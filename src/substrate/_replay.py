@@ -428,7 +428,7 @@ def _states_match(replayed: dict, live: dict) -> bool:
         return False
     if replayed["needs_review"] != live["needs_review"]:
         return False
-    if replayed["not_before"] != live["not_before"]:
+    if not _ts_equal(replayed["not_before"], live["not_before"]):
         return False
     if replayed["attempt_number"] != live["attempt_number"]:
         return False
@@ -442,6 +442,12 @@ def _states_match(replayed: dict, live: dict) -> bool:
     return True
 
 
+def _to_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def _ts_equal_within(
     a: datetime | None, b: datetime | None, threshold_seconds: float,
 ) -> bool:
@@ -449,7 +455,7 @@ def _ts_equal_within(
         return True
     if a is None or b is None:
         return False
-    diff = abs((a.astimezone(UTC) - b.astimezone(UTC)).total_seconds())
+    diff = abs((_to_utc(a) - _to_utc(b)).total_seconds())
     return diff <= threshold_seconds
 
 
@@ -463,7 +469,7 @@ def _diff_fields(replayed: dict, live: dict) -> list[str]:
         diffs.append("custom_fields")
     if replayed["needs_review"] != live["needs_review"]:
         diffs.append("needs_review")
-    if replayed["not_before"] != live["not_before"]:
+    if not _ts_equal(replayed["not_before"], live["not_before"]):
         diffs.append("not_before")
     if replayed["attempt_number"] != live["attempt_number"]:
         diffs.append("attempt_number")

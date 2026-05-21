@@ -1,15 +1,15 @@
 # spec.yaml — substrate
 # Machine-readable sidecar to spec.md. Source of truth is spec.md.
-# Regenerated against spec.md v4 (2026-05-06).
+# Regenerated against spec.md v5 (2026-05-18).
 
 meta:
   name: "substrate"
   spec_level: 3
   desired_level: 3
-  date: "2026-05-06"
+  date: "2026-05-18"
   extensions: []
-  spec_md_version: 4
-  yaml_regenerated_against: 4
+  spec_md_version: 5
+  yaml_regenerated_against: 5
 
 # ---------------------------------------------------------------------------
 # Glossary

@@ -82,7 +82,7 @@ docker compose -f docker-compose.test.yml up -d
 .venv/bin/python -m pytest tests/ -v -m slow
 
 # Lint
-.venv/bin/ruff check src/
+.venv/bin/ruff check src/ tests/
 ```
 
 Test DSN: `postgresql://substrate_test:substrate_test@localhost:5432/substrate_test`
@@ -111,7 +111,7 @@ sub.acquire_claim(work_item_id, actor_id, ttl_seconds=300)
 sub.heartbeat_claim(work_item_id, actor_id, ttl_seconds, *, expected_attempt_number=...)
 sub.release_claim(work_item_id, actor_id)
 sub.sweep_expired_claims()
-sub.ensure_event_partitions(months_ahead=3)  # idempotent; call on a timer to keep ahead of `events_default`
+sub.ensure_event_partitions(months_ahead=3)  # no-op (partitioning removed); returns []
 sub.query_work_items(workflow_name=..., current_states=[...], claimable_now=True, custom_field_filters={...})
 sub.read_events(work_item_id=...)
 sub.create_link(from_id, to_id, link_type, actor_id, payload=...)
@@ -162,19 +162,19 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 ## Known constraints
 
 - **Schema-per-project requires session-scoped `search_path`.** Substrate uses `SET LOCAL search_path` per transaction. This is incompatible with connection-pooling middleware that dispatches transactions across different backends (e.g., PgBouncer in transaction mode). Use PgBouncer in session mode, or connect directly to Postgres. Medium-term migration path: fully-qualified table names (BC-033).
-- **`events` is partitioned by month on `timestamp` (migration 010).** Host process must call `sub.ensure_event_partitions()` on a timer (alongside `sweep_expired_claims`) or new months land in `events_default`. The `hook_queue.event_id → events.event_id` FK was dropped (partitioned tables cannot maintain it without including the partition key); a replay-time orphan check is tracked in BC-145. The partial unique index `idx_events_one_escalated` is enforced per-partition; cross-partition uniqueness for `(work_item_id, event_seq)` relies on seq allocation under the canonical row lock and is asserted at the application layer.
+- **`events` table is flat (partitioning removed in RFC-001).** A global `UNIQUE(event_id)` index ensures event identity. `hook_queue.event_id → events.event_id` FK is maintained. `ensure_event_partitions` is a no-op returning `[]`. Partition gauges (`events_default_rows`, `events_partition_horizon_days`) have been removed. `heartbeat_claim` coalesces `claim_heartbeat` events within a `max(60s, ttl/2)` threshold (BC-194).
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-005 implemented. All FRs FR-01 through FR-29 are in tree. 528 tests (511 core + 17 sidecar) + 4 scale benchmarks passing.
+MVP + Phase 2 + Phase 3 + Plans 002-005 implemented. All FRs FR-01 through FR-29 are in tree. 577 core + 20 sidecar tests + 4 scale benchmarks passing.
 
-Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v4, structured replay error handling, CHANGELOG.md.
+Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
 
 Phase 3 additions: FR-24 (actor → allowed_roles enforcement, closes BR-09), FR-25 (continue-on-revoked replay flag), FR-26 (update_not_before API), FR-27 (custom field validation at transition time). Migration `005_actor_roles.sql` adds the actor_roles table. ReplayReport gains `warnings` field.
 
 Plans 002-004 additions:
 - **Plan 002 (Admin CLI):** `substrate` console entry point (`src/substrate/_cli.py`). Commands: `workflow validate`, `work-item show/list`, `events show/tail`, `replay`, `schema init/status`, `hooks dead-letter list/requeue`, `actor-roles list`, `recurrence list/due/fire/cancel/update`. No DB required for `workflow validate`. Structlog routes to stderr in CLI mode.
-- **Plan 003 (Recurring work-items, FR-28):** New `recurrence_rules` table (migration 012). Schedule kinds: `interval` and `rrule`. Public API on `Substrate` and `InMemorySubstrate`: `register_recurrence_rule`, `list_recurrence_rules`, `due_recurrences`, `fire_recurrence`, `cancel_recurrence_rule`, `update_recurrence_rule`. New error codes: `RECURRENCE_RULE_NOT_FOUND`, `RECURRENCE_RULE_EXHAUSTED`, `RECURRENCE_SCHEDULE_INVALID`, `RECURRENCE_TEMPLATE_INVALID`. Dependency: `python-dateutil`.
+- **Plan 003 (Recurring work-items, FR-28):** New `recurrence_rules` table (migration 011). Schedule kinds: `interval` and `rrule`. Public API on `Substrate` and `InMemorySubstrate`: `register_recurrence_rule`, `list_recurrence_rules`, `due_recurrences`, `fire_recurrence`, `cancel_recurrence_rule`, `update_recurrence_rule`. New error codes: `RECURRENCE_RULE_NOT_FOUND`, `RECURRENCE_RULE_EXHAUSTED`, `RECURRENCE_SCHEDULE_INVALID`, `RECURRENCE_TEMPLATE_INVALID`. Dependency: `python-dateutil`.
 - **Plan 004 (Workflow composition, FR-29):** `_workflow_compose.py` with `resolve_includes`, `_deep_merge`, and `compose_workflow`. `extends:` field added to JSON Schema. `parse_file()` now resolves composition. Keyed list merge by `(name, from)` for transitions, `__append`/`__remove` list modifiers. New error code `WORKFLOW_COMPOSE_ERROR`.
 
 Plan 005 additions:
@@ -197,6 +197,7 @@ BC-171: `work_item_ref` custom fields now accept `target_work_item_types: [typeA
 - All mutations go through `mgr.transaction()` which sets `SET LOCAL search_path`
 - Error codes are part of the API contract (§19.5)
 - Tests reach internal state via `substrate._testing` only — never import `_mgr` directly
+- **`InMemorySubstrate` without `hmac_key_path` silently skips event emission.** Operations that emit events (claim acquire, release, heartbeat) check `key_set is not None` before appending. Tests asserting on event counts must provide `hmac_key_path`. The `test_in_memory_conformance.py` fixture deliberately omits it; new test files that need event observability should pass `KEY_PATH`.
 
 ## Agent Workflow
 

@@ -14,28 +14,33 @@ log = structlog.get_logger()
 def _ts_equal(a: datetime | None, b: datetime | None) -> bool:
     """Compare two timestamps in a timezone-safe way.
 
-    Converts both to UTC if tz-aware, or compares naively if both naive.
-    Returns True if both are None or if their UTC equivalents are equal.
+    Postgres returns tz-aware datetimes; replayed values come from
+    datetime.fromisoformat() which may or may not include tzinfo depending
+    on whether the stored string included an offset.  Normalise both to UTC
+    before comparing so that +00:00-suffixed and naive values compare equal.
     """
     if a is None and b is None:
         return True
     if a is None or b is None:
         return False
-    # Normalise: if either is tz-aware, convert both to UTC
     a_aware = a.tzinfo is not None
     b_aware = b.tzinfo is not None
     if a_aware and b_aware:
         return a.astimezone(UTC) == b.astimezone(UTC)
     if not a_aware and not b_aware:
         return a == b
-    # Mixed: make the naive one UTC-aware
+    # Mixed: strip tzinfo from the aware side for comparison
     if a_aware:
         a = a.astimezone(UTC).replace(tzinfo=None)
-        b = b.replace(tzinfo=None) if b.tzinfo is None else b.astimezone(UTC).replace(tzinfo=None)
     else:
         b = b.astimezone(UTC).replace(tzinfo=None)
-        a = a.replace(tzinfo=None) if a.tzinfo is None else a.astimezone(UTC).replace(tzinfo=None)
     return a == b
+
+
+def _to_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _ts_equal_within(
@@ -45,7 +50,7 @@ def _ts_equal_within(
         return True
     if a is None or b is None:
         return False
-    diff = abs((a.astimezone(UTC) - b.astimezone(UTC)).total_seconds())
+    diff = abs((_to_utc(a) - _to_utc(b)).total_seconds())
     return diff <= threshold_seconds
 
 
@@ -223,7 +228,7 @@ def in_memory_replay(
                     derived_state != wi["current_state"]
                     or derived_fields != (wi["custom_fields"] or {})
                     or derived_needs_review != wi.get("needs_review", False)
-                    or derived_not_before != wi.get("not_before")
+                    or not _ts_equal(derived_not_before, wi.get("not_before"))
                     or derived_last_seq != wi.get("last_event_seq", 0)
                     or derived_attempt_number != wi.get("attempt_number", 0)
                     or derived_claimed_by != wi.get("claimed_by")

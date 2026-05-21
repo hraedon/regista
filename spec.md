@@ -2,10 +2,11 @@
 
 **Spec Level:** 3
 **Desired Level:** 3
-**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions)
+**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions, 2026-05-18 — v5)
 **Extensions active:** None
 
 **Revision history:**
+- 2026-05-18 — v5: RFC-001 (revert migration 010 partitioning; events table is flat with global `UNIQUE(event_id)`). BC-194 (heartbeat coalescing: `claim_heartbeat` events suppressed within `max(60s, ttl/2)` threshold). `ensure_event_partitions` is now a no-op returning `[]`. Partition gauges (`events_default_rows`, `events_partition_horizon_days`) removed. Migrations renumbered 010–013 (no production data). `heartbeat_claim` gains optional `coalesce_threshold` parameter.
 - 2026-05-05 — v4: Phase 3 additions. FR-24 (actor → allowed_roles enforcement, closing BR-09 fast-follow). FR-25 (continue-on-revoked replay flag). AC-35/AC-36 added. §12 Phase 3 updated. §16 decision items resolved: actor role enforcement (implemented), retention policy (deferred with guidance), Postgres version (pinned to 15+). BR-09 updated from "deferred fast-follow" to "implemented."
 - 2026-05-05 — v3: integrated third reviewer pass on API shape and consumer expectations. Adds FR-05b (structured work-item query, MVP), §19 Public API Surface (substrate library as sole signer; service-wrapping is mechanical), §20 Consumer Expectation Boundary (explicit non-goals consumers commonly assume substrate provides), BR-13 (per-project DB isolation as load-bearing assumption with documented migration path), refinement to FR-15 (library-as-sole-signer clause). ACs 32–34 added. Reviewer points on links projection and signing envelope complexity were considered and held as designed.
 - 2026-05-05 — v2: integrated two-reviewer correctness pass. Adds API-layer idempotency, gap-free `event_seq` allocator + canonical lock target (§17), projection invariants (§18), HMAC-SHA256 + RFC 8785 canonical signing envelope, transition-validator vs hook split, custom-field type vocabulary, trust tiers on `actor_metadata`. Resolves §13 Q8 (domain-expert review).

@@ -88,7 +88,7 @@ def _run_migrations_locked(mgr: ConnectionManager) -> list[int]:
             "CREATE TABLE IF NOT EXISTS _substrate_migrations "
             "(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
         )
-        # Add checksum column if migration 013 has not yet run (bootstrap safety).
+        # Add checksum column if migration 012 has not yet run (bootstrap safety).
         conn.execute(
             "ALTER TABLE _substrate_migrations ADD COLUMN IF NOT EXISTS checksum BYTEA"
         )

@@ -193,7 +193,7 @@ class Substrate:
         )
 
     def _run_auto_partition(self) -> None:
-        """No-op. Partitioning was removed in migration 014."""
+        """No-op. Partitioning was removed (RFC-001)."""
         log.warning("auto_partition.deprecated", project=self._project)
 
     def close(self) -> None:
@@ -285,7 +285,7 @@ class Substrate:
             )
 
     def ensure_event_partitions(self, months_ahead: int = 3) -> list[str]:
-        """Deprecated. Partitioning was removed in migration 014.
+        """Deprecated. Partitioning was removed (RFC-001).
 
         This method is kept for backwards compatibility and has no effect.
 
@@ -461,7 +461,7 @@ class Substrate:
             parse_workflow_yaml, _yaml.dump, path,
         )
 
-    def get_workflow(self, workflow_name: str, version: int):
+    def get_workflow(self, workflow_name: str, version: int) -> WorkflowDefinition:
         """Retrieve a workflow definition by name and version.
 
         Returns:
@@ -552,7 +552,7 @@ class Substrate:
         Raises:
             SubstrateError: ``INVALID_TRANSITION``, ``ROLE_NOT_PERMITTED``,
                 ``ACTOR_ROLE_NOT_AUTHORIZED``, ``CUSTOM_FIELD_VIOLATION``,
-                ``VALIDATOR_TIMEOUT``, ``VALIDATOR_FAILED``.
+                ``VALIDATOR_FAILED``.
         """
         from ._transition import transition as _transition_impl
 
@@ -1220,7 +1220,7 @@ class Substrate:
         count: int | None = None,
         catchup_policy: str = "fire_once",
         created_by: str = "system",
-    ):
+    ) -> dict:
         from ._recurrence_api import register_recurrence_rule as _impl
         return _impl(
             self._mgr, self._metrics, self._project,
@@ -1230,11 +1230,11 @@ class Substrate:
             count=count, catchup_policy=catchup_policy, created_by=created_by,
         )
 
-    def list_recurrence_rules(self, status: str | None = None) -> list:
+    def list_recurrence_rules(self, status: str | None = None) -> list[dict]:
         from ._recurrence_api import list_recurrence_rules as _impl
         return _impl(self._mgr, status=status)
 
-    def due_recurrences(self, now: datetime | None = None) -> list:
+    def due_recurrences(self, now: datetime | None = None) -> list[dict]:
         from ._recurrence_api import due_recurrences as _impl
         return _impl(self._mgr, now=now)
 

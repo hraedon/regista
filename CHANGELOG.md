@@ -2,6 +2,24 @@
 
 All notable changes to substrate are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] — 2026-05-21
+
+### Changed
+
+- **RFC-001:** Reverted events table partitioning. Events table is now flat with a global `UNIQUE(event_id)` index. `ensure_event_partitions()` is a no-op returning `[]`. Partition gauges (`events_default_rows`, `events_partition_horizon_days`) removed from Prometheus metrics. Migrations renumbered 010–013 (gaps 010/014 closed; no production data affected).
+- **BC-194:** Heartbeat coalescing — `heartbeat_claim` suppresses `claim_heartbeat` events within `max(60s, ttl/2)` threshold. New optional `coalesce_threshold` parameter for custom override. Replay drift detection tolerates `claim_expires_at` deltas within the coalesce threshold.
+
+### Deprecated
+
+- `ensure_event_partitions()` — no-op, will be removed in a future version
+- `auto_partition` parameter on `Substrate.create_project()` — no-op, will be removed in a future version
+- Prometheus gauges `substrate_events_default_rows` and `substrate_events_partition_horizon_days` — no longer emitted
+
+### Fixed
+
+- `_ts_equal_within` in replay modules incorrectly called `.astimezone(UTC)` on naive datetimes (assumed local time instead of UTC)
+- `_ts_equal` mixed naive/aware comparison logic simplified to normalize both to UTC
+
 ## [0.1.0] — 2026-05-15
 
 ### Added
@@ -11,7 +29,7 @@ All notable changes to substrate are documented here. Format follows [Keep a Cha
 - Immutable append-only event log with gap-free `event_seq` per work-item
 - Transactionally-consistent denormalized projection (`work_items_current`)
 - HMAC-SHA256 signing with RFC 8785 canonicalization; library is sole signer (FR-15)
-- Monthly partitioned events table (migration 010)
+- Monthly partitioned events table (migration 010) — **removed in RFC-001**; events table is now flat with global `UNIQUE(event_id)`
 - Durable claims with TTL, attempt tracking, and auto-steal on expiry
 - Workflow registry with content-hash idempotency
 - Sync transition validators with 5s timeout and I/O safety AST check (FR-13)
@@ -37,5 +55,5 @@ All notable changes to substrate are documented here. Format follows [Keep a Cha
 
 ### Fixed
 
-- 160 breadcrumbs resolved across security, correctness, and conformance dimensions
+- 188 breadcrumbs resolved across security, correctness, and conformance dimensions
 - Key fixes: claim zombie revival prevention (BC-071), cross-partition event_id uniqueness (BC-148), projection-before-event ordering (BC-147), validator ThreadPoolExecutor lock leak (BC-146), structlog stderr routing in CLI

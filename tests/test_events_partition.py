@@ -72,7 +72,7 @@ class TestEnsureEventPartitions:
         assert names == []
 
 
-class TestPartitionRouting:
+class TestEventStorage:
     def test_events_land_in_events_table(self, substrate):
         wi, _ = substrate.create_work_item(
             workflow_name="partition_test",
@@ -157,8 +157,8 @@ class TestPartitionRouting:
         assert row is None, "events table should not be partitioned"
 
 
-class TestAutoPartitionOnInit:
-    """Partitioning was removed in migration 014; auto_partition is a no-op."""
+class TestUnpartitionedInit:
+    """Partitioning was removed; auto_partition is a no-op."""
 
     def test_no_partitions_created_on_create_project(self):
         """create_project does not create any partition tables."""
