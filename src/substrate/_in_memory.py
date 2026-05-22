@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -22,6 +22,7 @@ from ._types import (
     ConnectionInfo,
     DeadLetterEntry,
     Event,
+    HookContext,
     Link,
     QueryPage,
     ReplayReport,
@@ -503,6 +504,101 @@ class InMemorySubstrate:
 
         return in_memory_list_dead_lettered_hooks(self._dead_letter)
 
+    def claim_hooks(
+        self,
+        max_batch: int = 10,
+        lease_seconds: int = 60,
+    ) -> list[HookContext]:
+        now = datetime.now(UTC)
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+
+        pending = [
+            e for e in self._hook_queue
+            if e.get("status", "pending") == "pending"
+        ][:max_batch]
+
+        valid = []
+        result = []
+        for entry in pending:
+            work_item_id = entry.get("work_item_id")
+            if work_item_id is None:
+                continue
+            valid.append(entry)
+            result.append(HookContext(
+                hook_queue_id=entry["id"],
+                event_id=entry["event_id"],
+                work_item_id=work_item_id,
+                hook_name=entry["hook_name"],
+                transition=entry.get("transition"),
+                payload=entry.get("payload"),
+            ))
+
+        for entry in valid:
+            entry["status"] = "in_progress"
+            entry["lease_expires_at"] = lease_expires_at
+            entry["updated_at"] = now
+
+        return result
+
+    def complete_hook(self, hook_queue_id: int) -> None:
+        entry = next(
+            (e for e in self._hook_queue if e.get("id") == hook_queue_id),
+            None,
+        )
+        if entry is None:
+            raise SubstrateError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found",
+            )
+        entry["status"] = "completed"
+        entry["lease_expires_at"] = None
+        entry["updated_at"] = datetime.now(UTC)
+
+    def fail_hook(self, hook_queue_id: int, error: str) -> None:
+        from ._in_memory_hooks import _in_memory_move_to_dead_letter
+
+        entry = next(
+            (e for e in self._hook_queue if e.get("id") == hook_queue_id),
+            None,
+        )
+        if entry is None:
+            raise SubstrateError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found",
+            )
+
+        retry_count = entry.get("retry_count", 0) + 1
+        max_retries = entry.get("max_retries", 3)
+
+        if retry_count >= max_retries:
+            _in_memory_move_to_dead_letter(
+                entry, self._dead_letter, self._work_items,
+                self._store, self._key_set, error,
+            )
+        else:
+            entry["retry_count"] = retry_count
+            entry["status"] = "pending"
+            entry["lease_expires_at"] = None
+            entry["updated_at"] = datetime.now(UTC)
+
+    def sweep_expired_hook_leases(self) -> int:
+        now = datetime.now(UTC)
+        swept = 0
+        for entry in self._hook_queue:
+            if (
+                entry.get("status") == "in_progress"
+                and entry.get("lease_expires_at") is not None
+                and entry["lease_expires_at"] < now
+            ):
+                entry["status"] = "pending"
+                entry["lease_expires_at"] = None
+                entry["updated_at"] = now
+                swept += 1
+        return swept
+
+    def ensure_event_partitions(self, months_ahead: int = 3) -> list[str]:
+        return []
+
     def update_not_before(
         self,
         work_item_id: uuid.UUID,
@@ -619,7 +715,6 @@ class InMemorySubstrate:
 
     @staticmethod
     def validate_actor_metadata(
-        self,
         event: Event,
         expected_schema: dict | None = None,
     ) -> list[str]:
@@ -696,68 +791,3 @@ class InMemorySubstrate:
         key, data = versions[0]
         wf_def = self._workflow_defs[key]
         return data, wf_def, key[1]
-
-    def _validate_refs_in_memory(self, wf_data: dict, work_item_type: str, values: dict) -> None:
-        wits = wf_data.get("work_item_types", [])
-        wit = next((t for t in wits if t["name"] == work_item_type), None)
-        if wit is None:
-            return
-        for field_def in wit.get("custom_fields", []):
-            if field_def["type"] != "work_item_ref":
-                continue
-            value = values.get(field_def["name"])
-            if value is None:
-                continue
-            ref_uuid = uuid.UUID(value)
-            target_type = field_def.get("target_work_item_type")
-            target_types = field_def.get("target_work_item_types")
-            ref_wi = self._work_items.get(ref_uuid)
-            if ref_wi is None:
-                raise SubstrateError(
-                    ErrorCode.CUSTOM_FIELD_VIOLATION,
-                    f"Field {field_def['name']!r} references nonexistent work item {value}",
-                    detail={"field": field_def["name"], "value": value},
-                )
-            if target_type and ref_wi["work_item_type"] != target_type:
-                raise SubstrateError(
-                    ErrorCode.CUSTOM_FIELD_VIOLATION,
-                    f"Field {field_def['name']!r} references work item of type "
-                    f"{ref_wi['work_item_type']!r}, expected {target_type!r}",
-                    detail={
-                        "field": field_def["name"],
-                        "value": value,
-                        "actual_type": ref_wi["work_item_type"],
-                        "expected_type": target_type,
-                    },
-                )
-            if target_types and ref_wi["work_item_type"] not in target_types:
-                raise SubstrateError(
-                    ErrorCode.CUSTOM_FIELD_VIOLATION,
-                    f"Field {field_def['name']!r} references work item of type "
-                    f"{ref_wi['work_item_type']!r}, expected one of {sorted(target_types)}",
-                    detail={
-                        "field": field_def["name"],
-                        "value": value,
-                        "actual_type": ref_wi["work_item_type"],
-                        "expected_types": sorted(target_types),
-                    },
-                )
-
-    def _append_simple_event(
-        self, wi: dict, event_id: uuid.UUID,
-        actor_id: str, actor_kind: str, actor_metadata: Jsonb | None,
-        transition: str, payload: Jsonb | None,
-    ) -> None:
-        return _store_append(
-            self._store,
-            work_item_id=wi["work_item_id"],
-            actor_id=actor_id,
-            actor_kind=actor_kind,
-            actor_metadata=actor_metadata,
-            workflow_name=wi["workflow_name"],
-            workflow_version=wi["workflow_version"],
-            transition=transition,
-            payload=payload,
-            event_id=event_id,
-            key_set=self._key_set,
-        )

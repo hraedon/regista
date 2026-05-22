@@ -383,53 +383,6 @@ def read_events_by_work_item(
     return [_row_to_event(r) for r in reversed(rows)]
 
 
-def read_events_by_actor(
-    conn: psycopg.Connection,
-    actor_id: str,
-    limit: int = 100,
-) -> list[Event]:
-    rows = conn.execute(
-        SQL(
-            f"SELECT {_EVENT_FIELDS} FROM events "
-            "WHERE actor_id = %s ORDER BY timestamp DESC, event_seq DESC LIMIT %s"
-        ),
-        [actor_id, limit],
-    ).fetchall()
-    return [_row_to_event(r) for r in rows]
-
-
-def read_events_by_time_range(
-    conn: psycopg.Connection,
-    start: datetime,
-    end: datetime,
-    limit: int = 100,
-) -> list[Event]:
-    rows = conn.execute(
-        SQL(
-            f"SELECT {_EVENT_FIELDS} FROM events "
-            "WHERE timestamp >= %s AND timestamp <= %s "
-            "ORDER BY timestamp, event_seq LIMIT %s"
-        ),
-        [start, end, limit],
-    ).fetchall()
-    return [_row_to_event(r) for r in rows]
-
-
-def read_events_by_transition(
-    conn: psycopg.Connection,
-    transition: str,
-    limit: int = 100,
-) -> list[Event]:
-    rows = conn.execute(
-        SQL(
-            f"SELECT {_EVENT_FIELDS} FROM events "
-            "WHERE transition = %s ORDER BY timestamp DESC, event_seq DESC LIMIT %s"
-        ),
-        [transition, limit],
-    ).fetchall()
-    return [_row_to_event(r) for r in rows]
-
-
 def read_events_composite(
     conn: psycopg.Connection,
     *,

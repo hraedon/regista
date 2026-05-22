@@ -17,31 +17,6 @@ class ActorKind(Enum):
 
 
 @dataclass(frozen=True)
-class ActorIdentity:
-    actor_id: str
-    actor_kind: ActorKind
-    actor_metadata: dict | None = None
-    key_id: str | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "actor_id": self.actor_id,
-            "actor_kind": self.actor_kind.value,
-            "actor_metadata": self.actor_metadata,
-            "key_id": self.key_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> ActorIdentity:
-        return cls(
-            actor_id=data["actor_id"],
-            actor_kind=ActorKind(data["actor_kind"]),
-            actor_metadata=data.get("actor_metadata"),
-            key_id=data.get("key_id"),
-        )
-
-
-@dataclass(frozen=True)
 class ActorMetadata:
     role: str | None = None
     channel: str | None = None

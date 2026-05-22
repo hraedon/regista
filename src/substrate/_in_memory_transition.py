@@ -47,6 +47,11 @@ def in_memory_transition(
     )
 
     wi = work_items.get(work_item_id)
+    if wi is None:
+        raise SubstrateError(
+            ErrorCode.WORK_ITEM_NOT_FOUND,
+            f"Work item {work_item_id} not found",
+        )
 
     wf_key = (wi["workflow_name"], wi["workflow_version"])
     wf_data = workflows.get(wf_key)

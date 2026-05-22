@@ -39,9 +39,6 @@ class Metrics:
             )
         return self._status_gauges[name]
 
-    def set_gauge(self, name: str, project: str, value: float) -> None:
-        log.warning("metrics.unknown_gauge", name=name)
-
     def set_hook_queue_depth(self, project: str, status: str, value: float) -> None:
         """Update the hook_queue_depth gauge for a specific (project, status) label pair."""
         self._gauge_with_status(

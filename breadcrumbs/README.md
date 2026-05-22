@@ -31,7 +31,12 @@ _(none)_
 
 ## Open
 
-_(none)_
+| # | Title | Severity | Status |
+|---|---|---|---|
+| 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | proposed |
+| 196 | HMAC signing is symmetric — no external/adversarial verifiability | medium | proposed |
+| 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | proposed |
+| 198 | No defense against operator forgery — single key holder can rewrite or fabricate signed events with no external detection path | medium | proposed |
 
 ## Resolved
 

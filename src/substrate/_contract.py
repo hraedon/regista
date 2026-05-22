@@ -451,11 +451,6 @@ class Jsonb:
 
 
 def _check_string_safe(value: str, label: str) -> None:
-    if not isinstance(value, str):
-        raise SubstrateError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"{label} has unsupported type {type(value).__name__} for JSON serialization",
-        )
     if "\u0000" in value:
         raise SubstrateError(
             ErrorCode.INVALID_ARGUMENT,

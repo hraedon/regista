@@ -277,8 +277,19 @@ class PostgresEventStore:
                 ],
             ).fetchone()
         except psycopg.errors.UniqueViolation:
+            existing = self.find_by_event_id(event.event_id)
+            if existing is not None:
+                from ._contract import check_idempotency as _contract_check
+                match = _contract_check(
+                    existing,
+                    actor_id=event.actor_id,
+                    transition=event.transition,
+                    work_item_id=event.work_item_id,
+                )
+                if match is not None:
+                    return match
             raise SubstrateError(
-                ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                ErrorCode.EVENT_ID_GLOBAL_COLLISION,
                 f"event_id {event.event_id} already exists",
             )
 
