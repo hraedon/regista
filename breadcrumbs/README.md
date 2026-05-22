@@ -34,10 +34,13 @@ _(none)_
 | # | Title | Severity | Status |
 |---|---|---|---|
 | 199 | Sidecar auth middleware is permissive by default; no role-based authorization | critical | proposed |
-| 209 | Replay test coverage is thin — 3 tests, many untested derivation paths | high | proposed |
-| 210 | Recurrence system has zero Postgres integration tests | high | proposed |
 
 ## Resolved
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| 210 | Recurrence system has zero Postgres integration tests | high | Added 24 Postgres integration tests in `tests/test_recurrence_postgres.py` covering register, list, due, fire, cancel, update, and custom fields. Fixed `_recurrence.py` to use `psycopg.types.json.Jsonb` for dict params and wrap `actor_metadata` in `_Jsonb` before calling `_create_work_item`. |
+| 209 | Replay test coverage is thin — many untested derivation paths | high | Added 19 tests in `tests/test_replay_coverage.py`: claims (acquired/stolen/released/expired/heartbeat), links, escalation, not_before_set, custom_fields_update, orphan events, continue_on_revoked, signature failures, missing workflow, invalid from_state, and InMemory parity. Fixed `_in_memory_replay.py` to also reset `derived_claim_expires_at` on transition. |
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|

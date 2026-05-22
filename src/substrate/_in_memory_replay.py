@@ -173,6 +173,7 @@ def in_memory_replay(
                         if "custom_fields_update" in p:
                             derived_fields = {**derived_fields, **p["custom_fields_update"]}
                         derived_claimed_by = None
+                        derived_claim_expires_at = None
         except SubstrateError:
             halted += 1
         except Exception:

@@ -199,6 +199,7 @@ def register_recurrence_rule(
     next_fire = compute_next_fire(schedule_kind, schedule_expr, timezone, start_at, None, end_at)
     if next_fire is None:
         next_fire = start_at
+    import psycopg.types.json
     row = conn.execute(
         SQL(
             "INSERT INTO recurrence_rules "
@@ -210,7 +211,7 @@ def register_recurrence_rule(
         ),
         [
             rule_id, workflow_name, workflow_version, work_item_type,
-            template, schedule_kind, schedule_expr, timezone, start_at,
+            psycopg.types.json.Jsonb(template), schedule_kind, schedule_expr, timezone, start_at,
             end_at, count, "active", catchup_policy, next_fire, created_by,
         ],
     ).fetchone()
@@ -371,16 +372,18 @@ def fire_recurrence(
     custom_fields = template.get("custom_fields", {})
     event_id = uuid.uuid5(rule_id, scheduled_fire_at.isoformat())
 
+    from ._contract import Jsonb as _Jsonb
+
     wi, _evt = _create_work_item(
         conn,
         workflow_name=rule["workflow_name"],
         work_item_type=rule["work_item_type"],
         actor_id=scheduler_actor_id,
         actor_kind="system",
-        actor_metadata={
+        actor_metadata=_Jsonb({
             "recurrence_rule_id": str(rule_id),
             "scheduled_fire_at": scheduled_fire_at.isoformat(),
-        },
+        }),
         key_set=key_set,
         custom_fields=custom_fields,
         not_before=not_before,
@@ -438,7 +441,8 @@ def update_recurrence_rule(
         params.append(schedule_expr)
     if template is not None:
         updates.append("template = %s")
-        params.append(template)
+        import psycopg.types.json
+        params.append(psycopg.types.json.Jsonb(template))
     if not updates:
         return rule
     updates.append("updated_at = now()")

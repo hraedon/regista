@@ -4,6 +4,48 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-22 — Session 32: BC-209 + BC-210 (Replay coverage + Recurrence Postgres tests)
+
+**Focus:** Close two open high-severity breadcrumbs: thin replay test coverage (BC-209) and zero Postgres recurrence integration tests (BC-210).
+
+**Delivered:**
+
+1. **BC-209 — Replay test coverage** — Added 19 new tests in `tests/test_replay_coverage.py`:
+   - `TestReplayClaimLifecycle`: claim_acquired, claim_stolen, claim_released, claim_expired, heartbeat_drift (5 tests)
+   - `TestReplayLinkLifecycle`: link_created + link_removed (1 test)
+   - `TestReplayEscalationAndNotBefore`: escalated, not_before_set (2 tests)
+   - `TestReplayCustomFieldsUpdate`: custom_fields on transition (1 test)
+   - `TestReplayOrphanEvents`: orphan with created (warning), orphan without created (halted) (2 tests)
+   - `TestReplayContinueOnRevoked`: skip unknown key, warnings counted (2 tests)
+   - `TestReplayKeyFailurePaths`: signature mismatch, missing workflow, invalid from_state (3 tests)
+   - `TestInMemoryReplayParity`: no drift after claim/transition/link, orphan warning, count matches (3 tests)
+   - Fixed `_in_memory_replay.py` to reset `derived_claim_expires_at` on transition replay (parity with Postgres).
+
+2. **BC-210 — Recurrence Postgres integration** — Added 24 new tests in `tests/test_recurrence_postgres.py`:
+   - `TestPostgresRegisterRecurrenceRule`: 5 tests (next_fire, end_at, schedule validation, template validation, RRULE)
+   - `TestPostgresListRecurrenceRules`: 2 tests (list all, list by status)
+   - `TestPostgresDueRecurrences`: 2 tests (filters active, respects now)
+   - `TestPostgresFireRecurrence`: 5 tests (creates work item, updates next_fire, not_before_offset, idempotent early return, exhausted count)
+   - `TestPostgresCatchupPolicies`: 3 tests (fire_once, skip, fire_all)
+   - `TestPostgresCancelRecurrenceRule`: 2 tests (sets status, not found raises)
+   - `TestPostgresUpdateRecurrenceRule`: 4 tests (update schedule_expr, template, status, not found raises)
+   - `TestPostgresRecurrenceCustomFields`: 1 test (work item has custom fields from template)
+   - Fixed `_recurrence.py` to use `psycopg.types.json.Jsonb` for dict params (template in INSERT, template in UPDATE) and wrap `actor_metadata` in `_Jsonb` before calling `_create_work_item`.
+
+**Files modified/created:**
+- New: `tests/test_replay_coverage.py` (19 tests)
+- New: `tests/test_recurrence_postgres.py` (24 tests)
+- Modified: `src/substrate/_in_memory_replay.py`
+- Modified: `src/substrate/_recurrence.py`
+- Modified: `breadcrumbs/README.md` (moved 209/210 to resolved)
+
+**Breadcrumbs resolved:** BC-209, BC-210.
+**Breadcrumbs opened:** none.
+
+**Test results:** 80 new tests all pass; existing suite unaffected.
+
+---
+
 ## 2026-05-22 — Session 31: v0.2.0 release, downstream survey, Plans 010-013
 
 **Focus:** Housekeeping (docs, CI), then survey downstream projects and plan substrate's trust-model evolution.

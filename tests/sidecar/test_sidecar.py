@@ -26,14 +26,22 @@ TEST_WORKFLOW = os.environ.get("TEST_WORKFLOW", "tests/test_workflow.yaml")
 def _make_token_file():
     raw_token = "test-secret-token-12345"
     token_sha256 = hashlib.sha256(raw_token.encode()).hexdigest()
+    nonadmin_raw = "test-nonadmin-token-67890"
+    nonadmin_sha256 = hashlib.sha256(nonadmin_raw.encode()).hexdigest()
     data = {
         "tokens": [
             {
                 "token_sha256": token_sha256,
                 "actor_id": "test-agent",
                 "actor_kind": "agent",
-                "allowed_roles": ["agent", "coder", "reviewer"],
-            }
+                "allowed_roles": ["agent", "coder", "reviewer", "admin"],
+            },
+            {
+                "token_sha256": nonadmin_sha256,
+                "actor_id": "test-nonadmin",
+                "actor_kind": "agent",
+                "allowed_roles": ["agent"],
+            },
         ]
     }
     f = tempfile.NamedTemporaryFile(
@@ -41,13 +49,13 @@ def _make_token_file():
     )
     json.dump(data, f)
     f.close()
-    return f.name, raw_token
+    return f.name, raw_token, nonadmin_raw
 
 
 @pytest.fixture(scope="module")
 def token_file():
-    path, raw = _make_token_file()
-    yield path, raw
+    path, raw, nonadmin_raw = _make_token_file()
+    yield path, raw, nonadmin_raw
     os.unlink(path)
 
 
@@ -63,7 +71,7 @@ def substrate_instance():
 
 @pytest.fixture(scope="module")
 def client(substrate_instance, token_file):
-    token_path, _ = token_file
+    token_path, _, _ = token_file
     from substrate.sidecar.app import create_app
     from substrate.sidecar.auth import TokenRegistry
 
@@ -74,8 +82,14 @@ def client(substrate_instance, token_file):
 
 @pytest.fixture(scope="module")
 def auth_headers(token_file):
-    _, raw = token_file
+    _, raw, _ = token_file
     return {"Authorization": f"Bearer {raw}"}
+
+
+@pytest.fixture(scope="module")
+def nonadmin_headers(token_file):
+    _, _, nonadmin_raw = token_file
+    return {"Authorization": f"Bearer {nonadmin_raw}"}
 
 
 @pytest.fixture(scope="module")
@@ -133,6 +147,41 @@ class TestAuth:
             headers={"Authorization": "Bearer wrong-token"},
         )
         assert resp.status_code == 401
+
+    def test_missing_bearer_prefix(self, client):
+        resp = client.get(
+            "/v1/actor_roles",
+            headers={"Authorization": "test-secret-token-12345"},
+        )
+        assert resp.status_code == 401
+
+    def test_admin_required_for_sweep(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/sweep_expired_claims", headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_admin_required_for_replay(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/replay",
+            json={"continue_on_revoked": False},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_admin_required_for_dead_lettered_hooks(self, client, nonadmin_headers):
+        resp = client.get("/v1/dead_lettered_hooks", headers=nonadmin_headers)
+        assert resp.status_code == 403
+
+    def test_non_admin_can_use_regular_endpoints(self, client, nonadmin_headers):
+        # A non-admin token should still be able to authenticate; the
+        # endpoint may 404 on missing workflow but must not 401/403.
+        resp = client.post(
+            "/v1/query_work_items",
+            json={"workflow_name": "test_workflow"},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code not in (401, 403)
 
 
 class TestSoleSigner:
@@ -325,7 +374,7 @@ class TestActorRoles:
     def test_unauthorized_role(self, client, auth_headers):
         resp = client.post(
             "/v1/register_actor_role",
-            json={"role": "admin"},
+            json={"role": "auditor"},
             headers=auth_headers,
         )
         assert resp.status_code == 403
@@ -337,7 +386,7 @@ class TestActorRoles:
 
 class TestApiDocs:
     def test_docs_disabled(self, substrate_instance, token_file):
-        token_path, _ = token_file
+        token_path, _, _ = token_file
         from substrate.sidecar.app import create_app
         from substrate.sidecar.auth import TokenRegistry
 

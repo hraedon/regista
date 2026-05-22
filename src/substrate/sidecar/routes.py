@@ -4,10 +4,13 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from substrate._errors import ErrorCode, SubstrateError
 
 from .auth import AuthenticatedActor, TokenRegistry
+
+ADMIN_ROLE = "admin"
 from .models import (
     AcquireClaimRequest,
     AppendEventRequest,
@@ -41,6 +44,16 @@ def _get_actor(request: Request) -> AuthenticatedActor:
     return actor
 
 
+def _require_admin(request: Request) -> AuthenticatedActor:
+    actor = _get_actor(request)
+    if ADMIN_ROLE not in actor.allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Role {ADMIN_ROLE!r} required",
+        )
+    return actor
+
+
 def _parse_uuid(val: str) -> uuid.UUID:
     return uuid.UUID(val)
 
@@ -56,22 +69,24 @@ def register_routes(app, substrate, tokens: TokenRegistry):
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        if not request.url.path.startswith("/v1") and request.url.path not in (
-            "/docs", "/openapi.json",
-        ):
-            return await call_next(request)
-
-        if request.method == "OPTIONS":
+        if not request.url.path.startswith("/v1"):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
-            return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+            )
 
         raw_token = auth_header[len("Bearer "):]
         actor = tokens.authenticate(raw_token)
-        if actor is not None:
-            request.state.actor = actor
+        if actor is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid token"},
+            )
+        request.state.actor = actor
 
         return await call_next(request)
 
@@ -223,7 +238,7 @@ def register_routes(app, substrate, tokens: TokenRegistry):
 
     @router.post("/sweep_expired_claims")
     async def sweep_expired_claims(request: Request):
-        _get_actor(request)
+        _require_admin(request)
         count = substrate.sweep_expired_claims()
         return {"swept": count}
 
@@ -271,19 +286,19 @@ def register_routes(app, substrate, tokens: TokenRegistry):
 
     @router.post("/replay")
     async def replay(body: ReplayRequest, request: Request):
-        _get_actor(request)
+        _require_admin(request)
         result = substrate.replay(continue_on_revoked=body.continue_on_revoked)
         return _serialize(result)
 
     @router.get("/dead_lettered_hooks")
     async def list_dead_lettered_hooks(request: Request):
-        _get_actor(request)
+        _require_admin(request)
         result = substrate.list_dead_lettered_hooks()
         return _serialize(result)
 
     @router.post("/requeue_dead_lettered_hook")
     async def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request):
-        _get_actor(request)
+        _require_admin(request)
         substrate.requeue_dead_lettered_hook(body.dead_letter_id)
         return {"status": "ok"}
 
@@ -339,19 +354,19 @@ def register_routes(app, substrate, tokens: TokenRegistry):
 
     @router.post("/fire_recurrence")
     async def fire_recurrence(body: FireRecurrenceRequest, request: Request):
-        _get_actor(request)
+        _require_admin(request)
         rule, wi = substrate.fire_recurrence(_parse_uuid(body.rule_id))
         return {"rule": _serialize(rule), "work_item": _serialize(wi)}
 
     @router.post("/cancel_recurrence_rule")
     async def cancel_recurrence_rule(body: CancelRecurrenceRuleRequest, request: Request):
-        _get_actor(request)
+        _require_admin(request)
         substrate.cancel_recurrence_rule(_parse_uuid(body.rule_id))
         return {"status": "ok"}
 
     @router.post("/update_recurrence_rule")
     async def update_recurrence_rule(body: UpdateRecurrenceRuleRequest, request: Request):
-        _get_actor(request)
+        _require_admin(request)
         result = substrate.update_recurrence_rule(
             rule_id=_parse_uuid(body.rule_id),
             status=body.status,
@@ -362,7 +377,7 @@ def register_routes(app, substrate, tokens: TokenRegistry):
 
     @router.post("/sweep_expired_hook_leases")
     async def sweep_expired_hook_leases(request: Request):
-        _get_actor(request)
+        _require_admin(request)
         count = substrate.sweep_expired_hook_leases()
         return {"swept": count}
 
