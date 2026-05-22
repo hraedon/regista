@@ -58,6 +58,12 @@ src/substrate/
   _recurrence.py        # Recurring work-item schedule engine (FR-28)
   _recurrence_api.py    # Thin facade for recurrence on Substrate class
   _transition.py        # Extracted transition logic (delegated from Substrate)
+  _datetime_utils.py   # Shared datetime comparison for replay modules
+  _ops.py              # Facade classes: WorkflowOps, WorkItemOps, etc. (Plan 007)
+  _maintenance.py      # MaintenanceThread — timer-driven sweep/recurrence (Plan 009)
+  _vendor/             # Vendored dependencies
+    __init__.py
+    rfc8785.py         # Vendored rfc8785 0.1.4 (Plan 008 WS-3)
   sidecar/              # HTTP sidecar (Plan 005, optional)
     __init__.py
     __main__.py         # Entry point: python -m substrate.sidecar
@@ -140,6 +146,34 @@ sub.register_actor_role(actor_id, role)              # register actor → role m
 sub.unregister_actor_role(actor_id, role)            # remove actor → role mapping
 sub.list_actor_roles(actor_id=None)                  # list registered roles
 
+# Facade API (Plan 007) — domain-scoped sub-objects
+sub.workflows.register(yaml_content)
+sub.work_items.create(workflow_name, work_item_type, actor_id, ...)
+sub.events.append(work_item_id, actor_id, *, transition=..., payload=...)
+sub.claims.acquire(work_item_id, actor_id, ttl_seconds=300)
+sub.claims.heartbeat(work_item_id, actor_id, ttl_seconds)
+sub.claims.release(work_item_id, actor_id)
+sub.links.create(from_id, to_id, link_type, actor_id)
+sub.hooks.register_validator(name, fn)
+sub.hooks.register_handler(name, fn)
+sub.hooks.claim(max_batch, lease_seconds)
+sub.hooks.complete(hook_queue_id)
+sub.hooks.fail(hook_queue_id, error)
+sub.recurrence.register_rule(...)
+sub.recurrence.fire(rule_id)
+
+# Legacy top-level methods still work — they delegate to facades
+
+# Maintenance (Plan 009)
+sub.start_maintenance(sweep_interval=30, recurrence_interval=10)  # background thread
+sub.stop_maintenance()
+sub.maintenance_healthy  # True when thread is running and healthy (or not started)
+
+# Trust hardening (Plan 008)
+sub = Substrate(dsn, project, hmac_key_path, strict_roles=True)  # reject unregistered actors
+# Env-var key injection: SUBSTRATE_HMAC_KEY_<KEY_ID> overrides file secrets
+# Key rotation safety: unknown status raises KEY_LOAD_ERROR at startup
+
 # Standalone utilities (no database required)
 validate_yaml(yaml_string_or_path)                     # -> ValidationResult
 compose_workflow(file_or_path)                         # -> composed dict + SourceMap (FR-29)
@@ -151,13 +185,15 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 - Claim mutations (acquire, release, sweep) emit events for audit trail; heartbeats do not
 - Escalation (FR-10) fires automatically inside `acquire_claim` when `attempt_number >= attempt_threshold`; sets `needs_review`, emits `escalated`, idempotent
 - Hooks dead-letter after max retries and emit `hook_dead_lettered`; replay handles both `escalated` and `hook_dead_lettered`
+- `strict_roles=True` requires all actors to have registered roles before transitioning; `prompt`-source roles are rejected (Plan 008 WS-1)
+- `start_maintenance()` subsumes `start_hook_consumer()` — calling both is unnecessary but harmless
 
 ## Key Design Decisions
 
 1. **Schema-per-project** not DB-per-project. One pool, one backup target, engine-enforced isolation via `GRANT ON SCHEMA`. Migration path to `tenant_id`-in-shared-DB documented but not needed at homelab scale.
-2. **Library, not daemon.** Runs in-process. No HTTP server. Exposes `prometheus_client.CollectorRegistry` for host app to mount.
+2. **Library with optional maintenance thread.** Runs in-process. No HTTP server required. Exposes `prometheus_client.CollectorRegistry` for host app to mount. Optional `start_maintenance()` runs sweep/recurrence in a background thread.
 3. **Hybrid persistence.** Events authoritative; projection updated in same transaction. Not pure event-sourcing (no per-read replay cost).
-4. **Signing is internal.** RFC 8785 canonicalization + HMAC-SHA256 computed inside the library. Callers submit unsigned field tuples.
+4. **Signing is internal.** RFC 8785 canonicalization (vendored in `_vendor/rfc8785.py`) + HMAC-SHA256 computed inside the library. Callers submit unsigned field tuples.
 
 ## Known constraints
 
@@ -166,7 +202,7 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-005 implemented. All FRs FR-01 through FR-29 are in tree. 577 core + 20 sidecar tests + 4 scale benchmarks passing.
+MVP + Phase 2 + Phase 3 + Plans 002-009 implemented. All FRs FR-01 through FR-29 are in tree. 721 tests passing (including sidecar, property-based, and plan-specific tests).
 
 Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
 
@@ -180,7 +216,12 @@ Plans 002-004 additions:
 Plan 005 additions:
 - **Plan 005 (HTTP sidecar):** `src/substrate/sidecar/` package with FastAPI. 1:1 pass-through of the Substrate public API. Bearer-token auth via SHA-256 hashed token registry. Sole-signer middleware rejects `signature`/`payload_canonical_hash` fields. Hook claim/complete/fail lifecycle for non-Python consumers. ErrorCode → HTTP status mapping. Optional install extra `[sidecar]`. Dockerfile in `deploy/sidecar/`. 17 integration tests.
 
-Code structure: `transition()` extracted to `_transition.py`, `recurrence` API extracted to `_recurrence_api.py`, reducing `__init__.py` from ~1580 to ~1400 lines.
+Code structure: `transition()` extracted to `_transition.py`, `recurrence` API extracted to `_recurrence_api.py`, reducing `__init__.py` from ~1580 to ~1200 lines. Facade decomposition (Plan 007) adds `_ops.py` with 7 domain-scoped facade classes; top-level methods delegate to facades.
+
+Plans 007-009 additions:
+- **Plan 007 (Facade decomposition):** `_ops.py` with `WorkflowOps`, `WorkItemOps`, `EventOps`, `ClaimOps`, `LinkOps`, `HookOps`, `RecurrenceOps`. Cached properties on `Substrate`. Old top-level methods remain as thin delegates (no deprecation warnings). 30 tests.
+- **Plan 008 (Trust model hardening):** WS-1 (`strict_roles` flag — rejects unregistered actors and `prompt`-source roles). WS-2 (env-var key injection via `SUBSTRATE_HMAC_KEY_<KEY_ID>`). WS-3 (vendored `rfc8785` in `_vendor/` with 73 cross-validation tests). WS-5 (raise on unknown key status, `expected_key_count`, `keys_loaded` log). WS-4 (sidecar rate limiting) deferred.
+- **Plan 009 (Operational runtime):** `_maintenance.py` with `MaintenanceThread`. `start_maintenance()`/`stop_maintenance()` on `Substrate`. Subsumes hook consumer. `maintenance_healthy` property reflects thread state. 5 integration tests.
 
 RFC-062: Single-source-of-truth backend contract via `_contract.py` — 20 pure validation/decision functions shared by both Postgres and InMemory backends. Property-based conformance tests via hypothesis in `tests/test_property_conformance.py`.
 
