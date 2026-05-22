@@ -2,6 +2,29 @@
 
 All notable changes to substrate are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-05-22
+
+### Added
+
+- **Plan 007 (Facade decomposition):** Domain-scoped sub-objects (`sub.workflows`, `sub.work_items`, `sub.events`, `sub.claims`, `sub.links`, `sub.hooks`, `sub.recurrence`) via `_ops.py`. Legacy top-level methods remain as thin delegates.
+- **Plan 008 (Trust model hardening):**
+  - WS-1: `strict_roles=True` flag rejects unregistered actors and `prompt`-source roles at transition time
+  - WS-2: Environment-variable key injection via `SUBSTRATE_HMAC_KEY_<KEY_ID>` overrides file secrets
+  - WS-3: Vendored `rfc8785` 0.1.4 into `_vendor/` with 73 cross-validation tests against system library
+  - WS-5: Raise on unknown key status at startup; `expected_key_count` parameter; `keys_loaded` structured log
+- **Plan 009 (Operational runtime):** `MaintenanceThread` in `_maintenance.py` with configurable sweep, recurrence, hook-poll, and partition intervals. `start_maintenance()` / `stop_maintenance()` on `Substrate`. `maintenance_healthy` property. Subsumes hook consumer lifecycle.
+- Shared datetime utilities (`_datetime_utils.py`): `ts_equal`, `to_utc`, `ts_equal_within` — eliminated 88 lines of duplication between replay modules.
+- CI now installs `[vendor-check]` extra so rfc8785 cross-validation tests run in CI.
+
+### Changed
+
+- Constructor positional-signature contract test (BC-195) pins `Substrate(dsn, project, hmac_key_path)` shape used by sf2.
+- BC-196/197/198 (trust model design gaps) accepted and documented; implementation deferred.
+
+### Deprecated
+
+- WS-4 (sidecar rate limiting) explicitly deferred per reviewer consensus.
+
 ## [0.1.1] — 2026-05-21
 
 ### Changed

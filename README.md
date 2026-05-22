@@ -3,7 +3,7 @@
 Coordination and durable state for agent pipelines over Postgres.
 
 [![CI](https://github.com/hraedon/substrate/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/substrate/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-529%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-721%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 Substrate is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys substrate as its own isolated instance using schema-per-project isolation within a single Postgres database.
@@ -18,6 +18,9 @@ Substrate is a Python library that provides durable claims, event-sourced state,
 - **Custom fields** — typed fields with JSON Schema validation, enum support, and JSONB containment queries
 - **Recurring work items** — interval and RRULE schedules with catch-up policies
 - **Workflow composition** — `extends:` inheritance with keyed list merge and `__append`/`__remove` modifiers
+- **Facade API** — domain-scoped sub-objects (`sub.workflows`, `sub.work_items`, `sub.claims`, etc.)
+- **Maintenance thread** — background sweep, recurrence firing, and hook lease cleanup
+- **Trust hardening** — `strict_roles` enforcement, env-var key injection, vendored RFC 8785
 - **HMAC-SHA256 signing** — RFC 8785 canonicalization; library is sole signer
 - **HTTP sidecar** — optional FastAPI pass-through for non-Python consumers with bearer-token auth
 - **Admin CLI** — `substrate` command for workflow validation, work-item inspection, replay, and recurrence management
@@ -252,9 +255,9 @@ substrate actor-roles list --actor agent-1
 
 - **Event-sourced**: events are the authoritative log; `work_items_current` is a transactionally-consistent projection
 - **Schema-per-project**: one Postgres database, one schema per project, engine-enforced isolation
-- **Library mode**: runs in-process, no HTTP server required; exposes `prometheus_client.CollectorRegistry`
+- **Library mode**: runs in-process, no HTTP server required; optional `start_maintenance()` background thread for sweep and recurrence
 - **Library is sole signer**: HMAC-SHA256 over RFC 8785 canonical JSON, computed internally
-- **Monthly partitioned events**: partitions auto-ensured on init (`auto_partition=True`); explicit `ensure_event_partitions()` still available for manual cron use
+- **Flat events table**: global `UNIQUE(event_id)` index; partitioning removed in RFC-001
 - **Single-source-of-truth contract**: shared validation/decision functions in `_contract.py` used by both Postgres and in-memory backends
 - **Property-based testing**: hypothesis-driven conformance tests verify both backends behave identically
 
@@ -289,7 +292,7 @@ Test DSN: `postgresql://substrate_test:substrate_test@localhost:5432/substrate_t
 
 ## Status
 
-All features through Plan 005 implemented. 528 tests (511 core + 17 sidecar) + 4 scale benchmarks. FR-01 through FR-29 in tree. See `AGENTS.md` for detailed status.
+All features through Plan 009 implemented. 721 tests passing (core, sidecar, property-based, and plan-specific). FR-01 through FR-29 in tree. 198 breadcrumbs resolved. See `AGENTS.md` for detailed status.
 
 ## License
 
