@@ -4,6 +4,52 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-22 — Session 30: Plans 007-009, BC-195, BC-196/197/198, datetime utils extraction
+
+**Focus:** Housekeeping, then implement all three remaining architectural plans (facade decomposition, trust hardening, maintenance thread).
+
+**Delivered:**
+
+1. **Committed stale working tree** — 19 files of dead-code cleanup from prior session (unused query functions, ActorIdentity, obsolete error codes, UniqueViolation idempotency recovery).
+
+2. **Resolved BC-195** — Contract test in `tests/test_api_surface.py::TestBC195ConstructorPositionalContract` pins `Substrate(dsn, project, hmac_key_path)` positional shape used by sf2.
+
+3. **Accepted BC-196/197/198** — Trust model design gaps (symmetric HMAC, no delegation chain, no operator-forgery defense). All three marked accepted, deferred to future Plan 008+ work.
+
+4. **Extracted shared datetime utilities** — `src/substrate/_datetime_utils.py` with `ts_equal`, `to_utc`, `ts_equal_within`. Eliminated 88 lines of duplication between `_replay.py` and `_in_memory_replay.py`.
+
+5. **Implemented Plan 007 (Facade decomposition):**
+   - `src/substrate/_ops.py` (635 lines) — 7 facade classes: WorkflowOps, WorkItemOps, EventOps, ClaimOps, LinkOps, HookOps, RecurrenceOps
+   - Substrate gains cached facade properties; old methods delegate to facades
+   - 30 facade tests + backward-compat verification
+
+6. **Implemented Plan 008 (Trust model hardening):**
+   - WS-1: `strict_roles=True` flag rejects unregistered actors and `prompt`-source roles (8 tests)
+   - WS-2: Env-var key injection via `SUBSTRATE_HMAC_KEY_<KEY_ID>` (5 tests)
+   - WS-3: Vendored `rfc8785` into `_vendor/` with 73 cross-validation tests
+   - WS-5: Raise on unknown key status, `expected_key_count` parameter, `keys_loaded` log (5 tests)
+   - WS-4 (sidecar rate limiting): deferred per reviewer consensus
+
+7. **Implemented Plan 009 (Operational runtime):**
+   - `src/substrate/_maintenance.py` — MaintenanceThread with configurable intervals
+   - `start_maintenance()` / `stop_maintenance()` on Substrate
+   - Subsumes hook consumer lifecycle
+   - `maintenance_healthy` reflects actual thread state
+   - 5 integration tests
+
+8. **Updated documentation** — AGENTS.md source layout, public API section, status section, key design decisions. Debate index updated to close debates 001-002 and mark plans 007-009 as implemented.
+
+**Files modified/created:**
+- New: `src/substrate/_ops.py`, `src/substrate/_maintenance.py`, `src/substrate/_vendor/__init__.py`, `src/substrate/_vendor/rfc8785.py`, `src/substrate/_datetime_utils.py`
+- New tests: `test_plan007_facade.py`, `test_plan008_ws1.py`, `test_plan008_ws2.py`, `test_plan008_ws3.py`, `test_plan008_ws5.py`, `test_plan009.py`
+- Modified: `__init__.py`, `_contract.py`, `_errors.py`, `_keys.py`, `_jcs.py`, `_actor_roles.py`, `_transition.py`, `_in_memory.py`, `_in_memory_transition.py`, `_replay.py`, `_in_memory_replay.py`, `pyproject.toml`, `AGENTS.md`, `debate/README.md`
+
+**Breadcrumbs resolved:** BC-195, BC-196, BC-197, BC-198
+
+**Test results:** 721 passed, 10 deselected, lint clean.
+
+---
+
 ## 2026-05-16 — Session 28: Transition extraction, CLI recurrence, Plan 005 HTTP sidecar, README/CHANGELOG, CI fixes
 
 **Focus:** Deliver all remaining near-term items: transition extraction, CLI recurrence subcommands, structlog stderr, Plan 005 HTTP sidecar, changelog, README update, CI fixes.
