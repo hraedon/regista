@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import psycopg.types.json
 import structlog
 
 from ._errors import ErrorCode, SubstrateError
@@ -199,7 +200,6 @@ def register_recurrence_rule(
     next_fire = compute_next_fire(schedule_kind, schedule_expr, timezone, start_at, None, end_at)
     if next_fire is None:
         next_fire = start_at
-    import psycopg.types.json
     row = conn.execute(
         SQL(
             "INSERT INTO recurrence_rules "
@@ -441,7 +441,6 @@ def update_recurrence_rule(
         params.append(schedule_expr)
     if template is not None:
         updates.append("template = %s")
-        import psycopg.types.json
         params.append(psycopg.types.json.Jsonb(template))
     if not updates:
         return rule
