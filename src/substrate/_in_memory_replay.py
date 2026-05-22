@@ -1,57 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 
+from ._datetime_utils import ts_equal as _ts_equal
+from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, SubstrateError
 from ._signing import verify_event as _verify_event
 from ._types import ReplayReport
 
 log = structlog.get_logger()
-
-
-def _ts_equal(a: datetime | None, b: datetime | None) -> bool:
-    """Compare two timestamps in a timezone-safe way.
-
-    Postgres returns tz-aware datetimes; replayed values come from
-    datetime.fromisoformat() which may or may not include tzinfo depending
-    on whether the stored string included an offset.  Normalise both to UTC
-    before comparing so that +00:00-suffixed and naive values compare equal.
-    """
-    if a is None and b is None:
-        return True
-    if a is None or b is None:
-        return False
-    a_aware = a.tzinfo is not None
-    b_aware = b.tzinfo is not None
-    if a_aware and b_aware:
-        return a.astimezone(UTC) == b.astimezone(UTC)
-    if not a_aware and not b_aware:
-        return a == b
-    # Mixed: strip tzinfo from the aware side for comparison
-    if a_aware:
-        a = a.astimezone(UTC).replace(tzinfo=None)
-    else:
-        b = b.astimezone(UTC).replace(tzinfo=None)
-    return a == b
-
-
-def _to_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
-def _ts_equal_within(
-    a: datetime | None, b: datetime | None, threshold_seconds: float,
-) -> bool:
-    if a is None and b is None:
-        return True
-    if a is None or b is None:
-        return False
-    diff = abs((_to_utc(a) - _to_utc(b)).total_seconds())
-    return diff <= threshold_seconds
 
 
 def in_memory_replay(
