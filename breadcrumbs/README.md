@@ -31,7 +31,20 @@ _(none)_
 
 ## Open
 
-_(none)_
+| # | Title | Severity | Status |
+|---|---|---|---|
+| 199 | Sidecar auth middleware is permissive by default; no role-based authorization | critical | proposed |
+| 200 | validate_yaml reads files when string happens to match existing path | medium | proposed |
+| 201 | heartbeat_claim and release_claim do not null-check lock_work_item result | high | proposed |
+| 202 | sweep_expired_claims race with concurrent acquire_claim | high | proposed |
+| 203 | HookConsumer.is_running returns True when connection exhausted and processing stopped | high | proposed |
+| 204 | Dead-lettered hooks on orphaned events have no audit trail | high | proposed |
+| 205 | No input validation on actor_id, role, actor_metadata | medium | proposed |
+| 206 | HookConsumer._connect does not set synchronous_commit = on | medium | proposed |
+| 207 | maintenance_healthy returns True when maintenance is stopped or never started | medium | proposed |
+| 208 | ISO 8601 P1M recurrence always means 31 days, not one calendar month | low | proposed |
+| 209 | Replay test coverage is thin — 3 tests, many untested derivation paths | high | proposed |
+| 210 | Recurrence system has zero Postgres integration tests | high | proposed |
 
 ## Resolved
 
