@@ -4,6 +4,7 @@ import psycopg
 from psycopg.sql import SQL
 
 from ._contract import check_actor_role_authorized as _check_roles
+from ._contract import validate_actor_id, validate_role
 from ._errors import ErrorCode, SubstrateError
 
 
@@ -12,6 +13,8 @@ def register_actor_role(
     actor_id: str,
     role: str,
 ) -> None:
+    validate_actor_id(actor_id)
+    validate_role(role)
     existing = conn.execute(
         SQL(
             "SELECT 1 FROM actor_roles WHERE actor_id = %s AND role = %s"

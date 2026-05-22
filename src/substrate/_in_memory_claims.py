@@ -101,6 +101,9 @@ def in_memory_heartbeat_claim(
     coalesce_threshold: float | None = None,
 ) -> Claim:
     validate_mutation_params(actor_id=actor_id, ttl_seconds=ttl_seconds)
+    wi = work_items.get(work_item_id)
+    validate_work_item_exists(wi, work_item_id)
+
     now = datetime.now(UTC)
     claim = claims.get(work_item_id)
     claim_state = claim if claim is not None else None
@@ -121,8 +124,7 @@ def in_memory_heartbeat_claim(
         or (result.new_expires_at - last_emitted).total_seconds() >= threshold
     )
 
-    wi = work_items.get(work_item_id)
-    if should_emit and wi is not None and key_set is not None:
+    if should_emit and key_set is not None:
         _store_append(
             store,
             work_item_id=wi["work_item_id"],
@@ -143,8 +145,7 @@ def in_memory_heartbeat_claim(
         claim["last_heartbeat_emitted_at"] = result.new_expires_at
 
     claim["expires_at"] = result.new_expires_at
-    if wi is not None:
-        wi["claim_expires_at"] = result.new_expires_at
+    wi["claim_expires_at"] = result.new_expires_at
 
     return Claim(
         work_item_id=work_item_id,
@@ -171,20 +172,21 @@ def in_memory_release_claim(
         actor_kind=actor_kind,
         event_id=event_id,
     )
+    wi = work_items.get(work_item_id)
+    validate_work_item_exists(wi, work_item_id)
+
     claim = claims.get(work_item_id)
     validate_release(claim, actor_id, work_item_id)
 
-    wi = work_items.get(work_item_id)
-    if wi is not None:
-        _in_memory_append_claim_event(
-            store, wi, key_set, event_id or uuid.uuid4(), "claim_released",
-            {"actor_id": actor_id},
-            actor_id=actor_id,
-            actor_kind=actor_kind,
-        )
-        claims.pop(work_item_id, None)
-        wi["claimed_by"] = None
-        wi["claim_expires_at"] = None
+    _in_memory_append_claim_event(
+        store, wi, key_set, event_id or uuid.uuid4(), "claim_released",
+        {"actor_id": actor_id},
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+    )
+    claims.pop(work_item_id, None)
+    wi["claimed_by"] = None
+    wi["claim_expires_at"] = None
 
 
 def in_memory_sweep_expired_claims(
@@ -199,6 +201,11 @@ def in_memory_sweep_expired_claims(
         if c["expires_at"] < now
     ]
     for wid, claim in expired:
+        current = claims.get(wid)
+        if current is None:
+            continue
+        if current["expires_at"] != claim["expires_at"]:
+            continue
         del claims[wid]
         wi = work_items.get(wid)
         if wi is not None:

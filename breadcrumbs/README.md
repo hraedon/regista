@@ -34,15 +34,6 @@ _(none)_
 | # | Title | Severity | Status |
 |---|---|---|---|
 | 199 | Sidecar auth middleware is permissive by default; no role-based authorization | critical | proposed |
-| 200 | validate_yaml reads files when string happens to match existing path | medium | proposed |
-| 201 | heartbeat_claim and release_claim do not null-check lock_work_item result | high | proposed |
-| 202 | sweep_expired_claims race with concurrent acquire_claim | high | proposed |
-| 203 | HookConsumer.is_running returns True when connection exhausted and processing stopped | high | proposed |
-| 204 | Dead-lettered hooks on orphaned events have no audit trail | high | proposed |
-| 205 | No input validation on actor_id, role, actor_metadata | medium | proposed |
-| 206 | HookConsumer._connect does not set synchronous_commit = on | medium | proposed |
-| 207 | maintenance_healthy returns True when maintenance is stopped or never started | medium | proposed |
-| 208 | ISO 8601 P1M recurrence always means 31 days, not one calendar month | low | proposed |
 | 209 | Replay test coverage is thin — 3 tests, many untested derivation paths | high | proposed |
 | 210 | Recurrence system has zero Postgres integration tests | high | proposed |
 
@@ -242,4 +233,13 @@ _(none)_
 | 176 | Sidecar sole-signer middleware only checks POST method | low | [resolved/176](resolved/176-sidecar-sole-signer-middleware-only-checks-post.md) |
 | 175 | Sidecar API docs (Swagger UI, OpenAPI) publicly accessible without auth | low | [resolved/175](resolved/175-sidecar-api-docs-exposed-without-auth.md) |
 | 174 | Unknown key status silently skipped — typo drops keys from rotation | low | [resolved/174](resolved/174-unknown-key-status-silently-skipped.md) |
+| 208 | ISO 8601 P1M recurrence always means 31 days, not one calendar month | low | Documented approximation in spec.md FR-28. `P1M`/`P1Y` interval schedules convert to `timedelta` via `relativedelta(1970-01-01)` baseline, yielding 31 days / 365 days. Calendar-aware scheduling requires RRULE. |
+| 207 | maintenance_healthy returns True when maintenance is stopped or never started | medium | `maintenance_healthy` now returns `False` when `_maintenance_thread` is stopped (i.e., not running). Previously returned `True` in "never started" and "stopped" branches. Test in `tests/test_plan009.py` updated. |
+| 206 | HookConsumer._connect does not set synchronous_commit = on | medium | Added `SET synchronous_commit = on` to `_connect()` immediately after `SET search_path`. Aligns hook consumer connection with spec NFR-durability-1. |
+| 205 | No input validation on actor_id, role, actor_metadata | medium | Added `validate_actor_id` (non-empty, printable, max 255), `validate_role` (same), and `validate_actor_metadata` (max 64KB serialized). Wired into `_contract.py`, Postgres `register_actor_role`, and InMemory backends. |
+| 204 | Dead-lettered hooks on orphaned events have no audit trail | high | `_move_to_dead_letter` now always emits a `hook_dead_lettered` event. When the event and work-item are both missing, uses sentinel work_item_id `00000000-0000-0000-0000-000000000000` and `workflow_name = '__orphan__'`. Payload includes `"original_event_missing": true`. |
+| 203 | HookConsumer.is_running returns True when connection exhausted and processing stopped | high | Introduced `_processing` flag. Set to `True` when loop starts, `False` in `finally` block on exit. `is_running` now requires `thread.is_alive() and _processing`. `stop()` resets `_processing` to `False`. |
+| 202 | sweep_expired_claims race with concurrent acquire_claim | high | Added fresh-claim re-verification in sweep loop: after locking the work-item, SELECT from `claims` table. If a fresh claim exists (concurrent acquire won the race), skip the work-item. InMemory sweep now rechecks `claims.get(wid)` after deletion. |
+| 201 | heartbeat_claim and release_claim do not null-check lock_work_item result | high | Both Postgres and InMemory backends now validate work-item existence before proceeding. `validate_work_item_exists(wi, work_item_id)` raises `WORK_ITEM_NOT_FOUND` early. Tests added in `tests/test_coverage_gaps.py`. |
+| 200 | validate_yaml reads files when string happens to match existing path | medium | Removed file-path auto-detection from `validate_yaml`. Strings are treated as YAML content unconditionally. `substrate._cli.cmd_workflow_validate` wraps the argument in `Path()` explicitly. Added early `not isinstance(data, dict)` guard with clean error. |
 | 001 | Replay does not verify signatures or check key status | high | [resolved/001](resolved/001-replay-no-signature-verification.md) |

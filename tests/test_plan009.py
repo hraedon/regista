@@ -42,7 +42,7 @@ class TestMaintenanceStartStop:
         time.sleep(0.3)
         assert substrate.maintenance_healthy
         substrate.stop_maintenance()
-        assert substrate.maintenance_healthy
+        assert not substrate.maintenance_healthy
 
 
 class TestMaintenanceSweeps:

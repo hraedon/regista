@@ -197,6 +197,11 @@ def heartbeat_claim(
     from ._events import append_event, lock_work_item
 
     wi = lock_work_item(conn, work_item_id)
+    if wi is None:
+        raise SubstrateError(
+            ErrorCode.WORK_ITEM_NOT_FOUND,
+            f"Work item {work_item_id} not found",
+        )
 
     claim_row = conn.execute(
         SQL("SELECT * FROM claims WHERE work_item_id = %s"),
@@ -277,6 +282,11 @@ def release_claim(
     from ._events import append_event, lock_work_item
 
     wi = lock_work_item(conn, work_item_id)
+    if wi is None:
+        raise SubstrateError(
+            ErrorCode.WORK_ITEM_NOT_FOUND,
+            f"Work item {work_item_id} not found",
+        )
 
     claim_row = conn.execute(
         SQL("SELECT * FROM claims WHERE work_item_id = %s"),
@@ -328,6 +338,13 @@ def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:
         prior_actor_id = row["actor_id"]
 
         wi = lock_work_item(conn, wi_id)
+
+        fresh_claim = conn.execute(
+            SQL("SELECT 1 FROM claims WHERE work_item_id = %s"),
+            [wi_id],
+        ).fetchone()
+        if fresh_claim is not None:
+            continue
 
         cur = conn.execute(
             SQL(

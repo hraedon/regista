@@ -329,6 +329,8 @@ def _move_to_dead_letter(
         workflow_version = evt_row["workflow_version"]
     else:
         work_item_id = None
+        workflow_name = None
+        workflow_version = None
         payload = hook_row.get("payload") or {}
         raw_wi = payload.get("work_item_id")
         if raw_wi is not None:
@@ -349,14 +351,11 @@ def _move_to_dead_letter(
                 workflow_version = wi_row["workflow_version"]
             else:
                 work_item_id = None
-        if work_item_id is None:
-            log.warning(
-                "hooks.dead_letter_audit_gap",
-                hook_queue_id=hook_row["id"],
-                event_id=str(hook_row["event_id"]),
-                reason="original_event_missing",
-            )
-            return
+
+    if work_item_id is None:
+        work_item_id = uuid.UUID(int=0)
+        workflow_name = workflow_name or "__orphan__"
+        workflow_version = workflow_version or 0
 
     append_event(
         conn=conn,
@@ -372,6 +371,7 @@ def _move_to_dead_letter(
             "hook_name": hook_row["hook_name"],
             "hook_queue_id": hook_row["id"],
             "error_message": error_message,
+            "original_event_missing": evt_row is None,
         }),
         event_id=uuid.uuid4(),
     )
@@ -441,6 +441,7 @@ class HookConsumer:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._channel = f"substrate_hooks_{schema}"
+        self._processing = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -455,11 +456,12 @@ class HookConsumer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        self._processing = False
         log.info("hooks.consumer_stopped", project=self._project)
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._thread is not None and self._thread.is_alive() and self._processing
 
     def _connect(self):
         from psycopg.rows import dict_row
@@ -472,10 +474,12 @@ class HookConsumer:
         conn.execute(
             SQL("SET search_path TO {}").format(Identifier(self._schema))
         )
+        conn.execute(SQL("SET synchronous_commit = on"))
         conn.execute(SQL("LISTEN {}").format(Identifier(self._channel)))
         return conn
 
     def _run(self) -> None:
+        self._processing = True
         max_reconnect_attempts = 10
         reconnect_backoff_base = 2.0
         reconnect_attempts = 0
@@ -509,6 +513,7 @@ class HookConsumer:
             return
 
         reconnect_attempts = 0
+        self._processing = True
 
         try:
             while not self._stop.is_set():
@@ -570,6 +575,7 @@ class HookConsumer:
                 except Exception as e:
                     log.error("hooks.poll_error", error=str(e))
         finally:
+            self._processing = False
             try:
                 conn.close()
             except Exception:

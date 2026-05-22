@@ -22,10 +22,15 @@ class TestValidateYamlValid:
         assert result.workflow is not None
         assert result.workflow.name == "test_workflow"
 
-    def test_valid_yaml_from_path_string(self):
+    def test_valid_yaml_from_path_string_is_content(self):
         result = validate_yaml(str(WORKFLOW_PATH))
-        assert result.valid
-        assert result.workflow is not None
+        assert not result.valid
+        assert any(
+            "dict" in e.message.lower()
+            or "object" in e.message.lower()
+            or "root" in e.message.lower()
+            for e in result.errors
+        )
 
 
 class TestValidateYamlInvalidYaml:

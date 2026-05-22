@@ -461,7 +461,7 @@ class Substrate:
         if self._maintenance_thread is None:
             return True
         if not self._maintenance_thread.is_running:
-            return True
+            return False
         return self._maintenance_thread.last_cycle_ok
 
     def register_workflow(

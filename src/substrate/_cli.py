@@ -71,7 +71,8 @@ def _add_common_args(parser):
 
 
 def cmd_workflow_validate(args):
-    result = _validate_yaml(args.file)
+    from pathlib import Path
+    result = _validate_yaml(Path(args.file))
     if args.json:
         _dump_json(result)
     else:

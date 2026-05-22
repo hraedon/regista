@@ -79,6 +79,18 @@ class TestWorkItemNotFound:
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
 
+class TestWorkItemNotFoundClaims:
+    def test_heartbeat_on_nonexistent_work_item(self, substrate):
+        with pytest.raises(SubstrateError) as exc_info:
+            substrate.heartbeat_claim(uuid.uuid4(), "agent-1", ttl_seconds=300)
+        assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
+
+    def test_release_on_nonexistent_work_item(self, substrate):
+        with pytest.raises(SubstrateError) as exc_info:
+            substrate.release_claim(uuid.uuid4(), "agent-1")
+        assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
+
+
 class TestClaimNotFound:
     def test_heartbeat_on_unclaimed_work_item(self, substrate):
         wi, _ = substrate.create_work_item(

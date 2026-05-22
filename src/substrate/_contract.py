@@ -9,6 +9,8 @@ from ._errors import ErrorCode, SubstrateError
 from ._types import Event
 
 MAX_ACTOR_ID_LENGTH = 255
+MAX_ROLE_LENGTH = 255
+MAX_ACTOR_METADATA_BYTES = 65536
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
 
@@ -483,12 +485,59 @@ def _check_string_safe(value: str, label: str) -> None:
             )
 
 
+def _actor_id_or_role_invalid(name: str, label: str, max_len: int) -> bool:
+    if not name:
+        return True
+    if len(name) > max_len:
+        return True
+    for ch in name:
+        if ch.isspace() or not ch.isprintable():
+            return True
+    return False
+
+
 def validate_actor_id(actor_id: str) -> None:
-    if len(actor_id) > MAX_ACTOR_ID_LENGTH:
+    if _actor_id_or_role_invalid(actor_id, "actor_id", MAX_ACTOR_ID_LENGTH):
+        msg = (
+            f"actor_id must be non-empty, printable, and no longer than "
+            f"{MAX_ACTOR_ID_LENGTH} characters"
+        )
         raise SubstrateError(
             ErrorCode.INVALID_ARGUMENT,
-            f"actor_id exceeds maximum length of {MAX_ACTOR_ID_LENGTH} characters",
+            msg,
             detail={"actor_id_length": len(actor_id), "max_length": MAX_ACTOR_ID_LENGTH},
+        )
+
+
+def validate_role(role: str) -> None:
+    if _actor_id_or_role_invalid(role, "role", MAX_ROLE_LENGTH):
+        msg = (
+            f"role must be non-empty, printable, and no longer than "
+            f"{MAX_ROLE_LENGTH} characters"
+        )
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            msg,
+            detail={"role_length": len(role), "max_length": MAX_ROLE_LENGTH},
+        )
+
+
+def validate_actor_metadata(actor_metadata: dict) -> None:
+    if actor_metadata is None:
+        return
+    try:
+        import json
+        serialized = json.dumps(actor_metadata)
+    except (TypeError, ValueError) as e:
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"actor_metadata is not JSON-serializable: {e}",
+        )
+    if len(serialized.encode("utf-8")) > MAX_ACTOR_METADATA_BYTES:
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"actor_metadata exceeds maximum size of {MAX_ACTOR_METADATA_BYTES} bytes",
+            detail={"size": len(serialized.encode("utf-8")), "max": MAX_ACTOR_METADATA_BYTES},
         )
 
 

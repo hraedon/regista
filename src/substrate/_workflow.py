@@ -512,14 +512,7 @@ def validate_yaml(source: str | Path) -> ValidationResult:
     if isinstance(source, Path):
         raw = source.read_text()
     else:
-        try:
-            p = Path(source)
-            if p.exists():
-                raw = p.read_text()
-            else:
-                raw = source
-        except Exception:
-            raw = source
+        raw = source
 
     errors: list[ValidationError] = []
 
@@ -531,6 +524,10 @@ def validate_yaml(source: str | Path) -> ValidationResult:
 
     if data is None:
         errors.append(ValidationError(path="(root)", message="YAML document is empty"))
+        return ValidationResult(valid=False, errors=errors)
+
+    if not isinstance(data, dict):
+        errors.append(ValidationError(path="(root)", message="YAML did not parse to a dict"))
         return ValidationResult(valid=False, errors=errors)
 
     try:
