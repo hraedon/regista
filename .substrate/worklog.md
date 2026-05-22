@@ -4,6 +4,48 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-22 — Session 31: v0.2.0 release, downstream survey, Plans 010-013
+
+**Focus:** Housekeeping (docs, CI), then survey downstream projects and plan substrate's trust-model evolution.
+
+**Delivered:**
+
+1. **Verified `maintenance_cycles` metric** — confirmed already wired in `_maintenance.py:89`. Prior session's reflection flagged a false concern.
+
+2. **Fixed CI vendor-check** — `.github/workflows/ci.yml` now installs `[dev,vendor-check]` so rfc8785 cross-validation tests run in CI instead of silently skipping.
+
+3. **Updated documentation for v0.2.0:**
+   - `CHANGELOG.md`: added 0.2.0 section covering Plans 007-009, trust hardening, maintenance thread
+   - `README.md`: updated test count (721), added facade/maintenance/trust features, fixed stale architecture section, updated status line
+   - `pyproject.toml`: bumped version to 0.2.0
+
+4. **Pushed to origin** — 9 commits now on origin/main.
+
+5. **Surveyed downstream projects:**
+   - `compliance-substrate`: clean HIPAA compliance layer, correct substrate usage, missing `strict_roles` and `substrate_version` bump
+   - `agent-provenance`: "CloudTrail for agent actions" — the right positioning, sharper than compliance-substrate
+   - `maybe-projects/pen-test-audit-bilateral-tracking.md`: correctly parked, same three BC dependencies
+
+6. **Wrote Plans 010-013** — trust-model evolution driven by agent-provenance as first real consumer:
+   - Plan 010: Delegation chain (`on_behalf_of`) — resolves BC-197
+   - Plan 011: Pluggable signing (Ed25519 + HMAC) — resolves BC-196
+   - Plan 012: RFC 3161 timestamping — BC-198 layer 1
+   - Plan 013: Witness/co-signature hooks — BC-198 layer 2
+
+7. **Updated agent-provenance** — expanded scope to include OpenCode alongside Claude Code as initial harness targets.
+
+**Files modified:**
+- `.github/workflows/ci.yml`, `CHANGELOG.md`, `README.md`, `pyproject.toml` (committed)
+- `plans/010-delegation-chain.md`, `plans/011-pluggable-signing.md`, `plans/012-rfc3161-timestamping.md`, `plans/013-witness-hooks.md` (new, untracked)
+- `../agent-provenance/README.md`, `../agent-provenance/AGENTS.md` (updated)
+
+**Breadcrumbs resolved:** none
+**Breadcrumbs opened:** none
+
+**Test results:** 721 passed, lint clean (verified prior to docs commit).
+
+---
+
 ## 2026-05-22 — Session 30: Plans 007-009, BC-195, BC-196/197/198, datetime utils extraction
 
 **Focus:** Housekeeping, then implement all three remaining architectural plans (facade decomposition, trust hardening, maintenance thread).
