@@ -18,7 +18,7 @@ external_refs:
 identifier: '197'
 kind: design
 severity: medium
-status: proposed
+status: accepted
 title: Event signing has no delegation chain — agent actor cannot be bound to authorizing
   human principal
 ---

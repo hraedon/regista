@@ -21,7 +21,7 @@ external_refs:
 identifier: '198'
 kind: design
 severity: medium
-status: proposed
+status: accepted
 title: No defense against operator forgery — single key holder can rewrite or fabricate
   signed events with no external detection path
 ---

@@ -31,17 +31,15 @@ _(none)_
 
 ## Open
 
-| # | Title | Severity | Status |
-|---|---|---|---|
-| 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | implemented |
-| 196 | HMAC signing is symmetric — no external/adversarial verifiability | medium | proposed |
-| 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | proposed |
-| 198 | No defense against operator forgery — single key holder can rewrite or fabricate signed events with no external detection path | medium | proposed |
+_(none)_
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 198 | No defense against operator forgery — single key holder can rewrite or fabricate signed events with no external detection path | medium | Accepted — valid design gap. Layered remedy (RFC 3161 timestamps → Merkle witnesses → OpenTimestamps) is well-scoped. Implementation deferred to Plan 008 workstream. Spec §17.9 and §FR-15 accurately describe the current homelab threat model; asymmetric signing is opt-in for future regulated-buyer deployments. |
+| 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | Accepted — valid design gap. Typed `on_behalf_of` sub-object is the correct v1 fix; per-principal signing keys require BC-196 to land first. Implementation deferred to Plan 008 workstream. Current `actor_metadata` is self-attested by design (BC-101). |
+| 196 | HMAC signing is symmetric — no external/adversarial verifiability | medium | Accepted — valid design gap for external-audit use cases. HMAC remains the correct homelab default. Pluggable signature scheme (WS-1/WS-3 in Plan 008 position) is the structural prerequisite; Ed25519 implementation deferred to Plan 008. Current spec §17.9 is honest about trust tiers. |
 | 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | Contract test in `tests/test_api_surface.py::TestBC195ConstructorPositionalContract` pins `Substrate(dsn, project, hmac_key_path)` positional shape used by sf2. Test fails at CI if constructor signature regresses. |---|
 | 185 | Maintenance metrics not specified in Plan 009 — operator blind to sweeps | medium | Counters `substrate_maintenance_cycles_total`, `substrate_maintenance_claims_swept_total`, `substrate_maintenance_hook_leases_swept_total`, `substrate_maintenance_partitions_created_total`, `substrate_maintenance_recurrences_fired_total`, and `substrate_maintenance_errors_total` added to `Metrics.inc`. Wired to: `sweep_expired_claims`, `sweep_expired_hook_leases`, `ensure_event_partitions`, and `fire_recurrence` on `Substrate`. `maintenance_healthy` property added to both `Substrate` and `InMemorySubstrate` (returns True pending Plan 009 thread). InMemory backend uses structured log. `maintenance_cycles_total` call site pending Plan 009 MaintenanceThread. |
 | 184 | Hook queue depth metric missing — no backpressure visibility | medium | `substrate_hook_queue_depth` Prometheus gauge with `project` + `status` labels added. `Metrics.set_hook_queue_depth()` helper and `Substrate.refresh_hook_queue_metrics()` method added. Gauge covers `pending`, `in_progress`, `completed`, and `dead_letter` (separate table) status buckets. InMemory backend emits `substrate.maintenance.hook_queue_depth` structured log line. Tests in `tests/test_bc184_bc185_metrics.py`. |

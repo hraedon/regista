@@ -2,7 +2,7 @@
 number: "196"
 title: HMAC signing is symmetric — no external/adversarial verifiability
 severity: medium
-status: proposed
+status: accepted
 kind: design
 author: claude
 date: "2026-05-22"
