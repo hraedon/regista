@@ -33,7 +33,7 @@ _(none)_
 
 | # | Title | Severity | Status |
 |---|---|---|---|
-| 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | proposed |
+| 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | implemented |
 | 196 | HMAC signing is symmetric — no external/adversarial verifiability | medium | proposed |
 | 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | proposed |
 | 198 | No defense against operator forgery — single key holder can rewrite or fabricate signed events with no external detection path | medium | proposed |
@@ -41,7 +41,8 @@ _(none)_
 ## Resolved
 
 | # | Title | Severity | Resolution |
-|---|---|---|---|---|
+|---|---|---|---|
+| 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | Contract test in `tests/test_api_surface.py::TestBC195ConstructorPositionalContract` pins `Substrate(dsn, project, hmac_key_path)` positional shape used by sf2. Test fails at CI if constructor signature regresses. |---|
 | 185 | Maintenance metrics not specified in Plan 009 — operator blind to sweeps | medium | Counters `substrate_maintenance_cycles_total`, `substrate_maintenance_claims_swept_total`, `substrate_maintenance_hook_leases_swept_total`, `substrate_maintenance_partitions_created_total`, `substrate_maintenance_recurrences_fired_total`, and `substrate_maintenance_errors_total` added to `Metrics.inc`. Wired to: `sweep_expired_claims`, `sweep_expired_hook_leases`, `ensure_event_partitions`, and `fire_recurrence` on `Substrate`. `maintenance_healthy` property added to both `Substrate` and `InMemorySubstrate` (returns True pending Plan 009 thread). InMemory backend uses structured log. `maintenance_cycles_total` call site pending Plan 009 MaintenanceThread. |
 | 184 | Hook queue depth metric missing — no backpressure visibility | medium | `substrate_hook_queue_depth` Prometheus gauge with `project` + `status` labels added. `Metrics.set_hook_queue_depth()` helper and `Substrate.refresh_hook_queue_metrics()` method added. Gauge covers `pending`, `in_progress`, `completed`, and `dead_letter` (separate table) status buckets. InMemory backend emits `substrate.maintenance.hook_queue_depth` structured log line. Tests in `tests/test_bc184_bc185_metrics.py`. |
 | 192 | Validator timeout leaks threads; cancel_futures is misleading | medium | Option 2 (drop the safety theater): `check_validator_io_safety` + ThreadPoolExecutor removed; `run_validator` now calls the handler directly. Validators are trusted, synchronous, in-process — Postgres `statement_timeout` (5s) is the only remaining real bound, and only for DB operations on the transaction's connection. spec.md §FR-13 rewritten; tests pinned to the new contract. VALIDATOR_TIMEOUT/VALIDATOR_IO_UNSAFE error codes kept in enum for back-compat. |

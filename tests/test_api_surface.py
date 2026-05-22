@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import inspect
+import uuid
+from pathlib import Path
+
+import pytest
+
+from substrate.testing import drop_project_schema
 
 DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 
 
 class TestAC33PreSignedRejection:
@@ -72,3 +79,26 @@ class TestAC34NoPostgresTypesLeak:
                 assert "psycopg" not in module, (
                     f"substrate.{name} is from psycopg module: {module}"
                 )
+
+
+class TestBC195ConstructorPositionalContract:
+    # BC-195: pin the positional signature Substrate(dsn, project, hmac_key_path)
+    # used by downstream consumers (sf2 build_failure_corpus.py:148).
+    # Any change to __init__ that breaks this shape should fail here first.
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        self._project = f"bc195_{uuid.uuid4().hex[:8]}"
+        yield
+        drop_project_schema(DSN, self._project)
+
+    def test_positional_constructor_matches_sf2_call_shape(self):
+        from substrate import Substrate
+
+        Substrate.create_project(DSN, self._project, KEY_PATH)
+
+        sub = Substrate(DSN, self._project, KEY_PATH)
+        try:
+            assert sub.connection_info.project == self._project
+        finally:
+            sub.close()
