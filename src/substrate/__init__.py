@@ -6,12 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 import structlog
-import yaml as _yaml
 
 from ._connection import ConnectionManager
-from ._contract import (
-    Jsonb as _Jsonb,
-)
 from ._contract import (
     validate_mutation_params as _validate_mutation_params,
 )
@@ -20,6 +16,7 @@ from ._integrity import SUBSTRATE_VERSION, check_integrity
 from ._keys import KeySet
 from ._migrations import run_migrations
 from ._observability import Metrics, OpTimer
+from ._ops import ClaimOps, EventOps, HookOps, LinkOps, RecurrenceOps, WorkflowOps, WorkItemOps
 from ._types import (
     ActorKind as ActorKind,
 )
@@ -82,6 +79,7 @@ class Substrate:
         require_ssl: bool = False,
         prometheus_registry=None,
         auto_partition: bool = True,
+        strict_roles: bool = False,
     ) -> None:
         """Connect to an existing project.
 
@@ -121,6 +119,7 @@ class Substrate:
             self._hook_handlers: dict[str, Callable] = {}
             self._hook_channel = f"substrate_hooks_{self._mgr.schema}"
             self._hook_consumer = None
+            self._strict_roles = strict_roles
             from ._hooks import HookConsumer
 
             self._hook_consumer = HookConsumer(
@@ -131,6 +130,7 @@ class Substrate:
                 key_set=self._keys,
                 metrics=self._metrics,
             )
+            self._maintenance_thread = None
             check_integrity(self._mgr)
             if auto_partition:
                 self._run_auto_partition()
@@ -152,6 +152,7 @@ class Substrate:
         require_ssl: bool = False,
         prometheus_registry=None,
         auto_partition: bool = True,
+        strict_roles: bool = False,
     ) -> Substrate:
         """Create a new project: schema, migrations, and return a connected handle.
 
@@ -190,6 +191,7 @@ class Substrate:
             require_ssl=require_ssl,
             prometheus_registry=prometheus_registry,
             auto_partition=auto_partition,
+            strict_roles=strict_roles,
         )
 
     def _run_auto_partition(self) -> None:
@@ -197,7 +199,9 @@ class Substrate:
         log.warning("auto_partition.deprecated", project=self._project)
 
     def close(self) -> None:
-        """Stop hook consumer (if running) and release the connection pool."""
+        """Stop maintenance thread, hook consumer (if running), and release the connection pool."""
+        if self._maintenance_thread is not None and self._maintenance_thread.is_running:
+            self._maintenance_thread.stop()
         if self._hook_consumer is not None and self._hook_consumer.is_running:
             self._hook_consumer.stop()
         if self._mgr is not None:
@@ -234,6 +238,55 @@ class Substrate:
     def prometheus_registry(self):
         return self._metrics.registry
 
+    @property
+    def workflows(self) -> WorkflowOps:
+        if not hasattr(self, "_workflows_ops"):
+            self._workflows_ops = WorkflowOps(self._mgr, self._metrics, self._project)
+        return self._workflows_ops
+
+    @property
+    def work_items(self) -> WorkItemOps:
+        if not hasattr(self, "_work_items_ops"):
+            self._work_items_ops = WorkItemOps(
+                self._mgr, self._keys, self._metrics, self._project, self._validators,
+            )
+        return self._work_items_ops
+
+    @property
+    def events(self) -> EventOps:
+        if not hasattr(self, "_events_ops"):
+            self._events_ops = EventOps(self._mgr, self._keys, self._metrics, self._project)
+        return self._events_ops
+
+    @property
+    def claims(self) -> ClaimOps:
+        if not hasattr(self, "_claims_ops"):
+            self._claims_ops = ClaimOps(self._mgr, self._keys, self._metrics, self._project)
+        return self._claims_ops
+
+    @property
+    def links(self) -> LinkOps:
+        if not hasattr(self, "_links_ops"):
+            self._links_ops = LinkOps(self._mgr, self._keys, self._metrics, self._project)
+        return self._links_ops
+
+    @property
+    def hooks(self) -> HookOps:
+        if not hasattr(self, "_hooks_ops"):
+            self._hooks_ops = HookOps(
+                self._mgr, self._keys, self._metrics, self._project,
+                self._validators, self._hook_handlers, self._hook_channel, self._hook_consumer,
+            )
+        return self._hooks_ops
+
+    @property
+    def recurrence(self) -> RecurrenceOps:
+        if not hasattr(self, "_recurrence_ops"):
+            self._recurrence_ops = RecurrenceOps(
+                self._mgr, self._keys, self._metrics, self._project,
+            )
+        return self._recurrence_ops
+
     def register_validator(self, name: str, handler: Callable) -> None:
         """Register a sync transition validator. Blocks the transaction on failure.
 
@@ -247,9 +300,7 @@ class Substrate:
                 DB operations made via the transaction's connection, but not
                 against pure-Python loops, sleeps, or external I/O.
         """
-        updated = dict(self._validators)
-        updated[name] = handler
-        self._validators = updated
+        self._validators[name] = handler
 
     def register_hook_handler(self, name: str, handler: Callable) -> None:
         """Register an async hook handler dispatched via the hook queue.
@@ -258,18 +309,58 @@ class Substrate:
             name: Must match a hook name listed in a workflow transition's ``hooks``.
             handler: ``Callable[[HookContext], None]``.
         """
-        updated = dict(self._hook_handlers)
-        updated[name] = handler
-        self._hook_handlers = updated
-        self._hook_consumer._handlers = updated
+        self._hook_handlers[name] = handler
+        self._hook_consumer._handlers = self._hook_handlers
 
     def start_hook_consumer(self) -> None:
         """Start a background thread that LISTENs and polls the hook queue."""
-        self._hook_consumer.start()
+        self.hooks.start_consumer()
 
     def stop_hook_consumer(self) -> None:
         """Stop the background hook consumer thread."""
-        self._hook_consumer.stop()
+        self.hooks.stop_consumer()
+
+    def start_maintenance(
+        self,
+        *,
+        sweep_interval: float = 30.0,
+        recurrence_interval: float = 10.0,
+        hook_poll_interval: float = 2.0,
+        partition_interval: float = 3600.0,
+    ) -> None:
+        """Start the background maintenance thread.
+
+        The maintenance thread periodically sweeps expired claims and hook
+        leases, fires due recurrence rules, and refreshes hook queue metrics.
+        It also starts the hook consumer if not already running.
+
+        Args:
+            sweep_interval: Seconds between maintenance cycles (default 30).
+            recurrence_interval: Seconds between recurrence checks (default 10).
+            hook_poll_interval: Hook consumer poll interval (default 2).
+            partition_interval: Deprecated; kept for API compatibility.
+        """
+        from ._maintenance import MaintenanceThread
+
+        if self._maintenance_thread is not None and self._maintenance_thread.is_running:
+            return
+        self._maintenance_thread = MaintenanceThread(
+            self,
+            sweep_interval=sweep_interval,
+            recurrence_interval=recurrence_interval,
+            hook_poll_interval=hook_poll_interval,
+            partition_interval=partition_interval,
+        )
+        self._maintenance_thread.start()
+        if not (self._hook_consumer is not None and self._hook_consumer.is_running):
+            self.start_hook_consumer()
+
+    def stop_maintenance(self) -> None:
+        """Stop the maintenance thread and the hook consumer gracefully."""
+        if self._maintenance_thread is not None and self._maintenance_thread.is_running:
+            self._maintenance_thread.stop()
+        if self._hook_consumer is not None and self._hook_consumer.is_running:
+            self._hook_consumer.stop()
 
     def poll_hooks(self) -> int:
         """Manually drain and process pending hooks from the queue.
@@ -277,12 +368,7 @@ class Substrate:
         Returns:
             Number of hooks processed.
         """
-        from ._hooks import poll_and_process_hooks
-
-        with self._mgr.transaction() as conn:
-            return poll_and_process_hooks(
-                conn, self._hook_handlers, self._keys, self._metrics, self._project,
-            )
+        return self.hooks.poll()
 
     def ensure_event_partitions(self, months_ahead: int = 3) -> list[str]:
         """Deprecated. Partitioning was removed (RFC-001).
@@ -316,10 +402,7 @@ class Substrate:
         Returns:
             List of ``HookContext`` objects describing each claimed hook.
         """
-        from ._hooks import claim_hooks as _claim
-
-        with self._mgr.transaction() as conn:
-            return _claim(conn, max_batch, lease_seconds)
+        return self.hooks.claim(max_batch, lease_seconds)
 
     def complete_hook(self, hook_queue_id: int) -> None:
         """Mark a previously claimed hook as successfully completed.
@@ -330,10 +413,7 @@ class Substrate:
         Raises:
             SubstrateError: ``HOOK_NOT_FOUND`` if the row does not exist.
         """
-        from ._hooks import complete_hook as _complete
-
-        with self._mgr.transaction() as conn:
-            _complete(conn, hook_queue_id)
+        self.hooks.complete(hook_queue_id)
 
     def fail_hook(self, hook_queue_id: int, error: str) -> None:
         """Record a hook processing failure.
@@ -349,10 +429,7 @@ class Substrate:
         Raises:
             SubstrateError: ``HOOK_NOT_FOUND`` if the row does not exist.
         """
-        from ._hooks import fail_hook as _fail
-
-        with self._mgr.transaction() as conn:
-            _fail(conn, hook_queue_id, error, self._keys, self._metrics, self._project)
+        self.hooks.fail(hook_queue_id, error)
 
     def sweep_expired_hook_leases(self) -> int:
         """Requeue in-progress hooks whose leases have expired.
@@ -364,13 +441,7 @@ class Substrate:
         Returns:
             Number of hooks requeued.
         """
-        from ._hooks import sweep_expired_hook_leases as _sweep
-
-        with self._mgr.transaction() as conn:
-            swept = _sweep(conn)
-        if swept:
-            self._metrics.inc("maintenance_hook_leases_swept", self._project, amount=swept)
-        return swept
+        return self.hooks.sweep_expired_leases()
 
     def refresh_hook_queue_metrics(self) -> None:
         """Query hook_queue and update the ``substrate_hook_queue_depth`` gauge.
@@ -383,40 +454,15 @@ class Substrate:
         The maintenance thread (Plan 009) will call this at the end of every
         sweep cycle. Operators may also call it on demand.
         """
-        from psycopg.sql import SQL
-
-        with self._mgr.transaction() as conn:
-            rows = conn.execute(
-                SQL(
-                    "SELECT status, count(*) AS n "
-                    "FROM hook_queue "
-                    "GROUP BY status"
-                )
-            ).fetchall()
-            dead_row = conn.execute(
-                SQL("SELECT count(*) AS n FROM hook_dead_letter")
-            ).fetchone()
-
-        counts = {r["status"]: int(r["n"]) for r in rows}
-        for status in ("pending", "in_progress", "completed"):
-            self._metrics.set_hook_queue_depth(
-                self._project, status, float(counts.get(status, 0))
-            )
-        self._metrics.set_hook_queue_depth(
-            self._project, "dead_letter", float(dead_row["n"] if dead_row else 0)
-        )
+        self.hooks.refresh_queue_metrics()
 
     @property
     def maintenance_healthy(self) -> bool:
-        """True if the maintenance thread is running and its last cycle succeeded.
-
-        Currently always returns ``True`` because the MaintenanceThread has
-        not yet been implemented (pending Plan 009). Once Plan 009 lands, this
-        property will reflect the thread's liveness and last-cycle success
-        status. Operators should not treat ``True`` here as confirmation that
-        maintenance is *actively* running until Plan 009 is deployed.
-        """
-        return True
+        if self._maintenance_thread is None:
+            return True
+        if not self._maintenance_thread.is_running:
+            return True
+        return self._maintenance_thread.last_cycle_ok
 
     def register_workflow(
         self,
@@ -438,9 +484,7 @@ class Substrate:
             SubstrateError: ``WORKFLOW_VALIDATION_FAILED``,
                 ``WORKFLOW_SEMANTIC_ERROR``, ``WORKFLOW_VERSION_CONFLICT``.
         """
-        from ._workflow_api import register_workflow as _impl
-
-        return _impl(self._mgr, self._metrics, self._project, yaml_content)
+        return self.workflows.register(yaml_content)
 
     def register_workflow_file(
         self,
@@ -454,12 +498,7 @@ class Substrate:
         Returns:
             The registered ``WorkflowVersion``.
         """
-        from ._workflow_api import register_workflow_file as _impl
-
-        return _impl(
-            self._mgr, self._metrics, self._project,
-            parse_workflow_yaml, _yaml.dump, path,
-        )
+        return self.workflows.register_file(path)
 
     def get_workflow(self, workflow_name: str, version: int) -> WorkflowDefinition:
         """Retrieve a workflow definition by name and version.
@@ -470,9 +509,7 @@ class Substrate:
         Raises:
             SubstrateError: ``WORKFLOW_NOT_REGISTERED``.
         """
-        from ._workflow_api import get_workflow as _impl
-
-        return _impl(self._mgr, self._project, workflow_name, version)
+        return self.workflows.get(workflow_name, version)
 
     def create_work_item(
         self,
@@ -506,10 +543,7 @@ class Substrate:
                 ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``,
                 ``VALIDATOR_FAILED``.
         """
-        from ._work_items_api import create_work_item as _impl
-
-        return _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        return self.work_items.create(
             workflow_name, work_item_type, actor_id, actor_kind,
             actor_metadata,
             custom_fields=custom_fields,
@@ -566,6 +600,7 @@ class Substrate:
             custom_fields=custom_fields,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            strict_roles=self._strict_roles,
         )
 
     def append_event(
@@ -604,10 +639,7 @@ class Substrate:
                 ``IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD``,
                 ``CONCURRENT_MODIFICATION``.
         """
-        from ._events_api import append_event as _impl
-
-        return _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        return self.events.append(
             work_item_id, actor_id, actor_kind,
             actor_metadata=actor_metadata,
             transition=transition,
@@ -653,10 +685,7 @@ class Substrate:
         Raises:
             SubstrateError: ``INVALID_FILTER``.
         """
-        from ._events_api import read_events as _impl
-
-        return _impl(
-            self._mgr,
+        return self.events.read(
             work_item_id=work_item_id,
             actor_id=actor_id,
             start=start,
@@ -688,9 +717,7 @@ class Substrate:
         Returns:
             Events in ascending ``event_seq`` order.
         """
-        from ._events_api import read_events_since as _impl
-
-        return _impl(self._mgr, work_item_id, after_seq, limit=limit)
+        return self.events.read_since(work_item_id, after_seq, limit=limit)
 
     def query_work_items(
         self,
@@ -728,10 +755,7 @@ class Substrate:
         Returns:
             ``QueryPage[WorkItem]`` with cursor for the next page.
         """
-        from ._work_items_api import query_work_items as _impl
-
-        return _impl(
-            self._mgr,
+        return self.work_items.query(
             workflow_name=workflow_name,
             workflow_version=workflow_version,
             work_item_types=work_item_types,
@@ -751,9 +775,7 @@ class Substrate:
         Returns:
             The ``WorkItem`` or ``None`` if not found.
         """
-        from ._work_items_api import get_work_item as _impl
-
-        return _impl(self._mgr, work_item_id)
+        return self.work_items.get(work_item_id)
 
     def acquire_claim(
         self,
@@ -789,9 +811,7 @@ class Substrate:
             event_id=event_id,
             ttl_seconds=ttl_seconds,
         )
-        from ._claims_api import acquire_claim as _impl
-        return _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        return self.claims.acquire(
             work_item_id, actor_id, ttl_seconds,
             event_id=event_id, actor_kind=actor_kind,
         )
@@ -823,9 +843,7 @@ class Substrate:
                 ``INVALID_ARGUMENT``.
         """
         _validate_mutation_params(actor_id=actor_id, ttl_seconds=ttl_seconds)
-        from ._claims_api import heartbeat_claim as _impl
-        return _impl(
-            self._mgr, self._keys, self._project,
+        return self.claims.heartbeat(
             work_item_id, actor_id, ttl_seconds,
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
@@ -855,9 +873,7 @@ class Substrate:
             actor_kind=actor_kind,
             event_id=event_id,
         )
-        from ._claims_api import release_claim as _impl
-        _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        self.claims.release(
             work_item_id, actor_id,
             event_id=event_id, actor_kind=actor_kind,
         )
@@ -868,11 +884,7 @@ class Substrate:
         Returns:
             Number of expired claims swept.
         """
-        from ._claims_api import sweep_expired_claims as _impl
-        swept = _impl(self._mgr, self._keys, self._metrics, self._project)
-        if swept:
-            self._metrics.inc("maintenance_claims_swept", self._project, amount=swept)
-        return swept
+        return self.claims.sweep_expired()
 
     def create_link(
         self,
@@ -910,9 +922,7 @@ class Substrate:
             actor_kind=actor_kind,
             event_id=event_id,
         )
-        from ._links_api import create_link as _impl
-        return _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        return self.links.create(
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id, payload=payload,
@@ -948,9 +958,7 @@ class Substrate:
             actor_kind=actor_kind,
             event_id=event_id,
         )
-        from ._links_api import remove_link as _impl
-        _impl(
-            self._mgr, self._keys, self._metrics, self._project,
+        self.links.remove(
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id,
@@ -1008,17 +1016,7 @@ class Substrate:
         Raises:
             SubstrateError: ``HOOK_NOT_FOUND``.
         """
-        from ._hooks import requeue_dead_lettered_hook as _requeue
-
-        timer = OpTimer(self._project, "requeue_dead_lettered_hook")
-        try:
-            with self._mgr.transaction() as conn:
-                _requeue(conn, dead_letter_id, self._hook_channel, self._keys)
-
-            timer.log("ok", detail=str(dead_letter_id))
-        except SubstrateError:
-            timer.log("error")
-            raise
+        self.hooks.requeue_dead_lettered(dead_letter_id)
 
     def list_dead_lettered_hooks(self) -> list[DeadLetterEntry]:
         """List all dead-lettered hooks in reverse chronological order.
@@ -1026,32 +1024,7 @@ class Substrate:
         Returns:
             List of ``DeadLetterEntry`` objects.
         """
-        from psycopg.sql import SQL
-
-        with self._mgr.transaction() as conn:
-            rows = conn.execute(
-                SQL(
-                    "SELECT id, event_id, hook_name, hook_type, payload, "
-                    "retry_count, error_message, dead_lettered_at, "
-                    "original_hook_queue_id "
-                    "FROM hook_dead_letter ORDER BY dead_lettered_at DESC"
-                ),
-            ).fetchall()
-
-        return [
-            DeadLetterEntry(
-                id=r["id"],
-                event_id=r["event_id"],
-                hook_name=r["hook_name"],
-                hook_type=r["hook_type"],
-                payload=r["payload"],
-                retry_count=r["retry_count"],
-                error_message=r["error_message"],
-                dead_lettered_at=r["dead_lettered_at"],
-                original_hook_queue_id=r.get("original_hook_queue_id"),
-            )
-            for r in rows
-        ]
+        return self.hooks.list_dead_lettered()
 
     def update_not_before(
         self,
@@ -1079,64 +1052,10 @@ class Substrate:
         Raises:
             SubstrateError: ``WORK_ITEM_NOT_FOUND``.
         """
-        from psycopg.sql import SQL
-
-        from ._events import append_event as _append_event
-        from ._events import lock_work_item as _lock
-
-        timer = OpTimer(self._project, "update_not_before")
-        try:
-            if event_id is None:
-                event_id = uuid.uuid4()
-            _validate_mutation_params(
-                actor_kind=actor_kind,
-                event_id=event_id,
-                not_before=not_before,
-            )
-
-            with self._mgr.transaction() as conn:
-                wi = _lock(conn, work_item_id)
-                if wi is None:
-                    raise SubstrateError(
-                        ErrorCode.WORK_ITEM_NOT_FOUND,
-                        f"Work item {work_item_id} not found",
-                    )
-
-                from ._events import check_idempotency as _check_idem
-
-                existing = _check_idem(
-                    conn, event_id, actor_id=actor_id, transition="not_before_set",
-                    work_item_id=work_item_id,
-                )
-                if existing is not None:
-                    return existing
-
-                evt = _append_event(
-                    conn,
-                    work_item_id=work_item_id,
-                    actor_id=actor_id,
-                    actor_kind=actor_kind,
-                    actor_metadata=_Jsonb(actor_metadata) if actor_metadata is not None else None,
-                    key_set=self._keys,
-                    workflow_name=wi["workflow_name"],
-                    workflow_version=wi["workflow_version"],
-                    transition="not_before_set",
-                    payload=_Jsonb({"not_before": not_before.isoformat() if not_before else None}),
-                    event_id=event_id,
-                    _prelocked_wi=wi,
-                )
-
-                conn.execute(
-                    SQL("UPDATE work_items_current SET not_before = %s WHERE work_item_id = %s"),
-                    [not_before, work_item_id],
-                )
-
-            self._metrics.inc("events_appended", self._project)
-            timer.log("ok", work_item_id=str(work_item_id))
-            return evt
-        except SubstrateError:
-            timer.log("error")
-            raise
+        return self.work_items.update_not_before(
+            work_item_id, not_before, actor_id, actor_kind,
+            actor_metadata, event_id=event_id,
+        )
 
     def register_actor_role(self, actor_id: str, role: str) -> None:
         """Register a role for an actor. Enables role enforcement for that actor.
@@ -1221,9 +1140,7 @@ class Substrate:
         catchup_policy: str = "fire_once",
         created_by: str = "system",
     ) -> dict:
-        from ._recurrence_api import register_recurrence_rule as _impl
-        return _impl(
-            self._mgr, self._metrics, self._project,
+        return self.recurrence.register_rule(
             workflow_name, workflow_version, work_item_type, template,
             schedule_kind, schedule_expr,
             timezone=timezone, start_at=start_at, end_at=end_at,
@@ -1231,22 +1148,16 @@ class Substrate:
         )
 
     def list_recurrence_rules(self, status: str | None = None) -> list[dict]:
-        from ._recurrence_api import list_recurrence_rules as _impl
-        return _impl(self._mgr, status=status)
+        return self.recurrence.list_rules(status=status)
 
     def due_recurrences(self, now: datetime | None = None) -> list[dict]:
-        from ._recurrence_api import due_recurrences as _impl
-        return _impl(self._mgr, now=now)
+        return self.recurrence.due(now=now)
 
     def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict, dict]:
-        from ._recurrence_api import fire_recurrence as _impl
-        result = _impl(self._mgr, self._keys, self._metrics, self._project, rule_id)
-        self._metrics.inc("maintenance_recurrences_fired", self._project)
-        return result
+        return self.recurrence.fire(rule_id)
 
     def cancel_recurrence_rule(self, rule_id: uuid.UUID) -> None:
-        from ._recurrence_api import cancel_recurrence_rule as _impl
-        _impl(self._mgr, rule_id)
+        self.recurrence.cancel_rule(rule_id)
 
     def update_recurrence_rule(
         self,
@@ -1256,9 +1167,8 @@ class Substrate:
         schedule_expr: str | None = None,
         template: dict | None = None,
     ) -> dict:
-        from ._recurrence_api import update_recurrence_rule as _impl
-        return _impl(
-            self._mgr, rule_id,
+        return self.recurrence.update_rule(
+            rule_id,
             status=status, schedule_expr=schedule_expr, template=template,
         )
 

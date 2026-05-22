@@ -49,6 +49,7 @@ class InMemorySubstrate:
         pool_min: int = 1,
         pool_max: int = 10,
         prometheus_registry=None,
+        strict_roles: bool = False,
     ) -> None:
         self._project = project
         self._key_set: KeySet | None = None
@@ -72,6 +73,7 @@ class InMemorySubstrate:
         self._dead_letter: dict[int, dict] = {}
         self._hook_consumer_running = False
         self._recurrence_rules: dict[uuid.UUID, dict] = {}
+        self._strict_roles = strict_roles
 
     @classmethod
     def create_project(
@@ -83,11 +85,13 @@ class InMemorySubstrate:
         pool_min: int = 1,
         pool_max: int = 10,
         prometheus_registry=None,
+        strict_roles: bool = False,
     ) -> InMemorySubstrate:
         return cls(
             dsn, project, hmac_key_path,
             pool_min=pool_min, pool_max=pool_max,
             prometheus_registry=prometheus_registry,
+            strict_roles=strict_roles,
         )
 
     def close(self) -> None:
@@ -302,6 +306,7 @@ class InMemorySubstrate:
             custom_fields=custom_fields,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            strict_roles=self._strict_roles,
         )
         self._hook_id_counter = new_counter
         return evt
@@ -752,14 +757,21 @@ class InMemorySubstrate:
 
     @property
     def maintenance_healthy(self) -> bool:
-        """True if the maintenance thread is running and its last cycle succeeded.
-
-        Currently always returns ``True`` because the MaintenanceThread has
-        not yet been implemented (pending Plan 009). Once Plan 009 lands, this
-        property will reflect the thread's liveness and last-cycle success
-        status.
-        """
+        """InMemory backend has no maintenance thread; always returns True."""
         return True
+
+    def start_maintenance(
+        self,
+        *,
+        sweep_interval: float = 30.0,
+        recurrence_interval: float = 10.0,
+        hook_poll_interval: float = 2.0,
+        partition_interval: float = 3600.0,
+    ) -> None:
+        pass
+
+    def stop_maintenance(self) -> None:
+        pass
 
     def _append_simple_event(
         self, wi: dict, event_id: uuid.UUID,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,14 +21,25 @@ class KeyEntry:
 
 
 class KeySet:
-    def __init__(self, path: str | Path, poll_interval: float = 30.0) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        poll_interval: float = 30.0,
+        expected_key_count: int | None = None,
+        env_prefix: str = "SUBSTRATE_HMAC_KEY_",
+    ) -> None:
         self._path = Path(path)
         self._poll_interval = poll_interval
+        self._expected_key_count = expected_key_count
+        self._env_prefix = env_prefix
         self._keys: dict[str, KeyEntry] = {}
         self._active_key_id: str | None = None
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
         self._load()
+
+    def _env_var_name(self, key_id: str) -> str:
+        return self._env_prefix + key_id.upper().replace("-", "_")
 
     def _load(self) -> None:
         try:
@@ -54,19 +66,26 @@ class KeySet:
 
         new_keys: dict[str, KeyEntry] = {}
         new_active: str | None = None
+        key_sources: dict[str, str] = {}
         for entry in data["keys"]:
             key_id = entry["key_id"]
             status = entry.get("status", "active")
             if status not in ("active", "deprecated", "revoked"):
-                log.warning(
-                    "keys.unknown_status",
-                    key_id=key_id,
-                    status=status,
+                raise SubstrateError(
+                    ErrorCode.KEY_LOAD_ERROR,
+                    f"Key {key_id!r} has unknown status {status!r}; "
+                    "expected 'active', 'deprecated', or 'revoked'",
                 )
-                continue
-            secret = entry["secret"]
-            if isinstance(secret, str):
-                secret = secret.encode("utf-8")
+            env_var = self._env_var_name(key_id)
+            env_val = os.environ.get(env_var)
+            if env_val is not None:
+                secret = env_val.encode("utf-8")
+                key_sources[key_id] = "env"
+            else:
+                secret = entry["secret"]
+                if isinstance(secret, str):
+                    secret = secret.encode("utf-8")
+                key_sources[key_id] = "file"
             new_keys[key_id] = KeyEntry(
                 key_id=key_id,
                 secret=bytes(secret),
@@ -79,7 +98,20 @@ class KeySet:
         self._active_key_id = new_active
         self._last_mtime = self._path.stat().st_mtime
         self._last_check = time.monotonic()
+
+        if self._expected_key_count is not None and len(new_keys) != self._expected_key_count:
+            raise SubstrateError(
+                ErrorCode.KEY_LOAD_ERROR,
+                f"Expected {self._expected_key_count} keys but loaded {len(new_keys)}",
+            )
+
         log.warning("keys.plaintext_at_rest", path=str(self._path))
+        log.info(
+            "keys_loaded",
+            key_count=len(self._keys),
+            active_key_id=self._active_key_id,
+            key_sources=key_sources,
+        )
         log.info(
             "keys.loaded",
             path=str(self._path),

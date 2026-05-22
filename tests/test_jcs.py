@@ -56,17 +56,15 @@ class TestJCSIntegerDomain:
         assert b"9007199254740991" in result
 
     def test_unsafe_integer_raises(self):
-        from rfc8785._impl import IntegerDomainError
-
         from substrate._jcs import canonicalize
+        from substrate._vendor.rfc8785 import IntegerDomainError
 
         with pytest.raises(IntegerDomainError):
             canonicalize({"val": 2**53})
 
     def test_large_power_raises(self):
-        from rfc8785._impl import IntegerDomainError
-
         from substrate._jcs import canonicalize
+        from substrate._vendor.rfc8785 import IntegerDomainError
 
         with pytest.raises(IntegerDomainError):
             canonicalize({"val": 2**64})

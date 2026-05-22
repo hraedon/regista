@@ -126,7 +126,26 @@ def check_actor_role_authorized(
     registered_roles: set[str],
     actor_id: str,
     claimed_role: str,
+    *,
+    strict: bool = False,
+    actor_metadata: dict | None = None,
 ) -> None:
+    if strict:
+        if not registered_roles:
+            raise SubstrateError(
+                ErrorCode.ACTOR_ROLE_NOT_AUTHORIZED,
+                f"Actor {actor_id!r} has no registered roles; "
+                f"strict_roles requires registration before any transition",
+                detail={"actor_id": actor_id},
+            )
+        role_source = (actor_metadata or {}).get("role_source")
+        if role_source not in ("config", "env"):
+            raise SubstrateError(
+                ErrorCode.ACTOR_ROLE_NOT_AUTHORIZED,
+                f"Actor {actor_id!r} role_source {role_source!r} not permitted in strict mode; "
+                f"must be 'config' or 'env'",
+                detail={"actor_id": actor_id, "role_source": role_source},
+            )
     if not registered_roles:
         return
     if claimed_role not in registered_roles:

@@ -14,7 +14,6 @@ dependencies = [
     "jsonschema>=4.21",
     "structlog>=24.1",
     "prometheus-client>=0.20",
-    "rfc8785==0.1.4",
     "python-dateutil>=2.9",
 ]
 
@@ -29,6 +28,9 @@ sidecar = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
+]
+vendor-check = [
+    "rfc8785==0.1.4",
 ]
 
 [tool.hatch.build.targets.wheel]

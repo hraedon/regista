@@ -72,6 +72,9 @@ def check_actor_role_authorized(
     conn: psycopg.Connection,
     actor_id: str,
     claimed_role: str,
+    *,
+    strict: bool = False,
+    actor_metadata: dict | None = None,
 ) -> None:
     rows = conn.execute(
         SQL(
@@ -80,4 +83,4 @@ def check_actor_role_authorized(
         [actor_id],
     ).fetchall()
     registered = {r["role"] for r in rows}
-    _check_roles(registered, actor_id, claimed_role)
+    _check_roles(registered, actor_id, claimed_role, strict=strict, actor_metadata=actor_metadata)

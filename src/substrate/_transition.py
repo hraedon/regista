@@ -41,6 +41,7 @@ def transition(
     custom_fields: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    strict_roles: bool = False,
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -94,7 +95,10 @@ def transition(
             if transition_def.get("allowed_roles"):
                 role = (actor_metadata or {}).get("role")
                 from ._actor_roles import check_actor_role_authorized
-                check_actor_role_authorized(conn, actor_id, role)
+                check_actor_role_authorized(
+                    conn, actor_id, role,
+                    strict=strict_roles, actor_metadata=actor_metadata,
+                )
 
             if custom_fields:
                 from ._workflow import validate_field_update, validate_work_item_refs

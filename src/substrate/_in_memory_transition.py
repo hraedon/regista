@@ -37,6 +37,7 @@ def in_memory_transition(
     custom_fields: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    strict_roles: bool = False,
 ) -> tuple[Event, int]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -76,7 +77,10 @@ def in_memory_transition(
     )
     if role is not None:
         registered = {r for (aid, r) in actor_roles if aid == actor_id}
-        check_actor_role_authorized(registered, actor_id, role)
+        check_actor_role_authorized(
+            registered, actor_id, role,
+            strict=strict_roles, actor_metadata=actor_metadata,
+        )
 
     if custom_fields:
         validate_field_update(wf_data, wi["work_item_type"], custom_fields)
