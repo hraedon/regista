@@ -8,8 +8,6 @@ from substrate._contract import validate_delegation_chain
 from substrate._errors import ErrorCode, SubstrateError
 from substrate._signing import (
     build_signing_envelope,
-    compute_canonical_hash,
-    compute_hmac,
     sign_event,
     verify_event,
 )
@@ -118,7 +116,7 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
-        sig, ch, env = sign_event(
+        sig, ch, _env = sign_event(
             eid, wid, "actor", "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
@@ -132,7 +130,7 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
-        sig, ch, env = sign_event(
+        sig, ch, _env = sign_event(
             eid, wid, "actor", "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
@@ -147,7 +145,7 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
-        sig, ch, env = sign_event(
+        sig, ch, _env = sign_event(
             eid, wid, "actor", "t1", {"k": "v"}, key,
         )
         assert verify_event(
@@ -160,7 +158,7 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
-        sig, ch, env = sign_event(
+        sig, ch, _env = sign_event(
             eid, wid, "actor", "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )

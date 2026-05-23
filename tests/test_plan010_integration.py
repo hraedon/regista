@@ -61,7 +61,7 @@ class TestPostgresAppendEventOnBehalfOf:
 
     def test_append_event_round_trips_via_read(self, sub: Substrate) -> None:
         wid = _register_and_create(sub)
-        evt = sub.append_event(
+        sub.append_event(
             wid, "actor_a",
             on_behalf_of={"principal_id": "alice", "scope": ["read"]},
         )

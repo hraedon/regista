@@ -173,7 +173,7 @@ class TestReplayCustomFieldsUpdate:
 
 class TestReplayOrphanEvents:
     def test_orphan_with_created_event_warns(self, substrate):
-        wi, evt = substrate.create_work_item(
+        wi, _evt = substrate.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "orphan created"},
         )
@@ -216,7 +216,7 @@ class TestReplayOrphanEvents:
 
 class TestReplayContinueOnRevoked:
     def test_continue_on_revoked_skips_unknown_key(self, substrate):
-        wi, _ = substrate.create_work_item(
+        _wi, _ = substrate.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "revoked replay"},
         )
@@ -225,7 +225,7 @@ class TestReplayContinueOnRevoked:
         assert report.replayed_ok >= 1
 
     def test_continue_on_revoked_warnings_counted(self, substrate):
-        wi, _ = substrate.create_work_item(
+        _wi, _ = substrate.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "revoked warnings"},
         )

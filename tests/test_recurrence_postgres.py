@@ -190,7 +190,7 @@ class TestPostgresFireRecurrence:
         )
         rule_id = rule["rule_id"]
 
-        updated_rule, wi = substrate.fire_recurrence(rule_id)
+        _, wi = substrate.fire_recurrence(rule_id)
         assert wi is not None
         assert wi["work_item_type"] == "feature"
         assert wi["workflow_name"] == "test_workflow"
