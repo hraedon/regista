@@ -31,7 +31,9 @@ _(none)_
 
 ## Open
 
-_(none)_
+| # | Title | Severity | Status |
+|---|---|---|---|
+| 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 
 ## Resolved
 
