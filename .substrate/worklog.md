@@ -45,6 +45,19 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-23 — Session 33½: Lint cleanup in Session 32 test files
+
+**Focus:** Resolve latent lint errors noticed during end-of-session review.
+
+**Delivered:**
+
+1. **Removed unused imports** from `tests/test_plan010.py` (`compute_canonical_hash`, `compute_hmac`) and `tests/test_replay_coverage.py` (`ErrorCode`, `SubstrateError`).
+2. **Prefixed underscore on unused unpacked variables** via ruff `--fix --unsafe-fixes` across `test_plan010.py`, `test_replay_coverage.py`, `test_plan010_integration.py`, `test_recurrence_postgres.py`.
+
+**Test results:** 74 targeted tests pass; full lint now clean across `src/` and `tests/`.
+
+---
+
 ## 2026-05-22 — Session 32: BC-209 + BC-210 (Replay coverage + Recurrence Postgres tests)
 
 **Focus:** Close two open high-severity breadcrumbs: thin replay test coverage (BC-209) and zero Postgres recurrence integration tests (BC-210).
