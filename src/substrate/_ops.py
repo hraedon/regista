@@ -9,6 +9,7 @@ import structlog
 
 from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
+from ._contract import validate_delegation_chain as _validate_delegation_chain
 from ._contract import validate_mutation_params as _validate_mutation_params
 from ._errors import ErrorCode, SubstrateError
 from ._keys import KeySet
@@ -140,6 +141,7 @@ class WorkItemOps:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         from psycopg.sql import SQL
 
@@ -156,6 +158,7 @@ class WorkItemOps:
                 event_id=event_id,
                 not_before=not_before,
             )
+            _validate_delegation_chain(on_behalf_of)
 
             with self._mgr.transaction() as conn:
                 wi = _lock(conn, work_item_id)
@@ -184,6 +187,7 @@ class WorkItemOps:
                     transition="not_before_set",
                     payload=_Jsonb({"not_before": not_before.isoformat() if not_before else None}),
                     event_id=event_id,
+                    on_behalf_of=on_behalf_of,
                     _prelocked_wi=wi,
                 )
 
@@ -224,6 +228,7 @@ class EventOps:
         payload: dict | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         from ._events_api import append_event as _impl
 
@@ -235,6 +240,7 @@ class EventOps:
             payload=payload,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            on_behalf_of=on_behalf_of,
         )
 
     def read(

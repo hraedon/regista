@@ -37,7 +37,8 @@ class _ReplayHaltError(SubstrateError):
 _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
-    "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope"
+    "timestamp, transition, payload, payload_canonical_hash, signature, "
+    "canonical_envelope, on_behalf_of"
 )
 
 
@@ -296,6 +297,7 @@ def _replay_work_item(
                 stored_envelope=(
                     bytes(evt["canonical_envelope"]) if evt["canonical_envelope"] else None
                 ),
+                on_behalf_of=evt["on_behalf_of"],
             ):
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "

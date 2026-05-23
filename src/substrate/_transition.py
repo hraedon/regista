@@ -14,6 +14,9 @@ from ._contract import (
     resolve_transition as _resolve_transition,
 )
 from ._contract import (
+    validate_delegation_chain as _validate_delegation_chain,
+)
+from ._contract import (
     validate_mutation_params as _validate_mutation_params,
 )
 from ._errors import ErrorCode, SubstrateError
@@ -41,6 +44,7 @@ def transition(
     custom_fields: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    on_behalf_of: dict | None = None,
     strict_roles: bool = False,
 ) -> Event:
     if event_id is None:
@@ -50,6 +54,7 @@ def transition(
         actor_kind=actor_kind,
         event_id=event_id,
     )
+    _validate_delegation_chain(on_behalf_of)
 
     timer = OpTimer(project, "transition")
     try:
@@ -162,6 +167,7 @@ def transition(
                 expected_event_seq=expected_event_seq,
                 custom_fields_update=custom_fields,
                 release_claim=True,
+                on_behalf_of=on_behalf_of,
             )
 
             hook_names = transition_def.get("hooks", [])

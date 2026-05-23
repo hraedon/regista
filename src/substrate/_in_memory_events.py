@@ -29,6 +29,7 @@ def in_memory_append_event(
     payload: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    on_behalf_of: dict | None = None,
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -64,6 +65,7 @@ def in_memory_append_event(
         event_id=event_id,
         expected_event_seq=expected_event_seq,
         key_set=key_set,
+        on_behalf_of=on_behalf_of,
     )
 
 

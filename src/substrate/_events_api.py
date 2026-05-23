@@ -13,6 +13,9 @@ from ._contract import (
     check_reserved_transition as _check_reserved_transition,
 )
 from ._contract import (
+    validate_delegation_chain as _validate_delegation_chain,
+)
+from ._contract import (
     validate_mutation_params as _validate_mutation_params,
 )
 from ._contract import (
@@ -39,6 +42,7 @@ def append_event(
     payload: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    on_behalf_of: dict | None = None,
 ) -> Event:
     timer = OpTimer(project, "append_event")
     try:
@@ -49,6 +53,7 @@ def append_event(
             actor_kind=actor_kind,
             event_id=event_id,
         )
+        _validate_delegation_chain(on_behalf_of)
 
         with mgr.transaction() as conn:
             wi_row = conn.execute(
@@ -90,6 +95,7 @@ def append_event(
                 event_id=event_id,
                 expected_event_seq=expected_event_seq,
                 key_set=keys,
+                on_behalf_of=on_behalf_of,
             )
 
         metrics.inc("events_appended", project)

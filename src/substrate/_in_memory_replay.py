@@ -86,6 +86,7 @@ def in_memory_replay(
                             canonical_hash=evt.payload_canonical_hash,
                             key=key_entry.secret,
                             stored_envelope=evt.canonical_envelope,
+                            on_behalf_of=evt.on_behalf_of,
                         ):
                             raise SubstrateError(
                                 ErrorCode.REPLAY_HALTED,

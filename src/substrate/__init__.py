@@ -9,6 +9,9 @@ import structlog
 
 from ._connection import ConnectionManager
 from ._contract import (
+    validate_delegation_chain as _validate_delegation_chain,
+)
+from ._contract import (
     validate_mutation_params as _validate_mutation_params,
 )
 from ._errors import ErrorCode, SubstrateError
@@ -563,6 +566,7 @@ class Substrate:
         custom_fields: dict | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         """Execute a workflow-defined state transition.
 
@@ -588,6 +592,7 @@ class Substrate:
                 ``ACTOR_ROLE_NOT_AUTHORIZED``, ``CUSTOM_FIELD_VIOLATION``,
                 ``VALIDATOR_FAILED``.
         """
+        _validate_delegation_chain(on_behalf_of)
         from ._transition import transition as _transition_impl
 
         return _transition_impl(
@@ -600,6 +605,7 @@ class Substrate:
             custom_fields=custom_fields,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            on_behalf_of=on_behalf_of,
             strict_roles=self._strict_roles,
         )
 
@@ -614,6 +620,7 @@ class Substrate:
         payload: dict | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         """Append a free-form event to the work-item log.
 
@@ -639,6 +646,7 @@ class Substrate:
                 ``IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD``,
                 ``CONCURRENT_MODIFICATION``.
         """
+        _validate_delegation_chain(on_behalf_of)
         return self.events.append(
             work_item_id, actor_id, actor_kind,
             actor_metadata=actor_metadata,
@@ -646,6 +654,7 @@ class Substrate:
             payload=payload,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            on_behalf_of=on_behalf_of,
         )
 
     def read_events(
@@ -1035,6 +1044,7 @@ class Substrate:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         """Set or clear the ``not_before`` gate on a work item.
 
@@ -1055,6 +1065,7 @@ class Substrate:
         return self.work_items.update_not_before(
             work_item_id, not_before, actor_id, actor_kind,
             actor_metadata, event_id=event_id,
+            on_behalf_of=on_behalf_of,
         )
 
     def register_actor_role(self, actor_id: str, role: str) -> None:

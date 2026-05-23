@@ -214,6 +214,7 @@ def in_memory_update_not_before(
     actor_metadata: dict | None = None,
     *,
     event_id: uuid.UUID | None = None,
+    on_behalf_of: dict | None = None,
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -239,6 +240,7 @@ def in_memory_update_not_before(
         payload=Jsonb({"not_before": not_before.isoformat() if not_before else None}),
         event_id=event_id,
         key_set=key_set,
+        on_behalf_of=on_behalf_of,
     )
     wi["not_before"] = not_before
     return evt

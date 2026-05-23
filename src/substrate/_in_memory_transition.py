@@ -8,6 +8,7 @@ from ._contract import (
     check_actor_role_authorized,
     check_role_gating,
     resolve_transition,
+    validate_delegation_chain,
     validate_mutation_params,
 )
 from ._errors import ErrorCode, SubstrateError
@@ -37,6 +38,7 @@ def in_memory_transition(
     custom_fields: dict | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
+    on_behalf_of: dict | None = None,
     strict_roles: bool = False,
 ) -> tuple[Event, int]:
     if event_id is None:
@@ -46,6 +48,7 @@ def in_memory_transition(
         actor_kind=actor_kind,
         event_id=event_id,
     )
+    validate_delegation_chain(on_behalf_of)
 
     wi = work_items.get(work_item_id)
     if wi is None:
@@ -128,6 +131,7 @@ def in_memory_transition(
         event_id=event_id,
         expected_event_seq=expected_event_seq,
         key_set=key_set,
+        on_behalf_of=on_behalf_of,
     )
 
     wi["current_state"] = new_state

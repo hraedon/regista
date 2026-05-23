@@ -50,6 +50,7 @@ class AppendEventRequest(BaseModel):
     payload: dict | None = None
     event_id: str | None = None
     expected_event_seq: int | None = None
+    on_behalf_of: dict | None = None
 
 
 class TransitionRequest(BaseModel):
@@ -62,6 +63,7 @@ class TransitionRequest(BaseModel):
     custom_fields: dict | None = None
     event_id: str | None = None
     expected_event_seq: int | None = None
+    on_behalf_of: dict | None = None
 
 
 class ReadEventsRequest(BaseModel):

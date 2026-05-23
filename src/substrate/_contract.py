@@ -577,3 +577,37 @@ def validate_work_item_exists(
             ErrorCode.WORK_ITEM_NOT_FOUND,
             f"Work item {work_item_id} not found",
         )
+
+
+def validate_delegation_chain(on_behalf_of: dict | None) -> None:
+    if on_behalf_of is None:
+        return
+    if not isinstance(on_behalf_of, dict):
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            "on_behalf_of must be a dict",
+        )
+    principal_id = on_behalf_of.get("principal_id")
+    if not isinstance(principal_id, str) or not principal_id:
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            "on_behalf_of.principal_id is required and must be a non-empty string",
+        )
+    if "scope" in on_behalf_of and on_behalf_of["scope"] is not None:
+        if not isinstance(on_behalf_of["scope"], list):
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.scope must be a list",
+            )
+        for item in on_behalf_of["scope"]:
+            if not isinstance(item, str):
+                raise SubstrateError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "on_behalf_of.scope items must be strings",
+                )
+    if "authenticated_at" in on_behalf_of and on_behalf_of["authenticated_at"] is not None:
+        if not isinstance(on_behalf_of["authenticated_at"], str):
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.authenticated_at must be a string",
+            )

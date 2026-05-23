@@ -15,7 +15,8 @@ from ._types import Event
 _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
-    "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope"
+    "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope, "
+    "on_behalf_of"
 )
 
 
@@ -36,6 +37,7 @@ def _row_to_event(row: dict) -> Event:
         payload_canonical_hash=bytes(row["payload_canonical_hash"]),
         signature=bytes(row["signature"]),
         canonical_envelope=bytes(row["canonical_envelope"]) if row["canonical_envelope"] else None,
+        on_behalf_of=row.get("on_behalf_of"),
     )
 
 
@@ -98,6 +100,7 @@ def append_event(
     payload: Jsonb | None,
     event_id: uuid.UUID,
     expected_event_seq: int | None = None,
+    on_behalf_of: dict | None = None,
     _prelocked_wi: dict | None = None,
 ) -> Event:
     key_entry = key_set.active_key()
@@ -130,6 +133,7 @@ def append_event(
         transition=transition,
         payload=pl,
         key=key_entry.secret,
+        on_behalf_of=on_behalf_of,
     )
 
     event_seq = next_seq
@@ -138,8 +142,9 @@ def append_event(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
-                "transition, payload, payload_canonical_hash, signature, canonical_envelope) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "transition, payload, payload_canonical_hash, signature, "
+                "canonical_envelope, on_behalf_of) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING timestamp"
             ),
             [
@@ -157,6 +162,7 @@ def append_event(
                 canonical_hash,
                 signature,
                 canonical_envelope,
+                psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
             ],
         ).fetchone()
     except psycopg.errors.UniqueViolation:
@@ -196,6 +202,7 @@ def append_event(
         payload_canonical_hash=canonical_hash,
         signature=signature,
         canonical_envelope=canonical_envelope,
+        on_behalf_of=on_behalf_of,
     )
 
 
@@ -213,6 +220,7 @@ def append_transition_event(
     expected_event_seq: int | None = None,
     custom_fields_update: dict | None = None,
     release_claim: bool = True,
+    on_behalf_of: dict | None = None,
     _prelocked_wi: dict | None = None,
 ) -> Event:
     key_entry = key_set.active_key()
@@ -250,6 +258,7 @@ def append_transition_event(
         transition=transition_name,
         payload=stored_payload,
         key=key_entry.secret,
+        on_behalf_of=on_behalf_of,
     )
 
     event_seq = next_seq
@@ -261,8 +270,9 @@ def append_transition_event(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
-                "transition, payload, payload_canonical_hash, signature, canonical_envelope) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "transition, payload, payload_canonical_hash, signature, "
+                "canonical_envelope, on_behalf_of) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING timestamp"
             ),
             [
@@ -280,6 +290,7 @@ def append_transition_event(
                 canonical_hash,
                 signature,
                 canonical_envelope,
+                psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
             ],
         ).fetchone()
     except psycopg.errors.UniqueViolation:
@@ -341,6 +352,7 @@ def append_transition_event(
         payload_canonical_hash=canonical_hash,
         signature=signature,
         canonical_envelope=canonical_envelope,
+        on_behalf_of=on_behalf_of,
     )
 
 

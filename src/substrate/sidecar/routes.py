@@ -9,8 +9,6 @@ from fastapi.responses import JSONResponse
 from substrate._errors import ErrorCode, SubstrateError
 
 from .auth import AuthenticatedActor, TokenRegistry
-
-ADMIN_ROLE = "admin"
 from .models import (
     AcquireClaimRequest,
     AppendEventRequest,
@@ -35,6 +33,8 @@ from .models import (
     UpdateRecurrenceRuleRequest,
     _serialize,
 )
+
+ADMIN_ROLE = "admin"
 
 
 def _get_actor(request: Request) -> AuthenticatedActor:
@@ -140,6 +140,7 @@ def register_routes(app, substrate, tokens: TokenRegistry):
             payload=body.payload,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             expected_event_seq=body.expected_event_seq,
+            on_behalf_of=body.on_behalf_of,
         )
         return _serialize(result)
 
@@ -156,6 +157,7 @@ def register_routes(app, substrate, tokens: TokenRegistry):
             custom_fields=body.custom_fields,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             expected_event_seq=body.expected_event_seq,
+            on_behalf_of=body.on_behalf_of,
         )
         return _serialize(result)
 

@@ -10,6 +10,7 @@ import yaml
 
 from ._contract import (
     Jsonb,
+    validate_delegation_chain,
 )
 from ._errors import ErrorCode, SubstrateError
 from ._event_store import InMemoryEventStore
@@ -269,9 +270,11 @@ class InMemorySubstrate:
         payload: dict | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
+        validate_delegation_chain(on_behalf_of)
         return in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,
             work_item_id, actor_id, actor_kind, actor_metadata,
@@ -279,6 +282,7 @@ class InMemorySubstrate:
             payload=payload,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            on_behalf_of=on_behalf_of,
         )
 
     def transition(
@@ -293,9 +297,11 @@ class InMemorySubstrate:
         custom_fields: dict | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         from ._in_memory_transition import in_memory_transition
 
+        validate_delegation_chain(on_behalf_of)
         evt, new_counter = in_memory_transition(
             self._store, self._work_items, self._workflows,
             self._actor_roles, self._validators, self._claims,
@@ -306,6 +312,7 @@ class InMemorySubstrate:
             custom_fields=custom_fields,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
+            on_behalf_of=on_behalf_of,
             strict_roles=self._strict_roles,
         )
         self._hook_id_counter = new_counter
@@ -613,6 +620,7 @@ class InMemorySubstrate:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        on_behalf_of: dict | None = None,
     ) -> Event:
         from ._in_memory_work_items import in_memory_update_not_before
 
@@ -620,6 +628,7 @@ class InMemorySubstrate:
             self._store, self._work_items, self._key_set,
             work_item_id, not_before, actor_id, actor_kind,
             actor_metadata, event_id=event_id,
+            on_behalf_of=on_behalf_of,
         )
 
     def register_actor_role(self, actor_id: str, role: str) -> None:

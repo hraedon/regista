@@ -62,6 +62,33 @@ class ActorMetadata:
 
 
 @dataclass(frozen=True)
+class DelegationChain:
+    principal_id: str
+    session_id: str | None = None
+    authenticated_at: str | None = None
+    scope: list[str] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        d: dict[str, object] = {"principal_id": self.principal_id}
+        if self.session_id is not None:
+            d["session_id"] = self.session_id
+        if self.authenticated_at is not None:
+            d["authenticated_at"] = self.authenticated_at
+        if self.scope is not None:
+            d["scope"] = self.scope
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DelegationChain:
+        return cls(
+            principal_id=data["principal_id"],
+            session_id=data.get("session_id"),
+            authenticated_at=data.get("authenticated_at"),
+            scope=data.get("scope"),
+        )
+
+
+@dataclass(frozen=True)
 class Event:
     event_id: uuid.UUID
     work_item_id: uuid.UUID
@@ -78,6 +105,7 @@ class Event:
     payload_canonical_hash: bytes
     signature: bytes
     canonical_envelope: bytes | None = None
+    on_behalf_of: dict | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -98,6 +126,8 @@ class Event:
         }
         if self.canonical_envelope is not None:
             d["canonical_envelope"] = self.canonical_envelope.hex()
+        if self.on_behalf_of is not None:
+            d["on_behalf_of"] = self.on_behalf_of
         return d
 
     @classmethod
@@ -122,6 +152,7 @@ class Event:
                 if data.get("canonical_envelope")
                 else None
             ),
+            on_behalf_of=data.get("on_behalf_of"),
         )
 
 

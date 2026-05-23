@@ -53,6 +53,7 @@ def append_event(
     event_id: uuid.UUID,
     expected_event_seq: int | None = None,
     key_set: KeySet | None = None,
+    on_behalf_of: dict | None = None,
 ) -> Event:
     event_seq = store.allocate_seq(work_item_id)
 
@@ -76,6 +77,7 @@ def append_event(
             transition=transition,
             payload=pl,
             key=key_entry.secret,
+            on_behalf_of=on_behalf_of,
         )
     else:
         key_id = _DUMMY_KEY_ID
@@ -100,6 +102,7 @@ def append_event(
         payload_canonical_hash=canonical_hash,
         signature=signature,
         canonical_envelope=canonical_envelope,
+        on_behalf_of=on_behalf_of,
     )
 
     return store.append(evt)
@@ -199,7 +202,8 @@ class PostgresEventStore:
     _EVENT_FIELDS = (
         "event_id, work_item_id, event_seq, actor_id, actor_kind, "
         "actor_metadata, key_id, workflow_name, workflow_version, "
-        "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope"
+        "timestamp, transition, payload, payload_canonical_hash, signature, "
+        "canonical_envelope, on_behalf_of"
     )
 
     def __init__(self, conn, key_set: KeySet) -> None:
@@ -255,8 +259,9 @@ class PostgresEventStore:
                 SQL(
                     "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
-                    "transition, payload, payload_canonical_hash, signature, canonical_envelope) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "transition, payload, payload_canonical_hash, signature, "
+                    "canonical_envelope, on_behalf_of) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                     "RETURNING timestamp"
                 ),
                 [
@@ -274,6 +279,9 @@ class PostgresEventStore:
                     event.payload_canonical_hash,
                     event.signature,
                     event.canonical_envelope,
+                    psycopg.types.json.Jsonb(
+                        event.on_behalf_of
+                    ) if event.on_behalf_of is not None else None,
                 ],
             ).fetchone()
         except psycopg.errors.UniqueViolation:
@@ -318,6 +326,7 @@ class PostgresEventStore:
             payload_canonical_hash=event.payload_canonical_hash,
             signature=event.signature,
             canonical_envelope=event.canonical_envelope,
+            on_behalf_of=event.on_behalf_of,
         )
 
     def read(
