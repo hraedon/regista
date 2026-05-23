@@ -26,6 +26,7 @@ _RESERVED_TRANSITIONS = frozenset({
     "escalated",
     "not_before_set",
     "hook_dead_lettered",
+    "checkpoint",
 })
 
 
@@ -611,3 +612,34 @@ def validate_delegation_chain(on_behalf_of: dict | None) -> None:
                 ErrorCode.INVALID_ARGUMENT,
                 "on_behalf_of.authenticated_at must be a string",
             )
+    if "session_id" in on_behalf_of and on_behalf_of["session_id"] is not None:
+        if not isinstance(on_behalf_of["session_id"], str) or not on_behalf_of["session_id"]:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.session_id must be a non-empty string when present",
+            )
+    if "expires_at" in on_behalf_of and on_behalf_of["expires_at"] is not None:
+        if not isinstance(on_behalf_of["expires_at"], str) or not on_behalf_of["expires_at"]:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.expires_at must be a non-empty string when present",
+            )
+    if (
+        "session_grant_event_id" in on_behalf_of
+        and on_behalf_of["session_grant_event_id"] is not None
+    ):
+        sg = on_behalf_of["session_grant_event_id"]
+        if not isinstance(sg, str) or not sg:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.session_grant_event_id must be a "
+                "non-empty string when present",
+            )
+
+
+def validate_key_role(role: str) -> None:
+    if role not in {"actor", "auditor", "recovery"}:
+        raise SubstrateError(
+            ErrorCode.INVALID_KEY_ROLE,
+            f"unknown key role: {role}",
+        )

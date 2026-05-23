@@ -567,6 +567,7 @@ class Substrate:
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
         on_behalf_of: dict | None = None,
+        key_id: str | None = None,
     ) -> Event:
         """Execute a workflow-defined state transition.
 
@@ -583,6 +584,7 @@ class Substrate:
             custom_fields: Partial update to custom fields (validated against schema).
             event_id: UUIDv4 idempotency key.
             expected_event_seq: Optimistic-concurrency check.
+            key_id: Optional explicit signing key id (default: resolve from actor).
 
         Returns:
             The appended ``Event``.
@@ -607,6 +609,7 @@ class Substrate:
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
             strict_roles=self._strict_roles,
+            key_id=key_id,
         )
 
     def append_event(
@@ -616,6 +619,7 @@ class Substrate:
         actor_kind: str = "agent",
         actor_metadata: dict | None = None,
         *,
+        key_id: str | None = None,
         transition: str | None = None,
         payload: dict | None = None,
         event_id: uuid.UUID | None = None,
@@ -632,6 +636,7 @@ class Substrate:
             actor_id: Authenticated actor.
             actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
             actor_metadata: Optional JSONB metadata.
+            key_id: Optional explicit signing key id (default: resolve from actor).
             transition: Free-form transition label (must not collide with workflow).
             payload: Optional JSONB payload.
             event_id: UUIDv4 idempotency key.
@@ -650,6 +655,7 @@ class Substrate:
         return self.events.append(
             work_item_id, actor_id, actor_kind,
             actor_metadata=actor_metadata,
+            key_id=key_id,
             transition=transition,
             payload=payload,
             event_id=event_id,

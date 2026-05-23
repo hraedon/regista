@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import psycopg
 from psycopg.sql import SQL
@@ -102,8 +102,9 @@ def append_event(
     expected_event_seq: int | None = None,
     on_behalf_of: dict | None = None,
     _prelocked_wi: dict | None = None,
+    _key_id: str | None = None,
 ) -> Event:
-    key_entry = key_set.active_key()
+    key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
 
     wi_row = _prelocked_wi if _prelocked_wi is not None else lock_work_item(conn, work_item_id)
@@ -126,10 +127,17 @@ def append_event(
     am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
 
+    now = datetime.now(UTC)
+
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
         work_item_id=work_item_id,
         actor_id=actor_id,
+        key_id=key_id,
+        event_seq=next_seq,
+        workflow_name=workflow_name,
+        workflow_version=workflow_version,
+        timestamp=now,
         transition=transition,
         payload=pl,
         key=key_entry.secret,
@@ -138,14 +146,13 @@ def append_event(
 
     event_seq = next_seq
     try:
-        row = conn.execute(
+        conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
-                "transition, payload, payload_canonical_hash, signature, "
+                "timestamp, transition, payload, payload_canonical_hash, signature, "
                 "canonical_envelope, on_behalf_of) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "RETURNING timestamp"
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -157,6 +164,7 @@ def append_event(
                 key_id,
                 workflow_name,
                 workflow_version,
+                now,
                 transition,
                 psycopg.types.json.Jsonb(pl) if pl is not None else None,
                 canonical_hash,
@@ -164,7 +172,7 @@ def append_event(
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
             ],
-        ).fetchone()
+        )
     except psycopg.errors.UniqueViolation:
         existing = check_idempotency(
             conn, event_id, actor_id=actor_id, transition=transition,
@@ -180,10 +188,10 @@ def append_event(
     conn.execute(
         SQL(
             "UPDATE work_items_current SET "
-            "last_event_seq = %s, last_event_at = now(), next_event_seq = %s "
+            "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
             "WHERE work_item_id = %s"
         ),
-        [event_seq, event_seq + 1, work_item_id],
+        [event_seq, now, event_seq + 1, work_item_id],
     )
 
     return Event(
@@ -196,7 +204,7 @@ def append_event(
         key_id=key_id,
         workflow_name=workflow_name,
         workflow_version=workflow_version,
-        timestamp=row["timestamp"],
+        timestamp=now,
         transition=transition,
         payload=pl,
         payload_canonical_hash=canonical_hash,
@@ -222,8 +230,9 @@ def append_transition_event(
     release_claim: bool = True,
     on_behalf_of: dict | None = None,
     _prelocked_wi: dict | None = None,
+    _key_id: str | None = None,
 ) -> Event:
-    key_entry = key_set.active_key()
+    key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
 
     wi_row = _prelocked_wi if _prelocked_wi is not None else lock_work_item(conn, work_item_id)
@@ -251,10 +260,17 @@ def append_transition_event(
 
     Jsonb(stored_payload)
 
+    now = datetime.now(UTC)
+
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
         work_item_id=work_item_id,
         actor_id=actor_id,
+        key_id=key_id,
+        event_seq=next_seq,
+        workflow_name=wi_row["workflow_name"],
+        workflow_version=wi_row["workflow_version"],
+        timestamp=now,
         transition=transition_name,
         payload=stored_payload,
         key=key_entry.secret,
@@ -266,14 +282,13 @@ def append_transition_event(
     workflow_version = wi_row["workflow_version"]
 
     try:
-        row = conn.execute(
+        conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
-                "transition, payload, payload_canonical_hash, signature, "
+                "timestamp, transition, payload, payload_canonical_hash, signature, "
                 "canonical_envelope, on_behalf_of) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "RETURNING timestamp"
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -285,6 +300,7 @@ def append_transition_event(
                 key_id,
                 workflow_name,
                 workflow_version,
+                now,
                 transition_name,
                 psycopg.types.json.Jsonb(stored_payload) if stored_payload is not None else None,
                 canonical_hash,
@@ -292,7 +308,7 @@ def append_transition_event(
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
             ],
-        ).fetchone()
+        )
     except psycopg.errors.UniqueViolation:
         existing = check_idempotency(
             conn, event_id, actor_id=actor_id, transition=transition_name,
@@ -319,12 +335,13 @@ def append_transition_event(
         SQL(
             "UPDATE work_items_current SET "
             "current_state = %s, custom_fields = %s, "
-            "last_event_seq = %s, last_event_at = now(), next_event_seq = %s"
+            "last_event_seq = %s, last_event_at = %s, next_event_seq = %s"
         ) + claim_clear + SQL(" WHERE work_item_id = %s"),
         [
             new_state,
             psycopg.types.json.Jsonb(merged_fields),
             event_seq,
+            now,
             event_seq + 1,
             work_item_id,
         ],
@@ -346,7 +363,7 @@ def append_transition_event(
         key_id=key_id,
         workflow_name=workflow_name,
         workflow_version=workflow_version,
-        timestamp=row["timestamp"],
+        timestamp=now,
         transition=transition_name,
         payload=stored_payload,
         payload_canonical_hash=canonical_hash,
@@ -446,6 +463,3 @@ def read_events_composite(
     if work_item_id is not None:
         return [_row_to_event(r) for r in reversed(rows)]
     return [_row_to_event(r) for r in rows]
-
-
-

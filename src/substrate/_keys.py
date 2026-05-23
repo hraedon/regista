@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -16,8 +17,23 @@ log = structlog.get_logger()
 @dataclass(frozen=True)
 class KeyEntry:
     key_id: str
+    alg: str
     secret: bytes
+    public_key: bytes | None
     status: str
+    role: str
+    revoked_at: str | None
+    principal_id: str | None
+
+    def fingerprint(self) -> str:
+        if self.alg == "HMAC-SHA256":
+            return f"hmac:sha256:{hashlib.sha256(self.secret).hexdigest()}"
+        if self.public_key is not None:
+            return f"{self.alg}:sha256:{hashlib.sha256(self.public_key).hexdigest()}"
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"Cannot compute fingerprint for algorithm {self.alg!r} without public_key",
+        )
 
 
 class KeySet:
@@ -76,6 +92,17 @@ class KeySet:
                     f"Key {key_id!r} has unknown status {status!r}; "
                     "expected 'active', 'deprecated', or 'revoked'",
                 )
+            alg = entry.get("alg", "HMAC-SHA256")
+            role = entry.get("role", "actor")
+            if role not in ("actor", "auditor", "recovery"):
+                raise SubstrateError(
+                    ErrorCode.INVALID_KEY_ROLE,
+                    f"Key {key_id!r} has unknown role {role!r}; "
+                    "expected 'actor', 'auditor', or 'recovery'",
+                )
+            revoked_at = entry.get("revoked_at")
+            principal_id = entry.get("principal_id")
+
             env_var = self._env_var_name(key_id)
             env_val = os.environ.get(env_var)
             if env_val is not None:
@@ -83,13 +110,30 @@ class KeySet:
                 key_sources[key_id] = "env"
             else:
                 secret = entry["secret"]
-                if isinstance(secret, str):
+                encoding = entry.get("encoding", "utf8")
+                if encoding == "base64":
+                    import base64
+
+                    secret = base64.b64decode(secret)
+                elif isinstance(secret, str):
                     secret = secret.encode("utf-8")
                 key_sources[key_id] = "file"
+
+            public_key = entry.get("public_key")
+            if isinstance(public_key, str):
+                import base64
+
+                public_key = base64.b64decode(public_key)
+
             new_keys[key_id] = KeyEntry(
                 key_id=key_id,
+                alg=alg,
                 secret=bytes(secret),
+                public_key=public_key,
                 status=status,
+                role=role,
+                revoked_at=revoked_at,
+                principal_id=principal_id,
             )
             if status == "active" and new_active is None:
                 new_active = key_id
@@ -163,9 +207,46 @@ class KeySet:
             )
         return entry
 
-    def verify_key_status(self, key_id: str) -> KeyEntry:
+    def active_keys_for(self, principal_id: str) -> list[KeyEntry]:
+        self._maybe_reload()
+        return [
+            e for e in self._keys.values()
+            if e.status == "active" and e.principal_id == principal_id
+        ]
+
+    def resolve_signing_key(self, actor_id: str, key_id: str | None = None) -> KeyEntry:
+        self._maybe_reload()
+        if key_id is not None:
+            entry = self.get_key(key_id)
+            if entry.status == "revoked":
+                raise SubstrateError(
+                    ErrorCode.REVOKED_KEY_ID,
+                    f"Key {key_id!r} is revoked",
+                )
+            if entry.status == "deprecated":
+                log.warning(
+                    "keys.deprecated_key_used_explicitly",
+                    key_id=key_id,
+                    actor_id=actor_id,
+                )
+            return entry
+        candidates = self.active_keys_for(actor_id)
+        if candidates:
+            return candidates[0]
+        return self.active_key()
+
+    def verify_key_status(self, key_id: str, event_timestamp: str | None = None) -> KeyEntry:
         entry = self.get_key(key_id)
         if entry.status == "revoked":
+            if event_timestamp is not None and entry.revoked_at is not None:
+                if event_timestamp < entry.revoked_at:
+                    log.warning(
+                        "keys.revoked_key_predates_event",
+                        key_id=key_id,
+                        revoked_at=entry.revoked_at,
+                        event_timestamp=event_timestamp,
+                    )
+                    return entry
             raise SubstrateError(
                 ErrorCode.REVOKED_KEY_ID,
                 f"Key {key_id!r} is revoked",

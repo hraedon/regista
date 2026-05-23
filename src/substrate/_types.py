@@ -67,6 +67,8 @@ class DelegationChain:
     session_id: str | None = None
     authenticated_at: str | None = None
     scope: list[str] | None = None
+    expires_at: str | None = None
+    session_grant_event_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {"principal_id": self.principal_id}
@@ -76,6 +78,10 @@ class DelegationChain:
             d["authenticated_at"] = self.authenticated_at
         if self.scope is not None:
             d["scope"] = self.scope
+        if self.expires_at is not None:
+            d["expires_at"] = self.expires_at
+        if self.session_grant_event_id is not None:
+            d["session_grant_event_id"] = self.session_grant_event_id
         return d
 
     @classmethod
@@ -85,6 +91,8 @@ class DelegationChain:
             session_id=data.get("session_id"),
             authenticated_at=data.get("authenticated_at"),
             scope=data.get("scope"),
+            expires_at=data.get("expires_at"),
+            session_grant_event_id=data.get("session_grant_event_id"),
         )
 
 

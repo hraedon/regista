@@ -46,6 +46,7 @@ def transition(
     expected_event_seq: int | None = None,
     on_behalf_of: dict | None = None,
     strict_roles: bool = False,
+    key_id: str | None = None,
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -168,6 +169,7 @@ def transition(
                 custom_fields_update=custom_fields,
                 release_claim=True,
                 on_behalf_of=on_behalf_of,
+                _key_id=key_id,
             )
 
             hook_names = transition_def.get("hooks", [])

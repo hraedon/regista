@@ -43,6 +43,7 @@ def append_event(
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
     on_behalf_of: dict | None = None,
+    key_id: str | None = None,
 ) -> Event:
     timer = OpTimer(project, "append_event")
     try:
@@ -96,6 +97,7 @@ def append_event(
                 expected_event_seq=expected_event_seq,
                 key_set=keys,
                 on_behalf_of=on_behalf_of,
+                _key_id=key_id,
             )
 
         metrics.inc("events_appended", project)

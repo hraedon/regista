@@ -260,10 +260,16 @@ class TestReplayKeyFailurePaths:
         from substrate._signing import sign_event as _sign_event
         new_event_id = uuid.uuid4()
         payload = {"initial_state": "new", "custom_fields": {"title": "missing wf"}}
+        now = datetime.now(UTC)
         sig, c_hash, env = _sign_event(
             event_id=new_event_id,
             work_item_id=wi.work_item_id,
             actor_id="agent-1",
+            key_id="test-key-001",
+            event_seq=2,
+            workflow_name=wi.workflow_name,
+            workflow_version=wi.workflow_version,
+            timestamp=now,
             transition="start",
             payload=payload,
             key=key_set.active_key().secret,
@@ -312,10 +318,16 @@ class TestReplayKeyFailurePaths:
         from substrate._signing import sign_event as _sign_event
         new_event_id = uuid.uuid4()
         payload = None
+        now = datetime.now(UTC)
         sig, c_hash, env = _sign_event(
             event_id=new_event_id,
             work_item_id=wi.work_item_id,
             actor_id="agent-1",
+            key_id="test-key-001",
+            event_seq=3,
+            workflow_name=wi.workflow_name,
+            workflow_version=wi.workflow_version,
+            timestamp=now,
             transition="start",
             payload=payload,
             key=key_set.active_key().secret,

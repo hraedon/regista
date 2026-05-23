@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -38,6 +39,11 @@ class TestDelegationChainValidation:
         validate_delegation_chain(
             {"principal_id": "alice", "session_id": "sess-123"}
         )
+
+    def test_rejects_empty_session_id(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain({"principal_id": "alice", "session_id": ""})
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_dict(self) -> None:
         with pytest.raises(SubstrateError) as exc:
@@ -116,12 +122,15 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
+        now = datetime.now(UTC)
         sig, ch, _env = sign_event(
-            eid, wid, "actor", "t1", {"k": "v"}, key,
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
         assert verify_event(
-            eid, wid, "actor", "t1", {"k": "v"},
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"},
             sig, ch, key,
             on_behalf_of={"principal_id": "alice"},
         )
@@ -130,12 +139,15 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
+        now = datetime.now(UTC)
         sig, ch, _env = sign_event(
-            eid, wid, "actor", "t1", {"k": "v"}, key,
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
         assert not verify_event(
-            eid, wid, "actor", "t1", {"k": "v"},
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"},
             sig, ch, key,
             on_behalf_of=None,
         )
@@ -145,11 +157,14 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
+        now = datetime.now(UTC)
         sig, ch, _env = sign_event(
-            eid, wid, "actor", "t1", {"k": "v"}, key,
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"}, key,
         )
         assert verify_event(
-            eid, wid, "actor", "t1", {"k": "v"},
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"},
             sig, ch, key,
             on_behalf_of=None,
         )
@@ -158,12 +173,15 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
+        now = datetime.now(UTC)
         sig, ch, _env = sign_event(
-            eid, wid, "actor", "t1", {"k": "v"}, key,
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
         assert not verify_event(
-            eid, wid, "actor", "t1", {"k": "v"},
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"},
             sig, ch, key,
             on_behalf_of={"principal_id": "bob"},
         )
@@ -172,12 +190,15 @@ class TestSigningEnvelope:
         eid = uuid.uuid4()
         wid = uuid.uuid4()
         key = _key()
+        now = datetime.now(UTC)
         sig, ch, env = sign_event(
-            eid, wid, "actor", "t1", {"k": "v"}, key,
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"}, key,
             on_behalf_of={"principal_id": "alice"},
         )
         assert verify_event(
-            eid, wid, "actor", "t1", {"k": "v"},
+            eid, wid, "actor", "k1", 1, "wf", 1, now,
+            "t1", {"k": "v"},
             sig, ch, key,
             stored_envelope=env,
             on_behalf_of={"principal_id": "bob"},

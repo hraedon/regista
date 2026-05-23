@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -138,10 +139,20 @@ class TestDeprecatedKeyId:
         wid = uuid.uuid4()
         sig, chash, envelope = sign_event(
             event_id=eid, work_item_id=wid, actor_id="test",
+            key_id=entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=datetime.now(UTC),
             transition="evt", payload=None, key=entry.secret,
         )
         assert verify_event(
             event_id=eid, work_item_id=wid, actor_id="test",
+            key_id=entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=datetime.now(UTC),
             transition="evt", payload=None, signature=sig,
             canonical_hash=chash, key=entry.secret,
             stored_envelope=envelope,

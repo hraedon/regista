@@ -25,6 +25,7 @@ def in_memory_append_event(
     actor_kind: str = "agent",
     actor_metadata: dict | None = None,
     *,
+    key_id: str | None = None,
     transition: str | None = None,
     payload: dict | None = None,
     event_id: uuid.UUID | None = None,
@@ -66,6 +67,7 @@ def in_memory_append_event(
         expected_event_seq=expected_event_seq,
         key_set=key_set,
         on_behalf_of=on_behalf_of,
+        _key_id=key_id,
     )
 
 

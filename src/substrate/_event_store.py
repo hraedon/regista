@@ -54,6 +54,7 @@ def append_event(
     expected_event_seq: int | None = None,
     key_set: KeySet | None = None,
     on_behalf_of: dict | None = None,
+    _key_id: str | None = None,
 ) -> Event:
     event_seq = store.allocate_seq(work_item_id)
 
@@ -67,13 +68,20 @@ def append_event(
     am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
 
+    now = datetime.now(UTC)
+
     if key_set is not None:
-        key_entry = key_set.active_key()
+        key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
         key_id = key_entry.key_id
         signature, canonical_hash, canonical_envelope = sign_event(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id=actor_id,
+            key_id=key_id,
+            event_seq=event_seq,
+            workflow_name=workflow_name,
+            workflow_version=workflow_version,
+            timestamp=now,
             transition=transition,
             payload=pl,
             key=key_entry.secret,
@@ -85,7 +93,6 @@ def append_event(
         canonical_hash = _DUMMY_HASH
         canonical_envelope = _DUMMY_SIG
 
-    now = datetime.now(UTC)
     evt = Event(
         event_id=event_id,
         work_item_id=work_item_id,
@@ -255,14 +262,13 @@ class PostgresEventStore:
         pl = event.payload
 
         try:
-            row = self._conn.execute(
+            self._conn.execute(
                 SQL(
                     "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
-                    "transition, payload, payload_canonical_hash, signature, "
+                    "timestamp, transition, payload, payload_canonical_hash, signature, "
                     "canonical_envelope, on_behalf_of) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                    "RETURNING timestamp"
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 ),
                 [
                     event.event_id,
@@ -274,6 +280,7 @@ class PostgresEventStore:
                     event.key_id,
                     event.workflow_name,
                     event.workflow_version,
+                    event.timestamp,
                     event.transition,
                     psycopg.types.json.Jsonb(pl) if pl is not None else None,
                     event.payload_canonical_hash,
@@ -283,7 +290,7 @@ class PostgresEventStore:
                         event.on_behalf_of
                     ) if event.on_behalf_of is not None else None,
                 ],
-            ).fetchone()
+            )
         except psycopg.errors.UniqueViolation:
             existing = self.find_by_event_id(event.event_id)
             if existing is not None:
@@ -304,30 +311,13 @@ class PostgresEventStore:
         self._conn.execute(
             SQL(
                 "UPDATE work_items_current SET "
-                "last_event_seq = %s, last_event_at = now(), next_event_seq = %s "
+                "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
                 "WHERE work_item_id = %s"
             ),
-            [event.event_seq, event.event_seq + 1, event.work_item_id],
+            [event.event_seq, event.timestamp, event.event_seq + 1, event.work_item_id],
         )
 
-        return Event(
-            event_id=event.event_id,
-            work_item_id=event.work_item_id,
-            event_seq=event.event_seq,
-            actor_id=event.actor_id,
-            actor_kind=event.actor_kind,
-            actor_metadata=am,
-            key_id=event.key_id,
-            workflow_name=event.workflow_name,
-            workflow_version=event.workflow_version,
-            timestamp=row["timestamp"],
-            transition=event.transition,
-            payload=pl,
-            payload_canonical_hash=event.payload_canonical_hash,
-            signature=event.signature,
-            canonical_envelope=event.canonical_envelope,
-            on_behalf_of=event.on_behalf_of,
-        )
+        return event
 
     def read(
         self,

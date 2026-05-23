@@ -260,7 +260,14 @@ def _replay_work_item(
 
         key_entry = None
         try:
-            key_entry = key_set.verify_key_status(evt["key_id"])
+            key_entry = key_set.verify_key_status(
+                evt["key_id"],
+                event_timestamp=(
+                    evt["timestamp"].isoformat()
+                    if evt.get("timestamp")
+                    else None
+                ),
+            )
         except SubstrateError as e:
             if e.code == ErrorCode.REVOKED_KEY_ID and continue_on_revoked:
                 key_entry = key_set.get_key(evt["key_id"])
@@ -289,6 +296,11 @@ def _replay_work_item(
                 event_id=evt["event_id"],
                 work_item_id=evt["work_item_id"],
                 actor_id=evt["actor_id"],
+                key_id=evt["key_id"],
+                event_seq=evt["event_seq"],
+                workflow_name=evt["workflow_name"],
+                workflow_version=evt["workflow_version"],
+                timestamp=evt["timestamp"],
                 transition=evt["transition"],
                 payload=evt["payload"],
                 signature=bytes(evt["signature"]),
