@@ -2,7 +2,7 @@
 number: "212"
 title: "FR-10 references event_type column but actual column is transition"
 severity: low
-status: proposed
+status: implemented
 kind: bug
 author: external-review
 date: "2026-05-22"

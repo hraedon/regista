@@ -2,12 +2,9 @@
 number: "209"
 title: "Replay test coverage is thin — 3 tests, many untested derivation paths"
 severity: high
-status: proposed
+status: implemented
 kind: improvement
 author: adversarial-review
-date: "2026-05-22"
-tags: [replay, testing, coverage]
-related: []
 ---
 
 # BC-209 — Replay test coverage is thin — 3 tests, many untested derivation paths
@@ -30,6 +27,6 @@ related: []
 
 The property-based conformance tests verify replay equivalence but don't exercise these specific derivation paths. A bug in any of these paths would silently produce incorrect replay results.
 
-## Proposed fix
+## Resolution
 
-Add targeted replay tests for each derivation path. At minimum: claim_stolen, escalated, not_before_set, heartbeat coalescing, continue_on_revoked, and multi-work-item scenarios.
+Added 19 tests in `tests/test_replay_coverage.py`: claims (acquired/stolen/released/expired/heartbeat), links, escalation, not_before_set, custom_fields_update, orphan events, continue_on_revoked, signature failures, missing workflow, invalid from_state, and InMemory parity. Fixed `_in_memory_replay.py` to also reset `derived_claim_expires_at` on transition.

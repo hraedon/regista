@@ -2,7 +2,7 @@
 number: "211"
 title: "Problem statement says 'own database' but v4 changed to schema-per-project"
 severity: low
-status: proposed
+status: implemented
 kind: bug
 author: external-review
 date: "2026-05-22"

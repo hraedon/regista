@@ -2,7 +2,7 @@
 number: "210"
 title: Recurrence system has zero Postgres integration tests
 severity: high
-status: in_progress
+status: implemented
 kind: bug
 author: substrate-agent
 date: "2026-05-22"

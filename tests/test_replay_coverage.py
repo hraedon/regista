@@ -7,7 +7,6 @@ from pathlib import Path
 import psycopg.types.json
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
 from substrate._testing import raw_transaction
 from substrate.testing import InMemorySubstrate, drop_project_schema
 
@@ -196,8 +195,10 @@ class TestReplayOrphanEvents:
                     "INSERT INTO events "
                     "(event_id, work_item_id, event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
-                    "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope) "
-                    "VALUES (%s, %s, 1, 'x', 'agent', %s, 'test-key-001', 'test_workflow', 1, "
+                    "timestamp, transition, payload, payload_canonical_hash, "
+                    "signature, canonical_envelope) "
+                    "VALUES (%s, %s, 1, 'x', 'agent', %s, 'test-key-001', "
+                    "'test_workflow', 1, "
                     "now(), 'start', %s, %s, %s, %s)"
                 ),
                 [
@@ -281,7 +282,8 @@ class TestReplayKeyFailurePaths:
                 "(event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "key_id, workflow_name, workflow_version, timestamp, "
                 "transition, payload, payload_canonical_hash, signature, canonical_envelope) "
-                "VALUES (%s, %s, 2, 'agent-1', 'agent', 'test-key-001', 'test_workflow', 999, now(), "
+                "VALUES (%s, %s, 2, 'agent-1', 'agent', 'test-key-001', "
+                "'test_workflow', 999, now(), "
                 "'start', %s, %s, %s, %s)",
                 [new_event_id, wi.work_item_id,
                  psycopg.types.json.Jsonb(payload), c_hash, sig, env],

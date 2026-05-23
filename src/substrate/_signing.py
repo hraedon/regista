@@ -57,6 +57,18 @@ def sign_event(
     return (signature, canonical_hash, envelope)
 
 
+def _verify_once(
+    envelope: bytes,
+    signature: bytes,
+    canonical_hash: bytes,
+    key: bytes,
+) -> bool:
+    return (
+        verify_hmac(envelope, signature, key)
+        and hashlib.sha256(envelope).digest() == canonical_hash
+    )
+
+
 def verify_event(
     event_id: UUID,
     work_item_id: UUID,
@@ -75,15 +87,13 @@ def verify_event(
         envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of
         )
-    if verify_hmac(envelope, signature, key):
-        if hashlib.sha256(envelope).digest() == canonical_hash:
-            return True
+    if _verify_once(envelope, signature, canonical_hash, key):
+        return True
     # Backward compat: old events without on_behalf_of in envelope
     if on_behalf_of is None and stored_envelope is None:
         old_envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None
         )
-        if verify_hmac(old_envelope, signature, key):
-            if hashlib.sha256(old_envelope).digest() == canonical_hash:
-                return True
+        if _verify_once(old_envelope, signature, canonical_hash, key):
+            return True
     return False
