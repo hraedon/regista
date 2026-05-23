@@ -8,7 +8,11 @@ Structured log of development sessions and milestones.
 
 **Focus:** Resolve open spec-drift and bookkeeping breadcrumbs; address reflection-flagged code-quality items.
 
-**Delivered:**
+### Addendum (Session 33½)
+
+Fixed full lint across `src/` and `tests/`. Removed unused imports and prefixed underscores on unused unpacked variables in `test_plan010.py`, `test_replay_coverage.py`, `test_plan010_integration.py`, `test_recurrence_postgres.py`. Updated breadcrumb README Open list to reflect BC-213. Filed BC-214 (resolved in same session) to document and prevent future agent sessions from only linting `src/`.
+
+**Original delivered:**
 
 1. **BC-211 — Spec drift: "own database" is stale**
    - Fixed `spec.md` line 22: changed "own database" to "own Postgres schema within a shared database".
