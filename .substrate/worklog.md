@@ -4,6 +4,47 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-23 — Session 33: Spec-drift fixes, breadcrumb reconciliation, signing cleanup
+
+**Focus:** Resolve open spec-drift and bookkeeping breadcrumbs; address reflection-flagged code-quality items.
+
+**Delivered:**
+
+1. **BC-211 — Spec drift: "own database" is stale**
+   - Fixed `spec.md` line 22: changed "own database" to "own Postgres schema within a shared database".
+   - Moved breadcrumb to `resolved/`.
+
+2. **BC-212 — Spec drift: FR-10 references non-existent `event_type` column**
+   - Fixed `spec.md` line 124: changed `event_type = 'escalated'` to `transition = 'escalated'`.
+   - Moved breadcrumb to `resolved/`.
+
+3. **BC-209 — Move to `resolved/`** (implementation was already in tree from Session 32).
+
+4. **Moved BC-184, 185, 188, 189, 190, 191, 192 to `resolved/`** (all had `status: implemented` in root).
+
+5. **Updated `spec.md` for `on_behalf_of` (reflection from Session 32):**
+   - Added `on_behalf_of` to FR-03 event field list.
+   - Updated canonical signing envelope to include `on_behalf_of` with backward-compat note.
+   - Added Plan 010 mention to v5 revision history.
+   - Updated core data model decision table.
+
+6. **Updated `AGENTS.md` test count:** 721 → 802.
+
+7. **BC-213 — Accepted as design tension**
+   - Heartbeat claim return type intentionally models durable claim state, not event-log delta.
+   - Updated breadcrumb with resolution rationale while leaving it as the single open item.
+
+8. **Extracted `_verify_once` helper in `_signing.py` (reflection gap)**
+   - Eliminates duplicated HMAC-verify + hash-check logic in backward-compat branch.
+   - No behavioral change; verified by 48 targeted tests (signing + replay + coverage + Plan 010).
+
+9. **Fixed pre-existing E501 lint in `test_replay_coverage.py`** (two SQL string line-too-long lines from Session 32).
+
+**Test results:** 802 passed, lint clean on modified files.
+**Breadcrumbs:** Resolved 12 open items; 1 remains accepted (BC-213).
+
+---
+
 ## 2026-05-22 — Session 32: BC-209 + BC-210 (Replay coverage + Recurrence Postgres tests)
 
 **Focus:** Close two open high-severity breadcrumbs: thin replay test coverage (BC-209) and zero Postgres recurrence integration tests (BC-210).
