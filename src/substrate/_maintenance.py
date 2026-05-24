@@ -114,6 +114,8 @@ class MaintenanceThread:
                 log.info("maintenance.timestamping_triggered", project=self._project)
         except Exception as e:
             log.error("maintenance.timestamping_error", error=str(e))
+            if self._metrics:
+                self._metrics.inc("timestamping_errors", self._project)
 
     def _fire_due_recurrences(self) -> None:
         try:

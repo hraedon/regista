@@ -1,0 +1,10 @@
+{
+  "keys": [
+    {
+      "key_id": "ed-test-001",
+      "secret": "lVv8seYO5jZLwduGJdVh3qG5tTA9PzOeFTAKUmWQPVg=",
+      "status": "active",
+      "scheme": "ed25519"
+    }
+  ]
+}

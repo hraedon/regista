@@ -27,6 +27,19 @@ class TimestampBatch:
     status: str  # pending | confirmed | failed
     error_message: str | None = None
 
+    def to_dict(self) -> dict:
+        return {
+            "batch_id": str(self.batch_id),
+            "event_ids": [str(e) for e in self.event_ids],
+            "merkle_root": self.merkle_root.hex(),
+            "tsa_token": self.tsa_token.hex() if self.tsa_token else None,
+            "tsa_timestamp": self.tsa_timestamp.isoformat() if self.tsa_timestamp else None,
+            "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
+            "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
+            "status": self.status,
+            "error_message": self.error_message,
+        }
+
 
 def _hash_pair(left: bytes, right: bytes) -> bytes:
     return hashlib.sha256(left + right).digest()
@@ -182,6 +195,17 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
         )
 
 
+def _rehydrate_event_ids(conn, first_seq: int, last_seq: int) -> list[uuid.UUID]:
+    if first_seq > last_seq:
+        return []
+    rows = conn.execute(
+        "SELECT event_id FROM events "
+        "WHERE event_seq >= %s AND event_seq <= %s ORDER BY event_seq",
+        [first_seq, last_seq],
+    ).fetchall()
+    return [r["event_id"] for r in rows]
+
+
 def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
     if status:
         rows = conn.execute(
@@ -194,10 +218,13 @@ def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
         ).fetchall()
     result: list[TimestampBatch] = []
     for r in rows:
+        event_ids = _rehydrate_event_ids(
+            conn, r["first_event_seq"], r["last_event_seq"]
+        )
         result.append(
             TimestampBatch(
                 batch_id=r["batch_id"],
-                event_ids=[],
+                event_ids=event_ids,
                 merkle_root=bytes(r["merkle_root"]),
                 tsa_token=bytes(r["tsa_token"]) if r["tsa_token"] else None,
                 tsa_timestamp=r["tsa_timestamp"],

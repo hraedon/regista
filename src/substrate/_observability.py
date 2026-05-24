@@ -155,6 +155,10 @@ class Metrics:
                 "substrate_maintenance_errors_total",
                 "Unhandled errors in maintenance cycle",
             ),
+            "timestamping_errors": (
+                "substrate_timestamping_errors_total",
+                "Errors during maintenance timestamping cycle",
+            ),
         }
         if name in counters:
             metric_name, doc = counters[name]

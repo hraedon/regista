@@ -528,3 +528,38 @@ class TestHookQueue:
     def test_sweep_expired_hook_leases(self, client, auth_headers):
         resp = client.post("/v1/sweep_expired_hook_leases", headers=auth_headers)
         assert resp.status_code == 200
+
+
+class TestTimestampRoutes:
+    def test_trigger_requires_admin(self, client, nonadmin_headers):
+        resp = client.post("/v1/timestamp/trigger", headers=nonadmin_headers)
+        assert resp.status_code == 403
+
+    def test_list_batches_requires_admin(self, client, nonadmin_headers):
+        resp = client.get("/v1/timestamp/batches", headers=nonadmin_headers)
+        assert resp.status_code == 403
+
+    def test_verify_batch_requires_admin(self, client, nonadmin_headers):
+        fake_id = str(uuid.uuid4())
+        resp = client.post(
+            f"/v1/timestamp/batches/{fake_id}/verify",
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_list_batches_empty(self, client, auth_headers):
+        resp = client.get("/v1/timestamp/batches", headers=auth_headers)
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_trigger_without_tsa_config(self, client, auth_headers):
+        resp = client.post("/v1/timestamp/trigger", headers=auth_headers)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "TSA_NOT_CONFIGURED"
+
+    def test_list_batches_with_status_filter(self, client, auth_headers):
+        resp = client.get(
+            "/v1/timestamp/batches?status=pending",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
