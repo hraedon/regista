@@ -39,6 +39,7 @@ _(none)_
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 222 | Replay _EVENT_FIELDS missing scheme_id — Ed25519 events always verified with HMAC | high | Added `scheme_id` to `_EVENT_FIELDS` in `_replay.py`. Replay paths resolve public_key for Ed25519 verification. Fixed Ed25519 test key files. 10 integration tests added in `tests/test_signing_ed25519.py`. |
 | 210 | Recurrence system has zero Postgres integration tests | high | Added 24 Postgres integration tests in `tests/test_recurrence_postgres.py` covering register, list, due, fire, cancel, update, and custom fields. Fixed `_recurrence.py` to use `psycopg.types.json.Jsonb` for dict params and wrap `actor_metadata` in `_Jsonb` before calling `_create_work_item`. |
 | 212 | FR-10 references `event_type` column but actual column is `transition` | low | Fixed `spec.md` line 124: changed `event_type = 'escalated'` to `transition = 'escalated'`. |
 | 211 | Problem statement says 'own database' but v4 changed to schema-per-project | low | Fixed `spec.md` line 22: changed 'own database' to 'own Postgres schema within a shared database'. |

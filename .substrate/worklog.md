@@ -4,6 +4,53 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 52: Plan 011/012 verification, Ed25519 integration, TSA protocol, spec v7
+
+**Focus:** Verify Plans 011 and 012 against plan documents, fix bugs found, complete remaining items.
+
+**Delivered:**
+
+1. **BC-222 — Replay _EVENT_FIELDS missing scheme_id (high)**
+   - `_replay.py` `_EVENT_FIELDS` was missing `scheme_id`, causing Ed25519 events to always verify with HMAC during Postgres replay.
+   - Fixed by adding `scheme_id` to the tuple.
+   - Added `verify_key` resolution in both replay paths: uses `key_entry.public_key` for Ed25519.
+
+2. **Ed25519 integration tests** (`tests/test_signing_ed25519.py`, 10 tests)
+   - Postgres: create/read, transition, replay with Ed25519 keys.
+   - Key rotation: mixed HMAC+Ed25519 with combined key file.
+   - InMemory: full lifecycle.
+   - Error paths: missing PyNaCl, unknown scheme.
+   - Fixed Ed25519 test key files (added `encoding: "base64"` and `public_key`).
+
+3. **TSA wire protocol** (`_timestamping.py`)
+   - Implemented `submit_to_tsa()` with RFC 3161 TimeStampReq DER construction + HTTP POST.
+   - Implemented `verify_tsa_token()` with digest-matching verification.
+   - 8 new tests: submission, HTTP errors, token verification, batch serialization.
+
+4. **Replay verify_timestamps** (`_replay.py`, `__init__.py`)
+   - Added `verify_timestamps: bool = False` to `replay()` (Plan 012 §5.4).
+   - When `True`, cross-references events against confirmed `tsp_batches`; uncovered events increment warnings.
+   - 2 integration tests.
+
+5. **Spec v7 reconciliation** (`spec.md`)
+   - Updated: FR-03 (scheme_id), FR-15 (pluggable scheme), FR-16 (verify_timestamps), §16 (signing decision), §17.9 (trust tiers), §19.2 (signing), §19.5 (error codes), revision history.
+
+6. **Minor fixes**
+   - `_testing.py`: re-exported `get_scheme` and `available_schemes`.
+   - `_signing_scheme.py`: `Ed25519Scheme.verify()` uses `VerifyKey` directly (expects public key).
+   - AGENTS.md: updated test count to 888, added Plans 011-012 section.
+
+**Files modified:**
+- `src/substrate/_replay.py`, `_in_memory_replay.py`, `_signing_scheme.py`, `_testing.py`, `_timestamping.py`, `__init__.py`
+- `spec.md`, `AGENTS.md`
+- `tests/test_signing_ed25519.py` (new), `tests/test_timestamping.py` (expanded)
+- `tests/test_keys_ed25519.json` (fixed), `tests/test_keys_combined.json` (new)
+- `breadcrumbs/resolved/222-replay-missing-scheme-id-ed25519.md` (new)
+
+**Test results:** 888 passed, 10 deselected, lint clean.
+
+---
+
 ## 2026-05-24 — Session 51: Plan 012 completion (timestamping API + sidecar + CLI)
 
 **Focus:** Complete the remaining Plan 012 wiring flagged in Session 50 reflection: expose `timestamping` on `Substrate`, sidecar routes, CLI commands, and `start_maintenance` TSA config passthrough.
