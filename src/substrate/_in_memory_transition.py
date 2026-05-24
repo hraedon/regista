@@ -49,7 +49,7 @@ def in_memory_transition(
         actor_kind=actor_kind,
         event_id=event_id,
     )
-    validate_delegation_chain(on_behalf_of)
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
     wi = work_items.get(work_item_id)
     if wi is None:

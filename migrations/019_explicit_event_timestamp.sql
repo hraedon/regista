@@ -1,0 +1,11 @@
+-- Migration 019 — Explicit event timestamp
+--
+-- This is a documentation-only migration (no schema changes). It records the
+-- design decision from Plan 015 BC-220: the application now passes the event
+-- timestamp explicitly as a parameter to INSERT, rather than relying on the
+-- column's DEFAULT now(). The default remains as a safety net but is always
+-- overridden by the application layer. This ensures identical timestamps between
+-- InMemory and Postgres backends and guarantees the signed timestamp equals the
+-- persisted timestamp.
+--
+-- Idempotent: no-op.

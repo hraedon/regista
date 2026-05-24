@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from ._contract import (
     Jsonb as _Jsonb,
@@ -54,7 +54,7 @@ def append_event(
             actor_kind=actor_kind,
             event_id=event_id,
         )
-        _validate_delegation_chain(on_behalf_of)
+        _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
         with mgr.transaction() as conn:
             wi_row = conn.execute(

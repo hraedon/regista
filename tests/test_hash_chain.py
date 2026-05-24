@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from substrate.testing import drop_project_schema
+from substrate.testing import InMemorySubstrate, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
@@ -107,3 +107,163 @@ class TestBC233HashChain:
 
         report = sub.replay()
         assert report.warnings >= 1
+
+    def test_append_event_api_persists_prev_hash(self, substrate):
+        sub = substrate
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "append"},
+        )
+        sub.append_event(
+            wi.work_item_id,
+            "agent-1",
+            transition="note",
+            payload={"msg": "hello"},
+        )
+        evts = sub.read_events(work_item_id=wi.work_item_id)
+        assert len(evts) == 2
+        assert evts[0].prev_event_hash is None
+        assert evts[1].prev_event_hash is not None
+        expected = hashlib.sha256(
+            evts[0].canonical_envelope + evts[0].signature
+        ).digest()
+        assert evts[1].prev_event_hash == expected
+
+    def test_multi_event_chain(self, substrate):
+        sub = substrate
+        sub.register_actor_role("agent-1", "agent")
+        sub.register_actor_role("reviewer-1", "reviewer")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "multi"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "submit_review", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "approve", "reviewer-1",
+            actor_metadata={"role": "reviewer"},
+        )
+
+        evts = substrate.read_events(work_item_id=wi.work_item_id)
+        assert len(evts) >= 3
+
+        assert evts[0].prev_event_hash is None
+
+        for i in range(1, len(evts)):
+            prev = evts[i - 1]
+            cur = evts[i]
+            assert cur.prev_event_hash is not None
+            expected = hashlib.sha256(
+                prev.canonical_envelope + prev.signature
+            ).digest()
+            assert cur.prev_event_hash == expected
+
+        report = sub.replay()
+        assert report.halted == 0
+        assert report.warnings == 0
+
+
+class TestBC233HashChainInMemory:
+    def test_first_event_has_no_prev_hash(self):
+        sub = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "first"},
+        )
+        evts = sub.read_events(work_item_id=wi.work_item_id, limit=1)
+        assert evts[0].prev_event_hash is None
+
+    def test_second_event_includes_prev_hash(self):
+        sub = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "chain"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        evts = sub.read_events(work_item_id=wi.work_item_id)
+        assert len(evts) == 2
+        first = evts[0]
+        second = evts[1]
+        assert second.prev_event_hash is not None
+        expected = hashlib.sha256(
+            first.canonical_envelope + first.signature
+        ).digest()
+        assert second.prev_event_hash == expected
+
+    def test_multi_event_chain(self):
+        sub = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+        sub.register_actor_role("reviewer-1", "reviewer")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "multi"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "submit_review", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "approve", "reviewer-1",
+            actor_metadata={"role": "reviewer"},
+        )
+
+        evts = sub.read_events(work_item_id=wi.work_item_id)
+        assert len(evts) >= 3
+
+        assert evts[0].prev_event_hash is None
+
+        for i in range(1, len(evts)):
+            prev = evts[i - 1]
+            cur = evts[i]
+            assert cur.prev_event_hash is not None
+            expected = hashlib.sha256(
+                prev.canonical_envelope + prev.signature
+            ).digest()
+            assert cur.prev_event_hash == expected
+
+    def test_chain_without_keys(self):
+        sub = InMemorySubstrate(project="test")
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "nokeys"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+
+        evts = sub.read_events(work_item_id=wi.work_item_id)
+        assert len(evts) == 2
+        assert evts[0].prev_event_hash is None
+        assert evts[1].prev_event_hash is not None

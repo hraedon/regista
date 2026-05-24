@@ -580,7 +580,9 @@ def validate_work_item_exists(
         )
 
 
-def validate_delegation_chain(on_behalf_of: dict | None) -> None:
+def validate_delegation_chain(
+    on_behalf_of: dict | None, *, event_timestamp: str | None = None,
+) -> None:
     if on_behalf_of is None:
         return
     if not isinstance(on_behalf_of, dict):
@@ -606,24 +608,70 @@ def validate_delegation_chain(on_behalf_of: dict | None) -> None:
                     ErrorCode.INVALID_ARGUMENT,
                     "on_behalf_of.scope items must be strings",
                 )
+
+    def _parse_iso(label: str, value: str) -> datetime:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"on_behalf_of.{label} must be a valid RFC 3339 timestamp",
+                detail={label: value},
+            )
+
     if "authenticated_at" in on_behalf_of and on_behalf_of["authenticated_at"] is not None:
         if not isinstance(on_behalf_of["authenticated_at"], str):
             raise SubstrateError(
                 ErrorCode.INVALID_ARGUMENT,
                 "on_behalf_of.authenticated_at must be a string",
             )
+        auth_ts = _parse_iso("authenticated_at", on_behalf_of["authenticated_at"])
+        if event_timestamp is not None:
+            evt_ts = _parse_iso("event_timestamp", event_timestamp)
+            if auth_ts > evt_ts:
+                raise SubstrateError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "on_behalf_of.authenticated_at cannot be after event timestamp",
+                    detail={
+                        "authenticated_at": on_behalf_of["authenticated_at"],
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+
     if "session_id" in on_behalf_of and on_behalf_of["session_id"] is not None:
         if not isinstance(on_behalf_of["session_id"], str) or not on_behalf_of["session_id"]:
             raise SubstrateError(
                 ErrorCode.INVALID_ARGUMENT,
                 "on_behalf_of.session_id must be a non-empty string when present",
             )
+        try:
+            uuid.UUID(on_behalf_of["session_id"])
+        except ValueError:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.session_id must be a valid UUID",
+                detail={"session_id": on_behalf_of["session_id"]},
+            )
+
     if "expires_at" in on_behalf_of and on_behalf_of["expires_at"] is not None:
         if not isinstance(on_behalf_of["expires_at"], str) or not on_behalf_of["expires_at"]:
             raise SubstrateError(
                 ErrorCode.INVALID_ARGUMENT,
                 "on_behalf_of.expires_at must be a non-empty string when present",
             )
+        exp_ts = _parse_iso("expires_at", on_behalf_of["expires_at"])
+        if event_timestamp is not None:
+            evt_ts = _parse_iso("event_timestamp", event_timestamp)
+            if evt_ts >= exp_ts:
+                raise SubstrateError(
+                    ErrorCode.DELEGATION_CHAIN_EXPIRED,
+                    "on_behalf_of.expires_at is at or before event timestamp",
+                    detail={
+                        "expires_at": on_behalf_of["expires_at"],
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+
     if (
         "session_grant_event_id" in on_behalf_of
         and on_behalf_of["session_grant_event_id"] is not None
@@ -634,6 +682,14 @@ def validate_delegation_chain(on_behalf_of: dict | None) -> None:
                 ErrorCode.INVALID_ARGUMENT,
                 "on_behalf_of.session_grant_event_id must be a "
                 "non-empty string when present",
+            )
+        try:
+            uuid.UUID(sg)
+        except ValueError:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "on_behalf_of.session_grant_event_id must be a valid UUID",
+                detail={"session_grant_event_id": sg},
             )
 
 

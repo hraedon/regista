@@ -36,12 +36,16 @@ _(none)_
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 | 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | proposed |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
+| 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | resolved |
+| 237 | Variable name collision in InMemory replay hash chain check | high | resolved |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
-| 233 | Events are individually signed but not hash-chained — no tamper-proof ordering | high | Implemented BC-233: added `prev_event_hash BYTEA` column to `events` (migration 018), added `prev_event_hash` and `global_seq` to `Event` dataclass and `_EVENT_FIELDS`. Postgres `append_event` and `append_transition_event` now compute `SHA-256(prev_canonical_envelope + prev_signature)` and store it. Signing envelope v3 includes `prev_event_hash` for integrity. Replay `_replay_work_item` verifies the chain per-event and increments `warnings` on break. 4 new tests in `tests/test_hash_chain.py`. |
+| 237 | Variable name collision in InMemory replay hash chain check | high | Fixed — renamed `ok`/`err` to `chain_ok`/`chain_err` in `_in_memory_replay.py` hash chain verification to avoid collision with outer `ok` counter. |
+| 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | Fixed — added `prev_event_hash` to `PostgresEventStore.append()` INSERT column and parameter list. Events via `Substrate.append_event()` now persist `prev_event_hash` to DB. Added `test_append_event_api_persists_prev_hash` to `test_hash_chain.py`. |
+| 233 | Events are individually signed but not hash-chained — no tamper-proof ordering | high | Implemented BC-233: added `prev_event_hash BYTEA` column to `events` (migration 018), added `prev_event_hash` and `global_seq` to `Event` dataclass and `_EVENT_FIELDS`. Postgres and InMemory backends both compute `SHA-256(prev_canonical_envelope + prev_signature)`. Signing envelope v3 includes `prev_event_hash` and `global_seq` for integrity. Replay `_replay_work_item` verifies the chain per-event and increments `warnings` on break. 9 tests in `tests/test_hash_chain.py` (Postgres + InMemory parity, multi-event chain). |
 | 232 | BC-227 test reimplements _run instead of calling it | low | Fixed in Session 52 — connect-exhaustion path now resets `_processing` before early return; `_run` structured with inner try/finally. Test updated to drive real `_run`. |
 | 231 | trigger_timestamping treats event_seq as global, but it is per-work-item | high | Implemented Plan 014 — added `global_seq BIGSERIAL` to `events`, rewrote `trigger_timestamping` + `_rehydrate_event_ids` + `list_batches` to use `global_seq`, updated replay `verify_timestamps` to key off `global_seq`. Multi-WI batching is now coherent. Migration `017_events_global_seq.sql`. 4 new tests in `tests/test_timestamping.py`. |
 | 230 | replay verify_timestamps does not re-derive Merkle root — tamper detection is theatre | high | Fixed in Session 52 — replay now recomputes `compute_merkle_root(event_ids)` from live events and constant-time-compares against stored `tsp_batches.merkle_root`; mismatch increments warnings. Multi-WI test added after Plan 014. |

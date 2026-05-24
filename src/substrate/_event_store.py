@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -71,6 +72,16 @@ def append_event(
 
     now = datetime.now(UTC)
 
+    prev_event_hash: bytes | None = None
+    if event_seq > 1:
+        prev_evts = store.read(work_item_id=work_item_id, limit=1, before_seq=event_seq)
+        if prev_evts:
+            prev_evt = prev_evts[0]
+            if prev_evt.canonical_envelope and prev_evt.signature:
+                prev_event_hash = hashlib.sha256(
+                    prev_evt.canonical_envelope + prev_evt.signature
+                ).digest()
+
     if key_set is not None:
         key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
         key_id = key_entry.key_id
@@ -89,6 +100,7 @@ def append_event(
             key=key_entry.secret,
             on_behalf_of=on_behalf_of,
             scheme=scheme,
+            prev_event_hash=prev_event_hash,
         )
         _scheme_id = scheme.scheme_id
     else:
@@ -116,7 +128,7 @@ def append_event(
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
         scheme_id=_scheme_id,
-        prev_event_hash=None,
+        prev_event_hash=prev_event_hash,
     )
 
     return store.append(evt)
@@ -278,8 +290,9 @@ class PostgresEventStore:
                     "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
                     "timestamp, transition, payload, payload_canonical_hash, signature, "
-                    "canonical_envelope, on_behalf_of, scheme_id) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 ),
                 [
                     event.event_id,
@@ -301,6 +314,7 @@ class PostgresEventStore:
                         event.on_behalf_of
                     ) if event.on_behalf_of is not None else None,
                     event.scheme_id,
+                    event.prev_event_hash,
                 ],
             )
         except psycopg.errors.UniqueViolation:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +159,7 @@ class WorkItemOps:
                 event_id=event_id,
                 not_before=not_before,
             )
-            _validate_delegation_chain(on_behalf_of)
+            _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
             with self._mgr.transaction() as conn:
                 wi = _lock(conn, work_item_id)

@@ -4,6 +4,57 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 55: BC-233 InMemory hash chain parity, spec v8, test coverage
+
+**Focus:** Wire `prev_event_hash` computation into the InMemory backend (shared `_store_append` path), add InMemory + multi-event chain tests, update spec.md to v8.
+
+**Delivered:**
+
+1. **InMemory hash chain parity (BC-233 gap)**
+   - `src/substrate/_event_store.py`: `append_event` (shared by InMemory) now computes `prev_event_hash` by looking up the previous event via `store.read(work_item_id=..., limit=1, before_seq=event_seq)` and hashing `SHA-256(prev.canonical_envelope + prev.signature)`. First events (`event_seq == 1`) correctly get `prev_event_hash=None`.
+   - When `key_set is None` (no HMAC), dummy envelope+signature still produce deterministic chain hashes.
+   - Both `sign_event()` calls (with and without key) now pass `prev_event_hash` through, ensuring v3 envelope is used when the chain is present.
+
+2. **Test coverage expansion**
+   - Added `TestBC233HashChainInMemory` class (4 tests): `test_first_event_has_no_prev_hash`, `test_second_event_includes_prev_hash`, `test_multi_event_chain`, `test_chain_without_keys`.
+   - Added `test_multi_event_chain` to `TestBC233HashChain` (Postgres): creates 3+ transitions, verifies each event's `prev_event_hash` matches `SHA-256(prev.canonical_envelope + prev.signature)`.
+   - Total: 9 tests in `test_hash_chain.py`, all passing.
+
+3. **Spec v8**
+   - Updated `spec.md`:
+     - Added `prev_event_hash` and `global_seq` to FR-03 event field list.
+     - Signing envelope section updated from v2 to v3, documenting `prev_event_hash` (hex) and `global_seq` inclusion.
+     - Storage description updated (v3 envelope).
+     - Signing envelope decision row updated.
+     - Core data model row updated.
+     - Revision history: v8 entry documenting BC-233, migration 018, InMemory parity.
+    - Updated `breadcrumbs/README.md` BC-233 resolution to note InMemory parity and 9 tests.
+
+4. **BC-236 — PostgresEventStore.append() missing prev_event_hash**
+   - `PostgresEventStore.append()` was not including `prev_event_hash` in its INSERT statement. Events created via `Substrate.append_event()` (public API path using `PostgresEventStore`) would have `prev_event_hash` computed correctly in memory but never persisted to DB — the column would remain NULL.
+   - Direct Postgres paths (`_events.py:append_event`, `_events.py:append_transition_event`) were unaffected (they have their own INSERT with `prev_event_hash`).
+   - Fixed by adding `prev_event_hash` to the INSERT column list and parameter list in `PostgresEventStore.append()`.
+   - Fixed by adding `prev_event_hash` to the INSERT column list and parameter list in `PostgresEventStore.append()`.
+   - Added `test_append_event_api_persists_prev_hash` to verify the public API path persists `prev_event_hash` correctly.
+
+5. **InMemory replay hash chain verification**
+   - Added `_verify_hash_chain_in_memory()` to `_in_memory_replay.py`, mirroring the Postgres replay's `_verify_hash_chain()`.
+   - Tracks `prev_evt` across events and verifies `SHA-256(prev.canonical_envelope + prev.signature)` matches `event.prev_event_hash`.
+   - Chain breaks emit warnings (not halt), consistent with Postgres replay behavior.
+   - **BC-237**: Fixed variable naming collision: `ok` was both the replay counter and the hash chain check result. Renamed to `chain_ok`/`chain_err`.
+
+**Files modified:**
+- `src/substrate/_event_store.py` — added `import hashlib`, `prev_event_hash` computation in `append_event()`, pass-through to `sign_event()`, set on `Event` dataclass, fixed `PostgresEventStore.append()` INSERT to include `prev_event_hash`
+- `src/substrate/_in_memory_replay.py` — added `_verify_hash_chain_in_memory()`, tracks `prev_evt` in replay loop, verifies hash chain per-event, fixed `ok` variable collision (BC-237)
+- `tests/test_hash_chain.py` — added `TestBC233HashChainInMemory` (4 tests), `test_multi_event_chain` to Postgres class, `test_append_event_api_persists_prev_hash`
+- `spec.md` — v8 revision
+- `breadcrumbs/236-postgreseventstore-append-missing-prev-event-hash.md` — new
+- `breadcrumbs/237-variable-name-collision-in-memory-replay.md` — new
+- `breadcrumbs/README.md` — BC-233, BC-236, BC-237 updated
+
+**Breadcrumbs:** Resolved BC-236 (PostgresEventStore INSERT), BC-237 (variable name collision). Open: 213 (accepted), 234 (low), 235 (medium).
+**Reflection:** pending
+
 ## 2026-05-24 — Session 54: Breadcrumb cleanup + BC-233 event hash chain
 
 **Focus:** Close resolved breadcrumbs 223–232, defer BC-229, implement BC-233 (event hash chain) with signing envelope v3.

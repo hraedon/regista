@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -620,7 +620,7 @@ class Substrate:
                 ``ACTOR_ROLE_NOT_AUTHORIZED``, ``CUSTOM_FIELD_VIOLATION``,
                 ``VALIDATOR_FAILED``.
         """
-        _validate_delegation_chain(on_behalf_of)
+        _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         from ._transition import transition as _transition_impl
 
         return _transition_impl(
@@ -677,7 +677,7 @@ class Substrate:
                 ``IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD``,
                 ``CONCURRENT_MODIFICATION``.
         """
-        _validate_delegation_chain(on_behalf_of)
+        _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         return self.events.append(
             work_item_id, actor_id, actor_kind,
             actor_metadata=actor_metadata,

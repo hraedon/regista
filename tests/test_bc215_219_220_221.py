@@ -177,11 +177,11 @@ class TestBC219DelegationChainFields:
     def test_full_session_grant_fields_roundtrip(self) -> None:
         dc = DelegationChain(
             principal_id="alice",
-            session_id="sess-123",
+            session_id="550e8400-e29b-41d4-a716-446655440000",
             authenticated_at="2026-01-01T00:00:00Z",
             scope=["read"],
             expires_at="2026-12-31T23:59:59Z",
-            session_grant_event_id="evt-1",
+            session_grant_event_id="550e8400-e29b-41d4-a716-446655440001",
         )
         restored = DelegationChain.from_dict(dc.to_dict())
         assert restored == dc
@@ -190,11 +190,112 @@ class TestBC219DelegationChainFields:
         validate_delegation_chain(
             {
                 "principal_id": "alice",
-                "session_id": "sess-123",
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
                 "authenticated_at": "2026-01-01T00:00:00Z",
                 "scope": ["read"],
                 "expires_at": "2026-12-31T23:59:59Z",
-                "session_grant_event_id": "evt-1",
+                "session_grant_event_id": "550e8400-e29b-41d4-a716-446655440001",
+            }
+        )
+
+    def test_rejects_invalid_session_id_uuid(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {"principal_id": "alice", "session_id": "not-a-uuid"}
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "session_id must be a valid UUID" in exc.value.message
+
+    def test_rejects_invalid_session_grant_event_id_uuid(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {"principal_id": "alice", "session_grant_event_id": "not-a-uuid"}
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "session_grant_event_id must be a valid UUID" in exc.value.message
+
+    def test_rejects_invalid_expires_at_format(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {"principal_id": "alice", "expires_at": "tomorrow"}
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "RFC 3339" in exc.value.message
+
+    def test_rejects_invalid_authenticated_at_format(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {
+                    "principal_id": "alice",
+                    "authenticated_at": "yesterday",
+                },
+                event_timestamp="2026-06-01T00:00:00Z",
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "RFC 3339" in exc.value.message
+
+    def test_expires_at_before_event_timestamp_raises_delegation_chain_expired(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {
+                    "principal_id": "alice",
+                    "expires_at": "2026-01-01T00:00:00Z",
+                },
+                event_timestamp="2026-06-01T00:00:00Z",
+            )
+        assert exc.value.code == ErrorCode.DELEGATION_CHAIN_EXPIRED
+
+    def test_expires_at_equal_to_event_timestamp_raises_delegation_chain_expired(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {
+                    "principal_id": "alice",
+                    "expires_at": "2026-06-01T00:00:00Z",
+                },
+                event_timestamp="2026-06-01T00:00:00Z",
+            )
+        assert exc.value.code == ErrorCode.DELEGATION_CHAIN_EXPIRED
+
+    def test_expires_at_after_event_timestamp_accepted(self) -> None:
+        validate_delegation_chain(
+            {
+                "principal_id": "alice",
+                "expires_at": "2026-12-31T23:59:59Z",
+            },
+            event_timestamp="2026-06-01T00:00:00Z",
+        )
+
+    def test_authenticated_at_after_event_timestamp_rejected(self) -> None:
+        with pytest.raises(SubstrateError) as exc:
+            validate_delegation_chain(
+                {
+                    "principal_id": "alice",
+                    "authenticated_at": "2026-07-01T00:00:00Z",
+                },
+                event_timestamp="2026-06-01T00:00:00Z",
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "after event timestamp" in exc.value.message
+
+    def test_authenticated_at_equal_to_event_timestamp_accepted(self) -> None:
+        validate_delegation_chain(
+            {
+                "principal_id": "alice",
+                "authenticated_at": "2026-06-01T00:00:00Z",
+            },
+            event_timestamp="2026-06-01T00:00:00Z",
+        )
+
+    def test_session_id_validation_without_timestamp(self) -> None:
+        validate_delegation_chain(
+            {"principal_id": "alice", "session_id": "550e8400-e29b-41d4-a716-446655440000"}
+        )
+
+    def test_session_grant_event_id_validation_without_timestamp(self) -> None:
+        validate_delegation_chain(
+            {
+                "principal_id": "alice",
+                "session_grant_event_id": "550e8400-e29b-41d4-a716-446655440000",
             }
         )
 
@@ -296,3 +397,31 @@ class TestBC221CheckpointReservation:
         with pytest.raises(SubstrateError) as exc:
             check_reserved_transition("checkpoint")
         assert exc.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
+
+    def test_checkpoint_workflow_registration_rejected(self) -> None:
+        """Workflow YAML with transition named 'checkpoint' is rejected at registration."""
+        from substrate._workflow import parse_and_validate
+        yaml = (
+            "name: wf\n"
+            "version: 1\n"
+            "substrate_version: 5.0.0\n"
+            "states:\n"
+            "  - name: s1\n"
+            "    initial: true\n"
+            "  - name: s2\n"
+            "    terminal: true\n"
+            "transitions:\n"
+            "  - name: checkpoint\n"
+            "    from: s1\n"
+            "    to: s2\n"
+            "roles:\n"
+            "  - name: admin\n"
+            "work_item_types:\n"
+            "  - name: t\n"
+            "    custom_fields: []\n"
+            "link_types: []\n"
+        )
+        with pytest.raises(SubstrateError) as exc:
+            parse_and_validate(yaml)
+        assert exc.value.code == ErrorCode.RESERVED_TRANSITION_NAME
+        assert "checkpoint" in exc.value.message

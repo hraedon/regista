@@ -37,7 +37,7 @@ class TestDelegationChainValidation:
 
     def test_valid_with_session_id(self) -> None:
         validate_delegation_chain(
-            {"principal_id": "alice", "session_id": "sess-123"}
+            {"principal_id": "alice", "session_id": "550e8400-e29b-41d4-a716-446655440000"}
         )
 
     def test_rejects_empty_session_id(self) -> None:

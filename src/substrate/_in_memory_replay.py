@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac
 from datetime import datetime
 
 import structlog
@@ -12,6 +14,31 @@ from ._signing_scheme import get_scheme
 from ._types import ReplayReport
 
 log = structlog.get_logger()
+
+
+def _verify_hash_chain_in_memory(
+    event,
+    prev_event,
+) -> tuple[bool, str]:
+    expected = event.prev_event_hash
+    if expected is None:
+        return True, ""
+    if prev_event is None:
+        return False, "prev_event_hash set but no previous event"
+    prev_env = prev_event.canonical_envelope
+    prev_sig = prev_event.signature
+    if prev_env is None or prev_sig is None:
+        return False, "previous event missing canonical_envelope or signature"
+    computed = hashlib.sha256(
+        bytes(prev_env) + bytes(prev_sig)
+    ).digest()
+    if not _hmac.compare_digest(computed, bytes(expected)):
+        detail = (
+            f"hash chain mismatch: computed={computed.hex()} "
+            f"expected={bytes(expected).hex()}"
+        )
+        return False, detail
+    return True, ""
 
 
 def in_memory_replay(
@@ -63,7 +90,19 @@ def in_memory_replay(
             derived_claimed_by = None
             derived_claim_expires_at = None
             derived_coalesce_threshold = 0.0
+            prev_evt = None
             for evt in sorted(evts, key=lambda e: e.event_seq):
+                chain_ok, chain_err = _verify_hash_chain_in_memory(evt, prev_evt)
+                if not chain_ok:
+                    log.warning(
+                        "replay.hash_chain_broken",
+                        work_item_id=str(wi_id),
+                        event_id=str(evt.event_id),
+                        event_seq=evt.event_seq,
+                        detail=chain_err,
+                    )
+                    warnings += 1
+
                 if key_set is not None:
                     key_entry = None
                     try:
@@ -189,6 +228,7 @@ def in_memory_replay(
                             derived_fields = {**derived_fields, **p["custom_fields_update"]}
                         derived_claimed_by = None
                         derived_claim_expires_at = None
+                prev_evt = evt
         except SubstrateError:
             halted += 1
         except Exception:

@@ -134,6 +134,11 @@ def _validate_semantics(data: dict) -> None:
         )
 
     for t in transitions:
+        if t["name"] == "checkpoint":
+            raise SubstrateError(
+                ErrorCode.RESERVED_TRANSITION_NAME,
+                "Transition name 'checkpoint' is reserved and cannot be used in workflow YAML",
+            )
         if t["from"] not in state_names:
             raise SubstrateError(
                 ErrorCode.WORKFLOW_SEMANTIC_ERROR,

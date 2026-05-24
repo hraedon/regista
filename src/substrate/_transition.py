@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import structlog
 
@@ -55,7 +56,7 @@ def transition(
         actor_kind=actor_kind,
         event_id=event_id,
     )
-    _validate_delegation_chain(on_behalf_of)
+    _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
     timer = OpTimer(project, "transition")
     try:

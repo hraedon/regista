@@ -275,7 +275,7 @@ class InMemorySubstrate:
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
-        validate_delegation_chain(on_behalf_of)
+        validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         return in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,
             work_item_id, actor_id, actor_kind, actor_metadata,
@@ -304,7 +304,7 @@ class InMemorySubstrate:
     ) -> Event:
         from ._in_memory_transition import in_memory_transition
 
-        validate_delegation_chain(on_behalf_of)
+        validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         evt, new_counter = in_memory_transition(
             self._store, self._work_items, self._workflows,
             self._actor_roles, self._validators, self._claims,
