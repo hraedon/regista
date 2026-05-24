@@ -4,6 +4,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -431,6 +432,61 @@ class LinkOps:
         )
 
 
+class TimestampOps:
+    def __init__(
+        self,
+        mgr: ConnectionManager,
+        keys: KeySet,
+        metrics: Metrics,
+        project: str,
+    ) -> None:
+        self._mgr = mgr
+        self._keys = keys
+        self._metrics = metrics
+        self._project = project
+        self._tsa_config: Any = None
+
+    def set_config(self, config: Any) -> None:
+        self._tsa_config = config
+
+    def trigger(self) -> Any | None:
+        if self._tsa_config is None:
+            raise SubstrateError(
+                ErrorCode.TSA_NOT_CONFIGURED,
+                "TSA is not configured",
+            )
+        from ._timestamping import trigger_timestamping
+
+        with self._mgr.transaction() as conn:
+            return trigger_timestamping(conn, self._tsa_config)
+
+    def list_batches(self, status: str | None = None) -> list[Any]:
+        from ._timestamping import list_batches
+
+        with self._mgr.transaction() as conn:
+            return list_batches(conn, status)
+
+    def verify_batch(self, batch_id: uuid.UUID) -> bool:
+        from ._timestamping import list_batches, verify_tsa_token
+
+        with self._mgr.transaction() as conn:
+            batches = list_batches(conn)
+            for b in batches:
+                if b.batch_id == batch_id:
+                    if b.tsa_token is None:
+                        return False
+                    if self._tsa_config is None:
+                        raise SubstrateError(
+                            ErrorCode.TSA_NOT_CONFIGURED,
+                            "TSA is not configured",
+                        )
+                    return verify_tsa_token(b.tsa_token, b.merkle_root, self._tsa_config)
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Batch {batch_id} not found",
+            )
+
+
 class HookOps:
     def __init__(
         self,
@@ -439,130 +495,98 @@ class HookOps:
         metrics: Metrics,
         project: str,
         validators: dict[str, Callable],
-        hook_handlers: dict[str, Callable],
-        hook_channel: str,
-        hook_consumer,
+        handlers: dict[str, Callable],
+        channel: str,
+        consumer,
     ) -> None:
         self._mgr = mgr
         self._keys = keys
         self._metrics = metrics
         self._project = project
         self._validators = validators
-        self._hook_handlers = hook_handlers
-        self._hook_channel = hook_channel
-        self._hook_consumer = hook_consumer
+        self._handlers = handlers
+        self._channel = channel
+        self._hook_channel = channel
+        self._consumer = consumer
 
     def register_validator(self, name: str, handler: Callable) -> None:
         self._validators[name] = handler
 
     def register_handler(self, name: str, handler: Callable) -> None:
-        self._hook_handlers[name] = handler
-        self._hook_consumer._handlers = self._hook_handlers
+        self._handlers[name] = handler
+        if self._consumer is not None:
+            self._consumer._handlers = self._handlers
 
     def start_consumer(self) -> None:
-        self._hook_consumer.start()
+        if self._consumer is None:
+            return
+        self._consumer._handlers = self._handlers
+        if not self._consumer.is_running:
+            self._consumer.start()
 
     def stop_consumer(self) -> None:
-        self._hook_consumer.stop()
+        if self._consumer is None:
+            return
+        if self._consumer.is_running:
+            self._consumer.stop()
 
     def poll(self) -> int:
-        from ._hooks import poll_and_process_hooks
+        from ._hooks import poll_and_process_hooks as _poll
 
         with self._mgr.transaction() as conn:
-            return poll_and_process_hooks(
-                conn, self._hook_handlers, self._keys, self._metrics, self._project,
+            count = _poll(
+                conn,
+                self._handlers,
+                self._keys,
+                self._metrics,
+                self._project,
             )
+        if count > 0:
+            self._metrics.inc("hooks_drain", self._project, amount=count)
+        return count
 
-    def claim(self, max_batch: int = 10, lease_seconds: int = 60) -> list[HookContext]:
-        from ._hooks import claim_hooks as _claim
+    def claim(self, max_batch: int, lease_seconds: int) -> list[HookContext]:
+        from ._hooks import claim_hooks
 
         with self._mgr.transaction() as conn:
-            return _claim(conn, max_batch, lease_seconds)
+            return claim_hooks(conn, max_batch, lease_seconds)
 
     def complete(self, hook_queue_id: int) -> None:
-        from ._hooks import complete_hook as _complete
+        from ._hooks import complete_hook
 
         with self._mgr.transaction() as conn:
-            _complete(conn, hook_queue_id)
+            complete_hook(conn, hook_queue_id)
 
     def fail(self, hook_queue_id: int, error: str) -> None:
-        from ._hooks import fail_hook as _fail
+        from ._hooks import fail_hook
 
         with self._mgr.transaction() as conn:
-            _fail(conn, hook_queue_id, error, self._keys, self._metrics, self._project)
+            fail_hook(conn, hook_queue_id, error, self._keys, self._metrics, self._project)
 
     def sweep_expired_leases(self) -> int:
-        from ._hooks import sweep_expired_hook_leases as _sweep
+        from ._hooks import sweep_expired_hook_leases
 
         with self._mgr.transaction() as conn:
-            swept = _sweep(conn)
-        if swept:
+            swept = sweep_expired_hook_leases(conn)
+        if swept and self._metrics:
             self._metrics.inc("maintenance_hook_leases_swept", self._project, amount=swept)
         return swept
 
-    def list_dead_lettered(self) -> list[DeadLetterEntry]:
-        from psycopg.sql import SQL
-
-        with self._mgr.transaction() as conn:
-            rows = conn.execute(
-                SQL(
-                    "SELECT id, event_id, hook_name, hook_type, payload, "
-                    "retry_count, error_message, dead_lettered_at, "
-                    "original_hook_queue_id "
-                    "FROM hook_dead_letter ORDER BY dead_lettered_at DESC"
-                ),
-            ).fetchall()
-
-        return [
-            DeadLetterEntry(
-                id=r["id"],
-                event_id=r["event_id"],
-                hook_name=r["hook_name"],
-                hook_type=r["hook_type"],
-                payload=r["payload"],
-                retry_count=r["retry_count"],
-                error_message=r["error_message"],
-                dead_lettered_at=r["dead_lettered_at"],
-                original_hook_queue_id=r.get("original_hook_queue_id"),
-            )
-            for r in rows
-        ]
-
-    def requeue_dead_lettered(self, dead_letter_id: int) -> None:
-        from ._hooks import requeue_dead_lettered_hook as _requeue
-
-        timer = OpTimer(self._project, "requeue_dead_lettered_hook")
-        try:
-            with self._mgr.transaction() as conn:
-                _requeue(conn, dead_letter_id, self._hook_channel, self._keys)
-
-            timer.log("ok", detail=str(dead_letter_id))
-        except SubstrateError:
-            timer.log("error")
-            raise
-
     def refresh_queue_metrics(self) -> None:
-        from psycopg.sql import SQL
+        from ._hooks_api import refresh_hook_queue_metrics
 
-        with self._mgr.transaction() as conn:
-            rows = conn.execute(
-                SQL(
-                    "SELECT status, count(*) AS n "
-                    "FROM hook_queue "
-                    "GROUP BY status"
-                )
-            ).fetchall()
-            dead_row = conn.execute(
-                SQL("SELECT count(*) AS n FROM hook_dead_letter")
-            ).fetchone()
+        return refresh_hook_queue_metrics(self._mgr, self._metrics, self._project)
 
-        counts = {r["status"]: int(r["n"]) for r in rows}
-        for status in ("pending", "in_progress", "completed"):
-            self._metrics.set_hook_queue_depth(
-                self._project, status, float(counts.get(status, 0))
-            )
-        self._metrics.set_hook_queue_depth(
-            self._project, "dead_letter", float(dead_row["n"] if dead_row else 0)
+    def list_dead_letter(self, limit: int = 100) -> list[DeadLetterEntry]:
+        from ._hooks_api import list_dead_lettered_hooks
+
+        return list_dead_lettered_hooks(self._mgr, limit)
+
+    def requeue_dead_letter(self, hook_id: int) -> None:
+        from ._hooks_api import requeue_dead_lettered_hook
+
+        return requeue_dead_lettered_hook(
+            self._mgr, self._hook_channel, self._keys, self._metrics, self._project, hook_id,
         )
 
 

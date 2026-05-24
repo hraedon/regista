@@ -4,6 +4,51 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 50: Plan 011 (pluggable signing) + Plan 012 (RFC 3161 timestamping)
+
+**Focus:** Implement Plans 011 and 012 per their draft RFCs, plus prerequisite recovery of missing `_hooks_api.py`.
+
+**Delivered:**
+
+1. **Plan 011 — Pluggable Signing (Ed25519 + HMAC-SHA256)**
+   - New `src/substrate/_signing_scheme.py`: `SigningScheme` protocol, `HMACSHA256Scheme`, `Ed25519Scheme`, registry.
+   - `Event` dataclass gains `scheme_id: str = "hmac-sha256"` with round-trip `to_dict`/`from_dict`.
+   - `KeyEntry` gains `scheme` field; `KeySet._load()` validates scheme and checks for PyNaCl when `scheme == "ed25519"`.
+   - Sign path (`_events.py`, `_event_store.py`) resolves scheme from key entry and passes to `sign_event()`.
+   - Replay (`_replay.py`, `_in_memory_replay.py`) resolves scheme per-event before verification.
+   - Migration `015_event_scheme_id.sql` adds `scheme_id` column to `events`.
+   - New error code: `SIGNING_SCHEME_NOT_FOUND`.
+   - `pyproject.toml` gains `[ed25519]` optional dependency.
+   - New tests: `tests/test_signing_scheme.py` (10 tests).
+
+2. **Plan 012 — RFC 3161 Timestamping on Event Batches**
+   - New `src/substrate/_timestamping.py`: `TSAConfig`, `TimestampBatch`, SHA-256 Merkle tree (`compute_merkle_root`, `merkle_proof`, `verify_merkle_proof`), `trigger_timestamping()`, `list_batches()`.
+   - `submit_to_tsa` / `verify_tsa_token` raise `NotImplementedError` (DER encoding deferred until cryptography dependency decision).
+   - Migration `016_tsp_batches.sql` creates `tsp_batches` table with indexes.
+   - `TimestampOps` facade added to `_ops.py` with `trigger()`, `list_batches()`, `verify_batch()`.
+   - `MaintenanceThread` gains `_maybe_timestamp_events()` gated by `TSAConfig`.
+   - New error codes: `TSA_NOT_CONFIGURED`, `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`.
+   - New tests: `tests/test_timestamping.py` (9 tests).
+
+3. **Prerequisite fix: re-created `_hooks_api.py` and facade wiring**
+   - `_hooks_api.py` was missing from the tree, causing `ModuleNotFoundError` in `HookOps` methods.
+   - Re-created the module with `refresh_hook_queue_metrics`, `list_dead_lettered_hooks`, `requeue_dead_lettered_hook`.
+   - Fixed `HookOps.sweep_expired_leases` to increment `maintenance_hook_leases_swept` metric.
+   - Added `_hook_channel` alias to `HookOps`.
+   - Fixed `Substrate.list_dead_lettered_hooks` / `requeue_dead_lettered_hook` method names to match facade.
+
+4. **Documentation**
+   - `spec.md` revision history updated to v7.
+   - `AGENTS.md` source layout updated with new modules.
+
+**Files modified:** `src/substrate/_errors.py`, `_types.py`, `_keys.py`, `_signing.py`, `_events.py`, `_event_store.py`, `_replay.py`, `_in_memory_replay.py`, `_ops.py`, `_maintenance.py`, `__init__.py`; new `src/substrate/_signing_scheme.py`, `_timestamping.py`, `_hooks_api.py`; migrations `015_event_scheme_id.sql`, `016_tsp_batches.sql`; new tests `tests/test_signing_scheme.py`, `test_timestamping.py`; `pyproject.toml`, `spec.md`, `AGENTS.md`.
+
+**Test results:** 836 passed, 3 skipped (Ed25519 without PyNaCl), lint clean on `src/` and `tests/`.
+
+**Reflection:** `.substrate/reflections/2026-05-24-kimi-k26.md`
+
+---
+
 ## 2026-05-24 — Session 49: BC-215/219/220/221 batch + spec v6 reconciliation
 
 **Focus:** Implement the remaining identity/signing cluster breadcrumbs and reconcile `spec.md` with the v2 envelope already present in code.

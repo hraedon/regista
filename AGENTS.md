@@ -61,6 +61,10 @@ src/substrate/
   _datetime_utils.py   # Shared datetime comparison for replay modules
   _ops.py              # Facade classes: WorkflowOps, WorkItemOps, etc. (Plan 007)
   _maintenance.py      # MaintenanceThread — timer-driven sweep/recurrence (Plan 009)
+  _signing_scheme.py   # SigningScheme protocol + HMACSHA256Scheme + Ed25519Scheme (Plan 011)
+  _timestamping.py     # RFC 3161 TSA Merkle tree batching (Plan 012)
+  _hooks_api.py        # Postgres-only hooks helpers for _ops facades
+  _in_memory_replay.py # InMemory replay engine (FR-16)
   _vendor/             # Vendored dependencies
     __init__.py
     rfc8785.py         # Vendored rfc8785 0.1.4 (Plan 008 WS-3)

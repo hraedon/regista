@@ -8,6 +8,7 @@ from ._contract import Jsonb, check_expected_seq, check_idempotency
 from ._errors import ErrorCode, SubstrateError
 from ._keys import KeySet
 from ._signing import sign_event
+from ._signing_scheme import get_scheme
 from ._types import Event
 
 _DUMMY_KEY_ID = "in-memory"
@@ -73,6 +74,7 @@ def append_event(
     if key_set is not None:
         key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
         key_id = key_entry.key_id
+        scheme = get_scheme(key_entry.scheme)
         signature, canonical_hash, canonical_envelope = sign_event(
             event_id=event_id,
             work_item_id=work_item_id,
@@ -86,12 +88,15 @@ def append_event(
             payload=pl,
             key=key_entry.secret,
             on_behalf_of=on_behalf_of,
+            scheme=scheme,
         )
+        _scheme_id = scheme.scheme_id
     else:
         key_id = _DUMMY_KEY_ID
         signature = _DUMMY_SIG
         canonical_hash = _DUMMY_HASH
         canonical_envelope = _DUMMY_SIG
+        _scheme_id = "hmac-sha256"
 
     evt = Event(
         event_id=event_id,
@@ -110,6 +115,7 @@ def append_event(
         signature=signature,
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
+        scheme_id=_scheme_id,
     )
 
     return store.append(evt)
@@ -210,7 +216,7 @@ class PostgresEventStore:
         "event_id, work_item_id, event_seq, actor_id, actor_kind, "
         "actor_metadata, key_id, workflow_name, workflow_version, "
         "timestamp, transition, payload, payload_canonical_hash, signature, "
-        "canonical_envelope, on_behalf_of"
+        "canonical_envelope, on_behalf_of, scheme_id"
     )
 
     def __init__(self, conn, key_set: KeySet) -> None:
@@ -267,8 +273,8 @@ class PostgresEventStore:
                     "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
                     "timestamp, transition, payload, payload_canonical_hash, signature, "
-                    "canonical_envelope, on_behalf_of) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "canonical_envelope, on_behalf_of, scheme_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 ),
                 [
                     event.event_id,
@@ -289,6 +295,7 @@ class PostgresEventStore:
                     psycopg.types.json.Jsonb(
                         event.on_behalf_of
                     ) if event.on_behalf_of is not None else None,
+                    event.scheme_id,
                 ],
             )
         except psycopg.errors.UniqueViolation:

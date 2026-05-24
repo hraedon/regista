@@ -10,13 +10,14 @@ from ._contract import Jsonb
 from ._errors import ErrorCode, SubstrateError
 from ._keys import KeySet
 from ._signing import sign_event
+from ._signing_scheme import get_scheme
 from ._types import Event
 
 _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope, "
-    "on_behalf_of"
+    "on_behalf_of, scheme_id"
 )
 
 
@@ -38,6 +39,7 @@ def _row_to_event(row: dict) -> Event:
         signature=bytes(row["signature"]),
         canonical_envelope=bytes(row["canonical_envelope"]) if row["canonical_envelope"] else None,
         on_behalf_of=row.get("on_behalf_of"),
+        scheme_id=row.get("scheme_id", "hmac-sha256"),
     )
 
 
@@ -129,6 +131,7 @@ def append_event(
 
     now = datetime.now(UTC)
 
+    scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
         work_item_id=work_item_id,
@@ -142,6 +145,7 @@ def append_event(
         payload=pl,
         key=key_entry.secret,
         on_behalf_of=on_behalf_of,
+        scheme=scheme,
     )
 
     event_seq = next_seq
@@ -151,8 +155,8 @@ def append_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -171,6 +175,7 @@ def append_event(
                 signature,
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
+                scheme.scheme_id,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -211,6 +216,7 @@ def append_event(
         signature=signature,
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
+        scheme_id=scheme.scheme_id,
     )
 
 
@@ -262,6 +268,7 @@ def append_transition_event(
 
     now = datetime.now(UTC)
 
+    scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
         work_item_id=work_item_id,
@@ -275,6 +282,7 @@ def append_transition_event(
         payload=stored_payload,
         key=key_entry.secret,
         on_behalf_of=on_behalf_of,
+        scheme=scheme,
     )
 
     event_seq = next_seq
@@ -287,8 +295,8 @@ def append_transition_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -307,6 +315,7 @@ def append_transition_event(
                 signature,
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
+                scheme.scheme_id,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -370,6 +379,7 @@ def append_transition_event(
         signature=signature,
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
+        scheme_id=scheme.scheme_id,
     )
 
 

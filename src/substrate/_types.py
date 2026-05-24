@@ -114,6 +114,7 @@ class Event:
     signature: bytes
     canonical_envelope: bytes | None = None
     on_behalf_of: dict | None = None
+    scheme_id: str = "hmac-sha256"
 
     def to_dict(self) -> dict:
         d = {
@@ -136,6 +137,7 @@ class Event:
             d["canonical_envelope"] = self.canonical_envelope.hex()
         if self.on_behalf_of is not None:
             d["on_behalf_of"] = self.on_behalf_of
+        d["scheme_id"] = self.scheme_id
         return d
 
     @classmethod
@@ -161,6 +163,7 @@ class Event:
                 else None
             ),
             on_behalf_of=data.get("on_behalf_of"),
+            scheme_id=data.get("scheme_id", "hmac-sha256"),
         )
 
 

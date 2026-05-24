@@ -29,6 +29,9 @@ sidecar = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
 ]
+ed25519 = [
+    "PyNaCl>=1.5",
+]
 vendor-check = [
     "rfc8785==0.1.4",
 ]

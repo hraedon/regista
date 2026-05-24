@@ -1031,7 +1031,7 @@ class Substrate:
         Raises:
             SubstrateError: ``HOOK_NOT_FOUND``.
         """
-        self.hooks.requeue_dead_lettered(dead_letter_id)
+        self.hooks.requeue_dead_letter(dead_letter_id)
 
     def list_dead_lettered_hooks(self) -> list[DeadLetterEntry]:
         """List all dead-lettered hooks in reverse chronological order.
@@ -1039,7 +1039,7 @@ class Substrate:
         Returns:
             List of ``DeadLetterEntry`` objects.
         """
-        return self.hooks.list_dead_lettered()
+        return self.hooks.list_dead_letter()
 
     def update_not_before(
         self,

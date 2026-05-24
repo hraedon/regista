@@ -11,6 +11,7 @@ from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, SubstrateError
 from ._keys import KeySet
 from ._signing import verify_event
+from ._signing_scheme import get_scheme
 from ._types import ReplayReport
 
 log = structlog.get_logger()
@@ -292,6 +293,7 @@ def _replay_work_item(
                 raise
 
         if key_entry is not None:
+            scheme = get_scheme(evt.get("scheme_id", "hmac-sha256"))
             if not verify_event(
                 event_id=evt["event_id"],
                 work_item_id=evt["work_item_id"],
@@ -310,6 +312,7 @@ def _replay_work_item(
                     bytes(evt["canonical_envelope"]) if evt["canonical_envelope"] else None
                 ),
                 on_behalf_of=evt["on_behalf_of"],
+                scheme=scheme,
             ):
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "

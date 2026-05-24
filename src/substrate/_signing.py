@@ -83,7 +83,12 @@ def sign_event(
     payload: dict | None,
     key: bytes,
     on_behalf_of: dict | None = None,
+    scheme=None,
 ) -> tuple[bytes, bytes, bytes]:
+    from ._signing_scheme import HMACSHA256Scheme
+
+    if scheme is None:
+        scheme = HMACSHA256Scheme()
     envelope = build_signing_envelope_v2(
         event_id=event_id,
         work_item_id=work_item_id,
@@ -97,8 +102,7 @@ def sign_event(
         payload=payload,
         on_behalf_of=on_behalf_of,
     )
-    signature = compute_hmac(envelope, key)
-    canonical_hash = compute_canonical_hash(envelope)
+    signature, canonical_hash = scheme.sign(envelope, key)
     return (signature, canonical_hash, envelope)
 
 
@@ -106,12 +110,10 @@ def _verify_once(
     envelope: bytes,
     signature: bytes,
     canonical_hash: bytes,
+    scheme,
     key: bytes,
 ) -> bool:
-    return (
-        verify_hmac(envelope, signature, key)
-        and hashlib.sha256(envelope).digest() == canonical_hash
-    )
+    return scheme.verify(envelope, signature, canonical_hash, key)
 
 
 def verify_event(
@@ -130,7 +132,12 @@ def verify_event(
     key: bytes,
     stored_envelope: bytes | None = None,
     on_behalf_of: dict | None = None,
+    scheme=None,
 ) -> bool:
+    from ._signing_scheme import HMACSHA256Scheme
+
+    if scheme is None:
+        scheme = HMACSHA256Scheme()
     if stored_envelope is not None:
         envelope = stored_envelope
     else:
@@ -147,14 +154,14 @@ def verify_event(
             payload=payload,
             on_behalf_of=on_behalf_of,
         )
-    if _verify_once(envelope, signature, canonical_hash, key):
+    if _verify_once(envelope, signature, canonical_hash, scheme, key):
         return True
 
     # Backward compat: retry with old envelope shape for pre-v2 events
     old_envelope = build_signing_envelope(
         event_id, work_item_id, actor_id, transition, payload, on_behalf_of,
     )
-    if _verify_once(old_envelope, signature, canonical_hash, key):
+    if _verify_once(old_envelope, signature, canonical_hash, scheme, key):
         return True
 
     # Fallback: retry without on_behalf_of in old envelope (BC-197 compat)
@@ -162,7 +169,7 @@ def verify_event(
         bare_envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None,
         )
-        if _verify_once(bare_envelope, signature, canonical_hash, key):
+        if _verify_once(bare_envelope, signature, canonical_hash, scheme, key):
             return True
 
     return False

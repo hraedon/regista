@@ -24,6 +24,7 @@ class KeyEntry:
     role: str
     revoked_at: str | None
     principal_id: str | None
+    scheme: str = "hmac-sha256"
 
     def fingerprint(self) -> str:
         if self.alg == "HMAC-SHA256":
@@ -125,6 +126,23 @@ class KeySet:
 
                 public_key = base64.b64decode(public_key)
 
+            scheme = entry.get("scheme", "hmac-sha256")
+            if scheme not in ("hmac-sha256", "ed25519"):
+                raise SubstrateError(
+                    ErrorCode.KEY_LOAD_ERROR,
+                    f"Key {key_id!r} has unknown scheme {scheme!r}; "
+                    "expected 'hmac-sha256' or 'ed25519'",
+                )
+            if scheme == "ed25519":
+                try:
+                    __import__("nacl")
+                except ImportError:
+                    raise SubstrateError(
+                        ErrorCode.KEY_LOAD_ERROR,
+                        "Scheme 'ed25519' requires PyNaCl: "
+                        "pip install substrate[ed25519]",
+                    )
+
             new_keys[key_id] = KeyEntry(
                 key_id=key_id,
                 alg=alg,
@@ -134,6 +152,7 @@ class KeySet:
                 role=role,
                 revoked_at=revoked_at,
                 principal_id=principal_id,
+                scheme=scheme,
             )
             if status == "active" and new_active is None:
                 new_active = key_id
@@ -234,6 +253,16 @@ class KeySet:
         if candidates:
             return candidates[0]
         return self.active_key()
+
+    def active_scheme(self) -> str:
+        self._maybe_reload()
+        entry = self.active_key()
+        return entry.scheme
+
+    def get_scheme(self, key_id: str) -> str:
+        self._maybe_reload()
+        entry = self.get_key(key_id)
+        return entry.scheme
 
     def verify_key_status(self, key_id: str, event_timestamp: str | None = None) -> KeyEntry:
         entry = self.get_key(key_id)

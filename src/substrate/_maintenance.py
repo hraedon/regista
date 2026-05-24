@@ -18,12 +18,17 @@ class MaintenanceThread:
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
+        timestamp_interval: float = 3600.0,
+        tsa_config=None,
     ) -> None:
         self._substrate = substrate
         self._sweep_interval = sweep_interval
         self._recurrence_interval = recurrence_interval
         self._hook_poll_interval = hook_poll_interval
         self._partition_interval = partition_interval
+        self._timestamp_interval = timestamp_interval
+        self._tsa_config = tsa_config
+        self._next_timestamp = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_cycle_ok: bool = True
@@ -34,6 +39,7 @@ class MaintenanceThread:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._next_timestamp = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         log.info("maintenance.thread_started", project=self._project)
@@ -78,6 +84,8 @@ class MaintenanceThread:
 
                 self._substrate.refresh_hook_queue_metrics()
 
+                self._maybe_timestamp_events()
+
                 self._last_cycle_ok = True
             except Exception as e:
                 log.error("maintenance.cycle_error", error=str(e))
@@ -89,6 +97,23 @@ class MaintenanceThread:
                 self._metrics.inc("maintenance_cycles", self._project)
 
             self._stop.wait(timeout=self._sweep_interval)
+
+    def _maybe_timestamp_events(self) -> None:
+        import time
+
+        if self._tsa_config is None or self._timestamp_interval <= 0:
+            return
+        now = time.monotonic()
+        if now < self._next_timestamp:
+            return
+        self._next_timestamp = now + self._timestamp_interval
+        try:
+            ts_ops = getattr(self._substrate, "timestamping", None)
+            if ts_ops is not None:
+                ts_ops.trigger()
+                log.info("maintenance.timestamping_triggered", project=self._project)
+        except Exception as e:
+            log.error("maintenance.timestamping_error", error=str(e))
 
     def _fire_due_recurrences(self) -> None:
         try:

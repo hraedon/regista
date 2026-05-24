@@ -8,6 +8,7 @@ from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, SubstrateError
 from ._signing import verify_event as _verify_event
+from ._signing_scheme import get_scheme
 from ._types import ReplayReport
 
 log = structlog.get_logger()
@@ -79,6 +80,7 @@ def in_memory_replay(
                         else:
                             raise
                     if key_entry is not None:
+                        scheme = get_scheme(evt.scheme_id)
                         if not _verify_event(
                             event_id=evt.event_id,
                             work_item_id=evt.work_item_id,
@@ -95,6 +97,7 @@ def in_memory_replay(
                             key=key_entry.secret,
                             stored_envelope=evt.canonical_envelope,
                             on_behalf_of=evt.on_behalf_of,
+                            scheme=scheme,
                         ):
                             raise SubstrateError(
                                 ErrorCode.REPLAY_HALTED,
