@@ -19,7 +19,16 @@ from ._integrity import SUBSTRATE_VERSION, check_integrity
 from ._keys import KeySet
 from ._migrations import run_migrations
 from ._observability import Metrics, OpTimer
-from ._ops import ClaimOps, EventOps, HookOps, LinkOps, RecurrenceOps, WorkflowOps, WorkItemOps
+from ._ops import (
+    ClaimOps,
+    EventOps,
+    HookOps,
+    LinkOps,
+    RecurrenceOps,
+    TimestampOps,
+    WorkflowOps,
+    WorkItemOps,
+)
 from ._types import (
     ActorKind as ActorKind,
 )
@@ -290,6 +299,14 @@ class Substrate:
             )
         return self._recurrence_ops
 
+    @property
+    def timestamping(self) -> TimestampOps:
+        if not hasattr(self, "_timestamping_ops"):
+            self._timestamping_ops = TimestampOps(
+                self._mgr, self._keys, self._metrics, self._project,
+            )
+        return self._timestamping_ops
+
     def register_validator(self, name: str, handler: Callable) -> None:
         """Register a sync transition validator. Blocks the transaction on failure.
 
@@ -330,11 +347,14 @@ class Substrate:
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
+        timestamp_interval: float = 3600.0,
+        tsa_config=None,
     ) -> None:
         """Start the background maintenance thread.
 
         The maintenance thread periodically sweeps expired claims and hook
-        leases, fires due recurrence rules, and refreshes hook queue metrics.
+        leases, fires due recurrence rules, refreshes hook queue metrics, and
+        optionally timestamps event batches via a configured TSA.
         It also starts the hook consumer if not already running.
 
         Args:
@@ -342,17 +362,23 @@ class Substrate:
             recurrence_interval: Seconds between recurrence checks (default 10).
             hook_poll_interval: Hook consumer poll interval (default 2).
             partition_interval: Deprecated; kept for API compatibility.
+            timestamp_interval: Seconds between timestamping triggers (default 3600).
+            tsa_config: Optional ``TSAConfig`` for RFC 3161 timestamping.
         """
         from ._maintenance import MaintenanceThread
 
         if self._maintenance_thread is not None and self._maintenance_thread.is_running:
             return
+        if tsa_config is not None:
+            self.timestamping.set_config(tsa_config)
         self._maintenance_thread = MaintenanceThread(
             self,
             sweep_interval=sweep_interval,
             recurrence_interval=recurrence_interval,
             hook_poll_interval=hook_poll_interval,
             partition_interval=partition_interval,
+            timestamp_interval=timestamp_interval,
+            tsa_config=tsa_config,
         )
         self._maintenance_thread.start()
         if not (self._hook_consumer is not None and self._hook_consumer.is_running):

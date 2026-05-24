@@ -4,6 +4,41 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 51: Plan 012 completion (timestamping API + sidecar + CLI)
+
+**Focus:** Complete the remaining Plan 012 wiring flagged in Session 50 reflection: expose `timestamping` on `Substrate`, sidecar routes, CLI commands, and `start_maintenance` TSA config passthrough.
+
+**Delivered:**
+
+1. **TimestampOps on Substrate**
+   - Added `Substrate.timestamping` cached property returning `TimestampOps` (facade pattern matching `workflows`, `claims`, etc.).
+   - `start_maintenance` gains `timestamp_interval: float = 3600.0` and `tsa_config=None` parameters.
+   - When `tsa_config` is passed, it is forwarded to both `TimestampOps.set_config()` and `MaintenanceThread` so the maintenance cycle can auto-trigger timestamping.
+
+2. **Sidecar timestamp routes**
+   - `POST /v1/timestamp/trigger` — triggers a batch (admin-only).
+   - `GET /v1/timestamp/batches` — lists batches with optional `status` query param (admin-only).
+   - `POST /v1/timestamp/batches/{id}/verify` — verifies a batch by ID (admin-only).
+   - Added `TriggerTimestampRequest` and `VerifyTimestampBatchRequest` Pydantic models to `sidecar/models.py`.
+   - Restored accidentally-deleted `ClaimHooksRequest` base model (fixes `ImportError` in `routes_hooks.py`).
+
+3. **CLI timestamp commands**
+   - `substrate timestamp status` — lists batches.
+   - `substrate timestamp trigger` — triggers a new batch.
+   - `substrate timestamp verify <id>` — verifies a batch.
+
+4. **Lint / test**
+   - Fixed duplicate `verify` subparser registration causing `ArgumentError` in CLI.
+   - Full suite: 861 passed, 3 skipped, 10 deselected; lint clean on `src/` and `tests/`.
+
+**Files modified:** `src/substrate/__init__.py`, `src/substrate/_cli.py`, `src/substrate/_ops.py`, `src/substrate/_maintenance.py`, `src/substrate/sidecar/routes.py`, `src/substrate/sidecar/models.py`.
+
+**Test results:** 861 passed, 3 skipped, 10 deselected, lint clean on `src/` and `tests/`.
+
+**Reflection:** `.substrate/reflections/2026-05-24-session-51.md`
+
+---
+
 ## 2026-05-24 — Session 50: Plan 011 (pluggable signing) + Plan 012 (RFC 3161 timestamping)
 
 **Focus:** Implement Plans 011 and 012 per their draft RFCs, plus prerequisite recovery of missing `_hooks_api.py`.

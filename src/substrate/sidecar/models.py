@@ -205,6 +205,15 @@ class UpdateRecurrenceRuleRequest(BaseModel):
     template: dict | None = None
 
 
+class TriggerTimestampRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class VerifyTimestampBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    batch_id: str
+
+
 class ClaimHooksRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_batch: int = 10

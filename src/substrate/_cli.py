@@ -373,6 +373,53 @@ def cmd_recurrence_update(args):
         sub.close()
 
 
+def cmd_timestamp_status(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        batches = sub.timestamping.list_batches(status=args.status)
+        if args.json:
+            _dump_json(batches)
+        else:
+            for b in batches:
+                print(
+                    f"{str(b.batch_id)[:8]}  {b.status:10s}  "
+                    f"events={len(b.event_ids):>4}  "
+                    f"root={b.merkle_root.hex()[:16]}..."
+                )
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_timestamp_trigger(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        result = sub.timestamping.trigger()
+        if result is None:
+            print("No new events to timestamp")
+        else:
+            print(f"Triggered batch {result.batch_id} with {len(result.event_ids)} events")
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_timestamp_verify(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        ok = sub.timestamping.verify_batch(uuid.UUID(args.id))
+        print(f"verified={ok}")
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate admin CLI")
@@ -455,6 +502,14 @@ def main(argv=None):
     rc_update.add_argument("--schedule-expr", help="New schedule expression")
     rc_update.add_argument("--template", help="New template (JSON string)")
 
+    # timestamp
+    ts = subs.add_parser("timestamp", help="Timestamping commands")
+    ts_sub = ts.add_subparsers(dest="subcommand")
+    ts_sub.add_parser("status", help="List timestamp batches")
+    ts_sub.add_parser("trigger", help="Trigger a new timestamp batch")
+    ts_verify = ts_sub.add_parser("verify", help="Verify a timestamp batch")
+    ts_verify.add_argument("id", help="Batch UUID")
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -487,6 +542,16 @@ def main(argv=None):
             sys.exit(2)
     elif args.command == "actor-roles" and args.subcommand == "list":
         cmd_actor_roles_list(args)
+    elif args.command == "timestamp":
+        if args.subcommand == "status":
+            cmd_timestamp_status(args)
+        elif args.subcommand == "trigger":
+            cmd_timestamp_trigger(args)
+        elif args.subcommand == "verify":
+            cmd_timestamp_verify(args)
+        else:
+            ts.print_help()
+            sys.exit(2)
     elif args.command == "recurrence" and args.subcommand == "list":
         cmd_recurrence_list(args)
     elif args.command == "recurrence" and args.subcommand == "due":

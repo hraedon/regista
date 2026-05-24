@@ -383,4 +383,23 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         count = substrate.sweep_expired_hook_leases()
         return {"swept": count}
 
+    @router.post("/timestamp/trigger")
+    async def trigger_timestamp(request: Request):
+        _require_admin(request)
+        result = substrate.timestamping.trigger()
+        return _serialize(result)
+
+    @router.get("/timestamp/batches")
+    async def list_timestamp_batches(request: Request):
+        _require_admin(request)
+        status = request.query_params.get("status")
+        result = substrate.timestamping.list_batches(status=status)
+        return _serialize(result)
+
+    @router.post("/timestamp/batches/{batch_id}/verify")
+    async def verify_timestamp_batch(batch_id: str, request: Request):
+        _require_admin(request)
+        result = substrate.timestamping.verify_batch(_parse_uuid(batch_id))
+        return {"verified": result}
+
     app.include_router(router)
