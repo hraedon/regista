@@ -4,6 +4,50 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 56: Plan 015 (Wake/Provenance v1 Trust-Envelope) — BC-219 + BC-221
+
+**Focus:** Implement the remaining Plan 015 items: upgrade `validate_delegation_chain` (BC-219), reserve `checkpoint` transition at workflow registration (BC-221), add missing error codes, update all call sites.
+
+**Delivered:**
+
+1. **BC-219 — `validate_delegation_chain` upgraded**
+   - `src/substrate/_contract.py`: `validate_delegation_chain()` now accepts optional `event_timestamp: str | None` parameter.
+   - UUID validation: `session_id` and `session_grant_event_id` must be valid UUID strings when present.
+   - RFC 3339 timestamp parsing: `expires_at` and `authenticated_at` parsed via `datetime.fromisoformat()` (with `Z` → `+00:00` normalization).
+   - Temporal comparison: when `event_timestamp` is provided, raises `DELEGATION_CHAIN_EXPIRED` if `event_timestamp >= expires_at`, and `INVALID_ARGUMENT` if `authenticated_at > event_timestamp`.
+   - All 9 call sites across `__init__.py`, `_ops.py`, `_transition.py`, `_events_api.py`, `_in_memory.py`, `_in_memory_transition.py` updated to pass `event_timestamp=datetime.now(UTC).isoformat()`.
+
+2. **BC-221 — `checkpoint` transition name reserved at workflow registration**
+   - `src/substrate/_workflow.py`: `_validate_semantics()` now checks each transition name and rejects `"checkpoint"` with `RESERVED_TRANSITION_NAME`.
+   - This is a second line of defense in addition to the existing `check_reserved_transition()` runtime guard.
+
+3. **Error codes**
+   - Added `DELEGATION_CHAIN_EXPIRED` and `RESERVED_TRANSITION_NAME` to `ErrorCode` enum in `_errors.py`.
+
+4. **Migration 019**
+   - `migrations/019_explicit_event_timestamp.sql`: comment-only migration documenting the BC-220 design decision (explicit timestamp parameter in INSERT).
+
+5. **Test expansion**
+   - `tests/test_bc215_219_220_221.py`: +12 new tests covering UUID validation, RFC 3339 parsing, `DELEGATION_CHAIN_EXPIRED` boundary conditions, `authenticated_at` ordering, and `checkpoint` workflow registration rejection.
+   - `tests/test_plan010.py`: fixed `test_valid_with_session_id` to use a valid UUID string.
+
+6. **Lint fix**
+   - Fixed `_transition.py` import ordering (stdlib `datetime` before third-party `structlog`).
+
+**Files modified:**
+- `src/substrate/_contract.py` — upgraded `validate_delegation_chain()`
+- `src/substrate/_errors.py` — added `DELEGATION_CHAIN_EXPIRED`, `RESERVED_TRANSITION_NAME`
+- `src/substrate/_workflow.py` — `checkpoint` reservation in `_validate_semantics()`
+- `src/substrate/__init__.py`, `_ops.py`, `_transition.py`, `_events_api.py`, `_in_memory.py`, `_in_memory_transition.py` — call sites pass `event_timestamp`
+- `tests/test_bc215_219_220_221.py` — 12 new tests
+- `tests/test_plan010.py` — fixed session_id to use valid UUID
+
+**Test results:** 927 passed, 10 deselected, lint clean.
+**Breadcrumbs:** Plan 015 BCs 219 and 221 resolved.
+**Reflection:** pending
+
+---
+
 ## 2026-05-24 — Session 55: BC-233 InMemory hash chain parity, spec v8, test coverage
 
 **Focus:** Wire `prev_event_hash` computation into the InMemory backend (shared `_store_append` path), add InMemory + multi-event chain tests, update spec.md to v8.
