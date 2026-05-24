@@ -116,6 +116,7 @@ def append_event(
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
         scheme_id=_scheme_id,
+        prev_event_hash=None,
     )
 
     return store.append(evt)
@@ -220,7 +221,7 @@ class PostgresEventStore:
         "event_id, work_item_id, event_seq, actor_id, actor_kind, "
         "actor_metadata, key_id, workflow_name, workflow_version, "
         "timestamp, transition, payload, payload_canonical_hash, signature, "
-        "canonical_envelope, on_behalf_of, scheme_id"
+        "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, global_seq"
     )
 
     def __init__(self, conn, key_set: KeySet) -> None:

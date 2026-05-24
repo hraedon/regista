@@ -33,6 +33,34 @@ def drop_old_replay_tables(conn: psycopg.Connection, schema: str) -> None:
         conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(tbl["tablename"])))
 
 
+# AC-28: event hash chain verification (BC-233)
+def _verify_hash_chain(
+    event: dict,
+    prev_event: dict | None,
+) -> tuple[bool, str]:
+    expected = event.get("prev_event_hash")
+    if expected is None:
+        return True, ""
+    if prev_event is None:
+        return False, "prev_event_hash set but no previous event"
+    prev_env = prev_event.get("canonical_envelope")
+    prev_sig = prev_event.get("signature")
+    if prev_env is None or prev_sig is None:
+        return False, "previous event missing canonical_envelope or signature"
+    import hashlib
+
+    computed = hashlib.sha256(
+        bytes(prev_env) + bytes(prev_sig)
+    ).digest()
+    if not _hmac.compare_digest(computed, bytes(expected)):
+        detail = (
+            f"hash chain mismatch: computed={computed.hex()} "
+            f"expected={bytes(expected).hex()}"
+        )
+        return False, detail
+    return True, ""
+
+
 class _ReplayHaltError(SubstrateError):
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.REPLAY_HALTED, message)
@@ -41,7 +69,7 @@ _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, global_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, "
-    "canonical_envelope, on_behalf_of, scheme_id"
+    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash"
 )
 
 
@@ -330,9 +358,21 @@ def _replay_work_item(
     claim_coalesce_threshold: float = 0.0
     warnings = 0
 
+    prev_evt: dict | None = None
     for evt in events:
         transition = evt["transition"]
         last_seq = evt["event_seq"]
+
+        ok, err = _verify_hash_chain(evt, prev_evt)
+        if not ok:
+            log.warning(
+                "replay.hash_chain_broken",
+                work_item_id=str(wi_id),
+                event_id=str(evt["event_id"]),
+                event_seq=evt["event_seq"],
+                detail=err,
+            )
+            warnings += 1
 
         key_entry = None
         try:
@@ -476,6 +516,8 @@ def _replay_work_item(
                     custom_fields = {**custom_fields, **payload["custom_fields_update"]}
                 claimed_by = None
                 claim_expires_at = None
+
+        prev_evt = evt
 
     return {
         "current_state": state,

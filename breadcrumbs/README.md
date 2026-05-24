@@ -33,18 +33,25 @@ _(none)_
 
 | # | Title | Severity | Status |
 |---|---|---|---|
-| 232 | BC-227 test reimplements _run instead of calling it | low | resolved |
-| 230 | replay verify_timestamps does not re-derive Merkle root — tamper detection is theatre | high | resolved |
-| 229 | TSAConfig.tsa_cert_path accepted but never used | low | resolved |
-| 228 | trigger_timestamping uses naive datetime.now() instead of DB clock | medium | resolved |
-| 227 | HookConsumer._processing flag not reset on early return | medium | resolved |
-| 226 | replay(verify_timestamps=True) only checks coverage, not token integrity | medium | resolved |
-| 225 | _build_tsr hand-rolled ASN.1 DER encoding is fragile and incomplete | high | resolved |
-| 224 | HMACSHA256Scheme.verify uses == for envelope hash — timing side-channel | high | resolved |
-| 223 | verify_tsa_token is not real TSA verification — naive substring search | critical | resolved |
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
+| 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | proposed |
+| 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
 
 ## Resolved
+
+| # | Title | Severity | Resolution |
+|---|---|---|---|
+| 233 | Events are individually signed but not hash-chained — no tamper-proof ordering | high | Implemented BC-233: added `prev_event_hash BYTEA` column to `events` (migration 018), added `prev_event_hash` and `global_seq` to `Event` dataclass and `_EVENT_FIELDS`. Postgres `append_event` and `append_transition_event` now compute `SHA-256(prev_canonical_envelope + prev_signature)` and store it. Signing envelope v3 includes `prev_event_hash` for integrity. Replay `_replay_work_item` verifies the chain per-event and increments `warnings` on break. 4 new tests in `tests/test_hash_chain.py`. |
+| 232 | BC-227 test reimplements _run instead of calling it | low | Fixed in Session 52 — connect-exhaustion path now resets `_processing` before early return; `_run` structured with inner try/finally. Test updated to drive real `_run`. |
+| 231 | trigger_timestamping treats event_seq as global, but it is per-work-item | high | Implemented Plan 014 — added `global_seq BIGSERIAL` to `events`, rewrote `trigger_timestamping` + `_rehydrate_event_ids` + `list_batches` to use `global_seq`, updated replay `verify_timestamps` to key off `global_seq`. Multi-WI batching is now coherent. Migration `017_events_global_seq.sql`. 4 new tests in `tests/test_timestamping.py`. |
+| 230 | replay verify_timestamps does not re-derive Merkle root — tamper detection is theatre | high | Fixed in Session 52 — replay now recomputes `compute_merkle_root(event_ids)` from live events and constant-time-compares against stored `tsp_batches.merkle_root`; mismatch increments warnings. Multi-WI test added after Plan 014. |
+| 228 | trigger_timestamping uses naive datetime.now() instead of DB clock | medium | Fixed in Session 52 — all three datetime fields now use `datetime.now(UTC)` consistently. `confirmed_at` read back from DB after UPDATE. |
+| 227 | HookConsumer._processing flag not reset on early return | medium | Fixed in Session 52 — inner `try/finally` added around `_run` body; `_processing = False` guaranteed on all exit paths including connect-exhaustion early return. |
+| 226 | replay(verify_timestamps=True) only checks coverage, not token integrity | medium | Fixed in Session 52 — renamed internal intent to "coverage + token-imprint check"; `verify_tsa_token` now parses CMS/PKCS#7 response and constant-time-compares the extracted message-imprint hash. Documented that full certificate-chain verification is deferred. |
+| 225 | _build_tsr hand-rolled ASN.1 DER encoding is fragile and incomplete | high | Fixed in Session 52 — replaced hand-rolled DER with `asn1crypto` library: `tsp.TimeStampReq` with proper nonce, `cert_req=True`, and configurable `hash_algorithm`. Full DER length encoding handled by library. |
+| 224 | HMACSHA256Scheme.verify uses == for envelope hash — timing side-channel | high | Fixed in Session 52 — replaced `hashlib.sha256(envelope).digest() == envelope_hash` with `hmac.compare_digest(...)` in both `HMACSHA256Scheme.verify` and `Ed25519Scheme.verify`. |
+| 223 | verify_tsa_token is not real TSA verification — naive substring search | critical | Fixed in Session 52 — replaced substring search with proper CMS/PKCS#7 parsing via `asn1crypto`: extracts `TSTInfo`, reads the embedded hash algorithm OID, recomputes the digest with the correct algorithm, and compares with `hmac.compare_digest`. |
+| 222 | Replay _EVENT_FIELDS missing scheme_id — Ed25519 events always verified with HMAC | high | Added `scheme_id` to `_EVENT_FIELDS` in `_replay.py`. Replay paths resolve public_key for Ed25519 verification. Fixed Ed25519 test key files. 10 integration tests added in `tests/test_signing_ed25519.py`. |
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|

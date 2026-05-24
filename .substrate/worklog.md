@@ -4,6 +4,46 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 54: Breadcrumb cleanup + BC-233 event hash chain
+
+**Focus:** Close resolved breadcrumbs 223–232, defer BC-229, implement BC-233 (event hash chain) with signing envelope v3.
+
+**Delivered:**
+
+1. **Breadcrumb cleanup**
+   - Moved resolved breadcrumbs 223, 224, 225, 226, 227, 228, 229, 230, 232 to `breadcrumbs/resolved/`.
+   - Updated `breadcrumbs/README.md` Open/Resolved tables with resolution descriptions.
+   - Accepted BC-229 (`TSAConfig.tsa_cert_path`) as deferred — field already documented as reserved for future use in `_timestamping.py`.
+
+2. **BC-233 — Event hash chain (`prev_event_hash`)**
+   - Migration `018_prev_event_hash.sql`: added `prev_event_hash BYTEA` to `events`.
+   - `Event` dataclass (`_types.py`): added `prev_event_hash: bytes | None` and `global_seq: int | None`.
+   - `_events.py`: both `append_event` and `append_transition_event` now query the previous event's `canonical_envelope` and `signature`, compute `SHA-256(prev_env + prev_sig)`, and store it. The INSERT statements include `prev_event_hash`.
+   - `_event_store.py`: updated `PostgresEventStore._EVENT_FIELDS` and `InMemory` `Event` constructor to include the new fields.
+   - `_signing.py`: added `build_signing_envelope_v3()` with `prev_event_hash` and `global_seq`. `sign_event` selects v3 vs v2 based on presence of `prev_event_hash`. `verify_event` tries v3 first, then v2, then v1 backward compat. Added `classify_envelope_version()` for auto-detection.
+   - `_replay.py`: added `_verify_hash_chain()` (AC-28) called per-event during `_replay_work_item`. Chain breaks emit warnings rather than halting replay.
+   - Tests (`tests/test_hash_chain.py`, 4 tests):
+     - `test_first_event_has_no_prev_hash`
+     - `test_second_event_includes_prev_hash`
+     - `test_replay_hash_chain_check`
+     - `test_broken_chain_detected`
+
+3. **Lint & test**
+   - 274 targeted tests passing across signing, replay, coverage, hash chain, e2e, timestamping, idempotency, CLI, contract.
+   - Lint clean on all modified files.
+   - E501 fix in `_replay.py`.
+
+**Files modified:**
+- `migrations/018_prev_event_hash.sql` (new)
+- `src/substrate/_types.py`, `_signing.py`, `_events.py`, `_event_store.py`, `_replay.py`
+- `tests/test_hash_chain.py` (new)
+- `breadcrumbs/README.md`, `breadcrumbs/resolved/*`
+
+**Breadcrumbs:** Resolved BC-233. Open: 213 (accepted), 234 (low), 235 (medium).
+**Reflection:** `.substrate/reflections/2026-05-24-kimi-k2.6-2.md`
+
+---
+
 ## 2026-05-24 — Session 53: Plan 014 — Global event sequence for coherent batch timestamping
 
 **Focus:** Implement Plan 014: add `global_seq BIGSERIAL` to `events`, rewrite timestamping batching and replay verification to use it, resolve BC-231.

@@ -115,6 +115,8 @@ class Event:
     canonical_envelope: bytes | None = None
     on_behalf_of: dict | None = None
     scheme_id: str = "hmac-sha256"
+    prev_event_hash: bytes | None = None
+    global_seq: int | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -138,6 +140,10 @@ class Event:
         if self.on_behalf_of is not None:
             d["on_behalf_of"] = self.on_behalf_of
         d["scheme_id"] = self.scheme_id
+        if self.prev_event_hash is not None:
+            d["prev_event_hash"] = self.prev_event_hash.hex()
+        if self.global_seq is not None:
+            d["global_seq"] = self.global_seq
         return d
 
     @classmethod
@@ -164,6 +170,12 @@ class Event:
             ),
             on_behalf_of=data.get("on_behalf_of"),
             scheme_id=data.get("scheme_id", "hmac-sha256"),
+            prev_event_hash=(
+                bytes.fromhex(data["prev_event_hash"])
+                if data.get("prev_event_hash")
+                else None
+            ),
+            global_seq=data.get("global_seq"),
         )
 
 

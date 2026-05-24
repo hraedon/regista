@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -17,7 +18,7 @@ _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope, "
-    "on_behalf_of, scheme_id"
+    "on_behalf_of, scheme_id, prev_event_hash, global_seq"
 )
 
 
@@ -40,6 +41,10 @@ def _row_to_event(row: dict) -> Event:
         canonical_envelope=bytes(row["canonical_envelope"]) if row["canonical_envelope"] else None,
         on_behalf_of=row.get("on_behalf_of"),
         scheme_id=row.get("scheme_id", "hmac-sha256"),
+        prev_event_hash=(
+            bytes(row["prev_event_hash"]) if row.get("prev_event_hash") else None
+        ),
+        global_seq=row.get("global_seq"),
     )
 
 
@@ -131,6 +136,23 @@ def append_event(
 
     now = datetime.now(UTC)
 
+    prev_event_hash: bytes | None = None
+    if next_seq > 1:
+        prev_row = conn.execute(
+            SQL(
+                "SELECT canonical_envelope, signature FROM events "
+                "WHERE work_item_id = %s AND event_seq = %s"
+            ),
+            [work_item_id, next_seq - 1],
+        ).fetchone()
+        if prev_row is not None:
+            prev_env = prev_row["canonical_envelope"]
+            prev_sig = prev_row["signature"]
+            if prev_env and prev_sig:
+                prev_event_hash = hashlib.sha256(
+                    bytes(prev_env) + bytes(prev_sig)
+                ).digest()
+
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -146,6 +168,7 @@ def append_event(
         key=key_entry.secret,
         on_behalf_of=on_behalf_of,
         scheme=scheme,
+        prev_event_hash=prev_event_hash,
     )
 
     event_seq = next_seq
@@ -155,8 +178,8 @@ def append_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -176,6 +199,7 @@ def append_event(
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
+                prev_event_hash,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -217,6 +241,7 @@ def append_event(
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
+        prev_event_hash=prev_event_hash,
     )
 
 
@@ -268,6 +293,23 @@ def append_transition_event(
 
     now = datetime.now(UTC)
 
+    prev_event_hash: bytes | None = None
+    if next_seq > 1:
+        prev_row = conn.execute(
+            SQL(
+                "SELECT canonical_envelope, signature FROM events "
+                "WHERE work_item_id = %s AND event_seq = %s"
+            ),
+            [work_item_id, next_seq - 1],
+        ).fetchone()
+        if prev_row is not None:
+            prev_env = prev_row["canonical_envelope"]
+            prev_sig = prev_row["signature"]
+            if prev_env and prev_sig:
+                prev_event_hash = hashlib.sha256(
+                    bytes(prev_env) + bytes(prev_sig)
+                ).digest()
+
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -283,6 +325,7 @@ def append_transition_event(
         key=key_entry.secret,
         on_behalf_of=on_behalf_of,
         scheme=scheme,
+        prev_event_hash=prev_event_hash,
     )
 
     event_seq = next_seq
@@ -295,8 +338,8 @@ def append_transition_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -316,6 +359,7 @@ def append_transition_event(
                 canonical_envelope,
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
+                prev_event_hash,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -380,6 +424,7 @@ def append_transition_event(
         canonical_envelope=canonical_envelope,
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
+        prev_event_hash=prev_event_hash,
     )
 
 
