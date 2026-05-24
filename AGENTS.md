@@ -206,7 +206,7 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-009 implemented. All FRs FR-01 through FR-29 are in tree. 845 tests passing (including sidecar, property-based, and plan-specific tests).
+MVP + Phase 2 + Phase 3 + Plans 002-012 implemented. All FRs FR-01 through FR-29 are in tree. 888 tests passing (including sidecar, property-based, and plan-specific tests).
 
 Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
 
@@ -223,9 +223,13 @@ Plan 005 additions:
 Code structure: `transition()` extracted to `_transition.py`, `recurrence` API extracted to `_recurrence_api.py`, reducing `__init__.py` from ~1580 to ~1200 lines. Facade decomposition (Plan 007) adds `_ops.py` with 7 domain-scoped facade classes; top-level methods delegate to facades.
 
 Plans 007-009 additions:
-- **Plan 007 (Facade decomposition):** `_ops.py` with `WorkflowOps`, `WorkItemOps`, `EventOps`, `ClaimOps`, `LinkOps`, `HookOps`, `RecurrenceOps`. Cached properties on `Substrate`. Old top-level methods remain as thin delegates (no deprecation warnings). 30 tests.
+- **Plan 007 (Facade decomposition):** `_ops.py` with `WorkflowOps`, `WorkItemOps`, `EventOps`, `ClaimOps`, `LinkOps`, `HookOps`, `RecurrenceOps`, `TimestampOps`. Cached properties on `Substrate`. Old top-level methods remain as thin delegates (no deprecation warnings). 30 tests.
 - **Plan 008 (Trust model hardening):** WS-1 (`strict_roles` flag — rejects unregistered actors and `prompt`-source roles). WS-2 (env-var key injection via `SUBSTRATE_HMAC_KEY_<KEY_ID>`). WS-3 (vendored `rfc8785` in `_vendor/` with 73 cross-validation tests). WS-5 (raise on unknown key status, `expected_key_count`, `keys_loaded` log). WS-4 (sidecar rate limiting) deferred.
 - **Plan 009 (Operational runtime):** `_maintenance.py` with `MaintenanceThread`. `start_maintenance()`/`stop_maintenance()` on `Substrate`. Subsumes hook consumer. `maintenance_healthy` property reflects thread state. 5 integration tests.
+
+Plans 011-012 additions:
+- **Plan 011 (Pluggable signing, Ed25519):** `SigningScheme` protocol with `sign()`/`verify()` methods. `HMACSHA256Scheme` (default) and `Ed25519Scheme` (optional, via `pip install substrate[ed25519]`). Module-level registry in `_signing_scheme.py`. `KeyEntry.scheme` field selects scheme per key. `scheme_id` column on `events` (migration 015). Replay resolves scheme per event. 10 unit + 10 integration tests.
+- **Plan 012 (RFC 3161 timestamping):** `_timestamping.py` with Merkle tree batching, TSA HTTP submission, token verification. `tsp_batches` table (migration 016). `TimestampOps` facade (`sub.timestamping.trigger/list_batches/verify_batch`). `MaintenanceThread._maybe_timestamp_events` for background timestamping. `replay(verify_timestamps=True)` cross-references events against confirmed batches. Sidecar routes and CLI commands. `timestamping_errors` metric. 17 tests.
 
 RFC-062: Single-source-of-truth backend contract via `_contract.py` — 20 pure validation/decision functions shared by both Postgres and InMemory backends. Property-based conformance tests via hypothesis in `tests/test_property_conformance.py`.
 

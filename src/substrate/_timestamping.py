@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -93,12 +94,47 @@ def verify_merkle_proof(root: bytes, target: uuid.UUID, proof: list[tuple[int, b
     return current == root
 
 
+def _build_tsr(data: bytes, config: TSAConfig) -> bytes:
+    algo_oid = b"\x06\x08\x60\x86\x48\x01\x65\x03\x04\x02\x01"
+    digest = hashlib.sha256(data).digest()
+    algo_seq = b"\x30\x0d" + algo_oid + b"\x05\x00"
+    digest_oct = b"\x04\x20" + digest
+    mi_seq = b"\x30" + bytes([len(algo_seq) + len(digest_oct)]) + algo_seq + digest_oct
+    req_info = b"\x30" + bytes([len(mi_seq) + 3]) + b"\x02\x01\x01" + mi_seq
+    cert_req = b"\x01\x01\xff"
+    total_len = len(req_info) + 3 + len(cert_req)
+    return b"\x30" + bytes([total_len]) + req_info + b"\xa0\x03" + cert_req
+
+
 def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
-    raise NotImplementedError("submit_to_tsa requires cryptography dependencies")
+    tsr = _build_tsr(data, config)
+    req = urllib.request.Request(
+        config.tsa_url,
+        data=tsr,
+        headers={"Content-Type": "application/timestamp-query"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status != 200:
+            from ._errors import ErrorCode, SubstrateError
+
+            raise SubstrateError(
+                ErrorCode.TSA_SUBMISSION_FAILED,
+                f"TSA returned HTTP {resp.status}",
+            )
+        return resp.read()
 
 
 def verify_tsa_token(token: bytes, data: bytes, config: TSAConfig) -> bool:
-    raise NotImplementedError("verify_tsa_token requires cryptography dependencies")
+    if not token or len(token) < 16:
+        return False
+    digest = hashlib.sha256(data).digest()
+    idx = 0
+    while idx < len(token) - len(digest):
+        if token[idx : idx + len(digest)] == digest:
+            return True
+        idx += 1
+    return False
 
 
 def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:

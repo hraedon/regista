@@ -1005,12 +1005,19 @@ class Substrate:
             event_id=event_id,
         )
 
-    def replay(self, *, continue_on_revoked: bool = False) -> ReplayReport:
+    def replay(
+        self,
+        *,
+        continue_on_revoked: bool = False,
+        verify_timestamps: bool = False,
+    ) -> ReplayReport:
         """Rebuild projection from the event log and compare with live state.
 
         Args:
             continue_on_revoked: Skip revoked-key events with warnings instead
                 of halting replay.
+            verify_timestamps: Check that events are covered by confirmed TSP
+                batches and emit warnings for uncovered events.
 
         Returns:
             ``ReplayReport`` with counts of ok, drift, halted, and warnings.
@@ -1032,6 +1039,7 @@ class Substrate:
                 report = _replay(
                     conn, self._mgr.schema, self._project, self._keys,
                     continue_on_revoked=continue_on_revoked,
+                    verify_timestamps=verify_timestamps,
                 )
 
             if report.replayed_drift > 0:

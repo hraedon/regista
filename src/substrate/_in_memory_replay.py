@@ -81,6 +81,9 @@ def in_memory_replay(
                             raise
                     if key_entry is not None:
                         scheme = get_scheme(evt.scheme_id)
+                        verify_key = key_entry.secret
+                        if scheme.scheme_id == "ed25519" and key_entry.public_key:
+                            verify_key = key_entry.public_key
                         if not _verify_event(
                             event_id=evt.event_id,
                             work_item_id=evt.work_item_id,
@@ -94,7 +97,7 @@ def in_memory_replay(
                             payload=evt.payload,
                             signature=evt.signature,
                             canonical_hash=evt.payload_canonical_hash,
-                            key=key_entry.secret,
+                            key=verify_key,
                             stored_envelope=evt.canonical_envelope,
                             on_behalf_of=evt.on_behalf_of,
                             scheme=scheme,

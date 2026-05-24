@@ -2,13 +2,13 @@
 
 **Spec Level:** 3
 **Desired Level:** 3
-**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions, 2026-05-18 — v5, 2026-05-23 — v6)
+**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions, 2026-05-18 — v5, 2026-05-23 — v6, 2026-05-24 — v7)
 **Extensions active:** None
 
 **Revision history:**
 - 2026-05-18 — v5: RFC-001 (revert migration 010 partitioning; events table is flat with global `UNIQUE(event_id)`). BC-194 (heartbeat coalescing: `claim_heartbeat` events suppressed within `max(60s, ttl/2)` threshold). `ensure_event_partitions` is now a no-op returning `[]`. Partition gauges (`events_default_rows`, `events_partition_horizon_days`) removed. Migrations renumbered 010–013 (no production data). `heartbeat_claim` gains optional `coalesce_threshold` parameter. Plan 010: `on_behalf_of` delegation field added to signing envelope; integrity-protected but self-attested.
 - 2026-05-23 — v6: Signing envelope updated to v2 (BC-214). Previously server-stamped fields (`timestamp`, `event_seq`, `key_id`, `workflow_name`, `workflow_version`) are now included in the canonical signing envelope, signed by the library before the event is persisted. This removes an ambiguity between InMemory and Postgres backends (BC-220) and prepares for asymmetric verification (Plan 011). Backward compat: replay verifies v2 first, then falls back to the old v1 envelope for pre-v6 events. KeyEntry gains `alg`, `public_key`, `role`, `revoked_at`, and `principal_id` fields (BC-216, BC-217, BC-218).
-- 2026-05-24 — v7: Plan 011 (pluggable signing, Ed25519 + HMAC-SHA256) implemented. `scheme_id` column added to `events` (migration 015). `SigningScheme` protocol, `HMACSHA256Scheme`, `Ed25519Scheme`, registry in `_signing_scheme.py`. KeyEntry gains `scheme` field (default `hmac-sha256`). Replay resolves scheme per event. Plan 012 (RFC 3161 timestamping) implemented with Merkle tree batching, `tsp_batches` table (migration 016), `TimestampOps` facade, `MaintenanceThread._maybe_timestamp_events`. New error codes: `SIGNING_SCHEME_NOT_FOUND`, `TSA_NOT_CONFIGURED`, `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`.
+- 2026-05-24 — v7: Plan 011 (pluggable signing, Ed25519 + HMAC-SHA256) implemented. `scheme_id` column added to `events` (migration 015). `SigningScheme` protocol, `HMACSHA256Scheme`, `Ed25519Scheme`, registry in `_signing_scheme.py`. KeyEntry gains `scheme` field (default `hmac-sha256`). Replay resolves scheme per event. Plan 012 (RFC 3161 timestamping) implemented with Merkle tree batching, `tsp_batches` table (migration 016), `TimestampOps` facade, `MaintenanceThread._maybe_timestamp_events`. Replay gains `verify_timestamps` parameter to cross-reference events against confirmed TSP batches. New error codes: `SIGNING_SCHEME_NOT_FOUND`, `TSA_NOT_CONFIGURED`, `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`.
 - 2026-05-05 — v4: Phase 3 additions. FR-24 (actor → allowed_roles enforcement, closing BR-09 fast-follow). FR-25 (continue-on-revoked replay flag). AC-35/AC-36 added. §12 Phase 3 updated. §16 decision items resolved: actor role enforcement (implemented), retention policy (deferred with guidance), Postgres version (pinned to 15+). BR-09 updated from "deferred fast-follow" to "implemented."
 - 2026-05-05 — v3: integrated third reviewer pass on API shape and consumer expectations. Adds FR-05b (structured work-item query, MVP), §19 Public API Surface (substrate library as sole signer; service-wrapping is mechanical), §20 Consumer Expectation Boundary (explicit non-goals consumers commonly assume substrate provides), BR-13 (per-project DB isolation as load-bearing assumption with documented migration path), refinement to FR-15 (library-as-sole-signer clause). ACs 32–34 added. Reviewer points on links projection and signing envelope complexity were considered and held as designed.
 - 2026-05-05 — v2: integrated two-reviewer correctness pass. Adds API-layer idempotency, gap-free `event_seq` allocator + canonical lock target (§17), projection invariants (§18), HMAC-SHA256 + RFC 8785 canonical signing envelope, transition-validator vs hook split, custom-field type vocabulary, trust tiers on `actor_metadata`. Resolves §13 Q8 (domain-expert review).
@@ -104,7 +104,8 @@
   - `timestamp` — Postgres `now()`, server-stamped (BR-08). Trust tier: *server-stamped*.
   - `transition`, `payload` — caller-supplied.
   - `payload_canonical_hash` — SHA-256 of the canonical signing envelope (FR-15). Stored to enable retroactive verification independent of jsonb round-trip behavior across Postgres versions.
-  - `signature` — HMAC-SHA256 over the canonical signing envelope.
+  - `signature` — produced by the key's declared signing scheme (default HMAC-SHA256; see FR-15, Plan 011).
+  - `scheme_id` — signing scheme identifier (`"hmac-sha256"` or `"ed25519"`); resolves to `SigningScheme` at verification time.
   - **Optional `expected_event_seq` API parameter** for optimistic locking: if supplied, append rejects with "concurrent modification" when `current_max(event_seq) + 1 != expected_event_seq`. Complements idempotency (idempotency handles retried requests; expected_seq handles concurrent modification by a different actor).
 - FR-04 **[MVP]**: Write events and update `work_items_current` denormalized table in a single Postgres transaction.
 - FR-05 **[MVP]**: Read event log with query shapes: by-work-item (ordered by `(timestamp, event_seq)`), by-actor, by-time-range, by-transition.
@@ -137,8 +138,8 @@
 - FR-14: Replay dead-lettered hooks via `requeue_dead_lettered_hook(id)` — resets retry counter; re-enters queue; re-failure follows same policy.
 - FR-15 **[MVP]**: Verify actor identity via pluggable verifier before recording any event.
 
-  - **Algorithm:** HMAC-SHA256 (default verifier).
-  - **Library is the sole sanctioned signer.** The substrate library's public API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, computes the HMAC, and persists. The API does NOT accept pre-signed events from callers and rejects any attempt to submit one. Rationale: canonicalization is an invariant — if every caller (Python agent, future sidecar client, federated UI service) implements JCS independently, the audit promise depends on every implementation being byte-identical, which is not a defensible position. Consolidating the canonicalizer in one place is the only sustainable defense. Future service-wrapper deployments (sidecar) MUST expose the same unsigned-fields API and sign inside the wrapper process; they MUST NOT expose a passthrough that accepts pre-signed events on the wire (see §19.2).
+  - **Algorithm:** Pluggable via `SigningScheme` protocol (Plan 011). Default: HMAC-SHA256. Alternative: Ed25519 (via PyNaCl, optional dependency). Scheme is declared per key in the key file (`KeyEntry.scheme`); `scheme_id` is persisted on each event row.
+  - **Library is the sole sanctioned signer.** The substrate library's public API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme, and persists. The API does NOT accept pre-signed events from callers and rejects any attempt to submit one. Rationale: canonicalization is an invariant — if every caller (Python agent, future sidecar client, federated UI service) implements JCS independently, the audit promise depends on every implementation being byte-identical, which is not a defensible position. Consolidating the canonicalizer in one place is the only sustainable defense. Future service-wrapper deployments (sidecar) MUST expose the same unsigned-fields API and sign inside the wrapper process; they MUST NOT expose a passthrough that accepts pre-signed events on the wire (see §19.2).
   - **Canonical signing envelope (v2):** the bytes signed are RFC 8785 (JCS) canonical JSON serialization of `{event_id, work_item_id, actor_id, key_id, event_seq, workflow_name, workflow_version, timestamp, on_behalf_of, transition, payload}`. Keys whose values are `None` are omitted from the canonical JSON. Lexicographically sorted keys, no whitespace. This covers all integrity-relevant event fields, including those previously treated as "server-stamped" (v1). Backward compatibility: replay first attempts v2 verification; on failure it retries the v1 envelope (`{event_id, work_item_id, actor_id, transition, payload, on_behalf_of}`) so pre-v6 events remain verifiable.
   - **Storage of canonical bytes:** The canonical envelope bytes (RFC 8785 serialized v2 envelope) are persisted as `canonical_envelope BYTEA` on every event row. `payload_canonical_hash` (SHA-256 of the canonical envelope) is also persisted. Re-verification at replay time uses the stored envelope bytes directly, not jsonb re-serialization, so signature stability survives Postgres version upgrades that change jsonb canonicalization.
   - **Key set:** per-actor, with status `active` / `deprecated` / `revoked`. Each event carries `key_id`. Hot-reload via mtime polling at default 30s interval. K3s Secret atomic-swap (symlink) is compatible with mtime polling. Inotify and SIGHUP are NOT used (platform-coupled and process-control-coupled respectively).
@@ -147,7 +148,7 @@
     - Revoked `key_id`: reject (including retroactively, where re-verification occurs).
     - Deprecated `key_id`: accept; emit structured warning.
   - **Trust tiers** (consumed by §17.9 and §11):
-    - *Authenticated* — `actor_id`, `key_id` (HMAC-verified).
+    - *Authenticated* — `actor_id`, `key_id` (scheme-verified: HMAC-SHA256 or Ed25519).
     - *Server-stamped* — `timestamp`, `event_seq` (substrate writes; not under actor control).
     - *Actor-claimed* — `actor_metadata` (incl. `role`, `model`, `provider`, `role_source`, `context_hash`, `prompt_template_hash`) — signed by actor but not validated against any registry. FR-24 provides opt-in enforcement: when an actor has registered roles, the claimed role is validated against the actor's allowed set; otherwise it is trusted.
 - FR-16 **[MVP]**: Replay — rebuild a `work_items_current_replay_<timestamp>` projection from the event log on demand. Each historical transition validates against the workflow version recorded on its event. Output is a fresh table; substrate does NOT mutate live `work_items_current` in place. Operator decides whether to atomically swap (rename) or diff for verification.
@@ -157,9 +158,11 @@
   - `replayed_ok` — replayed final state matches live `work_items_current`.
   - `replayed_drift` — replayed final state differs from live. **This is the actionable signal.** Possible causes: bug in projection update logic, direct edit to `work_items_current` outside the substrate API (forbidden by §18), missed event (corruption — usually accompanied by `event_seq` gap).
   - `halted` — replay could not complete on this work-item; halt reason recorded (`revoked_key`, `missing_workflow_version`, `unrecognized_transition`, `signature_verification_failed`, etc.).
-  - `warnings` — count of events skipped during signature verification (when `continue_on_revoked=True`); informational, not a defect signal.
+  - `warnings` — count of events skipped during signature verification (when `continue_on_revoked=True`) or events not covered by confirmed TSP batches (when `verify_timestamps=True`); informational, not a defect signal.
 
   The report is the operator's primary interface to replay; comparison logic does not need to be authored per-replay. Nonzero `replayed_drift` count is a defect signal. `halted` rows are operator alerts; live projection is untouched on halt. Nonzero `warnings` count with zero `halted` and zero `drift` indicates a clean replay with historical key rotation.
+
+  **Timestamping verification:** `replay(verify_timestamps=True)` cross-references every event's `event_seq` against confirmed `tsp_batches` rows. Events not covered by any confirmed batch increment `warnings`. This is informational — timestamping is opportunistic and a gap does not indicate a defect in the event log itself.
 
 **Workflow definition (project-owned, declarative):**
 
@@ -349,8 +352,8 @@ When resolving any of these during implementation, the implementing agent must e
 | Postgres version | Decided | Postgres 15+ required. No earlier-version compatibility guarantee. |
 | Concurrency contract | Decided | Canonical lock = `work_items_current` row; `SELECT FOR UPDATE`; isolation READ COMMITTED; cross-work-item ordering ascending `work_item_id`. Specified in §17. |
 | `event_seq` allocator | Decided | Gap-free per-work-item, allocated under canonical lock (§17.4). Trade-off: marginally slower per-write vs. dramatically simpler downstream consumer contract (no gap-handling logic). |
-| Signing envelope | Decided | HMAC-SHA256 over RFC 8785 (JCS) canonical JSON of `{event_id, work_item_id, actor_id, key_id, event_seq, workflow_name, workflow_version, timestamp, on_behalf_of, transition, payload}`. Keys with `None` values omitted. Previously "server-stamped" fields (`timestamp`, `event_seq`, `key_id`) are now included because the library generates them before signing. Backward compat: replay retries v1 envelope for pre-v6 events. Canonical hash stored alongside signature for jsonb-independent re-verification. |
-| Trust tiers in event fields | Decided | *Authenticated*: `actor_id`, `key_id`. *Server-stamped*: `timestamp`, `event_seq`. *Actor-claimed*: all of `actor_metadata` (role, model, provider, role_source). |
+| Signing envelope | Decided | Pluggable `SigningScheme` (Plan 011): HMAC-SHA256 (default) or Ed25519. Key declares scheme in `KeyEntry.scheme`; `scheme_id` persisted on each event row. Envelope: RFC 8785 (JCS) canonical JSON of `{event_id, work_item_id, actor_id, key_id, event_seq, workflow_name, workflow_version, timestamp, on_behalf_of, transition, payload}`. Keys with `None` values omitted. Backward compat: replay retries v1 envelope for pre-v6 events. Replay resolves scheme per event via `scheme_id`. |
+| Trust tiers in event fields | Decided | *Authenticated*: `actor_id`, `key_id` (scheme-verified). *Server-stamped*: `timestamp`, `event_seq`. *Actor-claimed*: all of `actor_metadata` (role, model, provider, role_source). |
 | API-layer idempotency | Decided | Client-supplied UUIDv4 idempotency key required on every mutation. `event_id` doubles as the key for event append. Duplicates return original result. Optional `expected_event_seq` for optimistic locking. |
 | Validator vs hook split | Decided | "Transition validator" = in-transaction, no I/O, gates commit. "Hook" = async, durable queue, retryable, dead-letter on max retries. Naming forces correct mental model. |
 | Public API surface | Decided | Substrate exposes a protocol, not a Postgres connection. Public API takes unsigned event fields; library is sole signer (canonicalization + HMAC are internal). No Postgres connection / cursor / migration object leaks across the boundary. Service-wrapping is mechanical, not architectural (§19). |
@@ -606,7 +609,7 @@ Consumers (UI, audit tooling, replay validators) MUST distinguish:
 
 | Tier | Fields | Trust property |
 |---|---|---|
-| Authenticated | `actor_id`, `key_id` | HMAC-verified; tampering detected at re-verification (AC-26) |
+| Authenticated | `actor_id`, `key_id` | Scheme-verified (HMAC-SHA256 or Ed25519); tampering detected at re-verification (AC-26) |
 | Server-stamped | `timestamp`, `event_seq` | Substrate writes; not under actor control; trustworthy modulo substrate bugs |
 | Actor-claimed | All of `actor_metadata` (incl. `role`, `model`, `provider`, `role_source`, `context_hash`, `prompt_template_hash`) | Signed-by-actor (so non-repudiable that *this actor said this*). When FR-24 actor roles are registered, `role` is additionally enforced against the actor's registered set; otherwise treated as diagnostic. |
 
@@ -700,7 +703,7 @@ The public API consists of the operations enumerated in FRs 02–08, FR-05b, FR-
 
 ### 19.2 Signing
 
-The substrate library is the sole sanctioned signer (FR-15). The API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, computes the HMAC, and persists the event. The API does NOT accept pre-signed events from callers and rejects any request shape carrying a caller-supplied `signature` or `payload_canonical_hash` field.
+The substrate library is the sole sanctioned signer (FR-15). The API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme (HMAC-SHA256 or Ed25519, per `KeyEntry.scheme`), and persists the event. The API does NOT accept pre-signed events from callers and rejects any request shape carrying a caller-supplied `signature` or `payload_canonical_hash` field.
 
 This invariant is what makes the canonicalization choice (RFC 8785) sustainable: it is implemented exactly once, in one place. If callers were permitted to sign, every implementation of JCS in the ecosystem would have to be byte-identical, and the audit-trail promise would silently rot the first time one of them diverged.
 
@@ -733,7 +736,7 @@ Stable, language-agnostic shapes:
 
 - Domain types: `WorkItem`, `Event`, `Claim`, `WorkflowDefinition`, `WorkflowVersion`, `Link`, `ActorIdentity` — value objects with documented JSON serialization.
 - Operation results: `AppendResult`, `ClaimResult`, `QueryPage` (with cursor), `ReplayReport`, `RegistrationResult`.
-- Errors: enumerated, named, machine-distinguishable (`workflow_not_registered`, `claim_contested`, `claim_lost`, `concurrent_modification`, `invalid_transition`, `role_not_permitted`, `library_is_sole_signer`, `idempotency_collision_with_different_payload`, etc.). Error codes are part of the API contract.
+- Errors: enumerated, named, machine-distinguishable (`workflow_not_registered`, `claim_contested`, `claim_lost`, `concurrent_modification`, `invalid_transition`, `role_not_permitted`, `library_is_sole_signer`, `idempotency_collision_with_different_payload`, `signing_scheme_not_found`, `tsa_not_configured`, `tsa_submission_failed`, `tsa_verification_failed`, etc.). Error codes are part of the API contract.
 
 ---
 

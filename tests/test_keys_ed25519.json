@@ -3,8 +3,10 @@
     {
       "key_id": "ed-test-001",
       "secret": "lVv8seYO5jZLwduGJdVh3qG5tTA9PzOeFTAKUmWQPVg=",
+      "encoding": "base64",
       "status": "active",
-      "scheme": "ed25519"
+      "scheme": "ed25519",
+      "public_key": "Hb0KhZz+xLQs/flMGz/lW/kyGMo0Kudxx8BAvvxx1CA="
     }
   ]
 }

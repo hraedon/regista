@@ -39,7 +39,7 @@ _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, "
-    "canonical_envelope, on_behalf_of"
+    "canonical_envelope, on_behalf_of, scheme_id"
 )
 
 
@@ -49,6 +49,7 @@ def replay(
     project: str,
     key_set: KeySet,
     continue_on_revoked: bool = False,
+    verify_timestamps: bool = False,
 ) -> ReplayReport:
     import uuid as _uuid
 
@@ -220,6 +221,28 @@ def replay(
             ],
         )
 
+    if verify_timestamps:
+        batch_rows = conn.execute(
+            "SELECT first_event_seq, last_event_seq FROM tsp_batches "
+            "WHERE status = 'confirmed'"
+        ).fetchall()
+        covered = set()
+        for br in batch_rows:
+            for seq in range(br["first_event_seq"], br["last_event_seq"] + 1):
+                covered.add(seq)
+        uncovered = []
+        for evt in all_events:
+            seq = evt["event_seq"]
+            if seq not in covered:
+                uncovered.append(seq)
+        if uncovered:
+            total_warnings += len(uncovered)
+            log.warning(
+                "replay.uncovered_events",
+                count=len(uncovered),
+                sample=uncovered[:10],
+            )
+
     return ReplayReport(
         table_name=replay_table,
         replayed_ok=ok_count,
@@ -294,6 +317,9 @@ def _replay_work_item(
 
         if key_entry is not None:
             scheme = get_scheme(evt.get("scheme_id", "hmac-sha256"))
+            verify_key = key_entry.secret
+            if scheme.scheme_id == "ed25519" and key_entry.public_key:
+                verify_key = key_entry.public_key
             if not verify_event(
                 event_id=evt["event_id"],
                 work_item_id=evt["work_item_id"],
@@ -307,7 +333,7 @@ def _replay_work_item(
                 payload=evt["payload"],
                 signature=bytes(evt["signature"]),
                 canonical_hash=bytes(evt["payload_canonical_hash"]),
-                key=key_entry.secret,
+                key=verify_key,
                 stored_envelope=(
                     bytes(evt["canonical_envelope"]) if evt["canonical_envelope"] else None
                 ),

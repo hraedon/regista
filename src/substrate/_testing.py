@@ -11,11 +11,15 @@ from ._observability import Metrics as Metrics
 from ._replay import replay as replay_fn
 from ._signing import sign_event as sign_event
 from ._signing import verify_event as verify_event
+from ._signing_scheme import available_schemes as available_schemes
+from ._signing_scheme import get_scheme as get_scheme
 
 __all__ = [
     "KeySet",
     "Metrics",
+    "available_schemes",
     "drop_project_schema",
+    "get_scheme",
     "poll_and_process_hooks",
     "raw_transaction",
     "replay_fn",

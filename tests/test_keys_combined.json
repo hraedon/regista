@@ -1,0 +1,18 @@
+{
+  "keys": [
+    {
+      "key_id": "hmac-001",
+      "secret": "dGhpcyBpcyBhIHRlc3Qgc2VjcmV0IGtleSBmb3Igc3Vic3RyYXRl",
+      "status": "deprecated",
+      "scheme": "hmac-sha256"
+    },
+    {
+      "key_id": "ed-001",
+      "secret": "QgQvfKgA6y6h3uO72gP8k5V9QIdAy89BB2TH4nFkm88=",
+      "encoding": "base64",
+      "status": "active",
+      "scheme": "ed25519",
+      "public_key": "iMZMllXSQnbuFzdpJdRgyJKD2qbPi5W6QAH5HsDvd3Y="
+    }
+  ]
+}
