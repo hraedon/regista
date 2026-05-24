@@ -35,6 +35,9 @@ ed25519 = [
 vendor-check = [
     "rfc8785==0.1.4",
 ]
+timestamping = [
+    "asn1crypto>=1.5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/substrate"]

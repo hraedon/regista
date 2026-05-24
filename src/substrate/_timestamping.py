@@ -1,16 +1,47 @@
 from __future__ import annotations
 
 import hashlib
+import hmac as _hmac
+import os
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+
+_SUPPORTED_HASH_ALGOS = {"sha256", "sha384", "sha512"}
+
+
+def _hash_data(data: bytes, algo: str) -> bytes:
+    if algo not in _SUPPORTED_HASH_ALGOS:
+        raise ValueError(f"Unsupported hash algorithm: {algo!r}")
+    return hashlib.new(algo, data).digest()
+
+
+def _require_asn1crypto():
+    try:
+        import asn1crypto.cms
+        import asn1crypto.tsp  # noqa: F401
+    except ImportError as e:
+        from ._errors import ErrorCode, SubstrateError
+
+        raise SubstrateError(
+            ErrorCode.TSA_SUBMISSION_FAILED,
+            "RFC 3161 timestamping requires asn1crypto: pip install substrate[timestamping]",
+        ) from e
 
 
 @dataclass(frozen=True)
 class TSAConfig:
     tsa_url: str
     tsa_cert_path: str | None = None
+    """Path to a trusted TSA certificate (PEM or DER).
+
+    RESERVED FOR FUTURE USE — this field is accepted so that existing
+    configurations are not broken, but it is not currently read by any
+    substrate code.  Full TSA-signature verification against a configured
+    trust anchor is tracked in BC-229 and has not yet been implemented.
+    Setting this field has no security effect in the current release.
+    """
     batch_size: int = 1000
     interval_seconds: float = 3600.0
     hash_algorithm: str = "sha256"
@@ -94,16 +125,29 @@ def verify_merkle_proof(root: bytes, target: uuid.UUID, proof: list[tuple[int, b
     return current == root
 
 
-def _build_tsr(data: bytes, config: TSAConfig) -> bytes:
-    algo_oid = b"\x06\x08\x60\x86\x48\x01\x65\x03\x04\x02\x01"
-    digest = hashlib.sha256(data).digest()
-    algo_seq = b"\x30\x0d" + algo_oid + b"\x05\x00"
-    digest_oct = b"\x04\x20" + digest
-    mi_seq = b"\x30" + bytes([len(algo_seq) + len(digest_oct)]) + algo_seq + digest_oct
-    req_info = b"\x30" + bytes([len(mi_seq) + 3]) + b"\x02\x01\x01" + mi_seq
-    cert_req = b"\x01\x01\xff"
-    total_len = len(req_info) + 3 + len(cert_req)
-    return b"\x30" + bytes([total_len]) + req_info + b"\xa0\x03" + cert_req
+def _build_tsr(data: bytes, config: TSAConfig, nonce: int | None = None) -> bytes:
+    # Produces a DER-encoded RFC 3161 TimeStampReq via asn1crypto. Honors
+    # config.hash_algorithm and always includes a nonce for replay protection.
+    _require_asn1crypto()
+    from asn1crypto import tsp
+
+    digest = _hash_data(data, config.hash_algorithm)
+    if nonce is None:
+        nonce = int.from_bytes(os.urandom(8), "big")
+    request = tsp.TimeStampReq(
+        {
+            "version": "v1",
+            "message_imprint": tsp.MessageImprint(
+                {
+                    "hash_algorithm": {"algorithm": config.hash_algorithm},
+                    "hashed_message": digest,
+                }
+            ),
+            "nonce": nonce,
+            "cert_req": True,
+        }
+    )
+    return request.dump()
 
 
 def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
@@ -125,62 +169,92 @@ def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
         return resp.read()
 
 
+def _parse_tst_info(token: bytes):
+    # Accepts either a full TimeStampResp (status + timeStampToken) or just the
+    # timeStampToken (a CMS ContentInfo). Returns the parsed TSTInfo or raises.
+    from asn1crypto import cms, tsp
+
+    try:
+        resp = tsp.TimeStampResp.load(token)
+        status = int(resp["status"]["status"])
+        if status not in (0, 1):  # granted / grantedWithMods
+            raise ValueError(f"TSA status {status}")
+        ci = resp["time_stamp_token"]
+    except Exception:
+        ci = cms.ContentInfo.load(token)
+    if ci["content_type"].native != "signed_data":
+        raise ValueError("Token is not CMS signed-data")
+    encap = ci["content"]["encap_content_info"]
+    if encap["content_type"].native != "tst_info":
+        raise ValueError("Encapsulated content is not TSTInfo")
+    content = encap["content"]
+    # asn1crypto returns this as a ParsableOctetString; .parsed gives the
+    # already-decoded TSTInfo. Fall back to raw bytes for defensive parsing.
+    parsed = getattr(content, "parsed", None)
+    if isinstance(parsed, tsp.TSTInfo):
+        return parsed
+    return tsp.TSTInfo.load(bytes(content))
+
+
 def verify_tsa_token(token: bytes, data: bytes, config: TSAConfig) -> bool:
-    if not token or len(token) < 16:
+    # Cryptographic verification of the RFC 3161 message imprint embedded in
+    # the TSA response. Parses the CMS/PKCS#7 envelope, extracts TSTInfo, and
+    # constant-time-compares the embedded hash to a fresh hash of `data` using
+    # the algorithm declared by the TSA.
+    #
+    # Note: this does NOT verify the TSA's signature on the token or validate
+    # the TSA certificate chain. Full signature/chain validation is tracked
+    # separately and requires a configured trust anchor (see BC-229).
+    if not token:
         return False
-    digest = hashlib.sha256(data).digest()
-    idx = 0
-    while idx < len(token) - len(digest):
-        if token[idx : idx + len(digest)] == digest:
-            return True
-        idx += 1
-    return False
+    _require_asn1crypto()
+    try:
+        tst_info = _parse_tst_info(token)
+        imprint = tst_info["message_imprint"]
+        algo_name = imprint["hash_algorithm"]["algorithm"].native
+        if algo_name not in _SUPPORTED_HASH_ALGOS:
+            return False
+        expected = _hash_data(data, algo_name)
+        return _hmac.compare_digest(bytes(imprint["hashed_message"]), expected)
+    except Exception:
+        return False
 
 
 def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
     import structlog
 
     log = structlog.get_logger()
-    row = conn.execute(
-        "SELECT MAX(last_event_seq) AS max_seq FROM work_items_current"
-    ).fetchone()
-    max_seq = row["max_seq"] or 0
-
     batch_row = conn.execute(
-        "SELECT MAX(last_event_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
+        "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
     ).fetchone()
     last_confirmed_seq = batch_row["max_seq"] or 0
 
-    if last_confirmed_seq >= max_seq:
-        return None
-
-    start_seq = last_confirmed_seq + 1
     rows = conn.execute(
-        "SELECT event_id, event_seq, timestamp FROM events "
-        "WHERE event_seq >= %s ORDER BY event_seq LIMIT %s",
-        [start_seq, config.batch_size],
+        "SELECT event_id, global_seq, timestamp FROM events "
+        "WHERE global_seq > %s ORDER BY global_seq LIMIT %s",
+        [last_confirmed_seq, config.batch_size],
     ).fetchall()
     if not rows:
         return None
 
     event_ids = [r["event_id"] for r in rows]
     merkle_root = compute_merkle_root(event_ids)
-    first_event_seq = rows[0]["event_seq"]
-    last_event_seq = rows[-1]["event_seq"]
+    first_global_seq = rows[0]["global_seq"]
+    last_global_seq = rows[-1]["global_seq"]
     first_event_at = rows[0]["timestamp"]
     last_event_at = rows[-1]["timestamp"]
 
     batch_id = uuid.uuid4()
     conn.execute(
         "INSERT INTO tsp_batches "
-        "(batch_id, merkle_root, first_event_seq, last_event_seq, "
+        "(batch_id, merkle_root, first_global_seq, last_global_seq, "
         "first_event_at, last_event_at, event_count, status, submitted_at) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())",
         [
             batch_id,
             merkle_root,
-            first_event_seq,
-            last_event_seq,
+            first_global_seq,
+            last_global_seq,
             first_event_at,
             last_event_at,
             len(rows),
@@ -191,12 +265,22 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
         "timestamping.batch_created",
         batch_id=str(batch_id),
         event_count=len(rows),
-        first_seq=first_event_seq,
-        last_seq=last_event_seq,
+        first_seq=first_global_seq,
+        last_seq=last_global_seq,
     )
 
+    now_utc = datetime.now(UTC)
     try:
         token = submit_to_tsa(merkle_root, config)
+        confirmed_at = datetime.now(UTC)
+        # Derive tsa_timestamp from the token's TSTInfo gen_time when possible.
+        tsa_timestamp: datetime | None = None
+        try:
+            tsa_timestamp = _parse_tst_info(token)["gen_time"].native
+            if tsa_timestamp is not None and tsa_timestamp.tzinfo is None:
+                tsa_timestamp = tsa_timestamp.replace(tzinfo=UTC)
+        except Exception:
+            tsa_timestamp = confirmed_at
         conn.execute(
             "UPDATE tsp_batches SET status = 'confirmed', tsa_token = %s, confirmed_at = now() "
             "WHERE batch_id = %s",
@@ -207,9 +291,9 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
             event_ids=event_ids,
             merkle_root=merkle_root,
             tsa_token=token,
-            tsa_timestamp=datetime.now(),
-            submitted_at=datetime.now(),
-            confirmed_at=datetime.now(),
+            tsa_timestamp=tsa_timestamp,
+            submitted_at=now_utc,
+            confirmed_at=confirmed_at,
             status="confirmed",
         )
     except Exception as e:
@@ -224,20 +308,20 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
             merkle_root=merkle_root,
             tsa_token=None,
             tsa_timestamp=None,
-            submitted_at=datetime.now(),
+            submitted_at=now_utc,
             confirmed_at=None,
             status="failed",
             error_message=str(e)[:500],
         )
 
 
-def _rehydrate_event_ids(conn, first_seq: int, last_seq: int) -> list[uuid.UUID]:
-    if first_seq > last_seq:
+def _rehydrate_event_ids(conn, first_global_seq: int, last_global_seq: int) -> list[uuid.UUID]:
+    if first_global_seq > last_global_seq:
         return []
     rows = conn.execute(
         "SELECT event_id FROM events "
-        "WHERE event_seq >= %s AND event_seq <= %s ORDER BY event_seq",
-        [first_seq, last_seq],
+        "WHERE global_seq >= %s AND global_seq <= %s ORDER BY global_seq",
+        [first_global_seq, last_global_seq],
     ).fetchall()
     return [r["event_id"] for r in rows]
 
@@ -255,7 +339,7 @@ def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
     result: list[TimestampBatch] = []
     for r in rows:
         event_ids = _rehydrate_event_ids(
-            conn, r["first_event_seq"], r["last_event_seq"]
+            conn, r["first_global_seq"], r["last_global_seq"]
         )
         result.append(
             TimestampBatch(

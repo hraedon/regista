@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -75,6 +77,57 @@ class TestHookConsumerLifecycle:
         substrate.stop_hook_consumer()
         substrate.stop_hook_consumer()
         assert not substrate._hook_consumer.is_running
+
+
+class TestBC227ProcessingFlagReset:
+    """BC-227: _processing must be False after _run exits regardless of path."""
+
+    def _make_consumer(self):
+        from substrate._hooks import HookConsumer
+        from substrate._keys import KeySet
+
+        key_set = MagicMock(spec=KeySet)
+        return HookConsumer(
+            dsn="postgresql://localhost/fake",
+            schema="public",
+            project="test",
+            handlers={},
+            key_set=key_set,
+            metrics=None,
+            poll_interval=0.1,
+        )
+
+    def test_processing_false_after_connect_exhaustion(self):
+        # BC-232: drive the real _run() rather than reimplementing the loop.
+        # _max_reconnect_attempts=1 and _reconnect_backoff_base=0 keep the test
+        # fast without changing the production exhaustion path.
+        consumer = self._make_consumer()
+        consumer._max_reconnect_attempts = 1
+        consumer._reconnect_backoff_base = 0.0
+
+        with patch.object(consumer, "_connect", side_effect=ConnectionError("refused")):
+            t = threading.Thread(target=consumer._run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), "_run did not exit"
+
+        assert (
+            not consumer._processing
+        ), "_processing should be False after connect exhaustion"
+
+    def test_processing_false_after_stop_during_connect_loop(self):
+        consumer = self._make_consumer()
+        # Signal stop immediately so the connect loop exits with conn=None.
+        consumer._stop.set()
+
+        with patch.object(consumer, "_connect", side_effect=ConnectionError("refused")):
+            t = threading.Thread(target=consumer._run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+
+        assert (
+            not consumer._processing
+        ), "_processing should be False when stopped during connect loop"
 
 
 class TestHookConsumerDelivery:

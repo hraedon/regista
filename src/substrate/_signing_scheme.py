@@ -63,9 +63,8 @@ class HMACSHA256Scheme:
         key_material: bytes,
     ) -> bool:
         expected = _hmac.new(key_material, envelope, hashlib.sha256).digest()
-        return (
-            _hmac.compare_digest(expected, signature)
-            and hashlib.sha256(envelope).digest() == envelope_hash
+        return _hmac.compare_digest(expected, signature) and _hmac.compare_digest(
+            hashlib.sha256(envelope).digest(), envelope_hash
         )
 
 
@@ -109,4 +108,4 @@ class Ed25519Scheme:
             verify_key.verify(envelope, signature)
         except Exception:
             return False
-        return hashlib.sha256(envelope).digest() == envelope_hash
+        return _hmac.compare_digest(hashlib.sha256(envelope).digest(), envelope_hash)

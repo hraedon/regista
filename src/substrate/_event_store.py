@@ -126,6 +126,8 @@ class InMemoryEventStore:
         self.events: dict[uuid.UUID, list[Event]] = {}
         self.event_id_index: dict[uuid.UUID, Event] = {}
         self._work_items: dict[uuid.UUID, dict] = {}
+        self._next_global_seq: int = 1
+        self._global_seq_by_event_id: dict[uuid.UUID, int] = {}
 
     def bind(self, work_items: dict[uuid.UUID, dict]) -> None:
         self._work_items = work_items
@@ -152,6 +154,8 @@ class InMemoryEventStore:
             )
         self.events.setdefault(wid, []).append(event)
         self.event_id_index[event.event_id] = event
+        self._global_seq_by_event_id[event.event_id] = self._next_global_seq
+        self._next_global_seq += 1
         wi["last_event_seq"] = event.event_seq
         wi["last_event_at"] = event.timestamp
         wi["next_event_seq"] = event.event_seq + 1

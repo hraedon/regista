@@ -442,6 +442,10 @@ class HookConsumer:
         self._thread: threading.Thread | None = None
         self._channel = f"substrate_hooks_{schema}"
         self._processing = False
+        # Test seams: tunable so unit tests can exercise the connect-exhaustion
+        # path without sleeping through real backoff.
+        self._max_reconnect_attempts = 10
+        self._reconnect_backoff_base = 2.0
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -480,8 +484,8 @@ class HookConsumer:
 
     def _run(self) -> None:
         self._processing = True
-        max_reconnect_attempts = 10
-        reconnect_backoff_base = 2.0
+        max_reconnect_attempts = self._max_reconnect_attempts
+        reconnect_backoff_base = self._reconnect_backoff_base
         reconnect_attempts = 0
 
         conn = None
@@ -496,6 +500,7 @@ class HookConsumer:
                         attempts=reconnect_attempts,
                         error=str(e),
                     )
+                    self._processing = False
                     return
                 backoff = min(
                     reconnect_backoff_base * (2 ** (reconnect_attempts - 1)),
@@ -510,6 +515,7 @@ class HookConsumer:
                 time.sleep(backoff)
 
         if conn is None:
+            self._processing = False
             return
 
         reconnect_attempts = 0

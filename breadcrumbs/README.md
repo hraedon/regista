@@ -33,12 +33,22 @@ _(none)_
 
 | # | Title | Severity | Status |
 |---|---|---|---|
+| 232 | BC-227 test reimplements _run instead of calling it | low | resolved |
+| 230 | replay verify_timestamps does not re-derive Merkle root — tamper detection is theatre | high | resolved |
+| 229 | TSAConfig.tsa_cert_path accepted but never used | low | resolved |
+| 228 | trigger_timestamping uses naive datetime.now() instead of DB clock | medium | resolved |
+| 227 | HookConsumer._processing flag not reset on early return | medium | resolved |
+| 226 | replay(verify_timestamps=True) only checks coverage, not token integrity | medium | resolved |
+| 225 | _build_tsr hand-rolled ASN.1 DER encoding is fragile and incomplete | high | resolved |
+| 224 | HMACSHA256Scheme.verify uses == for envelope hash — timing side-channel | high | resolved |
+| 223 | verify_tsa_token is not real TSA verification — naive substring search | critical | resolved |
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 231 | trigger_timestamping treats event_seq as global, but it is per-work-item | high | Implemented Plan 014 — added `global_seq BIGSERIAL` to `events`, rewrote `trigger_timestamping` + `_rehydrate_event_ids` + `list_batches` to use `global_seq`, updated replay `verify_timestamps` to key off `global_seq`. Multi-WI batching is now coherent. Migration `017_events_global_seq.sql`. 4 new tests in `tests/test_timestamping.py`. |
 | 222 | Replay _EVENT_FIELDS missing scheme_id — Ed25519 events always verified with HMAC | high | Added `scheme_id` to `_EVENT_FIELDS` in `_replay.py`. Replay paths resolve public_key for Ed25519 verification. Fixed Ed25519 test key files. 10 integration tests added in `tests/test_signing_ed25519.py`. |
 | 210 | Recurrence system has zero Postgres integration tests | high | Added 24 Postgres integration tests in `tests/test_recurrence_postgres.py` covering register, list, due, fire, cancel, update, and custom fields. Fixed `_recurrence.py` to use `psycopg.types.json.Jsonb` for dict params and wrap `actor_metadata` in `_Jsonb` before calling `_create_work_item`. |
 | 212 | FR-10 references `event_type` column but actual column is `transition` | low | Fixed `spec.md` line 124: changed `event_type = 'escalated'` to `transition = 'escalated'`. |

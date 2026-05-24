@@ -4,6 +4,56 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-24 — Session 53: Plan 014 — Global event sequence for coherent batch timestamping
+
+**Focus:** Implement Plan 014: add `global_seq BIGSERIAL` to `events`, rewrite timestamping batching and replay verification to use it, resolve BC-231.
+
+**Delivered:**
+
+1. **Migration `017_events_global_seq.sql`**
+   - Added `global_seq BIGSERIAL UNIQUE NOT NULL` to `events` with `CACHE 100`.
+   - Backfilled existing rows by `(timestamp, event_id)` order.
+   - Switched `tsp_batches` columns from `first_event_seq/last_event_seq` to `first_global_seq/last_global_seq`.
+   - Marked pre-existing `tsp_batches` rows as `superseded`.
+
+2. **Rewrote `trigger_timestamping` (`_timestamping.py`)**
+   - Replaced the broken per-WI `event_seq` arithmetic with `global_seq` range queries.
+   - `SELECT MAX(last_global_seq) FROM tsp_batches WHERE status = 'confirmed'` for high-water mark.
+   - `SELECT ... WHERE global_seq > last_confirmed ORDER BY global_seq LIMIT batch_size` for event selection.
+   - Updated `_rehydrate_event_ids` and `list_batches` to use `first_global_seq/last_global_seq`.
+
+3. **Rewrote replay `verify_timestamps` block (`_replay.py`)**
+   - Added `global_seq` to `_EVENT_FIELDS`.
+   - Changed coverage tracking from `event_seq` (per-WI, ambiguous) to `global_seq` (global, one-to-one).
+   - Replaced `event_ids_by_seq: dict[int, list[UUID]]` with `event_ids_by_global_seq: dict[int, UUID]`.
+   - Re-derived Merkle roots from `global_seq` ranges instead of `event_seq` ranges.
+
+4. **InMemory parity (`_event_store.py`)**
+   - Added `_next_global_seq` counter and `_global_seq_by_event_id` mapping to `InMemoryEventStore`.
+
+5. **Tests (`tests/test_timestamping.py`)**
+   - Updated existing tests to use new column names and query shapes.
+   - Fixed `TestBC228UTCTimestamps` mock call signatures after query count reduction.
+   - Added `TestPlan014GlobalSeq` (4 tests):
+     - `test_global_seq_monotonic_across_work_items`
+     - `test_trigger_timestamping_selects_by_global_seq`
+     - `test_replay_verify_timestamps_multi_wi`
+     - `test_replay_merkle_root_mismatch_multi_wi`
+
+6. **Breadcrumb reconciliation**
+   - Moved BC-231 to `breadcrumbs/resolved/` and updated README index.
+
+**Files modified:**
+- `migrations/017_events_global_seq.sql` (new)
+- `src/substrate/_timestamping.py`, `_replay.py`, `_event_store.py`
+- `tests/test_timestamping.py`
+- `breadcrumbs/README.md`, `breadcrumbs/resolved/231-trigger-timestamping-event-seq-not-global.md`
+
+**Test results:** 905 passed, lint clean.
+**Breadcrumbs:** Resolved BC-231. 1 remains accepted (BC-213).
+
+---
+
 ## 2026-05-24 — Session 52: Plan 011/012 verification, Ed25519 integration, TSA protocol, spec v7
 
 **Focus:** Verify Plans 011 and 012 against plan documents, fix bugs found, complete remaining items.

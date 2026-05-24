@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac as _hmac
+import uuid
 from datetime import datetime
 
 import psycopg
@@ -36,7 +38,7 @@ class _ReplayHaltError(SubstrateError):
         super().__init__(ErrorCode.REPLAY_HALTED, message)
 
 _EVENT_FIELDS = (
-    "event_id, work_item_id, event_seq, actor_id, actor_kind, "
+    "event_id, work_item_id, event_seq, global_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, "
     "canonical_envelope, on_behalf_of, scheme_id"
@@ -222,17 +224,67 @@ def replay(
         )
 
     if verify_timestamps:
+        from ._timestamping import TSAConfig, compute_merkle_root, verify_tsa_token
+
         batch_rows = conn.execute(
-            "SELECT first_event_seq, last_event_seq FROM tsp_batches "
-            "WHERE status = 'confirmed'"
+            "SELECT first_global_seq, last_global_seq, merkle_root, tsa_token "
+            "FROM tsp_batches WHERE status = 'confirmed'"
         ).fetchall()
-        covered = set()
+
+        event_ids_by_global_seq: dict[int, uuid.UUID] = {
+            evt["global_seq"]: evt["event_id"] for evt in all_events
+        }
+
+        _verify_cfg = TSAConfig(tsa_url="")
+        covered: set[int] = set()
         for br in batch_rows:
-            for seq in range(br["first_event_seq"], br["last_event_seq"] + 1):
+            first_seq = br["first_global_seq"]
+            last_seq = br["last_global_seq"]
+            for seq in range(first_seq, last_seq + 1):
                 covered.add(seq)
+
+            stored_root = bytes(br["merkle_root"]) if br["merkle_root"] else None
+            tsa_token = bytes(br["tsa_token"]) if br["tsa_token"] else None
+
+            # Re-derive the Merkle root from the current event log and compare
+            # against what the TSA actually signed. This is the load-bearing
+            # tamper check — without it, a forger who leaves merkle_root
+            # untouched while mutating events passes verification (BC-230).
+            current_leaf_ids: list[uuid.UUID] = []
+            for s in range(first_seq, last_seq + 1):
+                if s in event_ids_by_global_seq:
+                    current_leaf_ids.append(event_ids_by_global_seq[s])
+            if stored_root is not None and current_leaf_ids:
+                recomputed = compute_merkle_root(current_leaf_ids)
+                if not _hmac.compare_digest(recomputed, stored_root):
+                    total_warnings += 1
+                    log.warning(
+                        "replay.merkle_root_mismatch",
+                        first_seq=first_seq,
+                        last_seq=last_seq,
+                        recomputed=recomputed.hex(),
+                        stored=stored_root.hex(),
+                    )
+
+            # Token-integrity check: TSA actually signed the stored root.
+            if tsa_token and stored_root:
+                if not verify_tsa_token(tsa_token, stored_root, _verify_cfg):
+                    total_warnings += 1
+                    log.warning(
+                        "replay.invalid_tsa_token",
+                        first_seq=first_seq,
+                        last_seq=last_seq,
+                    )
+            else:
+                total_warnings += 1
+                log.warning(
+                    "replay.missing_tsa_token",
+                    first_seq=first_seq,
+                    last_seq=last_seq,
+                )
         uncovered = []
         for evt in all_events:
-            seq = evt["event_seq"]
+            seq = evt["global_seq"]
             if seq not in covered:
                 uncovered.append(seq)
         if uncovered:
