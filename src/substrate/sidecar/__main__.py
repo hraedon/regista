@@ -21,8 +21,16 @@ def main():
     hmac_key_path = os.environ.get("SUBSTRATE_HMAC_KEY_PATH")
     tokens_path = os.environ.get("SUBSTRATE_TOKENS_PATH")
     bind = os.environ.get("SUBSTRATE_BIND", "127.0.0.1:8080")
-    pool_min = int(os.environ.get("SUBSTRATE_POOL_MIN", "1"))
-    pool_max = int(os.environ.get("SUBSTRATE_POOL_MAX", "10"))
+    try:
+        pool_min = int(os.environ.get("SUBSTRATE_POOL_MIN", "1"))
+    except ValueError:
+        print("SUBSTRATE_POOL_MIN must be an integer", file=sys.stderr)
+        sys.exit(2)
+    try:
+        pool_max = int(os.environ.get("SUBSTRATE_POOL_MAX", "10"))
+    except ValueError:
+        print("SUBSTRATE_POOL_MAX must be an integer", file=sys.stderr)
+        sys.exit(2)
 
     missing = []
     if not dsn:
@@ -37,8 +45,15 @@ def main():
         print(f"Missing required env vars: {', '.join(missing)}", file=sys.stderr)
         sys.exit(2)
 
+    if ":" not in bind:
+        print(f"SUBSTRATE_BIND must be in host:port format, got {bind!r}", file=sys.stderr)
+        sys.exit(2)
     host, port_str = bind.rsplit(":", 1)
-    port = int(port_str)
+    try:
+        port = int(port_str)
+    except ValueError:
+        print(f"SUBSTRATE_BIND port must be an integer, got {port_str!r}", file=sys.stderr)
+        sys.exit(2)
 
     from substrate import Substrate
 

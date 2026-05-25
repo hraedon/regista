@@ -195,6 +195,8 @@ def classify_envelope_version(envelope: bytes) -> int:
         if _V2_FIELDS.issuperset(keys):
             return 2
         return 1
+    except json.JSONDecodeError:
+        return 0
     except Exception:
         return 0
 

@@ -784,6 +784,10 @@ class InMemorySubstrate:
         """InMemory backend has no maintenance thread; always returns True."""
         return True
 
+    @property
+    def witnesses(self) -> _InMemoryWitnessOps:
+        return _InMemoryWitnessOps(self)
+
     def start_maintenance(
         self,
         *,
@@ -969,6 +973,62 @@ class InMemorySubstrate:
                 event_id=str(event.event_id),
             )
 
-    @property
-    def witnesses(self):
-        return self
+
+
+class _InMemoryWitnessOps:
+    def __init__(self, sub: InMemorySubstrate) -> None:
+        self._sub = sub
+
+    def register(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        event_filter: dict | None = None,
+        max_failures: int = 10,
+        max_retries: int = 3,
+    ) -> uuid.UUID:
+        return self._sub.register_witness(
+            url, headers=headers, event_filter=event_filter,
+            max_failures=max_failures, max_retries=max_retries,
+        )
+
+    def unregister(self, witness_id: uuid.UUID) -> None:
+        self._sub.unregister_witness(witness_id)
+
+    def pause(self, witness_id: uuid.UUID) -> None:
+        self._sub.pause_witness(witness_id)
+
+    def reactivate(self, witness_id: uuid.UUID) -> None:
+        self._sub.reactivate_witness(witness_id)
+
+    def list(self, status: str | None = None) -> list[dict]:
+        return self._sub.list_witnesses(status=status)
+
+    def receipts(
+        self,
+        event_id: uuid.UUID | None = None,
+        witness_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self._sub.list_witness_receipts(
+            event_id=event_id, witness_id=witness_id,
+            status=status, limit=limit,
+        )
+
+    def deliver(self) -> int:
+        return self._sub.deliver_pending_witness_receipts()
+
+    def create_receipts_for_event(self, event_dict: dict) -> int:
+        from substrate._types import Event
+        evt_id = uuid.UUID(event_dict["event_id"])
+        self._sub._try_create_witness_receipts(Event(**event_dict))
+        return sum(
+            1 for r in self._sub._witness_receipts
+            if r["event_id"] == evt_id
+        )
+
+    @staticmethod
+    def event_matches_filter(event_dict: dict, event_filter: dict | None) -> bool:
+        from ._witness import event_matches_filter
+        return event_matches_filter(event_dict, event_filter)

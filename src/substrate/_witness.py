@@ -415,7 +415,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     try:
                         conn_h.close()
                     except Exception:
-                        pass
+                        log.warning("witness.connection_close_error", exc_info=True)
 
             now = datetime.now(UTC)
 

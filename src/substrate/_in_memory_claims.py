@@ -116,9 +116,8 @@ def in_memory_heartbeat_claim(
         work_item_id=work_item_id,
         now=now,
     )
-
     threshold = compute_coalesce_threshold(ttl_seconds, coalesce_threshold)
-    last_emitted = claim.get("last_heartbeat_emitted_at") if claim else None
+    last_emitted = claim.get("last_heartbeat_emitted_at")
     should_emit = (
         last_emitted is None
         or (result.new_expires_at - last_emitted).total_seconds() >= threshold

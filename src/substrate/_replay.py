@@ -332,12 +332,34 @@ def replay(
     )
 
 
+def _parse_claim_expires(expires_str: str | None) -> datetime | None:
+    if expires_str is None:
+        return None
+    try:
+        return datetime.fromisoformat(expires_str)
+    except (ValueError, TypeError):
+        import structlog
+        structlog.get_logger().warning(
+            "replay.malformed_claim_expires",
+            expires_str=expires_str,
+        )
+        return None
+
+
 def _parse_not_before(value: str | datetime | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
         return value
-    return datetime.fromisoformat(value)
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        import structlog
+        structlog.get_logger().warning(
+            "replay.malformed_not_before",
+            value=str(value),
+        )
+        return None
 
 
 def _replay_work_item(
@@ -459,18 +481,18 @@ def _replay_work_item(
                 claimed_by = payload.get("actor_id")
                 expires_str = payload.get("expires_at")
                 if expires_str:
-                    claim_expires_at = datetime.fromisoformat(expires_str)
+                    claim_expires_at = _parse_claim_expires(expires_str)
             elif transition == "claim_stolen":
                 payload = evt["payload"] or {}
                 claimed_by = payload.get("new_actor_id")
                 expires_str = payload.get("expires_at")
                 if expires_str:
-                    claim_expires_at = datetime.fromisoformat(expires_str)
+                    claim_expires_at = _parse_claim_expires(expires_str)
             elif transition == "claim_heartbeat":
                 payload = evt["payload"] or {}
                 expires_str = payload.get("expires_at")
                 if expires_str:
-                    claim_expires_at = datetime.fromisoformat(expires_str)
+                    claim_expires_at = _parse_claim_expires(expires_str)
                 claim_coalesce_threshold = payload.get("coalesce_threshold") or 0.0
             elif transition in ("claim_released", "claim_expired"):
                 claimed_by = None

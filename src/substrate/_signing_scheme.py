@@ -106,6 +106,15 @@ class Ed25519Scheme:
         verify_key = nacl.signing.VerifyKey(key_material)
         try:
             verify_key.verify(envelope, signature)
+        except nacl.exceptions.BadSignatureError:
+            return False
+        except (ValueError, TypeError):
+            return False
         except Exception:
+            import structlog
+            structlog.get_logger().error(
+                "signing.ed25519_verify_unexpected_error",
+                exc_info=True,
+            )
             return False
         return _hmac.compare_digest(hashlib.sha256(envelope).digest(), envelope_hash)

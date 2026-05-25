@@ -217,6 +217,11 @@ def verify_tsa_token(token: bytes, data: bytes, config: TSAConfig) -> bool:
         expected = _hash_data(data, algo_name)
         return _hmac.compare_digest(bytes(imprint["hashed_message"]), expected)
     except Exception:
+        import structlog
+        structlog.get_logger().warning(
+            "timestamping.verify_tsa_token_failed",
+            exc_info=True,
+        )
         return False
 
 
@@ -280,6 +285,11 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
             if tsa_timestamp is not None and tsa_timestamp.tzinfo is None:
                 tsa_timestamp = tsa_timestamp.replace(tzinfo=UTC)
         except Exception:
+            import structlog
+            structlog.get_logger().warning(
+                "timestamping.tsa_token_gen_time_parse_failed",
+                exc_info=True,
+            )
             tsa_timestamp = confirmed_at
         conn.execute(
             "UPDATE tsp_batches SET status = 'confirmed', tsa_token = %s, confirmed_at = now() "

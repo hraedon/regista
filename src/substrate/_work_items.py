@@ -282,9 +282,16 @@ def query_work_items(
     if custom_field_filters:
         import json as _json
 
-        conditions.append(
-            f"custom_fields @> {_ph(_json.dumps(custom_field_filters))}::jsonb"
-        )
+        try:
+            conditions.append(
+                f"custom_fields @> {_ph(_json.dumps(custom_field_filters))}::jsonb"
+            )
+        except TypeError:
+            from ._errors import ErrorCode, SubstrateError
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "custom_field_filters contains values that cannot be serialized to JSON",
+            ) from None
 
     if has_link_type is not None:
         conditions.append(

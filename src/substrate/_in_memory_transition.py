@@ -181,7 +181,14 @@ def _validate_refs_in_memory(
         value = values.get(field_def["name"])
         if value is None:
             continue
-        ref_uuid = uuid.UUID(value)
+        try:
+            ref_uuid = uuid.UUID(value)
+        except ValueError:
+            raise SubstrateError(
+                ErrorCode.CUSTOM_FIELD_VIOLATION,
+                f"Field {field_def['name']!r} has invalid UUID value {value!r}",
+                detail={"field": field_def["name"], "value": value},
+            )
         target_type = field_def.get("target_work_item_type")
         target_types = field_def.get("target_work_item_types")
         ref_wi = work_items.get(ref_uuid)

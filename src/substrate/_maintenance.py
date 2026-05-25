@@ -137,7 +137,7 @@ class MaintenanceThread:
         try:
             due = self._substrate.due_recurrences()
         except Exception:
-            log.warning("maintenance.due_recurrences_error")
+            log.warning("maintenance.due_recurrences_error", exc_info=True)
             return
         for rule in due:
             try:

@@ -13,6 +13,19 @@ from ._signing import verify_event as _verify_event
 from ._signing_scheme import get_scheme
 from ._types import ReplayReport
 
+
+def _try_fromisoformat(value):
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        structlog.get_logger().warning(
+            "replay.malformed_timestamp_in_memory",
+            value=value,
+        )
+        return None
+
 log = structlog.get_logger()
 
 
@@ -154,7 +167,7 @@ def in_memory_replay(
                     nb = p.get("not_before")
                     if nb:
                         derived_not_before = (
-                            datetime.fromisoformat(nb)
+                            _try_fromisoformat(nb)
                             if isinstance(nb, str) else nb
                         )
                 elif evt.transition in (
@@ -169,18 +182,18 @@ def in_memory_replay(
                         derived_claimed_by = p.get("actor_id")
                         expires_str = p.get("expires_at")
                         if expires_str:
-                            derived_claim_expires_at = datetime.fromisoformat(expires_str)
+                            derived_claim_expires_at = _try_fromisoformat(expires_str)
                     elif evt.transition == "claim_stolen":
                         p = evt.payload or {}
                         derived_claimed_by = p.get("new_actor_id")
                         expires_str = p.get("expires_at")
                         if expires_str:
-                            derived_claim_expires_at = datetime.fromisoformat(expires_str)
+                            derived_claim_expires_at = _try_fromisoformat(expires_str)
                     elif evt.transition == "claim_heartbeat":
                         p = evt.payload or {}
                         expires_str = p.get("expires_at")
                         if expires_str:
-                            derived_claim_expires_at = datetime.fromisoformat(expires_str)
+                            derived_claim_expires_at = _try_fromisoformat(expires_str)
                         derived_coalesce_threshold = p.get("coalesce_threshold") or 0.0
                     elif evt.transition in ("claim_released", "claim_expired"):
                         derived_claimed_by = None
@@ -193,7 +206,7 @@ def in_memory_replay(
                     nb = p.get("not_before")
                     if nb:
                         derived_not_before = (
-                            datetime.fromisoformat(nb)
+                            _try_fromisoformat(nb)
                             if isinstance(nb, str) else nb
                         )
                     else:

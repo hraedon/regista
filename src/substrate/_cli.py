@@ -89,7 +89,12 @@ def cmd_work_item_show(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
-        wi = sub.get_work_item(uuid.UUID(args.id))
+        work_item_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid work item ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        wi = sub.get_work_item(work_item_id)
         if wi is None:
             print(f"Work item {args.id!r} not found", file=sys.stderr)
             sys.exit(1)
@@ -116,6 +121,13 @@ def cmd_work_item_list(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
+        cursor_uuid = None
+        if args.cursor:
+            try:
+                cursor_uuid = uuid.UUID(args.cursor)
+            except ValueError:
+                print(f"Invalid cursor UUID: {args.cursor!r}", file=sys.stderr)
+                sys.exit(1)
         filters = {}
         if args.workflow:
             filters["workflow_name"] = args.workflow
@@ -130,7 +142,7 @@ def cmd_work_item_list(args):
         page = sub.query_work_items(
             **filters,
             page_size=args.page_size,
-            cursor=uuid.UUID(args.cursor) if args.cursor else None,
+            cursor=cursor_uuid,
         )
         if args.json:
             _dump_json(page)
@@ -156,8 +168,13 @@ def cmd_events_show(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
+        work_item_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid work item ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
         evts = sub.read_events(
-            work_item_id=uuid.UUID(args.id),
+            work_item_id=work_item_id,
             limit=args.limit,
             before_seq=args.before_seq,
         )
@@ -183,9 +200,17 @@ def cmd_events_tail(args):
         if args.transition:
             kw["transition"] = args.transition
         if args.since:
-            kw["start"] = datetime.fromisoformat(args.since)
+            try:
+                kw["start"] = datetime.fromisoformat(args.since)
+            except ValueError:
+                print(f"Invalid --since datetime: {args.since!r}", file=sys.stderr)
+                sys.exit(1)
         if args.until:
-            kw["end"] = datetime.fromisoformat(args.until)
+            try:
+                kw["end"] = datetime.fromisoformat(args.until)
+            except ValueError:
+                print(f"Invalid --until datetime: {args.until!r}", file=sys.stderr)
+                sys.exit(1)
         evts = sub.read_events(**kw)
         if args.json:
             _dump_json(evts)
@@ -257,7 +282,12 @@ def cmd_hooks_dead_letter_requeue(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
-        sub.requeue_dead_lettered_hook(int(args.id))
+        entry_id = int(args.id)
+    except ValueError:
+        print(f"Invalid dead-letter hook ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        sub.requeue_dead_lettered_hook(entry_id)
         print(f"Requeued dead-letter hook {args.id}")
     except SubstrateError as e:
         _handle_error(e)
@@ -326,7 +356,12 @@ def cmd_recurrence_fire(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
-        rule, wi = sub.fire_recurrence(uuid.UUID(args.id))
+        rule_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid rule ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        rule, wi = sub.fire_recurrence(rule_id)
         if args.json:
             _dump_json({"rule": rule, "work_item": wi})
         else:
@@ -343,7 +378,12 @@ def cmd_recurrence_cancel(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
-        sub.cancel_recurrence_rule(uuid.UUID(args.id))
+        rule_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid rule ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        sub.cancel_recurrence_rule(rule_id)
         print(f"Cancelled recurrence rule {args.id}")
     except SubstrateError as e:
         _handle_error(e)
@@ -355,6 +395,11 @@ def cmd_recurrence_update(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
+        rule_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid rule ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
         updates = {}
         if args.status is not None:
             updates["status"] = args.status
@@ -362,7 +407,7 @@ def cmd_recurrence_update(args):
             updates["schedule_expr"] = args.schedule_expr
         if args.template is not None:
             updates["template"] = json.loads(args.template)
-        result = sub.update_recurrence_rule(uuid.UUID(args.id), **updates)
+        result = sub.update_recurrence_rule(rule_id, **updates)
         if args.json:
             _dump_json(result)
         else:
@@ -415,7 +460,12 @@ def cmd_timestamp_verify(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
-        ok = sub.timestamping.verify_batch(uuid.UUID(args.id))
+        batch_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid batch ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        ok = sub.timestamping.verify_batch(batch_id)
         print(f"verified={ok}")
     except SubstrateError as e:
         _handle_error(e)
@@ -458,9 +508,22 @@ def cmd_witness_receipts(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Substrate(dsn, project, hmac_key_path)
     try:
+        evt_id = witness_id = None
+        if args.event_id:
+            try:
+                evt_id = uuid.UUID(args.event_id)
+            except ValueError:
+                print(f"Invalid event ID: {args.event_id!r}", file=sys.stderr)
+                sys.exit(1)
+        if args.witness_id:
+            try:
+                witness_id = uuid.UUID(args.witness_id)
+            except ValueError:
+                print(f"Invalid witness ID: {args.witness_id!r}", file=sys.stderr)
+                sys.exit(1)
         result = sub.list_witness_receipts(
-            event_id=uuid.UUID(args.event_id) if args.event_id else None,
-            witness_id=uuid.UUID(args.witness_id) if args.witness_id else None,
+            event_id=evt_id,
+            witness_id=witness_id,
             status=args.status,
             limit=args.limit,
         )

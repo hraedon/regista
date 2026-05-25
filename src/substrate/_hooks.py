@@ -560,7 +560,7 @@ class HookConsumer:
                     try:
                         conn.close()
                     except Exception:
-                        pass
+                        log.warning("hooks.connection_close_error", exc_info=True)
                     time.sleep(backoff)
                     try:
                         conn = self._connect()
@@ -594,4 +594,4 @@ class HookConsumer:
             try:
                 conn.close()
             except Exception:
-                pass
+                log.warning("hooks.connection_close_error", exc_info=True)

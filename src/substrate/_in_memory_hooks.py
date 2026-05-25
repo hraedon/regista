@@ -62,6 +62,12 @@ def in_memory_poll_hooks(
             entry["status"] = "completed"
             processed += 1
         except Exception:
+            import structlog
+            structlog.get_logger().warning(
+                "hooks.in_memory_handler_failed",
+                exc_info=True,
+                hook_name=entry.get("hook_name", "unknown"),
+            )
             entry["retry_count"] = entry.get("retry_count", 0) + 1
             max_retries = entry.get("max_retries", 3)
             if entry["retry_count"] >= max_retries:
