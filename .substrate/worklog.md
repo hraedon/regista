@@ -4,6 +4,39 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-25 — Session 59: Resume interrupted adversarial review commit (BC-244–BC-256)
+
+**Focus:** Deepseek session was interrupted by usage limits. Verified and committed the remaining uncommitted adversarial review fixes from Session 58.
+
+**Delivered:**
+
+1. **Verified uncommitted diff** — 15 files with input validation, error handling, and robustness improvements from the BC-244–BC-256 adversarial review pass.
+
+2. **Lint clean**, **972 tests passing**.
+
+3. **Committed** as `5c47c75` — `fix: adversarial review — input validation, error handling, robustness (BC-244–BC-256)`
+
+**Changes committed:**
+- `_cli.py` — ValueError handling for UUID/datetime/int parsing at all CLI entry points
+- `_hooks.py` — structured logging on connection close errors (was `pass`)
+- `_in_memory.py` — `_InMemoryWitnessOps` facade for witness API parity
+- `_in_memory_claims.py` — removed unreachable conditional in heartbeat claim
+- `_in_memory_hooks.py` — structured logging on handler failures
+- `_in_memory_replay.py` — `_try_fromisoformat` for malformed timestamp resilience
+- `_in_memory_transition.py` — UUID validation in work_item_ref fields
+- `_maintenance.py` — `exc_info=True` on recurrence error warning
+- `_replay.py` — `_parse_claim_expires`/`_parse_not_before` with malformed timestamp handling
+- `_signing.py` — `JSONDecodeError` handling in envelope classification
+- `_signing_scheme.py` — specific Ed25519 exception handling (BadSignatureError, ValueError)
+- `_timestamping.py` — structured logging on TSA token verification/parse failures
+- `_witness.py` — structured logging on connection close errors
+- `_work_items.py` — TypeError handling for non-serializable custom_field_filters
+- `sidecar/__main__.py` — validation of POOL_MIN/POOL_MAX/BIND format at startup
+
+**Test results:** 972 passed, 10 deselected, lint clean.
+
+---
+
 ## 2026-05-25 — Session 58: Adversarial Review — Witness, Sidecar, InMemory Bugs
 
 **Focus:** Comprehensive adversarial code review of the substrate codebase, focusing on the recently added witness/Plan 013 code, sidecar routes, InMemory backend parity, and error handling.
