@@ -20,6 +20,7 @@ class MaintenanceThread:
         partition_interval: float = 3600.0,
         timestamp_interval: float = 3600.0,
         tsa_config=None,
+        witness_interval: float = 30.0,
     ) -> None:
         self._substrate = substrate
         self._sweep_interval = sweep_interval
@@ -28,7 +29,9 @@ class MaintenanceThread:
         self._partition_interval = partition_interval
         self._timestamp_interval = timestamp_interval
         self._tsa_config = tsa_config
+        self._witness_interval = witness_interval
         self._next_timestamp = 0.0
+        self._next_witness = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_cycle_ok: bool = True
@@ -40,6 +43,7 @@ class MaintenanceThread:
             return
         self._stop.clear()
         self._next_timestamp = 0.0
+        self._next_witness = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         log.info("maintenance.thread_started", project=self._project)
@@ -86,6 +90,8 @@ class MaintenanceThread:
 
                 self._maybe_timestamp_events()
 
+                self._maybe_deliver_witness_receipts()
+
                 self._last_cycle_ok = True
             except Exception as e:
                 log.error("maintenance.cycle_error", error=str(e))
@@ -116,6 +122,28 @@ class MaintenanceThread:
             log.error("maintenance.timestamping_error", error=str(e))
             if self._metrics:
                 self._metrics.inc("timestamping_errors", self._project)
+
+    def _maybe_deliver_witness_receipts(self) -> None:
+        import time
+
+        now = time.monotonic()
+        if now < self._next_witness:
+            return
+        self._next_witness = now + self._witness_interval
+        try:
+            witness_ops = getattr(self._substrate, "witnesses", None)
+            if witness_ops is not None:
+                count = witness_ops.deliver()
+                if count > 0:
+                    log.info(
+                        "maintenance.witness_receipts_delivered",
+                        project=self._project,
+                        count=count,
+                    )
+        except Exception as e:
+            log.error("maintenance.witness_delivery_error", error=str(e))
+            if self._metrics:
+                self._metrics.inc("maintenance_errors", self._project)
 
     def _fire_due_recurrences(self) -> None:
         try:

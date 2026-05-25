@@ -22,6 +22,7 @@ from .models import (
     ReadEventsSinceRequest,
     RegisterActorRoleRequest,
     RegisterRecurrenceRuleRequest,
+    RegisterWitnessRequest,
     RegisterWorkflowRequest,
     ReleaseClaimRequest,
     RemoveLinkRequest,
@@ -55,13 +56,19 @@ def _require_admin(request: Request) -> AuthenticatedActor:
 
 
 def _parse_uuid(val: str) -> uuid.UUID:
-    return uuid.UUID(val)
+    try:
+        return uuid.UUID(val)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID: {val!r}")
 
 
 def _parse_datetime(val: str | None) -> datetime | None:
     if val is None:
         return None
-    return datetime.fromisoformat(val)
+    try:
+        return datetime.fromisoformat(val)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid datetime: {val!r}")
 
 
 def register_routes(app, substrate, tokens: TokenRegistry):
@@ -289,7 +296,10 @@ def register_routes(app, substrate, tokens: TokenRegistry):
     @router.post("/replay")
     async def replay(body: ReplayRequest, request: Request):
         _require_admin(request)
-        result = substrate.replay(continue_on_revoked=body.continue_on_revoked)
+        result = substrate.replay(
+            continue_on_revoked=body.continue_on_revoked,
+            verify_timestamps=body.verify_timestamps,
+        )
         return _serialize(result)
 
     @router.get("/dead_lettered_hooks")
@@ -401,5 +411,69 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         _require_admin(request)
         result = substrate.timestamping.verify_batch(_parse_uuid(batch_id))
         return {"verified": result}
+
+    @router.post("/witnesses")
+    async def register_witness(body: RegisterWitnessRequest, request: Request):
+        _require_admin(request)
+        witness_id = substrate.register_witness(
+            url=body.url,
+            headers=body.headers,
+            event_filter=body.event_filter,
+            max_failures=body.max_failures,
+            max_retries=body.max_retries,
+        )
+        return {"witness_id": str(witness_id)}
+
+    @router.delete("/witnesses/{witness_id}")
+    async def unregister_witness(witness_id: str, request: Request):
+        _require_admin(request)
+        substrate.unregister_witness(_parse_uuid(witness_id))
+        return {"status": "ok"}
+
+    @router.post("/witnesses/{witness_id}/pause")
+    async def pause_witness(witness_id: str, request: Request):
+        _require_admin(request)
+        substrate.pause_witness(_parse_uuid(witness_id))
+        return {"status": "ok"}
+
+    @router.post("/witnesses/{witness_id}/reactivate")
+    async def reactivate_witness(witness_id: str, request: Request):
+        _require_admin(request)
+        substrate.reactivate_witness(_parse_uuid(witness_id))
+        return {"status": "ok"}
+
+    @router.get("/witnesses")
+    async def list_witnesses(request: Request):
+        _get_actor(request)
+        status = request.query_params.get("status")
+        result = substrate.list_witnesses(status=status)
+        return _serialize(result)
+
+    @router.get("/witnesses/receipts")
+    async def list_witness_receipts(request: Request):
+        _get_actor(request)
+        event_id = request.query_params.get("event_id")
+        witness_id = request.query_params.get("witness_id")
+        status = request.query_params.get("status")
+        raw_limit = request.query_params.get("limit", "100")
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid limit: {raw_limit!r}")
+        if limit < 1 or limit > 10000:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 10000")
+        result = substrate.list_witness_receipts(
+            event_id=_parse_uuid(event_id) if event_id else None,
+            witness_id=_parse_uuid(witness_id) if witness_id else None,
+            status=status,
+            limit=limit,
+        )
+        return _serialize(result)
+
+    @router.post("/witnesses/deliver")
+    async def deliver_witness_receipts(request: Request):
+        _require_admin(request)
+        count = substrate.deliver_pending_witness_receipts()
+        return {"delivered": count}
 
     app.include_router(router)

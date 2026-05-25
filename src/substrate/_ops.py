@@ -26,6 +26,33 @@ from ._types import (
     WorkflowVersion,
     WorkItem,
 )
+from ._witness import (
+    create_receipts as _create_receipts,
+)
+from ._witness import (
+    deliver_pending_receipts as _deliver_pending_receipts,
+)
+from ._witness import (
+    event_matches_filter as _event_matches_filter,
+)
+from ._witness import (
+    list_witness_receipts as _list_witness_receipts,
+)
+from ._witness import (
+    list_witnesses as _list_witnesses,
+)
+from ._witness import (
+    pause_witness as _pause_witness,
+)
+from ._witness import (
+    reactivate_witness as _reactivate_witness,
+)
+from ._witness import (
+    register_witness as _register_witness,
+)
+from ._witness import (
+    unregister_witness as _unregister_witness,
+)
 
 log = structlog.get_logger()
 
@@ -665,3 +692,58 @@ class RecurrenceOps:
             self._mgr, rule_id,
             status=status, schedule_expr=schedule_expr, template=template,
         )
+
+
+class WitnessOps:
+    def __init__(self, mgr: ConnectionManager, metrics: Metrics, project: str) -> None:
+        self._mgr = mgr
+        self._metrics = metrics
+        self._project = project
+
+    def register(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        event_filter: dict | None = None,
+        max_failures: int = 10,
+        max_retries: int = 3,
+    ) -> uuid.UUID:
+        return _register_witness(
+            self._mgr, self._project, url, headers, event_filter,
+            max_failures, max_retries,
+        )
+
+    def unregister(self, witness_id: uuid.UUID) -> None:
+        _unregister_witness(self._mgr, self._project, witness_id)
+
+    def pause(self, witness_id: uuid.UUID) -> None:
+        _pause_witness(self._mgr, self._project, witness_id)
+
+    def reactivate(self, witness_id: uuid.UUID) -> None:
+        _reactivate_witness(self._mgr, self._project, witness_id)
+
+    def list(self, status: str | None = None) -> list[dict]:
+        return _list_witnesses(self._mgr, status=status)
+
+    def receipts(
+        self,
+        event_id: uuid.UUID | None = None,
+        witness_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return _list_witness_receipts(
+            self._mgr,
+            event_id=event_id, witness_id=witness_id,
+            status=status, limit=limit,
+        )
+
+    def deliver(self) -> int:
+        return _deliver_pending_receipts(self._mgr, self._project)
+
+    def create_receipts_for_event(self, event_dict: dict) -> int:
+        return _create_receipts(self._mgr, event_dict)
+
+    @staticmethod
+    def event_matches_filter(event_dict: dict, event_filter: dict | None) -> bool:
+        return _event_matches_filter(event_dict, event_filter)

@@ -4,6 +4,106 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-25 — Session 58: Adversarial Review — Witness, Sidecar, InMemory Bugs
+
+**Focus:** Comprehensive adversarial code review of the substrate codebase, focusing on the recently added witness/Plan 013 code, sidecar routes, InMemory backend parity, and error handling.
+
+**Delivered:**
+
+1. **BC-238** — `_try_create_witness_receipts` in Postgres backend silently swallowed ALL exceptions with `except Exception: pass`. Changed to log a structured warning with project, event_id, and error details. InMemory counterpart had NO exception handling at all — wrapped in `try/except` with logging.
+
+2. **BC-239** — `deliver_pending_receipts` HTTP connection leak: `conn_h.close()` was only called in the success path of a `try/except` block. Moved to `finally` block. Also capped response body at 1MB to prevent memory exhaustion from malicious witness endpoints.
+
+3. **BC-240** — Missing `UNIQUE(witness_id, event_id)` constraint on `witness_receipts` table. Added migration `021_witness_receipt_uniqueness.sql`. Added `UniqueViolation` catch in `create_receipts()` so concurrent receipt creation races are handled gracefully.
+
+4. **BC-241** — Sidecar error mapping missing 9 error codes: `WITNESS_NOT_FOUND` (→404), `WITNESS_DELIVERY_FAILED` (→500), `WITNESS_PAUSED` (→409), `EVENT_ID_GLOBAL_COLLISION` (→409), `MIGRATION_DRIFT` (→500), `KEY_LOAD_ERROR` (→500), `INVALID_KEY_ROLE` (→400), `SIGNING_SCHEME_NOT_FOUND` (→400), `TSA_SUBMISSION_FAILED` (→500), `TSA_VERIFICATION_FAILED` (→500). Removed phantom `INVALID_CUSTOM_FIELD_VALUE`. Added `ValueError` → 400 handling in `_parse_uuid` and `_parse_datetime`. Added `limit` bounds validation (1–10000) for witness receipts.
+
+5. **BC-242** — `ReplayRequest` model missing `verify_timestamps` parameter (consumers could never trigger timestamp verification). `RegisterWitnessRequest` accepted zero/negative `max_failures`/`max_retries` — added `Field(ge=1)`. Added core validation in `_witness.register_witness()` and `InMemorySubstrate.register_witness()`.
+
+6. **BC-243** — Multiple InMemory/web parity fixes:
+   - `unregister_witness` now cleans orphaned receipts.
+   - `register_witness` now copies `headers` and `event_filter` dicts to prevent caller mutation.
+   - `_in_memory_replay.py` now logs halted work items via `structlog`.
+   - `witness_signature` stored as raw BYTEA instead of incorrectly wrapped in `Jsonb()`.
+   - Receipt UPDATE queries include `WHERE status = 'pending'` guard against double-updates.
+   - Removed vacuous `FOR UPDATE` on `witness_registrations` read (autocommit connection).
+   - Added URL hostname validation in `_validate_url`.
+
+**Files modified:**
+- `src/substrate/__init__.py` — witness receipt error logging
+- `src/substrate/_in_memory.py` — try/except on receipt creation, copy dicts, clean receipts on unregister, validate max_failures/max_retries
+- `src/substrate/_in_memory_replay.py` — log halted work items
+- `src/substrate/_witness.py` — HTTP connection close in finally, response body cap, UniqueViolation catch, status guard on UPDATE, remove vacuous FOR UPDATE, validate max_failures/max_retries, validate URL hostname, store witness_signature as BYTEA not Jsonb
+- `src/substrate/sidecar/routes.py` — _parse_uuid/_parse_datetime ValueError handling, limit bounds, verify_timestamps passthrough
+- `src/substrate/sidecar/models.py` — Field import, ge=1 on max_failures/max_retries, verify_timestamps on ReplayRequest
+- `src/substrate/sidecar/errors.py` — 10 missing error code mappings, removed phantom INVALID_CUSTOM_FIELD_VALUE
+- `migrations/021_witness_receipt_uniqueness.sql` — new migration for UNIQUE constraint
+
+**Files created:**
+- `migrations/021_witness_receipt_uniqueness.sql`
+- `breadcrumbs/238-witness-receipt-creation-silently-swallowed-exceptions.md`
+- `breadcrumbs/239-witness-http-delivery-connection-leak.md`
+- `breadcrumbs/240-missing-unique-constraint-witness-receipts.md`
+- `breadcrumbs/241-sidecar-missing-error-code-mappings.md`
+- `breadcrumbs/242-sidecar-missing-verify-timestamps-and-witness-validation.md`
+- `breadcrumbs/243-in-memory-witness-and-replay-parity-issues.md`
+
+**Test results:** 972 passed, 10 deselected, lint clean.
+
+## 2026-05-25 — Session 57: Plan 013 (Witness/Co-signature Post-Append Hooks)
+
+**Focus:** Implement Plan 013 — Witness registration, receipt creation, event filtering, and HTTP delivery for external witnessing services.
+
+**Delivered:**
+
+1. **Migration 020** — `witness_registrations` and `witness_receipts` tables with indexes on `status`, `event_id`, and `(witness_id, event_id)`.
+
+2. **`_witness.py`** — Core module with:
+   - `register_witness()` / `unregister_witness()` / `pause_witness()` / `reactivate_witness()` / `list_witnesses()`
+   - `create_receipts()` — inserts pending receipts for active witnesses whose event_filter matches
+   - `list_witness_receipts()` — query receipts with filters
+   - `deliver_pending_receipts()` — HTTP delivery via stdlib, `FOR UPDATE SKIP LOCKED` concurrency, auto-pause on max_failures, dead-letter on max_retries
+   - `event_matches_filter()` — AND semantics across `transitions`, `work_item_types`, `workflows` filter fields
+   - `validate_url()` / `validate_event_filter()` — input validation with appropriate error codes
+
+3. **Error codes** — `WITNESS_NOT_FOUND`, `WITNESS_DELIVERY_FAILED`, `WITNESS_PAUSED` added to `ErrorCode` enum.
+
+4. **Public API** — `Substrate` class gains facade property `witnesses` (`WitnessOps`) and legacy top-level methods: `register_witness`, `unregister_witness`, `pause_witness`, `reactivate_witness`, `list_witnesses`, `list_witness_receipts`, `deliver_pending_witness_receipts`. Event-producing methods (`create_work_item`, `transition`, `append_event`, `update_not_before`) now call `_try_create_witness_receipts()` after each event commit. InMemory backend also creates receipts.
+
+5. **WitnessOps facade** — `_ops.py` with `WitnessOps` class wrapping witness methods plus `create_receipts_for_event` and `event_matches_filter`.
+
+6. **Maintenance thread** — `_maintenance.py` gains `witness_interval` parameter (default 30s) and `_maybe_deliver_witness_receipts()` step. `start_maintenance()` accepts `witness_interval`.
+
+7. **Observability** — `witness_receipts_delivered` and `witness_receipts_created` counters added to `Metrics`.
+
+8. **Sidecar routes** — 7 new endpoints: `POST /v1/witnesses`, `DELETE /v1/witnesses/{id}`, `POST /v1/witnesses/{id}/pause`, `POST /v1/witnesses/{id}/reactivate`, `GET /v1/witnesses`, `GET /v1/witnesses/receipts`, `POST /v1/witnesses/deliver`.
+
+9. **CLI** — `substrate witness list [--status]`, `substrate witness deliver`, `substrate witness receipts [--event-id] [--witness-id] [--status] [--limit]`.
+
+10. **InMemory support** — `InMemorySubstrate` gains `_witnesses`, `_witness_receipts`, and all witness methods. `_try_create_witness_receipts()` filters events and creates pending receipt dicts.
+
+11. **Tests** — 28 unit tests (`test_witness.py`) + 17 Postgres integration tests (`test_witness_integration.py`). Total: 972 tests passing.
+
+**Files created:**
+- `migrations/020_witness_tables.sql`
+- `src/substrate/_witness.py`
+- `tests/test_witness.py`
+- `tests/test_witness_integration.py`
+
+**Files modified:**
+- `src/substrate/_errors.py` — added WITNESS_NOT_FOUND, WITNESS_DELIVERY_FAILED, WITNESS_PAUSED
+- `src/substrate/_ops.py` — added WitnessOps facade
+- `src/substrate/_maintenance.py` — witness delivery step, witness_interval param
+- `src/substrate/_observability.py` — witness receipt counters
+- `src/substrate/__init__.py` — WitnessOps import, `witnesses` property, public API methods, `_try_create_witness_receipts`, `start_maintenance` witness_interval
+- `src/substrate/_in_memory.py` — InMemory witness methods and receipt creation
+- `src/substrate/sidecar/routes.py` — 7 witness endpoints
+- `src/substrate/sidecar/models.py` — RegisterWitnessRequest, ReactivateWitnessRequest, DeliverWitnessReceiptsRequest
+- `src/substrate/_cli.py` — witness list/deliver/receipts subcommands
+- `AGENTS.md` — updated source layout, public API, test count, Plan 013 status
+
+---
+
 ## 2026-05-24 — Session 56: Plan 015 (Wake/Provenance v1 Trust-Envelope) — BC-219 + BC-221
 
 **Focus:** Implement the remaining Plan 015 items: upgrade `validate_delegation_chain` (BC-219), reserve `checkpoint` transition at workflow registration (BC-221), add missing error codes, update all call sites.

@@ -420,6 +420,61 @@ def cmd_timestamp_verify(args):
         sub.close()
 
 
+def cmd_witness_list(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        result = sub.list_witnesses(status=args.__dict__.get("status"))
+        if not result:
+            print("No witnesses registered.")
+            return
+        for w in result:
+            print(
+                f"  {w['witness_id'][:8]}...  {w['url'][:50]:<50}  "
+                f"{w['status']:<8}  failures={w.get('consecutive_failures', 0)}"
+            )
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_witness_deliver(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        count = sub.deliver_pending_witness_receipts()
+        print(f"Delivered {count} receipt(s).")
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_witness_receipts(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        result = sub.list_witness_receipts(
+            event_id=uuid.UUID(args.event_id) if args.event_id else None,
+            witness_id=uuid.UUID(args.witness_id) if args.witness_id else None,
+            status=args.status,
+            limit=args.limit,
+        )
+        if not result:
+            print("No receipts found.")
+            return
+        for r in result:
+            print(
+                f"  {r['receipt_id'][:8]}...  witness={r['witness_id'][:8]}...  "
+                f"event={r['event_id'][:8]}...  status={r['status']}"
+            )
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate admin CLI")
@@ -510,6 +565,18 @@ def main(argv=None):
     ts_verify = ts_sub.add_parser("verify", help="Verify a timestamp batch")
     ts_verify.add_argument("id", help="Batch UUID")
 
+    # witness
+    wt = subs.add_parser("witness", help="Witness commands")
+    wt_sub = wt.add_subparsers(dest="subcommand")
+    wt_list = wt_sub.add_parser("list", help="List witness registrations")
+    wt_list.add_argument("--status", help="Filter by status (active/paused/failed)")
+    wt_sub.add_parser("deliver", help="Deliver pending witness receipts")
+    wt_receipts = wt_sub.add_parser("receipts", help="List witness receipts")
+    wt_receipts.add_argument("--event-id", help="Filter by event UUID")
+    wt_receipts.add_argument("--witness-id", help="Filter by witness UUID")
+    wt_receipts.add_argument("--status", help="Filter by receipt status")
+    wt_receipts.add_argument("--limit", type=int, default=100)
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -562,6 +629,16 @@ def main(argv=None):
         cmd_recurrence_cancel(args)
     elif args.command == "recurrence" and args.subcommand == "update":
         cmd_recurrence_update(args)
+    elif args.command == "witness":
+        if args.subcommand == "list":
+            cmd_witness_list(args)
+        elif args.subcommand == "deliver":
+            cmd_witness_deliver(args)
+        elif args.subcommand == "receipts":
+            cmd_witness_receipts(args)
+        else:
+            wt.print_help()
+            sys.exit(2)
     else:
         target = subs.choices.get(args.command)
         if target:

@@ -60,11 +60,12 @@ src/substrate/
   _transition.py        # Extracted transition logic (delegated from Substrate)
   _datetime_utils.py   # Shared datetime comparison for replay modules
   _ops.py              # Facade classes: WorkflowOps, WorkItemOps, etc. (Plan 007)
-  _maintenance.py      # MaintenanceThread — timer-driven sweep/recurrence (Plan 009)
+  _maintenance.py      # MaintenanceThread — timer-driven sweep/recurrence/witness
   _signing_scheme.py   # SigningScheme protocol + HMACSHA256Scheme + Ed25519Scheme (Plan 011)
   _timestamping.py     # RFC 3161 TSA Merkle tree batching (Plan 012)
   _hooks_api.py        # Postgres-only hooks helpers for _ops facades
   _in_memory_replay.py # InMemory replay engine (FR-16)
+  _witness.py          # Witness registration, receipt creation, event filtering, delivery (Plan 013)
   _vendor/             # Vendored dependencies
     __init__.py
     rfc8785.py         # Vendored rfc8785 0.1.4 (Plan 008 WS-3)
@@ -168,7 +169,24 @@ sub.recurrence.fire(rule_id)
 
 # Legacy top-level methods still work — they delegate to facades
 
-# Maintenance (Plan 009)
+sub.witnesses.register(url, headers, event_filter, ...)
+sub.witnesses.unregister(witness_id)
+sub.witnesses.pause(witness_id)
+sub.witnesses.reactivate(witness_id)
+sub.witnesses.list(status=None)
+sub.witnesses.receipts(event_id=None, witness_id=None, status=None, limit=100)
+sub.witnesses.deliver()
+
+# Legacy top-level methods also available:
+sub.register_witness(url, headers=None, event_filter=None, max_failures=10, max_retries=3)
+sub.unregister_witness(witness_id)
+sub.pause_witness(witness_id)
+sub.reactivate_witness(witness_id)
+sub.list_witnesses(status=None)
+sub.list_witness_receipts(event_id=None, witness_id=None, status=None, limit=100)
+sub.deliver_pending_witness_receipts()
+
+# Maintenance (Plan 009/013)
 sub.start_maintenance(sweep_interval=30, recurrence_interval=10)  # background thread
 sub.stop_maintenance()
 sub.maintenance_healthy  # True when thread is running and healthy (or not started)
@@ -206,7 +224,7 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-015 implemented. All FRs FR-01 through FR-29 are in tree. 927 tests passing (including sidecar, property-based, and plan-specific tests).
+MVP + Phase 2 + Phase 3 + Plans 002-015 implemented. All FRs FR-01 through FR-29 are in tree. 972 tests passing (including sidecar, property-based, witness, and plan-specific tests).
 
 Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
 
@@ -230,6 +248,9 @@ Plans 007-009 additions:
 Plans 011-012 additions:
 - **Plan 011 (Pluggable signing, Ed25519):** `SigningScheme` protocol with `sign()`/`verify()` methods. `HMACSHA256Scheme` (default) and `Ed25519Scheme` (optional, via `pip install substrate[ed25519]`). Module-level registry in `_signing_scheme.py`. `KeyEntry.scheme` field selects scheme per key. `scheme_id` column on `events` (migration 015). Replay resolves scheme per event. 10 unit + 10 integration tests.
 - **Plan 012 (RFC 3161 timestamping):** `_timestamping.py` with Merkle tree batching, TSA HTTP submission, token verification. `tsp_batches` table (migration 016). `TimestampOps` facade (`sub.timestamping.trigger/list_batches/verify_batch`). `MaintenanceThread._maybe_timestamp_events` for background timestamping. `replay(verify_timestamps=True)` cross-references events against confirmed batches. Sidecar routes and CLI commands. `timestamping_errors` metric. 17 tests.
+
+Plan 013 additions:
+- **Plan 013 (Witness/co-signature post-append hooks):** `_witness.py` with registration, event filtering, receipt creation, and HTTP delivery. `witness_registrations` and `witness_receipts` tables (migration 020). `WitnessOps` facade (`sub.witnesses.register/unregister/pause/reactivate/list/receipts/deliver`). Legacy top-level methods: `register_witness`, `unregister_witness`, `pause_witness`, `reactivate_witness`, `list_witnesses`, `list_witness_receipts`, `deliver_pending_witness_receipts`. InMemory witness support with receipt creation. `MaintenanceThread._maybe_deliver_witness_receipts` for background delivery. Sidecar witness routes (7 endpoints). CLI `substrate witness list/deliver/receipts` subcommands. New error codes: `WITNESS_NOT_FOUND`, `WITNESS_DELIVERY_FAILED`, `WITNESS_PAUSED`. 28 unit tests + 17 integration tests.
 
 RFC-062: Single-source-of-truth backend contract via `_contract.py` — 20 pure validation/decision functions shared by both Postgres and InMemory backends. Property-based conformance tests via hypothesis in `tests/test_property_conformance.py`.
 

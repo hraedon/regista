@@ -229,10 +229,12 @@ def in_memory_replay(
                         derived_claimed_by = None
                         derived_claim_expires_at = None
                 prev_evt = evt
-        except SubstrateError:
+        except SubstrateError as exc:
             halted += 1
-        except Exception:
+            log.warning("in_memory_replay.halted", wi=str(wi_id), error=str(exc)[:500])
+        except Exception as exc:
             halted += 1
+            log.warning("in_memory_replay.halted", wi=str(wi_id), error=str(exc)[:500])
         else:
             if derived_state is not None:
                 live_expires = wi.get("claim_expires_at")

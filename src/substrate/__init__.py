@@ -26,6 +26,7 @@ from ._ops import (
     LinkOps,
     RecurrenceOps,
     TimestampOps,
+    WitnessOps,
     WorkflowOps,
     WorkItemOps,
 )
@@ -307,6 +308,27 @@ class Substrate:
             )
         return self._timestamping_ops
 
+    @property
+    def witnesses(self) -> WitnessOps:
+        if not hasattr(self, "_witness_ops"):
+            self._witness_ops = WitnessOps(self._mgr, self._metrics, self._project)
+        return self._witness_ops
+
+    def _try_create_witness_receipts(self, event: Event) -> None:
+        from ._witness import create_receipts as _create_receipts
+
+        try:
+            count = _create_receipts(self._mgr, event.to_dict())
+            if count > 0:
+                self._metrics.inc("witness_receipts_created", self._project, amount=count)
+        except Exception as exc:
+            log.warning(
+                "witness.create_receipts_failed",
+                project=self._project,
+                event_id=str(event.event_id),
+                error=str(exc)[:500],
+            )
+
     def register_validator(self, name: str, handler: Callable) -> None:
         """Register a sync transition validator. Blocks the transaction on failure.
 
@@ -349,12 +371,14 @@ class Substrate:
         partition_interval: float = 3600.0,
         timestamp_interval: float = 3600.0,
         tsa_config=None,
+        witness_interval: float = 30.0,
     ) -> None:
         """Start the background maintenance thread.
 
         The maintenance thread periodically sweeps expired claims and hook
-        leases, fires due recurrence rules, refreshes hook queue metrics, and
-        optionally timestamps event batches via a configured TSA.
+        leases, fires due recurrence rules, refreshes hook queue metrics,
+        optionally timestamps event batches via a configured TSA, and delivers
+        pending witness receipts.
         It also starts the hook consumer if not already running.
 
         Args:
@@ -364,6 +388,7 @@ class Substrate:
             partition_interval: Deprecated; kept for API compatibility.
             timestamp_interval: Seconds between timestamping triggers (default 3600).
             tsa_config: Optional ``TSAConfig`` for RFC 3161 timestamping.
+            witness_interval: Seconds between witness receipt delivery cycles (default 30).
         """
         from ._maintenance import MaintenanceThread
 
@@ -379,6 +404,7 @@ class Substrate:
             partition_interval=partition_interval,
             timestamp_interval=timestamp_interval,
             tsa_config=tsa_config,
+            witness_interval=witness_interval,
         )
         self._maintenance_thread.start()
         if not (self._hook_consumer is not None and self._hook_consumer.is_running):
@@ -572,13 +598,15 @@ class Substrate:
                 ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``,
                 ``VALIDATOR_FAILED``.
         """
-        return self.work_items.create(
+        wi, evt = self.work_items.create(
             workflow_name, work_item_type, actor_id, actor_kind,
             actor_metadata,
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
         )
+        self._try_create_witness_receipts(evt)
+        return wi, evt
 
     def transition(
         self,
@@ -623,7 +651,7 @@ class Substrate:
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         from ._transition import transition as _transition_impl
 
-        return _transition_impl(
+        evt = _transition_impl(
             self._mgr, self._keys, self._metrics, self._project,
             self._validators, self._hook_channel,
             work_item_id, transition_name, actor_id,
@@ -637,6 +665,8 @@ class Substrate:
             strict_roles=self._strict_roles,
             key_id=key_id,
         )
+        self._try_create_witness_receipts(evt)
+        return evt
 
     def append_event(
         self,
@@ -678,7 +708,7 @@ class Substrate:
                 ``CONCURRENT_MODIFICATION``.
         """
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
-        return self.events.append(
+        evt = self.events.append(
             work_item_id, actor_id, actor_kind,
             actor_metadata=actor_metadata,
             key_id=key_id,
@@ -688,6 +718,8 @@ class Substrate:
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
         )
+        self._try_create_witness_receipts(evt)
+        return evt
 
     def read_events(
         self,
@@ -1102,11 +1134,13 @@ class Substrate:
         Raises:
             SubstrateError: ``WORK_ITEM_NOT_FOUND``.
         """
-        return self.work_items.update_not_before(
+        evt = self.work_items.update_not_before(
             work_item_id, not_before, actor_id, actor_kind,
             actor_metadata, event_id=event_id,
             on_behalf_of=on_behalf_of,
         )
+        self._try_create_witness_receipts(evt)
+        return evt
 
     def register_actor_role(self, actor_id: str, role: str) -> None:
         """Register a role for an actor. Enables role enforcement for that actor.
@@ -1222,6 +1256,64 @@ class Substrate:
             rule_id,
             status=status, schedule_expr=schedule_expr, template=template,
         )
+
+    def register_witness(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        event_filter: dict | None = None,
+        max_failures: int = 10,
+        max_retries: int = 3,
+    ) -> uuid.UUID:
+        """Register an external witness. Returns witness_id.
+
+        Args:
+            url: HTTP(S) endpoint to POST event data to.
+            headers: Optional HTTP headers (e.g., auth).
+            event_filter: Optional filter constraining which events trigger a receipt.
+            max_failures: Consecutive failures before auto-pause (default 10).
+            max_retries: Per-receipt retry limit before dead-lettering (default 3).
+
+        Returns:
+            UUID of the registered witness.
+        """
+        return self.witnesses.register(
+            url, headers=headers, event_filter=event_filter,
+            max_failures=max_failures, max_retries=max_retries,
+        )
+
+    def unregister_witness(self, witness_id: uuid.UUID) -> None:
+        """Remove a witness. Pending receipts are abandoned."""
+        self.witnesses.unregister(witness_id)
+
+    def pause_witness(self, witness_id: uuid.UUID) -> None:
+        """Pause a witness. Pending receipts are retained but not delivered."""
+        self.witnesses.pause(witness_id)
+
+    def reactivate_witness(self, witness_id: uuid.UUID) -> None:
+        """Reactivate a paused/failed witness. Resets consecutive_failures."""
+        self.witnesses.reactivate(witness_id)
+
+    def list_witnesses(self, status: str | None = None) -> list[dict]:
+        """List witness registrations, optionally filtered by status."""
+        return self.witnesses.list(status=status)
+
+    def list_witness_receipts(
+        self,
+        event_id: uuid.UUID | None = None,
+        witness_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Query witness receipts. At least one filter is recommended."""
+        return self.witnesses.receipts(
+            event_id=event_id, witness_id=witness_id,
+            status=status, limit=limit,
+        )
+
+    def deliver_pending_witness_receipts(self) -> int:
+        """Manually trigger one delivery cycle. Returns count of receipts processed."""
+        return self.witnesses.deliver()
 
     @staticmethod
     def validate_actor_metadata(        event: Event,

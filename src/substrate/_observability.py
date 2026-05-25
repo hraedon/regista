@@ -159,6 +159,14 @@ class Metrics:
                 "substrate_timestamping_errors_total",
                 "Errors during maintenance timestamping cycle",
             ),
+            "witness_receipts_delivered": (
+                "substrate_witness_receipts_delivered_total",
+                "Witness receipts delivered",
+            ),
+            "witness_receipts_created": (
+                "substrate_witness_receipts_created_total",
+                "Witness receipts created",
+            ),
         }
         if name in counters:
             metric_name, doc = counters[name]

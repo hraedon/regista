@@ -75,6 +75,8 @@ class InMemorySubstrate:
         self._hook_consumer_running = False
         self._recurrence_rules: dict[uuid.UUID, dict] = {}
         self._strict_roles = strict_roles
+        self._witnesses: dict[uuid.UUID, dict] = {}
+        self._witness_receipts: list[dict] = []
 
     @classmethod
     def create_project(
@@ -248,7 +250,7 @@ class InMemorySubstrate:
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
     ) -> tuple[WorkItem, Event]:
-        return self._create_work_item(
+        wi, evt = self._create_work_item(
             workflow_name,
             work_item_type,
             actor_id,
@@ -258,6 +260,8 @@ class InMemorySubstrate:
             not_before=not_before,
             event_id=event_id,
         )
+        self._try_create_witness_receipts(evt)
+        return wi, evt
 
     def append_event(
         self,
@@ -276,7 +280,7 @@ class InMemorySubstrate:
         from ._in_memory_events import in_memory_append_event
 
         validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
-        return in_memory_append_event(
+        evt = in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,
             work_item_id, actor_id, actor_kind, actor_metadata,
             key_id=key_id,
@@ -286,6 +290,8 @@ class InMemorySubstrate:
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
         )
+        self._try_create_witness_receipts(evt)
+        return evt
 
     def transition(
         self,
@@ -320,6 +326,7 @@ class InMemorySubstrate:
             strict_roles=self._strict_roles,
         )
         self._hook_id_counter = new_counter
+        self._try_create_witness_receipts(evt)
         return evt
 
     def read_events(
@@ -816,3 +823,148 @@ class InMemorySubstrate:
         key, data = versions[0]
         wf_def = self._workflow_defs[key]
         return data, wf_def, key[1]
+
+    def register_witness(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        event_filter: dict | None = None,
+        max_failures: int = 10,
+        max_retries: int = 3,
+    ) -> uuid.UUID:
+        from ._witness import _validate_event_filter, _validate_url
+
+        _validate_url(url)
+        event_filter = _validate_event_filter(event_filter)
+        if max_failures < 1:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"max_failures must be >= 1, got {max_failures}",
+            )
+        if max_retries < 1:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"max_retries must be >= 1, got {max_retries}",
+            )
+        witness_id = uuid.uuid4()
+        self._witnesses[witness_id] = {
+            "witness_id": witness_id,
+            "url": url,
+            "headers": dict(headers) if headers else None,
+            "event_filter": dict(event_filter) if event_filter else None,
+            "status": "active",
+            "max_failures": max_failures,
+            "consecutive_failures": 0,
+            "max_retries": max_retries,
+            "last_success_at": None,
+            "last_failure_at": None,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+        return witness_id
+
+    def unregister_witness(self, witness_id: uuid.UUID) -> None:
+        if witness_id not in self._witnesses:
+            raise SubstrateError(
+                ErrorCode.WITNESS_NOT_FOUND,
+                f"witness {witness_id} not found",
+            )
+        del self._witnesses[witness_id]
+        self._witness_receipts = [
+            r for r in self._witness_receipts
+            if r["witness_id"] != witness_id
+        ]
+
+    def pause_witness(self, witness_id: uuid.UUID) -> None:
+        if witness_id not in self._witnesses:
+            raise SubstrateError(
+                ErrorCode.WITNESS_NOT_FOUND,
+                f"witness {witness_id} not found",
+            )
+        self._witnesses[witness_id]["status"] = "paused"
+
+    def reactivate_witness(self, witness_id: uuid.UUID) -> None:
+        if witness_id not in self._witnesses:
+            raise SubstrateError(
+                ErrorCode.WITNESS_NOT_FOUND,
+                f"witness {witness_id} not found",
+            )
+        w = self._witnesses[witness_id]
+        w["status"] = "active"
+        w["consecutive_failures"] = 0
+
+    def list_witnesses(self, status: str | None = None) -> list[dict]:
+        results = []
+        for w in self._witnesses.values():
+            if status is not None and w["status"] != status:
+                continue
+            d = dict(w)
+            d["witness_id"] = str(d["witness_id"])
+            for key in ("last_success_at", "last_failure_at", "created_at", "updated_at"):
+                if d.get(key) is not None:
+                    d[key] = d[key].isoformat()
+            results.append(d)
+        return results
+
+    def list_witness_receipts(
+        self,
+        event_id: uuid.UUID | None = None,
+        witness_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        results = []
+        for r in self._witness_receipts:
+            if event_id is not None and r["event_id"] != event_id:
+                continue
+            if witness_id is not None and r["witness_id"] != witness_id:
+                continue
+            if status is not None and r["status"] != status:
+                continue
+            d = dict(r)
+            d["receipt_id"] = str(d["receipt_id"])
+            d["witness_id"] = str(d["witness_id"])
+            d["event_id"] = str(d["event_id"])
+            for key in ("submitted_at", "last_attempt_at", "confirmed_at", "created_at"):
+                if d.get(key) is not None:
+                    d[key] = d[key].isoformat()
+            results.append(d)
+        return results[:limit]
+
+    def deliver_pending_witness_receipts(self) -> int:
+        return 0
+
+    def _try_create_witness_receipts(self, event: Event) -> None:
+        from ._witness import event_matches_filter
+
+        try:
+            for w in list(self._witnesses.values()):
+                if w["status"] != "active":
+                    continue
+                if not event_matches_filter(event.to_dict(), w.get("event_filter")):
+                    continue
+                receipt_id = uuid.uuid4()
+                self._witness_receipts.append({
+                    "receipt_id": receipt_id,
+                    "witness_id": w["witness_id"],
+                    "event_id": event.event_id,
+                    "status": "pending",
+                    "retry_count": 0,
+                    "submitted_at": None,
+                    "last_attempt_at": None,
+                    "confirmed_at": None,
+                    "witness_signature": None,
+                    "witness_response": None,
+                    "error_message": None,
+                    "created_at": datetime.now(UTC),
+                })
+        except Exception:
+            import structlog
+            structlog.get_logger().warning(
+                "witness.create_receipts_failed_in_memory",
+                event_id=str(event.event_id),
+            )
+
+    @property
+    def witnesses(self):
+        return self

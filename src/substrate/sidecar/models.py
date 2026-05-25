@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _serialize(obj):
@@ -155,6 +155,7 @@ class UpdateNotBeforeRequest(BaseModel):
 class ReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     continue_on_revoked: bool = False
+    verify_timestamps: bool = False
 
 
 class RegisterActorRoleRequest(BaseModel):
@@ -227,3 +228,20 @@ class CompleteHookRequest(BaseModel):
 class FailHookRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     error: str
+
+
+class RegisterWitnessRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+    headers: dict[str, str] | None = None
+    event_filter: dict | None = None
+    max_failures: int = Field(default=10, ge=1)
+    max_retries: int = Field(default=3, ge=1)
+
+
+class ReactivateWitnessRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class DeliverWitnessReceiptsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")

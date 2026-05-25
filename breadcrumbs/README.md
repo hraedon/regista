@@ -38,12 +38,24 @@ _(none)_
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
 | 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | resolved |
 | 237 | Variable name collision in InMemory replay hash chain check | high | resolved |
+| 238 | Witness receipt creation silently swallowed exceptions | high | resolved |
+| 239 | Witness HTTP delivery connection leak and unbounded response | high | resolved |
+| 240 | Missing UNIQUE constraint on witness_receipts (witness_id, event_id) | medium | resolved |
+| 241 | Sidecar missing error code mappings for witness and other error codes | medium | resolved |
+| 242 | Sidecar missing verify_timestamps and max_failures/max_retries validation | medium | resolved |
+| 243 | InMemory witness and replay parity issues | medium | resolved |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
 | 237 | Variable name collision in InMemory replay hash chain check | high | Fixed — renamed `ok`/`err` to `chain_ok`/`chain_err` in `_in_memory_replay.py` hash chain verification to avoid collision with outer `ok` counter. |
+| 238 | Witness receipt creation silently swallowed exceptions | high | Fixed — Postgres `_try_create_witness_receipts` now logs warning instead of `pass`. InMemory counterpart wrapped in `try/except` with logging. |
+| 239 | Witness HTTP delivery connection leak and unbounded response | high | Fixed — `conn_h.close()` moved to `finally` block. Response body limited to 1MB. |
+| 240 | Missing UNIQUE constraint on witness_receipts (witness_id, event_id) | medium | Fixed — migration 021 adds `CREATE UNIQUE INDEX`. `create_receipts()` catches `UniqueViolation`. |
+| 241 | Sidecar missing error code mappings for witness and other error codes | medium | Fixed — added `WITNESS_NOT_FOUND→404`, `WITNESS_DELIVERY_FAILED→500`, `WITNESS_PAUSED→409` and 7 other missing mappings. Added `_parse_uuid`/`_parse_datetime` ValueError→400 handling. Added `limit` bounds validation. |
+| 242 | Sidecar missing verify_timestamps and max_failures/max_retries validation | medium | Fixed — added `verify_timestamps` to `ReplayRequest`. Added `ge=1` constraint on `max_failures`/`max_retries`. Added core API validation. |
+| 243 | InMemory witness and replay parity issues | medium | Fixed — `unregister_witness` cleans orphaned receipts. `register_witness` copies dicts. InMemory replay logs halted work items. `witness_signature` stored as BYTEA not Jsonb. Receipt UPDATEs include `WHERE status='pending'` guard. Removed vacuous `FOR UPDATE`. Added URL hostname validation. |
 | 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | Fixed — added `prev_event_hash` to `PostgresEventStore.append()` INSERT column and parameter list. Events via `Substrate.append_event()` now persist `prev_event_hash` to DB. Added `test_append_event_api_persists_prev_hash` to `test_hash_chain.py`. |
 | 233 | Events are individually signed but not hash-chained — no tamper-proof ordering | high | Implemented BC-233: added `prev_event_hash BYTEA` column to `events` (migration 018), added `prev_event_hash` and `global_seq` to `Event` dataclass and `_EVENT_FIELDS`. Postgres and InMemory backends both compute `SHA-256(prev_canonical_envelope + prev_signature)`. Signing envelope v3 includes `prev_event_hash` and `global_seq` for integrity. Replay `_replay_work_item` verifies the chain per-event and increments `warnings` on break. 9 tests in `tests/test_hash_chain.py` (Postgres + InMemory parity, multi-event chain). |
 | 232 | BC-227 test reimplements _run instead of calling it | low | Fixed in Session 52 — connect-exhaustion path now resets `_processing` before early return; `_run` structured with inner try/finally. Test updated to drive real `_run`. |
