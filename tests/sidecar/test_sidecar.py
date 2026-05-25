@@ -385,19 +385,26 @@ class TestActorRoles:
 
 
 class TestApiDocs:
-    def test_docs_disabled(self, substrate_instance, token_file):
+    def test_docs_disabled_by_default(self, substrate_instance, token_file):
         token_path, _, _ = token_file
         from substrate.sidecar.app import create_app
         from substrate.sidecar.auth import TokenRegistry
 
         tokens = TokenRegistry.from_file(token_path)
-        app = create_app(substrate_instance, tokens, docs_url=None, openapi_url=None)
+        app = create_app(substrate_instance, tokens)
         client2 = TestClient(app)
         assert client2.get("/docs").status_code == 404
         assert client2.get("/openapi.json").status_code == 404
 
-    def test_docs_enabled_by_default(self, client):
-        assert client.get("/docs").status_code == 200
+    def test_docs_enabled_with_explicit_url(self, substrate_instance, token_file):
+        token_path, _, _ = token_file
+        from substrate.sidecar.app import create_app
+        from substrate.sidecar.auth import TokenRegistry
+
+        tokens = TokenRegistry.from_file(token_path)
+        app = create_app(substrate_instance, tokens, docs_url="/docs", openapi_url="/openapi.json")
+        client2 = TestClient(app)
+        assert client2.get("/docs").status_code == 200
 
 
 class TestNoValidatorOverHttp:

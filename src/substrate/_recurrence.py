@@ -437,9 +437,11 @@ def update_recurrence_rule(
         updates.append("status = %s")
         params.append(status)
     if schedule_expr is not None:
+        validate_schedule(rule["schedule_kind"], schedule_expr)
         updates.append("schedule_expr = %s")
         params.append(schedule_expr)
     if template is not None:
+        validate_template(template)
         updates.append("template = %s")
         params.append(psycopg.types.json.Jsonb(template))
     if not updates:

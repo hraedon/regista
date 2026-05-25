@@ -66,21 +66,9 @@ class MaintenanceThread:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                swept_claims = self._substrate.sweep_expired_claims()
-                if swept_claims > 0 and self._metrics:
-                    self._metrics.inc(
-                        "maintenance_claims_swept",
-                        self._project,
-                        amount=swept_claims,
-                    )
+                self._substrate.sweep_expired_claims()
 
-                swept_hooks = self._substrate.sweep_expired_hook_leases()
-                if swept_hooks > 0 and self._metrics:
-                    self._metrics.inc(
-                        "maintenance_hook_leases_swept",
-                        self._project,
-                        amount=swept_hooks,
-                    )
+                self._substrate.sweep_expired_hook_leases()
 
                 self._fire_due_recurrences()
 

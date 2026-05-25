@@ -122,11 +122,20 @@ def claim_hooks(
         raw_wi_id = payload.get("work_item_id")
         if raw_wi_id is None:
             continue
+        try:
+            wi_uuid = uuid.UUID(raw_wi_id)
+        except (ValueError, AttributeError):
+            log.warning(
+                "hooks.malformed_work_item_id",
+                hook_queue_id=row["id"],
+                raw_wi_id=raw_wi_id,
+            )
+            continue
         valid_ids.append(row["id"])
         result.append(HookContext(
             hook_queue_id=row["id"],
             event_id=row["event_id"],
-            work_item_id=uuid.UUID(raw_wi_id),
+            work_item_id=wi_uuid,
             hook_name=row["hook_name"],
             transition=payload.get("transition"),
             payload=payload.get("event_payload"),

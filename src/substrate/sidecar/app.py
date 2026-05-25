@@ -17,8 +17,8 @@ def create_app(
     substrate,
     tokens: TokenRegistry,
     *,
-    docs_url: str | None = "/docs",
-    openapi_url: str | None = "/openapi.json",
+    docs_url: str | None = None,
+    openapi_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Substrate Sidecar",

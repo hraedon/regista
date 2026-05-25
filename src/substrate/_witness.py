@@ -341,10 +341,15 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
         with mgr.transaction() as conn:
             receipts = conn.execute(
                 SQL(
-                    "SELECT receipt_id, event_id FROM witness_receipts "
-                    "WHERE witness_id = %s AND status = 'pending' "
-                    "ORDER BY created_at LIMIT 50 "
-                    "FOR UPDATE SKIP LOCKED"
+                    "UPDATE witness_receipts "
+                    "SET status = 'in_progress', last_attempt_at = now() "
+                    "WHERE receipt_id IN ("
+                    "  SELECT receipt_id FROM witness_receipts "
+                    "  WHERE witness_id = %s AND status = 'pending' "
+                    "  ORDER BY created_at LIMIT 50 "
+                    "  FOR UPDATE SKIP LOCKED"
+                    ") "
+                    "RETURNING receipt_id, event_id"
                 ),
                 [witness_id],
             ).fetchall()
@@ -435,7 +440,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                             "SET status = 'confirmed', confirmed_at = %s, "
                             "witness_signature = %s, witness_response = %s, "
                             "submitted_at = COALESCE(submitted_at, %s) "
-                            "WHERE receipt_id = %s AND status = 'pending'"
+                            "WHERE receipt_id = %s AND status = 'in_progress'"
                         ),
                         [
                             now,
@@ -463,8 +468,9 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                         SQL(
                             "UPDATE witness_receipts "
                             "SET retry_count = retry_count + 1, "
-                            "last_attempt_at = %s, error_message = %s "
-                            "WHERE receipt_id = %s AND status = 'pending'"
+                            "last_attempt_at = %s, error_message = %s, "
+                            "status = 'pending' "
+                            "WHERE receipt_id = %s AND status = 'in_progress'"
                         ),
                         [now, error_msg, receipt_id],
                     )

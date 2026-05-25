@@ -20,7 +20,7 @@ def main():
     project = os.environ.get("SUBSTRATE_PROJECT")
     hmac_key_path = os.environ.get("SUBSTRATE_HMAC_KEY_PATH")
     tokens_path = os.environ.get("SUBSTRATE_TOKENS_PATH")
-    bind = os.environ.get("SUBSTRATE_BIND", "0.0.0.0:8080")
+    bind = os.environ.get("SUBSTRATE_BIND", "127.0.0.1:8080")
     pool_min = int(os.environ.get("SUBSTRATE_POOL_MIN", "1"))
     pool_max = int(os.environ.get("SUBSTRATE_POOL_MAX", "10"))
 

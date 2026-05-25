@@ -44,11 +44,37 @@ _(none)_
 | 241 | Sidecar missing error code mappings for witness and other error codes | medium | resolved |
 | 242 | Sidecar missing verify_timestamps and max_failures/max_retries validation | medium | resolved |
 | 243 | InMemory witness and replay parity issues | medium | resolved |
+| 244 | Witness receipt delivery TOCTOU allows double-delivery | high | resolved |
+| 245 | Maintenance thread double-counts sweep metrics | medium | resolved |
+| 246 | claim_hooks raises unhandled ValueError on malformed work_item_id | high | resolved |
+| 247 | Recurrence rule update skips schedule_expr and template validation | high | resolved |
+| 248 | Sidecar frozen dataclass AuthenticatedActor has mutable allowed_roles list | medium | resolved |
+| 249 | Sidecar missing error code mappings for DELEGATION_CHAIN_EXPIRED and RESERVED_TRANSITION_NAME | medium | resolved |
+| 250 | TSA response unbounded read allows memory exhaustion | medium | resolved |
+| 251 | Sidecar OpenAPI docs and docs URL enabled by default | medium | resolved |
+| 252 | Sidecar default bind 0.0.0.0 exposes service on all network interfaces | medium | resolved |
+| 253 | Sidecar unregister_actor_role endpoint missing authorization check | medium | resolved |
+| 254 | CLI cmd_recurrence_update crashes on malformed --template JSON | low | resolved |
+| 255 | InMemory claim_hooks ignores next_retry_at filter, diverging from Postgres | medium | resolved |
+| 256 | Missing CHECK constraints on status columns and missing sweep index | high | resolved |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 244 | Witness receipt delivery TOCTOU allows double-delivery | high | Fixed — changed SELECT+FOR UPDATE to atomic UPDATE SET status='in_progress' ... RETURNING. Success/failure updates now match on 'in_progress'. Added 'in_progress' to CHECK constraint in migration 022. |
+| 245 | Maintenance thread double-counts sweep metrics | medium | Fixed — removed duplicate metric increments from `_maintenance.py`; kept single emission in `_ops.py` facades. |
+| 246 | claim_hooks raises unhandled ValueError on malformed work_item_id | high | Fixed — wrapped `uuid.UUID()` in try/except with structured logging; malformed rows are skipped instead of aborting the batch. |
+| 247 | Recurrence rule update skips schedule_expr and template validation | high | Fixed — added `validate_schedule()` and `validate_template()` calls in `update_recurrence_rule()`. |
+| 248 | Sidecar frozen dataclass AuthenticatedActor has mutable allowed_roles list | medium | Fixed — changed to `tuple[str, ...]` with `__post_init__` conversion. |
+| 249 | Sidecar missing error code mappings for DELEGATION_CHAIN_EXPIRED and RESERVED_TRANSITION_NAME | medium | Fixed — added both to `_STATUS_MAP` with 400 status. |
+| 250 | TSA response unbounded read allows memory exhaustion | medium | Fixed — changed `resp.read()` to `resp.read(1_000_000)` matching witness delivery limit. |
+| 251 | Sidecar OpenAPI docs and docs URL enabled by default | medium | Fixed — defaults changed to `None`. Operators must explicitly opt in. |
+| 252 | Sidecar default bind 0.0.0.0 exposes service on all network interfaces | medium | Fixed — default changed to `127.0.0.1:8080`. Operators can override via `SUBSTRATE_BIND`. |
+| 253 | Sidecar unregister_actor_role endpoint missing authorization check | medium | Fixed — added same `allowed_roles` check as `register_actor_role`. |
+| 254 | CLI cmd_recurrence_update crashes on malformed --template JSON | low | Fixed — added explicit `json.JSONDecodeError` handler with user-friendly error. |
+| 255 | InMemory claim_hooks ignores next_retry_at filter, diverging from Postgres | medium | Fixed — added `next_retry_at` filter to InMemory implementation matching Postgres semantics. |
+| 256 | Missing CHECK constraints on status columns and missing sweep index | high | Fixed — migration 022 adds CHECK on tsp_batches, witness_registrations, witness_receipts; drops redundant index; adds hook_queue lease sweep index. |
 | 237 | Variable name collision in InMemory replay hash chain check | high | Fixed — renamed `ok`/`err` to `chain_ok`/`chain_err` in `_in_memory_replay.py` hash chain verification to avoid collision with outer `ok` counter. |
 | 238 | Witness receipt creation silently swallowed exceptions | high | Fixed — Postgres `_try_create_witness_receipts` now logs warning instead of `pass`. InMemory counterpart wrapped in `try/except` with logging. |
 | 239 | Witness HTTP delivery connection leak and unbounded response | high | Fixed — `conn_h.close()` moved to `finally` block. Response body limited to 1MB. |

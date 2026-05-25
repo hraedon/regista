@@ -369,6 +369,9 @@ def cmd_recurrence_update(args):
             print(f"Updated rule {args.id}")
     except SubstrateError as e:
         _handle_error(e)
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON in --template: {e}", file=sys.stderr)
+        sys.exit(1)
     finally:
         sub.close()
 

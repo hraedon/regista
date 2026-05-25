@@ -13,7 +13,11 @@ from substrate._errors import ErrorCode, SubstrateError
 class AuthenticatedActor:
     actor_id: str
     actor_kind: str
-    allowed_roles: list[str]
+    allowed_roles: tuple[str, ...]
+
+    def __post_init__(self):
+        if not isinstance(self.allowed_roles, tuple):
+            object.__setattr__(self, "allowed_roles", tuple(self.allowed_roles))
 
 
 class TokenRegistry:

@@ -166,7 +166,7 @@ def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
                 ErrorCode.TSA_SUBMISSION_FAILED,
                 f"TSA returned HTTP {resp.status}",
             )
-        return resp.read()
+        return resp.read(1_000_000)
 
 
 def _parse_tst_info(token: bytes):

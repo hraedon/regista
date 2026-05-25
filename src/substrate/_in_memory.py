@@ -538,6 +538,10 @@ class InMemorySubstrate:
         pending = [
             e for e in self._hook_queue
             if e.get("status", "pending") == "pending"
+            and (
+                e.get("next_retry_at") is None
+                or e["next_retry_at"] <= now
+            )
         ][:max_batch]
 
         valid = []

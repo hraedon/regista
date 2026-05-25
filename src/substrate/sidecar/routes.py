@@ -328,6 +328,11 @@ def register_routes(app, substrate, tokens: TokenRegistry):
     @router.post("/unregister_actor_role")
     async def unregister_actor_role(body: UnregisterActorRoleRequest, request: Request):
         actor = _get_actor(request)
+        if body.role not in actor.allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Token not authorized for role {body.role!r}",
+            )
         substrate.unregister_actor_role(actor.actor_id, body.role)
         return {"status": "ok"}
 
