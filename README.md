@@ -3,7 +3,7 @@
 Coordination and durable state for agent pipelines over Postgres.
 
 [![CI](https://github.com/hraedon/substrate/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/substrate/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-721%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-974%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 Substrate is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys substrate as its own isolated instance using schema-per-project isolation within a single Postgres database.
@@ -11,6 +11,7 @@ Substrate is a Python library that provides durable claims, event-sourced state,
 ## Features
 
 - **Event-sourced state** — immutable append-only event log; projection rebuilt by replay
+- **Event hash chain** — each event's `prev_event_hash` binds it to its predecessor (SHA-256 of prev envelope + signature)
 - **Durable claims** — lease-based work claiming with TTL, auto-steal, and attempt tracking
 - **Validated transitions** — workflow-defined state machines with role gating and sync validators
 - **Typed links** — directed relationships between work items with link types declared in workflow YAML
@@ -19,12 +20,18 @@ Substrate is a Python library that provides durable claims, event-sourced state,
 - **Recurring work items** — interval and RRULE schedules with catch-up policies
 - **Workflow composition** — `extends:` inheritance with keyed list merge and `__append`/`__remove` modifiers
 - **Facade API** — domain-scoped sub-objects (`sub.workflows`, `sub.work_items`, `sub.claims`, etc.)
-- **Maintenance thread** — background sweep, recurrence firing, and hook lease cleanup
+- **Maintenance thread** — background sweep, recurrence firing, hook lease cleanup, and witness delivery
 - **Trust hardening** — `strict_roles` enforcement, env-var key injection, vendored RFC 8785
-- **HMAC-SHA256 signing** — RFC 8785 canonicalization; library is sole signer
+- **Delegation chain** — `on_behalf_of` field for agent-to-principal binding (Plan 010)
+- **Pluggable signing** — HMAC-SHA256 (default) and Ed25519 via `SigningScheme` protocol (Plan 011)
+- **RFC 3161 timestamping** — Merkle tree batching against external TSA for event integrity (Plan 012)
+- **Witness co-signing** — external witness registration, receipt creation, and HTTP delivery (Plan 013)
+- **Webhooks** — push-model event delivery with auto-pause on failure
+- **Event archival** — `archive_events` moves old events to archive table, preserving hash chain integrity
+- **Batch operations** — `create_work_items_batch` for multi-create in a single transaction
 - **HTTP sidecar** — optional FastAPI pass-through for non-Python consumers with bearer-token auth
-- **Admin CLI** — `substrate` command for workflow validation, work-item inspection, replay, and recurrence management
-- **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations
+- **Admin CLI** — `substrate` command for workflow validation, work-item CRUD, event archival, witness management, and more
+- **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations, witnesses, timestamping
 - **In-memory backend** — full conformance backend for testing without Postgres
 
 ## Quick Start
@@ -35,6 +42,15 @@ pip install -e .
 
 # With HTTP sidecar support
 pip install -e ".[sidecar]"
+
+# With Ed25519 signing support
+pip install -e ".[ed25519]"
+
+# With RFC 3161 timestamping support
+pip install -e ".[timestamping]"
+
+# Install everything
+pip install -e ".[sidecar,ed25519,timestamping]"
 
 # Start test Postgres
 docker compose -f docker-compose.test.yml up -d
@@ -172,7 +188,7 @@ transitions:
     __append: true
 ```
 
-## HMAC Key Format
+## Key Format
 
 ```json
 {
@@ -180,13 +196,23 @@ transitions:
     {
       "key_id": "key-001",
       "secret": "base64-encoded-secret",
-      "status": "active"
+      "status": "active",
+      "scheme": "hmac-sha256"
+    },
+    {
+      "key_id": "key-002",
+      "secret": "base64-encoded-ed25519-seed",
+      "public_key": "base64-encoded-ed25519-public-key",
+      "status": "active",
+      "scheme": "ed25519",
+      "encoding": "base64"
     }
   ]
 }
 ```
 
 Key statuses: `active`, `deprecated` (accepted with warning), `revoked` (rejected).
+Signing schemes: `hmac-sha256` (default), `ed25519` (requires `pip install substrate[ed25519]`).
 
 ## HTTP Sidecar
 
@@ -223,13 +249,21 @@ A Dockerfile is provided in `deploy/sidecar/`.
 # Validate a workflow YAML (no database required)
 substrate workflow validate my-workflow.yaml
 
+# Compose workflow with extends:
+substrate workflow compose my-workflow.yaml --json
+
 # Inspect work items
 substrate work-item show <uuid>
 substrate work-item list --workflow my_workflow --claimable-now
 
+# Create and transition work items
+substrate work-item create --workflow my_workflow --type feature --actor agent-1 --confirm
+substrate work-item transition <uuid> --transition start --actor agent-1 --confirm
+
 # View events
 substrate events show <uuid>
 substrate events tail --actor agent-1 --since "2026-05-01T00:00:00Z"
+substrate events archive --before "2026-01-01T00:00:00Z" --dry-run
 
 # Replay drift check
 substrate replay
@@ -249,14 +283,28 @@ substrate hooks dead-letter requeue <id>
 
 # Actor roles
 substrate actor-roles list --actor agent-1
+
+# Witnesses
+substrate witness list
+substrate witness deliver
+substrate witness receipts --event-id <uuid>
+
+# Webhooks
+substrate webhook register --url https://example.com/hook --transitions start,complete
+substrate webhook list
+
+# Timestamping
+substrate timestamp status
+substrate timestamp trigger
 ```
 
 ## Architecture
 
 - **Event-sourced**: events are the authoritative log; `work_items_current` is a transactionally-consistent projection
+- **Hash-chained events**: each event's `prev_event_hash` creates a tamper-evident chain within each work-item
 - **Schema-per-project**: one Postgres database, one schema per project, engine-enforced isolation
-- **Library mode**: runs in-process, no HTTP server required; optional `start_maintenance()` background thread for sweep and recurrence
-- **Library is sole signer**: HMAC-SHA256 over RFC 8785 canonical JSON, computed internally
+- **Library mode**: runs in-process, no HTTP server required; optional `start_maintenance()` background thread for sweep, recurrence, and witness delivery
+- **Pluggable signing**: HMAC-SHA256 (default) or Ed25519 via `SigningScheme` protocol; library is sole signer
 - **Flat events table**: global `UNIQUE(event_id)` index; partitioning removed in RFC-001
 - **Single-source-of-truth contract**: shared validation/decision functions in `_contract.py` used by both Postgres and in-memory backends
 - **Property-based testing**: hypothesis-driven conformance tests verify both backends behave identically
@@ -292,7 +340,7 @@ Test DSN: `postgresql://substrate_test:substrate_test@localhost:5432/substrate_t
 
 ## Status
 
-All features through Plan 009 implemented. 721 tests passing (core, sidecar, property-based, and plan-specific). FR-01 through FR-29 in tree. 198 breadcrumbs resolved. See `AGENTS.md` for detailed status.
+All features through Plan 015 implemented. 974 tests passing (core, sidecar, property-based, witness, timestamping, and plan-specific). FR-01 through FR-29 in tree. 268 breadcrumbs tracked, 263 resolved. See `AGENTS.md` for detailed status.
 
 ## License
 
