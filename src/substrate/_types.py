@@ -366,9 +366,10 @@ class TransitionDef:
     allowed_roles: list[str]
     validator: str | None
     hooks: list[str]
+    privileged: bool = False
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "name": self.name,
             "from_state": self.from_state,
             "to_state": self.to_state,
@@ -376,6 +377,9 @@ class TransitionDef:
             "validator": self.validator,
             "hooks": self.hooks,
         }
+        if self.privileged:
+            result["privileged"] = True
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> TransitionDef:
@@ -386,6 +390,7 @@ class TransitionDef:
             allowed_roles=data["allowed_roles"],
             validator=data.get("validator"),
             hooks=data.get("hooks", []),
+            privileged=data.get("privileged", False),
         )
 
 

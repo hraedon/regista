@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import os
+import uuid
+
+import pytest
+
+from substrate import Substrate
+from substrate._contract import check_privileged_transition
+from substrate._errors import ErrorCode, SubstrateError
+from substrate._in_memory import InMemorySubstrate
+from substrate._types import TransitionDef
+from substrate.testing import drop_project_schema, validate_yaml
+
+DSN = os.environ.get(
+    "TEST_DSN",
+    "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test",
+)
+KEY_PATH = os.environ.get("TEST_KEYS", "tests/test_keys.json")
+
+PRIVILEGED_WORKFLOW = """\
+name: privileged_test
+version: 1
+substrate_version: "0.3.0"
+
+states:
+  - name: new
+    initial: true
+  - name: attested
+    terminal: true
+
+transitions:
+  - name: scope_attestation
+    from: new
+    to: attested
+    privileged: true
+  - name: start
+    from: new
+    to: attested
+    allowed_roles: [agent]
+
+roles:
+  - name: agent
+
+work_item_types:
+  - name: task
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+"""
+
+
+class TestContractPrivilegedTransition:
+    def test_system_actor_passes(self):
+        t = {"name": "scope_attestation", "from_state": "new", "privileged": True}
+        check_privileged_transition(t, "system", "scope_attestation")
+
+    def test_agent_actor_rejected(self):
+        t = {"name": "scope_attestation", "from_state": "new", "privileged": True}
+        with pytest.raises(SubstrateError) as exc_info:
+            check_privileged_transition(t, "agent", "scope_attestation")
+        assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED
+        assert "agent" in exc_info.value.message
+        assert "system" in exc_info.value.message
+
+    def test_human_actor_rejected(self):
+        t = {"name": "scope_attestation", "from_state": "new", "privileged": True}
+        with pytest.raises(SubstrateError):
+            check_privileged_transition(t, "human", "scope_attestation")
+
+    def test_non_privileged_transition_allows_any_actor(self):
+        t = {"name": "start", "from_state": "new", "privileged": False}
+        check_privileged_transition(t, "agent", "start")
+        check_privileged_transition(t, "human", "start")
+        check_privileged_transition(t, "system", "start")
+
+    def test_missing_privileged_key_defaults_false(self):
+        t = {"name": "start", "from_state": "new"}
+        check_privileged_transition(t, "agent", "start")
+
+
+class TestTransitionDefPrivileged:
+    def test_default_privileged_false(self):
+        td = TransitionDef(
+            name="start", from_state="new", to_state="done",
+            allowed_roles=[], validator=None, hooks=[],
+        )
+        assert td.privileged is False
+
+    def test_privileged_true(self):
+        td = TransitionDef(
+            name="attest", from_state="new", to_state="done",
+            allowed_roles=[], validator=None, hooks=[], privileged=True,
+        )
+        assert td.privileged is True
+
+    def test_to_dict_includes_privileged_when_true(self):
+        td = TransitionDef(
+            name="attest", from_state="new", to_state="done",
+            allowed_roles=[], validator=None, hooks=[], privileged=True,
+        )
+        d = td.to_dict()
+        assert d["privileged"] is True
+
+    def test_to_dict_omits_privileged_when_false(self):
+        td = TransitionDef(
+            name="start", from_state="new", to_state="done",
+            allowed_roles=[], validator=None, hooks=[], privileged=False,
+        )
+        d = td.to_dict()
+        assert "privileged" not in d
+
+    def test_from_dict_with_privileged(self):
+        d = {
+            "name": "attest", "from_state": "new", "to_state": "done",
+            "allowed_roles": [], "validator": None, "hooks": [], "privileged": True,
+        }
+        td = TransitionDef.from_dict(d)
+        assert td.privileged is True
+
+    def test_from_dict_without_privileged(self):
+        d = {
+            "name": "start", "from_state": "new", "to_state": "done",
+            "allowed_roles": [], "validator": None, "hooks": [],
+        }
+        td = TransitionDef.from_dict(d)
+        assert td.privileged is False
+
+
+class TestWorkflowSchemaPrivileged:
+    def test_privileged_workflow_validates(self):
+        result = validate_yaml(PRIVILEGED_WORKFLOW)
+        assert result.valid, result.errors
+
+    def test_privileged_rejects_non_boolean(self):
+        bad = PRIVILEGED_WORKFLOW.replace("privileged: true", "privileged: yes_not_bool")
+        result = validate_yaml(bad)
+        assert not result.valid
+
+
+class TestPostgresPrivilegedTransition:
+    @pytest.fixture()
+    def sub(self):
+        proj = f"test_priv_{uuid.uuid4().hex[:8]}"
+        s = Substrate.create_project(DSN, proj, hmac_key_path=KEY_PATH)
+        s.register_workflow(PRIVILEGED_WORKFLOW)
+        yield s
+        drop_project_schema(DSN, proj)
+
+    def test_system_actor_can_transition(self, sub):
+        wi, _ = sub.create_work_item(
+            "privileged_test", "task", "system-actor",
+            actor_kind="system",
+            custom_fields={"title": "test"},
+        )
+        evt = sub.transition(
+            wi.work_item_id, "scope_attestation", "system-actor",
+            actor_kind="system",
+        )
+        assert evt.transition == "scope_attestation"
+
+    def test_agent_actor_rejected(self, sub):
+        wi, _ = sub.create_work_item(
+            "privileged_test", "task", "agent-1",
+            actor_kind="agent",
+            custom_fields={"title": "test"},
+        )
+        with pytest.raises(SubstrateError) as exc_info:
+            sub.transition(
+                wi.work_item_id, "scope_attestation", "agent-1",
+                actor_kind="agent",
+            )
+        assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED
+
+    def test_non_privileged_transition_works_normally(self, sub):
+        wi, _ = sub.create_work_item(
+            "privileged_test", "task", "agent-1",
+            actor_kind="agent",
+            custom_fields={"title": "test"},
+        )
+        evt = sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_kind="agent",
+            actor_metadata={"role": "agent"},
+        )
+        assert evt.transition == "start"
+
+
+class TestInMemoryPrivilegedTransition:
+    @pytest.fixture()
+    def sub(self):
+        return InMemorySubstrate(
+            project="test_priv_mem",
+            hmac_key_path=KEY_PATH,
+        )
+
+    def test_system_actor_can_transition(self, sub):
+        sub.register_workflow(PRIVILEGED_WORKFLOW)
+        wi, _ = sub.create_work_item(
+            "privileged_test", "task", "system-actor",
+            actor_kind="system",
+            custom_fields={"title": "test"},
+        )
+        evt = sub.transition(
+            wi.work_item_id, "scope_attestation", "system-actor",
+            actor_kind="system",
+        )
+        assert evt.transition == "scope_attestation"
+
+    def test_agent_actor_rejected(self, sub):
+        sub.register_workflow(PRIVILEGED_WORKFLOW)
+        wi, _ = sub.create_work_item(
+            "privileged_test", "task", "agent-1",
+            actor_kind="agent",
+            custom_fields={"title": "test"},
+        )
+        with pytest.raises(SubstrateError) as exc_info:
+            sub.transition(
+                wi.work_item_id, "scope_attestation", "agent-1",
+                actor_kind="agent",
+            )
+        assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED

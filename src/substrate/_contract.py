@@ -125,6 +125,19 @@ def check_role_gating(
     return role
 
 
+def check_privileged_transition(
+    transition_def: dict,
+    actor_kind: str,
+    transition_name: str,
+) -> None:
+    if transition_def.get("privileged") and actor_kind != "system":
+        raise SubstrateError(
+            ErrorCode.PRIVILEGED_TRANSITION_REQUIRED,
+            f"Transition {transition_name!r} requires actor_kind='system', "
+            f"got actor_kind={actor_kind!r}",
+        )
+
+
 def check_actor_role_authorized(
     registered_roles: set[str],
     actor_id: str,

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from ._contract import (
     Jsonb,
     check_actor_role_authorized,
+    check_privileged_transition,
     check_role_gating,
     resolve_transition,
     validate_delegation_chain,
@@ -72,6 +73,12 @@ def in_memory_transition(
         transition_name,
         wi["workflow_name"],
         wi["workflow_version"],
+    )
+
+    check_privileged_transition(
+        transition_def,
+        actor_kind,
+        transition_name,
     )
 
     role = check_role_gating(

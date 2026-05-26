@@ -106,6 +106,10 @@
               "type": "string"
             },
             "default": []
+          },
+          "privileged": {
+            "type": "boolean",
+            "default": false
           }
         }
       }

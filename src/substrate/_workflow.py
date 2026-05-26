@@ -215,6 +215,7 @@ def build_definition(data: dict, raw_yaml: str) -> WorkflowDefinition:
             allowed_roles=t.get("allowed_roles", []),
             validator=t.get("validator"),
             hooks=t.get("hooks", []),
+            privileged=t.get("privileged", False),
         )
         for t in data.get("transitions", [])
     ]

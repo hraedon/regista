@@ -9,6 +9,9 @@ from ._contract import (
     Jsonb as _Jsonb,
 )
 from ._contract import (
+    check_privileged_transition as _check_privileged_transition,
+)
+from ._contract import (
     check_role_gating as _check_role_gating,
 )
 from ._contract import (
@@ -92,6 +95,12 @@ def transition(
                 transition_name,
                 wi_row["workflow_name"],
                 wi_row["workflow_version"],
+            )
+
+            _check_privileged_transition(
+                transition_def,
+                actor_kind,
+                transition_name,
             )
 
             _check_role_gating(
