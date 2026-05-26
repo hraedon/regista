@@ -35,27 +35,6 @@ _(none)_
 |---|---|---|---|
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
-| 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | resolved |
-| 237 | Variable name collision in InMemory replay hash chain check | high | resolved |
-| 238 | Witness receipt creation silently swallowed exceptions | high | resolved |
-| 239 | Witness HTTP delivery connection leak and unbounded response | high | resolved |
-| 240 | Missing UNIQUE constraint on witness_receipts (witness_id, event_id) | medium | resolved |
-| 241 | Sidecar missing error code mappings for witness and other error codes | medium | resolved |
-| 242 | Sidecar missing verify_timestamps and max_failures/max_retries validation | medium | resolved |
-| 243 | InMemory witness and replay parity issues | medium | resolved |
-| 244 | Witness receipt delivery TOCTOU allows double-delivery | high | resolved |
-| 245 | Maintenance thread double-counts sweep metrics | medium | resolved |
-| 246 | claim_hooks raises unhandled ValueError on malformed work_item_id | high | resolved |
-| 247 | Recurrence rule update skips schedule_expr and template validation | high | resolved |
-| 248 | Sidecar frozen dataclass AuthenticatedActor has mutable allowed_roles list | medium | resolved |
-| 249 | Sidecar missing error code mappings for DELEGATION_CHAIN_EXPIRED and RESERVED_TRANSITION_NAME | medium | resolved |
-| 250 | TSA response unbounded read allows memory exhaustion | medium | resolved |
-| 251 | Sidecar OpenAPI docs and docs URL enabled by default | medium | resolved |
-| 252 | Sidecar default bind 0.0.0.0 exposes service on all network interfaces | medium | resolved |
-| 253 | Sidecar unregister_actor_role endpoint missing authorization check | medium | resolved |
-| 254 | CLI cmd_recurrence_update crashes on malformed --template JSON | low | resolved |
-| 255 | InMemory claim_hooks ignores next_retry_at filter, diverging from Postgres | medium | resolved |
-| 256 | Missing CHECK constraints on status columns and missing sweep index | high | resolved |
 | 269 | Witness and webhook are near-duplicate patterns that should be unified | medium | accepted |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | accepted |
@@ -66,8 +45,17 @@ _(none)_
 |---|---|---|---|
 | 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | Accepted — UUIDv5 with SHA-1 is adequate for the homelab scale; collision probability is negligible for the expected event volume. |
 | 257 | No CLI or test helper for running targeted test subsets by file path | low | Added `make test-files FILES=tests/test_replay_coverage.py` target to Makefile. |
-| 267 | archive_events breaks hash chain and replay consistency | high | Changed `archive_events` to only archive complete work-items (max timestamp before cutoff). All events for a qualifying work-item move together, preserving hash chain integrity. |
 | 268 | Webhook delivery has no retry or dead-letter mechanism | medium | Added `failure_count` and `max_failures` columns. Auto-pauses webhook after consecutive failures. Resets counter on success. Full retry/dead-letter deferred. |
+| 267 | archive_events breaks hash chain and replay consistency | high | Changed `archive_events` to only archive complete work-items (max timestamp before cutoff). All events for a qualifying work-item move together, preserving hash chain integrity. |
+| 266 | Missing index on claims(expires_at) for sweep queries | low | Migration 023 adds `idx_claims_expires_at` partial index on `claims(expires_at) WHERE expires_at IS NOT NULL`. |
+| 265 | Replay temp tables leak on exception | low | Extracted `_replay_inner()`; `replay()` wraps in try/except and drops replay tables on exception using specific tag (not wildcard). |
+| 264 | spec.yaml stale — synced to v5 but spec.md is at v8 | low | Updated spec.yaml: meta version to v8, date to 2026-05-26. Added FR-28/FR-29 to phase 4. Updated open questions and handoff decisions. |
+| 263 | Connection pool health in maintenance_healthy | low | Added `pool_healthy` property to `Substrate` that executes `SELECT 1` via pool; returns `False` on failure or after close. |
+| 262 | CLI write commands for work items and transitions | low | Added `substrate work-item create` and `substrate work-item transition` commands gated by `--confirm` flag. Supports `--custom-fields`, `--payload`, `--actor-metadata` as JSON. |
+| 261 | Webhook delivery for events (push model) | medium | New `_webhooks.py` module with registration, filtering, HTTP POST delivery. Migration 024 creates `webhook_registrations` table. `WebhookOps` facade. Sidecar + CLI endpoints. |
+| 260 | compose_workflow endpoint and CLI command | low | Sidecar `POST /v1/compose_workflow` returns composed dict + source map. CLI `substrate workflow compose <file> [--json]`. |
+| 259 | Batch operations API for work items and transitions | medium | Added `create_work_items_batch(items, actor_id, actor_kind)` to `WorkItemOps` and `Substrate`. Single-transaction batch create. Sidecar `POST /v1/create_work_items_batch`. |
+| 258 | Event retention / archival API | medium | Added `archive_events(before_timestamp, dry_run=False)` with `ArchiveOps` facade. Migration 024 creates `events_archive` table. CLI + sidecar endpoints. |
 | 244 | Witness receipt delivery TOCTOU allows double-delivery | high | Fixed — changed SELECT+FOR UPDATE to atomic UPDATE SET status='in_progress' ... RETURNING. Success/failure updates now match on 'in_progress'. Added 'in_progress' to CHECK constraint in migration 022. |
 | 245 | Maintenance thread double-counts sweep metrics | medium | Fixed — removed duplicate metric increments from `_maintenance.py`; kept single emission in `_ops.py` facades. |
 | 246 | claim_hooks raises unhandled ValueError on malformed work_item_id | high | Fixed — wrapped `uuid.UUID()` in try/except with structured logging; malformed rows are skipped instead of aborting the batch. |
@@ -100,20 +88,12 @@ _(none)_
 | 224 | HMACSHA256Scheme.verify uses == for envelope hash — timing side-channel | high | Fixed in Session 52 — replaced `hashlib.sha256(envelope).digest() == envelope_hash` with `hmac.compare_digest(...)` in both `HMACSHA256Scheme.verify` and `Ed25519Scheme.verify`. |
 | 223 | verify_tsa_token is not real TSA verification — naive substring search | critical | Fixed in Session 52 — replaced substring search with proper CMS/PKCS#7 parsing via `asn1crypto`: extracts `TSTInfo`, reads the embedded hash algorithm OID, recomputes the digest with the correct algorithm, and compares with `hmac.compare_digest`. |
 | 222 | Replay _EVENT_FIELDS missing scheme_id — Ed25519 events always verified with HMAC | high | Added `scheme_id` to `_EVENT_FIELDS` in `_replay.py`. Replay paths resolve public_key for Ed25519 verification. Fixed Ed25519 test key files. 10 integration tests added in `tests/test_signing_ed25519.py`. |
-
-| # | Title | Severity | Resolution |
-|---|---|---|---|
-| 231 | trigger_timestamping treats event_seq as global, but it is per-work-item | high | Implemented Plan 014 — added `global_seq BIGSERIAL` to `events`, rewrote `trigger_timestamping` + `_rehydrate_event_ids` + `list_batches` to use `global_seq`, updated replay `verify_timestamps` to key off `global_seq`. Multi-WI batching is now coherent. Migration `017_events_global_seq.sql`. 4 new tests in `tests/test_timestamping.py`. |
-| 222 | Replay _EVENT_FIELDS missing scheme_id — Ed25519 events always verified with HMAC | high | Added `scheme_id` to `_EVENT_FIELDS` in `_replay.py`. Replay paths resolve public_key for Ed25519 verification. Fixed Ed25519 test key files. 10 integration tests added in `tests/test_signing_ed25519.py`. |
 | 210 | Recurrence system has zero Postgres integration tests | high | Added 24 Postgres integration tests in `tests/test_recurrence_postgres.py` covering register, list, due, fire, cancel, update, and custom fields. Fixed `_recurrence.py` to use `psycopg.types.json.Jsonb` for dict params and wrap `actor_metadata` in `_Jsonb` before calling `_create_work_item`. |
 | 212 | FR-10 references `event_type` column but actual column is `transition` | low | Fixed `spec.md` line 124: changed `event_type = 'escalated'` to `transition = 'escalated'`. |
 | 211 | Problem statement says 'own database' but v4 changed to schema-per-project | low | Fixed `spec.md` line 22: changed 'own database' to 'own Postgres schema within a shared database'. |
 | 209 | Replay test coverage is thin — many untested derivation paths | high | Added 19 tests in `tests/test_replay_coverage.py`: claims (acquired/stolen/released/expired/heartbeat), links, escalation, not_before_set, custom_fields_update, orphan events, continue_on_revoked, signature failures, missing workflow, invalid from_state, and InMemory parity. Fixed `_in_memory_replay.py` to also reset `derived_claim_expires_at` on transition. |
 | 199 | Sidecar auth middleware is permissive by default; no role-based authorization | high | Added deny-by-default `auth_middleware` in `src/substrate/sidecar/routes.py`, removed OPTIONS exemption, added `_require_admin` helper and `ADMIN_ROLE` constant, gated 8 privileged endpoints behind admin role. Tests added in `tests/sidecar/test_sidecar.py`. |
 | 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | Implemented Plan 010 — `on_behalf_of` field added to every event via `append_event`/`transition`/`update_not_before`. Integrity-protected by HMAC signature (backward-compat retry in `verify_event`). Validation via `validate_delegation_chain`. Postgres + InMemory + Sidecar. 31 new tests. Closes this design gap; cryptographic enforcement of delegation remains BC-196 / future work. |
-
-| # | Title | Severity | Resolution |
-| 197 | Event signing has no delegation chain — agent actor cannot be bound to authorizing human principal | medium | Accepted — valid design gap. Typed `on_behalf_of` sub-object is the correct v1 fix; per-principal signing keys require BC-196 to land first. Implementation deferred to Plan 008 workstream. Current `actor_metadata` is self-attested by design (BC-101). |
 | 196 | HMAC signing is symmetric — no external/adversarial verifiability | medium | Accepted — valid design gap for external-audit use cases. HMAC remains the correct homelab default. Pluggable signature scheme (WS-1/WS-3 in Plan 008 position) is the structural prerequisite; Ed25519 implementation deferred to Plan 008. Current spec §17.9 is honest about trust tiers. |
 | 195 | No visibility mechanism for downstream consumers of Substrate constructor signature | medium | Contract test in `tests/test_api_surface.py::TestBC195ConstructorPositionalContract` pins `Substrate(dsn, project, hmac_key_path)` positional shape used by sf2. Test fails at CI if constructor signature regresses. |
 | 185 | Maintenance metrics not specified in Plan 009 — operator blind to sweeps | medium | Counters `substrate_maintenance_cycles_total`, `substrate_maintenance_claims_swept_total`, `substrate_maintenance_hook_leases_swept_total`, `substrate_maintenance_partitions_created_total`, `substrate_maintenance_recurrences_fired_total`, and `substrate_maintenance_errors_total` added to `Metrics.inc`. Wired to: `sweep_expired_claims`, `sweep_expired_hook_leases`, `ensure_event_partitions`, and `fire_recurrence` on `Substrate`. `maintenance_healthy` property added to both `Substrate` and `InMemorySubstrate` (returns True pending Plan 009 thread). InMemory backend uses structured log. `maintenance_cycles_total` call site pending Plan 009 MaintenanceThread. |

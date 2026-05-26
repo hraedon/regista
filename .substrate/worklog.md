@@ -4,9 +4,9 @@ Structured log of development sessions and milestones.
 
 ---
 
-## 2026-05-26 — Session 60: ErrorCode ↔ sidecar status map drift guard
+## 2026-05-26 — Session 60: ErrorCode drift guard + documentation cleanup
 
-**Focus:** Address gap flagged in Session 59 reflection — no test asserting ErrorCode enum coverage matches sidecar `_STATUS_MAP`.
+**Focus:** Address gap flagged in Session 59 reflection, then full documentation update.
 
 **Delivered:**
 
@@ -14,9 +14,15 @@ Structured log of development sessions and milestones.
    - `test_all_error_codes_have_status_mapping` — asserts `set(ErrorCode) <= set(_STATUS_MAP.keys())`, fails with actionable message listing missing codes.
    - `test_status_map_values_are_valid_http_codes` — asserts all mapped values are standard HTTP error statuses (400/401/403/404/409/500/502/503).
 
-2. **Tracked `plans/016-privileged-transitions.md`** — was untracked in working tree.
+2. **AGENTS.md** — updated test count 972 → 974.
 
-**Test results:** 974 passed (2 new), 10 deselected, lint clean.
+3. **Breadcrumbs cleanup:**
+   - Moved BCs 236-256, 257, 267, 268 from root to `resolved/`.
+   - Cleaned Open table: removed 21 resolved entries, 5 remain (213, 235, 269, 270, 271).
+   - Consolidated duplicate Resolved table headers into single table.
+   - Added missing resolved entries for BCs 258-266 to Resolved table.
+
+**Test results:** 974 passed, 10 deselected, lint clean.
 
 ---
 
