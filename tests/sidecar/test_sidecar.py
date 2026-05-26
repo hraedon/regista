@@ -570,3 +570,24 @@ class TestTimestampRoutes:
             headers=auth_headers,
         )
         assert resp.status_code == 200
+
+
+class TestErrorCodeCoverage:
+    def test_all_error_codes_have_status_mapping(self):
+        from substrate._errors import ErrorCode
+        from substrate.sidecar.errors import _STATUS_MAP
+
+        missing = set(ErrorCode) - set(_STATUS_MAP.keys())
+        assert missing == set(), (
+            f"ErrorCode members missing from sidecar _STATUS_MAP: {missing}. "
+            "Every ErrorCode must have an explicit HTTP status mapping."
+        )
+
+    def test_status_map_values_are_valid_http_codes(self):
+        from substrate.sidecar.errors import _STATUS_MAP
+
+        valid = {400, 401, 403, 404, 409, 500, 502, 503}
+        for code, status in _STATUS_MAP.items():
+            assert status in valid, (
+                f"_STATUS_MAP[{code!r}] = {status} is not a standard HTTP error status"
+            )

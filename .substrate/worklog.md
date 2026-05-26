@@ -4,6 +4,22 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-26 — Session 60: ErrorCode ↔ sidecar status map drift guard
+
+**Focus:** Address gap flagged in Session 59 reflection — no test asserting ErrorCode enum coverage matches sidecar `_STATUS_MAP`.
+
+**Delivered:**
+
+1. **`TestErrorCodeCoverage`** — 2 tests in `tests/sidecar/test_sidecar.py`:
+   - `test_all_error_codes_have_status_mapping` — asserts `set(ErrorCode) <= set(_STATUS_MAP.keys())`, fails with actionable message listing missing codes.
+   - `test_status_map_values_are_valid_http_codes` — asserts all mapped values are standard HTTP error statuses (400/401/403/404/409/500/502/503).
+
+2. **Tracked `plans/016-privileged-transitions.md`** — was untracked in working tree.
+
+**Test results:** 974 passed (2 new), 10 deselected, lint clean.
+
+---
+
 ## 2026-05-25 — Session 59: Resume interrupted adversarial review commit (BC-244–BC-256)
 
 **Focus:** Deepseek session was interrupted by usage limits. Verified and committed the remaining uncommitted adversarial review fixes from Session 58.
