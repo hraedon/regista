@@ -222,7 +222,7 @@ def heartbeat_claim(
     last_emitted = claim_row["last_heartbeat_emitted_at"] if claim_row else None
     should_emit = (
         last_emitted is None
-        or (result.new_expires_at - last_emitted).total_seconds() >= threshold
+        or (now - last_emitted).total_seconds() >= threshold
     )
 
     if should_emit and wi is not None and key_set is not None:
@@ -249,7 +249,7 @@ def heartbeat_claim(
                 "UPDATE claims SET expires_at = %s, last_heartbeat_emitted_at = %s "
                 "WHERE work_item_id = %s"
             ),
-            [result.new_expires_at, result.new_expires_at, work_item_id],
+            [result.new_expires_at, now, work_item_id],
         )
     else:
         conn.execute(
@@ -307,21 +307,20 @@ def release_claim(
         [work_item_id],
     )
 
-    if wi is not None:
-        append_event(
-            conn=conn,
-            work_item_id=work_item_id,
-            actor_id=actor_id,
-            actor_kind=actor_kind,
-            actor_metadata=None,
-            key_set=key_set,
-            workflow_name=wi["workflow_name"],
-            workflow_version=wi["workflow_version"],
-            transition="claim_released",
-            payload=Jsonb({"actor_id": actor_id}),
-            event_id=event_id or uuid.uuid4(),
-            _prelocked_wi=wi,
-        )
+    append_event(
+        conn=conn,
+        work_item_id=work_item_id,
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        actor_metadata=None,
+        key_set=key_set,
+        workflow_name=wi["workflow_name"],
+        workflow_version=wi["workflow_version"],
+        transition="claim_released",
+        payload=Jsonb({"actor_id": actor_id}),
+        event_id=event_id or uuid.uuid4(),
+        _prelocked_wi=wi,
+    )
 
 
 def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:

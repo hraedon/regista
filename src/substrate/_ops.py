@@ -123,6 +123,36 @@ class WorkItemOps:
             event_id=event_id,
         )
 
+    def create_batch(
+        self,
+        items: list[dict],
+        actor_id: str,
+        actor_kind: str = "agent",
+    ) -> list[tuple[WorkItem, Event]]:
+        from ._work_items import create_work_item as _create
+
+        _validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind)
+        results = []
+        with self._mgr.transaction() as conn:
+            for item in items:
+                wi, evt = _create(
+                    conn,
+                    workflow_name=item["workflow_name"],
+                    work_item_type=item["work_item_type"],
+                    actor_id=actor_id,
+                    actor_kind=actor_kind,
+                    actor_metadata=(
+                        _Jsonb(item.get("actor_metadata"))
+                        if item.get("actor_metadata") else None
+                    ),
+                    key_set=self._keys,
+                    custom_fields=item.get("custom_fields"),
+                    not_before=item.get("not_before"),
+                    event_id=item.get("event_id"),
+                )
+                results.append((wi, evt))
+        return results
+
     def query(
         self,
         *,
@@ -747,3 +777,58 @@ class WitnessOps:
     @staticmethod
     def event_matches_filter(event_dict: dict, event_filter: dict | None) -> bool:
         return _event_matches_filter(event_dict, event_filter)
+
+
+class ArchiveOps:
+    def __init__(self, mgr: ConnectionManager, project: str) -> None:
+        self._mgr = mgr
+        self._project = project
+
+    def archive_events(self, before_timestamp: datetime, *, dry_run: bool = False) -> int:
+        from ._archive import archive_events as _impl
+
+        return _impl(self._mgr, self._project, before_timestamp, dry_run=dry_run)
+
+
+class WebhookOps:
+    def __init__(self, mgr: ConnectionManager, project: str) -> None:
+        self._mgr = mgr
+        self._project = project
+
+    def register(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        transitions: list[str] | None = None,
+        work_item_types: list[str] | None = None,
+        workflows: list[str] | None = None,
+        max_failures: int = 10,
+    ) -> dict:
+        from ._webhooks import register_webhook as _impl
+
+        return _impl(
+            self._mgr, url, headers=headers,
+            transitions=transitions, work_item_types=work_item_types,
+            workflows=workflows, max_failures=max_failures,
+        )
+
+    def list(self, status: str | None = None) -> list[dict]:
+        from ._webhooks import list_webhooks as _impl
+
+        return _impl(self._mgr, status=status)
+
+    def unregister(self, webhook_id: uuid.UUID) -> None:
+        from ._webhooks import unregister_webhook as _impl
+
+        _impl(self._mgr, webhook_id)
+
+    def pause(self, webhook_id: uuid.UUID) -> None:
+        from ._webhooks import pause_webhook as _impl
+
+        _impl(self._mgr, webhook_id)
+
+    def resume(self, webhook_id: uuid.UUID) -> None:
+        from ._webhooks import resume_webhook as _impl
+
+        _impl(self._mgr, webhook_id)

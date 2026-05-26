@@ -8,7 +8,7 @@ from psycopg.sql import SQL
 
 from ._contract import Jsonb
 from ._errors import ErrorCode, SubstrateError
-from ._events import append_event
+from ._events import append_event, check_idempotency
 from ._keys import KeySet
 from ._types import Event, QueryPage, WorkflowDefinition, WorkItem
 from ._workflow import validate_field_values, validate_work_item_refs
@@ -105,25 +105,36 @@ def create_work_item(
     work_item_id = uuid.uuid4()
     initial_state = wf.initial_state
 
-    conn.execute(
-        SQL(
-            "INSERT INTO work_items_current "
-            "(work_item_id, workflow_name, workflow_version, work_item_type, "
-            "current_state, custom_fields, needs_review, not_before, "
-            "last_event_seq, last_event_at, next_event_seq) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, now(), 1)"
-        ),
-        [
-            work_item_id,
-            workflow_name,
-            version,
-            work_item_type,
-            initial_state,
-            psycopg.types.json.Jsonb(validated_fields),
-            False,
-            not_before,
-        ],
-    )
+    try:
+        conn.execute(
+            SQL(
+                "INSERT INTO work_items_current "
+                "(work_item_id, workflow_name, workflow_version, work_item_type, "
+                "current_state, custom_fields, needs_review, not_before, "
+                "last_event_seq, last_event_at, next_event_seq) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, now(), 1)"
+            ),
+            [
+                work_item_id,
+                workflow_name,
+                version,
+                work_item_type,
+                initial_state,
+                psycopg.types.json.Jsonb(validated_fields),
+                False,
+                not_before,
+            ],
+        )
+    except psycopg.errors.UniqueViolation:
+        existing = check_idempotency(conn, event_id, transition="created")
+        if existing is not None:
+            wi_row = conn.execute(
+                SQL(f"SELECT {_WORK_ITEM_FIELDS} FROM work_items_current WHERE work_item_id = %s"),
+                [existing.work_item_id],
+            ).fetchone()
+            if wi_row is not None:
+                return _row_to_work_item(wi_row), existing
+        raise
 
     event = append_event(
         conn=conn,

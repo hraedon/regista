@@ -6,10 +6,10 @@ meta:
   name: "substrate"
   spec_level: 3
   desired_level: 3
-  date: "2026-05-18"
+  date: "2026-05-26"
   extensions: []
-  spec_md_version: 5
-  yaml_regenerated_against: 5
+  spec_md_version: 8
+  yaml_regenerated_against: 8
 
 # ---------------------------------------------------------------------------
 # Glossary
@@ -73,7 +73,7 @@ scope:
     - "Disk-level durability and backups"
     - "Scheduling beyond not_before timestamp"
     - "Retry / SLA / automation engines layered above coordination"
-    - "Workflow file composition across files (deferred)"
+    - "Workflow file composition across files (implemented as FR-29)"
     - "Notification / paging / email"
     - "Human-facing UI"
     - "Removal of registered workflow versions (registry is append-only)"
@@ -124,9 +124,15 @@ mvp:
         - "FR-27"
       rationale: "Actor → allowed_roles enforcement (closes BR-09), continue-on-revoked replay flag, update_not_before API, custom field validation at transitions."
     - phase: 4
+      label: "Operational features"
+      fr_ids:
+        - "FR-28"
+        - "FR-29"
+      rationale: "Recurring work-item generation and workflow file composition."
+    - phase: 5
       label: "Future"
       fr_ids: []
-      rationale: "Federated UI, OIDC verifier, workflow file composition, month-partitioning."
+      rationale: "Federated UI, OIDC verifier, month-partitioning."
 
   dependency_hints:
     - fr_id: "FR-02"
@@ -184,8 +190,8 @@ mvp:
 
 open_questions:
   - question: "Workflow file composition (!include / cross-file merge)"
-    category: "cheap_to_change"
-    owner: "Implementing agent (additive when needed)"
+    category: "resolved"
+    owner: "Implemented as FR-29 (Plan 004). extends: field with deep-merge, keyed list merge, __append/__remove modifiers."
   - question: "Substrate library version → Postgres major version compatibility matrix"
     category: "needs_research"
     owner: "Implementing agent (resolved during build)"
@@ -381,6 +387,16 @@ handoff:
       rationale: "Used in test infrastructure; features used: JSONB, LISTEN/NOTIFY, FOR UPDATE row locks, declarative partitioning available."
     - decision: "Event log retention: always-grow at homelab scale; month-partition at 1M events"
       rationale: "Correct for ≤10k work-items, ≤100k events per project. Month-partition via declarative partitioning is a one-time migration per project."
+    - decision: "Event archival API: move old events to events_archive table"
+      rationale: "Operators need a way to manage table growth. archive_events(before_timestamp) moves rows to a same-schema archive table. Replay of recent events unaffected."
+    - decision: "Batch work-item creation: create_work_items_batch() in single transaction"
+      rationale: "Agent pipelines fan out dozens of work-items; N round-trips add latency. Single-transaction batch is atomic and faster."
+    - decision: "Webhook push-model delivery for events"
+      rationale: "Lower integration friction for simple consumers. register_webhook(url, transitions=[...]) fires HTTP POST on matching events. Reuses existing retry/dead-letter infrastructure."
+    - decision: "CLI write commands gated by --confirm flag"
+      rationale: "Operators debugging workflows need create/transition without Python. --confirm flag prevents accidental mutations; without it, prints what would happen."
+    - decision: "Workflow composition endpoint and CLI command"
+      rationale: "Tools and CI pipelines can inspect composed YAML before registration without writing Python."
 
   pending:
     - item: "Workflow file composition (!include / merge)"
@@ -419,9 +435,9 @@ handoff:
 # ---------------------------------------------------------------------------
 
 delta_to_next_level:
-  - gap: "Concrete event log retention policy"
-    what_would_close_it: "Always-grow vs. month-partition trigger threshold vs. archival-to-cold-storage SOP"
-  - gap: "Decision on workflow file composition mechanism"
-    what_would_close_it: "Either declare a concrete loader extension or formally drop !include / merge as out-of-scope"
-  - gap: "First Software Factory pilot workflow definition authored"
-    what_would_close_it: "Downstream artifact; not a substrate concern, but blocks MVP shipping"
+  - gap: "OIDC verifier implementation"
+    what_would_close_it: "Implement verifier plug; no schema migration to actor model"
+  - gap: "Federated UI prototype"
+    what_would_close_it: "Downstream artifact; not a substrate concern, but blocks human-facing view"
+  - gap: "Per-hook rate limiting in sidecar"
+    what_would_close_it: "Token-bucket per-token rate limiting; currently deferred (WS-4)"

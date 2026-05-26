@@ -20,12 +20,14 @@ from ._keys import KeySet
 from ._migrations import run_migrations
 from ._observability import Metrics, OpTimer
 from ._ops import (
+    ArchiveOps,
     ClaimOps,
     EventOps,
     HookOps,
     LinkOps,
     RecurrenceOps,
     TimestampOps,
+    WebhookOps,
     WitnessOps,
     WorkflowOps,
     WorkItemOps,
@@ -211,6 +213,13 @@ class Substrate:
         """No-op. Partitioning was removed (RFC-001)."""
         log.warning("auto_partition.deprecated", project=self._project)
 
+    def _require_open(self) -> None:
+        if self._mgr is None:
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                "Substrate instance has been closed",
+            )
+
     def close(self) -> None:
         """Stop maintenance thread, hook consumer (if running), and release the connection pool."""
         if self._maintenance_thread is not None and self._maintenance_thread.is_running:
@@ -233,6 +242,7 @@ class Substrate:
         Returns:
             ``ConnectionInfo`` with host, port, database, and project.
         """
+        self._require_open()
         from urllib.parse import urlparse
 
         parsed = urlparse(self._mgr.dsn)
@@ -253,12 +263,14 @@ class Substrate:
 
     @property
     def workflows(self) -> WorkflowOps:
+        self._require_open()
         if not hasattr(self, "_workflows_ops"):
             self._workflows_ops = WorkflowOps(self._mgr, self._metrics, self._project)
         return self._workflows_ops
 
     @property
     def work_items(self) -> WorkItemOps:
+        self._require_open()
         if not hasattr(self, "_work_items_ops"):
             self._work_items_ops = WorkItemOps(
                 self._mgr, self._keys, self._metrics, self._project, self._validators,
@@ -267,24 +279,28 @@ class Substrate:
 
     @property
     def events(self) -> EventOps:
+        self._require_open()
         if not hasattr(self, "_events_ops"):
             self._events_ops = EventOps(self._mgr, self._keys, self._metrics, self._project)
         return self._events_ops
 
     @property
     def claims(self) -> ClaimOps:
+        self._require_open()
         if not hasattr(self, "_claims_ops"):
             self._claims_ops = ClaimOps(self._mgr, self._keys, self._metrics, self._project)
         return self._claims_ops
 
     @property
     def links(self) -> LinkOps:
+        self._require_open()
         if not hasattr(self, "_links_ops"):
             self._links_ops = LinkOps(self._mgr, self._keys, self._metrics, self._project)
         return self._links_ops
 
     @property
     def hooks(self) -> HookOps:
+        self._require_open()
         if not hasattr(self, "_hooks_ops"):
             self._hooks_ops = HookOps(
                 self._mgr, self._keys, self._metrics, self._project,
@@ -294,6 +310,7 @@ class Substrate:
 
     @property
     def recurrence(self) -> RecurrenceOps:
+        self._require_open()
         if not hasattr(self, "_recurrence_ops"):
             self._recurrence_ops = RecurrenceOps(
                 self._mgr, self._keys, self._metrics, self._project,
@@ -302,6 +319,7 @@ class Substrate:
 
     @property
     def timestamping(self) -> TimestampOps:
+        self._require_open()
         if not hasattr(self, "_timestamping_ops"):
             self._timestamping_ops = TimestampOps(
                 self._mgr, self._keys, self._metrics, self._project,
@@ -310,9 +328,24 @@ class Substrate:
 
     @property
     def witnesses(self) -> WitnessOps:
+        self._require_open()
         if not hasattr(self, "_witness_ops"):
             self._witness_ops = WitnessOps(self._mgr, self._metrics, self._project)
         return self._witness_ops
+
+    @property
+    def archive(self) -> ArchiveOps:
+        self._require_open()
+        if not hasattr(self, "_archive_ops"):
+            self._archive_ops = ArchiveOps(self._mgr, self._project)
+        return self._archive_ops
+
+    @property
+    def webhooks(self) -> WebhookOps:
+        self._require_open()
+        if not hasattr(self, "_webhook_ops"):
+            self._webhook_ops = WebhookOps(self._mgr, self._project)
+        return self._webhook_ops
 
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import create_receipts as _create_receipts
@@ -352,7 +385,8 @@ class Substrate:
             handler: ``Callable[[HookContext], None]``.
         """
         self._hook_handlers[name] = handler
-        self._hook_consumer._handlers = self._hook_handlers
+        if self._hook_consumer is not None:
+            self._hook_consumer._handlers = self._hook_handlers
 
     def start_hook_consumer(self) -> None:
         """Start a background thread that LISTENs and polls the hook queue."""
@@ -519,6 +553,18 @@ class Substrate:
             return False
         return self._maintenance_thread.last_cycle_ok
 
+    @property
+    def pool_healthy(self) -> bool:
+        """Check if the connection pool can execute a query."""
+        if self._mgr is None:
+            return False
+        try:
+            with self._mgr.connect() as conn:
+                conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def register_workflow(
         self,
         yaml_content: str,
@@ -649,6 +695,7 @@ class Substrate:
                 ``VALIDATOR_FAILED``.
         """
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
+        self._require_open()
         from ._transition import transition as _transition_impl
 
         evt = _transition_impl(
@@ -1054,6 +1101,7 @@ class Substrate:
         Returns:
             ``ReplayReport`` with counts of ok, drift, halted, and warnings.
         """
+        self._require_open()
         from ._replay import (
             drop_old_replay_tables,
         )
@@ -1349,3 +1397,104 @@ class Substrate:
         from ._lint import actor_metadata_complete as _complete
 
         return _complete(events, expected_keys)
+
+    def archive_events(
+        self,
+        before_timestamp: datetime,
+        *,
+        dry_run: bool = False,
+    ) -> int:
+        """Archive events from completed work-items older than the given timestamp.
+
+        Only archives work-items whose most recent event is before the
+        cutoff. All events for a qualifying work-item are moved together,
+        preserving hash chain integrity. Moves events to an
+        ``events_archive`` table with the same schema as ``events``.
+
+        Args:
+            before_timestamp: Archive work-items whose latest event
+                timestamp is before this value.
+            dry_run: If ``True``, return the count without moving rows.
+
+        Returns:
+            Number of events archived (or that would be archived).
+        """
+        return self.archive.archive_events(before_timestamp, dry_run=dry_run)
+
+    def create_work_items_batch(
+        self,
+        items: list[dict],
+        actor_id: str,
+        actor_kind: str = "agent",
+    ) -> list[tuple[WorkItem, Event]]:
+        """Create multiple work items in a single transaction.
+
+        Args:
+            items: List of dicts, each with keys ``workflow_name``,
+                ``work_item_type``, and optional ``custom_fields``,
+                ``not_before``, ``event_id``, ``actor_metadata``.
+            actor_id: Authenticated actor.
+            actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
+
+        Returns:
+            List of ``(WorkItem, Event)`` tuples.
+        """
+        return self.work_items.create_batch(items, actor_id, actor_kind)
+
+    def register_webhook(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        transitions: list[str] | None = None,
+        work_item_types: list[str] | None = None,
+        workflows: list[str] | None = None,
+        max_failures: int = 10,
+    ) -> dict:
+        """Register a webhook for push-model event delivery.
+
+        Args:
+            url: HTTP(S) endpoint to POST event payloads to.
+            headers: Optional HTTP headers to include in POST requests.
+            transitions: Filter: only fire for these transition names.
+                ``None`` means fire for all transitions.
+            work_item_types: Filter: only fire for these work-item types.
+            workflows: Filter: only fire for these workflow names.
+            max_failures: Auto-pause webhook after this many consecutive
+                failures (default 10).
+
+        Returns:
+            Dict with ``webhook_id``, ``url``, ``status``.
+        """
+        return self.webhooks.register(
+            url, headers=headers, transitions=transitions,
+            work_item_types=work_item_types, workflows=workflows,
+            max_failures=max_failures,
+        )
+
+    def list_webhooks(self, status: str | None = None) -> list[dict]:
+        """List registered webhooks.
+
+        Args:
+            status: Filter by status (``"active"``, ``"paused"``, ``"failed"``).
+
+        Returns:
+            List of webhook dicts.
+        """
+        return self.webhooks.list(status=status)
+
+    def unregister_webhook(self, webhook_id: uuid.UUID) -> None:
+        """Remove a webhook registration.
+
+        Args:
+            webhook_id: UUID from ``register_webhook``.
+        """
+        self.webhooks.unregister(webhook_id)
+
+    def pause_webhook(self, webhook_id: uuid.UUID) -> None:
+        """Pause a webhook (stops delivery without removing registration)."""
+        self.webhooks.pause(webhook_id)
+
+    def resume_webhook(self, webhook_id: uuid.UUID) -> None:
+        """Resume a paused webhook."""
+        self.webhooks.resume(webhook_id)

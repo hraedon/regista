@@ -26,6 +26,13 @@ class KeyEntry:
     principal_id: str | None
     scheme: str = "hmac-sha256"
 
+    def __repr__(self) -> str:
+        return (
+            f"KeyEntry(key_id={self.key_id!r}, alg={self.alg!r}, "
+            f"secret=<redacted>, status={self.status!r}, role={self.role!r}, "
+            f"scheme={self.scheme!r})"
+        )
+
     def fingerprint(self) -> str:
         if self.alg == "HMAC-SHA256":
             return f"hmac:sha256:{hashlib.sha256(self.secret).hexdigest()}"

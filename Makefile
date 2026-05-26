@@ -1,4 +1,4 @@
-.PHONY: all lint test cov check clean
+.PHONY: all lint test test-files cov check clean
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -14,6 +14,9 @@ lint:
 
 test:
 	$(PYTEST) tests/ -v
+
+test-files:
+	$(PYTEST) $(FILES) -v
 
 cov:
 	$(PYTEST) tests/ -v --cov=substrate --cov-report=term-missing

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from substrate._errors import SubstrateError
 
@@ -26,6 +26,31 @@ def create_app(
         docs_url=docs_url,
         openapi_url=openapi_url,
     )
+
+    max_body_size = 10 * 1024 * 1024
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready():
+        try:
+            with substrate._mgr.connect() as conn:
+                conn.execute("SELECT 1")
+            return {"status": "ok"}
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unavailable", "detail": str(exc)[:200]},
+            )
+
+    @app.get("/metrics")
+    async def metrics():
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        output = generate_latest(substrate.prometheus_registry)
+        return PlainTextResponse(content=output, media_type=CONTENT_TYPE_LATEST)
 
     max_body_size = 10 * 1024 * 1024
 

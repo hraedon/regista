@@ -34,7 +34,6 @@ _(none)_
 | # | Title | Severity | Status |
 |---|---|---|---|
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
-| 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | proposed |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
 | 236 | PostgresEventStore.append() omitted prev_event_hash from INSERT | high | resolved |
 | 237 | Variable name collision in InMemory replay hash chain check | high | resolved |
@@ -57,11 +56,18 @@ _(none)_
 | 254 | CLI cmd_recurrence_update crashes on malformed --template JSON | low | resolved |
 | 255 | InMemory claim_hooks ignores next_retry_at filter, diverging from Postgres | medium | resolved |
 | 256 | Missing CHECK constraints on status columns and missing sweep index | high | resolved |
+| 269 | Witness and webhook are near-duplicate patterns that should be unified | medium | accepted |
+| 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
+| 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | accepted |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | Accepted — UUIDv5 with SHA-1 is adequate for the homelab scale; collision probability is negligible for the expected event volume. |
+| 257 | No CLI or test helper for running targeted test subsets by file path | low | Added `make test-files FILES=tests/test_replay_coverage.py` target to Makefile. |
+| 267 | archive_events breaks hash chain and replay consistency | high | Changed `archive_events` to only archive complete work-items (max timestamp before cutoff). All events for a qualifying work-item move together, preserving hash chain integrity. |
+| 268 | Webhook delivery has no retry or dead-letter mechanism | medium | Added `failure_count` and `max_failures` columns. Auto-pauses webhook after consecutive failures. Resets counter on success. Full retry/dead-letter deferred. |
 | 244 | Witness receipt delivery TOCTOU allows double-delivery | high | Fixed — changed SELECT+FOR UPDATE to atomic UPDATE SET status='in_progress' ... RETURNING. Success/failure updates now match on 'in_progress'. Added 'in_progress' to CHECK constraint in migration 022. |
 | 245 | Maintenance thread double-counts sweep metrics | medium | Fixed — removed duplicate metric increments from `_maintenance.py`; kept single emission in `_ops.py` facades. |
 | 246 | claim_hooks raises unhandled ValueError on malformed work_item_id | high | Fixed — wrapped `uuid.UUID()` in try/except with structured logging; malformed rows are skipped instead of aborting the batch. |

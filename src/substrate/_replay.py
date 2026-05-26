@@ -33,6 +33,11 @@ def drop_old_replay_tables(conn: psycopg.Connection, schema: str) -> None:
         conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(tbl["tablename"])))
 
 
+def _drop_replay_tables(conn: psycopg.Connection, *table_names: str) -> None:
+    for name in table_names:
+        conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(name)))
+
+
 # AC-28: event hash chain verification (BC-233)
 def _verify_hash_chain(
     event: dict,
@@ -102,6 +107,28 @@ def replay(
         ).format(Identifier(report_table))
     )
 
+    try:
+        return _replay_inner(
+            conn, schema, project, key_set, replay_table, report_table,
+            continue_on_revoked=continue_on_revoked,
+            verify_timestamps=verify_timestamps,
+        )
+    except Exception:
+        _drop_replay_tables(conn, replay_table, report_table)
+        raise
+
+
+def _replay_inner(
+    conn: psycopg.Connection,
+    schema: str,
+    project: str,
+    key_set: KeySet,
+    replay_table: str,
+    report_table: str,
+    *,
+    continue_on_revoked: bool = False,
+    verify_timestamps: bool = False,
+) -> ReplayReport:
     wi_rows = conn.execute(
         SQL("SELECT work_item_id FROM work_items_current ORDER BY work_item_id")
     ).fetchall()
@@ -274,10 +301,6 @@ def replay(
             stored_root = bytes(br["merkle_root"]) if br["merkle_root"] else None
             tsa_token = bytes(br["tsa_token"]) if br["tsa_token"] else None
 
-            # Re-derive the Merkle root from the current event log and compare
-            # against what the TSA actually signed. This is the load-bearing
-            # tamper check — without it, a forger who leaves merkle_root
-            # untouched while mutating events passes verification (BC-230).
             current_leaf_ids: list[uuid.UUID] = []
             for s in range(first_seq, last_seq + 1):
                 if s in event_ids_by_global_seq:
@@ -294,7 +317,6 @@ def replay(
                         stored=stored_root.hex(),
                     )
 
-            # Token-integrity check: TSA actually signed the stored root.
             if tsa_token and stored_root:
                 if not verify_tsa_token(tsa_token, stored_root, _verify_cfg):
                     total_warnings += 1

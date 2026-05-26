@@ -34,6 +34,7 @@ from .models import (
     UpdateRecurrenceRuleRequest,
     _serialize,
 )
+from .rate_limit import make_limiter
 
 ADMIN_ROLE = "admin"
 
@@ -73,6 +74,7 @@ def _parse_datetime(val: str | None) -> datetime | None:
 
 def register_routes(app, substrate, tokens: TokenRegistry):
     router = APIRouter(prefix="/v1")
+    limiter = make_limiter()
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -93,6 +95,16 @@ def register_routes(app, substrate, tokens: TokenRegistry):
                 status_code=401,
                 content={"detail": "Invalid token"},
             )
+
+        import hashlib
+
+        token_key = hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+        if not limiter.allow(token_key):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+
         request.state.actor = actor
 
         return await call_next(request)
@@ -480,5 +492,89 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         _require_admin(request)
         count = substrate.deliver_pending_witness_receipts()
         return {"delivered": count}
+
+    @router.post("/archive_events")
+    async def archive_events(request: Request):
+        _require_admin(request)
+        body = await request.json()
+        raw_ts = body.get("before_timestamp")
+        if not raw_ts:
+            raise HTTPException(status_code=400, detail="before_timestamp is required")
+        ts = _parse_datetime(raw_ts)
+        dry_run = body.get("dry_run", False)
+        count = substrate.archive_events(before_timestamp=ts, dry_run=dry_run)
+        return {"archived": count, "dry_run": dry_run}
+
+    @router.post("/create_work_items_batch")
+    async def create_work_items_batch(request: Request):
+        actor = _get_actor(request)
+        body = await request.json()
+        items = body.get("items", [])
+        if not items:
+            raise HTTPException(status_code=400, detail="items list is required")
+        results = substrate.create_work_items_batch(
+            items=items,
+            actor_id=actor.actor_id,
+            actor_kind=actor.actor_kind,
+        )
+        return {
+            "results": [
+                {"work_item": _serialize(wi), "event": _serialize(evt)}
+                for wi, evt in results
+            ]
+        }
+
+    @router.post("/compose_workflow")
+    async def compose_workflow(request: Request):
+        _get_actor(request)
+        body = await request.json()
+        file_path = body.get("file_path")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        from substrate._workflow_compose import compose_workflow as _compose
+        composed, source_map = _compose(file_path)
+        return {"composed": composed, "source_map": source_map}
+
+    @router.post("/webhooks")
+    async def register_webhook(request: Request):
+        _require_admin(request)
+        body = await request.json()
+        url = body.get("url")
+        if not url:
+            raise HTTPException(status_code=400, detail="url is required")
+        result = substrate.register_webhook(
+            url=url,
+            headers=body.get("headers"),
+            transitions=body.get("transitions"),
+            work_item_types=body.get("work_item_types"),
+            workflows=body.get("workflows"),
+            max_failures=body.get("max_failures", 10),
+        )
+        return result
+
+    @router.get("/webhooks")
+    async def list_webhooks(request: Request):
+        _get_actor(request)
+        status = request.query_params.get("status")
+        result = substrate.list_webhooks(status=status)
+        return _serialize(result)
+
+    @router.delete("/webhooks/{webhook_id}")
+    async def unregister_webhook(webhook_id: str, request: Request):
+        _require_admin(request)
+        substrate.unregister_webhook(_parse_uuid(webhook_id))
+        return {"status": "ok"}
+
+    @router.post("/webhooks/{webhook_id}/pause")
+    async def pause_webhook(webhook_id: str, request: Request):
+        _require_admin(request)
+        substrate.pause_webhook(_parse_uuid(webhook_id))
+        return {"status": "ok"}
+
+    @router.post("/webhooks/{webhook_id}/resume")
+    async def resume_webhook(webhook_id: str, request: Request):
+        _require_admin(request)
+        substrate.resume_webhook(_parse_uuid(webhook_id))
+        return {"status": "ok"}
 
     app.include_router(router)

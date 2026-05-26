@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -370,7 +371,10 @@ def fire_recurrence(
         else scheduled_fire_at
     )
     custom_fields = template.get("custom_fields", {})
-    event_id = uuid.uuid5(rule_id, scheduled_fire_at.isoformat())
+    raw = hashlib.sha256(
+        rule_id.bytes + scheduled_fire_at.isoformat().encode()
+    ).digest()[:16]
+    event_id = uuid.UUID(bytes=bytes(raw[0:4] + raw[4:6] + raw[6:8] + raw[8:16]))
 
     from ._contract import Jsonb as _Jsonb
 

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import psycopg
 from psycopg.sql import SQL
 
-from ._contract import Jsonb
+from ._contract import Jsonb, check_expected_seq
 from ._errors import ErrorCode, SubstrateError
 from ._keys import KeySet
 from ._signing import sign_event
@@ -81,17 +81,6 @@ def check_idempotency(
     if row is None:
         return None
     return _contract_check(_row_to_event(row), actor_id, transition, work_item_id)
-
-
-def check_expected_seq(
-    current_next_seq: int,
-    expected_event_seq: int | None,
-) -> None:
-    if expected_event_seq is not None and current_next_seq != expected_event_seq:
-        raise SubstrateError(
-            ErrorCode.CONCURRENT_MODIFICATION,
-            f"Expected event_seq {expected_event_seq}, but current next is {current_next_seq}",
-        )
 
 
 def append_event(

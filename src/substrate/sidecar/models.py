@@ -245,3 +245,29 @@ class ReactivateWitnessRequest(BaseModel):
 
 class DeliverWitnessReceiptsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ArchiveEventsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    before_timestamp: str
+    dry_run: bool = False
+
+
+class CreateWorkItemsBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[dict]
+
+
+class ComposeWorkflowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    file_path: str
+
+
+class RegisterWebhookRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+    headers: dict[str, str] | None = None
+    transitions: list[str] | None = None
+    work_item_types: list[str] | None = None
+    workflows: list[str] | None = None
+    max_failures: int = Field(default=10, ge=1)

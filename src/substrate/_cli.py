@@ -541,6 +541,209 @@ def cmd_witness_receipts(args):
         sub.close()
 
 
+def cmd_events_archive(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        ts = datetime.fromisoformat(args.before)
+    except ValueError:
+        print(f"Invalid timestamp: {args.before!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        count = sub.archive_events(before_timestamp=ts, dry_run=args.dry_run)
+        if args.dry_run:
+            print(f"Would archive {count} event(s).")
+        else:
+            print(f"Archived {count} event(s).")
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_workflow_compose(args):
+    from substrate._workflow_compose import compose_workflow as _compose
+
+    try:
+        composed, source_map = _compose(args.file)
+        if args.json:
+            _dump_json({"composed": composed, "source_map": source_map})
+        else:
+            print(f"Composed workflow: {composed.get('name', '?')} v{composed.get('version', '?')}")
+            for source in source_map.get("sources", []):
+                print(f"  included: {source}")
+    except SubstrateError as e:
+        _handle_error(e)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_work_item_create(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    custom_fields = None
+    if args.custom_fields:
+        try:
+            custom_fields = json.loads(args.custom_fields)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON for --custom-fields: {e}", file=sys.stderr)
+            sys.exit(1)
+    not_before = None
+    if args.not_before:
+        try:
+            not_before = datetime.fromisoformat(args.not_before)
+        except ValueError:
+            print(f"Invalid timestamp: {args.not_before!r}", file=sys.stderr)
+            sys.exit(1)
+    if not args.confirm:
+        print("Would create work item:")
+        print(f"  workflow:  {args.workflow}")
+        print(f"  type:      {args.type}")
+        print(f"  actor:     {args.actor_id}")
+        if custom_fields:
+            print(f"  fields:    {json.dumps(custom_fields)}")
+        print("\nRun with --confirm to execute.")
+        return
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        wi, evt = sub.create_work_item(
+            workflow_name=args.workflow,
+            work_item_type=args.type,
+            actor_id=args.actor_id,
+            custom_fields=custom_fields,
+            not_before=not_before,
+        )
+        print(f"Created {wi.work_item_id}")
+        if args.json:
+            _dump_json({"work_item": wi, "event": evt})
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_work_item_transition(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    try:
+        work_item_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid work item ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    payload = None
+    if args.payload:
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON for --payload: {e}", file=sys.stderr)
+            sys.exit(1)
+    custom_fields = None
+    if args.custom_fields:
+        try:
+            custom_fields = json.loads(args.custom_fields)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON for --custom-fields: {e}", file=sys.stderr)
+            sys.exit(1)
+    actor_metadata = None
+    if args.actor_metadata:
+        try:
+            actor_metadata = json.loads(args.actor_metadata)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON for --actor-metadata: {e}", file=sys.stderr)
+            sys.exit(1)
+    if not args.confirm:
+        print(f"Would transition work item {args.id[:8]}...")
+        print(f"  transition:  {args.transition}")
+        print(f"  actor:       {args.actor_id}")
+        if payload:
+            print(f"  payload:     {json.dumps(payload)}")
+        if custom_fields:
+            print(f"  fields:      {json.dumps(custom_fields)}")
+        print("\nRun with --confirm to execute.")
+        return
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        evt = sub.transition(
+            work_item_id=work_item_id,
+            transition_name=args.transition,
+            actor_id=args.actor_id,
+            actor_metadata=actor_metadata,
+            payload=payload,
+            custom_fields=custom_fields,
+        )
+        print(f"Transitioned: seq={evt.event_seq}")
+        if args.json:
+            _dump_json(evt)
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_webhook_register(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    transitions = args.transitions.split(",") if args.transitions else None
+    workflows = args.workflows.split(",") if args.workflows else None
+    if not args.confirm:
+        print("Would register webhook:")
+        print(f"  url:          {args.url}")
+        if transitions:
+            print(f"  transitions:  {transitions}")
+        if workflows:
+            print(f"  workflows:    {workflows}")
+        print("\nRun with --confirm to execute.")
+        return
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        result = sub.register_webhook(
+            url=args.url,
+            transitions=transitions,
+            workflows=workflows,
+        )
+        print(f"Registered webhook {result['webhook_id']}")
+        if args.json:
+            _dump_json(result)
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_webhook_list(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        result = sub.list_webhooks(status=args.__dict__.get("status"))
+        if not result:
+            print("No webhooks registered.")
+            return
+        for w in result:
+            print(
+                f"  {str(w['webhook_id'])[:8]}...  {w['url'][:50]:<50}  "
+                f"{w['status']}"
+            )
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_webhook_remove(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    try:
+        webhook_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid webhook ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    sub = Substrate(dsn, project, hmac_key_path)
+    try:
+        sub.unregister_webhook(webhook_id)
+        print(f"Removed webhook {args.id[:8]}...")
+    except SubstrateError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate admin CLI")
@@ -643,6 +846,48 @@ def main(argv=None):
     wt_receipts.add_argument("--status", help="Filter by receipt status")
     wt_receipts.add_argument("--limit", type=int, default=100)
 
+    # events archive
+    ev_archive = ev_sub.add_parser("archive", help="Archive old events")
+    ev_archive.add_argument("--before", required=True, help="ISO 8601 timestamp")
+    ev_archive.add_argument("--dry-run", action="store_true", help="Count without archiving")
+
+    # workflow compose
+    wf_compose = wf_sub.add_parser("compose", help="Compose workflow with extends")
+    wf_compose.add_argument("file", help="Path to YAML file")
+    wf_compose.add_argument("--json", action="store_true", help="JSON output")
+
+    # work-item create
+    wi_create = wi_sub.add_parser("create", help="Create a work item")
+    wi_create.add_argument("--workflow", required=True, help="Workflow name")
+    wi_create.add_argument("--type", required=True, help="Work item type")
+    wi_create.add_argument("--actor-id", required=True, help="Actor ID")
+    wi_create.add_argument("--custom-fields", help="Custom fields (JSON)")
+    wi_create.add_argument("--not-before", help="ISO 8601 timestamp")
+    wi_create.add_argument("--confirm", action="store_true", help="Execute the action")
+
+    # work-item transition
+    wi_trans = wi_sub.add_parser("transition", help="Transition a work item")
+    wi_trans.add_argument("id", help="Work item UUID")
+    wi_trans.add_argument("--transition", required=True, help="Transition name")
+    wi_trans.add_argument("--actor-id", required=True, help="Actor ID")
+    wi_trans.add_argument("--actor-metadata", help="Actor metadata (JSON)")
+    wi_trans.add_argument("--payload", help="Transition payload (JSON)")
+    wi_trans.add_argument("--custom-fields", help="Custom fields update (JSON)")
+    wi_trans.add_argument("--confirm", action="store_true", help="Execute the action")
+
+    # webhook
+    wh = subs.add_parser("webhook", help="Webhook commands")
+    wh_sub = wh.add_subparsers(dest="subcommand")
+    wh_reg = wh_sub.add_parser("register", help="Register a webhook")
+    wh_reg.add_argument("--url", required=True, help="Webhook URL")
+    wh_reg.add_argument("--transitions", help="Comma-separated transition names")
+    wh_reg.add_argument("--workflows", help="Comma-separated workflow names")
+    wh_reg.add_argument("--confirm", action="store_true", help="Execute the action")
+    wh_list = wh_sub.add_parser("list", help="List webhooks")
+    wh_list.add_argument("--status", help="Filter by status")
+    wh_rm = wh_sub.add_parser("remove", help="Remove a webhook")
+    wh_rm.add_argument("id", help="Webhook UUID")
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -651,14 +896,22 @@ def main(argv=None):
 
     if args.command == "workflow" and args.subcommand == "validate":
         cmd_workflow_validate(args)
+    elif args.command == "workflow" and args.subcommand == "compose":
+        cmd_workflow_compose(args)
     elif args.command == "work-item" and args.subcommand == "show":
         cmd_work_item_show(args)
     elif args.command == "work-item" and args.subcommand == "list":
         cmd_work_item_list(args)
+    elif args.command == "work-item" and args.subcommand == "create":
+        cmd_work_item_create(args)
+    elif args.command == "work-item" and args.subcommand == "transition":
+        cmd_work_item_transition(args)
     elif args.command == "events" and args.subcommand == "show":
         cmd_events_show(args)
     elif args.command == "events" and args.subcommand == "tail":
         cmd_events_tail(args)
+    elif args.command == "events" and args.subcommand == "archive":
+        cmd_events_archive(args)
     elif args.command == "replay":
         cmd_replay(args)
     elif args.command == "schema" and args.subcommand == "init":
@@ -704,6 +957,16 @@ def main(argv=None):
             cmd_witness_receipts(args)
         else:
             wt.print_help()
+            sys.exit(2)
+    elif args.command == "webhook":
+        if args.subcommand == "register":
+            cmd_webhook_register(args)
+        elif args.subcommand == "list":
+            cmd_webhook_list(args)
+        elif args.subcommand == "remove":
+            cmd_webhook_remove(args)
+        else:
+            wh.print_help()
             sys.exit(2)
     else:
         target = subs.choices.get(args.command)
