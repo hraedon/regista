@@ -2,7 +2,7 @@
 number: "276"
 title: Zero test coverage for webhooks, archive, and several sidecar routes
 severity: high
-status: in_progress
+status: resolved
 kind: bug
 author: comprehensive-review
 date: "2026-05-27"
@@ -48,6 +48,10 @@ is raised.
   - `TestReadEventsSinceRoute` — read_events_since
   - `TestComposeWorkflowRoute` — compose_workflow, admin check
 - Fixed 19 `pytest.raises(Exception)` → `pytest.raises(SubstrateError)` across 8 test files
-
-**Remaining:**
-- Migrations 021–026 still lack direct test coverage (covered indirectly by integration tests)
+- Migration 021-026 direct tests: `tests/test_migrations_021_026.py` — 18 tests covering:
+  - 021: witness receipt uniqueness index + duplicate rejection
+  - 022: CHECK constraints on tsp_batches, witness_registrations, witness_receipts; hook_queue lease sweep index
+  - 023: claims expires_at partial index
+  - 024: events_archive table structure; webhook_registrations dropped by 026
+  - 025: sign_secret column on witness_registrations
+  - 026: mode column + CHECK constraint + default; unified status constraints (no 'failed'); mode index; register_witness returns mode

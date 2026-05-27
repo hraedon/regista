@@ -2,7 +2,7 @@
 number: "277"
 title: events_archive shares global_seq sequence with events table
 severity: medium
-status: proposed
+status: resolved
 kind: design
 author: comprehensive-review
 date: "2026-05-27"
@@ -25,3 +25,7 @@ overhead for an append-only archive table.
 **Fix:** Create `events_archive` with `LIKE events INCLUDING DEFAULTS` instead,
 then explicitly add only the needed indexes. Or reset the `global_seq` default
 to not use the shared sequence.
+
+## Resolution (2026-05-27)
+
+Migration 027 recreates `events_archive` with plain `LIKE events` (copies columns + types + NOT NULL only, no defaults), then restores non-sequence defaults (`timestamp`, `scheme_id`) and adds only needed indexes (`events_archive_pkey`, `idx_events_archive_work_item_id`, `idx_events_archive_timestamp`). Archive `global_seq` column now has no default — values come from the source events table. 4 tests in `tests/test_migrations_021_026.py::TestMigration027ArchiveSequenceFix`.
