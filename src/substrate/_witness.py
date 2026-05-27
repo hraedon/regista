@@ -82,9 +82,17 @@ def register_witness(
     event_filter: dict | None = None,
     max_failures: int = 10,
     max_retries: int = 3,
+    *,
+    mode: str = "witness",
+    sign_secret: bytes | None = None,
 ) -> uuid.UUID:
     _validate_url(url)
     event_filter = _validate_event_filter(event_filter)
+    if mode not in ("witness", "push"):
+        raise SubstrateError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"mode must be 'witness' or 'push', got {mode!r}",
+        )
     if max_failures < 1:
         raise SubstrateError(
             ErrorCode.INVALID_ARGUMENT,
@@ -100,8 +108,9 @@ def register_witness(
         conn.execute(
             SQL(
                 "INSERT INTO witness_registrations "
-                "(witness_id, url, headers, event_filter, max_failures, max_retries) "
-                "VALUES (%s, %s, %s, %s, %s, %s)"
+                "(witness_id, url, headers, event_filter, "
+                "max_failures, max_retries, mode, sign_secret) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 witness_id,
@@ -110,6 +119,8 @@ def register_witness(
                 psycopg.types.json.Jsonb(event_filter) if event_filter is not None else None,
                 max_failures,
                 max_retries,
+                mode,
+                sign_secret,
             ],
         )
     log.info(
@@ -117,6 +128,7 @@ def register_witness(
         project=project,
         witness_id=str(witness_id),
         url=url,
+        mode=mode,
     )
     return witness_id
 
@@ -189,31 +201,32 @@ def reactivate_witness(
 def list_witnesses(
     mgr: ConnectionManager,
     status: str | None = None,
+    mode: str | None = None,
 ) -> list[dict]:
+    clauses: list[str] = []
+    params: list = []
+    if status is not None:
+        clauses.append("status = %s")
+        params.append(status)
+    if mode is not None:
+        clauses.append("mode = %s")
+        params.append(mode)
+    where = " AND ".join(clauses) if clauses else "TRUE"
     with mgr.connect() as conn:
-        if status is not None:
-            rows = conn.execute(
-                SQL(
-                    "SELECT witness_id, url, headers, event_filter, status, "
-                    "max_failures, consecutive_failures, max_retries, "
-                    "last_success_at, last_failure_at, created_at, updated_at "
-                    "FROM witness_registrations WHERE status = %s ORDER BY created_at"
-                ),
-                [status],
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                SQL(
-                    "SELECT witness_id, url, headers, event_filter, status, "
-                    "max_failures, consecutive_failures, max_retries, "
-                    "last_success_at, last_failure_at, created_at, updated_at "
-                    "FROM witness_registrations ORDER BY created_at"
-                ),
-            ).fetchall()
+        rows = conn.execute(
+            SQL(
+                "SELECT witness_id, url, headers, event_filter, status, "
+                "max_failures, consecutive_failures, max_retries, mode, sign_secret, "
+                "last_success_at, last_failure_at, created_at, updated_at "
+                f"FROM witness_registrations WHERE {where} ORDER BY created_at"
+            ),
+            params,
+        ).fetchall()
     results = []
     for row in rows:
         d = dict(row)
         d["witness_id"] = str(d["witness_id"])
+        d.pop("sign_secret", None)
         for key in ("last_success_at", "last_failure_at", "created_at", "updated_at"):
             if d.get(key) is not None:
                 d[key] = d[key].isoformat()
@@ -321,7 +334,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
         witnesses = conn.execute(
             SQL(
                 "SELECT witness_id, url, headers, max_retries, max_failures, "
-                "consecutive_failures, status FROM witness_registrations "
+                "consecutive_failures, status, sign_secret FROM witness_registrations "
                 "WHERE status = 'active'"
             ),
         ).fetchall()
@@ -331,6 +344,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
         headers = w["headers"] or {}
         max_retries = w["max_retries"]
         max_failures = w["max_failures"]
+        sign_secret = w["sign_secret"]
         parsed = urlparse(url)
         host = parsed.hostname
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -401,9 +415,15 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     conn_h = http.client.HTTPConnection(host, port, timeout=10)
                 req_headers = {
                     "Content-Type": "application/json",
-                    "User-Agent": "substrate-witness-delivery/0",
+                    "User-Agent": "substrate-delivery/0",
                     **headers,
                 }
+                if sign_secret:
+                    import hashlib
+                    import hmac as _hmac
+
+                    sig = _hmac.new(sign_secret, body.encode(), hashlib.sha256).hexdigest()
+                    req_headers["X-Substrate-Signature"] = f"sha256={sig}"
                 conn_h.request("POST", path, body=body.encode(), headers=req_headers)
                 resp = conn_h.getresponse()
                 status_code = resp.status
@@ -489,7 +509,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                         conn.execute(
                             SQL(
                                 "UPDATE witness_registrations "
-                                "SET status = 'failed' WHERE witness_id = %s"
+                                "SET status = 'paused' WHERE witness_id = %s"
                             ),
                             [witness_id],
                         )
@@ -509,7 +529,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     if receipt_row and receipt_row["retry_count"] >= max_retries:
                         conn.execute(
                             SQL(
-                                "UPDATE witness_receipts SET status = 'failed' "
+                                "UPDATE witness_receipts SET status = 'paused' "
                             "WHERE receipt_id = %s"
                             ),
                             [receipt_id],

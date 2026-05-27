@@ -542,6 +542,10 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         url = body.get("url")
         if not url:
             raise HTTPException(status_code=400, detail="url is required")
+        sign_secret = body.get("sign_secret")
+        if sign_secret and isinstance(sign_secret, str):
+            import base64
+            sign_secret = base64.b64decode(sign_secret)
         result = substrate.register_webhook(
             url=url,
             headers=body.get("headers"),
@@ -549,6 +553,7 @@ def register_routes(app, substrate, tokens: TokenRegistry):
             work_item_types=body.get("work_item_types"),
             workflows=body.get("workflows"),
             max_failures=body.get("max_failures", 10),
+            sign_secret=sign_secret,
         )
         return result
 

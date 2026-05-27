@@ -1450,6 +1450,7 @@ class Substrate:
         work_item_types: list[str] | None = None,
         workflows: list[str] | None = None,
         max_failures: int = 10,
+        sign_secret: bytes | None = None,
     ) -> dict:
         """Register a webhook for push-model event delivery.
 
@@ -1462,6 +1463,10 @@ class Substrate:
             workflows: Filter: only fire for these workflow names.
             max_failures: Auto-pause webhook after this many consecutive
                 failures (default 10).
+            sign_secret: Optional HMAC-SHA256 secret. When set, substrate
+                computes ``HMAC-SHA256(sign_secret, body)`` and sends the
+                signature as ``X-Substrate-Signature: sha256=<hex>`` on
+                every delivery.
 
         Returns:
             Dict with ``webhook_id``, ``url``, ``status``.
@@ -1469,7 +1474,7 @@ class Substrate:
         return self.webhooks.register(
             url, headers=headers, transitions=transitions,
             work_item_types=work_item_types, workflows=workflows,
-            max_failures=max_failures,
+            max_failures=max_failures, sign_secret=sign_secret,
         )
 
     def list_webhooks(self, status: str | None = None) -> list[dict]:

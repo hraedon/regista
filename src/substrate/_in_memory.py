@@ -839,11 +839,19 @@ class InMemorySubstrate:
         event_filter: dict | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
+        *,
+        mode: str = "witness",
+        sign_secret: bytes | None = None,
     ) -> uuid.UUID:
         from ._witness import _validate_event_filter, _validate_url
 
         _validate_url(url)
         event_filter = _validate_event_filter(event_filter)
+        if mode not in ("witness", "push"):
+            raise SubstrateError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"mode must be 'witness' or 'push', got {mode!r}",
+            )
         if max_failures < 1:
             raise SubstrateError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -864,6 +872,8 @@ class InMemorySubstrate:
             "max_failures": max_failures,
             "consecutive_failures": 0,
             "max_retries": max_retries,
+            "mode": mode,
+            "sign_secret": sign_secret,
             "last_success_at": None,
             "last_failure_at": None,
             "created_at": datetime.now(UTC),
@@ -901,13 +911,16 @@ class InMemorySubstrate:
         w["status"] = "active"
         w["consecutive_failures"] = 0
 
-    def list_witnesses(self, status: str | None = None) -> list[dict]:
+    def list_witnesses(self, status: str | None = None, mode: str | None = None) -> list[dict]:
         results = []
         for w in self._witnesses.values():
             if status is not None and w["status"] != status:
                 continue
+            if mode is not None and w.get("mode") != mode:
+                continue
             d = dict(w)
             d["witness_id"] = str(d["witness_id"])
+            d.pop("sign_secret", None)
             for key in ("last_success_at", "last_failure_at", "created_at", "updated_at"):
                 if d.get(key) is not None:
                     d[key] = d[key].isoformat()

@@ -737,10 +737,13 @@ class WitnessOps:
         event_filter: dict | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
+        *,
+        mode: str = "witness",
+        sign_secret: bytes | None = None,
     ) -> uuid.UUID:
         return _register_witness(
             self._mgr, self._project, url, headers, event_filter,
-            max_failures, max_retries,
+            max_failures, max_retries, mode=mode, sign_secret=sign_secret,
         )
 
     def unregister(self, witness_id: uuid.UUID) -> None:
@@ -752,8 +755,8 @@ class WitnessOps:
     def reactivate(self, witness_id: uuid.UUID) -> None:
         _reactivate_witness(self._mgr, self._project, witness_id)
 
-    def list(self, status: str | None = None) -> list[dict]:
-        return _list_witnesses(self._mgr, status=status)
+    def list(self, status: str | None = None, mode: str | None = None) -> list[dict]:
+        return _list_witnesses(self._mgr, status=status, mode=mode)
 
     def receipts(
         self,
@@ -804,6 +807,7 @@ class WebhookOps:
         work_item_types: list[str] | None = None,
         workflows: list[str] | None = None,
         max_failures: int = 10,
+        sign_secret: bytes | None = None,
     ) -> dict:
         from ._webhooks import register_webhook as _impl
 
@@ -811,6 +815,7 @@ class WebhookOps:
             self._mgr, url, headers=headers,
             transitions=transitions, work_item_types=work_item_types,
             workflows=workflows, max_failures=max_failures,
+            sign_secret=sign_secret, project=self._project,
         )
 
     def list(self, status: str | None = None) -> list[dict]:

@@ -4,6 +4,38 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-26 — Session 61: Plan 016, webhook/witness unification, CI fixes
+
+**Focus:** Implement Plan 016 (privileged transitions), unify webhook→witness (BC-269), fix CI, add Python 3.13.
+
+**Delivered:**
+
+1. **CI fixes (Session 60 carryover):**
+   - Added `[sidecar,ed25519,timestamping]` extras to CI install step.
+   - Added `httpx>=0.27` to `[sidecar]` extras for `TestClient` dependency.
+
+2. **Plan 016 — Privileged transitions:**
+   - `PRIVILEGED_TRANSITION_REQUIRED` error code.
+   - `privileged: bool` on `TransitionDef`, JSON Schema, `build_definition`.
+   - `check_privileged_transition()` in `_contract.py`.
+   - Enforced in both Postgres and InMemory transition paths.
+   - Sidecar error mapping (403).
+   - 18 tests in `test_plan016.py`.
+
+3. **Python 3.13 CI:** Added to test matrix.
+
+4. **Webhook/witness unification (Plan 017, BC-269):**
+   - Migration 026: `mode` column on `witness_registrations`, unified status to `paused` (dropped `failed`), migrated `webhook_registrations` rows, dropped table.
+   - `_witness.py`: `register_witness` gains `mode` and `sign_secret` params. `list_witnesses` gains `mode` filter. Delivery signs with `X-Substrate-Signature` when `sign_secret` present.
+   - `_webhooks.py`: rewritten as thin wrapper delegating to witness machinery. Fixes BC-272 (`work_item_types` filter bug), BC-273 (resume resets failures), BC-274 (wrong error code).
+   - `_ops.py`: `WitnessOps.register` gains `mode`/`sign_secret`. `WebhookOps` delegates to `_webhooks.py` wrappers.
+   - InMemory: `register_witness`/`list_witnesses` gain `mode`/`sign_secret`.
+   - `X-AgentWake-Signature` → `X-Substrate-Signature`.
+
+5. **Breadcrumbs:** Filed BC-272 (filter bug), BC-273 (resume no reset), BC-274 (wrong error code). Plan 017 RFC written.
+
+**Test results:** 992 passed, 10 deselected, lint clean.
+
 ## 2026-05-26 — Session 60: ErrorCode drift guard + documentation cleanup
 
 **Focus:** Address gap flagged in Session 59 reflection, then full documentation update.
