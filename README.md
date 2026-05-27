@@ -3,7 +3,7 @@
 Coordination and durable state for agent pipelines over Postgres.
 
 [![CI](https://github.com/hraedon/substrate/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/substrate/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-974%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-992%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 Substrate is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys substrate as its own isolated instance using schema-per-project isolation within a single Postgres database.
@@ -340,7 +340,7 @@ Test DSN: `postgresql://substrate_test:substrate_test@localhost:5432/substrate_t
 
 ## Status
 
-All features through Plan 015 implemented. 974 tests passing (core, sidecar, property-based, witness, timestamping, and plan-specific). FR-01 through FR-29 in tree. 268 breadcrumbs tracked, 263 resolved. See `AGENTS.md` for detailed status.
+All features through Plan 017 implemented. 992 tests passing (core, sidecar, property-based, witness, timestamping, and plan-specific). FR-01 through FR-29 in tree. 274 breadcrumbs tracked, 270 resolved. See `AGENTS.md` for detailed status.
 
 ## License
 
