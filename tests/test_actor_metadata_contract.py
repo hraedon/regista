@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from substrate import ActorMetadata, Event, Substrate
+from regista import ActorMetadata, Event, Regista
 
 TESTS_DIR = Path(__file__).parent
 
@@ -97,7 +97,7 @@ class TestActorMetadataLintHelper:
             "attempt_n": 1,
             "context_hash": "abc",
         })
-        incomplete = Substrate.actor_metadata_complete(
+        incomplete = Regista.actor_metadata_complete(
             [evt_with_family, evt_missing_family],
             expected_keys=["role", "channel", "model", "family", "attempt_n", "context_hash"],
         )
@@ -106,7 +106,7 @@ class TestActorMetadataLintHelper:
 
     def test_catches_null_metadata(self):
         evt = _make_event(None)
-        incomplete = Substrate.actor_metadata_complete(
+        incomplete = Regista.actor_metadata_complete(
             [evt],
             expected_keys=["role"],
         )

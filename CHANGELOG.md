@@ -1,19 +1,38 @@
 # Changelog
 
-All notable changes to substrate are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to regista are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [0.4.0] — 2026-05-27
+
+### Changed
+
+- **Project renamed: `substrate` → `regista`.** The Python module, console script, PyPI name, and all env vars now use `regista`. Repo is at `hraedon/regista`; the old URL redirects. See Plan 018.
+- **Schema:** `workflow_registry.substrate_version` column renamed to `regista_version`; `_substrate_migrations` table renamed to `_regista_migrations` (migration 028).
+- **Env vars:** `SUBSTRATE_DSN`, `SUBSTRATE_HMAC_KEY_*`, `SUBSTRATE_BIND`, `SUBSTRATE_DISABLE_DOCS`, `SUBSTRATE_DISABLE_RATE_LIMIT`, `SUBSTRATE_POOL_MAX`, `SUBSTRATE_POOL_MIN`, `SUBSTRATE_PROJECT`, `SUBSTRATE_TOKENS_PATH`, `SUBSTRATE_VERSION` → all renamed `REGISTA_*`. No backwards-compat aliasing.
+- **Console script:** `substrate` → `regista` in `[project.scripts]`.
+- **Classes:** `Substrate` → `Regista`, `InMemorySubstrate` → `InMemoryRegista`, `SubstrateError` → `RegistaError`.
+
+### Migration notes for consumers
+
+Consumers pin to `v0.4.0-pre-rename` during their migration window. Migration steps:
+
+1. Update `pyproject.toml` / requirements: `substrate` → `regista`.
+2. Update imports: `from substrate import …` → `from regista import …`.
+3. Update env var references in code, scripts, and deployment configs.
+4. Re-run tests.
 
 ## [0.3.0] — 2026-05-26
 
 ### Added
 
 - **Plan 010 (Delegation chain):** `on_behalf_of` field on every event for agent-to-principal binding. `validate_delegation_chain` with temporal validation (`expires_at`, `authenticated_at`). Integrity-protected by HMAC signature. Migration 019.
-- **Plan 011 (Pluggable signing):** `SigningScheme` protocol with `HMACSHA256Scheme` (default) and `Ed25519Scheme` (optional, via `pip install substrate[ed25519]`). `scheme_id` column on events (migration 015). Replay resolves scheme per event.
+- **Plan 011 (Pluggable signing):** `SigningScheme` protocol with `HMACSHA256Scheme` (default) and `Ed25519Scheme` (optional, via `pip install regista[ed25519]`). `scheme_id` column on events (migration 015). Replay resolves scheme per event.
 - **Plan 012 (RFC 3161 timestamping):** `_timestamping.py` with Merkle tree batching, TSA HTTP submission, token verification. `tsp_batches` table (migration 016). `TimestampOps` facade. `replay(verify_timestamps=True)` cross-references events against confirmed batches.
 - **Plan 013 (Witness co-signing):** `_witness.py` with registration, event filtering, receipt creation, and HTTP delivery. `witness_registrations` and `witness_receipts` tables (migration 020). `WitnessOps` facade. Maintenance thread integration. Sidecar witness routes (7 endpoints).
 - **Plan 014 (Global event sequence):** `global_seq BIGSERIAL` on events (migration 017). Rewrote timestamping batching and replay verification to use global sequence for coherent multi-work-item batching.
 - **Plan 015 (Trust envelope v3):** Signing envelope v3 includes `prev_event_hash` and `global_seq`. `prev_event_hash BYTEA` column on events (migration 018). Hash chain verification in replay.
 - **Plan 016 (Privileged transitions):** `privileged: true` flag on workflow transitions. Only `actor_kind='system'` can execute. New `PRIVILEGED_TRANSITION_REQUIRED` error code. Enforced in Postgres and InMemory backends.
-- **Plan 017 (Webhook/witness unification):** Webhooks rewritten as thin wrapper over witness machinery. Migration 026 adds `mode` column to `witness_registrations`, unifies status to `paused` (dropped `failed`), drops `webhook_registrations` table. `X-Substrate-Signature` header. Optional `sign_secret` on all endpoints.
+- **Plan 017 (Webhook/witness unification):** Webhooks rewritten as thin wrapper over witness machinery. Migration 026 adds `mode` column to `witness_registrations`, unifies status to `paused` (dropped `failed`), drops `webhook_registrations` table. `X-Regista-Signature` header. Optional `sign_secret` on all endpoints.
 - **Webhooks:** Push-model event delivery with `register_webhook`, auto-pause on failure. Now delegates to witness receipt+delivery model (async, not synchronous).
 - **Event archival:** `archive_events(before_timestamp, dry_run)` with `ArchiveOps` facade. Only archives complete work-items to preserve hash chain integrity. Migration 024.
 - **Batch operations:** `create_work_items_batch` for multi-create in a single transaction.
@@ -36,16 +55,16 @@ All notable changes to substrate are documented here. Format follows [Keep a Cha
 - **Plan 007 (Facade decomposition):** Domain-scoped sub-objects (`sub.workflows`, `sub.work_items`, `sub.events`, `sub.claims`, `sub.links`, `sub.hooks`, `sub.recurrence`) via `_ops.py`. Legacy top-level methods remain as thin delegates.
 - **Plan 008 (Trust model hardening):**
   - WS-1: `strict_roles=True` flag rejects unregistered actors and `prompt`-source roles at transition time
-  - WS-2: Environment-variable key injection via `SUBSTRATE_HMAC_KEY_<KEY_ID>` overrides file secrets
+  - WS-2: Environment-variable key injection via `REGISTA_HMAC_KEY_<KEY_ID>` overrides file secrets
   - WS-3: Vendored `rfc8785` 0.1.4 into `_vendor/` with 73 cross-validation tests against system library
   - WS-5: Raise on unknown key status at startup; `expected_key_count` parameter; `keys_loaded` structured log
-- **Plan 009 (Operational runtime):** `MaintenanceThread` in `_maintenance.py` with configurable sweep, recurrence, hook-poll, and partition intervals. `start_maintenance()` / `stop_maintenance()` on `Substrate`. `maintenance_healthy` property. Subsumes hook consumer lifecycle.
+- **Plan 009 (Operational runtime):** `MaintenanceThread` in `_maintenance.py` with configurable sweep, recurrence, hook-poll, and partition intervals. `start_maintenance()` / `stop_maintenance()` on `Regista`. `maintenance_healthy` property. Subsumes hook consumer lifecycle.
 - Shared datetime utilities (`_datetime_utils.py`): `ts_equal`, `to_utc`, `ts_equal_within` — eliminated 88 lines of duplication between replay modules.
 - CI now installs `[vendor-check]` extra so rfc8785 cross-validation tests run in CI.
 
 ### Changed
 
-- Constructor positional-signature contract test (BC-195) pins `Substrate(dsn, project, hmac_key_path)` shape used by sf2.
+- Constructor positional-signature contract test (BC-195) pins `Regista(dsn, project, hmac_key_path)` shape used by sf2.
 - BC-196/197/198 (trust model design gaps) accepted and documented; implementation deferred.
 
 ### Deprecated
@@ -62,8 +81,8 @@ All notable changes to substrate are documented here. Format follows [Keep a Cha
 ### Deprecated
 
 - `ensure_event_partitions()` — no-op, will be removed in a future version
-- `auto_partition` parameter on `Substrate.create_project()` — no-op, will be removed in a future version
-- Prometheus gauges `substrate_events_default_rows` and `substrate_events_partition_horizon_days` — no longer emitted
+- `auto_partition` parameter on `Regista.create_project()` — no-op, will be removed in a future version
+- Prometheus gauges `regista_events_default_rows` and `regista_events_partition_horizon_days` — no longer emitted
 
 ### Fixed
 
@@ -99,7 +118,7 @@ All notable changes to substrate are documented here. Format follows [Keep a Cha
 - Prometheus metrics via `prometheus_client.CollectorRegistry`
 - Structured logging via structlog
 - CI configuration (`.github/workflows/ci.yml`)
-- In-memory backend for testing (`InMemorySubstrate`)
+- In-memory backend for testing (`InMemoryRegista`)
 - Single-source-of-truth backend contract via `_contract.py` (RFC-062)
 - Property-based conformance tests via hypothesis
 

@@ -4,11 +4,11 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: substrate_test
-      POSTGRES_PASSWORD: substrate_test
-      POSTGRES_DB: substrate_test
+      POSTGRES_USER: regista_test
+      POSTGRES_PASSWORD: regista_test
+      POSTGRES_DB: regista_test
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U substrate_test"]
+      test: ["CMD-SHELL", "pg_isready -U regista_test"]
       interval: 1s
       timeout: 3s
       retries: 30

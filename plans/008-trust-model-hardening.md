@@ -8,7 +8,7 @@
 
 ## 1. Problem Statement
 
-Substrate's trust model is designed for a single-operator homelab: one person runs all agents, trusts them not to misdeclare roles, and has physical access to the database and key material. The spec (§17.9) explicitly defines three trust tiers:
+Regista's trust model is designed for a single-operator homelab: one person runs all agents, trusts them not to misdeclare roles, and has physical access to the database and key material. The spec (§17.9) explicitly defines three trust tiers:
 
 1. **Authenticated** — `actor_id` proven by HMAC (FR-15)
 2. **Server-stamped** — `timestamp`, `event_seq`, `key_id` set by the library
@@ -43,7 +43,7 @@ In a multi-tenant deployment (multiple operators, multiple agent pools, shared P
 
 **Current:** FR-24 is opt-in. Actors with no registered roles are trusted.
 
-**Proposal:** Add a `strict_roles: bool = False` flag to `Substrate.__init__`. When `True`:
+**Proposal:** Add a `strict_roles: bool = False` flag to `Regista.__init__`. When `True`:
 
 1. Every actor must have at least one registered role before any transition is allowed.
 2. `actor_metadata.role_source` must be `config` or `env` — `prompt`-source roles are rejected.
@@ -61,11 +61,11 @@ This preserves backward compatibility (`strict_roles=False` is the default) whil
 
 **Proposal (layered):**
 
-1. **Environment-variable injection.** Accept `SUBSTRATE_HMAC_KEY_<KEY_ID>` env vars. Keys never touch disk in production. `KeySet` resolves keys from env vars first, falling back to file.
+1. **Environment-variable injection.** Accept `REGISTA_HMAC_KEY_<KEY_ID>` env vars. Keys never touch disk in production. `KeySet` resolves keys from env vars first, falling back to file.
 2. **Memory-lock hint.** Call `mlock()` on key buffers via `ctypes` on Linux. Best-effort — logs a warning if `mlock` is unavailable (containers, unprivileged).
 3. **Key zeroization on `close()`.** Overwrite key bytes with zeros before releasing. Not deterministic (Python string interning), but reduces the window for core-dump extraction.
 
-**Spec impact:** Adds `hmac_key_env_prefix` parameter to `Substrate.__init__`. Backward compatible.
+**Spec impact:** Adds `hmac_key_env_prefix` parameter to `Regista.__init__`. Backward compatible.
 
 **What this does NOT do:** Full KMS integration (AWS KMS, Vault transit) is out of scope for this RFC. The library is in-process and must hold the key material to sign. A KMS integration would require an HSM-backed signing delegation model, which is a separate architectural decision.
 
@@ -75,7 +75,7 @@ This preserves backward compatibility (`strict_roles=False` is the default) whil
 
 **Proposal:**
 
-1. **Vendor `rfc8785` into `src/substrate/_vendor/rfc8785/`.** The library is a single Python module (~400 lines). Vendoring eliminates PyPI supply-chain risk.
+1. **Vendor `rfc8785` into `src/regista/_vendor/rfc8785/`.** The library is a single Python module (~400 lines). Vendoring eliminates PyPI supply-chain risk.
 2. **Add a cross-validation test.** At build time, generate a corpus of 1,000 random JSON objects, canonicalize with both the vendored copy and the system `rfc8785` package, assert byte-identical output. This catches divergence during upgrades.
 3. **Pin `rfc8785` as a test-only dependency.** Production uses the vendored copy. Tests can opt into cross-validation by installing `rfc8785` from PyPI.
 
@@ -97,7 +97,7 @@ limiter = Limiter(key_func=get_actor_id_from_token)
 async def create_work_item(request, body): ...
 ```
 
-The library remains rate-limit-free. The sidecar enforces per-actor and per-endpoint limits. Operators who embed substrate in-process (the primary use case) are responsible for their own rate limiting.
+The library remains rate-limit-free. The sidecar enforces per-actor and per-endpoint limits. Operators who embed regista in-process (the primary use case) are responsible for their own rate limiting.
 
 **Spec impact:** None. Sidecar is an optional deployment artifact.
 
@@ -109,7 +109,7 @@ The library remains rate-limit-free. The sidecar enforces per-actor and per-endp
 
 **Proposal:**
 
-1. **Raise on unknown status.** Instead of `continue`, raise `SubstrateError(KEY_LOAD_ERROR)` with the offending key ID and status value. This makes typos fail-fast at startup rather than silently degrading.
+1. **Raise on unknown status.** Instead of `continue`, raise `RegistaError(KEY_LOAD_ERROR)` with the offending key ID and status value. This makes typos fail-fast at startup rather than silently degrading.
 2. **Add a key-count assertion.** `KeySet.__init__` accepts `expected_key_count: int | None`. If provided and the loaded count doesn't match, raise. This lets operators pin their expectations.
 3. **Add `keys_loaded` structured log at INFO level** (currently only the plaintext-at-rest warning is emitted).
 

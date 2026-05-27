@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._testing import raw_transaction
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista._testing import raw_transaction
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 WF_V1 = (
     "name: versioned_wf\n"
     "version: 1\n"
-    "substrate_version: '0.1.0'\n"
+    "regista_version: '0.1.0'\n"
     "\n"
     "states:\n"
     "  - name: new\n"
@@ -42,7 +42,7 @@ WF_V1 = (
 WF_V2 = (
     "name: versioned_wf\n"
     "version: 2\n"
-    "substrate_version: '0.1.0'\n"
+    "regista_version: '0.1.0'\n"
     "\n"
     "states:\n"
     "  - name: new\n"
@@ -75,11 +75,11 @@ WF_V2 = (
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_ac12_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow(WF_V1)
     yield sub
     sub.close()
@@ -87,24 +87,24 @@ def substrate():
 
 
 class TestAC12PinnedVersionIsolation:
-    def test_v1_work_item_rejects_v2_only_transition(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_v1_work_item_rejects_v2_only_transition(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             row = conn.execute(
                 "SELECT workflow_version FROM work_items_current WHERE work_item_id = %s",
                 [wi.work_item_id],
             ).fetchone()
         assert row["workflow_version"] == 1
 
-        substrate.register_workflow(WF_V2)
+        regista.register_workflow(WF_V2)
 
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.transition(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="shortcut",
                 actor_id="agent-1",
@@ -113,23 +113,23 @@ class TestAC12PinnedVersionIsolation:
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
         assert "v1" in exc_info.value.message
 
-    def test_v2_work_item_accepts_shortcut(self, substrate):
-        substrate.register_workflow(WF_V2)
+    def test_v2_work_item_accepts_shortcut(self, regista):
+        regista.register_workflow(WF_V2)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             row = conn.execute(
                 "SELECT workflow_version FROM work_items_current WHERE work_item_id = %s",
                 [wi.work_item_id],
             ).fetchone()
         assert row["workflow_version"] == 2
 
-        evt = substrate.transition(
+        evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="shortcut",
             actor_id="agent-1",
@@ -137,19 +137,19 @@ class TestAC12PinnedVersionIsolation:
         )
         assert evt.transition == "shortcut"
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed.current_state == "done"
 
-    def test_v1_work_item_uses_v1_transitions(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_v1_work_item_uses_v1_transitions(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        substrate.register_workflow(WF_V2)
+        regista.register_workflow(WF_V2)
 
-        evt = substrate.transition(
+        evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
             actor_id="agent-1",
@@ -157,5 +157,5 @@ class TestAC12PinnedVersionIsolation:
         )
         assert evt.transition == "finish"
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed.current_state == "done"

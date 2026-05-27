@@ -1,7 +1,7 @@
 """
 Tests for BC-184 (hook_queue_depth metric) and BC-185 (maintenance metrics).
 
-BC-184: substrate_hook_queue_depth gauge with status labels.
+BC-184: regista_hook_queue_depth gauge with status labels.
 BC-185: maintenance counters and maintenance_healthy property.
 """
 from __future__ import annotations
@@ -10,13 +10,13 @@ import uuid
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 
 WORKFLOW_YAML = """\
 name: bc184_185_test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -47,18 +47,18 @@ attempt_threshold: 99
 # ---------------------------------------------------------------------------
 
 class TestHookQueueDepthMetric:
-    """BC-184: substrate_hook_queue_depth gauge reflects hook_queue counts."""
+    """BC-184: regista_hook_queue_depth gauge reflects hook_queue counts."""
 
     def test_refresh_hook_queue_metrics_initial(self):
         """gauge starts at 0 for all statuses before any hooks are enqueued."""
         from prometheus_client import CollectorRegistry
 
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc184_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
-        sub = Substrate.create_project(
+        sub = Regista.create_project(
             DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
         )
         sub.register_workflow(WORKFLOW_YAML)
@@ -70,9 +70,9 @@ class TestHookQueueDepthMetric:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert ("substrate_hook_queue_depth", "pending") in samples
-            assert samples[("substrate_hook_queue_depth", "pending")] == 0.0
-            assert samples[("substrate_hook_queue_depth", "dead_letter")] == 0.0
+            assert ("regista_hook_queue_depth", "pending") in samples
+            assert samples[("regista_hook_queue_depth", "pending")] == 0.0
+            assert samples[("regista_hook_queue_depth", "dead_letter")] == 0.0
         finally:
             sub.close()
             drop_project_schema(DSN, project)
@@ -81,12 +81,12 @@ class TestHookQueueDepthMetric:
         """After enqueuing hooks, pending count rises; after processing, it drops."""
         from prometheus_client import CollectorRegistry
 
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc184b_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
-        sub = Substrate.create_project(
+        sub = Regista.create_project(
             DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
         )
         sub.register_workflow(WORKFLOW_YAML)
@@ -118,7 +118,7 @@ class TestHookQueueDepthMetric:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert samples[("substrate_hook_queue_depth", "pending")] == 3.0
+            assert samples[("regista_hook_queue_depth", "pending")] == 3.0
 
             # Process all hooks.
             sub.poll_hooks()
@@ -131,7 +131,7 @@ class TestHookQueueDepthMetric:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert samples[("substrate_hook_queue_depth", "pending")] == 0.0
+            assert samples[("regista_hook_queue_depth", "pending")] == 0.0
         finally:
             sub.close()
             drop_project_schema(DSN, project)
@@ -145,15 +145,15 @@ class TestHookQueueDepthInMemory:
     """BC-184: InMemory backend refresh_hook_queue_metrics runs without error."""
 
     def test_refresh_does_not_raise(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        sub = InMemorySubstrate(project="test_bc184_mem")
+        sub = InMemoryRegista(project="test_bc184_mem")
         sub.refresh_hook_queue_metrics()  # should not raise
 
     def test_maintenance_healthy_returns_true(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        sub = InMemorySubstrate(project="test_bc184_mem2")
+        sub = InMemoryRegista(project="test_bc184_mem2")
         assert sub.maintenance_healthy is True
 
 
@@ -165,11 +165,11 @@ class TestMaintenanceHealthy:
     """BC-185: maintenance_healthy returns True (pending Plan 009 thread)."""
 
     def test_maintenance_healthy_true_before_plan009(self):
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc185_{uuid.uuid4().hex[:8]}"
-        sub = Substrate.create_project(DSN, project, KEY_PATH, auto_partition=True)
+        sub = Regista.create_project(DSN, project, KEY_PATH, auto_partition=True)
         try:
             assert sub.maintenance_healthy is True
         finally:
@@ -185,18 +185,18 @@ class TestMaintenanceCounters:
     """BC-185: maintenance counters increment correctly on sweep operations."""
 
     def test_maintenance_claims_swept_counter(self):
-        """sweep_expired_claims increments substrate_maintenance_claims_swept_total."""
+        """sweep_expired_claims increments regista_maintenance_claims_swept_total."""
         from datetime import UTC, datetime, timedelta
 
         import psycopg
         from prometheus_client import CollectorRegistry
 
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc185c_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
-        sub = Substrate.create_project(
+        sub = Regista.create_project(
             DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
         )
         sub.register_workflow(WORKFLOW_YAML)
@@ -229,25 +229,25 @@ class TestMaintenanceCounters:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert "substrate_maintenance_claims_swept_total" in samples
-            assert samples["substrate_maintenance_claims_swept_total"] >= 1.0
+            assert "regista_maintenance_claims_swept_total" in samples
+            assert samples["regista_maintenance_claims_swept_total"] >= 1.0
         finally:
             sub.close()
             drop_project_schema(DSN, project)
 
     def test_maintenance_hook_leases_swept_counter(self):
-        """sweep_expired_hook_leases increments substrate_maintenance_hook_leases_swept_total."""
+        """sweep_expired_hook_leases increments regista_maintenance_hook_leases_swept_total."""
         from datetime import UTC, datetime, timedelta
 
         import psycopg
         from prometheus_client import CollectorRegistry
 
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc185h_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
-        sub = Substrate.create_project(
+        sub = Regista.create_project(
             DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
         )
         sub.register_workflow(WORKFLOW_YAML)
@@ -289,8 +289,8 @@ class TestMaintenanceCounters:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert "substrate_maintenance_hook_leases_swept_total" in samples
-            assert samples["substrate_maintenance_hook_leases_swept_total"] >= 1.0
+            assert "regista_maintenance_hook_leases_swept_total" in samples
+            assert samples["regista_maintenance_hook_leases_swept_total"] >= 1.0
         finally:
             sub.close()
             drop_project_schema(DSN, project)
@@ -299,12 +299,12 @@ class TestMaintenanceCounters:
         """ensure_event_partitions is a no-op after migration 014."""
         from prometheus_client import CollectorRegistry
 
-        from substrate import Substrate
-        from substrate.testing import drop_project_schema
+        from regista import Regista
+        from regista.testing import drop_project_schema
 
         project = f"test_bc185p_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
-        sub = Substrate.create_project(
+        sub = Regista.create_project(
             DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=False
         )
         try:
@@ -317,16 +317,16 @@ class TestMaintenanceCounters:
                 for s in m.samples
                 if s.labels.get("project") == project
             }
-            assert "substrate_maintenance_partitions_created_total" not in samples
+            assert "regista_maintenance_partitions_created_total" not in samples
         finally:
             sub.close()
             drop_project_schema(DSN, project)
 
     def test_maintenance_recurrences_fired_counter_registered(self):
-        """substrate_maintenance_recurrences_fired_total counter is registered and can be incremented."""  # noqa: E501
+        """regista_maintenance_recurrences_fired_total counter is registered and can be incremented."""  # noqa: E501
         from prometheus_client import CollectorRegistry
 
-        from substrate._observability import Metrics
+        from regista._observability import Metrics
 
         registry = CollectorRegistry()
         metrics = Metrics(registry=registry)
@@ -334,7 +334,7 @@ class TestMaintenanceCounters:
 
         # Counter should not yet appear.
         names_before = {s.name for m in registry.collect() for s in m.samples}
-        assert "substrate_maintenance_recurrences_fired_total" not in names_before
+        assert "regista_maintenance_recurrences_fired_total" not in names_before
 
         # After inc(), it should appear.
         metrics.inc("maintenance_recurrences_fired", project)
@@ -344,5 +344,5 @@ class TestMaintenanceCounters:
             for s in m.samples
             if s.labels.get("project") == project
         }
-        assert "substrate_maintenance_recurrences_fired_total" in samples
-        assert samples["substrate_maintenance_recurrences_fired_total"] == 1.0
+        assert "regista_maintenance_recurrences_fired_total" in samples
+        assert samples["regista_maintenance_recurrences_fired_total"] == 1.0

@@ -6,19 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import SubstrateError
-from substrate._testing import raw_transaction
-from substrate.testing import drop_project_schema
+from regista._errors import RegistaError
+from regista._testing import raw_transaction
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 WORKFLOW_V2 = """\
 name: test_workflow
 version: 2
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -66,11 +66,11 @@ attempt_threshold: 3
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_phase2_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -78,27 +78,27 @@ def substrate():
 
 
 class TestEscalation:
-    def test_no_escalation_below_threshold(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_no_escalation_below_threshold(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Esc test 1"},
         )
 
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
         import time
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
         time.sleep(1.1)
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed is not None
         assert not refreshed.needs_review
 
-    def test_escalation_at_threshold(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_escalation_at_threshold(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -106,26 +106,26 @@ class TestEscalation:
         )
 
         import time
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-3", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-3", ttl_seconds=300)
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed is not None
         assert refreshed.needs_review
 
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         escalated = [e for e in events if e.transition == "escalated"]
         assert len(escalated) == 1
         assert escalated[0].payload["attempt_number"] == 3
         assert escalated[0].payload["threshold"] == 3
 
-    def test_escalation_idempotent(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_escalation_idempotent(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -133,38 +133,38 @@ class TestEscalation:
         )
 
         import time
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=1)
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-3", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-3", ttl_seconds=1)
         time.sleep(1.1)
 
-        substrate.acquire_claim(wi.work_item_id, "agent-4", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-4", ttl_seconds=300)
 
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         escalated = [e for e in events if e.transition == "escalated"]
         assert len(escalated) == 1
 
 
 class TestValidators:
     @pytest.fixture(autouse=True)
-    def setup(self, substrate):
-        substrate.register_workflow(WORKFLOW_V2)
+    def setup(self, regista):
+        regista.register_workflow(WORKFLOW_V2)
 
-    def test_validator_success(self, substrate):
-        substrate.register_validator("validate_start", lambda ctx: None)
+    def test_validator_success(self, regista):
+        regista.register_validator("validate_start", lambda ctx: None)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Validator test"},
         )
 
-        evt = substrate.transition(
+        evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
@@ -172,28 +172,28 @@ class TestValidators:
         )
         assert evt.transition == "start"
 
-    def test_validator_failure_rolls_back(self, substrate):
+    def test_validator_failure_rolls_back(self, regista):
         def _fail(ctx):
             raise ValueError("validation failed")
 
-        substrate.register_validator("validate_start", _fail)
+        regista.register_validator("validate_start", _fail)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Validator fail"},
         )
 
-        with pytest.raises(SubstrateError, match="VALIDATOR_FAILED"):
-            substrate.transition(
+        with pytest.raises(RegistaError, match="VALIDATOR_FAILED"):
+            regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
                 actor_id="agent-1",
                 actor_metadata={"role": "agent"},
             )
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed is not None
         assert refreshed.current_state == "new"
 
@@ -202,17 +202,17 @@ class TestValidators:
     # validator now hangs the transaction; see tests/test_validator_hardening.py
     # for the trusted-contract assertions.
 
-    def test_validator_not_registered_warns(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_validator_not_registered_warns(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "No validator"},
         )
 
-        substrate._validators.pop("validate_start", None)
+        regista._validators.pop("validate_start", None)
 
-        evt = substrate.transition(
+        evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
@@ -223,34 +223,34 @@ class TestValidators:
 
 class TestAsyncHooks:
     @pytest.fixture(autouse=True)
-    def setup(self, substrate):
-        substrate.register_workflow(WORKFLOW_V2)
+    def setup(self, regista):
+        regista.register_workflow(WORKFLOW_V2)
 
-    def test_hook_enqueued_on_transition(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_hook_enqueued_on_transition(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Hook test"},
         )
 
-        substrate.register_validator("validate_start", lambda ctx: None)
+        regista.register_validator("validate_start", lambda ctx: None)
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="submit_review",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             rows = conn.execute(
                 "SELECT * FROM hook_queue WHERE hook_name = 'notify_reviewer' "
                 "ORDER BY id"
@@ -260,42 +260,42 @@ class TestAsyncHooks:
         assert rows[0]["hook_name"] == "notify_reviewer"
         assert rows[0]["status"] == "pending"
 
-    def test_hook_consumed_and_completed(self, substrate):
+    def test_hook_consumed_and_completed(self, regista):
         processed = []
 
         def handler(ctx):
             processed.append(ctx.hook_name)
 
-        substrate.register_hook_handler("notify_reviewer", handler)
+        regista.register_hook_handler("notify_reviewer", handler)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Hook consume"},
         )
 
-        substrate.register_validator("validate_start", lambda ctx: None)
+        regista.register_validator("validate_start", lambda ctx: None)
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="submit_review",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        count = substrate.poll_hooks()
+        count = regista.poll_hooks()
         assert count >= 1
         assert "notify_reviewer" in processed
 
-    def test_hook_retry_on_failure(self, substrate):
+    def test_hook_retry_on_failure(self, regista):
         call_count = 0
 
         def failing_handler(ctx):
@@ -304,25 +304,25 @@ class TestAsyncHooks:
             if call_count <= 2:
                 raise RuntimeError("temporary failure")
 
-        substrate.register_hook_handler("notify_reviewer", failing_handler)
+        regista.register_hook_handler("notify_reviewer", failing_handler)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Hook retry"},
         )
 
-        substrate.register_validator("validate_start", lambda ctx: None)
+        regista.register_validator("validate_start", lambda ctx: None)
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="submit_review",
             actor_id="agent-1",
@@ -331,16 +331,16 @@ class TestAsyncHooks:
 
         from datetime import UTC, datetime, timedelta
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE hook_queue SET next_retry_at = %s WHERE status = 'pending'",
                 [datetime.now(UTC) - timedelta(seconds=1)],
             )
 
-        substrate.poll_hooks()
+        regista.poll_hooks()
         assert call_count >= 1
 
-    def test_hook_dead_lettered_after_max_retries(self, substrate):
+    def test_hook_dead_lettered_after_max_retries(self, regista):
         always_fail_count = 0
 
         def always_fail(ctx):
@@ -348,25 +348,25 @@ class TestAsyncHooks:
             always_fail_count += 1
             raise RuntimeError("permanent failure")
 
-        substrate.register_hook_handler("notify_reviewer", always_fail)
+        regista.register_hook_handler("notify_reviewer", always_fail)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Dead letter"},
         )
 
-        substrate.register_validator("validate_start", lambda ctx: None)
+        regista.register_validator("validate_start", lambda ctx: None)
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="submit_review",
             actor_id="agent-1",
@@ -375,45 +375,45 @@ class TestAsyncHooks:
 
         from datetime import UTC, datetime, timedelta
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE hook_queue SET retry_count = 2, next_retry_at = %s "
                 "WHERE status = 'pending'",
                 [datetime.now(UTC) - timedelta(seconds=1)],
             )
 
-        substrate.poll_hooks()
+        regista.poll_hooks()
 
-        dead = substrate.list_dead_lettered_hooks()
+        dead = regista.list_dead_lettered_hooks()
         matching = [d for d in dead if d.hook_name == "notify_reviewer"]
         assert len(matching) >= 1
 
 
 class TestDeadLetterRequeue:
-    def test_requeue_dead_lettered_hook(self, substrate):
-        substrate.register_workflow(WORKFLOW_V2)
-        substrate.register_validator("validate_start", lambda ctx: None)
+    def test_requeue_dead_lettered_hook(self, regista):
+        regista.register_workflow(WORKFLOW_V2)
+        regista.register_validator("validate_start", lambda ctx: None)
 
         def always_fail(ctx):
             raise RuntimeError("fail")
 
-        substrate.register_hook_handler("notify_reviewer", always_fail)
+        regista.register_hook_handler("notify_reviewer", always_fail)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Requeue test"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="submit_review",
             actor_id="agent-1",
@@ -422,16 +422,16 @@ class TestDeadLetterRequeue:
 
         from datetime import UTC, datetime, timedelta
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE hook_queue SET retry_count = 2, next_retry_at = %s "
                 "WHERE status = 'pending'",
                 [datetime.now(UTC) - timedelta(seconds=1)],
             )
 
-        substrate.poll_hooks()
+        regista.poll_hooks()
 
-        dead = substrate.list_dead_lettered_hooks()
+        dead = regista.list_dead_lettered_hooks()
         target = None
         for d in dead:
             if d.hook_name == "notify_reviewer":
@@ -439,9 +439,9 @@ class TestDeadLetterRequeue:
                 break
         assert target is not None
 
-        substrate.requeue_dead_lettered_hook(target.id)
+        regista.requeue_dead_lettered_hook(target.id)
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             rows = conn.execute(
                 "SELECT * FROM hook_queue WHERE event_id = %s AND hook_name = %s",
                 [target.event_id, target.hook_name],
@@ -449,61 +449,61 @@ class TestDeadLetterRequeue:
         assert len(rows) >= 1
         assert rows[0]["retry_count"] == 0
 
-    def test_requeue_nonexistent_fails(self, substrate):
-        with pytest.raises(SubstrateError, match="HOOK_NOT_FOUND"):
-            substrate.requeue_dead_lettered_hook(999999)
+    def test_requeue_nonexistent_fails(self, regista):
+        with pytest.raises(RegistaError, match="HOOK_NOT_FOUND"):
+            regista.requeue_dead_lettered_hook(999999)
 
 
 class TestValidateActorMetadata:
-    def test_null_metadata(self, substrate):
-        wi, evt = substrate.create_work_item(
+    def test_null_metadata(self, regista):
+        wi, evt = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Lint test"},
         )
-        evt = substrate.read_events(work_item_id=wi.work_item_id)[0]
+        evt = regista.read_events(work_item_id=wi.work_item_id)[0]
         evt_null = replace(evt, actor_metadata=None)
-        issues = substrate.validate_actor_metadata(evt_null)
+        issues = regista.validate_actor_metadata(evt_null)
         assert any("null" in i for i in issues)
 
-    def test_missing_recommended_fields(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_missing_recommended_fields(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Lint fields"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         evt = replace(events[0], actor_metadata={"role": "agent"})
-        issues = substrate.validate_actor_metadata(evt)
+        issues = regista.validate_actor_metadata(evt)
         assert any("model" in i for i in issues)
         assert any("provider" in i for i in issues)
         assert any("role_source" in i for i in issues)
 
-    def test_invalid_role_source(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_invalid_role_source(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Lint role"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         evt = replace(
             events[0],
             actor_metadata={"model": "gpt-4", "provider": "openai", "role_source": "hacked"},
         )
-        issues = substrate.validate_actor_metadata(evt)
+        issues = regista.validate_actor_metadata(evt)
         assert any("role_source" in i for i in issues)
 
-    def test_schema_validation(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_schema_validation(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Lint schema"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         evt = replace(
             events[0],
             actor_metadata={"model": "gpt-4", "provider": "openai", "role_source": "config"},
@@ -512,20 +512,20 @@ class TestValidateActorMetadata:
             "type": "object",
             "required": ["model", "nonexistent_field"],
         }
-        issues = substrate.validate_actor_metadata(evt, expected_schema=schema)
+        issues = regista.validate_actor_metadata(evt, expected_schema=schema)
         assert any("nonexistent_field" in i for i in issues)
 
-    def test_clean_metadata_no_issues(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_clean_metadata_no_issues(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Lint clean"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         evt = replace(
             events[0],
             actor_metadata={"model": "gpt-4", "provider": "openai", "role_source": "config"},
         )
-        issues = substrate.validate_actor_metadata(evt)
+        issues = regista.validate_actor_metadata(evt)
         assert len(issues) == 0

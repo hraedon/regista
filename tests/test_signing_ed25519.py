@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import SubstrateError
-from substrate._testing import KeySet, get_scheme
-from substrate.testing import InMemorySubstrate, drop_project_schema
+from regista._errors import RegistaError
+from regista._testing import KeySet, get_scheme
+from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 ED_KEY_PATH = str(TESTS_DIR / "test_keys_ed25519.json")
 COMBINED_KEY_PATH = str(TESTS_DIR / "test_keys_combined.json")
@@ -24,11 +24,11 @@ def _write_keys(tmp_path, keys_data):
 
 
 @pytest.fixture
-def ed_substrate():
-    from substrate import Substrate
+def ed_regista():
+    from regista import Regista
 
     project = f"test_ed_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, ED_KEY_PATH)
+    sub = Regista.create_project(DSN, project, ED_KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -36,11 +36,11 @@ def ed_substrate():
 
 
 @pytest.fixture
-def combined_substrate():
-    from substrate import Substrate
+def combined_regista():
+    from regista import Regista
 
     project = f"test_comb_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, COMBINED_KEY_PATH)
+    sub = Regista.create_project(DSN, project, COMBINED_KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -52,40 +52,40 @@ def combined_substrate():
     reason="PyNaCl not installed",
 )
 class TestEd25519PostgresIntegration:
-    def test_create_and_read_ed25519_event(self, ed_substrate):
-        wi, _ = ed_substrate.create_work_item(
+    def test_create_and_read_ed25519_event(self, ed_regista):
+        wi, _ = ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "ed25519 test"},
         )
-        events = ed_substrate.read_events(work_item_id=wi.work_item_id)
+        events = ed_regista.read_events(work_item_id=wi.work_item_id)
         assert len(events) >= 1
         created_evt = events[-1]
         assert created_evt.scheme_id == "ed25519"
 
-    def test_transition_produces_ed25519_scheme_id(self, ed_substrate):
-        wi, _ = ed_substrate.create_work_item(
+    def test_transition_produces_ed25519_scheme_id(self, ed_regista):
+        wi, _ = ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "ed25519 transition"},
         )
-        ed_substrate.transition(
+        ed_regista.transition(
             wi.work_item_id, "start", "agent-1",
             actor_metadata={"role": "agent"},
         )
-        events = ed_substrate.read_events(work_item_id=wi.work_item_id)
+        events = ed_regista.read_events(work_item_id=wi.work_item_id)
         assert any(e.scheme_id == "ed25519" for e in events)
 
-    def test_replay_verifies_ed25519_signatures(self, ed_substrate):
-        ed_substrate.create_work_item(
+    def test_replay_verifies_ed25519_signatures(self, ed_regista):
+        ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "ed25519 replay"},
         )
-        report = ed_substrate.replay()
+        report = ed_regista.replay()
         assert report.halted == 0, f"Replay failed: {report.entries}"
 
     def test_ed25519_key_scheme_resolution(self, tmp_path):
@@ -106,7 +106,7 @@ class TestEd25519PostgresIntegration:
         assert scheme.scheme_id == "ed25519"
 
     def test_in_memory_ed25519_lifecycle(self):
-        sub = InMemorySubstrate(project="test", hmac_key_path=ED_KEY_PATH)
+        sub = InMemoryRegista(project="test", hmac_key_path=ED_KEY_PATH)
         sub.register_workflow_file(WORKFLOW_PATH)
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
@@ -125,24 +125,24 @@ class TestEd25519PostgresIntegration:
     reason="PyNaCl not installed",
 )
 class TestEd25519KeyRotation:
-    def test_replay_handles_mixed_schemes(self, combined_substrate):
-        combined_substrate.create_work_item(
+    def test_replay_handles_mixed_schemes(self, combined_regista):
+        combined_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "rotation test"},
         )
-        report = combined_substrate.replay()
+        report = combined_regista.replay()
         assert report.halted == 0, f"Replay failed with mixed schemes: halted={report.halted}"
 
-    def test_events_signed_with_active_key_scheme(self, combined_substrate):
-        wi, _ = combined_substrate.create_work_item(
+    def test_events_signed_with_active_key_scheme(self, combined_regista):
+        wi, _ = combined_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "active scheme test"},
         )
-        events = combined_substrate.read_events(work_item_id=wi.work_item_id)
+        events = combined_regista.read_events(work_item_id=wi.work_item_id)
         assert events[-1].scheme_id == "ed25519"
 
     def test_key_set_reports_both_schemes(self, tmp_path):
@@ -186,13 +186,13 @@ class TestEd25519KeyLoadErrors:
         })
         monkeypatch.setitem(__import__("sys").modules, "nacl", None)
         monkeypatch.setitem(__import__("sys").modules, "nacl.signing", None)
-        from substrate._keys import KeySet as _KeySet
+        from regista._keys import KeySet as _KeySet
 
-        with pytest.raises(SubstrateError, match=r"ed25519.*PyNaCl"):
+        with pytest.raises(RegistaError, match=r"ed25519.*PyNaCl"):
             _KeySet(kf)
 
     def test_unknown_scheme_raises(self, tmp_path):
-        from substrate._errors import ErrorCode, SubstrateError
+        from regista._errors import ErrorCode, RegistaError
 
         kf = _write_keys(tmp_path, {
             "keys": [
@@ -204,6 +204,6 @@ class TestEd25519KeyLoadErrors:
                 }
             ]
         })
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(kf)
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR

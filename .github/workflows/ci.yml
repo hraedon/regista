@@ -17,13 +17,13 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: substrate_test
-          POSTGRES_PASSWORD: substrate_test
-          POSTGRES_DB: substrate_test
+          POSTGRES_USER: regista_test
+          POSTGRES_PASSWORD: regista_test
+          POSTGRES_DB: regista_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U substrate_test"
+          --health-cmd "pg_isready -U regista_test"
           --health-interval 1s
           --health-timeout 3s
           --health-retries 30
@@ -48,4 +48,4 @@ jobs:
         run: pytest tests/ -v
 
       - name: Coverage
-        run: pytest tests/ -v --cov=substrate --cov-report=term-missing
+        run: pytest tests/ -v --cov=regista --cov-report=term-missing

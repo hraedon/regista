@@ -1,6 +1,6 @@
-# Substrate HTTP Sidecar
+# Regista HTTP Sidecar
 
-Thin 1:1 HTTP pass-through of the Substrate Python API. Exposes every public
+Thin 1:1 HTTP pass-through of the Regista Python API. Exposes every public
 operation over JSON endpoints for non-Python consumers.
 
 ## Quick start
@@ -8,34 +8,34 @@ operation over JSON endpoints for non-Python consumers.
 ```bash
 pip install ".[sidecar]"
 
-export SUBSTRATE_DSN="postgresql://user:pass@host:5432/db"
-export SUBSTRATE_PROJECT="my_project"
-export SUBSTRATE_HMAC_KEY_PATH="/path/to/keys.json"
-export SUBSTRATE_TOKENS_PATH="/path/to/tokens.yaml"
+export REGISTA_DSN="postgresql://user:pass@host:5432/db"
+export REGISTA_PROJECT="my_project"
+export REGISTA_HMAC_KEY_PATH="/path/to/keys.json"
+export REGISTA_TOKENS_PATH="/path/to/tokens.yaml"
 
-python -m substrate.sidecar
+python -m regista.sidecar
 ```
 
 Or via Docker:
 
 ```bash
-docker build -t substrate-sidecar -f deploy/sidecar/Dockerfile .
-docker run -e SUBSTRATE_DSN=... -e SUBSTRATE_PROJECT=... \
-  -e SUBSTRATE_HMAC_KEY_PATH=... -e SUBSTRATE_TOKENS_PATH=... \
-  substrate-sidecar
+docker build -t regista-sidecar -f deploy/sidecar/Dockerfile .
+docker run -e REGISTA_DSN=... -e REGISTA_PROJECT=... \
+  -e REGISTA_HMAC_KEY_PATH=... -e REGISTA_TOKENS_PATH=... \
+  regista-sidecar
 ```
 
 ## Environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SUBSTRATE_DSN` | Yes | | Postgres connection string |
-| `SUBSTRATE_PROJECT` | Yes | | Project (schema) name |
-| `SUBSTRATE_HMAC_KEY_PATH` | Yes | | Path to HMAC key-set JSON |
-| `SUBSTRATE_TOKENS_PATH` | Yes | | Path to bearer-token YAML |
-| `SUBSTRATE_BIND` | No | `0.0.0.0:8080` | Listen address |
-| `SUBSTRATE_POOL_MIN` | No | `1` | Min pool size |
-| `SUBSTRATE_POOL_MAX` | No | `10` | Max pool size |
+| `REGISTA_DSN` | Yes | | Postgres connection string |
+| `REGISTA_PROJECT` | Yes | | Project (schema) name |
+| `REGISTA_HMAC_KEY_PATH` | Yes | | Path to HMAC key-set JSON |
+| `REGISTA_TOKENS_PATH` | Yes | | Path to bearer-token YAML |
+| `REGISTA_BIND` | No | `0.0.0.0:8080` | Listen address |
+| `REGISTA_POOL_MIN` | No | `1` | Min pool size |
+| `REGISTA_POOL_MAX` | No | `10` | Max pool size |
 
 ## Token file format
 

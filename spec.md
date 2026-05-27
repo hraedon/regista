@@ -1,4 +1,4 @@
-# Specification: substrate
+# Specification: regista
 
 **Spec Level:** 3
 **Desired Level:** 3
@@ -11,7 +11,7 @@
 - 2026-05-24 — v7: Plan 011 (pluggable signing, Ed25519 + HMAC-SHA256) implemented. `scheme_id` column added to `events` (migration 015). `SigningScheme` protocol, `HMACSHA256Scheme`, `Ed25519Scheme`, registry in `_signing_scheme.py`. KeyEntry gains `scheme` field (default `hmac-sha256`). Replay resolves scheme per event. Plan 012 (RFC 3161 timestamping) implemented with Merkle tree batching, `tsp_batches` table (migration 016), `TimestampOps` facade, `MaintenanceThread._maybe_timestamp_events`. Replay gains `verify_timestamps` parameter to cross-reference events against confirmed TSP batches. New error codes: `SIGNING_SCHEME_NOT_FOUND`, `TSA_NOT_CONFIGURED`, `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`.
 - 2026-05-24 — v8: BC-233 (event hash chain). `prev_event_hash BYTEA` column added to `events` (migration 018). Each event's `prev_event_hash` is `SHA-256(prev_canonical_envelope ∥ prev_signature)`, binding each event to its predecessor within the work-item's event sequence. Signing envelope v3 includes `prev_event_hash` (hex) and `global_seq` when present. Replay verifies the hash chain per work-item and increments `warnings` on chain break. InMemory backend computes `prev_event_hash` identically. Plan 014 (`global_seq BIGSERIAL` on events, migration 017) already landed in v7 cycle.
 - 2026-05-05 — v4: Phase 3 additions. FR-24 (actor → allowed_roles enforcement, closing BR-09 fast-follow). FR-25 (continue-on-revoked replay flag). AC-35/AC-36 added. §12 Phase 3 updated. §16 decision items resolved: actor role enforcement (implemented), retention policy (deferred with guidance), Postgres version (pinned to 15+). BR-09 updated from "deferred fast-follow" to "implemented."
-- 2026-05-05 — v3: integrated third reviewer pass on API shape and consumer expectations. Adds FR-05b (structured work-item query, MVP), §19 Public API Surface (substrate library as sole signer; service-wrapping is mechanical), §20 Consumer Expectation Boundary (explicit non-goals consumers commonly assume substrate provides), BR-13 (per-project DB isolation as load-bearing assumption with documented migration path), refinement to FR-15 (library-as-sole-signer clause). ACs 32–34 added. Reviewer points on links projection and signing envelope complexity were considered and held as designed.
+- 2026-05-05 — v3: integrated third reviewer pass on API shape and consumer expectations. Adds FR-05b (structured work-item query, MVP), §19 Public API Surface (regista library as sole signer; service-wrapping is mechanical), §20 Consumer Expectation Boundary (explicit non-goals consumers commonly assume regista provides), BR-13 (per-project DB isolation as load-bearing assumption with documented migration path), refinement to FR-15 (library-as-sole-signer clause). ACs 32–34 added. Reviewer points on links projection and signing envelope complexity were considered and held as designed.
 - 2026-05-05 — v2: integrated two-reviewer correctness pass. Adds API-layer idempotency, gap-free `event_seq` allocator + canonical lock target (§17), projection invariants (§18), HMAC-SHA256 + RFC 8785 canonical signing envelope, transition-validator vs hook split, custom-field type vocabulary, trust tiers on `actor_metadata`. Resolves §13 Q8 (domain-expert review).
 
 ---
@@ -22,7 +22,7 @@
 
 **User/Operator:** Single operator running on a homelab K3s cluster with Postgres available. Currently zero humans-in-the-loop; agents are the primary actors. Non-revenue, license-cost-bound, token-spend unconstrained.
 
-**Success condition:** A substrate defined as a strict, versioned core schema and protocol — work-items, events, claims/leases, actors, link types — that each project deploys as its own isolated instance (own Postgres schema within a shared database; no cross-project state). On top of the core, each project declares its workflow declaratively: states, transitions, role-gating per transition, typed custom fields per work-item type (with `ui_visible` flag), and link types. Side effects are hooks the project owns; the substrate dispatches events but executes no project code. A future federated UI reads the contract and renders any project's workflow generically — pane-of-glass without shared state. Existing `reasoning.log` continues to work alongside.
+**Success condition:** A regista defined as a strict, versioned core schema and protocol — work-items, events, claims/leases, actors, link types — that each project deploys as its own isolated instance (own Postgres schema within a shared database; no cross-project state). On top of the core, each project declares its workflow declaratively: states, transitions, role-gating per transition, typed custom fields per work-item type (with `ui_visible` flag), and link types. Side effects are hooks the project owns; the regista dispatches events but executes no project code. A future federated UI reads the contract and renders any project's workflow generically — pane-of-glass without shared state. Existing `reasoning.log` continues to work alongside.
 
 ---
 
@@ -30,10 +30,10 @@
 
 | Term | Definition |
 |---|---|
-| **Substrate** | The library + Postgres schema + protocol providing coordination and durable state for agent pipelines. Library deployment; one substrate instance per project. |
+| **Regista** | The library + Postgres schema + protocol providing coordination and durable state for agent pipelines. Library deployment; one regista instance per project. |
 | **Project** | A logical unit of related work; corresponds 1:1 to one Postgres schema within a shared database. Hosts one or more workflow definitions. |
 | **Workflow** | A named, versioned declarative state machine describing how a particular kind of work proceeds. A project may register many workflows (e.g., spec generation, implementation, review). |
-| **Workflow definition** | A YAML file (validated against substrate's JSON Schema) declaring states, transitions, role-gating, custom fields per work-item-type, link types, attempt threshold, and per-hook retry overrides. |
+| **Workflow definition** | A YAML file (validated against regista's JSON Schema) declaring states, transitions, role-gating, custom fields per work-item-type, link types, attempt threshold, and per-hook retry overrides. |
 | **Work-item** | A discrete unit of trackable work. Has a workflow, a work-item-type within that workflow, a current state, custom fields, links to other work-items, a `needs_review` flag, and a `not_before` timestamp. |
 | **Work-item-type** | A category within a workflow (e.g., `spec`, `feature_request`, `bug`). Declares its own custom fields and allowed link types. |
 | **Event** | An immutable record appended to the per-project event log describing what happened to a work-item. The authoritative history. |
@@ -42,7 +42,7 @@
 | **Hook** | A side effect dispatched on transitions. Sync hooks gate the transaction; async hooks are queued and dispatched at-least-once. |
 | **Link** | A typed directed reference between work-items in the same project. Created and removed via events. |
 | **Workflow version** | A registered, immutable instance of a workflow definition. Work-items pin the version they were created against. |
-| **Reasoning log** | Existing flat-file convention in the Software Factory. Continues to operate alongside the substrate. |
+| **Reasoning log** | Existing flat-file convention in the Software Factory. Continues to operate alongside the regista. |
 
 ---
 
@@ -59,29 +59,29 @@
 - Sync and async hook dispatch (async via durable queue table; LISTEN/NOTIFY as latency optimization, polling as correctness mechanism)
 - Pluggable actor identity verifier (HMAC default; OIDC-ready)
 - Key rotation via key-set-with-status (active / deprecated / revoked)
-- Startup integrity check (migrations applied; workflow-substrate version compatibility)
+- Startup integrity check (migrations applied; workflow-regista version compatibility)
 - Structured logging + Prometheus metrics
 
 **Out of scope:**
 - Cross-project state, queries, or links
-- DB provisioning (operator creates the DB; substrate runs migrations against it)
+- DB provisioning (operator creates the DB; regista runs migrations against it)
 - Disk-level durability and backups (operator policy; separate concern)
 - Scheduling beyond `not_before` timestamp (no scheduler engine)
 - Retry / SLA / automation engines layered above coordination
 - Workflow file composition across files via `extends:` — **implemented (FR-29)**
-- Notification / paging / email (substrate flags + emits events; consumers are project policy)
-- A human-facing UI (federated UI is downstream and consumes the substrate; not part of this build)
+- Notification / paging / email (regista flags + emits events; consumers are project policy)
+- A human-facing UI (federated UI is downstream and consumes the regista; not part of this build)
 - Removal of registered workflow versions (registry is append-only)
 
 ---
 
 ## 4. MVP Definition
 
-**MVP is:** The substrate library replaces `reasoning.log` for one workflow in the Software Factory: agents create work-items in a declared workflow, claim them durably, transition them through validated states with role-gating, and the event log captures every operation with full replay support.
+**MVP is:** The regista library replaces `reasoning.log` for one workflow in the Software Factory: agents create work-items in a declared workflow, claim them durably, transition them through validated states with role-gating, and the event log captures every operation with full replay support.
 
 **MVP functional requirements:** FR-01, FR-02, FR-03, FR-04, FR-05, FR-05b, FR-06, FR-07, FR-08, FR-09a, FR-09b, FR-11, FR-12, FR-15, FR-16, FR-17, FR-19, FR-20, FR-21, FR-22, FR-23.
 
-**Rationale:** The minimum that earns its keep over `reasoning.log` is one factory workflow running on the substrate with durable claims, attempt tracking, replay, role enforcement, and observability. Hooks (FR-13), escalation consumers (FR-10), dead-letter requeue (FR-14), and lint helpers (FR-18) are real but their consumers don't yet exist; shipping them in MVP would be features without users.
+**Rationale:** The minimum that earns its keep over `reasoning.log` is one factory workflow running on the regista with durable claims, attempt tracking, replay, role enforcement, and observability. Hooks (FR-13), escalation consumers (FR-10), dead-letter requeue (FR-14), and lint helpers (FR-18) are real but their consumers don't yet exist; shipping them in MVP would be features without users.
 
 **Note to implementing agent:** This reflects value priority. Some non-MVP requirements may be architecturally load-bearing — surface conflicts before writing code rather than reordering silently.
 
@@ -122,7 +122,7 @@
   - `needs_review` (bool)
   - `has_link_type` (link type) — work-items that are the source of a link of given type
 
-  Pagination via stable `work_item_id` cursor (ordered ascending); default page size 100, max 1000. The cursor is `work_item_id`-only rather than `(last_event_seq, work_item_id)` so that ordering is fixed regardless of concurrent appends — pagination cannot skip or duplicate a work-item that is touched mid-scan. The trade-off is that pages are not ordered by recency; consumers who want "freshly active first" should sort the page contents client-side or filter by `last_event_seq` range. Indexes required to satisfy NFR-perf-1: `(workflow_name, workflow_version, current_state)`, `(claimed_by)`, `(needs_review) WHERE needs_review`. This is the foundation query for agent claim-discovery ("what work is available for me to claim now") and for the federated UI's list views; without it consumers reach into `work_items_current` directly and the substrate's API surface is incomplete.
+  Pagination via stable `work_item_id` cursor (ordered ascending); default page size 100, max 1000. The cursor is `work_item_id`-only rather than `(last_event_seq, work_item_id)` so that ordering is fixed regardless of concurrent appends — pagination cannot skip or duplicate a work-item that is touched mid-scan. The trade-off is that pages are not ordered by recency; consumers who want "freshly active first" should sort the page contents client-side or filter by `last_event_seq` range. Indexes required to satisfy NFR-perf-1: `(workflow_name, workflow_version, current_state)`, `(claimed_by)`, `(needs_review) WHERE needs_review`. This is the foundation query for agent claim-discovery ("what work is available for me to claim now") and for the federated UI's list views; without it consumers reach into `work_items_current` directly and the regista's API surface is incomplete.
 - FR-06 **[MVP]**: Acquire a claim on a work-item. Respects `not_before` (rejects if in future); rejects if work-item is already claimed and unexpired (Postgres row lock — first wins, second receives "claim contested" rejection, not an error).
 - FR-07 **[MVP]**: Renew a claim via heartbeat before TTL expiry. **Stale-heartbeat protection:** if `claims.actor_id != heartbeat.actor_id` OR `attempt_number` has advanced since the claim was acquired, the heartbeat is rejected with a "claim lost" signal and the agent must stop work.
 - FR-08 **[MVP]**: Release a claim explicitly via `release_claim()`. Successful state transitions release implicitly.
@@ -133,16 +133,16 @@
 - FR-12 **[MVP]**: Validate role-gating per transition against the work-item's pinned workflow version; reject if actor's declared role isn't permitted for that transition. If actor has registered roles (FR-24), the declared role must also be in the actor's registered set.
 - FR-13: Two distinct side-effect primitives on transitions, with materially different contracts:
 
-  - **Transition validator (in-transaction, synchronous):** runs inside the same Postgres transaction as the event append, while the canonical lock is held (§17.2). Gates commit. **Trusted code, no enforced bounds** (BC-192): validators run synchronously in the caller's thread; substrate does not enforce wall-clock or I/O limits. A hanging validator hangs the transaction. The Postgres `statement_timeout` (5s) protects against blocking DB operations made via the transaction's connection, but not pure-Python loops or external I/O. **Should NOT perform I/O** — local computation only (validation, derivation, cross-field invariants, sanity checks). Validators that need to call out to other systems should instead enqueue an async hook.
+  - **Transition validator (in-transaction, synchronous):** runs inside the same Postgres transaction as the event append, while the canonical lock is held (§17.2). Gates commit. **Trusted code, no enforced bounds** (BC-192): validators run synchronously in the caller's thread; regista does not enforce wall-clock or I/O limits. A hanging validator hangs the transaction. The Postgres `statement_timeout` (5s) protects against blocking DB operations made via the transaction's connection, but not pure-Python loops or external I/O. **Should NOT perform I/O** — local computation only (validation, derivation, cross-field invariants, sanity checks). Validators that need to call out to other systems should instead enqueue an async hook.
 
-  - **Hook (async, durable):** written to a durable `hook_queue` table on commit. Consumer woken via Postgres LISTEN/NOTIFY (latency optimization). The NOTIFY payload is **wakeup-only** (an `event_id` reference); it is never a data channel — Postgres NOTIFY has an 8KB payload cap and consumers must read the full hook payload from `hook_queue`. Polling sweep runs always at fixed default 30s interval (correctness mechanism, independent of NOTIFY). At-least-once delivery; retry-with-backoff (substrate-defined defaults; project-overridable per hook in workflow def). After max retries, row moves to `hook_dead_letter` table and a `hook_dead_lettered` event is emitted.
+  - **Hook (async, durable):** written to a durable `hook_queue` table on commit. Consumer woken via Postgres LISTEN/NOTIFY (latency optimization). The NOTIFY payload is **wakeup-only** (an `event_id` reference); it is never a data channel — Postgres NOTIFY has an 8KB payload cap and consumers must read the full hook payload from `hook_queue`. Polling sweep runs always at fixed default 30s interval (correctness mechanism, independent of NOTIFY). At-least-once delivery; retry-with-backoff (regista-defined defaults; project-overridable per hook in workflow def). After max retries, row moves to `hook_dead_letter` table and a `hook_dead_lettered` event is emitted.
 
   Naming intent: the in-transaction primitive is called a *validator*, not a "sync hook," because consumers and project authors should reach for hooks by default and reach for validators only when the work is *necessarily* atomic with the transition. Hooks may evolve freely; validators are a narrow exception path.
 - FR-14: Replay dead-lettered hooks via `requeue_dead_lettered_hook(id)` — resets retry counter; re-enters queue; re-failure follows same policy.
 - FR-15 **[MVP]**: Verify actor identity via pluggable verifier before recording any event.
 
   - **Algorithm:** Pluggable via `SigningScheme` protocol (Plan 011). Default: HMAC-SHA256. Alternative: Ed25519 (via PyNaCl, optional dependency). Scheme is declared per key in the key file (`KeyEntry.scheme`); `scheme_id` is persisted on each event row.
-  - **Library is the sole sanctioned signer.** The substrate library's public API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme, and persists. The API does NOT accept pre-signed events from callers and rejects any attempt to submit one. Rationale: canonicalization is an invariant — if every caller (Python agent, future sidecar client, federated UI service) implements JCS independently, the audit promise depends on every implementation being byte-identical, which is not a defensible position. Consolidating the canonicalizer in one place is the only sustainable defense. Future service-wrapper deployments (sidecar) MUST expose the same unsigned-fields API and sign inside the wrapper process; they MUST NOT expose a passthrough that accepts pre-signed events on the wire (see §19.2).
+  - **Library is the sole sanctioned signer.** The regista library's public API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme, and persists. The API does NOT accept pre-signed events from callers and rejects any attempt to submit one. Rationale: canonicalization is an invariant — if every caller (Python agent, future sidecar client, federated UI service) implements JCS independently, the audit promise depends on every implementation being byte-identical, which is not a defensible position. Consolidating the canonicalizer in one place is the only sustainable defense. Future service-wrapper deployments (sidecar) MUST expose the same unsigned-fields API and sign inside the wrapper process; they MUST NOT expose a passthrough that accepts pre-signed events on the wire (see §19.2).
   - **Canonical signing envelope (v3):** the bytes signed are RFC 8785 (JCS) canonical JSON serialization of `{event_id, work_item_id, actor_id, key_id, event_seq, workflow_name, workflow_version, timestamp, on_behalf_of, transition, payload, prev_event_hash?, global_seq?}`. Keys whose values are `None` are omitted from the canonical JSON. `prev_event_hash` (hex-encoded) and `global_seq` are included when present, making the signing envelope integrity-cover the chain linkage and global ordering. Lexicographically sorted keys, no whitespace. This covers all integrity-relevant event fields, including those previously treated as "server-stamped" (v1). Backward compatibility: replay classifies the envelope version at verification time — v3 first, then v2, then v1 for pre-v6 events.
   - **Storage of canonical bytes:** The canonical envelope bytes (RFC 8785 serialized v3 envelope) are persisted as `canonical_envelope BYTEA` on every event row. `payload_canonical_hash` (SHA-256 of the canonical envelope) is also persisted. Re-verification at replay time uses the stored envelope bytes directly, not jsonb re-serialization, so signature stability survives Postgres version upgrades that change jsonb canonicalization.
   - **Key set:** per-actor, with status `active` / `deprecated` / `revoked`. Each event carries `key_id`. Hot-reload via mtime polling at default 30s interval. K3s Secret atomic-swap (symlink) is compatible with mtime polling. Inotify and SIGHUP are NOT used (platform-coupled and process-control-coupled respectively).
@@ -152,14 +152,14 @@
     - Deprecated `key_id`: accept; emit structured warning.
   - **Trust tiers** (consumed by §17.9 and §11):
     - *Authenticated* — `actor_id`, `key_id` (scheme-verified: HMAC-SHA256 or Ed25519).
-    - *Server-stamped* — `timestamp`, `event_seq` (substrate writes; not under actor control).
+    - *Server-stamped* — `timestamp`, `event_seq` (regista writes; not under actor control).
     - *Actor-claimed* — `actor_metadata` (incl. `role`, `model`, `provider`, `role_source`, `context_hash`, `prompt_template_hash`) — signed by actor but not validated against any registry. FR-24 provides opt-in enforcement: when an actor has registered roles, the claimed role is validated against the actor's allowed set; otherwise it is trusted.
-- FR-16 **[MVP]**: Replay — rebuild a `work_items_current_replay_<timestamp>` projection from the event log on demand. Each historical transition validates against the workflow version recorded on its event. Output is a fresh table; substrate does NOT mutate live `work_items_current` in place. Operator decides whether to atomically swap (rename) or diff for verification.
+- FR-16 **[MVP]**: Replay — rebuild a `work_items_current_replay_<timestamp>` projection from the event log on demand. Each historical transition validates against the workflow version recorded on its event. Output is a fresh table; regista does NOT mutate live `work_items_current` in place. Operator decides whether to atomically swap (rename) or diff for verification.
 
-  Substrate also produces a companion `replay_report_<timestamp>` table categorizing each work-item:
+  Regista also produces a companion `replay_report_<timestamp>` table categorizing each work-item:
 
   - `replayed_ok` — replayed final state matches live `work_items_current`.
-  - `replayed_drift` — replayed final state differs from live. **This is the actionable signal.** Possible causes: bug in projection update logic, direct edit to `work_items_current` outside the substrate API (forbidden by §18), missed event (corruption — usually accompanied by `event_seq` gap).
+  - `replayed_drift` — replayed final state differs from live. **This is the actionable signal.** Possible causes: bug in projection update logic, direct edit to `work_items_current` outside the regista API (forbidden by §18), missed event (corruption — usually accompanied by `event_seq` gap).
   - `halted` — replay could not complete on this work-item; halt reason recorded (`revoked_key`, `missing_workflow_version`, `unrecognized_transition`, `signature_verification_failed`, etc.).
   - `warnings` — count of events skipped during signature verification (when `continue_on_revoked=True`) or events not covered by confirmed TSP batches (when `verify_timestamps=True`); informational, not a defect signal.
 
@@ -169,9 +169,9 @@
 
 **Workflow definition (project-owned, declarative):**
 
-- FR-17 **[MVP]**: Parse and validate workflow definition (YAML + JSON Schema). Declares: `version` (required integer), `substrate_version` (required, semver), states, transitions, role-gating per transition, custom typed fields per work-item-type (each field has `type` + `ui_visible` flag, default `false`), link types per work-item-type pair, attempt threshold, per-hook retry overrides.
+- FR-17 **[MVP]**: Parse and validate workflow definition (YAML + JSON Schema). Declares: `version` (required integer), `regista_version` (required, semver), states, transitions, role-gating per transition, custom typed fields per work-item-type (each field has `type` + `ui_visible` flag, default `false`), link types per work-item-type pair, attempt threshold, per-hook retry overrides.
 
-  - **Custom field type vocabulary** (closed set; expansion requires a substrate minor version bump):
+  - **Custom field type vocabulary** (closed set; expansion requires a regista minor version bump):
     - `string`
     - `integer`
     - `boolean`
@@ -180,7 +180,7 @@
     - `enum` (declared values list)
     - `work_item_ref` (constrained to a `work_item_id` in the same project DB; declared target work-item-type optional)
 
-  - **Compatibility rule (consumed by FR-20):** `library_major == workflow.substrate_version_major` AND `library_full_version >= workflow.substrate_version`. Workflows can require newer minor versions (new field types, new validators) — older libraries refuse to start against them. Workflows cannot require newer majors.
+  - **Compatibility rule (consumed by FR-20):** `library_major == workflow.regista_version_major` AND `library_full_version >= workflow.regista_version`. Workflows can require newer minor versions (new field types, new validators) — older libraries refuse to start against them. Workflows cannot require newer majors.
 
   - **Validation passes:**
     - (a) YAML syntactic — rejects with line-numbered error.
@@ -197,9 +197,9 @@
 
 **Operational:**
 
-- FR-19 **[MVP]**: Per-project Postgres schema isolation. One database hosts all projects; each project gets its own schema. Multiple workflow definitions may be registered within that schema. Substrate has no `provision_project_db()` primitive; database existence is a precondition (operator-shaped). `Substrate.create_project()` creates the project schema and runs migrations. Substrate fails fast with a clear error if the schema doesn't exist.
-- FR-20 **[MVP]**: Startup integrity check — verify (a) all schema migrations are applied; (b) every registered workflow declares a `substrate_version` compatible with the running library version. Refuse to start otherwise; operator runs migration command and re-launches.
-- FR-21 **[MVP]**: Structured logs per substrate operation including `project_id`, `work_item_id`, `operation`, `duration`, `outcome`, `actor_id`. Substrate is a library, not a daemon: it exposes a `prometheus_client.CollectorRegistry` (or labelled metrics) that the host application mounts on its own HTTP server. Substrate does not run an HTTP server. Counters: events appended, claims acquired/expired/stolen, hooks dispatched/succeeded/failed/dead-lettered, transitions accepted/rejected, validators succeeded/failed/timed-out, replay drift count, idempotency-key collisions, expected-seq-mismatch rejections.
+- FR-19 **[MVP]**: Per-project Postgres schema isolation. One database hosts all projects; each project gets its own schema. Multiple workflow definitions may be registered within that schema. Regista has no `provision_project_db()` primitive; database existence is a precondition (operator-shaped). `Regista.create_project()` creates the project schema and runs migrations. Regista fails fast with a clear error if the schema doesn't exist.
+- FR-20 **[MVP]**: Startup integrity check — verify (a) all schema migrations are applied; (b) every registered workflow declares a `regista_version` compatible with the running library version. Refuse to start otherwise; operator runs migration command and re-launches.
+- FR-21 **[MVP]**: Structured logs per regista operation including `project_id`, `work_item_id`, `operation`, `duration`, `outcome`, `actor_id`. Regista is a library, not a daemon: it exposes a `prometheus_client.CollectorRegistry` (or labelled metrics) that the host application mounts on its own HTTP server. Regista does not run an HTTP server. Counters: events appended, claims acquired/expired/stolen, hooks dispatched/succeeded/failed/dead-lettered, transitions accepted/rejected, validators succeeded/failed/timed-out, replay drift count, idempotency-key collisions, expected-seq-mismatch rejections.
 - FR-22 **[MVP]**: Create a link between work-items — validates target exists in same project DB, validates link type is allowed by workflow def for the work-item-type pair, records `link_created` event with `(from, to, type)`.
 - FR-23 **[MVP]**: Remove a link between work-items — records `link_removed` event with `(from, to, type)`. Previous link history remains in event log.
 
@@ -228,9 +228,9 @@
 ## 6. Data
 
 **Inputs:**
-- **Workflow definition file (YAML):** declares states, transitions, role-gating, custom fields, link types, attempt threshold, retry overrides, `version`, `substrate_version`. Validated at registration.
+- **Workflow definition file (YAML):** declares states, transitions, role-gating, custom fields, link types, attempt threshold, retry overrides, `version`, `regista_version`. Validated at registration.
 - **HMAC key set (K3s Secret, JSON-shaped):** per-actor key entries with `key_id` and `status` (`active` / `deprecated` / `revoked`). Hot-reloaded.
-- **Postgres connection string:** one per substrate library instance; identifies the project DB.
+- **Postgres connection string:** one per regista library instance; identifies the project DB.
 
 **Outputs:**
 - **Event records** (table `events`): authoritative append-only log
@@ -247,7 +247,7 @@
 - `hook_dead_letter` — terminally-failed async hooks (quarantine, replayable via FR-14)
 - `actor_roles` — per-actor role mappings for FR-24 enforcement; opt-in, backward compatible
 - `workflow_registry` — registered workflow definitions, append-only (versioned, immutable once referenced)
-- Migration metadata (substrate-managed, e.g., Alembic-equivalent)
+- Migration metadata (regista-managed, e.g., Alembic-equivalent)
 
 Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-partitioning is a known recipe (declarative `PARTITION BY RANGE (timestamp)`) if a single project exceeds ~10M events/month.
 
@@ -255,23 +255,23 @@ Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-
 
 ## 7. Business Rules
 
-- BR-01: Workflow registry is append-only. Substrate provides no primitive to remove a registered workflow version. Operator-level removal is operator's responsibility; orphaned references are detected at next replay.
+- BR-01: Workflow registry is append-only. Regista provides no primitive to remove a registered workflow version. Operator-level removal is operator's responsibility; orphaned references are detected at next replay.
 - BR-02: Work-items pin the workflow version they were created against. In-flight work-items continue to operate on their pinned version regardless of newer versions registered later.
 - BR-03: Events are immutable. The event log is append-only. No update or delete primitive exists.
 - BR-04: Cross-project links are not supported. Links are restricted to work-items in the same project DB.
-- BR-05: The substrate is not a durable execution engine. It is a coordination + state plane. Workflow orchestration (Temporal-style) is a layer projects may add on top using substrate as the durable state record.
-- BR-06: The substrate writes no project code, executes no project-supplied code outside of explicit hook contracts, and dispatches no notifications. All side effects are project-owned.
-- BR-07: Hooks are declarative-only at registration; their implementations are project-owned. The substrate dispatches; the substrate does not embed a sandbox.
+- BR-05: The regista is not a durable execution engine. It is a coordination + state plane. Workflow orchestration (Temporal-style) is a layer projects may add on top using regista as the durable state record.
+- BR-06: The regista writes no project code, executes no project-supplied code outside of explicit hook contracts, and dispatches no notifications. All side effects are project-owned.
+- BR-07: Hooks are declarative-only at registration; their implementations are project-owned. The regista dispatches; the regista does not embed a sandbox.
 - BR-08: Postgres `now()` (transaction-stable) is the time authority. Agent-supplied clocks may live in `actor_metadata` for diagnostics but are not used for ordering or correctness.
-- BR-09: **Authorization is enforced when actor roles are registered; audit-only when not.** HMAC verification proves `actor_id` (authenticated). The role used for role-gating (FR-12) is read from `actor_metadata.role` — an *actor-claimed* field. FR-24 adds an `actor_roles` table mapping `actor_id → allowed_roles`. When an actor has registered roles, FR-12 enforces that the claimed role is in the actor's registered set (rejects with `ACTOR_ROLE_NOT_AUTHORIZED` if not). When an actor has no registered roles, the claimed role is trusted (backward compatible with MVP behavior). The substrate guarantees a *signed audit trail* of which actor claimed which role for each transition; FR-24 makes this enforceable on a per-actor basis. `actor_metadata.role_source` ("config" / "env" / "prompt") provides post-hoc audit of misdeclaration sources.
+- BR-09: **Authorization is enforced when actor roles are registered; audit-only when not.** HMAC verification proves `actor_id` (authenticated). The role used for role-gating (FR-12) is read from `actor_metadata.role` — an *actor-claimed* field. FR-24 adds an `actor_roles` table mapping `actor_id → allowed_roles`. When an actor has registered roles, FR-12 enforces that the claimed role is in the actor's registered set (rejects with `ACTOR_ROLE_NOT_AUTHORIZED` if not). When an actor has no registered roles, the claimed role is trusted (backward compatible with MVP behavior). The regista guarantees a *signed audit trail* of which actor claimed which role for each transition; FR-24 makes this enforceable on a per-actor basis. `actor_metadata.role_source` ("config" / "env" / "prompt") provides post-hoc audit of misdeclaration sources.
 
 - BR-10: **Concurrency contract.** Every event-producing operation on a work-item acquires a row lock on the canonical lock target (the work-item's row in `work_items_current`) via `SELECT FOR UPDATE` at the start of the transaction. All mutations on a given work-item serialize through this lock. Cross-work-item operations (links) acquire both rows in ascending `work_item_id` order to prevent deadlock. Isolation level: READ COMMITTED. See §17.
 
-- BR-11: **Projection invariant.** `work_items_current` is fully derivable from `events`. Substrate writes to it only inside the event-append transaction. Direct `UPDATE` / `DELETE` on `work_items_current` outside the substrate's API is forbidden by contract; recommended Postgres role separation enforces this at the database level. Drift between the live projection and an event-log replay is detected via FR-16 `replay_report`. See §18.
+- BR-11: **Projection invariant.** `work_items_current` is fully derivable from `events`. Regista writes to it only inside the event-append transaction. Direct `UPDATE` / `DELETE` on `work_items_current` outside the regista's API is forbidden by contract; recommended Postgres role separation enforces this at the database level. Drift between the live projection and an event-log replay is detected via FR-16 `replay_report`. See §18.
 
 - BR-12: **API-layer idempotency.** All event-emitting mutation operations (event append, transition, claim acquire / release, link create / remove) accept a client-supplied `event_id` (UUIDv4) that doubles as the idempotency key. Duplicate `event_id` returns the original result deterministically rather than producing a second logical operation; this makes caller-side retry across transient failures (DB connection drop, partial response) safe. Operations with structural idempotency do not take an explicit key: `register_workflow` is idempotent on `(workflow_name, version)` (the natural uniqueness constraint); `heartbeat_claim` is idempotent on `(work_item_id, actor_id, attempt_number)` (a repeated heartbeat from the same claim-holder simply extends the TTL). Consolidating idempotency on `event_id` — rather than carrying a parallel `idempotency_key` table — is sufficient because every audit-relevant mutation is now an event (BC-005), and the events table enforces `event_id` uniqueness via a database unique index (migration 014). Cross-work-item reuse of the same `event_id` raises `EVENT_ID_GLOBAL_COLLISION`.
 
-- BR-13: **Per-project schema isolation is a load-bearing assumption, with a documented migration path.** The "one Postgres schema per project" choice (FR-19) is what makes cross-project queries impossible by construction (BR-04) and gives clean backup/restore boundaries. One shared database keeps the connection pool count constant regardless of project count. At homelab scale (≤10 projects, single operator, current design context), this is correct. It is NOT correct at multi-team / multi-org scale: hundreds of schemas can still be managed but a `tenant_id`-in-shared-schema model with row-level security becomes preferable. The public API (§19) is shaped so this boundary can shift without API changes: a `Substrate` handle owns one logical project namespace; whether that namespace maps to a dedicated schema or to a `tenant_id` partition within a shared schema protected by row-level security is internal. A future migration to tenant_id-in-shared-schema requires a one-time data move per project plus addition of a `project_id` column scoped by RLS to `events`, `work_items_current`, `claims`, `hook_queue`, `hook_dead_letter`, `workflow_registry`. No FR signature changes. Consumers should not assume schema-per-project as a permanent fixture; if a deployment approaches the operational pain threshold (subjective, but ~30+ projects is a fair signal), plan the migration before it compounds.
+- BR-13: **Per-project schema isolation is a load-bearing assumption, with a documented migration path.** The "one Postgres schema per project" choice (FR-19) is what makes cross-project queries impossible by construction (BR-04) and gives clean backup/restore boundaries. One shared database keeps the connection pool count constant regardless of project count. At homelab scale (≤10 projects, single operator, current design context), this is correct. It is NOT correct at multi-team / multi-org scale: hundreds of schemas can still be managed but a `tenant_id`-in-shared-schema model with row-level security becomes preferable. The public API (§19) is shaped so this boundary can shift without API changes: a `Regista` handle owns one logical project namespace; whether that namespace maps to a dedicated schema or to a `tenant_id` partition within a shared schema protected by row-level security is internal. A future migration to tenant_id-in-shared-schema requires a one-time data move per project plus addition of a `project_id` column scoped by RLS to `events`, `work_items_current`, `claims`, `hook_queue`, `hook_dead_letter`, `workflow_registry`. No FR signature changes. Consumers should not assume schema-per-project as a permanent fixture; if a deployment approaches the operational pain threshold (subjective, but ~30+ projects is a fair signal), plan the migration before it compounds.
 
 ---
 
@@ -293,9 +293,9 @@ Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-
 | Unknown key_id at verify | Event signed with unrecognized key_id | Reject; structured log with `actor_id_claim`, `key_id_claim`, `event_id` (no signature) | Log only |
 | Revoked key_id at verify | Event signed with revoked key | Reject; emit alert | Structured log |
 | Revoked key encountered at replay | Replay hits a revoked-key event | Halt replay on that work-item; live projection untouched | Operator alert |
-| DB connection failure mid-write | Postgres connection drops during operation | Surface error to caller; substrate does NOT retry; caller decides retry semantics | Caller sees error |
+| DB connection failure mid-write | Postgres connection drops during operation | Surface error to caller; regista does NOT retry; caller decides retry semantics | Caller sees error |
 | Migrations not applied at startup | Schema version mismatch | Refuse to start with clear instruction | Operator runs migration |
-| Substrate / workflow version mismatch | Registered workflow declares incompatible substrate version | Refuse to start | Operator decides upgrade or downgrade |
+| Regista / workflow version mismatch | Registered workflow declares incompatible regista version | Refuse to start | Operator decides upgrade or downgrade |
 | Cross-project link attempt | Link target work-item not in same DB | Reject at link create | Caller sees error |
 | Workflow version removed externally | Operator deletes a referenced row | Detected at next replay; replay fails on affected work-items | Operator alert |
 | LISTEN/NOTIFY connection drop | Network blip in hook consumer | Polling fallback drains queue at 30s interval; consumer reconnects opportunistically | Structured log |
@@ -316,9 +316,9 @@ Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-
 
 - **NFR-perf-1 — Claim acquisition latency:** p99 < 100ms at expected scale (≤50 concurrent agents per project, ≤10k active work-items per project). Sustained latency above 1s indicates a defect (missing index, lock contention, query plan regression) and should be investigated, not budgeted around. — *derived from: "what latency indicates a bug" framing; operator wants tight bounds at homelab scale.*
 
-- **NFR-durability-1 — Event log durability (process / OS crash):** All committed events survive process and OS crash. Postgres `synchronous_commit = on`; substrate sets this **per session** on its own connections (does NOT assume cluster-level configuration). WAL fsynced before commit return; recovery via WAL replay on Postgres restart. — *derived from: "Zero loss tolerable... when you debug a stuck pipeline three days later, 'the event log is missing the bit where it broke' is the worst possible failure."*
+- **NFR-durability-1 — Event log durability (process / OS crash):** All committed events survive process and OS crash. Postgres `synchronous_commit = on`; regista sets this **per session** on its own connections (does NOT assume cluster-level configuration). WAL fsynced before commit return; recovery via WAL replay on Postgres restart. — *derived from: "Zero loss tolerable... when you debug a stuck pipeline three days later, 'the event log is missing the bit where it broke' is the worst possible failure."*
 
-- **NFR-durability-2 — Disk-level durability:** Out of substrate scope. Disk corruption / disk loss are operator backup concerns. — *derived from: "durability is against process and OS crash, not disk failure... that's a backup concern, separate NFR."*
+- **NFR-durability-2 — Disk-level durability:** Out of regista scope. Disk corruption / disk loss are operator backup concerns. — *derived from: "durability is against process and OS crash, not disk failure... that's a backup concern, separate NFR."*
 
 - **NFR-dispatch-1 — Hook delivery mechanism:** Async hooks delivered via durable queue table; consumer wakeup via LISTEN/NOTIFY (latency optimization) AND fixed-interval polling sweep (correctness mechanism, runs always; default 30s). — *derived from: operator's preference to specify mechanism rather than latency, ensuring NOTIFY drop ≠ correctness break.*
 
@@ -328,9 +328,9 @@ Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-
 
 - **NFR-rotation-1 — Key rotation without downtime:** HMAC key rotation supported via key-set-with-status (`active` / `deprecated` / `revoked`); events carry `key_id`; deprecated-key use emits structured warning; revoked-key use rejects (including retroactively where re-verification occurs); hot-reload of key set without restart. — *derived from: "compatibility with minimal infra... constrains us least in terms of future growth."*
 
-- **NFR-sync-hook-timeout — Sync hook bound:** Sync hooks bound by workflow-declared timeout; substrate default 5s; timeout = failure = transaction rollback. — *derived from: prevention of misbehaving hooks wedging a project by holding row locks.*
+- **NFR-sync-hook-timeout — Sync hook bound:** Sync hooks bound by workflow-declared timeout; regista default 5s; timeout = failure = transaction rollback. — *derived from: prevention of misbehaving hooks wedging a project by holding row locks.*
 
-- **NFR-observability-1 — Operability:** Every substrate operation produces a structured log line with `project_id`, `work_item_id`, `operation`, `duration`, `outcome`, `actor_id`. Prometheus metrics expose substrate health. — *derived from: "for a substrate that orchestrates agent work, 'how do I know it's healthy' is going to bite eventually."*
+- **NFR-observability-1 — Operability:** Every regista operation produces a structured log line with `project_id`, `work_item_id`, `operation`, `duration`, `outcome`, `actor_id`. Prometheus metrics expose regista health. — *derived from: "for a regista that orchestrates agent work, 'how do I know it's healthy' is going to bite eventually."*
 
 ---
 
@@ -342,12 +342,12 @@ When resolving any of these during implementation, the implementing agent must e
 |---|---|---|
 | Core data model | Decided | work-item / event / claim / actor / link shapes specified in FR-01 through FR-23. Event includes `event_id`, `work_item_id`, `event_seq`, `global_seq`, `actor_id`, `actor_kind`, `actor_metadata`, `on_behalf_of` (optional), `key_id`, `workflow_version`, `timestamp`, `transition`, `payload`, `prev_event_hash` (optional, BC-233). |
 | State persistence strategy | Decided | Hybrid: events authoritative, `work_items_current` is a transactionally-consistent projection updated in same Postgres transaction as the event append. Rebuildable from events via FR-16. |
-| Durable execution engine | Decided | None. Substrate is coordination + state, not orchestration. Postgres-only, library-mode. Projects may layer Temporal on top if needed. |
+| Durable execution engine | Decided | None. Regista is coordination + state, not orchestration. Postgres-only, library-mode. Projects may layer Temporal on top if needed. |
 | Identity & authorization | Decided | Pluggable verifier. HMAC default with key-set-with-status; OIDC-ready via the same `actor_id` shape. Threat model: authenticated actors trusted not to misdeclare role; actor → allowed_roles deferred (see BR-09). |
-| Schema versioning mechanism | Decided | Library version IS the contract version. Workflow declares `substrate_version`; FR-20 enforces compatibility at startup. Migrations ship with substrate library. |
+| Schema versioning mechanism | Decided | Library version IS the contract version. Workflow declares `regista_version`; FR-20 enforces compatibility at startup. Migrations ship with regista library. |
 | Per-project isolation mechanism | Decided | Separate Postgres schema per project within a shared database. Engine-enforced isolation via `search_path`; clean backup/restore per schema; cross-project queries impossible (which is the design intent). One schema hosts one project's workflow definitions. Single connection pool shared across all projects. |
 | Hook dispatch contract | Decided | Sync hooks (in-process, gate transaction, 5s default timeout) AND async hooks (queue table + LISTEN/NOTIFY + always-on polling). Project picks per-hook in workflow def. |
-| Deployment shape | Decided | Library. Substrate is imported and called as Python; runs in-process; talks directly to Postgres. Non-Python projects deferred (migration to sidecar would be additive). |
+| Deployment shape | Decided | Library. Regista is imported and called as Python; runs in-process; talks directly to Postgres. Non-Python projects deferred (migration to sidecar would be additive). |
 | Workflow file composition | Deferred with flexibility | Single-file workflows in v1. Loader can grow `!include` / merge conventions later without breaking existing files. |
 | Schema partitioning policy | Single flat table | Migration 014 restored non-partitioned `events` with global `UNIQUE(event_id)`. Re-partitioning is a known recipe if a project exceeds ~10M events/month. |
 | Actor → allowed_roles mapping | Decided | Implemented as FR-24 (Phase 3). `actor_roles` table; opt-in enforcement; backward compatible. Closes BR-09. |
@@ -359,8 +359,8 @@ When resolving any of these during implementation, the implementing agent must e
 | Trust tiers in event fields | Decided | *Authenticated*: `actor_id`, `key_id` (scheme-verified). *Server-stamped*: `timestamp`, `event_seq`. *Actor-claimed*: all of `actor_metadata` (role, model, provider, role_source). |
 | API-layer idempotency | Decided | Client-supplied UUIDv4 idempotency key required on every mutation. `event_id` doubles as the key for event append. Duplicates return original result. Optional `expected_event_seq` for optimistic locking. |
 | Validator vs hook split | Decided | "Transition validator" = in-transaction, no I/O, gates commit. "Hook" = async, durable queue, retryable, dead-letter on max retries. Naming forces correct mental model. |
-| Public API surface | Decided | Substrate exposes a protocol, not a Postgres connection. Public API takes unsigned event fields; library is sole signer (canonicalization + HMAC are internal). No Postgres connection / cursor / migration object leaks across the boundary. Service-wrapping is mechanical, not architectural (§19). |
-| Consumer expectation boundary | Decided | Substrate is coordination + state, but already implements claims/TTL/escalation/hook dispatch. §20 enumerates explicitly what substrate does NOT do (dwell-time monitoring, work distribution, sagas, scheduling, notifications, SLAs, hierarchy rollups, role enforcement, project code execution) so consumers know what they must build above the substrate. |
+| Public API surface | Decided | Regista exposes a protocol, not a Postgres connection. Public API takes unsigned event fields; library is sole signer (canonicalization + HMAC are internal). No Postgres connection / cursor / migration object leaks across the boundary. Service-wrapping is mechanical, not architectural (§19). |
+| Consumer expectation boundary | Decided | Regista is coordination + state, but already implements claims/TTL/escalation/hook dispatch. §20 enumerates explicitly what regista does NOT do (dwell-time monitoring, work distribution, sagas, scheduling, notifications, SLAs, hierarchy rollups, role enforcement, project code execution) so consumers know what they must build above the regista. |
 | Project isolation as load-bearing | Acknowledged | Schema-per-project is correct at homelab scale and intentional (BR-04). Migration path to tenant_id-in-shared-schema documented in BR-13: API surface unchanged; one-time data move per project; RLS-scoped `project_id` columns added. Document set expectations rather than rearchitecting now. |
 
 ---
@@ -386,8 +386,8 @@ When resolving any of these during implementation, the implementing agent must e
 - AC-17 [FR-16]: `replay()` produces `work_items_current_replay_<ts>` table; live `work_items_current` is unchanged. Each historical transition is validated against the workflow version recorded on its event. Encountering a revoked-key event halts replay on that work-item with operator alert.
 - AC-18 [FR-17]: Workflow file with YAML syntax error rejects with line number. Schema-invalid file rejects with JSON pointer. Semantically broken file (unreachable state, undeclared terminal, undeclared role) rejects with element-named error. Valid file registers and is callable.
 - AC-19 [FR-19]: Connecting to a non-existent project DB fails fast with operator-actionable error. Multiple workflow definitions register in a single project DB.
-- AC-20 [FR-20]: Substrate refuses to start when migrations are outstanding. Substrate refuses to start when any registered workflow declares an incompatible substrate version.
-- AC-21 [FR-21]: Every substrate operation produces a structured log with the specified fields. Prometheus counters are exposed and increment on the corresponding events.
+- AC-20 [FR-20]: Regista refuses to start when migrations are outstanding. Regista refuses to start when any registered workflow declares an incompatible regista version.
+- AC-21 [FR-21]: Every regista operation produces a structured log with the specified fields. Prometheus counters are exposed and increment on the corresponding events.
 - AC-22 [FR-22]: Link create with cross-project target rejects. Link create with disallowed type for the work-item-type pair rejects. Valid link creates and emits `link_created`. Target in terminal state still allowed.
 - AC-23 [FR-23]: Link remove emits `link_removed`. Prior link history remains in event log.
 - AC-24 [BR-12 / FR-03]: Calling event append twice with the same `event_id` produces exactly one row in `events`. The second call returns the result of the first deterministically. Same property for `event_id` on transition, claim acquire, claim release, and link create / remove (all event-emitting mutations). `heartbeat_claim` is structurally idempotent (repeated heartbeats from the same claim-holder extend TTL without producing duplicate effects) and does not take an explicit key; it may emit a `claim_heartbeat` event subject to coalescing (§17.10).
@@ -395,8 +395,8 @@ When resolving any of these during implementation, the implementing agent must e
 - AC-26 [FR-15]: Re-verifying a stored event's signature uses the stored `canonical_envelope` bytes, not jsonb re-serialization. A simulated jsonb-formatting change (e.g., key reordering on round-trip) does NOT invalidate previously verified events.
 - AC-27 [FR-16]: `replay_report_<ts>` contains exactly one row per work-item processed, categorized as `replayed_ok`, `replayed_drift`, or `halted`. Drift count of zero is the success criterion for a no-bug projection.
 - AC-28 [BR-10 / §17]: Two concurrent transitions on the same work-item serialize via row lock. Witnessed property: first sees `event_seq = N`, second sees `event_seq = N+1`; no duplicate seq; no skipped seq even under high contention. (Property test: dozens of concurrent threads, hundreds of operations.)
-- AC-29 [BR-11 / §18]: A direct `UPDATE work_items_current SET current_state=...` performed outside the substrate API is detectable: the next replay reports the affected work-item as `replayed_drift`. (Operator role separation, when configured per §18.4, prevents this scenario at the database level.)
-- AC-30 [FR-13]: A transition validator that performs I/O (e.g., HTTP call) is a contract violation. The substrate does not enforce this prohibition mechanically (validators are project code), but the spec contract is testable via documentation + linting helper (FR-18 fast-follow).
+- AC-29 [BR-11 / §18]: A direct `UPDATE work_items_current SET current_state=...` performed outside the regista API is detectable: the next replay reports the affected work-item as `replayed_drift`. (Operator role separation, when configured per §18.4, prevents this scenario at the database level.)
+- AC-30 [FR-13]: A transition validator that performs I/O (e.g., HTTP call) is a contract violation. The regista does not enforce this prohibition mechanically (validators are project code), but the spec contract is testable via documentation + linting helper (FR-18 fast-follow).
 - AC-31 [FR-13]: NOTIFY payload for a hook event is always the `event_id` reference, never the full event payload. Consumer reads full payload from `hook_queue` keyed by `event_id`. Verified by inspecting raw NOTIFY messages.
 - AC-32 [FR-05b]: A query with multiple filters (e.g., `workflow_name=X AND current_state IN (a, b) AND claimable_now=true`) returns exactly the work-items satisfying all filters. Pagination with the stable `work_item_id` cursor returns subsequent pages with no overlap and no skip, even when work-items matching the filter are concurrently appended-to during the scan (the cursor ordering is independent of `last_event_seq`). Indexes ensure p99 < NFR-perf-1 latency at expected scale.
 - AC-33 [FR-15 / §19.2]: The public API rejects any attempt to submit a pre-signed event (a request shape carrying a caller-supplied `signature` or `payload_canonical_hash` field is refused with "library is sole signer"). Verified by attempting to construct such a request via the public API and observing the rejection.
@@ -410,10 +410,10 @@ When resolving any of these during implementation, the implementing agent must e
 
 | Item | Reason |
 |---|---|
-| Disk-level durability behavior under hardware failure | External dependency (hardware) — operator backup concern, not testable in substrate scope |
+| Disk-level durability behavior under hardware failure | External dependency (hardware) — operator backup concern, not testable in regista scope |
 | HMAC verifier behavior under future OIDC integration | Future code — testable when the OIDC verifier is added |
 | Cross-language non-Python agent integration | Out of MVP — sidecar deferred |
-| Federated UI rendering correctness | Different system; substrate testable independently |
+| Federated UI rendering correctness | Different system; regista testable independently |
 
 ---
 
@@ -421,7 +421,7 @@ When resolving any of these during implementation, the implementing agent must e
 
 ### Value Phases — owned by the operator
 
-- **Phase 1 (MVP):** FR-01, FR-02, FR-03, FR-04, FR-05, FR-05b, FR-06, FR-07, FR-08, FR-09a, FR-09b, FR-11, FR-12, FR-15, FR-16, FR-17, FR-19, FR-20, FR-21, FR-22, FR-23 — substrate replaces `reasoning.log` for one Software Factory workflow with durable claims, role enforcement, replay, structured work-item discovery, and observability.
+- **Phase 1 (MVP):** FR-01, FR-02, FR-03, FR-04, FR-05, FR-05b, FR-06, FR-07, FR-08, FR-09a, FR-09b, FR-11, FR-12, FR-15, FR-16, FR-17, FR-19, FR-20, FR-21, FR-22, FR-23 — regista replaces `reasoning.log` for one Software Factory workflow with durable claims, role enforcement, replay, structured work-item discovery, and observability.
 - **Phase 2 (Fast-follow):** FR-10 (escalation flag), FR-13 (hooks), FR-14 (dead-letter requeue), FR-18 (lint helper) — adds reactivity once consumers exist.
 - **Phase 3 (Authorization + replay resilience):** FR-24 (actor → allowed_roles enforcement), FR-25 (continue-on-revoked replay flag) — closes BR-09; makes replay practical after key rotation.
 - **Phase 4 (Future):** Federated UI; OIDC verifier; workflow file composition; operator-driven archival.
@@ -431,11 +431,11 @@ When resolving any of these during implementation, the implementing agent must e
 The implementing agent determines build sequence based on architectural dependencies. This includes invisible infrastructure (DB schema, migrations, HMAC key loading) that must exist before user-facing FRs can be exercised.
 
 **Known prerequisites identified during spec:**
-- All MVP FRs require Postgres schema (`events`, `work_items_current`, `claims`, `workflow_registry`, `hook_queue`) and a migration framework — substrate-ships, runs on first boot.
+- All MVP FRs require Postgres schema (`events`, `work_items_current`, `claims`, `workflow_registry`, `hook_queue`) and a migration framework — regista-ships, runs on first boot.
 - FR-02, FR-06, FR-11, FR-12 require FR-17 (workflow registry + parser) before they have anything to validate against.
 - FR-03, FR-06, FR-07, FR-08, FR-09b, FR-16, FR-22, FR-23 require FR-15 (verified actor) before any event can be recorded.
-- FR-15 requires HMAC key set loading — K3s Secret with documented JSON shape; substrate reads secret name from project config.
-- Operator precondition: project DB exists. Substrate fails fast otherwise.
+- FR-15 requires HMAC key set loading — K3s Secret with documented JSON shape; regista reads secret name from project config.
+- Operator precondition: project DB exists. Regista fails fast otherwise.
 
 **Dependency hints** *(intent-level only):*
 - FR-17 likely first; FR-15 second; then FR-01/FR-02/FR-03/FR-04 (the create path); then FR-05/FR-05b (read + structured query); then FR-06/FR-07/FR-08/FR-09a/FR-09b (claim lifecycle, which depends on FR-05b for claim-discovery); then FR-11/FR-12 (validation); then FR-22/FR-23 (links); then FR-16 (replay); FR-20 / FR-21 cross-cutting.
@@ -463,9 +463,9 @@ The implementing agent determines build sequence based on architectural dependen
 - Postgres is available on the homelab K3s cluster and is healthy enough to provide standard ACID semantics. Rationale: explicitly stated in vibe spec.
 - The operator runs all agents and trusts them not to misdeclare their role by default (actor-claimed trust tier). FR-24 provides opt-in enforcement when the threat model warrants it. Rationale: homelab single-operator context; enforcement is available but not required.
 - Workflow files are authored by the operator (not by untrusted parties). Rationale: homelab single-operator context; YAML parsing safety follows from this.
-- License-cost-bound but token-spend unconstrained — substrate may be liberal with logging detail and event payload size. Rationale: stated explicitly in vibe spec.
-- Federated UI design is downstream and will adapt to the substrate's contract, not vice versa. Rationale: vibe spec states UI is future; substrate is authoritative source.
-- Python is acceptable as the substrate's implementation language. Rationale: existing factory codebase is Python; Q1 answer "library; if we need non-Python, trivial to migrate" implies acceptance for MVP.
+- License-cost-bound but token-spend unconstrained — regista may be liberal with logging detail and event payload size. Rationale: stated explicitly in vibe spec.
+- Federated UI design is downstream and will adapt to the regista's contract, not vice versa. Rationale: vibe spec states UI is future; regista is authoritative source.
+- Python is acceptable as the regista's implementation language. Rationale: existing factory codebase is Python; Q1 answer "library; if we need non-Python, trivial to migrate" implies acceptance for MVP.
 
 ---
 
@@ -474,7 +474,7 @@ The implementing agent determines build sequence based on architectural dependen
 **Decisions made:**
 - Library deployment, in-process Postgres calls. Migration to sidecar is additive if non-Python actors arrive.
 - Hybrid persistence: events authoritative, `work_items_current` transactionally projected. Single Postgres transaction per state change.
-- Postgres-only coordination; substrate is not a durable execution engine. Temporal-style orchestration is a layer projects may add on top.
+- Postgres-only coordination; regista is not a durable execution engine. Temporal-style orchestration is a layer projects may add on top.
 - Per-project schema isolation; one schema per project within a shared database; multiple workflows per schema. Database is a precondition; `create_project()` creates the schema and runs migrations.
 - Workflow files are versioned in a per-project registry; entries are immutable once referenced; work-items pin the version they were created under; replay validates against historical versions.
 - Custom fields are per-workflow-per-work-item-type with declared types and `ui_visible` flag (default `false`).
@@ -482,18 +482,18 @@ The implementing agent determines build sequence based on architectural dependen
 - Identity via pluggable verifier; HMAC default with key-set-with-status (active/deprecated/revoked); events carry `key_id`; OIDC-ready via the same actor model.
 - Postgres `now()` is the time authority; `event_seq` provides per-work-item total ordering.
 - Links are events (`link_created` / `link_removed`); current links are derived; cross-project links unsupported.
-- Substrate does not retry on connection failure; caller's responsibility.
+- Regista does not retry on connection failure; caller's responsibility.
 - Workflow registry is append-only — no removal primitive.
 - **(v2)** Concurrency contract: canonical lock target = `work_items_current` row; READ COMMITTED + row lock; gap-free per-work-item `event_seq` allocator (§17).
 - **(v2)** Projection invariant: `work_items_current` fully derived from `events`; no out-of-band updates; drift detected via FR-16 replay report (§18).
 - **(v2)** API-layer idempotency: client-supplied UUIDv4 on every mutation; `event_id` doubles as event-append idempotency key; optional `expected_event_seq` for optimistic locking.
 - **(v2)** Signing: HMAC-SHA256 over RFC 8785 canonical JSON envelope `{event_id, work_item_id, actor_id, transition, payload}`; canonical hash stored alongside signature for jsonb-independent re-verification.
 - **(v2)** Renaming: in-transaction side effects are *transition validators* (no I/O, gate commit); async side effects are *hooks* (durable queue, retryable). The split forces the right mental model.
-- **(v2)** Closed custom field type vocabulary: `string`, `integer`, `boolean`, `timestamp`, `json`, `enum`, `work_item_ref`. Expansion requires a substrate minor version bump.
+- **(v2)** Closed custom field type vocabulary: `string`, `integer`, `boolean`, `timestamp`, `json`, `enum`, `work_item_ref`. Expansion requires a regista minor version bump.
 - **(v2)** Trust tiers on event fields: *authenticated* (`actor_id`, `key_id`) / *server-stamped* (`timestamp`, `event_seq`) / *actor-claimed* (`actor_metadata`). BR-09 elevated from "fast-follow" to "audit, not enforcement, in MVP."
 - **(v3)** Structured work-item query (FR-05b) added as MVP. Closes the API gap where agents would otherwise reach into `work_items_current` directly to discover claimable work.
-- **(v3)** Public API surface formalized (§19): protocol, not a Postgres connection. Substrate library is the sole sanctioned signer; canonicalization is internal. Service-wrapping is mechanical, not architectural.
-- **(v3)** Consumer expectation boundary (§20): explicit enumeration of what substrate does NOT do (dwell-time monitoring, work distribution, sagas, scheduling, notifications, SLAs, hierarchy rollups, role enforcement, project code execution).
+- **(v3)** Public API surface formalized (§19): protocol, not a Postgres connection. Regista library is the sole sanctioned signer; canonicalization is internal. Service-wrapping is mechanical, not architectural.
+- **(v3)** Consumer expectation boundary (§20): explicit enumeration of what regista does NOT do (dwell-time monitoring, work distribution, sagas, scheduling, notifications, SLAs, hierarchy rollups, role enforcement, project code execution).
 - **(v3)** Per-project DB isolation (BR-13) acknowledged as load-bearing; migration path to tenant_id-in-shared-DB documented. API surface unchanged either way.
 - **(v4)** Isolation model updated: schema-per-project (one database, one schema per project) replaces the originally specified DB-per-project. Connection pool shared across all projects; `SET LOCAL search_path` scopes each transaction. FR-19, BR-13, and §10 decisions table updated accordingly. Rationale: eliminates per-project connection pools, reduces operational overhead, maintains the same isolation guarantees via engine-enforced `search_path`.
 - **(v4)** Actor → allowed_roles enforcement (FR-24): opt-in enforcement via `actor_roles` table. Actors with no registered roles are trusted; actors with registered roles must claim a role in their set. Closes BR-09.
@@ -510,13 +510,13 @@ The implementing agent determines build sequence based on architectural dependen
 - Sidecar / non-Python integration: deferred until needed.
 
 **Intent signals (from the original vibe spec):**
-- *"Generalize it and have it work for all projects more generally"* — relevance: substrate must be project-agnostic; resist factory-specific concepts leaking into core schema.
+- *"Generalize it and have it work for all projects more generally"* — relevance: regista must be project-agnostic; resist factory-specific concepts leaking into core schema.
 - *"One source of truth for all projects ... one pane of glass we can feed projects into when we eventually make a human readable UI"* — relevance: shape the contract so federated UI is additive, not a redesign trigger. Workflow definitions, custom fields with `ui_visible`, and event log shape all serve this.
 - *"Non-revenue homelab project; license costs are the binding constraint, token spend is not"* — relevance: prefer richly-logged, verbose, debug-friendly implementations over throughput-optimized; never select tools by per-seat licensing.
-- *"Compose with, not replace, the existing reasoning.log convention"* — relevance: substrate must not assume sole ownership of agent state; reasoning.log continues to coexist.
+- *"Compose with, not replace, the existing reasoning.log convention"* — relevance: regista must not assume sole ownership of agent state; reasoning.log continues to coexist.
 - *"Currently zero humans-in-the-loop, but the design should not foreclose that"* — relevance: actor model and identity verifier shaped to accept humans without schema migration; keep `ui_visible` and pluggable verifier honest.
-- *"Idempotency and exactly-once semantics per task type, not globally"* — relevance: substrate doesn't enforce exactly-once globally; per-hook retry policy and dead-letter behavior are project-tunable; sync-hook-rollback gives exactly-once-per-transition where needed.
-- *"What's substrate concern vs. agent concern"* — relevance: substrate is coordination + state; agents own work, hooks, scheduling, retries beyond the dispatch primitive. Resist scope creep.
+- *"Idempotency and exactly-once semantics per task type, not globally"* — relevance: regista doesn't enforce exactly-once globally; per-hook retry policy and dead-letter behavior are project-tunable; sync-hook-rollback gives exactly-once-per-transition where needed.
+- *"What's regista concern vs. agent concern"* — relevance: regista is coordination + state; agents own work, hooks, scheduling, retries beyond the dispatch primitive. Resist scope creep.
 - *"Minimum API surface needs to be to keep a future UI cheap"* — relevance: read-event-log primitives (FR-05) and current-state queries are the UI's primary surface; design indexes and query shapes for the UI's future use, not just hot-path agent operations.
 
 ---
@@ -530,17 +530,17 @@ What would be required to reach Level 3:
 - Decide event log retention policy concretely (always-grow vs. re-partition trigger threshold vs. archival-to-cold-storage SOP). **Deferred with guidance:** always-grow is correct for homelab scale (≤10k work-items, ≤100k events per project). Re-partitioning is a known recipe if a single project exceeds ~10M events/month. Operator-driven archival is a separate concern. Migration 014 restored a single flat `events` table; re-introducing partitioning later is a focused 1–2 week project when actually needed.
 - Decide on a workflow file composition mechanism if and when needed (or formally drop it). **Deferred.** Single-file workflows in v1. Loader can grow `!include` / merge conventions later without breaking existing files. No concrete need identified.
 - Pin Postgres major version supported and document the matrix. **Decided v4.** Postgres 15+ required (used in test infrastructure; features used: JSONB, LISTEN/NOTIFY, `FOR UPDATE` row locks, declarative partitioning available when needed). No Postgres-14-or-earlier compatibility guarantee.
-- Decide initial workflow definition for the first Software Factory pilot — needed before MVP can ship, but is a downstream artifact, not a substrate concern. **Not a substrate decision.** Operator defines the pilot workflow.
+- Decide initial workflow definition for the first Software Factory pilot — needed before MVP can ship, but is a downstream artifact, not a regista concern. **Not a regista decision.** Operator defines the pilot workflow.
 
 ---
 
 ## 17. Concurrency Contract
 
-This section is normative. All implementations of substrate operations must conform. It exists because correctness depends on a single canonical serialization mechanism for per-work-item state; without it, multiple agents will infer incompatible locking strategies.
+This section is normative. All implementations of regista operations must conform. It exists because correctness depends on a single canonical serialization mechanism for per-work-item state; without it, multiple agents will infer incompatible locking strategies.
 
 ### 17.1 Isolation level
 
-All substrate transactions run at Postgres isolation level **READ COMMITTED**. SERIALIZABLE is not required; substrate provides serialization via explicit row locks at well-defined points. REPEATABLE READ and SERIALIZABLE are not supported (substrate has not been designed against their stricter semantics; using them may surface false-positive serialization failures with no correctness benefit).
+All regista transactions run at Postgres isolation level **READ COMMITTED**. SERIALIZABLE is not required; regista provides serialization via explicit row locks at well-defined points. REPEATABLE READ and SERIALIZABLE are not supported (regista has not been designed against their stricter semantics; using them may surface false-positive serialization failures with no correctness benefit).
 
 ### 17.2 Canonical lock target
 
@@ -572,7 +572,7 @@ Because the canonical lock is held, no other writer to the same work-item can in
 
 ### 17.5 Lock release
 
-Locks are released at transaction commit or rollback (Postgres default behavior). Substrate does not use Postgres advisory locks, application-level mutexes, or non-Postgres synchronization primitives. The single mechanism is row-level `SELECT FOR UPDATE` on the canonical lock target.
+Locks are released at transaction commit or rollback (Postgres default behavior). Regista does not use Postgres advisory locks, application-level mutexes, or non-Postgres synchronization primitives. The single mechanism is row-level `SELECT FOR UPDATE` on the canonical lock target.
 
 ### 17.6 Cross-work-item operations
 
@@ -585,7 +585,7 @@ ORDER BY work_item_id
 FOR UPDATE;
 ```
 
-This is the only deadlock-relevant interaction in the substrate; all other operations touch a single work-item.
+This is the only deadlock-relevant interaction in the regista; all other operations touch a single work-item.
 
 ### 17.7 Race interaction matrix
 
@@ -604,7 +604,7 @@ For two concurrent operations on the same work-item:
 
 ### 17.8 Connection lifecycle
 
-Substrate sets `synchronous_commit = on` per session on its own connections (NFR-durability-1). Substrate does not assume cluster-level configuration, and does not mutate cluster-level configuration. Connection pool settings (size, idle timeout, max lifetime) are operator-tunable; defaults are sized for ≤50 concurrent agents per project.
+Regista sets `synchronous_commit = on` per session on its own connections (NFR-durability-1). Regista does not assume cluster-level configuration, and does not mutate cluster-level configuration. Connection pool settings (size, idle timeout, max lifetime) are operator-tunable; defaults are sized for ≤50 concurrent agents per project.
 
 ### 17.9 Trust tiers in event fields
 
@@ -613,7 +613,7 @@ Consumers (UI, audit tooling, replay validators) MUST distinguish:
 | Tier | Fields | Trust property |
 |---|---|---|
 | Authenticated | `actor_id`, `key_id` | Scheme-verified (HMAC-SHA256 or Ed25519); tampering detected at re-verification (AC-26) |
-| Server-stamped | `timestamp`, `event_seq` | Substrate writes; not under actor control; trustworthy modulo substrate bugs |
+| Server-stamped | `timestamp`, `event_seq` | Regista writes; not under actor control; trustworthy modulo regista bugs |
 | Actor-claimed | All of `actor_metadata` (incl. `role`, `model`, `provider`, `role_source`, `context_hash`, `prompt_template_hash`) | Signed-by-actor (so non-repudiable that *this actor said this*). When FR-24 actor roles are registered, `role` is additionally enforced against the actor's registered set; otherwise treated as diagnostic. |
 
 The federated UI and downstream consumers should surface this distinction visually (e.g., role displayed with a "claimed" qualifier until enforcement lands) rather than treating all event fields as equally authoritative.
@@ -630,13 +630,13 @@ Between coalesced heartbeats, the live `claim_expires_at` may be ahead of the re
 
 ## 18. Projection Invariants
 
-`work_items_current` is a denormalized projection of `events`. This section defines what that means precisely, what guarantees the substrate makes about it, and how drift is detected.
+`work_items_current` is a denormalized projection of `events`. This section defines what that means precisely, what guarantees the regista makes about it, and how drift is detected.
 
 ### 18.1 Authoritative source
 
 The `events` table is the single authoritative source of work-item state. Every column on `work_items_current` is derivable from `events` for that `work_item_id`. There are NO fields on `work_items_current` that exist *only* there.
 
-### 18.2 Substrate-managed fields on `work_items_current`
+### 18.2 Regista-managed fields on `work_items_current`
 
 Each row reflects:
 
@@ -655,21 +655,21 @@ Each row reflects:
 
 ### 18.3 Update protocol
 
-Substrate updates `work_items_current` **only** inside the same transaction as the corresponding event append, after the event row has been inserted, before commit, while the canonical lock (§17.2) is held.
+Regista updates `work_items_current` **only** inside the same transaction as the corresponding event append, after the event row has been inserted, before commit, while the canonical lock (§17.2) is held.
 
-No other code path writes to `work_items_current`. Direct `UPDATE` / `DELETE` outside the substrate API is forbidden by contract.
+No other code path writes to `work_items_current`. Direct `UPDATE` / `DELETE` outside the regista API is forbidden by contract.
 
 ### 18.4 Postgres role separation (recommended)
 
 To enforce the projection invariant at the database level, the operator should grant the application a Postgres role with:
 
 - `INSERT, SELECT` on `events`
-- `SELECT, UPDATE` on `work_items_current` (only via substrate's stored functions if the substrate ships them)
+- `SELECT, UPDATE` on `work_items_current` (only via regista's stored functions if the regista ships them)
 - `INSERT, SELECT, UPDATE` on `claims`, `hook_queue`, `hook_dead_letter`
 - `INSERT, SELECT` on `workflow_registry`
 - No `DELETE` on any of the above
 
-This is recommended, not required. Substrate operates correctly without it; role separation defends against bugs in adjacent application code that might "fix" projection rows by hand.
+This is recommended, not required. Regista operates correctly without it; role separation defends against bugs in adjacent application code that might "fix" projection rows by hand.
 
 ### 18.5 Drift detection
 
@@ -677,8 +677,8 @@ Drift is detected by replay (FR-16). The `replay_report_<ts>` table categorizes 
 
 - `replayed_ok` — replayed final state matches live `work_items_current`.
 - `replayed_drift` — replayed final state differs from live. **This is an actionable defect signal.** Possible causes (in descending order of likelihood):
-  1. Bug in substrate's projection update logic.
-  2. Direct edit to `work_items_current` outside substrate API (forbidden by 18.3; defended by 18.4 if role separation is configured).
+  1. Bug in regista's projection update logic.
+  2. Direct edit to `work_items_current` outside regista API (forbidden by 18.3; defended by 18.4 if role separation is configured).
   3. Missed event (corruption; rare; usually accompanied by `event_seq` gaps).
 - `halted` — replay could not complete on this work-item; halt reason recorded.
 
@@ -698,21 +698,21 @@ Consumers MAY assume that a successful read of `work_items_current` reflects the
 
 ## 19. Public API Surface
 
-This section is normative. The substrate's public API is a **protocol**, not a set of free functions over an exposed Postgres connection. Any implementation — current in-process Python library, future sidecar over HTTP/gRPC, future federated UI service layer — MUST conform.
+This section is normative. The regista's public API is a **protocol**, not a set of free functions over an exposed Postgres connection. Any implementation — current in-process Python library, future sidecar over HTTP/gRPC, future federated UI service layer — MUST conform.
 
 ### 19.1 Boundary
 
-The public API consists of the operations enumerated in FRs 02–08, FR-05b, FR-11, FR-14, FR-16, FR-17, FR-22, FR-23. Callers interact with a `Substrate` handle that owns one logical project namespace (see BR-13). The handle exposes those operations and nothing else. No `psycopg.Connection`, SQLAlchemy session, migration-runner state, raw SQL string, or jsonb canonicalization helper crosses the API boundary.
+The public API consists of the operations enumerated in FRs 02–08, FR-05b, FR-11, FR-14, FR-16, FR-17, FR-22, FR-23. Callers interact with a `Regista` handle that owns one logical project namespace (see BR-13). The handle exposes those operations and nothing else. No `psycopg.Connection`, SQLAlchemy session, migration-runner state, raw SQL string, or jsonb canonicalization helper crosses the API boundary.
 
 ### 19.2 Signing
 
-The substrate library is the sole sanctioned signer (FR-15). The API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme (HMAC-SHA256 or Ed25519, per `KeyEntry.scheme`), and persists the event. The API does NOT accept pre-signed events from callers and rejects any request shape carrying a caller-supplied `signature` or `payload_canonical_hash` field.
+The regista library is the sole sanctioned signer (FR-15). The API accepts unsigned event field tuples; the library performs RFC 8785 canonicalization, signs using the key's declared scheme (HMAC-SHA256 or Ed25519, per `KeyEntry.scheme`), and persists the event. The API does NOT accept pre-signed events from callers and rejects any request shape carrying a caller-supplied `signature` or `payload_canonical_hash` field.
 
 This invariant is what makes the canonicalization choice (RFC 8785) sustainable: it is implemented exactly once, in one place. If callers were permitted to sign, every implementation of JCS in the ecosystem would have to be byte-identical, and the audit-trail promise would silently rot the first time one of them diverged.
 
 ### 19.3 Service-wrapping is mechanical
 
-A future sidecar exposing the substrate over HTTP/gRPC must:
+A future sidecar exposing the regista over HTTP/gRPC must:
 
 - Mirror the public operations 1:1. No consolidation, no "convenience" endpoints that bundle multiple operations behind a single call. Each public operation is independently invokable with the same argument shape.
 - Accept unsigned event fields and sign inside the sidecar process. Pre-signed events on the wire are rejected, the same as in-process.
@@ -731,7 +731,7 @@ The following MUST NOT appear in any public type signature, return type, or exce
 - Raw SQL strings
 - Jsonb canonicalization helpers (these are internal; see 19.2)
 
-Internal types may exist throughout the substrate's implementation. They are not part of the API. Static inspection of the public API module (AC-34) verifies conformance.
+Internal types may exist throughout the regista's implementation. They are not part of the API. Static inspection of the public API module (AC-34) verifies conformance.
 
 ### 19.5 What the API DOES expose
 
@@ -745,19 +745,19 @@ Stable, language-agnostic shapes:
 
 ## 20. Consumer Expectation Boundary
 
-BR-05 says substrate is "coordination + state, not orchestration." That label is necessary but not sufficient: substrate already implements claims-with-TTL, attempt tracking, escalation, hook dispatch with retry and dead-letter, and transition validators — much of what consumers associate with orchestration. This section enumerates explicitly what substrate does NOT do, so consumers know what they must build above the substrate rather than assuming substrate handles it.
+BR-05 says regista is "coordination + state, not orchestration." That label is necessary but not sufficient: regista already implements claims-with-TTL, attempt tracking, escalation, hook dispatch with retry and dead-letter, and transition validators — much of what consumers associate with orchestration. This section enumerates explicitly what regista does NOT do, so consumers know what they must build above the regista rather than assuming regista handles it.
 
-Substrate does NOT:
+Regista does NOT:
 
-- **Detect work stuck in a state for too long.** No "this work-item has been in state X for N hours, escalate" primitive. Attempt-based escalation (FR-10) fires on claim-attempt count, not on wall-clock dwell time. Dwell-time monitoring is a consumer concern; the substrate provides the timestamps in the event log to compute it.
-- **Distribute or assign work to actors.** Work-items are claimed by actors who poll FR-05b for claimable work; substrate does not push, route, prioritize, or load-balance. Work-stealing patterns are consumer-built on top of the claim primitives.
-- **Coordinate sagas across multiple work-items.** Each event-producing operation is single-work-item (links touch two rows for ordering, but there is no multi-step transaction across work-items). Saga / compensation patterns are consumer concerns; substrate provides the durable state record they would persist progress to.
+- **Detect work stuck in a state for too long.** No "this work-item has been in state X for N hours, escalate" primitive. Attempt-based escalation (FR-10) fires on claim-attempt count, not on wall-clock dwell time. Dwell-time monitoring is a consumer concern; the regista provides the timestamps in the event log to compute it.
+- **Distribute or assign work to actors.** Work-items are claimed by actors who poll FR-05b for claimable work; regista does not push, route, prioritize, or load-balance. Work-stealing patterns are consumer-built on top of the claim primitives.
+- **Coordinate sagas across multiple work-items.** Each event-producing operation is single-work-item (links touch two rows for ordering, but there is no multi-step transaction across work-items). Saga / compensation patterns are consumer concerns; regista provides the durable state record they would persist progress to.
 - **Schedule work for future execution.** `not_before` is a *gate*, not a scheduler — nothing wakes up at `not_before` to dispatch work. Consumers poll. A scheduler engine is explicitly out of scope (§3).
-- **Notify, page, alert, or message anyone.** Escalation emits an event; consumers wire up the rest. Substrate sends no email, Slack, webhook, or push notification except via project-defined hooks the project itself implements.
+- **Notify, page, alert, or message anyone.** Escalation emits an event; consumers wire up the rest. Regista sends no email, Slack, webhook, or push notification except via project-defined hooks the project itself implements.
 - **Enforce SLAs or deadlines.** No "must complete by" semantics, no deadline timers, no auto-cancel on missed deadline.
-- **Track work hierarchies or rollups.** Parent/child relationships are link-type conventions; substrate does not aggregate state ("all children done → parent ready"). Hierarchy semantics are project-defined via link types and consumer-side queries.
-- **Validate that an actor's claimed role is one the actor is entitled to claim.** FR-24 provides opt-in enforcement: when an actor has registered roles via `register_actor_role`, the claimed role is validated against the actor's allowed set. When no roles are registered for an actor, the claimed role is trusted (actor-claimed per §17.9). Full RBAC (hierarchical roles, role derivation, dynamic role assignment) is not provided — consumers needing richer authorization layer such a system above substrate.
+- **Track work hierarchies or rollups.** Parent/child relationships are link-type conventions; regista does not aggregate state ("all children done → parent ready"). Hierarchy semantics are project-defined via link types and consumer-side queries.
+- **Validate that an actor's claimed role is one the actor is entitled to claim.** FR-24 provides opt-in enforcement: when an actor has registered roles via `register_actor_role`, the claimed role is validated against the actor's allowed set. When no roles are registered for an actor, the claimed role is trusted (actor-claimed per §17.9). Full RBAC (hierarchical roles, role derivation, dynamic role assignment) is not provided — consumers needing richer authorization layer such a system above regista.
 - **Run project code in-process beyond the validator/hook contracts.** No sandbox, no in-process plugins, no expression language. Project authors own all side-effect code.
-- **Provide a workflow execution engine.** Substrate is a state record with transition validation; it is not Temporal. Consumers needing durable execution semantics (timers, retries-as-orchestration-primitive, child workflows, signals) layer such an engine above and use substrate as the state plane.
+- **Provide a workflow execution engine.** Regista is a state record with transition validation; it is not Temporal. Consumers needing durable execution semantics (timers, retries-as-orchestration-primitive, child workflows, signals) layer such an engine above and use regista as the state plane.
 
-If a consumer's mental model assumes any of the above, the consumer is building on a substrate that does not exist. Either lift the missing capability into a layer above substrate, or contribute it back as a substrate FR — and accept the corresponding scope expansion. This list is explicit precisely because the "coordination, not orchestration" label is too easily misread, and the most common adoption failure mode is "I thought substrate would handle X."
+If a consumer's mental model assumes any of the above, the consumer is building on a regista that does not exist. Either lift the missing capability into a layer above regista, or contribute it back as a regista FR — and accept the corresponding scope expansion. This list is explicit precisely because the "coordination, not orchestration" label is too easily misread, and the most common adoption failure mode is "I thought regista would handle X."

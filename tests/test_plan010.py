@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from substrate._contract import validate_delegation_chain
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._signing import (
+from regista._contract import validate_delegation_chain
+from regista._errors import ErrorCode, RegistaError
+from regista._signing import (
     build_signing_envelope,
     sign_event,
     verify_event,
@@ -41,46 +41,46 @@ class TestDelegationChainValidation:
         )
 
     def test_rejects_empty_session_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain({"principal_id": "alice", "session_id": ""})
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_dict(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain("not-a-dict")
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_missing_principal_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain({})
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_empty_principal_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain({"principal_id": ""})
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_string_principal_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain({"principal_id": 123})
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_list_scope(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "scope": "read"}
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_string_scope_items(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "scope": ["read", 123]}
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_string_authenticated_at(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "authenticated_at": 123}
             )

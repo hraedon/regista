@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_rec_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -28,9 +28,9 @@ def substrate():
 
 
 class TestPostgresRegisterRecurrenceRule:
-    def test_register_computes_next_fire(self, substrate):
+    def test_register_computes_next_fire(self, regista):
         start = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -42,10 +42,10 @@ class TestPostgresRegisterRecurrenceRule:
         assert rule["next_fire_at"] == start + timedelta(minutes=5)
         assert rule["status"] == "active"
 
-    def test_register_with_end_at(self, substrate):
+    def test_register_with_end_at(self, regista):
         start = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
         end = start + timedelta(minutes=3)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -59,9 +59,9 @@ class TestPostgresRegisterRecurrenceRule:
         # register_recurrence_rule falls back to start_at
         assert rule["next_fire_at"] == start
 
-    def test_register_validates_schedule(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.register_recurrence_rule(
+    def test_register_validates_schedule(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_recurrence_rule(
                 workflow_name="test_workflow",
                 workflow_version=1,
                 work_item_type="feature",
@@ -71,9 +71,9 @@ class TestPostgresRegisterRecurrenceRule:
             )
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
-    def test_register_validates_template(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.register_recurrence_rule(
+    def test_register_validates_template(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_recurrence_rule(
                 workflow_name="test_workflow",
                 workflow_version=1,
                 work_item_type="feature",
@@ -83,9 +83,9 @@ class TestPostgresRegisterRecurrenceRule:
             )
         assert exc_info.value.code == ErrorCode.RECURRENCE_TEMPLATE_INVALID
 
-    def test_register_with_rrule(self, substrate):
+    def test_register_with_rrule(self, regista):
         start = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -99,8 +99,8 @@ class TestPostgresRegisterRecurrenceRule:
 
 
 class TestPostgresListRecurrenceRules:
-    def test_list_all(self, substrate):
-        substrate.register_recurrence_rule(
+    def test_list_all(self, regista):
+        regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -108,7 +108,7 @@ class TestPostgresListRecurrenceRules:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        substrate.register_recurrence_rule(
+        regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="bug",
@@ -116,11 +116,11 @@ class TestPostgresListRecurrenceRules:
             schedule_kind="interval",
             schedule_expr="PT10M",
         )
-        rules = substrate.list_recurrence_rules()
+        rules = regista.list_recurrence_rules()
         assert len(rules) == 2
 
-    def test_list_by_status(self, substrate):
-        substrate.register_recurrence_rule(
+    def test_list_by_status(self, regista):
+        regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -128,17 +128,17 @@ class TestPostgresListRecurrenceRules:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        active = substrate.list_recurrence_rules(status="active")
+        active = regista.list_recurrence_rules(status="active")
         assert len(active) == 1
         assert active[0]["status"] == "active"
 
 
 class TestPostgresDueRecurrences:
-    def test_due_recurrences_filters_active(self, substrate):
+    def test_due_recurrences_filters_active(self, regista):
         past = datetime.now(UTC) - timedelta(minutes=5)
         future = datetime.now(UTC) + timedelta(minutes=5)
 
-        rule_past = substrate.register_recurrence_rule(
+        rule_past = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -147,7 +147,7 @@ class TestPostgresDueRecurrences:
             schedule_expr="PT5M",
             start_at=past,
         )
-        substrate.register_recurrence_rule(
+        regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="bug",
@@ -157,13 +157,13 @@ class TestPostgresDueRecurrences:
             start_at=future,
         )
 
-        due = substrate.due_recurrences()
+        due = regista.due_recurrences()
         assert len(due) == 1
         assert due[0]["rule_id"] == rule_past["rule_id"]
 
-    def test_due_recurrences_respects_now(self, substrate):
+    def test_due_recurrences_respects_now(self, regista):
         future = datetime.now(UTC) + timedelta(hours=1)
-        substrate.register_recurrence_rule(
+        regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -172,14 +172,14 @@ class TestPostgresDueRecurrences:
             schedule_expr="PT5M",
             start_at=future,
         )
-        due = substrate.due_recurrences()
+        due = regista.due_recurrences()
         assert len(due) == 0
 
 
 class TestPostgresFireRecurrence:
-    def test_fire_creates_work_item(self, substrate):
+    def test_fire_creates_work_item(self, regista):
         past = datetime.now(UTC) - timedelta(minutes=5)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -190,15 +190,15 @@ class TestPostgresFireRecurrence:
         )
         rule_id = rule["rule_id"]
 
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is not None
         assert wi["work_item_type"] == "feature"
         assert wi["workflow_name"] == "test_workflow"
         assert wi["custom_fields"]["title"] == "recurring"
 
-    def test_fire_updates_next_fire_at(self, substrate):
+    def test_fire_updates_next_fire_at(self, regista):
         past = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -210,12 +210,12 @@ class TestPostgresFireRecurrence:
         rule_id = rule["rule_id"]
         old_next = rule["next_fire_at"]
 
-        returned_rule, _wi = substrate.fire_recurrence(rule_id)
+        returned_rule, _wi = regista.fire_recurrence(rule_id)
         assert returned_rule["next_fire_at"] >= old_next
 
-    def test_fire_populates_not_before_offset(self, substrate):
+    def test_fire_populates_not_before_offset(self, regista):
         past = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -228,12 +228,12 @@ class TestPostgresFireRecurrence:
             start_at=past,
         )
         rule_id = rule["rule_id"]
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is not None
 
-    def test_fire_idempotent_early_return(self, substrate):
+    def test_fire_idempotent_early_return(self, regista):
         future = datetime.now(UTC) + timedelta(hours=1)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -243,12 +243,12 @@ class TestPostgresFireRecurrence:
             start_at=future,
         )
         rule_id = rule["rule_id"]
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is None
 
-    def test_fire_exhausted_count(self, substrate):
+    def test_fire_exhausted_count(self, regista):
         past = datetime.now(UTC) - timedelta(minutes=5)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -260,23 +260,23 @@ class TestPostgresFireRecurrence:
         )
         rule_id = rule["rule_id"]
 
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is not None
 
-        updated = substrate.list_recurrence_rules(status="exhausted")
+        updated = regista.list_recurrence_rules(status="exhausted")
         assert len(updated) == 1
         assert updated[0]["count_remaining"] == 0
 
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.fire_recurrence(rule_id)
+        with pytest.raises(RegistaError) as exc_info:
+            regista.fire_recurrence(rule_id)
         assert exc_info.value.code == ErrorCode.RECURRENCE_RULE_EXHAUSTED
 
 
 class TestPostgresCatchupPolicies:
-    def test_fire_once_skips_past_slots(self, substrate):
+    def test_fire_once_skips_past_slots(self, regista):
         now = datetime.now(UTC)
         start = now - timedelta(minutes=20)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -287,15 +287,15 @@ class TestPostgresCatchupPolicies:
             catchup_policy="fire_once",
         )
         rule_id = rule["rule_id"]
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is not None
-        updated = substrate.list_recurrence_rules()[0]
+        updated = regista.list_recurrence_rules()[0]
         assert updated["next_fire_at"] > now
 
-    def test_skip_advances_to_future(self, substrate):
+    def test_skip_advances_to_future(self, regista):
         now = datetime.now(UTC)
         start = now - timedelta(hours=1)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -306,15 +306,15 @@ class TestPostgresCatchupPolicies:
             catchup_policy="skip",
         )
         rule_id = rule["rule_id"]
-        _, wi = substrate.fire_recurrence(rule_id)
+        _, wi = regista.fire_recurrence(rule_id)
         assert wi is None
-        updated = substrate.list_recurrence_rules()[0]
+        updated = regista.list_recurrence_rules()[0]
         assert updated["next_fire_at"] > now
 
-    def test_fire_all_fires_one_per_call(self, substrate):
+    def test_fire_all_fires_one_per_call(self, regista):
         now = datetime.now(UTC)
         start = now - timedelta(minutes=15)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -326,19 +326,19 @@ class TestPostgresCatchupPolicies:
         )
         rule_id = rule["rule_id"]
         old_next = rule["next_fire_at"]
-        _, wi1 = substrate.fire_recurrence(rule_id)
+        _, wi1 = regista.fire_recurrence(rule_id)
         assert wi1 is not None
 
-        updated = substrate.list_recurrence_rules()[0]
+        updated = regista.list_recurrence_rules()[0]
         assert updated["next_fire_at"] > old_next
 
-        _, wi2 = substrate.fire_recurrence(rule_id)
+        _, wi2 = regista.fire_recurrence(rule_id)
         assert wi2 is not None
 
 
 class TestPostgresCancelRecurrenceRule:
-    def test_cancel_sets_status(self, substrate):
-        rule = substrate.register_recurrence_rule(
+    def test_cancel_sets_status(self, regista):
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -346,19 +346,19 @@ class TestPostgresCancelRecurrenceRule:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        substrate.cancel_recurrence_rule(rule["rule_id"])
-        updated = substrate.list_recurrence_rules(status="cancelled")
+        regista.cancel_recurrence_rule(rule["rule_id"])
+        updated = regista.list_recurrence_rules(status="cancelled")
         assert len(updated) == 1
 
-    def test_cancel_not_found_raises(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.cancel_recurrence_rule(uuid.uuid4())
+    def test_cancel_not_found_raises(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.cancel_recurrence_rule(uuid.uuid4())
         assert exc_info.value.code == ErrorCode.RECURRENCE_RULE_NOT_FOUND
 
 
 class TestPostgresUpdateRecurrenceRule:
-    def test_update_schedule_expr(self, substrate):
-        rule = substrate.register_recurrence_rule(
+    def test_update_schedule_expr(self, regista):
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -366,13 +366,13 @@ class TestPostgresUpdateRecurrenceRule:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        updated = substrate.update_recurrence_rule(
+        updated = regista.update_recurrence_rule(
             rule["rule_id"], schedule_expr="PT10M",
         )
         assert updated["schedule_expr"] == "PT10M"
 
-    def test_update_template(self, substrate):
-        rule = substrate.register_recurrence_rule(
+    def test_update_template(self, regista):
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -380,13 +380,13 @@ class TestPostgresUpdateRecurrenceRule:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        updated = substrate.update_recurrence_rule(
+        updated = regista.update_recurrence_rule(
             rule["rule_id"], template={"custom_fields": {"title": "new"}},
         )
         assert updated["template"]["custom_fields"]["title"] == "new"
 
-    def test_update_status(self, substrate):
-        rule = substrate.register_recurrence_rule(
+    def test_update_status(self, regista):
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -394,23 +394,23 @@ class TestPostgresUpdateRecurrenceRule:
             schedule_kind="interval",
             schedule_expr="PT5M",
         )
-        updated = substrate.update_recurrence_rule(
+        updated = regista.update_recurrence_rule(
             rule["rule_id"], status="paused",
         )
         assert updated["status"] == "paused"
 
-    def test_update_not_found_raises(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.update_recurrence_rule(
+    def test_update_not_found_raises(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.update_recurrence_rule(
                 uuid.uuid4(), schedule_expr="PT10M",
             )
         assert exc_info.value.code == ErrorCode.RECURRENCE_RULE_NOT_FOUND
 
 
 class TestPostgresRecurrenceCustomFields:
-    def test_created_work_item_has_custom_fields(self, substrate):
+    def test_created_work_item_has_custom_fields(self, regista):
         past = datetime.now(UTC) - timedelta(minutes=5)
-        rule = substrate.register_recurrence_rule(
+        rule = regista.register_recurrence_rule(
             workflow_name="test_workflow",
             workflow_version=1,
             work_item_type="feature",
@@ -419,7 +419,7 @@ class TestPostgresRecurrenceCustomFields:
             schedule_expr="PT5M",
             start_at=past,
         )
-        _, wi = substrate.fire_recurrence(rule["rule_id"])
+        _, wi = regista.fire_recurrence(rule["rule_id"])
         assert wi is not None
         assert wi["custom_fields"]["title"] == "from template"
         assert wi["custom_fields"]["priority"] == "high"

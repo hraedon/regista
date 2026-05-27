@@ -4,8 +4,8 @@ import uuid
 
 import pytest
 
-from substrate._errors import SubstrateError
-from substrate._witness import (
+from regista._errors import RegistaError
+from regista._witness import (
     _validate_event_filter,
     _validate_url,
     event_matches_filter,
@@ -20,11 +20,11 @@ class TestValidateUrl:
         _validate_url("http://localhost:8080/webhook")
 
     def test_empty_rejected(self):
-        with pytest.raises(SubstrateError, match="must start with"):
+        with pytest.raises(RegistaError, match="must start with"):
             _validate_url("")
 
     def test_ftp_rejected(self):
-        with pytest.raises(SubstrateError, match="must start with"):
+        with pytest.raises(RegistaError, match="must start with"):
             _validate_url("ftp://example.com")
 
 
@@ -47,15 +47,15 @@ class TestValidateEventFilter:
         assert result == f
 
     def test_unknown_key_rejected(self):
-        with pytest.raises(SubstrateError, match="not allowed"):
+        with pytest.raises(RegistaError, match="not allowed"):
             _validate_event_filter({"unknown_key": ["value"]})
 
     def test_non_list_value_rejected(self):
-        with pytest.raises(SubstrateError, match="must be a list"):
+        with pytest.raises(RegistaError, match="must be a list"):
             _validate_event_filter({"transitions": "close"})
 
     def test_non_string_element_rejected(self):
-        with pytest.raises(SubstrateError, match="must be a list of strings"):
+        with pytest.raises(RegistaError, match="must be a list of strings"):
             _validate_event_filter({"transitions": [1, 2]})
 
 
@@ -114,9 +114,9 @@ class TestEventMatchesFilter:
 
 class TestInMemoryWitness:
     def test_register_witness(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         wid = sub.register_witness("https://example.com/webhook")
         assert isinstance(wid, uuid.UUID)
         witnesses = sub.list_witnesses()
@@ -125,9 +125,9 @@ class TestInMemoryWitness:
         assert witnesses[0]["status"] == "active"
 
     def test_register_witness_with_filter(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         sub.register_witness(
             "https://example.com/webhook",
             event_filter={"transitions": ["close"]},
@@ -136,41 +136,41 @@ class TestInMemoryWitness:
         assert witnesses[0]["event_filter"] == {"transitions": ["close"]}
 
     def test_unregister_witness(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         wid = sub.register_witness("https://example.com/webhook")
         sub.unregister_witness(wid)
         assert len(sub.list_witnesses()) == 0
 
     def test_unregister_nonexistent_raises(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
-        with pytest.raises(SubstrateError, match="WITNESS_NOT_FOUND"):
+        sub = InMemoryRegista()
+        with pytest.raises(RegistaError, match="WITNESS_NOT_FOUND"):
             sub.unregister_witness(uuid.uuid4())
 
     def test_pause_witness(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         wid = sub.register_witness("https://example.com/webhook")
         sub.pause_witness(wid)
         assert sub.list_witnesses()[0]["status"] == "paused"
 
     def test_reactivate_witness(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         wid = sub.register_witness("https://example.com/webhook")
         sub.pause_witness(wid)
         sub.reactivate_witness(wid)
         assert sub.list_witnesses()[0]["status"] == "active"
 
     def test_list_witnesses_filtered(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         wid1 = sub.register_witness("https://example.com/webhook1")
         wid2 = sub.register_witness("https://example.com/webhook2")
         sub.pause_witness(wid2)
@@ -179,9 +179,9 @@ class TestInMemoryWitness:
         assert active[0]["witness_id"] == str(wid1)
 
     def test_witness_receipts_created_on_event(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
 
 
         import os
@@ -189,7 +189,7 @@ class TestInMemoryWitness:
         key_path = os.path.join(
             os.path.dirname(__file__), "test_keys.json"
         )
-        sub = InMemorySubstrate(hmac_key_path=key_path)
+        sub = InMemoryRegista(hmac_key_path=key_path)
         wid = sub.register_witness(
             "https://example.com/webhook",
             event_filter={"transitions": ["created"]},
@@ -197,7 +197,7 @@ class TestInMemoryWitness:
         wf_yaml = """
 name: test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: open
@@ -227,12 +227,12 @@ roles: []
     def test_filter_skips_event(self):
         import os
 
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
         key_path = os.path.join(
             os.path.dirname(__file__), "test_keys.json"
         )
-        sub = InMemorySubstrate(hmac_key_path=key_path)
+        sub = InMemoryRegista(hmac_key_path=key_path)
         sub.register_witness(
             "https://example.com/webhook",
             event_filter={"transitions": ["close"]},
@@ -240,7 +240,7 @@ roles: []
         wf_yaml = """
 name: test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: open
@@ -266,7 +266,7 @@ roles: []
         assert len(receipts) == 0
 
     def test_deliver_pending_witness_receipts_noop(self):
-        from substrate._in_memory import InMemorySubstrate
+        from regista._in_memory import InMemoryRegista
 
-        sub = InMemorySubstrate()
+        sub = InMemoryRegista()
         assert sub.deliver_pending_witness_receipts() == 0

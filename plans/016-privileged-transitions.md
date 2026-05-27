@@ -57,12 +57,12 @@ def resolve_transition(transitions, current_state, transition_name, actor_kind, 
     for t in transitions:
         if t["name"] == transition_name and t["from_state"] == current_state:
             if t.get("privileged") and actor_kind != "system":
-                raise SubstrateError(
+                raise RegistaError(
                     ErrorCode.PRIVILEGED_TRANSITION_REQUIRED,
                     f"Transition {transition_name!r} requires actor_kind='system'",
                 )
             return t
-    raise SubstrateError(ErrorCode.INVALID_TRANSITION, ...)
+    raise RegistaError(ErrorCode.INVALID_TRANSITION, ...)
 ```
 
 The error code `PRIVILEGED_TRANSITION_REQUIRED` is new and distinct from `ROLE_NOT_PERMITTED` — an auditor seeing this code knows the event was rejected specifically because a non-system actor attempted a privileged transition.

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 PYTHON = sys.executable
@@ -21,14 +21,14 @@ PYTHON = sys.executable
 
 def _run(*args, env=None):
     base_env = {
-        "SUBSTRATE_DSN": DSN,
-        "SUBSTRATE_HMAC_KEY_PATH": KEY_PATH,
+        "REGISTA_DSN": DSN,
+        "REGISTA_HMAC_KEY_PATH": KEY_PATH,
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     if env:
         base_env.update(env)
     result = subprocess.run(
-        [PYTHON, "-m", "substrate._cli", *args],
+        [PYTHON, "-m", "regista._cli", *args],
         capture_output=True,
         text=True,
         env=base_env,
@@ -66,9 +66,9 @@ def initialized_project(project):
 
 @pytest.fixture
 def populated_project(initialized_project):
-    from substrate import Substrate
+    from regista import Regista
 
-    sub = Substrate(DSN, initialized_project, KEY_PATH)
+    sub = Regista(DSN, initialized_project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     wi, _ = sub.create_work_item(
         "test_workflow", "feature", "worker-1",
@@ -95,14 +95,14 @@ class TestSchemaStatus:
     def test_schema_status_after_init(self, initialized_project):
         result = _run(*_project_args(initialized_project), "schema", "status")
         assert result.returncode == 0
-        assert "substrate_version" in result.stdout
+        assert "regista_version" in result.stdout
 
 
 class TestWorkflowValidate:
     def test_validate_valid_yaml(self):
         result = _run(
             "workflow", "validate", WORKFLOW_PATH,
-            env={"SUBSTRATE_DSN": "", "SUBSTRATE_HMAC_KEY_PATH": ""},
+            env={"REGISTA_DSN": "", "REGISTA_HMAC_KEY_PATH": ""},
         )
         assert result.returncode == 0
         assert "Valid:" in result.stdout
@@ -110,7 +110,7 @@ class TestWorkflowValidate:
     def test_validate_valid_json_output(self):
         result = _run(
             "workflow", "validate", WORKFLOW_PATH, "--json",
-            env={"SUBSTRATE_DSN": "", "SUBSTRATE_HMAC_KEY_PATH": ""},
+            env={"REGISTA_DSN": "", "REGISTA_HMAC_KEY_PATH": ""},
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -121,7 +121,7 @@ class TestWorkflowValidate:
         bad.write_text("name: x\nstates: []\n")
         result = _run(
             "workflow", "validate", str(bad),
-            env={"SUBSTRATE_DSN": "", "SUBSTRATE_HMAC_KEY_PATH": ""},
+            env={"REGISTA_DSN": "", "REGISTA_HMAC_KEY_PATH": ""},
         )
         assert result.returncode == 1
 
@@ -252,12 +252,12 @@ class TestHooksDeadLetterList:
 
 class TestEnvVarConfig:
     def test_project_from_env(self, project):
-        result = _run("schema", "init", env={"SUBSTRATE_PROJECT": project})
+        result = _run("schema", "init", env={"REGISTA_PROJECT": project})
         assert result.returncode == 0
 
     def test_missing_all_config(self):
         result = subprocess.run(
-            [PYTHON, "-m", "substrate._cli", "schema", "status"],
+            [PYTHON, "-m", "regista._cli", "schema", "status"],
             capture_output=True,
             text=True,
             env={"PATH": "/usr/bin:/bin"},

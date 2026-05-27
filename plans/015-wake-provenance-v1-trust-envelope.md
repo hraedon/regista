@@ -1,7 +1,7 @@
 # Plan 015 — Wake/Provenance v1 Trust-Envelope Completion
 
 **Status:** Draft RFC
-**Owner:** substrate
+**Owner:** regista
 **Resolves:** BC-214, BC-215, BC-218, BC-219, BC-220, BC-221 (six of the eight items in `agent-wake/design/v1-implementation-spec.md` §2)
 **Defers:** BC-216, BC-217 (require BC-196 asymmetric-signing implementation; tracked separately)
 **Spec touched:** §17 (signing envelope), §17.9 (trust tiers), §19 (public API), §19.5 (error codes)
@@ -9,7 +9,7 @@
 
 ## 1. Motivation
 
-`agent-wake/design/v1-implementation-spec.md` §2 ("Substrate change inventory") enumerates eight discrete substrate changes that, together, complete the trust envelope required for both `agent-wake` v1 (durable external-ingest signaling) and `agent-provenance` v1 (Claude Code PreToolUse/PostToolUse attestation). Six of those changes are independent of BC-196 asymmetric signing and can ship now. Shipping them as a coherent slice — rather than ad-hoc per breadcrumb — keeps the signing envelope evolution legible and avoids three separate envelope-version bumps.
+`agent-wake/design/v1-implementation-spec.md` §2 ("Regista change inventory") enumerates eight discrete regista changes that, together, complete the trust envelope required for both `agent-wake` v1 (durable external-ingest signaling) and `agent-provenance` v1 (Claude Code PreToolUse/PostToolUse attestation). Six of those changes are independent of BC-196 asymmetric signing and can ship now. Shipping them as a coherent slice — rather than ad-hoc per breadcrumb — keeps the signing envelope evolution legible and avoids three separate envelope-version bumps.
 
 This is the load-bearing unblock for `agent-provenance` plan 002 ("Harness-level interception") and `agent-wake` v1 ingest. It also closes the residual gap in Plan 010: today `validate_delegation_chain` accepts `session_id` but does not validate its shape, so the field is structurally present but semantically dark.
 
@@ -31,7 +31,7 @@ Out of scope (and why):
 - BC-216, BC-217 — require Ed25519 + per-principal key resolution; tracked by future plan once BC-196 lands.
 - BC-198 (operator forgery defense) — properly belongs with Plan 012 RFC 3161 maturation, not here.
 - Plan 013 (witness hooks) — independently scoped; will follow this plan once envelope is stable.
-- Auditor-side verifier tool — lives in `agent-provenance`, not substrate.
+- Auditor-side verifier tool — lives in `agent-provenance`, not regista.
 
 ## 3. Design
 
@@ -86,7 +86,7 @@ New key file schema (additive; old files still load):
 
 - `session_id`, if present, must be a valid UUID string. Reject otherwise.
 - `expires_at`, if present, must parse as RFC 3339 UTC. If the event's signing timestamp is `≥ expires_at`, raise `DELEGATION_CHAIN_EXPIRED` (new error code).
-- `session_grant_event_id`, if present, must be a valid UUID string. Referential integrity is NOT checked at sign time (the grant event may live in a separate substrate project or be verifier-resolved); structural validation only.
+- `session_grant_event_id`, if present, must be a valid UUID string. Referential integrity is NOT checked at sign time (the grant event may live in a separate regista project or be verifier-resolved); structural validation only.
 - `authenticated_at`, if present, must parse as RFC 3339 UTC and be ≤ event timestamp.
 
 New error codes: `DELEGATION_CHAIN_EXPIRED`. Existing `INVALID_ARGUMENT` continues for structural failures (keep churn down).
@@ -129,7 +129,7 @@ Each item is one PR-sized unit; sequencing matches `agent-wake` v1 spec §6.
 - New tests added per work item above; aggregate test count ≥ +25.
 - `replay()` over a mixed log (pre-v4 + v4 events) returns `ok=True` with `warnings` populated only for envelope-version notes.
 - `agent-provenance` consumer (live or stub) can sign and verify events whose envelope includes `timestamp`/`key_id`/`workflow_name`.
-- `agent-wake` v1 verifier prerequisites are satisfiable from substrate alone for the non-BC-196 path.
+- `agent-wake` v1 verifier prerequisites are satisfiable from regista alone for the non-BC-196 path.
 - spec.md revision history advances to v9; FR-15 lists envelope v4 fields.
 
 ## 7. Risks
@@ -144,12 +144,12 @@ Each item is one PR-sized unit; sequencing matches `agent-wake` v1 spec §6.
 ## 8. Open questions
 
 - **Q1:** Should `role="auditor"` keys be allowed to call `transition()` at all in v1, or merely flagged? Spec says deferred to BC-196; defaulting to "allowed but logged" for now.
-- **Q2:** Should envelope-version mismatches emit a Prometheus counter (`substrate_envelope_version_drift_total`) in addition to replay warnings? Probably yes; adding to WI-2.
+- **Q2:** Should envelope-version mismatches emit a Prometheus counter (`regista_envelope_version_drift_total`) in addition to replay warnings? Probably yes; adding to WI-2.
 - **Q3:** `session_grant_event_id` referential check — punted to verifier. Confirm with agent-provenance owner that this split is acceptable.
 
 ## 9. Cross-project impact
 
 - **agent-provenance:** Unblocks plan 002 (PreToolUse/PostToolUse hooks) end-to-end for the non-Ed25519 path. `Plan 002 §"Gaps to close"` BC-197 line is already satisfied by Plan 010; this plan closes the BC-219 follow-up. Verifier work for `session_grant_event_id` referential checks moves to `agent-provenance`.
-- **agent-wake:** Unblocks v1 substrate dependency completely except BC-196/216/217 (asymmetric path). agent-wake adapters can now rely on a stable envelope v4 and unified timestamps.
-- **agent-notes-mcp:** No direct change; the eventual NOTIFY → wake bridge still uses substrate's normal append path, which now has the strengthened envelope automatically.
+- **agent-wake:** Unblocks v1 regista dependency completely except BC-196/216/217 (asymmetric path). agent-wake adapters can now rely on a stable envelope v4 and unified timestamps.
+- **agent-notes:** No direct change; the eventual NOTIFY → wake bridge still uses regista's normal append path, which now has the strengthened envelope automatically.
 - **software-factory-2:** Receives envelope v4 transparently. The positional constructor contract (BC-195) is unaffected. sf2 should see no behavior change unless it inspects raw envelopes.

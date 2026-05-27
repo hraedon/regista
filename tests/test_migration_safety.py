@@ -10,13 +10,13 @@ import psycopg
 import pytest
 from psycopg.sql import SQL, Identifier
 
-from substrate._connection import ConnectionManager
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._migrations import MIGRATION_LOCK_ID, run_migrations
-from substrate.testing import drop_project_schema
+from regista._connection import ConnectionManager
+from regista._errors import ErrorCode, RegistaError
+from regista._migrations import MIGRATION_LOCK_ID, run_migrations
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 
 
 def _make_mgr(project: str) -> ConnectionManager:
@@ -76,8 +76,8 @@ class TestAdvisoryLockConcurrentBoot:
 
     def test_migration_lock_id_is_documented_value(self):
         """MIGRATION_LOCK_ID must equal the SHA-256-derived constant documented
-        in BC-191 (2479241334166598476) so operators can verify non-collision."""
-        assert MIGRATION_LOCK_ID == 2479241334166598476
+        in BC-191 (4952183743003111440) so operators can verify non-collision."""
+        assert MIGRATION_LOCK_ID == 4952183743003111440
 
 
 class TestChecksumDriftDetection:
@@ -85,7 +85,7 @@ class TestChecksumDriftDetection:
     raise MIGRATION_DRIFT with both checksums in the detail dict."""
 
     def test_drift_raises_migration_drift(self, tmp_path):
-        import substrate._migrations as mig_mod
+        import regista._migrations as mig_mod
 
         project = f"test_bc191_drift_{uuid.uuid4().hex[:8]}"
         _create_schema(project)
@@ -112,7 +112,7 @@ class TestChecksumDriftDetection:
             original_bytes = target.read_bytes()
             target.write_bytes(original_bytes + b"\n-- tampered")
 
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 run_migrations(mgr)
 
             err = exc_info.value
@@ -132,7 +132,7 @@ class TestChecksumDriftDetection:
     def test_null_checksum_legacy_row_is_backfilled_not_rejected(self, tmp_path):
         """Rows inserted without a checksum (legacy / pre-BC-191) must be
         backfilled silently, not treated as drift."""
-        import substrate._migrations as mig_mod
+        import regista._migrations as mig_mod
 
         project = f"test_bc191_null_{uuid.uuid4().hex[:8]}"
         _create_schema(project)
@@ -156,7 +156,7 @@ class TestChecksumDriftDetection:
             with psycopg.connect(DSN, autocommit=True) as conn:
                 conn.execute(
                     SQL(
-                        "UPDATE {}._substrate_migrations "
+                        "UPDATE {}._regista_migrations "
                         "SET checksum = NULL WHERE version = 1"
                     ).format(Identifier(project))
                 )
@@ -168,7 +168,7 @@ class TestChecksumDriftDetection:
             # Verify the checksum was written.
             with psycopg.connect(DSN) as conn:
                 row = conn.execute(
-                    SQL("SELECT checksum FROM {}._substrate_migrations WHERE version = 1").format(
+                    SQL("SELECT checksum FROM {}._regista_migrations WHERE version = 1").format(
                         Identifier(project)
                     )
                 ).fetchone()

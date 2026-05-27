@@ -8,11 +8,11 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from substrate._errors import SubstrateError
-from substrate.testing import InMemorySubstrate, drop_project_schema
+from regista._errors import RegistaError
+from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
@@ -243,7 +243,7 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
             event_id_pool.append(eid)
             work_items.append(wi)
             return ("ok", "created", str(wi.work_item_id))
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     idx = op.get("idx", 0)
@@ -263,7 +263,7 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
             if refreshed:
                 work_items[idx] = refreshed
             return ("ok", "claimed", str(claim.attempt_number))
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     if op["op"] == "heartbeat":
@@ -272,7 +272,7 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
                 wi_id, op["actor_id"], ttl_seconds=op["ttl"]
             )
             return ("ok", "heartbeat", str(claim.attempt_number))
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     if op["op"] == "release":
@@ -284,14 +284,14 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
             if refreshed:
                 work_items[idx] = refreshed
             return ("ok", "released")
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     if op["op"] == "sweep":
         try:
             count = backend.sweep_expired_claims()
             return ("ok", "swept", count)
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     if op["op"] == "transition":
@@ -320,7 +320,7 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
             if refreshed:
                 work_items[idx] = refreshed
             return ("ok", "transitioned", t_name)
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     if op["op"] == "append_event":
@@ -334,7 +334,7 @@ def _exec_op(backend, op, work_items, event_id_pool=None):
             )
             event_id_pool.append(eid)
             return ("ok", "appended")
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     return ("noop", "unknown")
@@ -399,7 +399,7 @@ def _exec_op_adversarial(backend, op, work_items):
             wi, _evt = backend.create_work_item(**kwargs)
             work_items.append(wi)
             return ("ok", "created", str(wi.work_item_id))
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     idx = op.get("idx", 0)
@@ -417,7 +417,7 @@ def _exec_op_adversarial(backend, op, work_items):
             if refreshed:
                 work_items[idx] = refreshed
             return ("ok", "claimed", str(claim.attempt_number))
-        except SubstrateError as e:
+        except RegistaError as e:
             return ("err", e.code)
 
     return ("noop", "unknown")
@@ -432,14 +432,14 @@ class TestPropertyBasedConformance:
     )
     @given(data=st.data())
     def test_random_sequences_equivalent(self, data):
-        from substrate import Substrate
+        from regista import Regista
 
         n_ops = data.draw(st.integers(min_value=0, max_value=30))
 
         project = f"prop_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         real_items = []
@@ -485,12 +485,12 @@ class TestPropertyBasedConformance:
         )
     )
     def test_claim_contention_sequence(self, claim_ops):
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"prop_claim_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         try:
@@ -527,12 +527,12 @@ class TestPropertyBasedConformance:
         n_claims=st.integers(min_value=1, max_value=5),
     )
     def test_escalation_equivalence(self, n_claims):
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"prop_esc_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         try:
@@ -566,12 +566,12 @@ class TestPropertyBasedConformance:
     @settings(max_examples=50, deadline=None)
     @given(data=st.data())
     def test_transition_sequence_equivalence(self, data):
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"prop_trans_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         try:
@@ -614,14 +614,14 @@ class TestPropertyBasedConformance:
     @settings(max_examples=30, deadline=None)
     @given(data=st.data())
     def test_replay_equivalence(self, data):
-        from substrate import Substrate
+        from regista import Regista
 
         n_ops = data.draw(st.integers(min_value=0, max_value=20))
 
         project = f"prop_replay_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         real_items = []
@@ -654,12 +654,12 @@ class TestPropertyBasedConformance:
     @given(ops=st.lists(adversarial_operation(), max_size=20))
     def test_adversarial_error_code_equivalence(self, ops):
         """Both backends must reject invalid inputs with the same error code."""
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"prop_adv_{uuid.uuid4().hex[:8]}"
-        real = Substrate.create_project(DSN, project, KEY_PATH)
+        real = Regista.create_project(DSN, project, KEY_PATH)
         real.register_workflow(WORKFLOW_YAML)
-        mem = InMemorySubstrate(project="test")
+        mem = InMemoryRegista(project="test")
         mem.register_workflow(WORKFLOW_YAML)
 
         real_items = []
@@ -683,12 +683,12 @@ def _safe_claim(backend, wi_id, actor_id, ttl):
     try:
         claim = backend.acquire_claim(wi_id, actor_id, ttl_seconds=ttl)
         return ("ok", claim)
-    except SubstrateError as e:
+    except RegistaError as e:
         return ("err", e.code)
 
 
 def _safe_release(backend, wi_id, actor_id):
     try:
         backend.release_claim(wi_id, actor_id)
-    except SubstrateError:
+    except RegistaError:
         pass

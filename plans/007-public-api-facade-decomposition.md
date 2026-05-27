@@ -7,7 +7,7 @@
 
 ## 1. Problem Statement
 
-`Substrate` in `__init__.py` is a 1,200-line God class with 25+ public methods spanning six distinct capability domains:
+`Regista` in `__init__.py` is a 1,200-line God class with 25+ public methods spanning six distinct capability domains:
 
 | Domain | Methods | Extracted internal modules |
 |---|---|---|
@@ -37,7 +37,7 @@ The internal logic is already extracted. The remaining 1,200 lines are docstring
 Introduce namespaced accessors that return thin facade objects scoped to a domain:
 
 ```python
-class Substrate:
+class Regista:
     @property
     def work_items(self) -> WorkItemOps: ...
     @property
@@ -55,7 +55,7 @@ class Substrate:
 Each facade object holds a reference to the shared `ConnectionManager`, `KeySet`, and `Metrics` — exactly what `__init__.py` delegates today. Usage:
 
 ```python
-sub = Substrate(dsn, "my_project", hmac_key_path=...)
+sub = Regista(dsn, "my_project", hmac_key_path=...)
 
 wi = sub.work_items.create(workflow_name=..., work_item_type=..., actor_id=...)
 sub.claims.acquire(wi.work_item_id, actor_id=...)
@@ -77,7 +77,7 @@ def create_work_item(self, **kwargs):
 
 ### (b) Mixin composition
 
-Split `Substrate` into mixins: `WorkItemMixin`, `ClaimMixin`, `HookMixin`, etc. The concrete `Substrate` class inherits all mixins.
+Split `Regista` into mixins: `WorkItemMixin`, `ClaimMixin`, `HookMixin`, etc. The concrete `Regista` class inherits all mixins.
 
 **Pros:** No API shape change. Consumers call `sub.create_work_item()` as before.
 
@@ -89,14 +89,14 @@ Split into independent classes: `WorkflowClient`, `WorkItemClient`, `ClaimClient
 
 **Pros:** Maximum separation.
 
-**Cons:** Breaks the "single handle" contract in §19. Consumers must manage multiple client lifecycles. Shared state (connection pool, key set) requires a shared context object, which is just a renamed `Substrate` class.
+**Cons:** Breaks the "single handle" contract in §19. Consumers must manage multiple client lifecycles. Shared state (connection pool, key set) requires a shared context object, which is just a renamed `Regista` class.
 
 ## 3. Proposed Design (Option A in detail)
 
 ### Facade objects
 
 ```python
-# src/substrate/_ops/work_items.py
+# src/regista/_ops/work_items.py
 class WorkItemOps:
     __slots__ = ("_mgr", "_keys", "_metrics", "_project")
 
@@ -106,22 +106,22 @@ class WorkItemOps:
     def update_not_before(self, ...) -> Event: ...
 ```
 
-### Lifecycle methods stay on Substrate
+### Lifecycle methods stay on Regista
 
-`create_project`, `close`, `ensure_event_partitions`, `connection_info`, and `replay` remain on the top-level `Substrate` class. They are infrastructure operations, not domain operations.
+`create_project`, `close`, `ensure_event_partitions`, `connection_info`, and `replay` remain on the top-level `Regista` class. They are infrastructure operations, not domain operations.
 
 ### Backward compatibility
 
-All 25+ current methods remain on `Substrate` with deprecation warnings. Removal targeted for substrate 0.3.0 (two minor versions after introduction).
+All 25+ current methods remain on `Regista` with deprecation warnings. Removal targeted for regista 0.3.0 (two minor versions after introduction).
 
 ### What about `transition()`?
 
 `transition` spans work-items, claims, hooks, and events. It is the most cross-cutting operation. Two options:
 
-1. **Keep on Substrate.** It's the "main loop" operation — claim, validate, transition, dispatch hooks. Conceptually it belongs at the orchestration level.
+1. **Keep on Regista.** It's the "main loop" operation — claim, validate, transition, dispatch hooks. Conceptually it belongs at the orchestration level.
 2. **Put on `TransitionsOps`.** More consistent with the decomposition but creates an awkward dependency (TransitionOps needs ClaimOps + HookOps internals).
 
-Recommendation: keep `transition()` on `Substrate` top-level. It is the primary consumer entry point and its cross-domain nature makes it a poor fit for a single facade.
+Recommendation: keep `transition()` on `Regista` top-level. It is the primary consumer entry point and its cross-domain nature makes it a poor fit for a single facade.
 
 ## 4. Migration Path
 

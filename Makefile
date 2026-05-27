@@ -19,7 +19,7 @@ test-files:
 	$(PYTEST) $(FILES) -v
 
 cov:
-	$(PYTEST) tests/ -v --cov=substrate --cov-report=term-missing
+	$(PYTEST) tests/ -v --cov=regista --cov-report=term-missing
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +

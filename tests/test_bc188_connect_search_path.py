@@ -5,10 +5,10 @@ from pathlib import Path
 
 import psycopg
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 
 
@@ -21,14 +21,14 @@ class TestConnectSetsSearchPath:
         drop_old_replay_tables called against schema A must leave schema B's
         table untouched.
         """
-        from substrate import Substrate
-        from substrate._replay import drop_old_replay_tables
+        from regista import Regista
+        from regista._replay import drop_old_replay_tables
 
         schema_a = f"bc188_a_{uuid.uuid4().hex[:8]}"
         schema_b = f"bc188_b_{uuid.uuid4().hex[:8]}"
 
-        sub_a = Substrate.create_project(DSN, schema_a, KEY_PATH)
-        sub_b = Substrate.create_project(DSN, schema_b, KEY_PATH)
+        sub_a = Regista.create_project(DSN, schema_a, KEY_PATH)
+        sub_b = Regista.create_project(DSN, schema_b, KEY_PATH)
 
         shared_table = "work_items_current_replay_bc188test"
 
@@ -71,10 +71,10 @@ class TestConnectSetsSearchPath:
 
     def test_connect_sets_search_path_session(self):
         """connect() must set search_path so unqualified SQL resolves to the project schema."""
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"bc188_sp_{uuid.uuid4().hex[:8]}"
-        sub = Substrate.create_project(DSN, project, KEY_PATH)
+        sub = Regista.create_project(DSN, project, KEY_PATH)
         try:
             with sub._mgr.connect() as conn:
                 row = conn.execute(

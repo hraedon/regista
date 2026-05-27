@@ -6,7 +6,7 @@ from typing import ClassVar
 
 import pytest
 
-from substrate._contract import (
+from regista._contract import (
     check_actor_role_authorized,
     check_append_blocked,
     check_expected_seq,
@@ -26,8 +26,8 @@ from substrate._contract import (
     validate_ttl,
     validate_work_item_exists,
 )
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._types import Event
+from regista._errors import ErrorCode, RegistaError
+from regista._types import Event
 
 
 def _make_event(
@@ -68,12 +68,12 @@ class TestValidateActorKind:
         validate_actor_kind("system")
 
     def test_rejects_unknown(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_actor_kind("bot")
         assert exc_info.value.code == ErrorCode.INVALID_ACTOR_KIND
 
     def test_rejects_empty(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_actor_kind("")
         assert exc_info.value.code == ErrorCode.INVALID_ACTOR_KIND
 
@@ -84,12 +84,12 @@ class TestValidateTtl:
         validate_ttl(300)
 
     def test_rejects_zero(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_ttl(0)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_negative(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_ttl(-1)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -105,7 +105,7 @@ class TestValidateNotBefore:
         validate_not_before(NOW, NOW)
 
     def test_future_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_not_before(NOW + timedelta(seconds=1), NOW)
         assert exc_info.value.code == ErrorCode.NOT_BEFORE_FUTURE
 
@@ -126,17 +126,17 @@ class TestResolveTransition:
         assert t["to_state"] == "approved"
 
     def test_rejects_wrong_from_state(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_transition(self.TRANSITIONS, "approved", "approve", "wf", 1)
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
 
     def test_rejects_unknown_name(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_transition(self.TRANSITIONS, "pending", "unknown", "wf", 1)
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
 
     def test_error_includes_workflow_context(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_transition([], "s", "t", "my_workflow", 3)
         assert "my_workflow" in exc_info.value.message
         assert "v3" in exc_info.value.message
@@ -150,17 +150,17 @@ class TestCheckRoleGating:
         assert check_role_gating(["admin"], {"role": "admin"}, "do_thing") == "admin"
 
     def test_mismatched_role_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_role_gating(["admin"], {"role": "viewer"}, "do_thing")
         assert exc_info.value.code == ErrorCode.ROLE_NOT_PERMITTED
 
     def test_none_metadata_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_role_gating(["admin"], None, "do_thing")
         assert exc_info.value.code == ErrorCode.ROLE_NOT_PERMITTED
 
     def test_metadata_without_role_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_role_gating(["admin"], {}, "do_thing")
         assert exc_info.value.code == ErrorCode.ROLE_NOT_PERMITTED
 
@@ -173,7 +173,7 @@ class TestCheckActorRoleAuthorized:
         check_actor_role_authorized({"admin", "viewer"}, "a1", "admin")
 
     def test_mismatched_role_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_actor_role_authorized({"admin"}, "a1", "viewer")
         assert exc_info.value.code == ErrorCode.ACTOR_ROLE_NOT_AUTHORIZED
         assert exc_info.value.detail is not None
@@ -192,7 +192,7 @@ class TestCheckAppendBlocked:
         check_append_blocked(self.TRANSITIONS, "custom_note", "wf")
 
     def test_matching_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_append_blocked(self.TRANSITIONS, "approve", "wf")
         assert exc_info.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
@@ -211,13 +211,13 @@ class TestCheckIdempotency:
 
     def test_actor_mismatch_raises(self):
         evt = _make_event(actor_id="a1", transition="approve")
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_idempotency(evt, "a2", "approve")
         assert exc_info.value.code == ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD
 
     def test_transition_mismatch_raises(self):
         evt = _make_event(actor_id="a1", transition="approve")
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_idempotency(evt, "a1", "reject")
         assert exc_info.value.code == ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD
 
@@ -230,7 +230,7 @@ class TestCheckIdempotency:
         wi1 = uuid.uuid4()
         wi2 = uuid.uuid4()
         evt = _make_event(actor_id="a1", transition="approve", work_item_id=wi1)
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_idempotency(evt, "a1", "approve", work_item_id=wi2)
         assert exc_info.value.code == ErrorCode.EVENT_ID_GLOBAL_COLLISION
         assert str(wi2) in exc_info.value.message
@@ -255,7 +255,7 @@ class TestCheckExpectedSeq:
         check_expected_seq(5, 5)
 
     def test_mismatching_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_expected_seq(5, 3)
         assert exc_info.value.code == ErrorCode.CONCURRENT_MODIFICATION
 
@@ -270,17 +270,17 @@ class TestValidateLinkType:
         validate_link_type(self.LINK_TYPES, "task", "task", "depends_on")
 
     def test_wrong_name_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_link_type(self.LINK_TYPES, "task", "task", "related_to")
         assert exc_info.value.code == ErrorCode.LINK_TYPE_NOT_ALLOWED
 
     def test_wrong_source_type_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_link_type(self.LINK_TYPES, "bug", "task", "depends_on")
         assert exc_info.value.code == ErrorCode.LINK_TYPE_NOT_ALLOWED
 
     def test_wrong_target_type_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_link_type(self.LINK_TYPES, "task", "bug", "depends_on")
         assert exc_info.value.code == ErrorCode.LINK_TYPE_NOT_ALLOWED
 
@@ -310,17 +310,17 @@ class TestValidateReadEventsFilters:
         validate_read_events_filters(5, uuid.uuid4(), None, None)
 
     def test_before_seq_without_work_item_id_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_read_events_filters(5, None, None, None)
         assert exc_info.value.code == ErrorCode.INVALID_FILTER
 
     def test_start_without_end_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_read_events_filters(None, None, NOW, None)
         assert exc_info.value.code == ErrorCode.INVALID_FILTER
 
     def test_end_without_start_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_read_events_filters(None, None, None, NOW)
         assert exc_info.value.code == ErrorCode.INVALID_FILTER
 
@@ -382,7 +382,7 @@ class TestResolveClaimAcquire:
         assert r.event_transition == "claim_stolen"
 
     def test_contested_active_claim_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_claim_acquire(
                 wi_not_before=None,
                 claim_actor_id="a2",
@@ -397,7 +397,7 @@ class TestResolveClaimAcquire:
         assert exc_info.value.code == ErrorCode.CLAIM_CONTESTED
 
     def test_not_before_future_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_claim_acquire(
                 wi_not_before=NOW + timedelta(hours=1),
                 claim_actor_id=None,
@@ -412,7 +412,7 @@ class TestResolveClaimAcquire:
         assert exc_info.value.code == ErrorCode.NOT_BEFORE_FUTURE
 
     def test_zero_ttl_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_claim_acquire(
                 wi_not_before=None,
                 claim_actor_id=None,
@@ -427,7 +427,7 @@ class TestResolveClaimAcquire:
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_negative_ttl_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_claim_acquire(
                 wi_not_before=None,
                 claim_actor_id=None,
@@ -464,13 +464,13 @@ class TestResolveHeartbeat:
         assert r.new_expires_at == NOW + timedelta(seconds=300)
 
     def test_no_claim_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(None, "a1", 300, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
     def test_wrong_actor_raises(self):
         claim = {"actor_id": "a2", "acquired_at": NOW, "attempt_number": 1}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 300, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
@@ -481,7 +481,7 @@ class TestResolveHeartbeat:
             "expires_at": NOW - timedelta(seconds=1),
             "attempt_number": 1,
         }
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 300, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
@@ -497,7 +497,7 @@ class TestResolveHeartbeat:
 
     def test_stale_attempt_number_raises(self):
         claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 2}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 300, 1, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
@@ -508,7 +508,7 @@ class TestResolveHeartbeat:
 
     def test_invalid_ttl_raises(self):
         claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 1}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 0, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -519,13 +519,13 @@ class TestValidateRelease:
         validate_release(claim, "a1", uuid.uuid4())
 
     def test_no_claim_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_release(None, "a1", uuid.uuid4())
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
     def test_wrong_actor_raises(self):
         claim = {"actor_id": "a2"}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_release(claim, "a1", uuid.uuid4())
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
@@ -538,18 +538,18 @@ class TestValidateJsonSafeValue:
         validate_json_safe_value("", "test")
 
     def test_null_byte_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value("abc\x00def", "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
         assert "\\u0000" in exc_info.value.message
 
     def test_unpaired_surrogate_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value("abc\uD800def", "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_high_surrogate_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value("\uDBFF", "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -557,17 +557,17 @@ class TestValidateJsonSafeValue:
         validate_json_safe_value({"key": "value", "num": 42}, "test")
 
     def test_dict_with_null_byte_key_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value({"bad\x00key": "value"}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_dict_with_null_byte_value_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value({"key": "bad\x00value"}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_nested_dict_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value({"outer": {"inner": "\u0000"}}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -575,7 +575,7 @@ class TestValidateJsonSafeValue:
         validate_json_safe_value(["a", "b", "c"], "test")
 
     def test_list_with_null_byte_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value(["ok", "bad\x00"], "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -592,22 +592,22 @@ class TestValidateJsonSafeValue:
         validate_json_safe_value(True, "test")
 
     def test_deeply_nested_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value({"a": [{"b": "\u0000"}]}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_set_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value({1, 2, 3}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_bytes_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value(b"hello", "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_tuple_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value((1, 2), "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -620,13 +620,13 @@ class TestValidateActorId:
         validate_actor_id("x" * 255)
 
     def test_over_255_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_actor_id("x" * 256)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
         assert "255" in exc_info.value.message
 
     def test_detail_includes_length(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_actor_id("y" * 300)
         assert exc_info.value.detail is not None
         assert exc_info.value.detail["actor_id_length"] == 300
@@ -638,7 +638,7 @@ class TestValidateWorkItemExists:
 
     def test_none_raises(self):
         wid = uuid.uuid4()
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_work_item_exists(None, wid)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
         assert str(wid) in exc_info.value.message

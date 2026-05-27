@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._testing import (
+from regista._errors import ErrorCode, RegistaError
+from regista._testing import (
     KeySet,
     raw_transaction,
     replay_fn,
     sign_event,
     verify_event,
 )
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
@@ -36,7 +36,7 @@ class TestUnknownKeyId:
             {"key_id": "known-1", "secret": SECRET, "status": "active"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.get_key("nonexistent-key")
         assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
 
@@ -45,7 +45,7 @@ class TestUnknownKeyId:
             {"key_id": "revoked-1", "secret": SECRET, "status": "revoked"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.active_key()
         assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
 
@@ -54,26 +54,26 @@ class TestUnknownKeyId:
             {"key_id": "known-1", "secret": SECRET, "status": "active"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.verify_key_status("nonexistent-key")
         assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
 
     def test_load_rejects_missing_file(self, tmp_path):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(str(tmp_path / "nonexistent.json"))
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
     def test_load_rejects_invalid_json(self, tmp_path):
         kf = tmp_path / "bad.json"
         kf.write_text("not json")
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(str(kf))
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
     def test_load_rejects_missing_keys_field(self, tmp_path):
         kf = tmp_path / "nokeys.json"
         kf.write_text('{"not_keys": []}')
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(str(kf))
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
@@ -84,7 +84,7 @@ class TestRevokedKeyId:
             {"key_id": "rev-1", "secret": SECRET, "status": "revoked"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.active_key()
         assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
 
@@ -94,7 +94,7 @@ class TestRevokedKeyId:
             {"key_id": "rev-1", "secret": SECRET, "status": "revoked"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.verify_key_status("rev-1")
         assert exc_info.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -158,14 +158,14 @@ class TestDeprecatedKeyId:
             stored_envelope=envelope,
         )
 
-    def test_replay_accepts_deprecated_key(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_accepts_deprecated_key(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "AC-16 deprecated replay"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         key_id = events[0].key_id
 
         dep_path = TESTS_DIR / f"_ac16_dep_{uuid.uuid4().hex[:8]}.json"
@@ -175,9 +175,9 @@ class TestDeprecatedKeyId:
             ])
             dep_ks = KeySet(str(dep_path))
 
-            with raw_transaction(substrate) as conn:
+            with raw_transaction(regista) as conn:
                 report = replay_fn(
-                    conn, substrate._mgr.schema, substrate.project,
+                    conn, regista._mgr.schema, regista.project,
                     dep_ks, continue_on_revoked=True,
                 )
             assert report.halted == 0
@@ -217,7 +217,7 @@ class TestHotReload:
         import time
         time.sleep(0.01)
 
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             ks.verify_key_status("k1")
         assert exc_info.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -226,11 +226,11 @@ class TestHotReload:
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_ac16_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()

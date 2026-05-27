@@ -10,19 +10,19 @@
 
 ## 1. Motivation & Scope
 
-Substrate's `not_before` is a one-shot gate on a single work-item (`spec.md` lines 33, 118, 206; `src/substrate/_work_items.py:82,278`). A caller that wants "run this task every Monday at 09:00" must keep its own schedule out-of-band and call `create_work_item` itself. That out-of-band scheduler is then *not* a substrate actor — the new work-items get attributed to whatever ad-hoc cron job created them, and the audit trail loses the "this was a recurrence fire" signal.
+Regista's `not_before` is a one-shot gate on a single work-item (`spec.md` lines 33, 118, 206; `src/regista/_work_items.py:82,278`). A caller that wants "run this task every Monday at 09:00" must keep its own schedule out-of-band and call `create_work_item` itself. That out-of-band scheduler is then *not* a regista actor — the new work-items get attributed to whatever ad-hoc cron job created them, and the audit trail loses the "this was a recurrence fire" signal.
 
-**This plan adds first-class recurrence: a project registers a recurrence rule that points at a work-item template; substrate emits fresh work-items on the rule's schedule, each created through the normal signed-event path with a `system:scheduler` actor.**
+**This plan adds first-class recurrence: a project registers a recurrence rule that points at a work-item template; regista emits fresh work-items on the rule's schedule, each created through the normal signed-event path with a `system:scheduler` actor.**
 
 **In scope (use cases enabled):**
 - Periodic agent jobs (nightly replay audit, hourly health probe, weekly retro).
 - Pre-built work-items that an operator wants surfaced at a future fixed time (one-shot with `count=1` is a degenerate recurrence).
-- "Time-spawned" backlog items where consumers want substrate to be the single signer of the creation event.
+- "Time-spawned" backlog items where consumers want regista to be the single signer of the creation event.
 
 **Out of scope (call out explicitly to prevent feature creep):**
 - SLA auto-transition / dwell-time monitoring (covered separately; spec §20 forbids).
 - "When event X happens, fire Y" — event-driven (non-time) triggers.
-- Cron-as-a-service for arbitrary code: substrate spawns work-items, not callable hooks. The hook subsystem already handles "do work in response to events" (FR-13).
+- Cron-as-a-service for arbitrary code: regista spawns work-items, not callable hooks. The hook subsystem already handles "do work in response to events" (FR-13).
 - Max-retry policies on the spawned items (those follow the workflow's own attempt threshold, FR-10).
 - Rescheduling running work-items (FR-26 `update_not_before` already does that).
 
@@ -35,7 +35,7 @@ Substrate's `not_before` is a one-shot gate on a single work-item (`spec.md` lin
 Rationale:
 - A rule has its own lifecycle (active/paused/cancelled, last-fired-at, next-fire-at) distinct from any individual work-item. Embedding it on a template work-item would conflate "the template" with "the live schedule state" and force ad-hoc semantics on the template (does its claim block firing? does its state matter?).
 - `work_items_current` is a *projection* of events (BR-11). A mutable `next_fire_at` field on it would either need its own event type and replay rule per tick, or it would be a non-projection column — both bad.
-- The substrate already has precedent for adjacent operational tables that aren't pure projections: `hook_queue`, `hook_dead_letter`, `actor_roles`.
+- The regista already has precedent for adjacent operational tables that aren't pure projections: `hook_queue`, `hook_dead_letter`, `actor_roles`.
 
 ### Schema sketch (new migration `010_recurrence_rules.sql`)
 
@@ -78,13 +78,13 @@ CREATE INDEX idx_recurrence_due ON recurrence_rules (next_fire_at)
 
 | Option | Pros | Cons |
 |---|---|---|
-| (a) In-process background thread (mirrors `start_hook_consumer`) | Already-blessed pattern (`_hooks.py:380-388`); signs events via the same code path; works in library-mode | New responsibility (substrate isn't a daemon today); caller must invoke `start_recurrence_consumer()` or it stalls |
-| (b) Caller polls `substrate.due_recurrences()` and invokes `fire_recurrence(rule_id)` | Substrate stays passive — perfectly aligned with §20 ("scheduling … explicitly out of scope") | Pushes the timing loop onto every consumer; spreads the "is substrate the signer" responsibility thin |
-| (c) `pg_cron` / NOTIFY-based DB trigger | Single instance; cluster-friendly | `pg_cron` is an extension not present in vanilla Postgres 15; would force a new infra dependency (violates "minimal infra" principle, spec line 315); cannot reach into substrate's signing code from inside Postgres |
+| (a) In-process background thread (mirrors `start_hook_consumer`) | Already-blessed pattern (`_hooks.py:380-388`); signs events via the same code path; works in library-mode | New responsibility (regista isn't a daemon today); caller must invoke `start_recurrence_consumer()` or it stalls |
+| (b) Caller polls `regista.due_recurrences()` and invokes `fire_recurrence(rule_id)` | Regista stays passive — perfectly aligned with §20 ("scheduling … explicitly out of scope") | Pushes the timing loop onto every consumer; spreads the "is regista the signer" responsibility thin |
+| (c) `pg_cron` / NOTIFY-based DB trigger | Single instance; cluster-friendly | `pg_cron` is an extension not present in vanilla Postgres 15; would force a new infra dependency (violates "minimal infra" principle, spec line 315); cannot reach into regista's signing code from inside Postgres |
 
 **Decision: (b) primary, (a) optional convenience.**
 
-The substrate library exposes:
+The regista library exposes:
 - `due_recurrences(now=None) -> list[DueRecurrence]` — read-only; returns rules whose `next_fire_at <= now()` and `status='active'`.
 - `fire_recurrence(rule_id, actor_id='system:scheduler', actor_kind='system') -> tuple[WorkItem, Event, NextFireAt]` — atomically:
   1. `SELECT ... FOR UPDATE SKIP LOCKED` on the rule row.
@@ -94,7 +94,7 @@ The substrate library exposes:
   5. Commit. The whole thing is one Postgres transaction, taking the canonical lock on the new work-item's row via the existing `create_work_item` path.
 - `start_recurrence_consumer(poll_interval_seconds=30)` / `stop_recurrence_consumer()` — convenience thread mirroring `_hooks.py:380`. Default off. Calling it is the difference between "passive" and "active" deployment.
 
-This keeps option (b) as the primitive (substrate-as-library, caller-as-driver) and option (a) as ergonomics on top, so both shapes are first-class.
+This keeps option (b) as the primitive (regista-as-library, caller-as-driver) and option (a) as ergonomics on top, so both shapes are first-class.
 
 **Signing path:** `fire_recurrence` calls the public `create_work_item` (no internal back door). That means HMAC-SHA256 over the canonical envelope (§17.7) is computed inside the library; AC-33 (no pre-signed events) is preserved by construction.
 
@@ -103,7 +103,7 @@ This keeps option (b) as the primitive (substrate-as-library, caller-as-driver) 
 ## 4. Actor Attribution
 
 Spawned-item creation events carry:
-- `actor_id = "system:scheduler"` (configurable per-project via `Substrate(..., scheduler_actor_id=...)` but defaults to that literal).
+- `actor_id = "system:scheduler"` (configurable per-project via `Regista(..., scheduler_actor_id=...)` but defaults to that literal).
 - `actor_kind = "system"` (already an enumerated kind — `__init__.py:416,480,578,1050,1109,1256`).
 - `actor_metadata = {"recurrence_rule_id": "<uuid>", "role_source": "config", "role": "<rule.template.role|'scheduler'>"}`.
 
@@ -142,7 +142,7 @@ Idempotency-on-retry within a slot is automatic: `create_work_item` is event-id-
 
 1. **Migration `010_recurrence_rules.sql`** — table + index above. Run via existing `_migrations.py` machinery.
 2. **`_recurrence.py`** — pure functions: `compute_next_fire(rule, after)`, `parse_schedule_expr(kind, expr, tz)`. Add `python-dateutil` to `pyproject.toml` if not already pinned (`uv.lock` check).
-3. **API additions on `Substrate`** in `__init__.py`:
+3. **API additions on `Regista`** in `__init__.py`:
    - `register_recurrence_rule(...) -> RecurrenceRule`
    - `update_recurrence_rule(rule_id, *, status=..., schedule_expr=..., template=...)`
    - `cancel_recurrence_rule(rule_id)`
@@ -177,8 +177,8 @@ Idempotency-on-retry within a slot is automatic: `create_work_item` is event-id-
 ## 9. Open Questions / Risks
 
 - **Q1: Should the `template` reference a registered "template work-item" rather than carrying an inline jsonb dict?** Pro: editable as a normal work-item; reusable across rules. Con: muddies what "claim" / "transition" mean on a template (would it be terminal? frozen?). Lean: inline jsonb in v1; revisit if multiple rules want to share a template.
-- **Q2: Multi-instance firing.** Two substrate library instances running against the same DB will both fire. `SKIP LOCKED` makes that safe (one wins per slot), but the consumer-thread default of 30s on both means doubled load on the index. Mitigation: document and let operators run one consumer. No code change needed.
-- **Q3: Clock skew.** Substrate uses Postgres `now()` (BR-08); the rule's `next_fire_at` is server-clock-relative. Fire instants are therefore consistent regardless of client clock skew. Good.
+- **Q2: Multi-instance firing.** Two regista library instances running against the same DB will both fire. `SKIP LOCKED` makes that safe (one wins per slot), but the consumer-thread default of 30s on both means doubled load on the index. Mitigation: document and let operators run one consumer. No code change needed.
+- **Q3: Clock skew.** Regista uses Postgres `now()` (BR-08); the rule's `next_fire_at` is server-clock-relative. Fire instants are therefore consistent regardless of client clock skew. Good.
 - **Q4: RRULE expressiveness vs. complexity.** RRULE is a large RFC; we should pin to a tested subset (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYHOUR`, `BYMINUTE`, `COUNT`, `UNTIL`). Document the supported subset in AGENTS.md.
 - **Risk: schema-per-project means recurrence rules live per project schema.** Cross-project recurrence is not supported (consistent with BR-04). A "spawn a work-item in project A every time project B fires" use case is out of scope.
 
@@ -190,6 +190,6 @@ Idempotency-on-retry within a slot is automatic: `create_work_item` is event-id-
 - Max-retry policies on spawned work-items (workflow's `attempt_threshold` already governs FR-10).
 - Event-driven triggers (when event X is appended, spawn Y) — possible future "reactive rules" plan; uses hooks today.
 - Cron-string syntax for `schedule_expr`.
-- A substrate-managed *executor* for the spawned item — substrate spawns; the agent/consumer claims and runs (BR-05).
+- A regista-managed *executor* for the spawned item — regista spawns; the agent/consumer claims and runs (BR-05).
 - Cross-project rules.
-- A REST/HTTP scheduler endpoint — substrate remains a library (Phase 2 deployment-shape decision, §10).
+- A REST/HTTP scheduler endpoint — regista remains a library (Phase 2 deployment-shape decision, §10).

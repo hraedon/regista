@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from substrate._contract import (
+from regista._contract import (
     ErrorCode,
-    SubstrateError,
+    RegistaError,
     check_reserved_transition,
     validate_delegation_chain,
 )
-from substrate._keys import KeySet
-from substrate._types import DelegationChain
+from regista._keys import KeySet
+from regista._types import DelegationChain
 
 SECRET = "dGhpcyBpcyBhIHRlc3Qgc2VjcmV0IGtleSBmb3Igc3Vic3RyYXRl"
 
@@ -46,7 +46,7 @@ class TestBC215RevokedAtBoundary:
             },
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old", event_timestamp="2026-06-01T00:00:00Z")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -59,7 +59,7 @@ class TestBC215RevokedAtBoundary:
             },
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old", event_timestamp="2026-07-01T00:00:00Z")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -71,7 +71,7 @@ class TestBC215RevokedAtBoundary:
             },
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -83,7 +83,7 @@ class TestBC215RevokedAtBoundary:
             },
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old", event_timestamp="2026-04-01T00:00:00Z")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -97,7 +97,7 @@ class TestBC215RevokedAtBoundary:
             },
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -109,14 +109,14 @@ class TestBC219DelegationChainFields:
         )
 
     def test_rejects_empty_expires_at(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "expires_at": ""}
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_string_expires_at(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "expires_at": 123}
             )
@@ -136,14 +136,14 @@ class TestBC219DelegationChainFields:
         )
 
     def test_rejects_empty_session_grant_event_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "session_grant_event_id": ""}
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_rejects_non_string_session_grant_event_id(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "session_grant_event_id": 123}
             )
@@ -199,7 +199,7 @@ class TestBC219DelegationChainFields:
         )
 
     def test_rejects_invalid_session_id_uuid(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "session_id": "not-a-uuid"}
             )
@@ -207,7 +207,7 @@ class TestBC219DelegationChainFields:
         assert "session_id must be a valid UUID" in exc.value.message
 
     def test_rejects_invalid_session_grant_event_id_uuid(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "session_grant_event_id": "not-a-uuid"}
             )
@@ -215,7 +215,7 @@ class TestBC219DelegationChainFields:
         assert "session_grant_event_id must be a valid UUID" in exc.value.message
 
     def test_rejects_invalid_expires_at_format(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {"principal_id": "alice", "expires_at": "tomorrow"}
             )
@@ -223,7 +223,7 @@ class TestBC219DelegationChainFields:
         assert "RFC 3339" in exc.value.message
 
     def test_rejects_invalid_authenticated_at_format(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {
                     "principal_id": "alice",
@@ -235,7 +235,7 @@ class TestBC219DelegationChainFields:
         assert "RFC 3339" in exc.value.message
 
     def test_expires_at_before_event_timestamp_raises_delegation_chain_expired(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {
                     "principal_id": "alice",
@@ -246,7 +246,7 @@ class TestBC219DelegationChainFields:
         assert exc.value.code == ErrorCode.DELEGATION_CHAIN_EXPIRED
 
     def test_expires_at_equal_to_event_timestamp_raises_delegation_chain_expired(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {
                     "principal_id": "alice",
@@ -266,7 +266,7 @@ class TestBC219DelegationChainFields:
         )
 
     def test_authenticated_at_after_event_timestamp_rejected(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_delegation_chain(
                 {
                     "principal_id": "alice",
@@ -302,7 +302,7 @@ class TestBC219DelegationChainFields:
 
 class TestBC220ClientTimestamp:
     def test_client_timestamp_set_in_event(self, tmp_path: Path) -> None:
-        from substrate._event_store import InMemoryEventStore, append_event
+        from regista._event_store import InMemoryEventStore, append_event
         store = InMemoryEventStore()
         work_item_id = uuid.uuid4()
         store.bind({
@@ -320,19 +320,19 @@ class TestBC220ClientTimestamp:
         assert evt.timestamp is not None
 
     def test_postgres_appends_client_timestamp(self, tmp_path: Path) -> None:
-        from substrate import Substrate
-        from substrate._testing import drop_project_schema
+        from regista import Regista
+        from regista._testing import drop_project_schema
 
         kf = _write_key_file(tmp_path / "keys.json", [
             {"key_id": "k1", "secret": SECRET, "status": "active"},
         ])
-        dsn = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+        dsn = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
         project_name = f"ts_test_{uuid.uuid4().hex[:12]}"
-        sub = Substrate.create_project(dsn, project_name, hmac_key_path=str(kf))
+        sub = Regista.create_project(dsn, project_name, hmac_key_path=str(kf))
         sub.register_workflow(
             "name: wf\n"
             "version: 1\n"
-            "substrate_version: 5.0.0\n"
+            "regista_version: 5.0.0\n"
             "states:\n"
             "  - name: s1\n"
             "    initial: true\n"
@@ -366,14 +366,14 @@ class TestBC220ClientTimestamp:
 
 class TestBC221CheckpointReservation:
     def test_checkpoint_in_reserved_transitions(self) -> None:
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             check_reserved_transition("checkpoint")
         assert exc.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
     def test_checkpoint_blocked_in_append(self) -> None:
-        from substrate._contract import check_append_blocked
+        from regista._contract import check_append_blocked
         transitions = [{"name": "checkpoint", "from_state": "a", "to_state": "b"}]
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             check_append_blocked(transitions, "checkpoint", "wf")
         assert exc.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
@@ -394,17 +394,17 @@ class TestBC221CheckpointReservation:
 
     def test_checkpoint_transition_name_reserved(self) -> None:
         # Directly assert membership in the frozenset via the contract function
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             check_reserved_transition("checkpoint")
         assert exc.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
     def test_checkpoint_workflow_registration_rejected(self) -> None:
         """Workflow YAML with transition named 'checkpoint' is rejected at registration."""
-        from substrate._workflow import parse_and_validate
+        from regista._workflow import parse_and_validate
         yaml = (
             "name: wf\n"
             "version: 1\n"
-            "substrate_version: 5.0.0\n"
+            "regista_version: 5.0.0\n"
             "states:\n"
             "  - name: s1\n"
             "    initial: true\n"
@@ -421,7 +421,7 @@ class TestBC221CheckpointReservation:
             "    custom_fields: []\n"
             "link_types: []\n"
         )
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             parse_and_validate(yaml)
         assert exc.value.code == ErrorCode.RESERVED_TRANSITION_NAME
         assert "checkpoint" in exc.value.message

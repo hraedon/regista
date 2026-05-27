@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._keys import KeySet
-from substrate._signing import sign_event, verify_event
+from regista._errors import ErrorCode, RegistaError
+from regista._keys import KeySet
+from regista._signing import sign_event, verify_event
 
 
 def _write_key_file(path: Path, keys: list[dict]) -> Path:
@@ -99,18 +99,68 @@ class TestBC218KeyRole:
         kf = _write_key_file(tmp_path / "keys.json", [
             {"key_id": "k1", "secret": SECRET, "status": "active", "role": "operator"},
         ])
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             KeySet(str(kf))
         assert exc.value.code == ErrorCode.INVALID_KEY_ROLE
 
     def test_validate_key_role_contract(self):
-        from substrate._contract import validate_key_role
+        from regista._contract import validate_key_role
         validate_key_role("actor")
         validate_key_role("auditor")
         validate_key_role("recovery")
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             validate_key_role("invalid")
         assert exc.value.code == ErrorCode.INVALID_KEY_ROLE
+
+
+class TestBC218KeyRolePolicy:
+    def test_actor_can_sign_workflow_transition(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("actor", "start")
+
+    def test_actor_can_sign_tool_call(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("actor", "tool_call")
+
+    def test_actor_can_sign_none_transition(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("actor", None)
+
+    def test_auditor_can_sign_auditor_attestation(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("auditor", "auditor_attestation")
+
+    def test_auditor_cannot_sign_tool_call(self):
+        from regista._contract import check_key_role_policy
+        with pytest.raises(RegistaError) as exc:
+            check_key_role_policy("auditor", "tool_call")
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+
+    def test_auditor_cannot_sign_workflow_transition(self):
+        from regista._contract import check_key_role_policy
+        with pytest.raises(RegistaError) as exc:
+            check_key_role_policy("auditor", "start")
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+
+    def test_auditor_cannot_sign_key_rotation(self):
+        from regista._contract import check_key_role_policy
+        with pytest.raises(RegistaError) as exc:
+            check_key_role_policy("auditor", "key_rotation")
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+
+    def test_recovery_can_sign_key_rotation(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("recovery", "key_rotation")
+
+    def test_recovery_cannot_sign_tool_call(self):
+        from regista._contract import check_key_role_policy
+        with pytest.raises(RegistaError) as exc:
+            check_key_role_policy("recovery", "tool_call")
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+
+    def test_actor_can_sign_key_rotation(self):
+        from regista._contract import check_key_role_policy
+        check_key_role_policy("actor", "key_rotation")
 
 
 class TestBC215RevokedAt:
@@ -123,7 +173,7 @@ class TestBC215RevokedAt:
             {"key_id": "new", "secret": SECRET, "status": "active"},
         ])
         ks = KeySet(str(kf))
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             ks.verify_key_status("old")
         assert exc.value.code == ErrorCode.REVOKED_KEY_ID
 
@@ -212,8 +262,8 @@ class TestBC214EnvelopeV2:
         import hashlib
         from datetime import UTC, datetime
 
-        from substrate._jcs import canonicalize
-        from substrate._signing import compute_hmac
+        from regista._jcs import canonicalize
+        from regista._signing import compute_hmac
 
         key = b"x" * 32
         now = datetime.now(UTC)
@@ -252,3 +302,98 @@ class TestBC214EnvelopeV2:
             canonical_hash=ch,
             key=key,
         )
+
+
+class TestBC218KeyRolePolicyIntegration:
+    WORKFLOW_YAML = """\
+name: test_policy
+version: 1
+regista_version: "0.1.0"
+states:
+  - name: new
+    initial: true
+  - name: done
+    terminal: true
+transitions:
+  - name: start
+    from: new
+    to: done
+    allowed_roles: [agent]
+roles:
+  - name: agent
+work_item_types:
+  - name: task
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+"""
+
+    def _make_key_file(self, tmp_path, keys):
+        kf = tmp_path / "keys.json"
+        kf.write_text(json.dumps({"keys": keys}))
+        return str(kf)
+
+    def test_actor_key_can_transition(self, tmp_path):
+        from regista.testing import InMemoryRegista
+
+        key_path = self._make_key_file(tmp_path, [
+            {"key_id": "actor-key", "secret": SECRET, "status": "active", "role": "actor"},
+        ])
+        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
+        sub.register_workflow(self.WORKFLOW_YAML)
+        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        evt = sub.transition(
+            wi.work_item_id, "start", "agent1",
+            actor_metadata={"role": "agent"},
+        )
+        assert evt.transition == "start"
+        sub.close()
+
+    def test_auditor_key_blocked_from_workflow_transition(self, tmp_path):
+        from regista.testing import InMemoryRegista
+
+        key_path = self._make_key_file(tmp_path, [
+            {"key_id": "aud-key", "secret": SECRET, "status": "active", "role": "auditor"},
+        ])
+        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
+        sub.register_workflow(self.WORKFLOW_YAML)
+        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        with pytest.raises(RegistaError) as exc:
+            sub.transition(
+                wi.work_item_id, "start", "agent1",
+                actor_metadata={"role": "agent"},
+            )
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+        sub.close()
+
+    def test_auditor_key_blocked_from_append_event_transition(self, tmp_path):
+        from regista.testing import InMemoryRegista
+
+        key_path = self._make_key_file(tmp_path, [
+            {"key_id": "aud-key", "secret": SECRET, "status": "active", "role": "auditor"},
+        ])
+        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
+        sub.register_workflow(self.WORKFLOW_YAML)
+        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        with pytest.raises(RegistaError) as exc:
+            sub.append_event(wi.work_item_id, "agent1", transition="tool_call")
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+        sub.close()
+
+    def test_recovery_key_blocked_from_workflow_transition(self, tmp_path):
+        from regista.testing import InMemoryRegista
+
+        key_path = self._make_key_file(tmp_path, [
+            {"key_id": "rec-key", "secret": SECRET, "status": "active", "role": "recovery"},
+        ])
+        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
+        sub.register_workflow(self.WORKFLOW_YAML)
+        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        with pytest.raises(RegistaError) as exc:
+            sub.transition(
+                wi.work_item_id, "start", "agent1",
+                actor_metadata={"role": "agent"},
+            )
+        assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
+        sub.close()

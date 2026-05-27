@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "substrate"
+name = "regista"
 version = "0.3.0"
 description = "Coordination + state plane for agent pipelines over Postgres"
 requires-python = ">=3.11"
@@ -41,13 +41,13 @@ timestamping = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/substrate"]
+packages = ["src/regista"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"migrations" = "substrate/migrations"
+"migrations" = "regista/migrations"
 
 [project.scripts]
-substrate = "substrate._cli:main"
+regista = "regista._cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

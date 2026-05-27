@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Substrate's event signing is hardcoded to HMAC-SHA256. This plan makes the signing scheme pluggable by introducing a `SigningScheme` protocol, an `Ed25519Scheme` implementation alongside the existing `HMACSHA256Scheme`, a `scheme_id` column on the `events` table, and a registry that allows replay to select the correct verifier per event.
+Regista's event signing is hardcoded to HMAC-SHA256. This plan makes the signing scheme pluggable by introducing a `SigningScheme` protocol, an `Ed25519Scheme` implementation alongside the existing `HMACSHA256Scheme`, a `scheme_id` column on the `events` table, and a registry that allows replay to select the correct verifier per event.
 
 All existing events remain HMAC-SHA256 signed. No data migration of signatures or keys is required. The change is fully backward-compatible: existing key files, existing databases, and existing code paths work unchanged until an operator opts into Ed25519 by adding a key entry with `"scheme": "ed25519"`.
 
@@ -27,7 +27,7 @@ BC-196 accepted: signing scheme is pluggable, Ed25519 added as a first-class opt
 
 ### 3.1 SigningScheme protocol
 
-New file `src/substrate/_signing_scheme.py`. Defines the protocol and the registry.
+New file `src/regista/_signing_scheme.py`. Defines the protocol and the registry.
 
 ```python
 from __future__ import annotations
@@ -146,7 +146,7 @@ Key file JSON gains an optional `scheme` field per key entry:
 
 Omitting `scheme` defaults to `"hmac-sha256"` — existing key files work unchanged.
 
-`KeySet._load()` reads the `scheme` field, validates it against the registry, and stores it on `KeyEntry`. If `scheme` is `"ed25519"` and PyNaCl is not installed, `KeySet._load()` raises `SubstrateError(KEY_LOAD_ERROR, ...)` at load time — not at sign time.
+`KeySet._load()` reads the `scheme` field, validates it against the registry, and stores it on `KeyEntry`. If `scheme` is `"ed25519"` and PyNaCl is not installed, `KeySet._load()` raises `RegistaError(KEY_LOAD_ERROR, ...)` at load time — not at sign time.
 
 ### 3.5 KeySet scheme resolution
 
@@ -247,7 +247,7 @@ if not verify_event(
     raise _ReplayHaltError(...)
 ```
 
-Unknown scheme IDs (e.g., a custom scheme not registered in this process) produce a clear `SubstrateError(SCHEME_NOT_FOUND, ...)` — not a generic signature failure.
+Unknown scheme IDs (e.g., a custom scheme not registered in this process) produce a clear `RegistaError(SCHEME_NOT_FOUND, ...)` — not a generic signature failure.
 
 ## 4. Key File Format
 
@@ -280,7 +280,7 @@ Key material for Ed25519: the 32-byte private key seed, base64-encoded in the JS
 
 - `scheme` must be a non-empty string present in the scheme registry at load time.
 - `scheme` defaults to `"hmac-sha256"` if omitted (backward compat).
-- If the scheme's required library is not installed, `KeySet._load()` raises `SubstrateError(KEY_LOAD_ERROR, "Scheme 'ed25519' requires PyNaCl: pip install substrate[ed25519]")`.
+- If the scheme's required library is not installed, `KeySet._load()` raises `RegistaError(KEY_LOAD_ERROR, "Scheme 'ed25519' requires PyNaCl: pip install regista[ed25519]")`.
 
 ## 5. Migration
 
@@ -300,9 +300,9 @@ ALTER TABLE events ADD COLUMN scheme_id TEXT NOT NULL DEFAULT 'hmac-sha256';
 
 ### Public API (no changes)
 
-The `Substrate` class public API is unchanged. Scheme selection is driven by the key file. Operators opt into Ed25519 by:
+The `Regista` class public API is unchanged. Scheme selection is driven by the key file. Operators opt into Ed25519 by:
 
-1. Installing `pip install substrate[ed25519]`.
+1. Installing `pip install regista[ed25519]`.
 2. Adding an Ed25519 key entry to their key file with `"scheme": "ed25519"`.
 3. Setting its `status` to `"active"` and the old HMAC key to `"deprecated"`.
 
@@ -338,7 +338,7 @@ The `Substrate` class public API is unchanged. Scheme selection is driven by the
 | Existing `Event` dataclass usage | `scheme_id` has default `"hmac-sha256"`. Existing code constructing `Event` without `scheme_id` works. |
 | Existing `KeyEntry` construction | `scheme` has default `"hmac-sha256"`. Existing code constructing `KeyEntry` without `scheme` works. |
 | Replay of existing events | Reads `scheme_id = 'hmac-sha256'` from column, resolves `HMACSHA256Scheme`, verifies identically to today. |
-| InMemorySubstrate events | `scheme_id` defaults to `"hmac-sha256"`. In-memory replay works unchanged. |
+| InMemoryRegista events | `scheme_id` defaults to `"hmac-sha256"`. In-memory replay works unchanged. |
 | Sidecar (Plan 005) | Sidecar rejects `signature` and `payload_canonical_hash` in request bodies (sole-signer middleware). `scheme_id` is not a request field — it's internal. No sidecar change needed. |
 | CLI (Plan 002) | `events show/tail` display `scheme_id` in `--json` output. No behavior change. |
 
@@ -354,7 +354,7 @@ ed25519 = ["PyNaCl>=1.5"]
 Rationale:
 - PyNaCl is the standard Python binding for libsodium. Well-maintained, MIT/Apache-2.0 licensed.
 - `cryptography` (pyca) also supports Ed25519 but is heavier (OpenSSL binding). PyNaCl's API is more direct for seed-based signing.
-- Marked optional. Substrate installs and functions fully without it. Only Ed25519 scheme requires it.
+- Marked optional. Regista installs and functions fully without it. Only Ed25519 scheme requires it.
 - Import is deferred to method body, not module top-level. Missing library raises `ImportError` with a clear message at use time.
 
 ### No new runtime dependencies
@@ -396,16 +396,16 @@ The `hmac-sha256` scheme uses only stdlib (`hashlib`, `hmac`). The scheme regist
 
 | File | Action | Description |
 |---|---|---|
-| `src/substrate/_signing_scheme.py` | **New** | Protocol, registry, `HMACSHA256Scheme`, `Ed25519Scheme` |
-| `src/substrate/_signing.py` | Modify | `sign_event()` / `verify_event()` gain `scheme` parameter |
-| `src/substrate/_keys.py` | Modify | `KeyEntry.scheme`, `KeySet.active_scheme()`, `KeySet.get_scheme()`, scheme validation in `_load()` |
-| `src/substrate/_types.py` | Modify | `Event.scheme_id` field, `to_dict()` / `from_dict()` |
-| `src/substrate/_events.py` | Modify | `_EVENT_FIELDS`, `_row_to_event()`, INSERT statements, scheme resolution at sign time |
-| `src/substrate/_event_store.py` | Modify | In-memory append passes scheme to `sign_event()` |
-| `src/substrate/_replay.py` | Modify | Reads `scheme_id`, resolves scheme, passes to `verify_event()` |
-| `src/substrate/_in_memory_replay.py` | Modify | Reads `scheme_id` from `Event`, resolves scheme, passes to `verify_event()` |
-| `src/substrate/_errors.py` | Modify | Add `SIGNING_SCHEME_NOT_FOUND` |
-| `src/substrate/_testing.py` | Modify | Re-export `get_scheme`, `available_schemes` |
+| `src/regista/_signing_scheme.py` | **New** | Protocol, registry, `HMACSHA256Scheme`, `Ed25519Scheme` |
+| `src/regista/_signing.py` | Modify | `sign_event()` / `verify_event()` gain `scheme` parameter |
+| `src/regista/_keys.py` | Modify | `KeyEntry.scheme`, `KeySet.active_scheme()`, `KeySet.get_scheme()`, scheme validation in `_load()` |
+| `src/regista/_types.py` | Modify | `Event.scheme_id` field, `to_dict()` / `from_dict()` |
+| `src/regista/_events.py` | Modify | `_EVENT_FIELDS`, `_row_to_event()`, INSERT statements, scheme resolution at sign time |
+| `src/regista/_event_store.py` | Modify | In-memory append passes scheme to `sign_event()` |
+| `src/regista/_replay.py` | Modify | Reads `scheme_id`, resolves scheme, passes to `verify_event()` |
+| `src/regista/_in_memory_replay.py` | Modify | Reads `scheme_id` from `Event`, resolves scheme, passes to `verify_event()` |
+| `src/regista/_errors.py` | Modify | Add `SIGNING_SCHEME_NOT_FOUND` |
+| `src/regista/_testing.py` | Modify | Re-export `get_scheme`, `available_schemes` |
 | `migrations/014_event_scheme_id.sql` | **New** | Add `scheme_id TEXT NOT NULL DEFAULT 'hmac-sha256'` to `events` |
 | `pyproject.toml` | Modify | Add `[project.optional-dependencies] ed25519 = ["PyNaCl>=1.5"]` |
 | `tests/test_signing_scheme.py` | **New** | Unit tests for protocol, registry, both schemes |
@@ -417,6 +417,6 @@ The `hmac-sha256` scheme uses only stdlib (`hashlib`, `hmac`). The scheme regist
 
 2. **Verification-only mode.** A consumer that only reads events and verifies signatures needs only the public key. Currently `KeySet` stores `secret: bytes` used for both signing and verification. A `verify_only` mode where `KeyEntry.secret` holds the public key is useful but adds complexity to the `verify()` dispatch. **Recommendation:** defer to a follow-up. For now, consumers that verify also have access to the full key file (homelab trust boundary). The `scheme_id` column enables future verification-only deployments.
 
-3. **Custom scheme registration.** The registry is module-level. A consumer can `from substrate._signing_scheme import register_scheme` and add their own. Should this be part of the public API (`Substrate.register_signing_scheme()`)? **Recommendation:** keep it internal for now. The `_signing_scheme` module is stable enough for advanced consumers to import directly, but we don't commit to its API surface until there's demand.
+3. **Custom scheme registration.** The registry is module-level. A consumer can `from regista._signing_scheme import register_scheme` and add their own. Should this be part of the public API (`Regista.register_signing_scheme()`)? **Recommendation:** keep it internal for now. The `_signing_scheme` module is stable enough for advanced consumers to import directly, but we don't commit to its API surface until there's demand.
 
 4. **Migration numbering.** Migration 014 is next in sequence. This plan assumes no other plan adds migrations between 013 and 014. If plans are developed concurrently, renumber accordingly.

@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from substrate._testing import Metrics, poll_and_process_hooks, raw_transaction
-from substrate.testing import drop_project_schema
+from regista._testing import Metrics, poll_and_process_hooks, raw_transaction
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
@@ -23,11 +23,11 @@ def pytest_configure(config):
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_scale_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -36,12 +36,12 @@ def substrate():
 
 class TestReplayBenchmark:
     @slow
-    def test_replay_at_scale(self, substrate):
+    def test_replay_at_scale(self, regista):
         n_items = 100
         events_per_item = 10
 
         for i in range(n_items):
-            wi, _ = substrate.create_work_item(
+            wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -49,12 +49,12 @@ class TestReplayBenchmark:
             )
             for j in range(events_per_item - 1):
                 if j == 0:
-                    substrate.transition(
+                    regista.transition(
                         wi.work_item_id, "start", "agent-1",
                         actor_metadata={"role": "agent"},
                     )
                 else:
-                    substrate.append_event(
+                    regista.append_event(
                         wi.work_item_id, "agent-1",
                         transition=f"bench_note_{j}",
                         payload={"note": f"event {j}"},
@@ -62,7 +62,7 @@ class TestReplayBenchmark:
 
         total_events = n_items * events_per_item
         start = time.time()
-        report = substrate.replay()
+        report = regista.replay()
         elapsed = time.time() - start
 
         print(f"\n  [replay] {n_items} items x {events_per_item} events = {total_events} total")
@@ -73,56 +73,56 @@ class TestReplayBenchmark:
         assert report.halted == 0
 
     @slow
-    def test_replay_long_history(self, substrate):
+    def test_replay_long_history(self, regista):
         n_items = 100
         events_per_item = 100
 
         prev_wi_id = None
         for i in range(n_items):
-            wi, _ = substrate.create_work_item(
+            wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
                 custom_fields={"title": f"Long history item {i}"},
             )
-            substrate.transition(
+            regista.transition(
                 wi.work_item_id, "start", "agent-1",
                 actor_metadata={"role": "agent"},
             )
-            substrate.transition(
+            regista.transition(
                 wi.work_item_id, "submit_review", "agent-1",
                 actor_metadata={"role": "agent"},
             )
             if i % 2 == 0:
-                substrate.transition(
+                regista.transition(
                     wi.work_item_id, "approve", "reviewer-1",
                     actor_metadata={"role": "reviewer"},
                 )
                 used = 4
             else:
-                substrate.transition(
+                regista.transition(
                     wi.work_item_id, "reject", "reviewer-1",
                     actor_metadata={"role": "reviewer"},
                 )
-                substrate.transition(
+                regista.transition(
                     wi.work_item_id, "submit_review", "agent-1",
                     actor_metadata={"role": "agent"},
                 )
-                substrate.transition(
+                regista.transition(
                     wi.work_item_id, "approve", "reviewer-1",
                     actor_metadata={"role": "reviewer"},
                 )
                 used = 6
 
             for j in range(events_per_item - used - 1):
-                substrate.append_event(
+                regista.append_event(
                     wi.work_item_id, "agent-1",
                     transition=f"note_{j}",
                     payload={"idx": j},
                 )
 
             if i > 0:
-                substrate.create_link(
+                regista.create_link(
                     from_work_item_id=wi.work_item_id,
                     to_work_item_id=prev_wi_id,
                     link_type="blocks",
@@ -132,7 +132,7 @@ class TestReplayBenchmark:
 
         total_events = n_items * events_per_item
         start = time.time()
-        report = substrate.replay()
+        report = regista.replay()
         elapsed = time.time() - start
 
         print(
@@ -147,7 +147,7 @@ class TestReplayBenchmark:
 
         from psycopg.sql import SQL, Identifier
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             sample = conn.execute(
                 SQL("SELECT work_item_id FROM {} ORDER BY work_item_id LIMIT 5")
                 .format(Identifier(report.table_name))
@@ -175,20 +175,20 @@ class TestReplayBenchmark:
 
 class TestLinkQueryBenchmark:
     @slow
-    def test_link_query_at_scale(self, substrate):
+    def test_link_query_at_scale(self, regista):
         n_items = 50
         links_per_item = 5
 
         sources = []
         targets = []
         for i in range(n_items):
-            src, _ = substrate.create_work_item(
+            src, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
                 custom_fields={"title": f"Link src {i}"},
             )
-            tgt, _ = substrate.create_work_item(
+            tgt, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="bug",
                 actor_id="agent-1",
@@ -200,7 +200,7 @@ class TestLinkQueryBenchmark:
         for i in range(n_items):
             for j in range(links_per_item):
                 t_idx = (i + j + 1) % n_items
-                substrate.create_link(
+                regista.create_link(
                     from_work_item_id=sources[i],
                     to_work_item_id=targets[t_idx],
                     link_type="fixes",
@@ -211,7 +211,7 @@ class TestLinkQueryBenchmark:
 
         start = time.time()
         for _ in range(10):
-            page = substrate.query_work_items(
+            page = regista.query_work_items(
                 workflow_name="test_workflow",
                 has_link_type="fixes",
                 page_size=100,
@@ -226,22 +226,22 @@ class TestLinkQueryBenchmark:
 
 class TestHookThroughputBenchmark:
     @slow
-    def test_hook_drain_throughput(self, substrate):
+    def test_hook_drain_throughput(self, regista):
         import psycopg.types.json
         from psycopg.sql import SQL
 
         n_hooks = 500
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Hook bench"},
         )
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         event_id = events[0].event_id
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             for i in range(n_hooks):
                 conn.execute(
                     SQL(
@@ -264,10 +264,10 @@ class TestHookThroughputBenchmark:
         drain_count = 0
         start = time.time()
         while True:
-            with raw_transaction(substrate) as conn:
+            with raw_transaction(regista) as conn:
                 batch = poll_and_process_hooks(
-                    conn, handlers, substrate._keys,
-                    Metrics(), substrate.project,
+                    conn, handlers, regista._keys,
+                    Metrics(), regista.project,
                 )
             drain_count += batch
             if batch == 0:

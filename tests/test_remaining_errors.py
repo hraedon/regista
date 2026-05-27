@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_remain_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -28,9 +28,9 @@ def substrate():
 
 
 class TestNotBeforeFuture:
-    def test_claim_blocked_by_not_before(self, substrate):
+    def test_claim_blocked_by_not_before(self, regista):
         future = datetime.now(UTC) + timedelta(hours=1)
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -38,15 +38,15 @@ class TestNotBeforeFuture:
             not_before=future,
         )
 
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        with pytest.raises(RegistaError) as exc_info:
+            regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.NOT_BEFORE_FUTURE
 
 
 class TestWorkItemTypeNotDeclared:
-    def test_create_rejects_undeclared_type(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_create_rejects_undeclared_type(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="nonexistent_type",
                 actor_id="agent-1",
@@ -56,9 +56,9 @@ class TestWorkItemTypeNotDeclared:
 
 
 class TestWorkflowNotRegistered:
-    def test_create_rejects_unknown_workflow(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_create_rejects_unknown_workflow(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="nonexistent_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -68,11 +68,11 @@ class TestWorkflowNotRegistered:
 
 
 class TestLinkCrossProject:
-    def test_link_cross_workflow_rejected(self, substrate):
+    def test_link_cross_workflow_rejected(self, regista):
         wf2 = (
             "name: other_workflow\n"
             "version: 1\n"
-            "substrate_version: '0.1.0'\n"
+            "regista_version: '0.1.0'\n"
             "\n"
             "states:\n"
             "  - name: new\n"
@@ -94,22 +94,22 @@ class TestLinkCrossProject:
             "    custom_fields: []\n"
             "link_types: []\n"
         )
-        substrate.register_workflow(wf2)
+        regista.register_workflow(wf2)
 
-        wi1, _ = substrate.create_work_item(
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="other_workflow",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
@@ -119,18 +119,18 @@ class TestLinkCrossProject:
 
 
 class TestCustomFieldViolation:
-    def test_missing_required_field_on_create(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_missing_required_field_on_create(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="bug",
                 actor_id="agent-1",
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
-    def test_unknown_field_on_create(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_unknown_field_on_create(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -138,9 +138,9 @@ class TestCustomFieldViolation:
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
-    def test_wrong_type_on_create(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_wrong_type_on_create(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -148,9 +148,9 @@ class TestCustomFieldViolation:
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
-    def test_invalid_enum_on_create(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_invalid_enum_on_create(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -158,15 +158,15 @@ class TestCustomFieldViolation:
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
-    def test_custom_field_violation_on_transition(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_custom_field_violation_on_transition(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "Field test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.transition(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
                 actor_id="agent-1",
@@ -177,10 +177,10 @@ class TestCustomFieldViolation:
 
 
 class TestDbNotFound:
-    def test_connect_without_create_rejects(self, substrate):
-        from substrate import Substrate
+    def test_connect_without_create_rejects(self, regista):
+        from regista import Regista
 
         project = f"nonexistent_{uuid.uuid4().hex[:8]}"
-        with pytest.raises(SubstrateError) as exc_info:
-            Substrate(DSN, project, KEY_PATH)
+        with pytest.raises(RegistaError) as exc_info:
+            Regista(DSN, project, KEY_PATH)
         assert exc_info.value.code == ErrorCode.DB_NOT_FOUND

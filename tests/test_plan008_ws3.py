@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from substrate._vendor import rfc8785 as vendored
+from regista._vendor import rfc8785 as vendored
 
 try:
     import rfc8785 as system

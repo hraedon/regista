@@ -9,7 +9,7 @@
 1. **Option C — clean-slate merge.** Webhooks promoted to witness model. `_webhooks.py` becomes thin wrapper.
 2. **Status: `paused` only.** Drop `failed` from CHECK constraints. All auto-pause uses `paused`.
 3. **Fix `work_item_types` filter bug** (BC-272). Webhook filter reads wrong event field.
-4. **Keep signing, rename header.** `X-AgentWake-Signature` → `X-Substrate-Signature`. Constant-time comparison documented.
+4. **Keep signing, rename header.** `X-AgentWake-Signature` → `X-Regista-Signature`. Constant-time comparison documented.
 5. **Async delivery.** Webhook delivery uses witness receipt+delivery model (not synchronous on event-write).
 6. **Breaking change acceptable.** No production users at meaningful scale.
 
@@ -30,7 +30,7 @@
 2. `register_witness` — add `mode` parameter (default `'witness'`).
 3. `deliver_pending_receipts` — already handles retry and max_retries. For `mode='push'` endpoints, `max_retries=1` means a single failure marks the receipt as terminal. This is the fire-and-forget degenerate case.
 4. Unify status: replace `'failed'` with `'paused'` everywhere. Log message already says "auto_paused".
-5. `X-AgentWake-Signature` → `X-Substrate-Signature` in delivery headers.
+5. `X-AgentWake-Signature` → `X-Regista-Signature` in delivery headers.
 
 ### _webhooks.py → thin wrapper
 
@@ -50,14 +50,14 @@
 
 ### CLI changes
 
-1. `substrate webhook register/list/remove/pause/resume` → delegate to witness CLI with mode filter.
-2. Mark as deprecated with stderr warning pointing at `substrate witness`.
+1. `regista webhook register/list/remove/pause/resume` → delegate to witness CLI with mode filter.
+2. Mark as deprecated with stderr warning pointing at `regista witness`.
 
 ### Sidecar changes
 
 1. Webhook routes delegate to witness operations.
 2. Keep `/v1/webhooks/*` endpoints as aliases for now.
-3. `X-AgentWake-Signature` → `X-Substrate-Signature` in any signing code.
+3. `X-AgentWake-Signature` → `X-Regista-Signature` in any signing code.
 
 ### Error codes
 
@@ -68,4 +68,4 @@
 1. Fix existing webhook tests to work with new model.
 2. Add test for `work_item_types` filter against real `Event.to_dict()`.
 3. Add test for auto-pause + resume resetting failure counter.
-4. Verify `X-Substrate-Signature` header in delivery tests.
+4. Verify `X-Regista-Signature` header in delivery tests.

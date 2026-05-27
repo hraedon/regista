@@ -1,12 +1,12 @@
-# substrate
+# regista
 
 Coordination and durable state for agent pipelines over Postgres.
 
-[![CI](https://github.com/hraedon/substrate/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/substrate/actions/workflows/ci.yml)
+[![CI](https://github.com/hraedon/regista/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/regista/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/tests-992%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
-Substrate is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys substrate as its own isolated instance using schema-per-project isolation within a single Postgres database.
+Regista is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys regista as its own isolated instance using schema-per-project isolation within a single Postgres database.
 
 ## Features
 
@@ -30,7 +30,7 @@ Substrate is a Python library that provides durable claims, event-sourced state,
 - **Event archival** — `archive_events` moves old events to archive table, preserving hash chain integrity
 - **Batch operations** — `create_work_items_batch` for multi-create in a single transaction
 - **HTTP sidecar** — optional FastAPI pass-through for non-Python consumers with bearer-token auth
-- **Admin CLI** — `substrate` command for workflow validation, work-item CRUD, event archival, witness management, and more
+- **Admin CLI** — `regista` command for workflow validation, work-item CRUD, event archival, witness management, and more
 - **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations, witnesses, timestamping
 - **In-memory backend** — full conformance backend for testing without Postgres
 
@@ -65,13 +65,13 @@ ruff check src/ tests/
 ## Usage
 
 ```python
-from substrate import Substrate
+from regista import Regista
 
 # Initialize a project (one-time)
-sub = Substrate.create_project(
+sub = Regista.create_project(
     dsn="postgresql://user:pass@host:5432/mydb",
     project="factory",
-    hmac_key_path="/secrets/substrate-keys.json",
+    hmac_key_path="/secrets/regista-keys.json",
 )
 
 # Register a workflow
@@ -121,7 +121,7 @@ Workflows are YAML files validated against a JSON Schema:
 ```yaml
 name: my_workflow
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -212,21 +212,21 @@ transitions:
 ```
 
 Key statuses: `active`, `deprecated` (accepted with warning), `revoked` (rejected).
-Signing schemes: `hmac-sha256` (default), `ed25519` (requires `pip install substrate[ed25519]`).
+Signing schemes: `hmac-sha256` (default), `ed25519` (requires `pip install regista[ed25519]`).
 
 ## HTTP Sidecar
 
-The optional sidecar exposes the full Substrate API over HTTP for non-Python consumers:
+The optional sidecar exposes the full Regista API over HTTP for non-Python consumers:
 
 ```bash
 pip install ".[sidecar]"
 
-export SUBSTRATE_DSN="postgresql://user:pass@host:5432/mydb"
-export SUBSTRATE_PROJECT="factory"
-export SUBSTRATE_HMAC_KEY_PATH="/secrets/keys.json"
-export SUBSTRATE_TOKENS_PATH="/secrets/tokens.yaml"
+export REGISTA_DSN="postgresql://user:pass@host:5432/mydb"
+export REGISTA_PROJECT="factory"
+export REGISTA_HMAC_KEY_PATH="/secrets/keys.json"
+export REGISTA_TOKENS_PATH="/secrets/tokens.yaml"
 
-python -m substrate.sidecar
+python -m regista.sidecar
 ```
 
 Token file (`tokens.yaml`):
@@ -247,55 +247,55 @@ A Dockerfile is provided in `deploy/sidecar/`.
 
 ```bash
 # Validate a workflow YAML (no database required)
-substrate workflow validate my-workflow.yaml
+regista workflow validate my-workflow.yaml
 
 # Compose workflow with extends:
-substrate workflow compose my-workflow.yaml --json
+regista workflow compose my-workflow.yaml --json
 
 # Inspect work items
-substrate work-item show <uuid>
-substrate work-item list --workflow my_workflow --claimable-now
+regista work-item show <uuid>
+regista work-item list --workflow my_workflow --claimable-now
 
 # Create and transition work items
-substrate work-item create --workflow my_workflow --type feature --actor agent-1 --confirm
-substrate work-item transition <uuid> --transition start --actor agent-1 --confirm
+regista work-item create --workflow my_workflow --type feature --actor agent-1 --confirm
+regista work-item transition <uuid> --transition start --actor agent-1 --confirm
 
 # View events
-substrate events show <uuid>
-substrate events tail --actor agent-1 --since "2026-05-01T00:00:00Z"
-substrate events archive --before "2026-01-01T00:00:00Z" --dry-run
+regista events show <uuid>
+regista events tail --actor agent-1 --since "2026-05-01T00:00:00Z"
+regista events archive --before "2026-01-01T00:00:00Z" --dry-run
 
 # Replay drift check
-substrate replay
+regista replay
 
 # Manage recurrence rules
-substrate recurrence list
-substrate recurrence due
-substrate recurrence fire <rule-uuid>
+regista recurrence list
+regista recurrence due
+regista recurrence fire <rule-uuid>
 
 # Schema management
-substrate schema init
-substrate schema status
+regista schema init
+regista schema status
 
 # Dead-lettered hooks
-substrate hooks dead-letter list
-substrate hooks dead-letter requeue <id>
+regista hooks dead-letter list
+regista hooks dead-letter requeue <id>
 
 # Actor roles
-substrate actor-roles list --actor agent-1
+regista actor-roles list --actor agent-1
 
 # Witnesses
-substrate witness list
-substrate witness deliver
-substrate witness receipts --event-id <uuid>
+regista witness list
+regista witness deliver
+regista witness receipts --event-id <uuid>
 
 # Webhooks
-substrate webhook register --url https://example.com/hook --transitions start,complete
-substrate webhook list
+regista webhook register --url https://example.com/hook --transitions start,complete
+regista webhook list
 
 # Timestamping
-substrate timestamp status
-substrate timestamp trigger
+regista timestamp status
+regista timestamp trigger
 ```
 
 ## Architecture
@@ -328,7 +328,7 @@ pytest tests/sidecar/ -v
 ruff check src/ tests/
 ```
 
-Test DSN: `postgresql://substrate_test:substrate_test@localhost:5432/substrate_test`
+Test DSN: `postgresql://regista_test:regista_test@localhost:5432/regista_test`
 
 ## Documentation
 

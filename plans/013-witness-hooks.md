@@ -1,7 +1,7 @@
 # Plan 013 — Witness/Co-signature Post-Append Hooks
 
 **Status:** Draft RFC
-**Owner:** substrate
+**Owner:** regista
 **Spec touched:** §19 (public API surface), §17 (integrity and signing)
 **Related:** BC-198 (agent provenance), Plan 009 (MaintenanceThread), Plan 012 (RFC 3161 timestamping), FR-13 (async hooks)
 
@@ -21,7 +21,7 @@ Like Plan 012 (timestamping), witnessing is **best-effort.** A missing witness r
 
 ### Agent provenance
 
-Substrate's event log is signed by the operator's HMAC key. In multi-party scenarios (pen-test tracking, cross-org collaboration, regulatory audit), additional parties need independent proof that they observed an event:
+Regista's event log is signed by the operator's HMAC key. In multi-party scenarios (pen-test tracking, cross-org collaboration, regulatory audit), additional parties need independent proof that they observed an event:
 
 - **Bilateral tracking:** A pen-test team and a customer both maintain event logs. Witness receipts from the other party prove neither side tampered with their log after the fact.
 - **Witness federation:** Multiple independent auditors observe the same event stream. Any single auditor's compromise doesn't break the chain.
@@ -271,7 +271,7 @@ def _run(self) -> None:
 
 ### 5.3 Concurrency safety
 
-- `FOR UPDATE SKIP LOCKED` prevents two maintenance threads from delivering the same receipt. Multiple substrate processes (per Plan 009's concurrent execution model) can safely run witness delivery.
+- `FOR UPDATE SKIP LOCKED` prevents two maintenance threads from delivering the same receipt. Multiple regista processes (per Plan 009's concurrent execution model) can safely run witness delivery.
 - Receipt insertion happens inside the event commit transaction, ensuring the receipt is never visible without its event.
 - Witness auto-pause is idempotent: setting `status='failed'` on an already-failed witness is a no-op.
 
@@ -279,9 +279,9 @@ def _run(self) -> None:
 
 - **Timeout:** 10 seconds per request (configurable per witness in future).
 - **Retry:** on any non-2xx response or network error. Retried next cycle (not exponential backoff in v1).
-- **Idempotency:** The POST body includes `receipt_id`. Witnesses can use this to deduplicate. Substrate does not resend confirmed receipts.
+- **Idempotency:** The POST body includes `receipt_id`. Witnesses can use this to deduplicate. Regista does not resend confirmed receipts.
 - **Content-Type:** `application/json`.
-- **User-Agent:** `substrate-witness-delivery/<version>`.
+- **User-Agent:** `regista-witness-delivery/<version>`.
 
 ## 6. Configuration
 
@@ -289,7 +289,7 @@ def _run(self) -> None:
 
 ```python
 sub.register_witness(
-    url="https://auditor.example.com/substrate-witness",
+    url="https://auditor.example.com/regista-witness",
     headers={"Authorization": "Bearer token123"},
     event_filter={"transitions": ["close", "verify"]},
     max_failures=10,
@@ -303,7 +303,7 @@ Returns `(witness_id: UUID)`.
 
 ```yaml
 witnesses:
-  - url: https://auditor.example.com/substrate-witness
+  - url: https://auditor.example.com/regista-witness
     headers:
       Authorization: "Bearer token123"
     event_filter:
@@ -311,7 +311,7 @@ witnesses:
     max_failures: 10
     max_retries: 3
 
-  - url: https://customer.example.com/substrate-witness
+  - url: https://customer.example.com/regista-witness
     event_filter: null
 ```
 
@@ -331,7 +331,7 @@ sub.start_maintenance(
 
 ## 7. API
 
-### 7.1 Public methods on `Substrate`
+### 7.1 Public methods on `Regista`
 
 ```python
 def register_witness(
@@ -400,18 +400,18 @@ Exposed as `sub.witnesses.register(...)`, `sub.witnesses.list()`, etc.
 
 ## 8. CLI
 
-New `substrate witness` subcommands in `_cli.py`:
+New `regista witness` subcommands in `_cli.py`:
 
 ```
-substrate witness list [--status=active|paused|failed]
-substrate witness show <witness_id>
-substrate witness pause <witness_id>
-substrate witness reactivate <witness_id>
-substrate witness receipts [--event-id=<uuid>] [--witness_id=<uuid>] [--status=pending|confirmed|failed]
-substrate witness deliver
+regista witness list [--status=active|paused|failed]
+regista witness show <witness_id>
+regista witness pause <witness_id>
+regista witness reactivate <witness_id>
+regista witness receipts [--event-id=<uuid>] [--witness_id=<uuid>] [--status=pending|confirmed|failed]
+regista witness deliver
 ```
 
-### `substrate witness list`
+### `regista witness list`
 
 ```
 Witness ID                           URL                                       Status   Failures  Last Success
@@ -420,11 +420,11 @@ a1b2c3d4-...                         https://auditor.example.com/witness       a
 e5f6a7b8-...                         https://customer.example.com/witness      failed   10        2025-03-14T22:00:00Z
 ```
 
-### `substrate witness receipts`
+### `regista witness receipts`
 
 Shows receipt status for a given event or witness. Useful for debugging delivery failures.
 
-### `substrate witness deliver`
+### `regista witness deliver`
 
 Manually triggers one delivery cycle. Useful for initial setup or after fixing a witness endpoint.
 
@@ -507,17 +507,17 @@ The mock server runs on a random port, accepts POST requests, stores event bodie
 
 | File | Change |
 |---|---|
-| `src/substrate/_witness.py` | **New.** Witness registration, receipt creation, event filtering, delivery logic. |
+| `src/regista/_witness.py` | **New.** Witness registration, receipt creation, event filtering, delivery logic. |
 | `migrations/015_witness_tables.sql` | **New.** `witness_registrations` and `witness_receipts` tables. |
-| `src/substrate/_maintenance.py` | Add `witness_interval` parameter, `_deliver_witness_receipts()` method. |
-| `src/substrate/__init__.py` | Add witness public methods (`register_witness`, `unregister_witness`, `pause_witness`, `reactivate_witness`, `list_witnesses`, `list_witness_receipts`, `deliver_pending_witness_receipts`). |
-| `src/substrate/_ops.py` | Add `WitnessOps` facade class. |
-| `src/substrate/_events.py` | After event commit, call `_witness.create_receipts(event)` to insert pending receipts for matching witnesses. |
-| `src/substrate/_event_store.py` | Same receipt creation hook for shared event store path. |
-| `src/substrate/_errors.py` | Add `WITNESS_NOT_FOUND`, `WITNESS_DELIVERY_FAILED`, `WITNESS_PAUSED` error codes. |
-| `src/substrate/_cli.py` | Add `witness` subcommand group with `list`, `show`, `pause`, `reactivate`, `receipts`, `deliver`. |
-| `src/substrate/sidecar/routes.py` | Add witness routes (7 endpoints). |
-| `src/substrate/sidecar/models.py` | Add Pydantic models for witness request/response. |
+| `src/regista/_maintenance.py` | Add `witness_interval` parameter, `_deliver_witness_receipts()` method. |
+| `src/regista/__init__.py` | Add witness public methods (`register_witness`, `unregister_witness`, `pause_witness`, `reactivate_witness`, `list_witnesses`, `list_witness_receipts`, `deliver_pending_witness_receipts`). |
+| `src/regista/_ops.py` | Add `WitnessOps` facade class. |
+| `src/regista/_events.py` | After event commit, call `_witness.create_receipts(event)` to insert pending receipts for matching witnesses. |
+| `src/regista/_event_store.py` | Same receipt creation hook for shared event store path. |
+| `src/regista/_errors.py` | Add `WITNESS_NOT_FOUND`, `WITNESS_DELIVERY_FAILED`, `WITNESS_PAUSED` error codes. |
+| `src/regista/_cli.py` | Add `witness` subcommand group with `list`, `show`, `pause`, `reactivate`, `receipts`, `deliver`. |
+| `src/regista/sidecar/routes.py` | Add witness routes (7 endpoints). |
+| `src/regista/sidecar/models.py` | Add Pydantic models for witness request/response. |
 | `tests/test_witness.py` | **New.** Unit tests for filtering and registration. |
 | `tests/test_witness_integration.py` | **New.** Integration tests with mock witness. |
 | `tests/helpers/mock_witness.py` | **New.** Mock HTTP witness server. |
@@ -538,7 +538,7 @@ The mock server runs on a random port, accepts POST requests, stores event bodie
 ## 14. Future Work
 
 - **Witness co-signature verification.** Store `witness_signature` and provide a `verify_witness_signature(receipt_id)` method that checks the signature against the event's canonical hash.
-- **Webhook secret.** Sign POST bodies with an HMAC key shared between substrate and the witness, allowing the witness to verify authenticity.
+- **Webhook secret.** Sign POST bodies with an HMAC key shared between regista and the witness, allowing the witness to verify authenticity.
 - **Receipt pruning.** `auto_prune_confirmed_receipts_older_than_days` parameter for housekeeping.
 - **Exponential backoff.** Per-receipt delivery retry with exponential backoff instead of next-cycle retry.
 - **Batch delivery.** Send multiple events in a single POST to reduce HTTP overhead for high-volume witnesses.

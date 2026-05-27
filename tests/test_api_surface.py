@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 
 
 class TestAC33PreSignedRejection:
     def test_public_api_has_no_signature_params(self):
-        from substrate import Substrate
+        from regista import Regista
 
         methods = [
-            Substrate.append_event,
-            Substrate.transition,
-            Substrate.create_work_item,
-            Substrate.register_workflow,
+            Regista.append_event,
+            Regista.transition,
+            Regista.create_work_item,
+            Regista.register_workflow,
         ]
         for method in methods:
             sig = inspect.signature(method)
@@ -36,7 +36,7 @@ class TestAC34NoPostgresTypesLeak:
     PG_TYPES: frozenset[str] = frozenset({"psycopg", "Connection", "Cursor", "ConnectionPool"})
 
     def test_event_no_pg_types(self):
-        from substrate._types import Event
+        from regista._types import Event
 
         annotations = Event.__dataclass_fields__
         for field_name, field in annotations.items():
@@ -47,7 +47,7 @@ class TestAC34NoPostgresTypesLeak:
                 )
 
     def test_work_item_no_pg_types(self):
-        from substrate._types import WorkItem
+        from regista._types import WorkItem
 
         annotations = WorkItem.__dataclass_fields__
         for field_name, field in annotations.items():
@@ -58,7 +58,7 @@ class TestAC34NoPostgresTypesLeak:
                 )
 
     def test_claim_no_pg_types(self):
-        from substrate._types import Claim
+        from regista._types import Claim
 
         annotations = Claim.__dataclass_fields__
         for field_name, field in annotations.items():
@@ -68,21 +68,21 @@ class TestAC34NoPostgresTypesLeak:
                     f"Claim.{field_name} references Postgres type: {type_str}"
                 )
 
-    def test_substrate_public_api_no_pg_imports(self):
-        import substrate
+    def test_regista_public_api_no_pg_imports(self):
+        import regista
 
-        public_names = [name for name in dir(substrate) if not name.startswith("_")]
+        public_names = [name for name in dir(regista) if not name.startswith("_")]
         for name in public_names:
-            obj = getattr(substrate, name)
+            obj = getattr(regista, name)
             if inspect.isclass(obj):
                 module = getattr(obj, "__module__", "")
                 assert "psycopg" not in module, (
-                    f"substrate.{name} is from psycopg module: {module}"
+                    f"regista.{name} is from psycopg module: {module}"
                 )
 
 
 class TestBC195ConstructorPositionalContract:
-    # BC-195: pin the positional signature Substrate(dsn, project, hmac_key_path)
+    # BC-195: pin the positional signature Regista(dsn, project, hmac_key_path)
     # used by downstream consumers (sf2 build_failure_corpus.py:148).
     # Any change to __init__ that breaks this shape should fail here first.
 
@@ -93,11 +93,11 @@ class TestBC195ConstructorPositionalContract:
         drop_project_schema(DSN, self._project)
 
     def test_positional_constructor_matches_sf2_call_shape(self):
-        from substrate import Substrate
+        from regista import Regista
 
-        Substrate.create_project(DSN, self._project, KEY_PATH)
+        Regista.create_project(DSN, self._project, KEY_PATH)
 
-        sub = Substrate(DSN, self._project, KEY_PATH)
+        sub = Regista(DSN, self._project, KEY_PATH)
         try:
             assert sub.connection_info.project == self._project
         finally:

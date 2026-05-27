@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._keys import KeySet
+from regista._errors import ErrorCode, RegistaError
+from regista._keys import KeySet
 
 KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 
@@ -33,7 +33,7 @@ class TestKeySetUnknownStatus:
         path = _write_temp_keys([
             {"key_id": "k1", "secret": "c2VjcmV0", "status": "unknown_value"}
         ])
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(path)
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
         assert "k1" in exc_info.value.message
@@ -45,7 +45,7 @@ class TestKeySetExpectedCount:
         path = _write_temp_keys([
             {"key_id": "k1", "secret": "c2VjcmV0", "status": "active"}
         ])
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             KeySet(path, expected_key_count=5)
         assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
         assert "5" in exc_info.value.message

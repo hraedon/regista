@@ -5,21 +5,21 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_links_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -27,21 +27,21 @@ def substrate():
 
 
 class TestLinkErrorPaths:
-    def test_disallowed_link_type_rejected(self, substrate):
-        wi1, _ = substrate.create_work_item(
+    def test_disallowed_link_type_rejected(self, regista):
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
             actor_id="agent-1",
             custom_fields={"severity": "major"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_link(
                 from_work_item_id=wi2.work_item_id,
                 to_work_item_id=wi1.work_item_id,
                 link_type="blocks",
@@ -49,16 +49,16 @@ class TestLinkErrorPaths:
             )
         assert exc_info.value.code == ErrorCode.LINK_TYPE_NOT_ALLOWED
 
-    def test_link_target_not_found_rejected(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_link_target_not_found_rejected(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
         phantom = uuid.uuid4()
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_link(
                 from_work_item_id=wi.work_item_id,
                 to_work_item_id=phantom,
                 link_type="blocks",
@@ -66,21 +66,21 @@ class TestLinkErrorPaths:
             )
         assert exc_info.value.code == ErrorCode.LINK_TARGET_NOT_FOUND
 
-    def test_remove_nonexistent_link_rejected(self, substrate):
-        wi1, _ = substrate.create_work_item(
+    def test_remove_nonexistent_link_rejected(self, regista):
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
             actor_id="agent-1",
             custom_fields={"severity": "major"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.remove_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.remove_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
@@ -88,38 +88,38 @@ class TestLinkErrorPaths:
             )
         assert exc_info.value.code == ErrorCode.LINK_NOT_FOUND
 
-    def test_link_removed_event_emitted(self, substrate):
-        wi1, _ = substrate.create_work_item(
+    def test_link_removed_event_emitted(self, regista):
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
             actor_id="agent-1",
             custom_fields={"severity": "major"},
         )
-        substrate.create_link(
+        regista.create_link(
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
             actor_id="agent-1",
         )
 
-        events_before = substrate.read_events(work_item_id=wi1.work_item_id)
+        events_before = regista.read_events(work_item_id=wi1.work_item_id)
         link_events_before = [e for e in events_before if e.transition == "link_created"]
         assert len(link_events_before) == 1
 
-        substrate.remove_link(
+        regista.remove_link(
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
             actor_id="agent-1",
         )
 
-        events_after = substrate.read_events(work_item_id=wi1.work_item_id)
+        events_after = regista.read_events(work_item_id=wi1.work_item_id)
         link_removed = [e for e in events_after if e.transition == "link_removed"]
         assert len(link_removed) == 1
 

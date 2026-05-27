@@ -14,19 +14,19 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._hooks import run_validator
-from substrate._types import ValidatorContext
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista._hooks import run_validator
+from regista._types import ValidatorContext
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 
 WORKFLOW_WITH_VALIDATOR = """\
 name: validator_test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -76,15 +76,15 @@ class TestRunValidator:
         def boom(ctx):
             raise ValueError("nope")
 
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             run_validator("boom", boom, _make_ctx())
         assert exc_info.value.code == ErrorCode.VALIDATOR_FAILED
 
-    def test_substrate_error_passes_through(self):
+    def test_regista_error_passes_through(self):
         def custom(ctx):
-            raise SubstrateError(ErrorCode.CUSTOM_FIELD_VIOLATION, "bad")
+            raise RegistaError(ErrorCode.CUSTOM_FIELD_VIOLATION, "bad")
 
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             run_validator("custom", custom, _make_ctx())
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
@@ -92,7 +92,7 @@ class TestRunValidator:
         """BC-192: wall-clock is a soft warning, not an enforced bound."""
         from prometheus_client import CollectorRegistry
 
-        from substrate._observability import Metrics
+        from regista._observability import Metrics
 
         registry = CollectorRegistry()
         metrics = Metrics(registry=registry)
@@ -106,11 +106,11 @@ class TestRunValidator:
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_bc192_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow(WORKFLOW_WITH_VALIDATOR)
     yield sub
     sub.close()
@@ -118,42 +118,42 @@ def substrate():
 
 
 class TestValidatorTransactionRollback:
-    def test_clean_validator_allows_transition(self, substrate):
-        substrate.register_validator("check_finish", lambda ctx: None)
+    def test_clean_validator_allows_transition(self, regista):
+        regista.register_validator("check_finish", lambda ctx: None)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="validator_test",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        evt = substrate.transition(
+        evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
             actor_id="agent-1",
         )
         assert evt.transition == "finish"
 
-    def test_validator_failure_rolls_back(self, substrate):
+    def test_validator_failure_rolls_back(self, regista):
         def fail_validator(ctx):
             raise ValueError("boom")
 
-        substrate.register_validator("check_finish", fail_validator)
+        regista.register_validator("check_finish", fail_validator)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="validator_test",
             work_item_type="task",
             actor_id="agent-1",
         )
 
-        with pytest.raises(SubstrateError, match="VALIDATOR_FAILED"):
-            substrate.transition(
+        with pytest.raises(RegistaError, match="VALIDATOR_FAILED"):
+            regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="finish",
                 actor_id="agent-1",
             )
 
-        refreshed = substrate.get_work_item(wi.work_item_id)
+        refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed is not None
         assert refreshed.current_state == "new"
 
@@ -161,20 +161,20 @@ class TestValidatorTransactionRollback:
 class TestTrustedValidatorContract:
     """BC-192: validators are trusted code. The previous AST-based I/O
     safety check and ThreadPoolExecutor wall-clock timeout are removed.
-    A handler that does I/O or hangs is the caller's bug, not substrate's
+    A handler that does I/O or hangs is the caller's bug, not regista's
     enforcement gap. These tests pin the new (honest) contract.
     """
 
-    def test_io_referencing_handler_can_be_registered(self, substrate):
+    def test_io_referencing_handler_can_be_registered(self, regista):
         import socket
 
         def uses_socket(ctx):
             socket.gethostname()
 
-        substrate.register_validator("check_finish", uses_socket)
+        regista.register_validator("check_finish", uses_socket)
         # No raise — registration accepts the handler.
 
-    def test_registration_is_purely_a_dict_update(self, substrate):
-        substrate.register_validator("check_finish", lambda ctx: None)
+    def test_registration_is_purely_a_dict_update(self, regista):
+        regista.register_validator("check_finish", lambda ctx: None)
         # No AST inspection, no I/O check, no exception class beyond
         # whatever Python raises for non-callables.

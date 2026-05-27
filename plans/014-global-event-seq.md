@@ -1,7 +1,7 @@
 # Plan 014 — Global event sequence for coherent batch timestamping
 
 **Status:** Draft RFC
-**Owner:** substrate
+**Owner:** regista
 **Spec touched:** §17 (signing/integrity), Plan 012 §3.1 / §4 / §5.4
 **Resolves:** BC-231 (per-WI `event_seq` makes batching incoherent), unblocks the BC-230 multi-WI case
 **Related:** BC-198, BC-226, BC-230
@@ -14,7 +14,7 @@
 
 Add a global monotonic sequence to `events` (`global_seq BIGSERIAL UNIQUE NOT NULL`) and rewrite the batching, replay, and inclusion-verification paths to use it. Per-WI `event_seq` stays exactly as-is — it's load-bearing elsewhere (`work_items_current.last_event_seq`, optimistic concurrency via `expected_event_seq`, replay state reconstruction).
 
-Option B from BC-231 (explicit leaf set per batch) was considered and rejected: A gives intrinsic coverage proofs (gaps in `global_seq` are visible without a separate audit), range-scan replay instead of N-lookup set membership, and matches the well-known LSN/offset pattern. The contention concern against A (hot rightmost B-tree leaf on monotonic insert) is irrelevant below ~10k inserts/sec sustained, which substrate is not near.
+Option B from BC-231 (explicit leaf set per batch) was considered and rejected: A gives intrinsic coverage proofs (gaps in `global_seq` are visible without a separate audit), range-scan replay instead of N-lookup set membership, and matches the well-known LSN/offset pattern. The contention concern against A (hot rightmost B-tree leaf on monotonic insert) is irrelevant below ~10k inserts/sec sustained, which regista is not near.
 
 ## 3. Schema change
 
@@ -75,17 +75,17 @@ ALTER TABLE tsp_batches ALTER COLUMN last_global_seq  SET NOT NULL;
 
 Notes:
 - `CACHE 100` keeps `nextval()` cheap across concurrent inserts.
-- The `'superseded'` status for pre-existing `tsp_batches` rows is intentional: their per-WI seqs cannot be re-interpreted as global. Operators get a clean "old batches no longer verifiable, new batches start fresh" semantic. If you have production data you actually trust, write a one-off backfill script — but substrate currently has no such deployment.
+- The `'superseded'` status for pre-existing `tsp_batches` rows is intentional: their per-WI seqs cannot be re-interpreted as global. Operators get a clean "old batches no longer verifiable, new batches start fresh" semantic. If you have production data you actually trust, write a one-off backfill script — but regista currently has no such deployment.
 - `last_event_seq` on `work_items_current` is untouched. It is the per-WI concept and remains correct.
 
 ## 4. Code changes
 
 ### 4.1 Event insert path (low risk)
-- `src/substrate/_event_store.py:273` — `INSERT INTO events (...)`: do **not** list `global_seq`; rely on the column default (`nextval`). One-line: no change needed if the column list is explicit and omits `global_seq`. Verify SELECTs that round-trip events do not need `global_seq` (they don't — it's not in the `Event` dataclass and shouldn't be).
-- `src/substrate/_in_memory_work_items.py` (and any in-memory event store): add a module-level monotonic counter for `global_seq` assigned on commit. Used only by replay / timestamping in tests.
+- `src/regista/_event_store.py:273` — `INSERT INTO events (...)`: do **not** list `global_seq`; rely on the column default (`nextval`). One-line: no change needed if the column list is explicit and omits `global_seq`. Verify SELECTs that round-trip events do not need `global_seq` (they don't — it's not in the `Event` dataclass and shouldn't be).
+- `src/regista/_in_memory_work_items.py` (and any in-memory event store): add a module-level monotonic counter for `global_seq` assigned on commit. Used only by replay / timestamping in tests.
 
 ### 4.2 `trigger_timestamping` (medium risk — load-bearing rewrite)
-`src/substrate/_timestamping.py:223-329`. Replace the per-WI `event_seq` arithmetic with:
+`src/regista/_timestamping.py:223-329`. Replace the per-WI `event_seq` arithmetic with:
 
 ```python
 batch_row = conn.execute(
@@ -112,7 +112,7 @@ Drop the `SELECT MAX(last_event_seq) FROM work_items_current` query entirely —
 `list_batches` — same column change in row unpacking.
 
 ### 4.3 Replay verification (medium risk)
-`src/substrate/_replay.py:226-294`. The current code groups events by `event_seq`, which produces wrong leaf sets in multi-WI batches. Rewrite:
+`src/regista/_replay.py:226-294`. The current code groups events by `event_seq`, which produces wrong leaf sets in multi-WI batches. Rewrite:
 
 ```python
 batch_rows = conn.execute(
@@ -173,10 +173,10 @@ A weaker model can safely take the Low tier as a single batched change; the Medi
 
 ## 7. Rollout
 
-Substrate has no production deployments. Single migration, no feature flag. Land migration + code + tests in one PR, regenerate CHANGELOG, mark BC-231 as `resolved` and add a follow-up note on BC-230 confirming the multi-WI case is now actually checked.
+Regista has no production deployments. Single migration, no feature flag. Land migration + code + tests in one PR, regenerate CHANGELOG, mark BC-231 as `resolved` and add a follow-up note on BC-230 confirming the multi-WI case is now actually checked.
 
 ## 8. Out of scope
 
-- Hash-sharded sequences, ULID-based IDs, table partitioning — all premature. Documented as the migration path *if* substrate ever hits the contention wall.
+- Hash-sharded sequences, ULID-based IDs, table partitioning — all premature. Documented as the migration path *if* regista ever hits the contention wall.
 - Changing per-WI `event_seq` semantics or removing `work_items_current.last_event_seq`. Neither needs to move.
 - Replacing the range model in `tsp_batches` with an explicit leaf-set table (BC-231 Option B). Not pursued; the global-seq range is sufficient and intrinsically auditable.

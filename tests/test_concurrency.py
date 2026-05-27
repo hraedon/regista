@@ -6,20 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_conc_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -27,8 +27,8 @@ def substrate():
 
 
 class TestAC28ConcurrentSeqGapFree:
-    def test_concurrent_appends_are_gap_free(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_concurrent_appends_are_gap_free(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-main",
@@ -45,7 +45,7 @@ class TestAC28ConcurrentSeqGapFree:
             local_seqs = []
             try:
                 for i in range(events_per_worker):
-                    evt = substrate.append_event(
+                    evt = regista.append_event(
                         work_item_id=wi.work_item_id,
                         actor_id=f"worker-{worker_id}",
                         transition=f"concurrent_{worker_id}_{i}",
@@ -67,11 +67,11 @@ class TestAC28ConcurrentSeqGapFree:
         expected = list(range(2, total + 2))
         assert results == expected, f"Gap in event_seq: got {results}, expected {expected}"
 
-    def test_concurrent_transitions_gap_free(self, substrate):
+    def test_concurrent_transitions_gap_free(self, regista):
         num_workers = 10
         work_items = []
         for i in range(num_workers):
-            wi, _ = substrate.create_work_item(
+            wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-main",
@@ -84,19 +84,19 @@ class TestAC28ConcurrentSeqGapFree:
 
         def do_transition(wi):
             try:
-                substrate.transition(
+                regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="start",
                     actor_id="agent-1",
                     actor_metadata={"role": "agent"},
                 )
-                substrate.transition(
+                regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="submit_review",
                     actor_id="agent-1",
                     actor_metadata={"role": "agent"},
                 )
-                substrate.transition(
+                regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="approve",
                     actor_id="reviewer-1",
@@ -113,8 +113,8 @@ class TestAC28ConcurrentSeqGapFree:
         assert not errors, f"Errors during concurrent transitions: {errors}"
 
         for wi in work_items:
-            refreshed = substrate.get_work_item(wi.work_item_id)
+            refreshed = regista.get_work_item(wi.work_item_id)
             assert refreshed.current_state == "done"
-            events = substrate.read_events(work_item_id=wi.work_item_id)
+            events = regista.read_events(work_item_id=wi.work_item_id)
             seqs = [e.event_seq for e in events]
             assert seqs == sorted(seqs)

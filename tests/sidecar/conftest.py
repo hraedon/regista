@@ -1,3 +1,3 @@
 import os
 
-os.environ.setdefault("SUBSTRATE_DISABLE_RATE_LIMIT", "1")
+os.environ.setdefault("REGISTA_DISABLE_RATE_LIMIT", "1")

@@ -1,7 +1,7 @@
 # Plan 001 — Month-Partitioning the `events` Table
 
 Status: Proposed
-Scope: Substrate core schema. Per-project, applied to each project schema (BR-13).
+Scope: Regista core schema. Per-project, applied to each project schema (BR-13).
 Spec anchors: §16 "Schema partitioning policy — Deferred with flexibility" (`spec.md:338`); deferred-items list (`spec.md:494`); §16 trigger threshold note (`spec.md:517`); §10 retention statement (`spec.md:238`).
 
 ## 1. Motivation
@@ -9,7 +9,7 @@ Spec anchors: §16 "Schema partitioning policy — Deferred with flexibility" (`
 The `events` table (`migrations/001_initial.sql:1-17`) is append-only and grows monotonically. At homelab scale (≤100k events/project) a single heap is fine, but `spec.md:338` and `spec.md:517` flag month-partitioning as the agreed move once any project exceeds ~1M events. This plan is the *enabling* groundwork: it converts `events` into a `PARTITION BY RANGE (timestamp)` parent so that future archival, drop-old-partition, or cold-storage export can attach to a stable structure.
 
 Explicitly **not solved** by this plan:
-- No public-API change. `Substrate.append_event`, `read_events`, `replay` continue to behave identically (BR-03, BR-11 still hold).
+- No public-API change. `Regista.append_event`, `read_events`, `replay` continue to behave identically (BR-03, BR-11 still hold).
 - No archival, no S3 export, no retention policy enforcement — those are downstream work that *depends* on partitioning being in place.
 - No change to event semantics, signing, canonicalization, or `event_seq` allocation.
 
@@ -26,13 +26,13 @@ The win is operational: range-pruned queries on `timestamp` (already used by `re
 **Default partition:** `events_default`. Catches stragglers (clock-skewed inserts, backfill with old timestamps, or a missed pre-creation run). Monitoring must alert when `events_default` has non-zero rows — that indicates a missed `CREATE PARTITION` or an unexpected timestamp.
 
 **Partition creation cadence:** in-app scheduled task, not pg_partman, not OS cron.
-- pg_partman is excellent but adds an extension dependency that conflicts with substrate's "library, not daemon, minimal infra" stance (`spec.md:336`).
-- OS cron lives outside substrate's deployment unit; substrate is imported into the host process and shouldn't require external schedulers.
-- A new method `Substrate.ensure_event_partitions(months_ahead: int = 3)` is idempotent, safe to call from the host's existing periodic loop (the same place `sweep_expired_claims` is called today), and works equally well inside a `start_hook_consumer`-style background thread. Pre-create 3 months ahead; the operation is `CREATE TABLE IF NOT EXISTS … PARTITION OF events FOR VALUES FROM (…) TO (…)`.
+- pg_partman is excellent but adds an extension dependency that conflicts with regista's "library, not daemon, minimal infra" stance (`spec.md:336`).
+- OS cron lives outside regista's deployment unit; regista is imported into the host process and shouldn't require external schedulers.
+- A new method `Regista.ensure_event_partitions(months_ahead: int = 3)` is idempotent, safe to call from the host's existing periodic loop (the same place `sweep_expired_claims` is called today), and works equally well inside a `start_hook_consumer`-style background thread. Pre-create 3 months ahead; the operation is `CREATE TABLE IF NOT EXISTS … PARTITION OF events FOR VALUES FROM (…) TO (…)`.
 
 ## 3. Migration Strategy
 
-Per-project (one schema at a time), packaged as `migrations/010_events_partition.sql` + a Python migration helper (the runner already exists at `src/substrate/_migrations.py`). Two paths:
+Per-project (one schema at a time), packaged as `migrations/010_events_partition.sql` + a Python migration helper (the runner already exists at `src/regista/_migrations.py`). Two paths:
 
 **Path A — small table (<100k rows), maintenance window acceptable (the homelab default today):**
 1. `BEGIN`.
@@ -44,11 +44,11 @@ Per-project (one schema at a time), packaged as `migrations/010_events_partition
 7. `DROP TABLE events_legacy`.
 8. `COMMIT`.
 
-Single transaction; takes a brief exclusive lock; acceptable at substrate's current scale.
+Single transaction; takes a brief exclusive lock; acceptable at regista's current scale.
 
 **Path B — large table, no downtime:** Build the new partitioned table alongside, double-write via a trigger on legacy `events` for the cutover window, backfill in batches, swap names under a short lock, drop trigger. Documented but deferred — Path A is sufficient today and will be sufficient until the spec trigger fires (1M events). When Path B is needed, write it as a separate plan.
 
-Schema-per-project (BR-13) means the migration runs once per `Substrate(...).migrate()` call against each project's schema. No cross-schema coordination needed; `SET LOCAL search_path` already scopes DDL (`_connection.py:86`).
+Schema-per-project (BR-13) means the migration runs once per `Regista(...).migrate()` call against each project's schema. No cross-schema coordination needed; `SET LOCAL search_path` already scopes DDL (`_connection.py:86`).
 
 ## 4. Code Changes
 
@@ -61,12 +61,12 @@ Schema-per-project (BR-13) means the migration runs once per `Substrate(...).mig
 
 **Note on the supposed `events.work_item_id → work_items.id` FK:** no such FK exists today (verify `001_initial.sql:1-17`); `events` references no other table. So no FK-from-events to drop. The reverse direction (`claims.work_item_id REFERENCES work_items_current`) is unaffected.
 
-**Python layer:** no required changes. All event SQL (`_events.py`, `_event_store.py`, `_replay.py`, `_hooks.py`, `_claims.py:158`, `_links.py:161-167`, `_work_items.py:290-295`) operates on the `events` name; partition routing is transparent. The new `Substrate.ensure_event_partitions(months_ahead: int = 3)` method is additive.
+**Python layer:** no required changes. All event SQL (`_events.py`, `_event_store.py`, `_replay.py`, `_hooks.py`, `_claims.py:158`, `_links.py:161-167`, `_work_items.py:290-295`) operates on the `events` name; partition routing is transparent. The new `Regista.ensure_event_partitions(months_ahead: int = 3)` method is additive.
 
 ## 5. Operational Concerns
 
 - **Partition creation automation:** host calls `ensure_event_partitions()` on the same cadence as `sweep_expired_claims` (e.g. every 5 minutes is overkill but cheap; daily suffices).
-- **Monitoring:** new Prometheus gauge `substrate_events_partitions_total{project}` and `substrate_events_default_partition_rows{project}`. The latter alerts at `> 0`.
+- **Monitoring:** new Prometheus gauge `regista_events_partitions_total{project}` and `regista_events_default_partition_rows{project}`. The latter alerts at `> 0`.
 - **What breaks if a partition is missing:** inserts into a timestamp with no covering partition land in `events_default`. Reads still work (Postgres scans all partitions including default). The failure mode is *silent correctness* (data is captured) but *operationally noisy* (default partition grows unbounded). The monitoring gauge converts this into a visible alert.
 - **Backups:** `pg_dump` of a schema handles partitioned tables natively. No change.
 - **Replay cost:** unchanged — replay scans by `work_item_id`, which is index-supported per partition.

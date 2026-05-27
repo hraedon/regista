@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from substrate._contract import compute_coalesce_threshold
-from substrate.testing import InMemorySubstrate, drop_project_schema
+from regista._contract import compute_coalesce_threshold
+from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
@@ -33,16 +33,16 @@ class TestComputeCoalesceThreshold:
 @pytest.fixture(params=["real", "in_memory"])
 def sub(request):
     if request.param == "real":
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"test_hbc_{uuid.uuid4().hex[:8]}"
-        s = Substrate.create_project(DSN, project, KEY_PATH)
+        s = Regista.create_project(DSN, project, KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
         drop_project_schema(DSN, project)
     else:
-        s = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
         s.register_workflow(WORKFLOW_YAML)
         yield s
 

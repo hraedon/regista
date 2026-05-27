@@ -13,11 +13,11 @@ pytest.importorskip("uvicorn")
 
 from fastapi.testclient import TestClient
 
-from substrate import Substrate
+from regista import Regista
 
 DSN = os.environ.get(
     "TEST_DSN",
-    "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
 )
 TEST_KEYS = os.environ.get("TEST_KEYS", "tests/test_keys.json")
 TEST_WORKFLOW = os.environ.get("TEST_WORKFLOW", "tests/test_workflow.yaml")
@@ -60,23 +60,23 @@ def token_file():
 
 
 @pytest.fixture(scope="module")
-def substrate_instance():
+def regista_instance():
     project = f"sidecar_test_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, TEST_KEYS)
+    sub = Regista.create_project(DSN, project, TEST_KEYS)
     yield sub
     sub.close()
-    from substrate._testing import drop_project_schema
+    from regista._testing import drop_project_schema
     drop_project_schema(DSN, project)
 
 
 @pytest.fixture(scope="module")
-def client(substrate_instance, token_file):
+def client(regista_instance, token_file):
     token_path, _, _ = token_file
-    from substrate.sidecar.app import create_app
-    from substrate.sidecar.auth import TokenRegistry
+    from regista.sidecar.app import create_app
+    from regista.sidecar.auth import TokenRegistry
 
     tokens = TokenRegistry.from_file(token_path)
-    app = create_app(substrate_instance, tokens)
+    app = create_app(regista_instance, tokens)
     return TestClient(app)
 
 
@@ -93,16 +93,16 @@ def nonadmin_headers(token_file):
 
 
 @pytest.fixture(scope="module")
-def workflow_id(substrate_instance):
+def workflow_id(regista_instance):
     yaml_content = open(TEST_WORKFLOW).read()
-    substrate_instance.register_workflow(yaml_content)
+    regista_instance.register_workflow(yaml_content)
     return yaml_content
 
 
 HOOK_TEST_WORKFLOW_YAML = """\
 name: hook_test_workflow
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -385,24 +385,24 @@ class TestActorRoles:
 
 
 class TestApiDocs:
-    def test_docs_disabled_by_default(self, substrate_instance, token_file):
+    def test_docs_disabled_by_default(self, regista_instance, token_file):
         token_path, _, _ = token_file
-        from substrate.sidecar.app import create_app
-        from substrate.sidecar.auth import TokenRegistry
+        from regista.sidecar.app import create_app
+        from regista.sidecar.auth import TokenRegistry
 
         tokens = TokenRegistry.from_file(token_path)
-        app = create_app(substrate_instance, tokens)
+        app = create_app(regista_instance, tokens)
         client2 = TestClient(app)
         assert client2.get("/docs").status_code == 404
         assert client2.get("/openapi.json").status_code == 404
 
-    def test_docs_enabled_with_explicit_url(self, substrate_instance, token_file):
+    def test_docs_enabled_with_explicit_url(self, regista_instance, token_file):
         token_path, _, _ = token_file
-        from substrate.sidecar.app import create_app
-        from substrate.sidecar.auth import TokenRegistry
+        from regista.sidecar.app import create_app
+        from regista.sidecar.auth import TokenRegistry
 
         tokens = TokenRegistry.from_file(token_path)
-        app = create_app(substrate_instance, tokens, docs_url="/docs", openapi_url="/openapi.json")
+        app = create_app(regista_instance, tokens, docs_url="/docs", openapi_url="/openapi.json")
         client2 = TestClient(app)
         assert client2.get("/docs").status_code == 200
 
@@ -419,10 +419,10 @@ class TestNoValidatorOverHttp:
 
 class TestHookQueue:
     @pytest.fixture(autouse=True)
-    def _register_hook_workflow(self, substrate_instance):
-        substrate_instance.register_workflow(HOOK_TEST_WORKFLOW_YAML)
+    def _register_hook_workflow(self, regista_instance):
+        regista_instance.register_workflow(HOOK_TEST_WORKFLOW_YAML)
 
-    def test_claim_complete_round_trip(self, client, auth_headers, substrate_instance):
+    def test_claim_complete_round_trip(self, client, auth_headers, regista_instance):
         resp = client.post(
             "/v1/create_work_item",
             json={
@@ -469,7 +469,7 @@ class TestHookQueue:
         )
         assert resp.status_code == 200
 
-    def test_hook_lease_expiry_requeues(self, client, auth_headers, substrate_instance):
+    def test_hook_lease_expiry_requeues(self, client, auth_headers, regista_instance):
         import time
 
         resp = client.post(
@@ -852,8 +852,8 @@ class TestComposeWorkflowRoute:
 
 class TestErrorCodeCoverage:
     def test_all_error_codes_have_status_mapping(self):
-        from substrate._errors import ErrorCode
-        from substrate.sidecar.errors import _STATUS_MAP
+        from regista._errors import ErrorCode
+        from regista.sidecar.errors import _STATUS_MAP
 
         missing = set(ErrorCode) - set(_STATUS_MAP.keys())
         assert missing == set(), (
@@ -862,7 +862,7 @@ class TestErrorCodeCoverage:
         )
 
     def test_status_map_values_are_valid_http_codes(self):
-        from substrate.sidecar.errors import _STATUS_MAP
+        from regista.sidecar.errors import _STATUS_MAP
 
         valid = {400, 401, 403, 404, 409, 500, 502, 503}
         for code, status in _STATUS_MAP.items():

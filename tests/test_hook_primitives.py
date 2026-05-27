@@ -8,16 +8,16 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 
 WORKFLOW_WITH_HOOKS = """\
 name: hook_prim_test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -44,11 +44,11 @@ attempt_threshold: 99
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_hookprim_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow(WORKFLOW_WITH_HOOKS)
     yield sub
     sub.close()
@@ -61,14 +61,14 @@ def _raw_conn(schema: str):
     return conn
 
 
-def _trigger_hook(substrate):
-    wi, _ = substrate.create_work_item(
+def _trigger_hook(regista):
+    wi, _ = regista.create_work_item(
         workflow_name="hook_prim_test",
         work_item_type="task",
         actor_id="agent-1",
         custom_fields={},
     )
-    substrate.transition(
+    regista.transition(
         work_item_id=wi.work_item_id,
         transition_name="finish",
         actor_id="agent-1",
@@ -77,11 +77,11 @@ def _trigger_hook(substrate):
 
 
 class TestHookClaimCompleteRoundTrip:
-    def test_hook_claim_complete_round_trip(self, substrate):
-        _trigger_hook(substrate)
-        schema = substrate._mgr.schema
+    def test_hook_claim_complete_round_trip(self, regista):
+        _trigger_hook(regista)
+        schema = regista._mgr.schema
 
-        claimed = substrate.claim_hooks(max_batch=1, lease_seconds=60)
+        claimed = regista.claim_hooks(max_batch=1, lease_seconds=60)
         assert len(claimed) == 1
         ctx = claimed[0]
         assert ctx.hook_name == "on_finish"
@@ -94,7 +94,7 @@ class TestHookClaimCompleteRoundTrip:
         assert row["status"] == "in_progress"
         assert row["lease_expires_at"] > datetime.now(UTC)
 
-        substrate.complete_hook(ctx.hook_queue_id)
+        regista.complete_hook(ctx.hook_queue_id)
 
         with _raw_conn(schema) as conn:
             row = conn.execute(
@@ -105,16 +105,16 @@ class TestHookClaimCompleteRoundTrip:
 
 
 class TestHookClaimSkipLocked:
-    def test_hook_claim_skip_locked(self, substrate):
+    def test_hook_claim_skip_locked(self, regista):
         for _ in range(5):
-            _trigger_hook(substrate)
+            _trigger_hook(regista)
 
         import threading
 
         results: list[list] = [[], []]
 
         def claim(i):
-            results[i] = substrate.claim_hooks(max_batch=10, lease_seconds=120)
+            results[i] = regista.claim_hooks(max_batch=10, lease_seconds=120)
 
         t1 = threading.Thread(target=claim, args=(0,))
         t2 = threading.Thread(target=claim, args=(1,))
@@ -133,11 +133,11 @@ class TestHookClaimSkipLocked:
 
 
 class TestHookFailRetriesThenDeadLetters:
-    def test_hook_fail_retries_then_dead_letters(self, substrate):
-        wi = _trigger_hook(substrate)
-        schema = substrate._mgr.schema
+    def test_hook_fail_retries_then_dead_letters(self, regista):
+        wi = _trigger_hook(regista)
+        schema = regista._mgr.schema
 
-        claimed = substrate.claim_hooks(max_batch=1, lease_seconds=30)
+        claimed = regista.claim_hooks(max_batch=1, lease_seconds=30)
         assert len(claimed) >= 1
         ctx = claimed[0]
         hook_id = ctx.hook_queue_id
@@ -149,7 +149,7 @@ class TestHookFailRetriesThenDeadLetters:
             ).fetchone()["max_retries"]
 
         for attempt in range(max_retries - 1):
-            substrate.fail_hook(hook_id, f"error attempt {attempt}")
+            regista.fail_hook(hook_id, f"error attempt {attempt}")
 
             with _raw_conn(schema) as conn:
                 row = conn.execute(
@@ -166,12 +166,12 @@ class TestHookFailRetriesThenDeadLetters:
                     [hook_id],
                 )
 
-            reclaimed = substrate.claim_hooks(max_batch=100, lease_seconds=30)
+            reclaimed = regista.claim_hooks(max_batch=100, lease_seconds=30)
             assert any(c.hook_queue_id == hook_id for c in reclaimed), (
                 f"Could not reclaim hook on attempt {attempt + 1}"
             )
 
-        substrate.fail_hook(hook_id, "final error")
+        regista.fail_hook(hook_id, "final error")
 
         with _raw_conn(schema) as conn:
             dead_row = conn.execute(
@@ -180,17 +180,17 @@ class TestHookFailRetriesThenDeadLetters:
             ).fetchone()
         assert dead_row is not None, "Hook was not dead-lettered after exhausting retries"
 
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         dead_letter_events = [e for e in events if e.transition == "hook_dead_lettered"]
         assert len(dead_letter_events) >= 1
 
 
 class TestHookLeaseExpiryRequeues:
-    def test_hook_lease_expiry_requeues(self, substrate):
-        _trigger_hook(substrate)
-        schema = substrate._mgr.schema
+    def test_hook_lease_expiry_requeues(self, regista):
+        _trigger_hook(regista)
+        schema = regista._mgr.schema
 
-        claimed = substrate.claim_hooks(max_batch=1, lease_seconds=1)
+        claimed = regista.claim_hooks(max_batch=1, lease_seconds=1)
         assert len(claimed) >= 1
         ctx = claimed[0]
         hook_id = ctx.hook_queue_id
@@ -209,7 +209,7 @@ class TestHookLeaseExpiryRequeues:
                 [hook_id],
             )
 
-        requeued = substrate.sweep_expired_hook_leases()
+        requeued = regista.sweep_expired_hook_leases()
         assert requeued >= 1
 
         with _raw_conn(schema) as conn:

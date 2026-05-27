@@ -8,17 +8,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 WORKFLOW_WITH_HOOKS = """\
 name: hook_test
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 
 states:
   - name: new
@@ -49,11 +49,11 @@ attempt_threshold: 99
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_hookcons_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow(WORKFLOW_WITH_HOOKS)
     yield sub
     sub.close()
@@ -61,30 +61,30 @@ def substrate():
 
 
 class TestHookConsumerLifecycle:
-    def test_start_and_stop_hook_consumer(self, substrate):
-        substrate.start_hook_consumer()
-        assert substrate._hook_consumer.is_running
-        substrate.stop_hook_consumer()
-        assert not substrate._hook_consumer.is_running
+    def test_start_and_stop_hook_consumer(self, regista):
+        regista.start_hook_consumer()
+        assert regista._hook_consumer.is_running
+        regista.stop_hook_consumer()
+        assert not regista._hook_consumer.is_running
 
-    def test_start_idempotent(self, substrate):
-        substrate.start_hook_consumer()
-        substrate.start_hook_consumer()
-        assert substrate._hook_consumer.is_running
-        substrate.stop_hook_consumer()
+    def test_start_idempotent(self, regista):
+        regista.start_hook_consumer()
+        regista.start_hook_consumer()
+        assert regista._hook_consumer.is_running
+        regista.stop_hook_consumer()
 
-    def test_stop_idempotent(self, substrate):
-        substrate.stop_hook_consumer()
-        substrate.stop_hook_consumer()
-        assert not substrate._hook_consumer.is_running
+    def test_stop_idempotent(self, regista):
+        regista.stop_hook_consumer()
+        regista.stop_hook_consumer()
+        assert not regista._hook_consumer.is_running
 
 
 class TestBC227ProcessingFlagReset:
     """BC-227: _processing must be False after _run exits regardless of path."""
 
     def _make_consumer(self):
-        from substrate._hooks import HookConsumer
-        from substrate._keys import KeySet
+        from regista._hooks import HookConsumer
+        from regista._keys import KeySet
 
         key_set = MagicMock(spec=KeySet)
         return HookConsumer(
@@ -131,23 +131,23 @@ class TestBC227ProcessingFlagReset:
 
 
 class TestHookConsumerDelivery:
-    def test_consumer_polls_hooks_after_start(self, substrate):
+    def test_consumer_polls_hooks_after_start(self, regista):
         received: list = []
 
         def handler(ctx):
             received.append(ctx)
 
-        substrate.register_hook_handler("on_finish", handler)
-        substrate.start_hook_consumer()
+        regista.register_hook_handler("on_finish", handler)
+        regista.start_hook_consumer()
         time.sleep(0.3)
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="hook_test",
             work_item_type="task",
             actor_id="agent-1",
             custom_fields={"title": "consumer test"},
         )
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
             actor_id="agent-1",
@@ -155,10 +155,10 @@ class TestHookConsumerDelivery:
 
         deadline = time.time() + 15
         while not received and time.time() < deadline:
-            substrate.poll_hooks()
+            regista.poll_hooks()
             time.sleep(0.5)
 
-        substrate.stop_hook_consumer()
+        regista.stop_hook_consumer()
 
         assert len(received) >= 1
         ctx = received[0]

@@ -5,22 +5,22 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._testing import raw_transaction
-from substrate.testing import drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista._testing import raw_transaction
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture(scope="module")
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_prodready_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -28,9 +28,9 @@ def substrate():
 
 
 class TestActorKindValidation:
-    def test_invalid_actor_kind_on_create(self, substrate):
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_work_item(
+    def test_invalid_actor_kind_on_create(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -39,15 +39,15 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_invalid_actor_kind_on_append(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_invalid_actor_kind_on_append(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "AC kind"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.append_event(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.append_event(
                 work_item_id=wi.work_item_id,
                 actor_id="agent-1",
                 actor_kind="alien",
@@ -55,15 +55,15 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_invalid_actor_kind_on_transition(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_invalid_actor_kind_on_transition(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "AC trans kind"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.transition(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
                 actor_id="agent-1",
@@ -72,21 +72,21 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_invalid_actor_kind_on_create_link(self, substrate):
-        wi1, _ = substrate.create_work_item(
+    def test_invalid_actor_kind_on_create_link(self, regista):
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
             actor_id="agent-1",
             custom_fields={"severity": "major"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.create_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.create_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
@@ -95,27 +95,27 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_invalid_actor_kind_on_remove_link(self, substrate):
-        wi1, _ = substrate.create_work_item(
+    def test_invalid_actor_kind_on_remove_link(self, regista):
+        wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "A"},
         )
-        wi2, _ = substrate.create_work_item(
+        wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
             actor_id="agent-1",
             custom_fields={"severity": "major"},
         )
-        substrate.create_link(
+        regista.create_link(
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
             actor_id="agent-1",
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.remove_link(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.remove_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
@@ -124,17 +124,17 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_invalid_actor_kind_on_update_not_before(self, substrate):
+    def test_invalid_actor_kind_on_update_not_before(self, regista):
         from datetime import UTC, datetime, timedelta
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "AC nb kind"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.update_not_before(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.update_not_before(
                 work_item_id=wi.work_item_id,
                 not_before=datetime.now(UTC) + timedelta(hours=1),
                 actor_id="agent-1",
@@ -142,9 +142,9 @@ class TestActorKindValidation:
             )
         assert "actor_kind" in exc_info.value.message
 
-    def test_valid_actor_kinds_accepted(self, substrate):
+    def test_valid_actor_kinds_accepted(self, regista):
         for kind in ("agent", "human", "system"):
-            wi, _ = substrate.create_work_item(
+            wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id=f"actor-{kind}",
@@ -153,15 +153,15 @@ class TestActorKindValidation:
             )
             assert wi is not None
 
-            events = substrate.read_events(work_item_id=wi.work_item_id)
+            events = regista.read_events(work_item_id=wi.work_item_id)
             created_events = [e for e in events if e.transition == "created"]
             assert len(created_events) >= 1
             assert created_events[0].actor_kind == kind
 
 
 class TestTransitionEventIdCollision:
-    def test_same_event_id_different_transition_rejected(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_same_event_id_different_transition_rejected(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -170,7 +170,7 @@ class TestTransitionEventIdCollision:
         )
 
         eid = uuid.uuid4()
-        substrate.transition(
+        regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
             actor_id="agent-1",
@@ -178,8 +178,8 @@ class TestTransitionEventIdCollision:
             event_id=eid,
         )
 
-        with pytest.raises(SubstrateError) as exc_info:
-            substrate.append_event(
+        with pytest.raises(RegistaError) as exc_info:
+            regista.append_event(
                 work_item_id=wi.work_item_id,
                 actor_id="agent-1",
                 transition="custom_event_b",
@@ -189,40 +189,40 @@ class TestTransitionEventIdCollision:
 
 
 class TestClaimStolenMetric:
-    def test_stolen_claim_emits_event_and_metric(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_stolen_claim_emits_event_and_metric(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "stolen metric"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE claims SET expires_at = now() - interval '1 second' "
                 "WHERE work_item_id = %s",
                 [wi.work_item_id],
             )
 
-        substrate.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
 
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         stolen_events = [e for e in events if e.transition == "claim_stolen"]
         assert len(stolen_events) >= 1
         assert stolen_events[-1].payload["prior_actor_id"] == "agent-1"
         assert stolen_events[-1].payload["new_actor_id"] == "agent-2"
 
-    def test_same_actor_reacquire_does_not_count_as_stolen(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_same_actor_reacquire_does_not_count_as_stolen(self, regista):
+        wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "reacquire not stolen"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
 
-        events = substrate.read_events(work_item_id=wi.work_item_id)
+        events = regista.read_events(work_item_id=wi.work_item_id)
         stolen_events = [e for e in events if e.transition == "claim_stolen"]
         assert len(stolen_events) == 0

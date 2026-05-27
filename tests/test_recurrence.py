@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._recurrence import (
+from regista._errors import ErrorCode, RegistaError
+from regista._recurrence import (
     _parse_iso8601_duration,
     compute_next_fire,
     validate_schedule,
     validate_template,
 )
-from substrate._types import RecurrenceRule
+from regista._types import RecurrenceRule
 
 
 class TestComputeNextFire:
@@ -78,7 +78,7 @@ class TestComputeNextFire:
         assert next_fire is None
 
     def test_unknown_schedule_kind(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             compute_next_fire("bogus", "", "UTC", datetime.now(UTC), None, None)
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
@@ -91,12 +91,12 @@ class TestValidateSchedule:
         validate_schedule("rrule", "FREQ=HOURLY")
 
     def test_invalid_rrule(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_schedule("rrule", "not a rrule")
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
     def test_invalid_interval(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_schedule("interval", "xyz")
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
@@ -106,7 +106,7 @@ class TestValidateTemplate:
         validate_template({"custom_fields": {}})
 
     def test_not_dict(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             validate_template("nope")
         assert exc_info.value.code == ErrorCode.RECURRENCE_TEMPLATE_INVALID
 
@@ -154,12 +154,12 @@ class TestParseIso8601Duration:
         assert td == timedelta(hours=1, seconds=30.5)
 
     def test_zero_duration_rejected(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             _parse_iso8601_duration("P0D")
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
     def test_invalid_format(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             _parse_iso8601_duration("notaduration")
         assert exc_info.value.code == ErrorCode.RECURRENCE_SCHEDULE_INVALID
 
@@ -176,7 +176,7 @@ class TestCatchupPolicyFireOnce:
     def test_fire_once_skips_past_slots(self):
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
         now = start + timedelta(minutes=25)
-        from substrate._recurrence import _find_next_future_slot
+        from regista._recurrence import _find_next_future_slot
         result = _find_next_future_slot(
             "interval", "PT5M", "UTC", start, start, now, None,
         )
@@ -185,7 +185,7 @@ class TestCatchupPolicyFireOnce:
     def test_fire_once_next_already_future(self):
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
         now = start
-        from substrate._recurrence import _find_next_future_slot
+        from regista._recurrence import _find_next_future_slot
         result = _find_next_future_slot(
             "interval", "PT5M", "UTC", start, start, now, None,
         )
@@ -194,7 +194,7 @@ class TestCatchupPolicyFireOnce:
     def test_fire_once_past_end(self):
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
         now = start + timedelta(hours=1)
-        from substrate._recurrence import _find_next_future_slot
+        from regista._recurrence import _find_next_future_slot
         result = _find_next_future_slot(
             "interval", "PT5M", "UTC", start, start, now, start + timedelta(minutes=10),
         )
@@ -203,9 +203,9 @@ class TestCatchupPolicyFireOnce:
 
 class TestCatchupPolicySkip:
     def test_skip_policy_returns_none_work_item(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
@@ -226,9 +226,9 @@ class TestCatchupPolicySkip:
         assert wi is None
 
     def test_skip_advances_to_future(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         now = datetime.now(UTC)
@@ -253,9 +253,9 @@ class TestCatchupPolicySkip:
 
 class TestCatchupPolicyFireAll:
     def test_fire_all_fires_one_per_call(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         now = datetime.now(UTC)
@@ -282,9 +282,9 @@ class TestCatchupPolicyFireAll:
         assert rule["next_fire_at"] == start + timedelta(minutes=10)
 
     def test_fire_all_does_not_skip_past_slots(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         now = datetime.now(UTC)
@@ -309,9 +309,9 @@ class TestCatchupPolicyFireAll:
 
 class TestInMemoryMultipleRules:
     def test_multiple_rules_same_workflow(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
@@ -340,9 +340,9 @@ class TestInMemoryMultipleRules:
 
 class TestInMemoryNextFireAt:
     def test_register_computes_next_fire(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
@@ -358,12 +358,12 @@ class TestInMemoryNextFireAt:
         assert rule["next_fire_at"] == start + timedelta(minutes=5)
 
     def test_register_validates_schedule(self):
-        from substrate.testing import InMemorySubstrate
+        from regista.testing import InMemoryRegista
 
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
 
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             s.register_recurrence_rule(
                 workflow_name="test_workflow",
                 workflow_version=1,

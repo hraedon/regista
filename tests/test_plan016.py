@@ -5,23 +5,23 @@ import uuid
 
 import pytest
 
-from substrate import Substrate
-from substrate._contract import check_privileged_transition
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._in_memory import InMemorySubstrate
-from substrate._types import TransitionDef
-from substrate.testing import drop_project_schema, validate_yaml
+from regista import Regista
+from regista._contract import check_privileged_transition
+from regista._errors import ErrorCode, RegistaError
+from regista._in_memory import InMemoryRegista
+from regista._types import TransitionDef
+from regista.testing import drop_project_schema, validate_yaml
 
 DSN = os.environ.get(
     "TEST_DSN",
-    "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
 )
 KEY_PATH = os.environ.get("TEST_KEYS", "tests/test_keys.json")
 
 PRIVILEGED_WORKFLOW = """\
 name: privileged_test
 version: 1
-substrate_version: "0.3.0"
+regista_version: "0.3.0"
 
 states:
   - name: new
@@ -58,7 +58,7 @@ class TestContractPrivilegedTransition:
 
     def test_agent_actor_rejected(self):
         t = {"name": "scope_attestation", "from_state": "new", "privileged": True}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             check_privileged_transition(t, "agent", "scope_attestation")
         assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED
         assert "agent" in exc_info.value.message
@@ -66,7 +66,7 @@ class TestContractPrivilegedTransition:
 
     def test_human_actor_rejected(self):
         t = {"name": "scope_attestation", "from_state": "new", "privileged": True}
-        with pytest.raises(SubstrateError):
+        with pytest.raises(RegistaError):
             check_privileged_transition(t, "human", "scope_attestation")
 
     def test_non_privileged_transition_allows_any_actor(self):
@@ -143,7 +143,7 @@ class TestPostgresPrivilegedTransition:
     @pytest.fixture()
     def sub(self):
         proj = f"test_priv_{uuid.uuid4().hex[:8]}"
-        s = Substrate.create_project(DSN, proj, hmac_key_path=KEY_PATH)
+        s = Regista.create_project(DSN, proj, hmac_key_path=KEY_PATH)
         s.register_workflow(PRIVILEGED_WORKFLOW)
         yield s
         drop_project_schema(DSN, proj)
@@ -166,7 +166,7 @@ class TestPostgresPrivilegedTransition:
             actor_kind="agent",
             custom_fields={"title": "test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.transition(
                 wi.work_item_id, "scope_attestation", "agent-1",
                 actor_kind="agent",
@@ -190,7 +190,7 @@ class TestPostgresPrivilegedTransition:
 class TestInMemoryPrivilegedTransition:
     @pytest.fixture()
     def sub(self):
-        return InMemorySubstrate(
+        return InMemoryRegista(
             project="test_priv_mem",
             hmac_key_path=KEY_PATH,
         )
@@ -215,7 +215,7 @@ class TestInMemoryPrivilegedTransition:
             actor_kind="agent",
             custom_fields={"title": "test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.transition(
                 wi.work_item_id, "scope_attestation", "agent-1",
                 actor_kind="agent",

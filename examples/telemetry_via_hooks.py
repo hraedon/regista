@@ -1,12 +1,12 @@
-"""Minimal telemetry-via-hooks example for substrate.
+"""Minimal telemetry-via-hooks example for regista.
 
 This example demonstrates:
-1. Creating a reporting table in a non-substrate schema.
+1. Creating a reporting table in a non-regista schema.
 2. Registering a hook handler on transition events.
 3. Rebuilding the reporting table from scratch by replaying events.
 
 Usage:
-    # Requires a running Postgres with substrate migrations applied.
+    # Requires a running Postgres with regista migrations applied.
     # Edit DSN and KEY_PATH before running.
     python examples/telemetry_via_hooks.py
 """
@@ -18,11 +18,11 @@ from datetime import datetime
 import psycopg
 from psycopg.sql import SQL, Identifier
 
-from substrate import Substrate
+from regista import Regista
 
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = "tests/test_keys.json"
-REPORTING_SCHEMA = "substrate_analytics"
+REPORTING_SCHEMA = "regista_analytics"
 PROJECT = "telemetry_example"
 
 
@@ -77,7 +77,7 @@ def record_transition(
         conn.commit()
 
 
-def rebuild_analytics(sub: Substrate) -> None:
+def rebuild_analytics(sub: Regista) -> None:
     schema = Identifier(REPORTING_SCHEMA)
     with psycopg.connect(DSN) as conn:
         conn.execute(SQL("TRUNCATE {}.transitions_by_role").format(schema))
@@ -99,7 +99,7 @@ def rebuild_analytics(sub: Substrate) -> None:
 def main() -> None:
     ensure_reporting_schema(DSN)
 
-    sub = Substrate.create_project(DSN, PROJECT, KEY_PATH)
+    sub = Regista.create_project(DSN, PROJECT, KEY_PATH)
     sub.register_workflow(open("tests/test_workflow.yaml").read())
 
     sub.register_hook_handler("start", record_transition)

@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate.testing import InMemorySubstrate, drop_project_schema
+from regista._errors import ErrorCode, RegistaError
+from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
@@ -19,16 +19,16 @@ WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
 @pytest.fixture(params=["real", "in_memory"])
 def sub(request):
     if request.param == "real":
-        from substrate import Substrate
+        from regista import Regista
 
         project = f"test_conf_{uuid.uuid4().hex[:8]}"
-        s = Substrate.create_project(DSN, project, KEY_PATH)
+        s = Regista.create_project(DSN, project, KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
         drop_project_schema(DSN, project)
     else:
-        s = InMemorySubstrate(project="test")
+        s = InMemoryRegista(project="test")
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
@@ -45,7 +45,7 @@ class TestConformanceWorkflow:
     def test_register_version_conflict(self, sub):
         sub.register_workflow(WORKFLOW_YAML)
         modified = WORKFLOW_YAML.replace("attempt_threshold: 3", "attempt_threshold: 99")
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.register_workflow(modified)
         assert exc_info.value.code == ErrorCode.WORKFLOW_VERSION_CONFLICT
 
@@ -67,7 +67,7 @@ class TestConformanceWorkItem:
         assert fetched.work_item_id == wi.work_item_id
 
     def test_create_missing_required_field(self, sub):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
@@ -77,7 +77,7 @@ class TestConformanceWorkItem:
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
     def test_create_unknown_type(self, sub):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="nonexistent",
@@ -109,7 +109,7 @@ class TestConformanceTransition:
             actor_id="agent-1",
             custom_fields={"title": "test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.transition(wi.work_item_id, "approve", "agent-1")
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
 
@@ -125,7 +125,7 @@ class TestConformanceTransition:
             wi.work_item_id, "submit_review", "agent-1",
             actor_metadata={"role": "agent"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.transition(
                 wi.work_item_id, "approve", "agent-1",
                 actor_metadata={"role": "agent"},
@@ -139,7 +139,7 @@ class TestConformanceTransition:
             actor_id="agent-1",
             custom_fields={"title": "test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.append_event(wi.work_item_id, "agent-1", transition="start")
         assert exc_info.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
@@ -260,7 +260,7 @@ class TestConformanceClaims:
             custom_fields={"title": "test"},
         )
         sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.CLAIM_CONTESTED
 
@@ -340,7 +340,7 @@ class TestConformanceActorRoles:
             actor_id="agent-1",
             custom_fields={"title": "test"},
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             sub.transition(
                 wi.work_item_id, "start", "agent-1",
                 actor_metadata={"role": "agent"},
@@ -526,8 +526,8 @@ class TestConformanceCustomFieldFilter:
 
 @pytest.fixture
 def mem_sub():
-    """Standalone InMemorySubstrate fixture (not parameterized, no Postgres needed)."""
-    s = InMemorySubstrate(project="bc189")
+    """Standalone InMemoryRegista fixture (not parameterized, no Postgres needed)."""
+    s = InMemoryRegista(project="bc189")
     s.register_workflow_file(WORKFLOW_PATH)
     yield s
     s.close()
@@ -538,7 +538,7 @@ class TestBC189OrphanEventDetection:
 
     def test_orphan_with_created_event_counts_as_warning(self, mem_sub):
         """An orphan work-item whose first event is 'created' is a warning (not halted)."""
-        from substrate._types import Event
+        from regista._types import Event
 
         orphan_id = uuid.uuid4()
         # Inject a synthetic 'created' event directly into the event store
@@ -571,7 +571,7 @@ class TestBC189OrphanEventDetection:
 
     def test_orphan_without_created_event_counts_as_halted(self, mem_sub):
         """An orphan work-item whose events do NOT start with 'created' is halted."""
-        from substrate._types import Event
+        from regista._types import Event
 
         orphan_id = uuid.uuid4()
         # Inject only a non-created event — no 'created' event at seq 1

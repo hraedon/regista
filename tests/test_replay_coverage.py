@@ -7,21 +7,21 @@ from pathlib import Path
 import psycopg.types.json
 import pytest
 
-from substrate._testing import raw_transaction
-from substrate.testing import InMemorySubstrate, drop_project_schema
+from regista._testing import raw_transaction
+from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def substrate():
-    from substrate import Substrate
+def regista():
+    from regista import Regista
 
     project = f"test_replay_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -29,167 +29,167 @@ def substrate():
 
 
 class TestReplayClaimLifecycle:
-    def test_replay_derives_claim_acquired(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_claim_acquired(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "claim replay"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
-    def test_replay_derives_claim_stolen(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_claim_stolen(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "steal replay"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.release_claim(wi.work_item_id, "agent-1")
-        substrate.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
-    def test_replay_derives_claim_released(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_claim_released(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "release replay"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.release_claim(wi.work_item_id, "agent-1")
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
-    def test_replay_derives_claim_expired(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_claim_expired(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "expired replay"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
         import time
         time.sleep(2)
-        substrate.sweep_expired_claims()
+        regista.sweep_expired_claims()
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
-    def test_replay_heartbeat_drift_within_threshold(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_heartbeat_drift_within_threshold(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "heartbeat replay"},
         )
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
 
 class TestReplayLinkLifecycle:
-    def test_replay_derives_link_created_and_removed(self, substrate):
-        wi_a, _ = substrate.create_work_item(
+    def test_replay_derives_link_created_and_removed(self, regista):
+        wi_a, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "link src"},
         )
-        wi_b, _ = substrate.create_work_item(
+        wi_b, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "link dst"},
         )
-        substrate.create_link(
+        regista.create_link(
             wi_a.work_item_id, wi_b.work_item_id, "blocks", "agent-1",
         )
-        substrate.remove_link(
+        regista.remove_link(
             wi_a.work_item_id, wi_b.work_item_id, "blocks", "agent-1",
         )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
 
 class TestReplayEscalationAndNotBefore:
-    def test_replay_derives_escalated(self, substrate):
-        substrate.register_actor_role("agent-1", "agent")
-        substrate.register_actor_role("reviewer-1", "reviewer")
+    def test_replay_derives_escalated(self, regista):
+        regista.register_actor_role("agent-1", "agent")
+        regista.register_actor_role("reviewer-1", "reviewer")
 
-        wi, _ = substrate.create_work_item(
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "escalation replay"},
         )
         # attempt_threshold=3; need 3 claim acquisitions to trigger escalation.
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.release_claim(wi.work_item_id, "agent-1")
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        substrate.release_claim(wi.work_item_id, "agent-1")
-        substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
-        live = substrate.get_work_item(wi.work_item_id)
+        live = regista.get_work_item(wi.work_item_id)
         assert live.needs_review is True
 
-    def test_replay_derives_not_before_set(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_not_before_set(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "not_before replay"},
         )
         future = datetime.now(UTC) + timedelta(days=1)
-        substrate.update_not_before(wi.work_item_id, future, "agent-1")
+        regista.update_not_before(wi.work_item_id, future, "agent-1")
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
 
 class TestReplayCustomFieldsUpdate:
-    def test_replay_derives_custom_fields_on_transition(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_replay_derives_custom_fields_on_transition(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "cf replay"},
         )
-        substrate.transition(
+        regista.transition(
             wi.work_item_id, "start", "agent-1",
             actor_metadata={"role": "agent"},
             custom_fields={"metadata": {"step": 1}},
         )
-        substrate.transition(
+        regista.transition(
             wi.work_item_id, "submit_review", "agent-1",
             actor_metadata={"role": "agent"},
             custom_fields={"metadata": {"step": 2}},
         )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
 
 
 class TestReplayOrphanEvents:
-    def test_orphan_with_created_event_warns(self, substrate):
-        wi, _evt = substrate.create_work_item(
+    def test_orphan_with_created_event_warns(self, regista):
+        wi, _evt = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "orphan created"},
         )
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "DELETE FROM work_items_current WHERE work_item_id = %s",
                 [wi.work_item_id],
             )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.warnings >= 1
 
-    def test_orphan_without_created_event_halts(self, substrate):
+    def test_orphan_without_created_event_halts(self, regista):
         from psycopg.sql import SQL
         orphan_id = uuid.uuid4()
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 SQL(
                     "INSERT INTO events "
@@ -210,54 +210,54 @@ class TestReplayOrphanEvents:
                 ],
             )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.halted >= 1
 
 
 class TestReplayContinueOnRevoked:
-    def test_continue_on_revoked_skips_unknown_key(self, substrate):
-        _wi, _ = substrate.create_work_item(
+    def test_continue_on_revoked_skips_unknown_key(self, regista):
+        _wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "revoked replay"},
         )
 
-        report = substrate.replay(continue_on_revoked=True)
+        report = regista.replay(continue_on_revoked=True)
         assert report.replayed_ok >= 1
 
-    def test_continue_on_revoked_warnings_counted(self, substrate):
-        _wi, _ = substrate.create_work_item(
+    def test_continue_on_revoked_warnings_counted(self, regista):
+        _wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "revoked warnings"},
         )
-        report = substrate.replay(continue_on_revoked=True)
+        report = regista.replay(continue_on_revoked=True)
         assert report.warnings is not None
         assert report.replayed_ok >= 1
 
 
 class TestReplayKeyFailurePaths:
-    def test_signature_mismatch_halts(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_signature_mismatch_halts(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "sig halt"},
         )
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE events SET signature = E'\\\\xDEADBEEF'::bytea "
                 "WHERE work_item_id = %s AND transition = 'created'",
                 [wi.work_item_id],
             )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.halted >= 1
 
-    def test_missing_workflow_halts(self, substrate):
-        wi, _ = substrate.create_work_item(
+    def test_missing_workflow_halts(self, regista):
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "missing wf"},
         )
-        key_set = substrate._keys
+        key_set = regista._keys
 
-        from substrate._signing import sign_event as _sign_event
+        from regista._signing import sign_event as _sign_event
         new_event_id = uuid.uuid4()
         payload = {"initial_state": "new", "custom_fields": {"title": "missing wf"}}
         now = datetime.now(UTC)
@@ -275,7 +275,7 @@ class TestReplayKeyFailurePaths:
             key=key_set.active_key().secret,
         )
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             # Change work_item to v999 so replay reads v999 for subsequent events
             conn.execute(
                 "UPDATE work_items_current SET workflow_version = 999 "
@@ -300,22 +300,22 @@ class TestReplayKeyFailurePaths:
                 [wi.work_item_id],
             )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.halted >= 1
 
-    def test_invalid_from_state_halts(self, substrate):
-        substrate.register_actor_role("agent-1", "agent")
-        wi, _ = substrate.create_work_item(
+    def test_invalid_from_state_halts(self, regista):
+        regista.register_actor_role("agent-1", "agent")
+        wi, _ = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "bad state"},
         )
-        substrate.transition(
+        regista.transition(
             wi.work_item_id, "start", "agent-1",
             actor_metadata={"role": "agent"},
         )
 
-        key_set = substrate._keys
-        from substrate._signing import sign_event as _sign_event
+        key_set = regista._keys
+        from regista._signing import sign_event as _sign_event
         new_event_id = uuid.uuid4()
         payload = None
         now = datetime.now(UTC)
@@ -333,7 +333,7 @@ class TestReplayKeyFailurePaths:
             key=key_set.active_key().secret,
         )
 
-        with raw_transaction(substrate) as conn:
+        with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE work_items_current SET current_state = 'done' "
                 "WHERE work_item_id = %s",
@@ -350,13 +350,13 @@ class TestReplayKeyFailurePaths:
                  psycopg.types.json.Jsonb(payload or {}), c_hash, sig, env],
             )
 
-        report = substrate.replay()
+        report = regista.replay()
         assert report.halted >= 1
 
 
 class TestInMemoryReplayParity:
     def test_in_memory_no_drift_after_claim_transition_link(self):
-        s = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
 
         wi, _ = s.create_work_item(
@@ -386,7 +386,7 @@ class TestInMemoryReplayParity:
         assert report.halted == 0
 
     def test_in_memory_replay_orphan_warning(self):
-        s = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
 
         wi, _ = s.create_work_item(
@@ -399,7 +399,7 @@ class TestInMemoryReplayParity:
         assert report.warnings >= 1
 
     def test_in_memory_replay_count_matches(self):
-        s = InMemorySubstrate(project="test", hmac_key_path=KEY_PATH)
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
 
         for i in range(3):

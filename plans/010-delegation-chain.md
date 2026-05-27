@@ -130,20 +130,20 @@ def validate_delegation_chain(on_behalf_of: dict | None) -> None:
     if on_behalf_of is None:
         return
     if not isinstance(on_behalf_of, dict):
-        raise SubstrateError(INVALID_ARGUMENT, "on_behalf_of must be a dict")
+        raise RegistaError(INVALID_ARGUMENT, "on_behalf_of must be a dict")
     principal_id = on_behalf_of.get("principal_id")
     if not isinstance(principal_id, str) or not principal_id:
-        raise SubstrateError(INVALID_ARGUMENT,
+        raise RegistaError(INVALID_ARGUMENT,
             "on_behalf_of.principal_id is required and must be a non-empty string")
     if "scope" in on_behalf_of and on_behalf_of["scope"] is not None:
         if not isinstance(on_behalf_of["scope"], list):
-            raise SubstrateError(INVALID_ARGUMENT, "on_behalf_of.scope must be a list")
+            raise RegistaError(INVALID_ARGUMENT, "on_behalf_of.scope must be a list")
         for item in on_behalf_of["scope"]:
             if not isinstance(item, str):
-                raise SubstrateError(INVALID_ARGUMENT, "on_behalf_of.scope items must be strings")
+                raise RegistaError(INVALID_ARGUMENT, "on_behalf_of.scope items must be strings")
     if "authenticated_at" in on_behalf_of and on_behalf_of["authenticated_at"] is not None:
         if not isinstance(on_behalf_of["authenticated_at"], str):
-            raise SubstrateError(INVALID_ARGUMENT, "on_behalf_of.authenticated_at must be a string")
+            raise RegistaError(INVALID_ARGUMENT, "on_behalf_of.authenticated_at must be a string")
 ```
 
 Called at the top of every public entry point that accepts `on_behalf_of`, before any other work.
@@ -193,12 +193,12 @@ The parameter flows through every layer. Each function in the chain gains `on_be
 - `WorkItemOps.update_not_before()`: add parameter, pass to `_append_event()`
 
 **Layer 5 — Public API** (`__init__.py`):
-- `Substrate.append_event()`: add `on_behalf_of: dict | None = None`, validate, pass to facade
-- `Substrate.transition()`: add `on_behalf_of: dict | None = None`, validate, pass to facade
+- `Regista.append_event()`: add `on_behalf_of: dict | None = None`, validate, pass to facade
+- `Regista.transition()`: add `on_behalf_of: dict | None = None`, validate, pass to facade
 
-**Layer 6 — InMemorySubstrate** (`_in_memory.py`):
-- `InMemorySubstrate.append_event()`: add parameter, validate, pass to `in_memory_append_event()`
-- `InMemorySubstrate.transition()`: add parameter, validate, pass to `in_memory_transition()`
+**Layer 6 — InMemoryRegista** (`_in_memory.py`):
+- `InMemoryRegista.append_event()`: add parameter, validate, pass to `in_memory_append_event()`
+- `InMemoryRegista.transition()`: add parameter, validate, pass to `in_memory_transition()`
 
 ### 3.7 Replay
 
@@ -217,8 +217,8 @@ In `sidecar/models.py`:
 - `TransitionRequest`: add `on_behalf_of: dict | None = None`
 
 In `sidecar/routes.py`:
-- `append_event()`: pass `body.on_behalf_of` to `substrate.append_event()`
-- `transition()`: pass `body.on_behalf_of` to `substrate.transition()`
+- `append_event()`: pass `body.on_behalf_of` to `regista.append_event()`
+- `transition()`: pass `body.on_behalf_of` to `regista.transition()`
 
 ## 4. Migration
 
@@ -237,10 +237,10 @@ Nullable column. All existing rows get `NULL`. No data backfill. No index (audit
 
 | Method | New parameter | Default |
 |---|---|---|
-| `Substrate.append_event()` | `on_behalf_of: dict \| None` | `None` |
-| `Substrate.transition()` | `on_behalf_of: dict \| None` | `None` |
-| `InMemorySubstrate.append_event()` | `on_behalf_of: dict \| None` | `None` |
-| `InMemorySubstrate.transition()` | `on_behalf_of: dict \| None` | `None` |
+| `Regista.append_event()` | `on_behalf_of: dict \| None` | `None` |
+| `Regista.transition()` | `on_behalf_of: dict \| None` | `None` |
+| `InMemoryRegista.append_event()` | `on_behalf_of: dict \| None` | `None` |
+| `InMemoryRegista.transition()` | `on_behalf_of: dict \| None` | `None` |
 | `EventOps.append()` | `on_behalf_of: dict \| None` | `None` |
 | `WorkItemOps.update_not_before()` | `on_behalf_of: dict \| None` | `None` |
 | Sidecar `POST /append_event` | `on_behalf_of` body field | omitted |
@@ -294,22 +294,22 @@ Validation uses existing `INVALID_ARGUMENT`. If we later want specificity, we ca
 
 | File | Change |
 |---|---|
-| `src/substrate/_types.py` | Add `DelegationChain` dataclass. Add `on_behalf_of` field to `Event`. Update `Event.to_dict()` / `from_dict()`. |
-| `src/substrate/_signing.py` | Add `on_behalf_of` param to `build_signing_envelope()`, `sign_event()`, `verify_event()`. Add backward-compat retry in `verify_event()`. |
-| `src/substrate/_contract.py` | Add `validate_delegation_chain()`. |
-| `src/substrate/_event_store.py` | Add `on_behalf_of` param to `append_event()`. Update `PostgresEventStore._EVENT_FIELDS`, `PostgresEventStore.append()` INSERT. |
-| `src/substrate/_events.py` | Add `on_behalf_of` to `_EVENT_FIELDS`. Update `_row_to_event()`. Add param to `append_event()`, `append_transition_event()` — pass to `sign_event()` and include in INSERT. |
-| `src/substrate/_events_api.py` | Add `on_behalf_of` param to `append_event()`, pass to `_store_append_event()`. |
-| `src/substrate/_transition.py` | Add `on_behalf_of` param to `transition()`, pass to `_append_transition_event()`. |
-| `src/substrate/_ops.py` | Add `on_behalf_of` param to `EventOps.append()`, `WorkItemOps.update_not_before()`. |
-| `src/substrate/__init__.py` | Add `on_behalf_of` param to `Substrate.append_event()`, `Substrate.transition()`. Validate and delegate. |
-| `src/substrate/_in_memory.py` | Add `on_behalf_of` param to `InMemorySubstrate.append_event()`, `InMemorySubstrate.transition()`. |
-| `src/substrate/_in_memory_events.py` | Add `on_behalf_of` param to `in_memory_append_event()`, pass to `_store_append()`. |
-| `src/substrate/_in_memory_transition.py` | Add `on_behalf_of` param to `in_memory_transition()`, pass to `_store_append()`. |
-| `src/substrate/_replay.py` | Add `on_behalf_of` to `_EVENT_FIELDS`. Pass `evt["on_behalf_of"]` to `verify_event()`. |
-| `src/substrate/_in_memory_replay.py` | Pass `on_behalf_of` from event to `verify_event()`. |
-| `src/substrate/sidecar/models.py` | Add `on_behalf_of: dict \| None = None` to `AppendEventRequest` and `TransitionRequest`. |
-| `src/substrate/sidecar/routes.py` | Pass `body.on_behalf_of` in `append_event` and `transition` route handlers. |
+| `src/regista/_types.py` | Add `DelegationChain` dataclass. Add `on_behalf_of` field to `Event`. Update `Event.to_dict()` / `from_dict()`. |
+| `src/regista/_signing.py` | Add `on_behalf_of` param to `build_signing_envelope()`, `sign_event()`, `verify_event()`. Add backward-compat retry in `verify_event()`. |
+| `src/regista/_contract.py` | Add `validate_delegation_chain()`. |
+| `src/regista/_event_store.py` | Add `on_behalf_of` param to `append_event()`. Update `PostgresEventStore._EVENT_FIELDS`, `PostgresEventStore.append()` INSERT. |
+| `src/regista/_events.py` | Add `on_behalf_of` to `_EVENT_FIELDS`. Update `_row_to_event()`. Add param to `append_event()`, `append_transition_event()` — pass to `sign_event()` and include in INSERT. |
+| `src/regista/_events_api.py` | Add `on_behalf_of` param to `append_event()`, pass to `_store_append_event()`. |
+| `src/regista/_transition.py` | Add `on_behalf_of` param to `transition()`, pass to `_append_transition_event()`. |
+| `src/regista/_ops.py` | Add `on_behalf_of` param to `EventOps.append()`, `WorkItemOps.update_not_before()`. |
+| `src/regista/__init__.py` | Add `on_behalf_of` param to `Regista.append_event()`, `Regista.transition()`. Validate and delegate. |
+| `src/regista/_in_memory.py` | Add `on_behalf_of` param to `InMemoryRegista.append_event()`, `InMemoryRegista.transition()`. |
+| `src/regista/_in_memory_events.py` | Add `on_behalf_of` param to `in_memory_append_event()`, pass to `_store_append()`. |
+| `src/regista/_in_memory_transition.py` | Add `on_behalf_of` param to `in_memory_transition()`, pass to `_store_append()`. |
+| `src/regista/_replay.py` | Add `on_behalf_of` to `_EVENT_FIELDS`. Pass `evt["on_behalf_of"]` to `verify_event()`. |
+| `src/regista/_in_memory_replay.py` | Pass `on_behalf_of` from event to `verify_event()`. |
+| `src/regista/sidecar/models.py` | Add `on_behalf_of: dict \| None = None` to `AppendEventRequest` and `TransitionRequest`. |
+| `src/regista/sidecar/routes.py` | Pass `body.on_behalf_of` in `append_event` and `transition` route handlers. |
 | `migrations/014_on_behalf_of.sql` | New file: `ALTER TABLE events ADD COLUMN on_behalf_of JSONB;` |
 
 ## 9. Implementation Order

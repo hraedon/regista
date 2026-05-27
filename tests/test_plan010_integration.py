@@ -5,21 +5,21 @@ from pathlib import Path
 
 import pytest
 
-from substrate import Substrate
-from substrate._errors import ErrorCode, SubstrateError
-from substrate.testing import InMemorySubstrate
+from regista import Regista
+from regista._errors import ErrorCode, RegistaError
+from regista.testing import InMemoryRegista
 
 _KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 _WF = (Path(__file__).parent / "test_workflow.yaml").read_text()
 
 
 @pytest.fixture
-def sub(request) -> Substrate:
-    from substrate.testing import drop_project_schema
+def sub(request) -> Regista:
+    from regista.testing import drop_project_schema
 
-    dsn = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+    dsn = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
     project = f"test_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(dsn, project, hmac_key_path=_KEY_PATH)
+    sub = Regista.create_project(dsn, project, hmac_key_path=_KEY_PATH)
 
     def teardown():
         sub.close()
@@ -30,11 +30,11 @@ def sub(request) -> Substrate:
 
 
 @pytest.fixture
-def imsub(request) -> InMemorySubstrate:
-    return InMemorySubstrate(project="test", hmac_key_path=_KEY_PATH)
+def imsub(request) -> InMemoryRegista:
+    return InMemoryRegista(project="test", hmac_key_path=_KEY_PATH)
 
 
-def _register_and_create(sub: Substrate) -> uuid.UUID:
+def _register_and_create(sub: Regista) -> uuid.UUID:
     sub.register_workflow(_WF)
     sub.register_actor_role("actor_a", "agent")
     wi, _evt = sub.work_items.create(
@@ -46,7 +46,7 @@ def _register_and_create(sub: Substrate) -> uuid.UUID:
 
 
 class TestPostgresAppendEventOnBehalfOf:
-    def test_append_event_with_on_behalf_of(self, sub: Substrate) -> None:
+    def test_append_event_with_on_behalf_of(self, sub: Regista) -> None:
         wid = _register_and_create(sub)
         evt = sub.append_event(
             wid, "actor_a",
@@ -54,12 +54,12 @@ class TestPostgresAppendEventOnBehalfOf:
         )
         assert evt.on_behalf_of == {"principal_id": "alice"}
 
-    def test_append_event_without_on_behalf_of_is_none(self, sub: Substrate) -> None:
+    def test_append_event_without_on_behalf_of_is_none(self, sub: Regista) -> None:
         wid = _register_and_create(sub)
         evt = sub.append_event(wid, "actor_a")
         assert evt.on_behalf_of is None
 
-    def test_append_event_round_trips_via_read(self, sub: Substrate) -> None:
+    def test_append_event_round_trips_via_read(self, sub: Regista) -> None:
         wid = _register_and_create(sub)
         sub.append_event(
             wid, "actor_a",
@@ -70,7 +70,7 @@ class TestPostgresAppendEventOnBehalfOf:
 
 
 class TestPostgresTransitionOnBehalfOf:
-    def test_transition_with_on_behalf_of(self, sub: Substrate) -> None:
+    def test_transition_with_on_behalf_of(self, sub: Regista) -> None:
         wid = _register_and_create(sub)
         evt = sub.transition(
             wid, "start", "actor_a",
@@ -79,9 +79,9 @@ class TestPostgresTransitionOnBehalfOf:
         )
         assert evt.on_behalf_of == {"principal_id": "bob"}
 
-    def test_transition_rejects_invalid_on_behalf_of(self, sub: Substrate) -> None:
+    def test_transition_rejects_invalid_on_behalf_of(self, sub: Regista) -> None:
         wid = _register_and_create(sub)
-        with pytest.raises(SubstrateError) as exc:
+        with pytest.raises(RegistaError) as exc:
             sub.transition(
                 wid, "start", "actor_a",
                 actor_metadata={"role": "agent"},
@@ -90,8 +90,8 @@ class TestPostgresTransitionOnBehalfOf:
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
 
-class TestInMemorySubstrateOnBehalfOf:
-    def test_append_event_with_on_behalf_of(self, imsub: InMemorySubstrate) -> None:
+class TestInMemoryRegistaOnBehalfOf:
+    def test_append_event_with_on_behalf_of(self, imsub: InMemoryRegista) -> None:
         imsub.register_workflow(_WF)
         wi, _evt = imsub.create_work_item(
             "test_workflow", "feature", "actor_a",
@@ -104,7 +104,7 @@ class TestInMemorySubstrateOnBehalfOf:
         )
         assert evt.on_behalf_of == {"principal_id": "alice"}
 
-    def test_transition_with_on_behalf_of(self, imsub: InMemorySubstrate) -> None:
+    def test_transition_with_on_behalf_of(self, imsub: InMemoryRegista) -> None:
         imsub.register_workflow(_WF)
         wi, _evt = imsub.create_work_item(
             "test_workflow", "feature", "actor_a",
@@ -118,7 +118,7 @@ class TestInMemorySubstrateOnBehalfOf:
         )
         assert evt.on_behalf_of == {"principal_id": "carol"}
 
-    def test_reads_return_on_behalf_of(self, imsub: InMemorySubstrate) -> None:
+    def test_reads_return_on_behalf_of(self, imsub: InMemoryRegista) -> None:
         imsub.register_workflow(_WF)
         wi, _evt = imsub.create_work_item(
             "test_workflow", "feature", "actor_a",
@@ -132,7 +132,7 @@ class TestInMemorySubstrateOnBehalfOf:
         evts = imsub.read_events(work_item_id=wi.work_item_id)
         assert evts[-1].on_behalf_of == {"principal_id": "alice"}
 
-    def test_replay_with_on_behalf_of_no_drift(self, imsub: InMemorySubstrate) -> None:
+    def test_replay_with_on_behalf_of_no_drift(self, imsub: InMemoryRegista) -> None:
         imsub.register_workflow(_WF)
         wi, _evt = imsub.create_work_item(
             "test_workflow", "feature", "actor_a",
@@ -147,7 +147,7 @@ class TestInMemorySubstrateOnBehalfOf:
         report = imsub.replay()
         assert report.replayed_drift == 0
 
-    def test_replay_signature_still_verifies(self, imsub: InMemorySubstrate) -> None:
+    def test_replay_signature_still_verifies(self, imsub: InMemoryRegista) -> None:
         imsub.register_workflow(_WF)
         wi, _evt = imsub.create_work_item(
             "test_workflow", "feature", "actor_a",

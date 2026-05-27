@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from substrate._timestamping import (
+from regista._timestamping import (
     TimestampBatch,
     TSAConfig,
     compute_merkle_root,
@@ -17,10 +17,10 @@ from substrate._timestamping import (
     verify_merkle_proof,
     verify_tsa_token,
 )
-from substrate.testing import drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
@@ -104,23 +104,23 @@ class TestTSASubmission:
         mock_resp.status = 200
         mock_resp.read.return_value = b"\x30\x03\x02\x01\x01"
         data = b"\x00" * 32
-        with patch("substrate._timestamping.urllib.request.urlopen") as mock_urlopen:
+        with patch("regista._timestamping.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_resp)
             mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
             result = submit_to_tsa(data, cfg)
         assert result == b"\x30\x03\x02\x01\x01"
 
     def test_submit_raises_on_http_error(self):
-        from substrate._errors import ErrorCode, SubstrateError
+        from regista._errors import ErrorCode, RegistaError
 
         cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr")
         mock_resp = MagicMock()
         mock_resp.status = 500
         data = b"\x00" * 32
-        with patch("substrate._timestamping.urllib.request.urlopen") as mock_urlopen:
+        with patch("regista._timestamping.urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_resp)
             mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 submit_to_tsa(data, cfg)
             assert exc_info.value.code == ErrorCode.TSA_SUBMISSION_FAILED
 
@@ -206,7 +206,7 @@ class TestBuildTsr:
         cfg = TSAConfig(
             tsa_url="https://tsa.example.com/tsr", hash_algorithm="sha384"
         )
-        from substrate._timestamping import _build_tsr
+        from regista._timestamping import _build_tsr
 
         tsr_bytes = _build_tsr(b"payload", cfg, nonce=12345)
         req = tsp.TimeStampReq.load(tsr_bytes)
@@ -220,7 +220,7 @@ class TestBuildTsr:
     def test_build_tsr_includes_nonce_by_default(self):
         from asn1crypto import tsp
 
-        from substrate._timestamping import _build_tsr
+        from regista._timestamping import _build_tsr
 
         cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr")
         a = tsp.TimeStampReq.load(_build_tsr(b"x", cfg))
@@ -238,7 +238,7 @@ class TestBC228UTCTimestamps:
         # interface used before submit_to_tsa is called.
         from unittest.mock import MagicMock, patch
 
-        from substrate._timestamping import TSAConfig, trigger_timestamping
+        from regista._timestamping import TSAConfig, trigger_timestamping
 
         cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr")
 
@@ -263,7 +263,7 @@ class TestBC228UTCTimestamps:
         ]
         mock_conn.execute.side_effect = call_results
 
-        with patch("substrate._timestamping.submit_to_tsa", side_effect=RuntimeError("tsa down")):
+        with patch("regista._timestamping.submit_to_tsa", side_effect=RuntimeError("tsa down")):
             result = trigger_timestamping(mock_conn, cfg)
 
         assert result is not None
@@ -276,7 +276,7 @@ class TestBC228UTCTimestamps:
     def test_trigger_timestamping_confirmed_branch_tz_aware(self):
         from unittest.mock import MagicMock, patch
 
-        from substrate._timestamping import TSAConfig, trigger_timestamping
+        from regista._timestamping import TSAConfig, trigger_timestamping
 
         cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr")
 
@@ -294,7 +294,7 @@ class TestBC228UTCTimestamps:
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = call_results
 
-        with patch("substrate._timestamping.submit_to_tsa", return_value=token):
+        with patch("regista._timestamping.submit_to_tsa", return_value=token):
             result = trigger_timestamping(mock_conn, cfg)
 
         assert result is not None
@@ -337,11 +337,11 @@ class TestTimestampBatchToDict:
 
 
 @pytest.fixture
-def timestamp_substrate():
-    from substrate import Substrate
+def timestamp_regista():
+    from regista import Regista
 
     project = f"test_ts_{uuid.uuid4().hex[:8]}"
-    sub = Substrate.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -349,29 +349,29 @@ def timestamp_substrate():
 
 
 class TestReplayVerifyTimestamps:
-    def test_verify_timestamps_false_no_warnings(self, timestamp_substrate):
-        timestamp_substrate.create_work_item(
+    def test_verify_timestamps_false_no_warnings(self, timestamp_regista):
+        timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "ts test"},
         )
-        report = timestamp_substrate.replay(verify_timestamps=False)
+        report = timestamp_regista.replay(verify_timestamps=False)
         assert report.halted == 0
         assert report.warnings == 0
 
-    def test_verify_timestamps_true_uncovered_events_warns(self, timestamp_substrate):
-        timestamp_substrate.create_work_item(
+    def test_verify_timestamps_true_uncovered_events_warns(self, timestamp_regista):
+        timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "ts uncovered"},
         )
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         assert report.halted == 0
         assert report.warnings >= 1
 
-    def test_verify_timestamps_invalid_token_warns(self, timestamp_substrate):
+    def test_verify_timestamps_invalid_token_warns(self, timestamp_regista):
         # BC-226: replay(verify_timestamps=True) must validate the TSA token, not
         # just check coverage.  Insert a confirmed tsp_batch row whose tsa_token is
         # garbage (all-zeros), covering all event seqs.  The replay should warn
@@ -379,7 +379,7 @@ class TestReplayVerifyTimestamps:
         import psycopg
         from psycopg.rows import dict_row
 
-        _, _ = timestamp_substrate.create_work_item(
+        _, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -388,7 +388,7 @@ class TestReplayVerifyTimestamps:
 
         # Discover the event global_seq range for the events just created.
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             evt_rows = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_seq, MAX(global_seq) AS max_seq FROM events"
@@ -401,7 +401,7 @@ class TestReplayVerifyTimestamps:
             event_id_rows = raw_conn.execute(
                 "SELECT event_id FROM events ORDER BY global_seq"
             ).fetchall()
-            from substrate._timestamping import compute_merkle_root
+            from regista._timestamping import compute_merkle_root
             event_ids = [r["event_id"] for r in event_id_rows]
             merkle_root = compute_merkle_root(event_ids)
 
@@ -415,17 +415,17 @@ class TestReplayVerifyTimestamps:
                 [merkle_root, min_seq, max_seq, max_seq - min_seq + 1, bad_token],
             )
 
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         # The bad token should produce a warning even though all events are covered.
         assert report.warnings >= 1
 
-    def test_verify_timestamps_valid_token_no_extra_warnings(self, timestamp_substrate):
+    def test_verify_timestamps_valid_token_no_extra_warnings(self, timestamp_regista):
         # BC-226: when a confirmed batch has a proper TSA token that validates,
         # no additional warning should be emitted for the token itself.
         import psycopg
         from psycopg.rows import dict_row
 
-        timestamp_substrate.create_work_item(
+        timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -433,7 +433,7 @@ class TestReplayVerifyTimestamps:
         )
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             evt_rows = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_seq, MAX(global_seq) AS max_seq FROM events"
@@ -444,7 +444,7 @@ class TestReplayVerifyTimestamps:
             event_id_rows = raw_conn.execute(
                 "SELECT event_id FROM events ORDER BY global_seq"
             ).fetchall()
-            from substrate._timestamping import compute_merkle_root
+            from regista._timestamping import compute_merkle_root
             event_ids = [r["event_id"] for r in event_id_rows]
             merkle_root = compute_merkle_root(event_ids)
 
@@ -459,11 +459,11 @@ class TestReplayVerifyTimestamps:
                 [merkle_root, min_seq, max_seq, max_seq - min_seq + 1, good_token],
             )
 
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         # With all events covered by a valid token, warnings should be 0.
         assert report.warnings == 0
 
-    def test_verify_timestamps_merkle_root_mismatch_warns(self, timestamp_substrate):
+    def test_verify_timestamps_merkle_root_mismatch_warns(self, timestamp_regista):
         # BC-230: a stored merkle_root that no longer matches the current event
         # log must produce a warning, even when the TSA token validates that
         # stored root. Simulates an operator tampering with events while
@@ -471,7 +471,7 @@ class TestReplayVerifyTimestamps:
         import psycopg
         from psycopg.rows import dict_row
 
-        timestamp_substrate.create_work_item(
+        timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -479,7 +479,7 @@ class TestReplayVerifyTimestamps:
         )
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             evt_rows = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_seq, MAX(global_seq) AS max_seq FROM events"
@@ -491,7 +491,7 @@ class TestReplayVerifyTimestamps:
             # the TSA signed *that* root, but the current event log will
             # re-derive to something else.
             fake_ids = [uuid.uuid4() for _ in range(3)]
-            from substrate._timestamping import compute_merkle_root
+            from regista._timestamping import compute_merkle_root
             stale_root = compute_merkle_root(fake_ids)
             valid_token = _build_fake_tsa_token(stale_root)
 
@@ -503,7 +503,7 @@ class TestReplayVerifyTimestamps:
                 [stale_root, min_seq, max_seq, max_seq - min_seq + 1, valid_token],
             )
 
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         # The re-derived root from current events won't match the stale stored root.
         assert report.warnings >= 1
 
@@ -511,18 +511,18 @@ class TestReplayVerifyTimestamps:
 class TestPlan014GlobalSeq:
     """Plan 014: global_seq is monotonic and coherent across multi-WI batches."""
 
-    def test_global_seq_monotonic_across_work_items(self, timestamp_substrate):
+    def test_global_seq_monotonic_across_work_items(self, timestamp_regista):
         import psycopg
         from psycopg.rows import dict_row
 
         # Create two work items.
-        wi1, _ = timestamp_substrate.create_work_item(
+        wi1, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
             custom_fields={"title": "wi1"},
         )
-        wi2, _ = timestamp_substrate.create_work_item(
+        wi2, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
             actor_id="agent-1",
@@ -530,13 +530,13 @@ class TestPlan014GlobalSeq:
         )
 
         # Insert a third event to wi1 after wi2 created, interleaving global_seq.
-        timestamp_substrate.transition(
+        timestamp_regista.transition(
             wi1.work_item_id, "start", "agent-1",
             actor_metadata={"role": "agent"},
         )
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             rows = raw_conn.execute(
                 "SELECT work_item_id, event_seq, global_seq FROM events ORDER BY global_seq"
@@ -555,25 +555,25 @@ class TestPlan014GlobalSeq:
         assert wi1_rows[1]["global_seq"] > wi1_rows[0]["global_seq"]
         assert wi2_rows[0]["global_seq"] > wi1_rows[0]["global_seq"]
 
-    def test_trigger_timestamping_selects_by_global_seq(self, timestamp_substrate):
+    def test_trigger_timestamping_selects_by_global_seq(self, timestamp_regista):
         from unittest.mock import patch
 
-        from substrate._timestamping import (
+        from regista._timestamping import (
             TSAConfig,
             compute_merkle_root,
             trigger_timestamping,
         )
 
         # Create three work items.
-        _wi1, _ = timestamp_substrate.create_work_item(
+        _wi1, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow", work_item_type="feature",
             actor_id="agent-1", custom_fields={"title": "a"},
         )
-        _wi2, _ = timestamp_substrate.create_work_item(
+        _wi2, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow", work_item_type="feature",
             actor_id="agent-1", custom_fields={"title": "b"},
         )
-        _wi3, _ = timestamp_substrate.create_work_item(
+        _wi3, _ = timestamp_regista.create_work_item(
             workflow_name="test_workflow", work_item_type="feature",
             actor_id="agent-1", custom_fields={"title": "c"},
         )
@@ -582,7 +582,7 @@ class TestPlan014GlobalSeq:
         from psycopg.rows import dict_row
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             row = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_gs, MAX(global_seq) AS max_gs FROM events"
@@ -595,7 +595,7 @@ class TestPlan014GlobalSeq:
             fake_token = _build_fake_tsa_token(b"merkle_root_placeholder")
 
             # Patch submit_to_tsa to return a fake token that passes verify.
-            with patch("substrate._timestamping.submit_to_tsa", return_value=fake_token):
+            with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
                 batch = trigger_timestamping(raw_conn, cfg)
 
             assert batch is not None
@@ -620,12 +620,12 @@ class TestPlan014GlobalSeq:
             expected_root = compute_merkle_root(expected_ids)
             assert batch.merkle_root == expected_root
 
-    def test_replay_verify_timestamps_multi_wi(self, timestamp_substrate):
+    def test_replay_verify_timestamps_multi_wi(self, timestamp_regista):
         import psycopg
         from psycopg.rows import dict_row
 
         for i in range(3):
-            timestamp_substrate.create_work_item(
+            timestamp_regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -633,7 +633,7 @@ class TestPlan014GlobalSeq:
             )
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             evt_rows = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_seq, MAX(global_seq) AS max_seq FROM events"
@@ -645,7 +645,7 @@ class TestPlan014GlobalSeq:
                 "SELECT event_id FROM events ORDER BY global_seq"
             ).fetchall()
             event_ids = [r["event_id"] for r in event_id_rows]
-            from substrate._timestamping import compute_merkle_root
+            from regista._timestamping import compute_merkle_root
             merkle_root = compute_merkle_root(event_ids)
 
             good_token = _build_fake_tsa_token(merkle_root)
@@ -658,16 +658,16 @@ class TestPlan014GlobalSeq:
                 [merkle_root, min_seq, max_seq, max_seq - min_seq + 1, good_token],
             )
 
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         assert report.warnings == 0
         assert report.halted == 0
 
-    def test_replay_merkle_root_mismatch_multi_wi(self, timestamp_substrate):
+    def test_replay_merkle_root_mismatch_multi_wi(self, timestamp_regista):
         import psycopg
         from psycopg.rows import dict_row
 
         for i in range(3):
-            timestamp_substrate.create_work_item(
+            timestamp_regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
                 actor_id="agent-1",
@@ -675,7 +675,7 @@ class TestPlan014GlobalSeq:
             )
 
         with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
-            schema = timestamp_substrate._mgr.schema
+            schema = timestamp_regista._mgr.schema
             raw_conn.execute(f"SET search_path TO {schema}")
             evt_rows = raw_conn.execute(
                 "SELECT MIN(global_seq) AS min_seq, MAX(global_seq) AS max_seq FROM events"
@@ -684,7 +684,7 @@ class TestPlan014GlobalSeq:
             max_seq = evt_rows["max_seq"]
 
             fake_ids = [uuid.uuid4() for _ in range(3)]
-            from substrate._timestamping import compute_merkle_root
+            from regista._timestamping import compute_merkle_root
             stale_root = compute_merkle_root(fake_ids)
             valid_token = _build_fake_tsa_token(stale_root)
 
@@ -696,6 +696,6 @@ class TestPlan014GlobalSeq:
                 [stale_root, min_seq, max_seq, max_seq - min_seq + 1, valid_token],
             )
 
-        report = timestamp_substrate.replay(verify_timestamps=True)
+        report = timestamp_regista.replay(verify_timestamps=True)
         assert report.warnings >= 1
         assert report.halted == 0

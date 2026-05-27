@@ -1,19 +1,19 @@
 # Plan 012 — RFC 3161 Timestamping on Event Batches
 
 **Status:** Draft RFC
-**Owner:** substrate
+**Owner:** regista
 **Spec touched:** §17 (signing and integrity), §19 (public API surface)
 **Related:** BC-198 (operator backdating defense), Plan 009 (MaintenanceThread), Plan 013 (witness hooks)
 
 ## 1. Overview
 
-Adds trusted timestamp tokens from a third-party Time Stamp Authority (TSA) to event batches. Substrate already HMAC-signs every event (FR-15), but the operator holding the HMAC key can theoretically backdate events. RFC 3161 TSA tokens provide independent, cryptographically-verifiable proof that a Merkle root over a batch of event IDs existed at a specific time.
+Adds trusted timestamp tokens from a third-party Time Stamp Authority (TSA) to event batches. Regista already HMAC-signs every event (FR-15), but the operator holding the HMAC key can theoretically backdate events. RFC 3161 TSA tokens provide independent, cryptographically-verifiable proof that a Merkle root over a batch of event IDs existed at a specific time.
 
 Timestamping is **opportunistic and non-blocking.** Events are committed first, then batched and timestamped asynchronously by the maintenance thread. A missing timestamp is a warning, not an error — the event log remains complete and authoritative regardless of TSA availability.
 
 ## 2. Motivation
 
-Substrate's trust model (§17.9) has three tiers: authenticated (HMAC), server-stamped (timestamp, seq), and actor-claimed (metadata). The HMAC key holder is trusted. In multi-tenant or adversarial-operator scenarios, this trust is insufficient:
+Regista's trust model (§17.9) has three tiers: authenticated (HMAC), server-stamped (timestamp, seq), and actor-claimed (metadata). The HMAC key holder is trusted. In multi-tenant or adversarial-operator scenarios, this trust is insufficient:
 
 - A malicious operator with HMAC key access can insert events with arbitrary timestamps.
 - An auditor examining the event log has no independent anchor to detect backdating.
@@ -218,7 +218,7 @@ def _run(self) -> None:
 
 Step 6 is the only network call. All other steps are database-local. The TSA call has a timeout (default 30s). If the call exceeds the timeout, the batch is marked failed.
 
-### 5.2 Substrate constructor
+### 5.2 Regista constructor
 
 ```python
 def __init__(
@@ -232,7 +232,7 @@ def __init__(
 ) -> None:
 ```
 
-Env var fallbacks: `SUBSTRATE_TSA_URL`, `SUBSTRATE_TSA_CERT_PATH`.
+Env var fallbacks: `REGISTA_TSA_URL`, `REGISTA_TSA_CERT_PATH`.
 
 If `tsa_url` is not provided, timestamping is disabled. `TSAConfig` is `None`. All timestamping methods return empty results.
 
@@ -258,9 +258,9 @@ Exposed as `sub.timestamping.trigger()`, `sub.timestamping.list_batches()`, `sub
 3. Warnings are collected in `ReplayReport.warnings` (already exists from FR-25).
 4. Timestamping gaps are warnings, not errors. A replay succeeds even with uncovered events.
 
-### 5.5 InMemorySubstrate
+### 5.5 InMemoryRegista
 
-`InMemorySubstrate` supports `TSAConfig` in its constructor but all TSA operations are no-ops (no network calls). `list_timestamp_batches` returns empty. This matches the existing pattern where `InMemorySubstrate` skips event emission without `hmac_key_path`.
+`InMemoryRegista` supports `TSAConfig` in its constructor but all TSA operations are no-ops (no network calls). `list_timestamp_batches` returns empty. This matches the existing pattern where `InMemoryRegista` skips event emission without `hmac_key_path`.
 
 ### 5.6 Sidecar (Plan 005)
 
@@ -276,9 +276,9 @@ New endpoints:
 
 | Parameter | Constructor | Env var | Default | Description |
 |---|---|---|---|---|
-| `tsa_url` | `tsa_url` | `SUBSTRATE_TSA_URL` | `None` (disabled) | TSA endpoint URL |
-| `tsa_cert_path` | `tsa_cert_path` | `SUBSTRATE_TSA_CERT_PATH` | `None` | Path to TSA certificate PEM (for verification) |
-| `batch_size` | — | `SUBSTRATE_TSA_BATCH_SIZE` | `1000` | Max events per batch |
+| `tsa_url` | `tsa_url` | `REGISTA_TSA_URL` | `None` (disabled) | TSA endpoint URL |
+| `tsa_cert_path` | `tsa_cert_path` | `REGISTA_TSA_CERT_PATH` | `None` | Path to TSA certificate PEM (for verification) |
+| `batch_size` | — | `REGISTA_TSA_BATCH_SIZE` | `1000` | Max events per batch |
 | `timestamp_interval` | `start_maintenance(timestamp_interval=...)` | — | `3600.0` | Seconds between timestamping cycles |
 
 Recommended TSAs:
@@ -290,7 +290,7 @@ Recommended TSAs:
 ```yaml
 timestamping:
   tsa_url: https://freetsa.org/tsr
-  tsa_cert_path: /etc/substrate/tsa-ca.pem
+  tsa_cert_path: /etc/regista/tsa-ca.pem
   batch_size: 2000
 ```
 
@@ -298,15 +298,15 @@ Loaded alongside workflow YAML. Not required — env vars or constructor args ar
 
 ## 7. CLI
 
-New `substrate timestamp` subcommands in `_cli.py`:
+New `regista timestamp` subcommands in `_cli.py`:
 
 ```
-substrate timestamp status [--dsn ...] [--project ...]
-substrate timestamp verify <batch_id> [--dsn ...] [--project ...]
-substrate timestamp trigger [--dsn ...] [--project ...]
+regista timestamp status [--dsn ...] [--project ...]
+regista timestamp verify <batch_id> [--dsn ...] [--project ...]
+regista timestamp trigger [--dsn ...] [--project ...]
 ```
 
-### `substrate timestamp status`
+### `regista timestamp status`
 
 Prints a summary table:
 
@@ -319,7 +319,7 @@ e5f6a7b8-...                          pending    800     2025-03-01T01:00:00Z  2
 
 Also shows: total batches, confirmed count, pending count, failed count, coverage percentage (events covered by confirmed batches / total events).
 
-### `substrate timestamp verify <batch_id>`
+### `regista timestamp verify <batch_id>`
 
 Loads the batch, re-derives the Merkle root from the event_seq range, verifies the TSA token against the Merkle root, and prints:
 
@@ -331,7 +331,7 @@ Batch a1b2c3d4-...
   Event count: 1500
 ```
 
-### `substrate timestamp trigger`
+### `regista timestamp trigger`
 
 Manually triggers a timestamping cycle. Useful for debugging or initial backfill. Connects to the database, finds untimestamped events, submits a batch to the TSA.
 
@@ -352,7 +352,7 @@ Manually triggers a timestamping cycle. Useful for debugging or initial backfill
 | `urllib.request` (stdlib) | HTTP POST to TSA | Yes (stdlib) |
 | `hashlib` (stdlib) | SHA-256 Merkle tree | Yes (stdlib) |
 
-If `asn1crypto` is not installed and timestamping is configured, raise `SubstrateError(KEY_LOAD_ERROR, "asn1crypto required for TSA timestamping")` at construction time — fail fast, not at first batch.
+If `asn1crypto` is not installed and timestamping is configured, raise `RegistaError(KEY_LOAD_ERROR, "asn1crypto required for TSA timestamping")` at construction time — fail fast, not at first batch.
 
 Consider using `cryptography` (already in the dependency tree via psycopg's optional extras) for DER handling instead of adding a new dependency. Evaluate during implementation.
 
@@ -381,7 +381,7 @@ Requires a running TSA (mock or FreeTSA). Use a mock HTTP server for determinist
 - **`test_replay_with_timestamps`** — `replay(verify_timestamps=True)` with confirmed batches produces no warnings.
 - **`test_replay_uncovered_events`** — `replay(verify_timestamps=True)` with events outside batch range produces warnings.
 - **`test_merkle_root_matches_events`** — load events from DB by seq range, re-derive Merkle root, compare to stored root.
-- **`test_verify_batch_cli`** — run `substrate timestamp verify <batch_id>` and parse output.
+- **`test_verify_batch_cli`** — run `regista timestamp verify <batch_id>` and parse output.
 
 ### Mock TSA server
 
@@ -402,17 +402,17 @@ The test certificate and key are generated at test collection time and stored in
 
 | File | Change |
 |---|---|
-| `src/substrate/_timestamping.py` | **New.** TSAConfig, TimestampBatch, Merkle tree, TSA submission/verification. |
+| `src/regista/_timestamping.py` | **New.** TSAConfig, TimestampBatch, Merkle tree, TSA submission/verification. |
 | `migrations/014_tsp_batches.sql` | **New.** `tsp_batches` table and indexes. |
-| `src/substrate/_maintenance.py` | Add `timestamp_interval` parameter, `_timestamp_events()` method. |
-| `src/substrate/__init__.py` | Add `tsa_url`, `tsa_cert_path` constructor params. Add `timestamp_pending_events`, `list_timestamp_batches`, `verify_timestamp_batch` methods. |
-| `src/substrate/_ops.py` | Add `TimestampOps` facade class. |
-| `src/substrate/_replay.py` | Add `verify_timestamps` parameter to `replay()`. |
-| `src/substrate/_errors.py` | Add `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`, `TSA_NOT_CONFIGURED` error codes. |
-| `src/substrate/_cli.py` | Add `timestamp` subcommand group with `status`, `verify`, `trigger`. |
-| `src/substrate/_event_store.py` | No changes. Events remain unchanged; timestamping is a separate concern. |
-| `src/substrate/sidecar/routes.py` | Add timestamp routes (3 endpoints). |
-| `src/substrate/sidecar/models.py` | Add Pydantic models for timestamp request/response. |
+| `src/regista/_maintenance.py` | Add `timestamp_interval` parameter, `_timestamp_events()` method. |
+| `src/regista/__init__.py` | Add `tsa_url`, `tsa_cert_path` constructor params. Add `timestamp_pending_events`, `list_timestamp_batches`, `verify_timestamp_batch` methods. |
+| `src/regista/_ops.py` | Add `TimestampOps` facade class. |
+| `src/regista/_replay.py` | Add `verify_timestamps` parameter to `replay()`. |
+| `src/regista/_errors.py` | Add `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`, `TSA_NOT_CONFIGURED` error codes. |
+| `src/regista/_cli.py` | Add `timestamp` subcommand group with `status`, `verify`, `trigger`. |
+| `src/regista/_event_store.py` | No changes. Events remain unchanged; timestamping is a separate concern. |
+| `src/regista/sidecar/routes.py` | Add timestamp routes (3 endpoints). |
+| `src/regista/sidecar/models.py` | Add Pydantic models for timestamp request/response. |
 | `tests/test_timestamping.py` | **New.** Unit tests for Merkle tree and TSA operations. |
 | `tests/test_timestamping_integration.py` | **New.** Integration tests with mock TSA. |
 | `tests/helpers/mock_tsa.py` | **New.** Minimal RFC 3161 mock responder. |
@@ -427,5 +427,5 @@ The test certificate and key are generated at test collection time and stored in
 | Large batch exceeds TSA size limits | `batch_size` is configurable. Default 1000 is conservative. |
 | Merkle tree implementation bug | Property-based tests + determinism tests. Root is stored, so a bug is detectable post-hoc. |
 | `asn1crypto` / `cryptography` dependency conflict | Evaluate during implementation. Both are widely used. Fall back to stdlib ASN.1 if feasible. |
-| Clock skew between substrate and TSA | TSA timestamp is authoritative. Substrate's event timestamps are informational. |
+| Clock skew between regista and TSA | TSA timestamp is authoritative. Regista's event timestamps are informational. |
 | Migration 014 conflicts with future migrations | Migration numbering is sequential; 014 is next after existing 013. |

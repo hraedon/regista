@@ -2,7 +2,7 @@
 
 Status: Proposed — proceed conditionally (see Motivation).
 Spec anchor: spec.md L67, L337, L437, L493, L518 ("Loader can grow `!include` / merge conventions later without breaking existing files").
-Loader code: `/projects/substrate/src/substrate/_workflow.py` (parse and validate); schema `/projects/substrate/src/substrate/_workflow_schema.json`.
+Loader code: `/projects/regista/src/regista/_workflow.py` (parse and validate); schema `/projects/regista/src/regista/_workflow_schema.json`.
 
 ## 1. Motivation — duplication audit of sf2 workflow files
 
@@ -34,7 +34,7 @@ Rationale:
 Merge semantics (specified, not inferred):
 
 - **Maps:** deep merge. Child keys override parent keys at the same path. (e.g., `attempt_threshold: 5` in child overrides parent's `3`.)
-- **Top-level scalar fields (`name`, `version`, `substrate_version`):** child wins. `version` MUST be set in the child (it is what distinguishes phase3 from phase2).
+- **Top-level scalar fields (`name`, `version`, `regista_version`):** child wins. `version` MUST be set in the child (it is what distinguishes phase3 from phase2).
 - **Lists of named objects** (`states`, `transitions`, `roles`, `work_item_types`, `link_types`): keyed merge by `name` (for transitions: `(name, from)`). Child entries with a matching key **deep-merge** into the parent entry; child entries with a new key are **appended**; a child entry with key plus `__remove: true` deletes the parent entry.
 - **Plain lists** (`allowed_roles`, `enum_values`): default **replace**. Optional `__append: [...]` sibling key for additive cases (the common sf2 pattern: phase4 adds two roles to every transition's `allowed_roles`).
 
@@ -107,7 +107,7 @@ A file with no `extends:` field follows the existing code path bit-for-bit. The 
 4. Wire `SourceMap` into `validate_json_schema` and `_validate_semantics` for attribution. Add a new `ErrorCode.WORKFLOW_COMPOSE_ERROR` (cycles, depth, path-escape, missing parent file) distinct from `WORKFLOW_VALIDATION_FAILED`.
 5. Add `compose_workflow(path) -> str` helper that returns the merged YAML as text (useful for debugging and for the SF2 migration script).
 6. Update `validate_yaml(source)` (workflow.py:464) — when given a Path with `extends:`, route through the composer.
-7. Migration of sf2 workflows: write a one-shot script `scripts/migrate_workflows.py` in sf2 that takes each `phaseN.yaml`, computes its diff against `phase(N-1).yaml`, and emits a `phaseN.yaml` using `extends:`. Verify `compute_content_hash` matches before and after. **This is sf2 work, not substrate work**, but the plan should land both together to prove the design.
+7. Migration of sf2 workflows: write a one-shot script `scripts/migrate_workflows.py` in sf2 that takes each `phaseN.yaml`, computes its diff against `phase(N-1).yaml`, and emits a `phaseN.yaml` using `extends:`. Verify `compute_content_hash` matches before and after. **This is sf2 work, not regista work**, but the plan should land both together to prove the design.
 
 ## 8. Test approach
 
@@ -132,7 +132,7 @@ A file with no `extends:` field follows the existing code path bit-for-bit. The 
 
 - **Hash stability across phases:** if sf2 migrates `phase3.yaml` to `extends: ./phase2.yaml`, the *composed* dict must be bytewise identical to the old standalone file. Map key ordering during merge must be deterministic. Mitigation: merge preserves child-then-parent insertion order; verify with content-hash equivalence test.
 - **`raw_yaml` semantics in DB:** registration stores the source YAML. Composed-then-stored means the DB record no longer matches the file the operator authored. Decision: store the **composed** YAML in `raw_yaml` and add a new event/column `compose_sources: list[str]` recording the chain. Replay reads composed YAML directly; no re-resolution on read.
-- **Tooling impact:** YAML LSP and editors won't follow `extends:`. Acceptable in v1 — provide a `substrate workflow show <file>` CLI subcommand that prints the composed form.
+- **Tooling impact:** YAML LSP and editors won't follow `extends:`. Acceptable in v1 — provide a `regista workflow show <file>` CLI subcommand that prints the composed form.
 - **Override expressiveness:** `__remove` / `__append` are minimal. Risk that users want more (e.g., "remove allowed_role X from every transition"). Out of scope; revisit only if needed.
 - **Diamond inheritance:** disallow in v1. If a file's transitive extends graph has the same ancestor reachable two ways, reject. Simpler than specifying merge order.
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._signing_scheme import (
+from regista._errors import ErrorCode, RegistaError
+from regista._signing_scheme import (
     Ed25519Scheme,
     HMACSHA256Scheme,
     available_schemes,
@@ -81,7 +81,7 @@ class TestRegistry:
         assert get_scheme("hmac-sha256") is not None
 
     def test_get_scheme_unknown_raises(self):
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             get_scheme("unknown-scheme")
         assert exc_info.value.code == ErrorCode.SIGNING_SCHEME_NOT_FOUND
 

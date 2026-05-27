@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from substrate import Substrate
-from substrate._testing import drop_project_schema
+from regista import Regista
+from regista._testing import drop_project_schema
 
-DSN = "postgresql://substrate_test:substrate_test@localhost:5432/substrate_test"
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = "tests/test_keys.json"
 WORKFLOW_PATH = "tests/test_workflow.yaml"
 
@@ -22,7 +22,7 @@ def project():
 
 @pytest.fixture(scope="module")
 def sub(project):
-    s = Substrate.create_project(DSN, project, KEY_PATH)
+    s = Regista.create_project(DSN, project, KEY_PATH)
     with open(WORKFLOW_PATH) as f:
         s.register_workflow(f.read())
     yield s
@@ -197,8 +197,8 @@ def client(sub):
 
     from fastapi.testclient import TestClient
 
-    from substrate.sidecar.app import create_app
-    from substrate.sidecar.auth import TokenRegistry
+    from regista.sidecar.app import create_app
+    from regista.sidecar.auth import TokenRegistry
 
     raw_token = "test-secret-token-12345"
     token_sha256 = hashlib.sha256(raw_token.encode()).hexdigest()

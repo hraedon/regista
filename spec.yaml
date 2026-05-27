@@ -1,9 +1,9 @@
-# spec.yaml — substrate
+# spec.yaml — regista
 # Machine-readable sidecar to spec.md. Source of truth is spec.md.
 # Regenerated against spec.md v5 (2026-05-18).
 
 meta:
-  name: "substrate"
+  name: "regista"
   spec_level: 3
   desired_level: 3
   date: "2026-05-26"
@@ -16,14 +16,14 @@ meta:
 # ---------------------------------------------------------------------------
 
 glossary:
-  - term: "Substrate"
-    definition: "Library + Postgres schema + protocol providing coordination and durable state for agent pipelines. Library deployment; one substrate instance per project."
+  - term: "Regista"
+    definition: "Library + Postgres schema + protocol providing coordination and durable state for agent pipelines. Library deployment; one regista instance per project."
   - term: "Project"
     definition: "Logical unit of related work; corresponds 1:1 to one Postgres schema within a shared database. Hosts one or more workflow definitions."
   - term: "Workflow"
     definition: "Named, versioned declarative state machine describing how a particular kind of work proceeds. A project may register many workflows."
   - term: "Workflow definition"
-    definition: "YAML file (validated against substrate's JSON Schema) declaring states, transitions, role-gating, custom fields per work-item-type, link types, attempt threshold, and per-hook retry overrides."
+    definition: "YAML file (validated against regista's JSON Schema) declaring states, transitions, role-gating, custom fields per work-item-type, link types, attempt threshold, and per-hook retry overrides."
   - term: "Work-item"
     definition: "Discrete unit of trackable work. Has workflow, work-item-type, current state, custom fields, links, needs_review flag, not_before timestamp."
   - term: "Work-item-type"
@@ -41,7 +41,7 @@ glossary:
   - term: "Workflow version"
     definition: "Registered, immutable instance of a workflow definition. Work-items pin the version they were created against."
   - term: "Reasoning log"
-    definition: "Existing flat-file convention in the Software Factory. Continues to operate alongside the substrate."
+    definition: "Existing flat-file convention in the Software Factory. Continues to operate alongside the regista."
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -60,16 +60,16 @@ scope:
     - "Sync and async hook dispatch (transition validators: in-transaction, gate commit, no I/O; async hooks via durable queue + LISTEN/NOTIFY + always-on polling)"
     - "Pluggable actor identity verifier (HMAC-SHA256 default; RFC 8785 canonical signing envelope; OIDC-ready)"
     - "Key rotation via key-set-with-status (active/deprecated/revoked); hot-reload via mtime polling"
-    - "Startup integrity check (migrations applied; workflow-substrate version compatibility)"
+    - "Startup integrity check (migrations applied; workflow-regista version compatibility)"
     - "Structured logging + Prometheus metrics (library-mode CollectorRegistry, not HTTP server)"
     - "Concurrency contract: canonical lock target, gap-free event_seq allocator, cross-work-item deadlock prevention"
     - "Projection invariants: work_items_current fully derived from events, drift detection via replay report"
     - "API-layer idempotency: client-supplied UUIDv4 on every mutation; event_id doubles as key for event append"
     - "Public API surface (section 19): protocol, not Postgres connection; library is sole signer; service-wrapping is mechanical"
-    - "Consumer expectation boundary (section 20): explicit enumeration of what substrate does NOT do"
+    - "Consumer expectation boundary (section 20): explicit enumeration of what regista does NOT do"
   out_of_scope:
     - "Cross-project state, queries, or links"
-    - "DB provisioning (operator creates DB; substrate runs migrations)"
+    - "DB provisioning (operator creates DB; regista runs migrations)"
     - "Disk-level durability and backups"
     - "Scheduling beyond not_before timestamp"
     - "Retry / SLA / automation engines layered above coordination"
@@ -83,7 +83,7 @@ scope:
 # ---------------------------------------------------------------------------
 
 mvp:
-  description: "Substrate library replaces reasoning.log for one Software Factory workflow: agents create work-items in a declared workflow, claim them durably, transition them through validated states with role-gating, with full event history and replay. Structured work-item query (FR-05b) enables claim-discovery and future UI list views without reaching into work_items_current directly."
+  description: "Regista library replaces reasoning.log for one Software Factory workflow: agents create work-items in a declared workflow, claim them durably, transition them through validated states with role-gating, with full event history and replay. Structured work-item query (FR-05b) enables claim-discovery and future UI list views without reaching into work_items_current directly."
       fr_ids:
         - "FR-01"
         - "FR-02"
@@ -106,7 +106,7 @@ mvp:
         - "FR-21"
         - "FR-22"
         - "FR-23"
-      rationale: "Substrate replaces reasoning.log for one Software Factory workflow with durable claims, role enforcement, structured work-item discovery, replay, observability."
+      rationale: "Regista replaces reasoning.log for one Software Factory workflow with durable claims, role enforcement, structured work-item discovery, replay, observability."
     - phase: 2
       label: "Fast-follow"
       fr_ids:
@@ -192,7 +192,7 @@ open_questions:
   - question: "Workflow file composition (!include / cross-file merge)"
     category: "resolved"
     owner: "Implemented as FR-29 (Plan 004). extends: field with deep-merge, keyed list merge, __append/__remove modifiers."
-  - question: "Substrate library version → Postgres major version compatibility matrix"
+  - question: "Regista library version → Postgres major version compatibility matrix"
     category: "needs_research"
     owner: "Implementing agent (resolved during build)"
   - question: "Per-hook retry override defaults — what's the right per-hook tuning?"
@@ -225,11 +225,11 @@ assumptions:
     rationale: "Homelab single-operator context; enforcement is available but not required."
   - assumption: "Workflow files authored by operator (not untrusted parties)"
     rationale: "Homelab single-operator context; YAML parsing safety follows"
-  - assumption: "License-cost-bound but token-spend unconstrained — substrate may be liberal with logging detail and event payload size"
+  - assumption: "License-cost-bound but token-spend unconstrained — regista may be liberal with logging detail and event payload size"
     rationale: "Stated explicitly in vibe spec"
-  - assumption: "Federated UI is downstream and adapts to substrate's contract, not vice versa"
-    rationale: "Vibe spec frames UI as future; substrate is authoritative source"
-  - assumption: "Python is acceptable as substrate's implementation language for MVP"
+  - assumption: "Federated UI is downstream and adapts to regista's contract, not vice versa"
+    rationale: "Vibe spec frames UI as future; regista is authoritative source"
+  - assumption: "Python is acceptable as regista's implementation language for MVP"
     rationale: "Existing factory is Python; Q1 answer 'library; if non-Python needed, trivial to migrate' implies acceptance"
 
 # ---------------------------------------------------------------------------
@@ -311,9 +311,9 @@ deployment:
       ports:
         "5432": "5432"
       env:
-        POSTGRES_USER: "substrate_test"
-        POSTGRES_PASSWORD: "substrate_test"
-        POSTGRES_DB: "substrate_test"
+        POSTGRES_USER: "regista_test"
+        POSTGRES_PASSWORD: "regista_test"
+        POSTGRES_DB: "regista_test"
   smoke_tests:
     http_endpoints: []
     file_checks: []
@@ -329,10 +329,10 @@ handoff:
       rationale: "Simplest, matches per-project isolation. Sidecar migration is additive if non-Python actors arrive."
     - decision: "Hybrid persistence: events authoritative, work_items_current transactionally projected"
       rationale: "Single Postgres transaction per state change. Fast reads + intact history + rebuildable projection. Avoids pure event-sourcing's per-read replay cost."
-    - decision: "Postgres-only coordination; substrate is not a durable execution engine"
-      rationale: "Keeps substrate small. Temporal-style orchestration is project-layered concern using substrate as durable state record."
+    - decision: "Postgres-only coordination; regista is not a durable execution engine"
+      rationale: "Keeps regista small. Temporal-style orchestration is project-layered concern using regista as durable state record."
     - decision: "Per-project schema isolation; one schema per project within a shared database; multiple workflows per schema"
-      rationale: "Hardest wall, cleanest backup/restore, no cross-project query accidents. Operator provisions DB; substrate runs migrations."
+      rationale: "Hardest wall, cleanest backup/restore, no cross-project query accidents. Operator provisions DB; regista runs migrations."
     - decision: "Workflow files versioned in per-project registry; immutable once referenced; work-items pin version; replay validates against historical versions"
       rationale: "Allows non-additive workflow changes (rename state, remove transition) safely. In-flight work continues on its pinned version."
     - decision: "Custom fields per-workflow-per-work-item-type with declared types and ui_visible flag (default false)"
@@ -345,8 +345,8 @@ handoff:
       rationale: "Same-transaction events share timestamp (correct); event_seq disambiguates within work-item for replay determinism."
     - decision: "Links are events (link_created / link_removed); current links derived; cross-project links unsupported"
       rationale: "Composes with replay correctness; link history preserved in audit trail."
-    - decision: "Substrate does not retry on connection failure; surfaces error to caller"
-      rationale: "Substrate doesn't know if a write is safe to retry; that decision belongs to caller with idempotency context."
+    - decision: "Regista does not retry on connection failure; surfaces error to caller"
+      rationale: "Regista doesn't know if a write is safe to retry; that decision belongs to caller with idempotency context."
     - decision: "Workflow registry append-only; no removal primitive"
       rationale: "Operator-level removal is operator's responsibility; orphaned references caught at next replay."
     - decision: "Dead-letter is quarantine, not graveyard; requeue_dead_lettered_hook(id) primitive"
@@ -356,23 +356,23 @@ handoff:
     - decision: "Concurrency contract: canonical lock target = work_items_current row; READ COMMITTED + row lock; gap-free per-work-item event_seq allocator"
       rationale: "Single canonical serialization mechanism for per-work-item state; prevents multiple agents inferring incompatible locking strategies."
     - decision: "Projection invariant: work_items_current fully derived from events; no out-of-band updates; drift detected via FR-16 replay report"
-      rationale: "Events are authoritative; projection is a transactionally-consistent denormalization. Direct mutation outside substrate API is a contract violation detectable by replay."
+      rationale: "Events are authoritative; projection is a transactionally-consistent denormalization. Direct mutation outside regista API is a contract violation detectable by replay."
     - decision: "API-layer idempotency: client-supplied UUIDv4 on every mutation; event_id doubles as event-append idempotency key; optional expected_event_seq for optimistic locking"
-      rationale: "Makes caller-side retry across transient failures safe without substrate needing to understand caller idempotency semantics."
+      rationale: "Makes caller-side retry across transient failures safe without regista needing to understand caller idempotency semantics."
     - decision: "Signing: HMAC-SHA256 over RFC 8785 canonical JSON envelope; canonical hash stored alongside signature for jsonb-independent re-verification"
       rationale: "Signature stability must survive Postgres version upgrades that change jsonb canonicalization. Storing canonical hash decouples verification from jsonb round-trip behavior."
     - decision: "Renaming: in-transaction side effects are transition validators (no I/O, gate commit); async side effects are hooks (durable queue, retryable)"
       rationale: "Naming forces correct mental model. Consumers reach for hooks by default; validators are a narrow exception path for work necessarily atomic with the transition."
-    - decision: "Closed custom field type vocabulary: string, integer, boolean, timestamp, json, enum, work_item_ref. Expansion requires substrate minor version bump"
-      rationale: "Prevents uncontrolled type proliferation; version-gated expansion keeps workflow definitions portable across substrate versions."
+    - decision: "Closed custom field type vocabulary: string, integer, boolean, timestamp, json, enum, work_item_ref. Expansion requires regista minor version bump"
+      rationale: "Prevents uncontrolled type proliferation; version-gated expansion keeps workflow definitions portable across regista versions."
     - decision: "Trust tiers on event fields: authenticated (actor_id, key_id) / server-stamped (timestamp, event_seq) / actor-claimed (actor_metadata, incl. role, model, provider, role_source, context_hash, prompt_template_hash)"
       rationale: "Consumers (UI, audit tooling, replay validators) must distinguish field trustworthiness. Surfaces role as 'claimed' until enforcement lands. Content-hash fields (context_hash, prompt_template_hash) are actor-claimed like the rest of actor_metadata but serve a different purpose: per-attempt and per-template correlation in telemetry."
     - decision: "Structured work-item query (FR-05b) as MVP"
       rationale: "Closes the API gap where agents would otherwise reach into work_items_current directly to discover claimable work. Foundation for federated UI list views."
     - decision: "Public API surface formalized (section 19): protocol, not Postgres connection; library is sole signer; service-wrapping is mechanical"
       rationale: "If the API leaks Postgres internals, every service wrapper becomes architectural. Clean boundary means sidecar/federated-UI service layer is a thin HTTP translation, not a redesign."
-    - decision: "Consumer expectation boundary (section 20): explicit enumeration of what substrate does NOT do"
-      rationale: "The 'coordination, not orchestration' label is too easily misread. Enumerating non-goals prevents the most common adoption failure: 'I thought substrate would handle X.'"
+    - decision: "Consumer expectation boundary (section 20): explicit enumeration of what regista does NOT do"
+      rationale: "The 'coordination, not orchestration' label is too easily misread. Enumerating non-goals prevents the most common adoption failure: 'I thought regista would handle X.'"
     - decision: "Per-project schema isolation (BR-13) acknowledged as load-bearing with documented migration path to tenant_id-in-shared-schema"
       rationale: "DB-per-project is correct at homelab scale. Migration path to tenant_id-in-shared-DB documented so the boundary can shift without API changes when operational pain warrants."
     - decision: "Actor → allowed_roles enforcement (FR-24): opt-in via actor_roles table"
@@ -410,23 +410,23 @@ handoff:
       impact_if_wrong: "Adding OIDC requires implementing verifier plug; no schema migration to actor model"
     - item: "Sidecar / non-Python integration"
       why_deferred: "All MVP agents are Python"
-      impact_if_wrong: "Migration to sidecar is additive (substrate exposes RPC over local socket); no core schema change"
+      impact_if_wrong: "Migration to sidecar is additive (regista exposes RPC over local socket); no core schema change"
 
   intent_signals:
     - signal: "Generalize it and have it work for all projects more generally"
-      relevance: "Substrate must be project-agnostic; resist factory-specific concepts leaking into core schema. Workflow definitions are the project-specific layer."
+      relevance: "Regista must be project-agnostic; resist factory-specific concepts leaking into core schema. Workflow definitions are the project-specific layer."
     - signal: "One source of truth for all projects ... one pane of glass we can feed projects into when we eventually make a human readable UI"
       relevance: "Shape the contract so federated UI is additive, not redesign trigger. ui_visible flag, declarative workflow def, event log read shapes all serve this."
     - signal: "Non-revenue homelab project; license costs are the binding constraint, token spend is not"
       relevance: "Prefer richly-logged, verbose, debug-friendly implementations over throughput-optimized. Avoid per-seat-licensed tools (Linear / Jira-cloud)."
     - signal: "Compose with, not replace, the existing reasoning.log convention"
-      relevance: "Substrate must not assume sole ownership of agent state; reasoning.log continues to coexist."
+      relevance: "Regista must not assume sole ownership of agent state; reasoning.log continues to coexist."
     - signal: "Currently zero humans-in-the-loop, but the design should not foreclose that"
       relevance: "Actor model + identity verifier shaped to accept humans without schema migration; ui_visible flag and pluggable verifier honor this."
     - signal: "Idempotency and exactly-once semantics per task type, not globally"
-      relevance: "Substrate does not enforce exactly-once globally; per-hook retry policy and dead-letter behavior are project-tunable; sync-hook-rollback gives exactly-once-per-transition where needed."
-    - signal: "What's substrate concern vs. agent concern"
-      relevance: "Substrate is coordination + state; agents own work, hooks, scheduling, retries beyond the dispatch primitive. Resist scope creep."
+      relevance: "Regista does not enforce exactly-once globally; per-hook retry policy and dead-letter behavior are project-tunable; sync-hook-rollback gives exactly-once-per-transition where needed."
+    - signal: "What's regista concern vs. agent concern"
+      relevance: "Regista is coordination + state; agents own work, hooks, scheduling, retries beyond the dispatch primitive. Resist scope creep."
     - signal: "Minimum API surface needs to be to keep a future UI cheap"
       relevance: "Read-event-log primitives (FR-05) and current-state queries are the UI's primary surface; design indexes and query shapes for the UI's future use, not just hot-path agent operations."
 
@@ -438,6 +438,6 @@ delta_to_next_level:
   - gap: "OIDC verifier implementation"
     what_would_close_it: "Implement verifier plug; no schema migration to actor model"
   - gap: "Federated UI prototype"
-    what_would_close_it: "Downstream artifact; not a substrate concern, but blocks human-facing view"
+    what_would_close_it: "Downstream artifact; not a regista concern, but blocks human-facing view"
   - gap: "Per-hook rate limiting in sidecar"
     what_would_close_it: "Token-bucket per-token rate limiting; currently deferred (WS-4)"

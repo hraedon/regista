@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from substrate import ValidationResult, validate_yaml
+from regista import ValidationResult, validate_yaml
 
 WORKFLOW_PATH = Path(__file__).parent / "test_workflow.yaml"
 WORKFLOW_YAML = WORKFLOW_PATH.read_text()
@@ -52,7 +52,7 @@ class TestValidateYamlSchemaErrors:
         bad_yaml = """
 name: bad_wf
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 states: []
 transitions: []
 roles: []
@@ -69,7 +69,7 @@ class TestValidateYamlSemanticErrors:
         bad_yaml = """
 name: bad_wf
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 states:
   - name: start
     initial: true
@@ -92,7 +92,7 @@ link_types: []
         bad_yaml = """
 name: bad_wf
 version: 1
-substrate_version: "0.1.0"
+regista_version: "0.1.0"
 states:
   - name: start
     initial: true

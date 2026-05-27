@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from substrate._cli import main as cli_main
+from regista._cli import main as cli_main
 
 TESTS_DIR = Path(__file__).parent
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")

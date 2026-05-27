@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from substrate._errors import ErrorCode, SubstrateError
-from substrate._workflow_compose import (
+from regista._errors import ErrorCode, RegistaError
+from regista._workflow_compose import (
     MAX_INCLUDE_DEPTH,
     _deep_merge,
     _merge_lists,
@@ -48,7 +48,7 @@ class TestDeepMerge:
     def test_append_non_list_raises(self):
         parent = {"allowed_roles": "agent"}
         child = {"allowed_roles__append": ["human"]}
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(RegistaError) as exc_info:
             _deep_merge(parent, child, {})
         assert exc_info.value.code == ErrorCode.WORKFLOW_COMPOSE_ERROR
 
@@ -87,7 +87,7 @@ class TestResolveIncludes:
                 """
 name: test
 version: 1
-substrate_version: 0.1.0
+regista_version: 0.1.0
 states:
   - name: new
     initial: true
@@ -109,7 +109,7 @@ work_item_types: []
                 """
 name: test
 version: 1
-substrate_version: 0.1.0
+regista_version: 0.1.0
 states:
   - name: new
     initial: true
@@ -136,7 +136,7 @@ version: 2
             b = Path(tmpdir) / "b.yaml"
             a.write_text("extends: ./b.yaml\n")
             b.write_text("extends: ./a.yaml\n")
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 resolve_includes(a)
             assert exc_info.value.code == ErrorCode.WORKFLOW_COMPOSE_ERROR
             assert "Cycle" in exc_info.value.message
@@ -153,7 +153,7 @@ version: 2
                         """
 name: test
 version: 1
-substrate_version: 0.1.0
+regista_version: 0.1.0
 states:
   - name: new
     initial: true
@@ -163,7 +163,7 @@ work_item_types: []
 """
                     )
                 files.append(p)
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 resolve_includes(files[0])
             assert exc_info.value.code == ErrorCode.WORKFLOW_COMPOSE_ERROR
             assert "depth" in exc_info.value.message
@@ -172,7 +172,7 @@ work_item_types: []
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "child.yaml"
             p.write_text("extends: ../base.yaml\n")
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 resolve_includes(p)
             assert exc_info.value.code == ErrorCode.WORKFLOW_COMPOSE_ERROR
 
@@ -180,7 +180,7 @@ work_item_types: []
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "child.yaml"
             p.write_text("extends: ./nonexistent.yaml\n")
-            with pytest.raises(SubstrateError) as exc_info:
+            with pytest.raises(RegistaError) as exc_info:
                 resolve_includes(p)
             assert exc_info.value.code == ErrorCode.WORKFLOW_COMPOSE_ERROR
 
@@ -194,7 +194,7 @@ work_item_types: []
                 """
 name: test
 version: 1
-substrate_version: 0.1.0
+regista_version: 0.1.0
 states:
   - name: new
     initial: true
@@ -220,7 +220,7 @@ class TestComposeWorkflow:
                 """
 name: test
 version: 1
-substrate_version: 0.1.0
+regista_version: 0.1.0
 states:
   - name: new
     initial: true
