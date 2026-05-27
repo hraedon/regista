@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate._testing import KeySet, get_scheme
 from substrate.testing import InMemorySubstrate, drop_project_schema
 
@@ -187,7 +188,7 @@ class TestEd25519KeyLoadErrors:
         monkeypatch.setitem(__import__("sys").modules, "nacl.signing", None)
         from substrate._keys import KeySet as _KeySet
 
-        with pytest.raises(Exception, match=r"ed25519.*PyNaCl"):
+        with pytest.raises(SubstrateError, match=r"ed25519.*PyNaCl"):
             _KeySet(kf)
 
     def test_unknown_scheme_raises(self, tmp_path):

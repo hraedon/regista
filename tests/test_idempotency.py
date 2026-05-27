@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
@@ -42,7 +43,7 @@ class TestAC24IdempotencyMismatch:
             event_id=eid,
         )
 
-        with pytest.raises(Exception, match="IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD"):
+        with pytest.raises(SubstrateError, match="IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD"):
             substrate.append_event(
                 work_item_id=wi.work_item_id,
                 actor_id="agent-1",
@@ -66,7 +67,7 @@ class TestAC24IdempotencyMismatch:
             event_id=eid,
         )
 
-        with pytest.raises(Exception, match="IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD"):
+        with pytest.raises(SubstrateError, match="IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD"):
             substrate.append_event(
                 work_item_id=wi.work_item_id,
                 actor_id="agent-2",
@@ -108,7 +109,7 @@ class TestAC25ExpectedEventSeq:
             custom_fields={"title": "AC-25"},
         )
 
-        with pytest.raises(Exception, match="CONCURRENT_MODIFICATION"):
+        with pytest.raises(SubstrateError, match="CONCURRENT_MODIFICATION"):
             substrate.append_event(
                 work_item_id=wi.work_item_id,
                 actor_id="agent-1",
@@ -141,7 +142,7 @@ class TestAC25ExpectedEventSeq:
             custom_fields={"title": "AC-25 transition"},
         )
 
-        with pytest.raises(Exception, match="CONCURRENT_MODIFICATION"):
+        with pytest.raises(SubstrateError, match="CONCURRENT_MODIFICATION"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",

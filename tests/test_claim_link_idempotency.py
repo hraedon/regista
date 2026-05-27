@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
@@ -149,7 +150,7 @@ class TestLinkIdempotency:
         events_after_first = substrate.read_events(work_item_id=wi1.work_item_id)
         first_count = len(events_after_first)
 
-        with pytest.raises(Exception, match="LINK_NOT_FOUND"):
+        with pytest.raises(SubstrateError, match="LINK_NOT_FOUND"):
             substrate.remove_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,

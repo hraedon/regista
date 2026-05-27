@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate._testing import KeySet, raw_transaction, replay_fn
 from substrate.testing import drop_project_schema
 
@@ -53,7 +54,7 @@ class TestActorRoles:
         assert len(roles) == 0
 
     def test_unregister_nonexistent_role_raises(self, substrate):
-        with pytest.raises(Exception, match="ACTOR_ROLE_NOT_REGISTERED"):
+        with pytest.raises(SubstrateError, match="ACTOR_ROLE_NOT_REGISTERED"):
             substrate.unregister_actor_role("agent-4", "agent")
 
     def test_list_all_roles(self, substrate):
@@ -73,7 +74,7 @@ class TestActorRoles:
             custom_fields={"title": "Enforcement test"},
         )
 
-        with pytest.raises(Exception, match="ACTOR_ROLE_NOT_AUTHORIZED"):
+        with pytest.raises(SubstrateError, match="ACTOR_ROLE_NOT_AUTHORIZED"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
@@ -125,7 +126,7 @@ class TestActorRoles:
             custom_fields={"title": "Detail test"},
         )
 
-        with pytest.raises(Exception, match="Allowed roles") as exc_info:
+        with pytest.raises(SubstrateError, match="Allowed roles") as exc_info:
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
@@ -137,12 +138,12 @@ class TestActorRoles:
 
     def test_register_actor_role_rejects_overlong_actor_id(self, substrate):
         long_id = "x" * 256
-        with pytest.raises(Exception, match="INVALID_ARGUMENT"):
+        with pytest.raises(SubstrateError, match="INVALID_ARGUMENT"):
             substrate.register_actor_role(long_id, "agent")
 
     def test_unregister_actor_role_rejects_overlong_actor_id(self, substrate):
         long_id = "x" * 256
-        with pytest.raises(Exception, match="INVALID_ARGUMENT"):
+        with pytest.raises(SubstrateError, match="INVALID_ARGUMENT"):
             substrate.unregister_actor_role(long_id, "agent")
 
 
@@ -383,7 +384,7 @@ class TestUpdateNotBefore:
             not_before=future,
         )
 
-        with pytest.raises(Exception, match="not_before"):
+        with pytest.raises(SubstrateError, match="not_before"):
             substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
 
     def test_not_before_update_event_idempotent(self, substrate):
@@ -435,7 +436,7 @@ class TestCustomFieldValidationAtTransition:
             custom_fields={"title": "Bad enum test"},
         )
 
-        with pytest.raises(Exception, match="not in enum"):
+        with pytest.raises(SubstrateError, match="not in enum"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
@@ -452,7 +453,7 @@ class TestCustomFieldValidationAtTransition:
             custom_fields={"title": "Unknown field test"},
         )
 
-        with pytest.raises(Exception, match="Unknown field"):
+        with pytest.raises(SubstrateError, match="Unknown field"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
@@ -469,7 +470,7 @@ class TestCustomFieldValidationAtTransition:
             custom_fields={"title": "Type test"},
         )
 
-        with pytest.raises(Exception, match="expects string"):
+        with pytest.raises(SubstrateError, match="expects string"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",

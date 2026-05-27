@@ -572,6 +572,284 @@ class TestTimestampRoutes:
         assert resp.status_code == 200
 
 
+class TestLinkRoutes:
+    def test_create_and_remove_link(self, client, auth_headers, workflow_id):
+        resp1 = client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "test_workflow",
+                "work_item_type": "feature",
+                "custom_fields": {"title": "link-src"},
+            },
+            headers=auth_headers,
+        )
+        assert resp1.status_code == 200
+        src_id = resp1.json()["work_item"]["work_item_id"]
+
+        resp2 = client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "test_workflow",
+                "work_item_type": "feature",
+                "custom_fields": {"title": "link-dst"},
+            },
+            headers=auth_headers,
+        )
+        assert resp2.status_code == 200
+        dst_id = resp2.json()["work_item"]["work_item_id"]
+
+        resp = client.post(
+            "/v1/create_link",
+            json={
+                "from_work_item_id": src_id,
+                "to_work_item_id": dst_id,
+                "link_type": "blocks",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = client.post(
+            "/v1/remove_link",
+            json={
+                "from_work_item_id": src_id,
+                "to_work_item_id": dst_id,
+                "link_type": "blocks",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+
+class TestUpdateNotBeforeRoute:
+    def test_update_not_before(self, client, auth_headers, workflow_id):
+        resp = client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "test_workflow",
+                "work_item_type": "feature",
+                "custom_fields": {"title": "nb-test"},
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        wi_id = resp.json()["work_item"]["work_item_id"]
+
+        resp = client.post(
+            "/v1/update_not_before",
+            json={
+                "work_item_id": wi_id,
+                "not_before": "2026-06-01T00:00:00+00:00",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+
+class TestHeartbeatClaimRoute:
+    def test_heartbeat_claim(self, client, auth_headers, workflow_id):
+        resp = client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "test_workflow",
+                "work_item_type": "feature",
+                "custom_fields": {"title": "hb-test"},
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        wi_id = resp.json()["work_item"]["work_item_id"]
+
+        resp = client.post(
+            "/v1/acquire_claim",
+            json={"work_item_id": wi_id, "ttl_seconds": 300},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = client.post(
+            "/v1/heartbeat_claim",
+            json={"work_item_id": wi_id, "ttl_seconds": 600},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+
+class TestWitnessRoutes:
+    def test_register_list_delete_witness(self, client, auth_headers):
+        resp = client.post(
+            "/v1/witnesses",
+            json={"url": "https://example.com/witness"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        witness_id = resp.json()["witness_id"]
+
+        resp = client.get("/v1/witnesses", headers=auth_headers)
+        assert resp.status_code == 200
+        assert any(w["witness_id"] == witness_id for w in resp.json())
+
+        resp = client.delete(f"/v1/witnesses/{witness_id}", headers=auth_headers)
+        assert resp.status_code == 200
+
+    def test_pause_resume_witness(self, client, auth_headers):
+        resp = client.post(
+            "/v1/witnesses",
+            json={"url": "https://example.com/witness-pr"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        witness_id = resp.json()["witness_id"]
+
+        resp = client.post(
+            f"/v1/witnesses/{witness_id}/pause",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = client.post(
+            f"/v1/witnesses/{witness_id}/reactivate",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+    def test_list_witness_receipts(self, client, auth_headers):
+        resp = client.get("/v1/witnesses/receipts", headers=auth_headers)
+        assert resp.status_code == 200
+
+    def test_deliver_witness_receipts(self, client, auth_headers):
+        resp = client.post("/v1/witnesses/deliver", headers=auth_headers)
+        assert resp.status_code == 200
+
+    def test_witness_requires_admin(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/witnesses",
+            json={"url": "https://example.com/nope"},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+
+class TestRecurrenceRoutes:
+    def test_register_list_cancel_recurrence(self, client, auth_headers):
+        resp = client.post(
+            "/v1/register_recurrence_rule",
+            json={
+                "workflow_name": "test_workflow",
+                "workflow_version": 1,
+                "work_item_type": "feature",
+                "template": {"custom_fields": {"title": "recurring"}},
+                "schedule_kind": "interval",
+                "schedule_expr": "PT1H",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        rule_id = resp.json()["rule_id"]
+
+        resp = client.get("/v1/recurrence_rules", headers=auth_headers)
+        assert resp.status_code == 200
+        assert any(r["rule_id"] == rule_id for r in resp.json())
+
+        resp = client.post(
+            "/v1/cancel_recurrence_rule",
+            json={"rule_id": rule_id},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+    def test_fire_recurrence_requires_admin(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/fire_recurrence",
+            json={"rule_id": str(uuid.uuid4())},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_update_recurrence_requires_admin(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/update_recurrence_rule",
+            json={"rule_id": str(uuid.uuid4()), "status": "cancelled"},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+
+class TestBatchRoutes:
+    def test_create_work_items_batch(self, client, auth_headers, workflow_id):
+        resp = client.post(
+            "/v1/create_work_items_batch",
+            json={
+                "items": [
+                    {
+                        "workflow_name": "test_workflow",
+                        "work_item_type": "feature",
+                        "custom_fields": {"title": "batch-1"},
+                    },
+                    {
+                        "workflow_name": "test_workflow",
+                        "work_item_type": "feature",
+                        "custom_fields": {"title": "batch-2"},
+                    },
+                ]
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["results"]) == 2
+
+    def test_create_work_items_batch_empty_rejected(self, client, auth_headers):
+        resp = client.post(
+            "/v1/create_work_items_batch",
+            json={"items": []},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+
+class TestReadEventsSinceRoute:
+    def test_read_events_since(self, client, auth_headers, workflow_id):
+        resp = client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "test_workflow",
+                "work_item_type": "feature",
+                "custom_fields": {"title": "since-test"},
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        wi_id = resp.json()["work_item"]["work_item_id"]
+
+        resp = client.post(
+            "/v1/read_events_since",
+            json={"work_item_id": wi_id, "after_seq": 0},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) >= 1
+
+
+class TestComposeWorkflowRoute:
+    def test_compose_workflow(self, client, auth_headers):
+        resp = client.post(
+            "/v1/compose_workflow",
+            json={"file_path": TEST_WORKFLOW},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert "composed" in resp.json()
+        assert "source_map" in resp.json()
+
+    def test_compose_requires_admin(self, client, nonadmin_headers):
+        resp = client.post(
+            "/v1/compose_workflow",
+            json={"file_path": TEST_WORKFLOW},
+            headers=nonadmin_headers,
+        )
+        assert resp.status_code == 403
+
+
 class TestErrorCodeCoverage:
     def test_all_error_codes_have_status_mapping(self):
         from substrate._errors import ErrorCode

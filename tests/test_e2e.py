@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
@@ -137,7 +138,7 @@ class TestEndToEndAgentPipeline:
             not_before=future,
         )
 
-        with pytest.raises(Exception, match="not_before"):
+        with pytest.raises(SubstrateError, match="not_before"):
             substrate.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
 
         past = datetime.now(UTC) - timedelta(seconds=1)
@@ -211,7 +212,7 @@ class TestEndToEndAgentPipeline:
             custom_fields={"title": "Role enforced"},
         )
 
-        with pytest.raises(Exception, match="ACTOR_ROLE_NOT_AUTHORIZED"):
+        with pytest.raises(SubstrateError, match="ACTOR_ROLE_NOT_AUTHORIZED"):
             substrate.transition(
                 wi.work_item_id, "start", "strict-worker",
                 actor_metadata={"role": "agent"},

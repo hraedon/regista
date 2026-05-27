@@ -146,7 +146,7 @@ class TestValidatorTransactionRollback:
             actor_id="agent-1",
         )
 
-        with pytest.raises(Exception, match="VALIDATOR_FAILED"):
+        with pytest.raises(SubstrateError, match="VALIDATOR_FAILED"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="finish",

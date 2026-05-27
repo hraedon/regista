@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
@@ -74,7 +75,7 @@ class TestSF2WorkflowRoundtripV1:
 
     def test_phase1_create_missing_required_field_rejected(self, substrate):
         substrate.register_actor_role("arch-2", "interface_architect")
-        with pytest.raises(Exception, match="CUSTOM_FIELD_VIOLATION"):
+        with pytest.raises(SubstrateError, match="CUSTOM_FIELD_VIOLATION"):
             substrate.create_work_item(
                 workflow_name="software_factory",
                 work_item_type="interface_spec",
@@ -99,7 +100,7 @@ class TestSF2WorkflowRoundtripV1:
                 "ac_ids": ["AC-01"],
             },
         )
-        with pytest.raises(Exception, match="ROLE_NOT_PERMITTED"):
+        with pytest.raises(SubstrateError, match="ROLE_NOT_PERMITTED"):
             substrate.transition(
                 wi.work_item_id, "claim", "intruder-1",
                 actor_kind="agent",
@@ -195,7 +196,7 @@ class TestSF2WorkflowRoundtripV2:
         after_claim = substrate.get_work_item(wi2.work_item_id)
         assert after_claim.current_state == "in_progress"
 
-        with pytest.raises(Exception, match="ROLE_NOT_PERMITTED"):
+        with pytest.raises(SubstrateError, match="ROLE_NOT_PERMITTED"):
             substrate.transition(
                 wi1.work_item_id, "claim", "imp-5",
                 actor_kind="agent",

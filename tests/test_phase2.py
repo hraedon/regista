@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from substrate._errors import SubstrateError
 from substrate._testing import raw_transaction
 from substrate.testing import drop_project_schema
 
@@ -184,7 +185,7 @@ class TestValidators:
             custom_fields={"title": "Validator fail"},
         )
 
-        with pytest.raises(Exception, match="VALIDATOR_FAILED"):
+        with pytest.raises(SubstrateError, match="VALIDATOR_FAILED"):
             substrate.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
@@ -449,7 +450,7 @@ class TestDeadLetterRequeue:
         assert rows[0]["retry_count"] == 0
 
     def test_requeue_nonexistent_fails(self, substrate):
-        with pytest.raises(Exception, match="HOOK_NOT_FOUND"):
+        with pytest.raises(SubstrateError, match="HOOK_NOT_FOUND"):
             substrate.requeue_dead_lettered_hook(999999)
 
 
