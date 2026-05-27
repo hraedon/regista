@@ -48,6 +48,7 @@ def list_dead_lettered_hooks(mgr: ConnectionManager, limit: int = 100) -> list[D
                 hook_type=r["hook_type"],
                 payload=r["payload"],
                 retry_count=r["retry_count"],
+                max_retries=r["max_retries"],
                 error_message=r["error_message"],
                 dead_lettered_at=r["dead_lettered_at"],
                 original_hook_queue_id=r["original_hook_queue_id"],

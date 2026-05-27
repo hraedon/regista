@@ -747,6 +747,7 @@ class DeadLetterEntry:
     hook_type: str
     payload: dict | None
     retry_count: int
+    max_retries: int
     error_message: str | None
     dead_lettered_at: datetime
     original_hook_queue_id: int | None
@@ -759,6 +760,7 @@ class DeadLetterEntry:
             "hook_type": self.hook_type,
             "payload": self.payload,
             "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
             "error_message": self.error_message,
             "dead_lettered_at": self.dead_lettered_at.isoformat(),
             "original_hook_queue_id": self.original_hook_queue_id,
@@ -773,6 +775,7 @@ class DeadLetterEntry:
             hook_type=data["hook_type"],
             payload=data.get("payload"),
             retry_count=data["retry_count"],
+            max_retries=data.get("max_retries", 3),
             error_message=data.get("error_message"),
             dead_lettered_at=datetime.fromisoformat(data["dead_lettered_at"]),
             original_hook_queue_id=data.get("original_hook_queue_id"),

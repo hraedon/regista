@@ -70,7 +70,7 @@ class KeySet:
             raw = self._path.read_text()
         except OSError as e:
             raise SubstrateError(
-                ErrorCode.UNKNOWN_KEY_ID,
+                ErrorCode.KEY_LOAD_ERROR,
                 f"Cannot read key set from {self._path}: {e}",
             )
 
@@ -78,13 +78,13 @@ class KeySet:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
             raise SubstrateError(
-                ErrorCode.UNKNOWN_KEY_ID,
+                ErrorCode.KEY_LOAD_ERROR,
                 f"Invalid JSON in key set {self._path}: {e}",
             )
 
         if not isinstance(data, dict) or "keys" not in data:
             raise SubstrateError(
-                ErrorCode.UNKNOWN_KEY_ID,
+                ErrorCode.KEY_LOAD_ERROR,
                 f"Key set {self._path} must be a JSON object with a 'keys' array",
             )
 

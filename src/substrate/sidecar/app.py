@@ -36,13 +36,19 @@ def create_app(
     @app.get("/ready")
     async def ready():
         try:
-            with substrate._mgr.connect() as conn:
+            mgr = substrate._mgr
+            if mgr is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "unavailable", "detail": "Connection closed"},
+                )
+            with mgr.connect() as conn:
                 conn.execute("SELECT 1")
             return {"status": "ok"}
-        except Exception as exc:
+        except Exception:
             return JSONResponse(
                 status_code=503,
-                content={"status": "unavailable", "detail": str(exc)[:200]},
+                content={"status": "unavailable"},
             )
 
     @app.get("/metrics")
@@ -51,8 +57,6 @@ def create_app(
 
         output = generate_latest(substrate.prometheus_registry)
         return PlainTextResponse(content=output, media_type=CONTENT_TYPE_LATEST)
-
-    max_body_size = 10 * 1024 * 1024
 
     @app.middleware("http")
     async def sole_signer_middleware(request: Request, call_next):

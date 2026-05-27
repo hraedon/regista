@@ -166,6 +166,7 @@ def in_memory_list_dead_lettered_hooks(dead_letter: dict) -> list[DeadLetterEntr
             hook_type=e["hook_type"],
             payload=e.get("payload"),
             retry_count=e["retry_count"],
+            max_retries=e.get("max_retries", 3),
             error_message=e.get("error_message"),
             dead_lettered_at=e["dead_lettered_at"],
             original_hook_queue_id=e.get("original_hook_queue_id"),

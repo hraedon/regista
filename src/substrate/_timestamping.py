@@ -292,9 +292,10 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
             )
             tsa_timestamp = confirmed_at
         conn.execute(
-            "UPDATE tsp_batches SET status = 'confirmed', tsa_token = %s, confirmed_at = now() "
+            "UPDATE tsp_batches SET status = 'confirmed', "
+            "tsa_token = %s, tsa_timestamp = %s, confirmed_at = now() "
             "WHERE batch_id = %s",
-            [token, batch_id],
+            [token, tsa_timestamp, batch_id],
         )
         return TimestampBatch(
             batch_id=batch_id,

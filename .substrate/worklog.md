@@ -4,6 +4,33 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-27 — Session 62: Breadcrumb remediation (BC-275, BC-278–281)
+
+**Focus:** Scan repo, fix open breadcrumbs, tighten code.
+
+**Delivered:**
+
+1. **BC-278 — Heartbeat coalescing InMemory divergence (medium → fixed):**
+   - `_in_memory_claims.py`: changed `(new_expires_at - last_emitted)` to `(now - last_emitted)` matching Postgres wall-clock comparison. Changed `last_heartbeat_emitted_at` to store `now` instead of `new_expires_at`.
+
+2. **BC-279 — Replay silently skips unknown transitions (medium → fixed):**
+   - `_replay.py` and `_in_memory_replay.py`: when a transition name is not found in the workflow definition (neither by name+state nor by name alone), now increments `warnings` and logs `replay.unknown_transition` instead of silently continuing.
+
+3. **BC-280 — HookOps _handlers thread safety (medium → fixed):**
+   - `_ops.py`: `HookOps.register_handler` and `HookOps.register_validator` use copy-on-write pattern (`{**self._handlers, name: handler}`) instead of in-place mutation. InMemory backend already had this pattern; Postgres `HookOps` now matches.
+
+4. **BC-275 — Sidecar async blocking IO (medium → fixed):**
+   - `sidecar/routes.py`: changed all 42 route handlers from `async def` to plain `def`. FastAPI runs plain def handlers in a threadpool, preventing synchronous psycopg I/O from blocking the event loop.
+
+5. **BC-281 — Unused witness error codes (low → accepted):**
+   - `WITNESS_DELIVERY_FAILED` and `WITNESS_PAUSED` are part of the ErrorCode enum (API contract §19.5). Delivery handles failures via status transitions, not exceptions. Removing them would break the enum. Accepted as vocabulary for downstream consumers.
+
+6. **Regression tests:** 6 new tests in `tests/test_bc278_279_280.py`.
+
+**Test results:** 998 passed, 10 deselected, lint clean.
+
+---
+
 ## 2026-05-26 — Session 61: Plan 016, webhook/witness unification, CI fixes
 
 **Focus:** Implement Plan 016 (privileged transitions), unify webhook→witness (BC-269), fix CI, add Python 3.13.

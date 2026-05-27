@@ -120,7 +120,7 @@ def in_memory_heartbeat_claim(
     last_emitted = claim.get("last_heartbeat_emitted_at")
     should_emit = (
         last_emitted is None
-        or (result.new_expires_at - last_emitted).total_seconds() >= threshold
+        or (now - last_emitted).total_seconds() >= threshold
     )
 
     if should_emit and key_set is not None:
@@ -141,7 +141,7 @@ def in_memory_heartbeat_claim(
             event_id=uuid.uuid4(),
             key_set=key_set,
         )
-        claim["last_heartbeat_emitted_at"] = result.new_expires_at
+        claim["last_heartbeat_emitted_at"] = now
 
     claim["expires_at"] = result.new_expires_at
     wi["claim_expires_at"] = result.new_expires_at

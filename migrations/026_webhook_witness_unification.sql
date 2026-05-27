@@ -9,7 +9,11 @@ ALTER TABLE witness_registrations
 ALTER TABLE witness_registrations
     ADD CONSTRAINT chk_witness_mode CHECK (mode IN ('witness', 'push'));
 
--- 3. Unify status: replace 'failed' with 'paused' in CHECK constraints
+-- 3. Backfill any existing 'failed' rows to 'paused' BEFORE adding constraints
+UPDATE witness_registrations SET status = 'paused' WHERE status = 'failed';
+UPDATE witness_receipts SET status = 'paused' WHERE status = 'failed';
+
+-- 4. Unify status: replace 'failed' with 'paused' in CHECK constraints
 -- witness_registrations
 ALTER TABLE witness_registrations DROP CONSTRAINT IF EXISTS chk_witness_registrations_status;
 ALTER TABLE witness_registrations ADD CONSTRAINT chk_witness_registrations_status
@@ -22,10 +26,6 @@ ALTER TABLE witness_receipts ADD CONSTRAINT chk_witness_receipts_status
 
 -- tsp_batches (unchanged from 022, but verify)
 -- tsp_batches.status CHECK already uses ('pending','confirmed','failed','superseded') — keep as-is
-
--- 4. Backfill any existing 'failed' rows to 'paused'
-UPDATE witness_registrations SET status = 'paused' WHERE status = 'failed';
-UPDATE witness_receipts SET status = 'paused' WHERE status = 'failed';
 
 -- 5. Migrate webhook_registrations into witness_registrations (if table exists)
 DO $$

@@ -999,10 +999,14 @@ class _InMemoryWitnessOps:
         event_filter: dict | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
+        *,
+        mode: str = "witness",
+        sign_secret: bytes | None = None,
     ) -> uuid.UUID:
         return self._sub.register_witness(
             url, headers=headers, event_filter=event_filter,
             max_failures=max_failures, max_retries=max_retries,
+            mode=mode, sign_secret=sign_secret,
         )
 
     def unregister(self, witness_id: uuid.UUID) -> None:

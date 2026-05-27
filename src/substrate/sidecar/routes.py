@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from substrate._errors import ErrorCode, SubstrateError
 
-from .auth import AuthenticatedActor, TokenRegistry
+from .auth import TokenRegistry, get_actor, require_admin
 from .models import (
     AcquireClaimRequest,
     AppendEventRequest,
+    ArchiveEventsRequest,
     CancelRecurrenceRuleRequest,
+    ComposeWorkflowRequest,
     CreateLinkRequest,
     CreateWorkItemRequest,
+    CreateWorkItemsBatchRequest,
     FireRecurrenceRequest,
     HeartbeatClaimRequest,
     QueryWorkItemsRequest,
@@ -22,6 +27,7 @@ from .models import (
     ReadEventsSinceRequest,
     RegisterActorRoleRequest,
     RegisterRecurrenceRuleRequest,
+    RegisterWebhookRequest,
     RegisterWitnessRequest,
     RegisterWorkflowRequest,
     ReleaseClaimRequest,
@@ -35,25 +41,6 @@ from .models import (
     _serialize,
 )
 from .rate_limit import make_limiter
-
-ADMIN_ROLE = "admin"
-
-
-def _get_actor(request: Request) -> AuthenticatedActor:
-    actor = getattr(request.state, "actor", None)
-    if actor is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return actor
-
-
-def _require_admin(request: Request) -> AuthenticatedActor:
-    actor = _get_actor(request)
-    if ADMIN_ROLE not in actor.allowed_roles:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Role {ADMIN_ROLE!r} required",
-        )
-    return actor
 
 
 def _parse_uuid(val: str) -> uuid.UUID:
@@ -96,8 +83,6 @@ def register_routes(app, substrate, tokens: TokenRegistry):
                 content={"detail": "Invalid token"},
             )
 
-        import hashlib
-
         token_key = hashlib.sha256(raw_token.encode()).hexdigest()[:16]
         if not limiter.allow(token_key):
             return JSONResponse(
@@ -110,20 +95,20 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return await call_next(request)
 
     @router.post("/register_workflow")
-    async def register_workflow(body: RegisterWorkflowRequest, request: Request):
-        _get_actor(request)
+    def register_workflow(body: RegisterWorkflowRequest, request: Request):
+        get_actor(request)
         result = substrate.register_workflow(body.yaml_content)
         return _serialize(result)
 
     @router.get("/workflows/{name}/{version}")
-    async def get_workflow(name: str, version: int, request: Request):
-        _get_actor(request)
+    def get_workflow(name: str, version: int, request: Request):
+        get_actor(request)
         result = substrate.get_workflow(name, version)
         return _serialize(result)
 
     @router.post("/create_work_item")
-    async def create_work_item(body: CreateWorkItemRequest, request: Request):
-        actor = _get_actor(request)
+    def create_work_item(body: CreateWorkItemRequest, request: Request):
+        actor = get_actor(request)
         wi, evt = substrate.create_work_item(
             workflow_name=body.workflow_name,
             work_item_type=body.work_item_type,
@@ -137,8 +122,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"work_item": _serialize(wi), "event": _serialize(evt)}
 
     @router.get("/work_items/{work_item_id}")
-    async def get_work_item(work_item_id: str, request: Request):
-        _get_actor(request)
+    def get_work_item(work_item_id: str, request: Request):
+        get_actor(request)
         result = substrate.get_work_item(_parse_uuid(work_item_id))
         if result is None:
             raise SubstrateError(
@@ -148,8 +133,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/append_event")
-    async def append_event(body: AppendEventRequest, request: Request):
-        actor = _get_actor(request)
+    def append_event(body: AppendEventRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.append_event(
             work_item_id=_parse_uuid(body.work_item_id),
             actor_id=actor.actor_id,
@@ -164,8 +149,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/transition")
-    async def transition(body: TransitionRequest, request: Request):
-        actor = _get_actor(request)
+    def transition(body: TransitionRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.transition(
             work_item_id=_parse_uuid(body.work_item_id),
             transition_name=body.transition_name,
@@ -181,8 +166,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/read_events")
-    async def read_events(body: ReadEventsRequest, request: Request):
-        _get_actor(request)
+    def read_events(body: ReadEventsRequest, request: Request):
+        get_actor(request)
         result = substrate.read_events(
             work_item_id=_parse_uuid(body.work_item_id) if body.work_item_id else None,
             actor_id=body.actor_id,
@@ -195,8 +180,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/read_events_since")
-    async def read_events_since(body: ReadEventsSinceRequest, request: Request):
-        _get_actor(request)
+    def read_events_since(body: ReadEventsSinceRequest, request: Request):
+        get_actor(request)
         result = substrate.read_events_since(
             work_item_id=_parse_uuid(body.work_item_id),
             after_seq=body.after_seq,
@@ -205,8 +190,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/query_work_items")
-    async def query_work_items(body: QueryWorkItemsRequest, request: Request):
-        _get_actor(request)
+    def query_work_items(body: QueryWorkItemsRequest, request: Request):
+        get_actor(request)
         result = substrate.query_work_items(
             workflow_name=body.workflow_name,
             workflow_version=body.workflow_version,
@@ -223,8 +208,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/acquire_claim")
-    async def acquire_claim(body: AcquireClaimRequest, request: Request):
-        actor = _get_actor(request)
+    def acquire_claim(body: AcquireClaimRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.acquire_claim(
             work_item_id=_parse_uuid(body.work_item_id),
             actor_id=actor.actor_id,
@@ -235,8 +220,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/heartbeat_claim")
-    async def heartbeat_claim(body: HeartbeatClaimRequest, request: Request):
-        actor = _get_actor(request)
+    def heartbeat_claim(body: HeartbeatClaimRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.heartbeat_claim(
             work_item_id=_parse_uuid(body.work_item_id),
             actor_id=actor.actor_id,
@@ -247,8 +232,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/release_claim")
-    async def release_claim(body: ReleaseClaimRequest, request: Request):
-        actor = _get_actor(request)
+    def release_claim(body: ReleaseClaimRequest, request: Request):
+        actor = get_actor(request)
         substrate.release_claim(
             work_item_id=_parse_uuid(body.work_item_id),
             actor_id=actor.actor_id,
@@ -258,14 +243,14 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"status": "ok"}
 
     @router.post("/sweep_expired_claims")
-    async def sweep_expired_claims(request: Request):
-        _require_admin(request)
+    def sweep_expired_claims(request: Request):
+        require_admin(request)
         count = substrate.sweep_expired_claims()
         return {"swept": count}
 
     @router.post("/create_link")
-    async def create_link(body: CreateLinkRequest, request: Request):
-        actor = _get_actor(request)
+    def create_link(body: CreateLinkRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.create_link(
             from_work_item_id=_parse_uuid(body.from_work_item_id),
             to_work_item_id=_parse_uuid(body.to_work_item_id),
@@ -279,8 +264,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/remove_link")
-    async def remove_link(body: RemoveLinkRequest, request: Request):
-        actor = _get_actor(request)
+    def remove_link(body: RemoveLinkRequest, request: Request):
+        actor = get_actor(request)
         substrate.remove_link(
             from_work_item_id=_parse_uuid(body.from_work_item_id),
             to_work_item_id=_parse_uuid(body.to_work_item_id),
@@ -293,8 +278,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"status": "ok"}
 
     @router.post("/update_not_before")
-    async def update_not_before(body: UpdateNotBeforeRequest, request: Request):
-        actor = _get_actor(request)
+    def update_not_before(body: UpdateNotBeforeRequest, request: Request):
+        actor = get_actor(request)
         result = substrate.update_not_before(
             work_item_id=_parse_uuid(body.work_item_id),
             not_before=_parse_datetime(body.not_before),
@@ -306,8 +291,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/replay")
-    async def replay(body: ReplayRequest, request: Request):
-        _require_admin(request)
+    def replay(body: ReplayRequest, request: Request):
+        require_admin(request)
         result = substrate.replay(
             continue_on_revoked=body.continue_on_revoked,
             verify_timestamps=body.verify_timestamps,
@@ -315,20 +300,20 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.get("/dead_lettered_hooks")
-    async def list_dead_lettered_hooks(request: Request):
-        _require_admin(request)
+    def list_dead_lettered_hooks(request: Request):
+        require_admin(request)
         result = substrate.list_dead_lettered_hooks()
         return _serialize(result)
 
     @router.post("/requeue_dead_lettered_hook")
-    async def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request):
-        _require_admin(request)
+    def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request):
+        require_admin(request)
         substrate.requeue_dead_lettered_hook(body.dead_letter_id)
         return {"status": "ok"}
 
     @router.post("/register_actor_role")
-    async def register_actor_role(body: RegisterActorRoleRequest, request: Request):
-        actor = _get_actor(request)
+    def register_actor_role(body: RegisterActorRoleRequest, request: Request):
+        actor = get_actor(request)
         if body.role not in actor.allowed_roles:
             raise HTTPException(
                 status_code=403,
@@ -338,8 +323,8 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"status": "ok"}
 
     @router.post("/unregister_actor_role")
-    async def unregister_actor_role(body: UnregisterActorRoleRequest, request: Request):
-        actor = _get_actor(request)
+    def unregister_actor_role(body: UnregisterActorRoleRequest, request: Request):
+        actor = get_actor(request)
         if body.role not in actor.allowed_roles:
             raise HTTPException(
                 status_code=403,
@@ -349,15 +334,15 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"status": "ok"}
 
     @router.get("/actor_roles")
-    async def list_actor_roles(request: Request):
-        _get_actor(request)
+    def list_actor_roles(request: Request):
+        get_actor(request)
         actor_id = request.query_params.get("actor_id")
         result = substrate.list_actor_roles(actor_id=actor_id)
         return _serialize(result)
 
     @router.post("/register_recurrence_rule")
-    async def register_recurrence_rule(body: RegisterRecurrenceRuleRequest, request: Request):
-        _get_actor(request)
+    def register_recurrence_rule(body: RegisterRecurrenceRuleRequest, request: Request):
+        get_actor(request)
         result = substrate.register_recurrence_rule(
             workflow_name=body.workflow_name,
             workflow_version=body.workflow_version,
@@ -370,32 +355,32 @@ def register_routes(app, substrate, tokens: TokenRegistry):
             end_at=_parse_datetime(body.end_at),
             count=body.count,
             catchup_policy=body.catchup_policy,
-            created_by=_get_actor(request).actor_id,
+            created_by=get_actor(request).actor_id,
         )
         return _serialize(result)
 
     @router.get("/recurrence_rules")
-    async def list_recurrence_rules(request: Request):
-        _get_actor(request)
+    def list_recurrence_rules(request: Request):
+        get_actor(request)
         status = request.query_params.get("status")
         result = substrate.list_recurrence_rules(status=status)
         return _serialize(result)
 
     @router.post("/fire_recurrence")
-    async def fire_recurrence(body: FireRecurrenceRequest, request: Request):
-        _require_admin(request)
+    def fire_recurrence(body: FireRecurrenceRequest, request: Request):
+        require_admin(request)
         rule, wi = substrate.fire_recurrence(_parse_uuid(body.rule_id))
         return {"rule": _serialize(rule), "work_item": _serialize(wi)}
 
     @router.post("/cancel_recurrence_rule")
-    async def cancel_recurrence_rule(body: CancelRecurrenceRuleRequest, request: Request):
-        _require_admin(request)
+    def cancel_recurrence_rule(body: CancelRecurrenceRuleRequest, request: Request):
+        require_admin(request)
         substrate.cancel_recurrence_rule(_parse_uuid(body.rule_id))
         return {"status": "ok"}
 
     @router.post("/update_recurrence_rule")
-    async def update_recurrence_rule(body: UpdateRecurrenceRuleRequest, request: Request):
-        _require_admin(request)
+    def update_recurrence_rule(body: UpdateRecurrenceRuleRequest, request: Request):
+        require_admin(request)
         result = substrate.update_recurrence_rule(
             rule_id=_parse_uuid(body.rule_id),
             status=body.status,
@@ -405,33 +390,33 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/sweep_expired_hook_leases")
-    async def sweep_expired_hook_leases(request: Request):
-        _require_admin(request)
+    def sweep_expired_hook_leases(request: Request):
+        require_admin(request)
         count = substrate.sweep_expired_hook_leases()
         return {"swept": count}
 
     @router.post("/timestamp/trigger")
-    async def trigger_timestamp(request: Request):
-        _require_admin(request)
+    def trigger_timestamp(request: Request):
+        require_admin(request)
         result = substrate.timestamping.trigger()
         return _serialize(result)
 
     @router.get("/timestamp/batches")
-    async def list_timestamp_batches(request: Request):
-        _require_admin(request)
+    def list_timestamp_batches(request: Request):
+        require_admin(request)
         status = request.query_params.get("status")
         result = substrate.timestamping.list_batches(status=status)
         return _serialize(result)
 
     @router.post("/timestamp/batches/{batch_id}/verify")
-    async def verify_timestamp_batch(batch_id: str, request: Request):
-        _require_admin(request)
+    def verify_timestamp_batch(batch_id: str, request: Request):
+        require_admin(request)
         result = substrate.timestamping.verify_batch(_parse_uuid(batch_id))
         return {"verified": result}
 
     @router.post("/witnesses")
-    async def register_witness(body: RegisterWitnessRequest, request: Request):
-        _require_admin(request)
+    def register_witness(body: RegisterWitnessRequest, request: Request):
+        require_admin(request)
         witness_id = substrate.register_witness(
             url=body.url,
             headers=body.headers,
@@ -442,33 +427,33 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return {"witness_id": str(witness_id)}
 
     @router.delete("/witnesses/{witness_id}")
-    async def unregister_witness(witness_id: str, request: Request):
-        _require_admin(request)
+    def unregister_witness(witness_id: str, request: Request):
+        require_admin(request)
         substrate.unregister_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.post("/witnesses/{witness_id}/pause")
-    async def pause_witness(witness_id: str, request: Request):
-        _require_admin(request)
+    def pause_witness(witness_id: str, request: Request):
+        require_admin(request)
         substrate.pause_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.post("/witnesses/{witness_id}/reactivate")
-    async def reactivate_witness(witness_id: str, request: Request):
-        _require_admin(request)
+    def reactivate_witness(witness_id: str, request: Request):
+        require_admin(request)
         substrate.reactivate_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.get("/witnesses")
-    async def list_witnesses(request: Request):
-        _get_actor(request)
+    def list_witnesses(request: Request):
+        get_actor(request)
         status = request.query_params.get("status")
         result = substrate.list_witnesses(status=status)
         return _serialize(result)
 
     @router.get("/witnesses/receipts")
-    async def list_witness_receipts(request: Request):
-        _get_actor(request)
+    def list_witness_receipts(request: Request):
+        get_actor(request)
         event_id = request.query_params.get("event_id")
         witness_id = request.query_params.get("witness_id")
         status = request.query_params.get("status")
@@ -488,32 +473,25 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/witnesses/deliver")
-    async def deliver_witness_receipts(request: Request):
-        _require_admin(request)
+    def deliver_witness_receipts(request: Request):
+        require_admin(request)
         count = substrate.deliver_pending_witness_receipts()
         return {"delivered": count}
 
     @router.post("/archive_events")
-    async def archive_events(request: Request):
-        _require_admin(request)
-        body = await request.json()
-        raw_ts = body.get("before_timestamp")
-        if not raw_ts:
-            raise HTTPException(status_code=400, detail="before_timestamp is required")
-        ts = _parse_datetime(raw_ts)
-        dry_run = body.get("dry_run", False)
-        count = substrate.archive_events(before_timestamp=ts, dry_run=dry_run)
-        return {"archived": count, "dry_run": dry_run}
+    def archive_events_route(body: ArchiveEventsRequest, request: Request):
+        require_admin(request)
+        ts = _parse_datetime(body.before_timestamp)
+        count = substrate.archive_events(before_timestamp=ts, dry_run=body.dry_run)
+        return {"archived": count, "dry_run": body.dry_run}
 
     @router.post("/create_work_items_batch")
-    async def create_work_items_batch(request: Request):
-        actor = _get_actor(request)
-        body = await request.json()
-        items = body.get("items", [])
-        if not items:
+    def create_work_items_batch(body: CreateWorkItemsBatchRequest, request: Request):
+        actor = get_actor(request)
+        if not body.items:
             raise HTTPException(status_code=400, detail="items list is required")
         results = substrate.create_work_items_batch(
-            items=items,
+            items=body.items,
             actor_id=actor.actor_id,
             actor_kind=actor.actor_kind,
         )
@@ -525,60 +503,60 @@ def register_routes(app, substrate, tokens: TokenRegistry):
         }
 
     @router.post("/compose_workflow")
-    async def compose_workflow(request: Request):
-        _get_actor(request)
-        body = await request.json()
-        file_path = body.get("file_path")
-        if not file_path:
-            raise HTTPException(status_code=400, detail="file_path is required")
+    def compose_workflow_route(body: ComposeWorkflowRequest, request: Request):
+        require_admin(request)
+        file_path = Path(body.file_path).resolve()
+        if not file_path.exists():
+            raise HTTPException(status_code=400, detail=f"File not found: {body.file_path}")
+        if file_path.suffix not in (".yaml", ".yml"):
+            raise HTTPException(status_code=400, detail="Only .yaml/.yml files are allowed")
         from substrate._workflow_compose import compose_workflow as _compose
-        composed, source_map = _compose(file_path)
+        composed, source_map = _compose(str(file_path))
         return {"composed": composed, "source_map": source_map}
 
     @router.post("/webhooks")
-    async def register_webhook(request: Request):
-        _require_admin(request)
-        body = await request.json()
-        url = body.get("url")
-        if not url:
-            raise HTTPException(status_code=400, detail="url is required")
-        sign_secret = body.get("sign_secret")
-        if sign_secret and isinstance(sign_secret, str):
+    def register_webhook(body: RegisterWebhookRequest, request: Request):
+        require_admin(request)
+        sign_secret = None
+        if body.sign_secret:
             import base64
-            sign_secret = base64.b64decode(sign_secret)
+            try:
+                sign_secret = base64.b64decode(body.sign_secret)
+            except Exception:
+                raise HTTPException(status_code=400, detail="sign_secret must be valid base64")
         result = substrate.register_webhook(
-            url=url,
-            headers=body.get("headers"),
-            transitions=body.get("transitions"),
-            work_item_types=body.get("work_item_types"),
-            workflows=body.get("workflows"),
-            max_failures=body.get("max_failures", 10),
+            url=body.url,
+            headers=body.headers,
+            transitions=body.transitions,
+            work_item_types=body.work_item_types,
+            workflows=body.workflows,
+            max_failures=body.max_failures,
             sign_secret=sign_secret,
         )
-        return result
+        return _serialize(result)
 
     @router.get("/webhooks")
-    async def list_webhooks(request: Request):
-        _get_actor(request)
+    def list_webhooks(request: Request):
+        get_actor(request)
         status = request.query_params.get("status")
         result = substrate.list_webhooks(status=status)
         return _serialize(result)
 
     @router.delete("/webhooks/{webhook_id}")
-    async def unregister_webhook(webhook_id: str, request: Request):
-        _require_admin(request)
+    def unregister_webhook(webhook_id: str, request: Request):
+        require_admin(request)
         substrate.unregister_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 
     @router.post("/webhooks/{webhook_id}/pause")
-    async def pause_webhook(webhook_id: str, request: Request):
-        _require_admin(request)
+    def pause_webhook(webhook_id: str, request: Request):
+        require_admin(request)
         substrate.pause_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 
     @router.post("/webhooks/{webhook_id}/resume")
-    async def resume_webhook(webhook_id: str, request: Request):
-        _require_admin(request)
+    def resume_webhook(webhook_id: str, request: Request):
+        require_admin(request)
         substrate.resume_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 

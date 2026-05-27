@@ -48,6 +48,32 @@ def archive_events(
         )
         conn.execute(
             SQL(
+                "DELETE FROM hook_queue "
+                "WHERE event_id IN ("
+                "  SELECT event_id FROM events "
+                "  WHERE work_item_id IN ("
+                "    SELECT work_item_id FROM events "
+                "    GROUP BY work_item_id HAVING max(timestamp) < %s"
+                "  )"
+                ")"
+            ),
+            [before_timestamp],
+        )
+        conn.execute(
+            SQL(
+                "DELETE FROM witness_receipts "
+                "WHERE event_id IN ("
+                "  SELECT event_id FROM events "
+                "  WHERE work_item_id IN ("
+                "    SELECT work_item_id FROM events "
+                "    GROUP BY work_item_id HAVING max(timestamp) < %s"
+                "  )"
+                ")"
+            ),
+            [before_timestamp],
+        )
+        conn.execute(
+            SQL(
                 "DELETE FROM events "
                 "WHERE work_item_id IN ("
                 "  SELECT work_item_id FROM events "

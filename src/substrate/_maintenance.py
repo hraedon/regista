@@ -51,7 +51,7 @@ class MaintenanceThread:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=self._sweep_interval + 5)
+            self._thread.join(timeout=10)
             self._thread = None
         log.info("maintenance.thread_stopped", project=self._project)
 

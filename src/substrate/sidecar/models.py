@@ -271,3 +271,4 @@ class RegisterWebhookRequest(BaseModel):
     work_item_types: list[str] | None = None
     workflows: list[str] | None = None
     max_failures: int = Field(default=10, ge=1)
+    sign_secret: str | None = None

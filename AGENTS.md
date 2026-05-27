@@ -224,7 +224,7 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-016 implemented. All FRs FR-01 through FR-29 are in tree. 992 tests passing (including sidecar, property-based, witness, timestamping, and plan-specific tests).
+MVP + Phase 2 + Phase 3 + Plans 002-016 implemented. All FRs FR-01 through FR-29 are in tree. 998 tests passing (including sidecar, property-based, witness, timestamping, and plan-specific tests).
 
 Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
 

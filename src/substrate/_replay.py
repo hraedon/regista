@@ -553,6 +553,14 @@ def _replay_work_item(
                     raise _ReplayHaltError(
                         f"Transition {transition!r} exists but not valid from state {state!r}"
                     )
+                warnings += 1
+                log.warning(
+                    "replay.unknown_transition",
+                    work_item_id=str(wi_id),
+                    event_id=str(evt["event_id"]),
+                    event_seq=evt["event_seq"],
+                    transition=transition,
+                )
 
             if found:
                 payload = evt["payload"] or {}

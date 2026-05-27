@@ -536,7 +536,7 @@ def validate_role(role: str) -> None:
         )
 
 
-def validate_actor_metadata(actor_metadata: dict) -> None:
+def validate_actor_metadata(actor_metadata: dict | None) -> None:
     if actor_metadata is None:
         return
     try:

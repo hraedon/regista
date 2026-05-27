@@ -61,21 +61,21 @@ class TestUnknownKeyId:
     def test_load_rejects_missing_file(self, tmp_path):
         with pytest.raises(SubstrateError) as exc_info:
             KeySet(str(tmp_path / "nonexistent.json"))
-        assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
+        assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
     def test_load_rejects_invalid_json(self, tmp_path):
         kf = tmp_path / "bad.json"
         kf.write_text("not json")
         with pytest.raises(SubstrateError) as exc_info:
             KeySet(str(kf))
-        assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
+        assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
     def test_load_rejects_missing_keys_field(self, tmp_path):
         kf = tmp_path / "nokeys.json"
         kf.write_text('{"not_keys": []}')
         with pytest.raises(SubstrateError) as exc_info:
             KeySet(str(kf))
-        assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
+        assert exc_info.value.code == ErrorCode.KEY_LOAD_ERROR
 
 
 class TestRevokedKeyId:

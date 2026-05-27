@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from fastapi import HTTPException, Request
 
 from substrate._errors import ErrorCode, SubstrateError
 
@@ -18,6 +19,26 @@ class AuthenticatedActor:
     def __post_init__(self):
         if not isinstance(self.allowed_roles, tuple):
             object.__setattr__(self, "allowed_roles", tuple(self.allowed_roles))
+
+
+def get_actor(request: Request) -> AuthenticatedActor:
+    actor = getattr(request.state, "actor", None)
+    if actor is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return actor
+
+
+ADMIN_ROLE = "admin"
+
+
+def require_admin(request: Request) -> AuthenticatedActor:
+    actor = get_actor(request)
+    if ADMIN_ROLE not in actor.allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Role {ADMIN_ROLE!r} required",
+        )
+    return actor
 
 
 class TokenRegistry:
@@ -65,7 +86,7 @@ class TokenRegistry:
             reg._tokens[token_sha256] = actor
         return reg
 
-    def authenticate(self, raw_token: str) -> AuthenticatedActor:
+    def authenticate(self, raw_token: str) -> AuthenticatedActor | None:
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         actor = self._tokens.get(token_hash)
         if actor is None:

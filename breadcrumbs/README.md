@@ -37,11 +37,18 @@ _(none)_
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | accepted |
+| 276 | Zero test coverage for webhooks, archive, and several sidecar routes | high | proposed |
+| 277 | events_archive shares global_seq sequence with events table | medium | proposed |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 281 | WITNESS_DELIVERY_FAILED and WITNESS_PAUSED error codes defined but never raised | low | Accepted — codes are part of ErrorCode enum (API contract §19.5) for downstream consumers. Delivery handles failures gracefully via status transitions, not exceptions. |
+| 280 | HookOps assigns _handlers dict non-atomically while consumer thread may iterate | medium | Fixed — register_handler and register_validator use copy-on-write pattern creating new dicts. Both InMemory and Postgres backends updated. |
+| 279 | Replay silently skips unknown transitions without warning | medium | Fixed — both Postgres and InMemory replay now increment warnings and log when encountering transition names not defined in the workflow. |
+| 278 | Heartbeat coalescing logic differs between Postgres and InMemory backends | medium | Fixed — InMemory heartbeat now uses `now - last_emitted` (wall-clock) matching Postgres, and stores `last_heartbeat_emitted_at = now` matching Postgres. |
+| 275 | Sidecar async route handlers block the event loop with synchronous DB I/O | medium | Changed all route handlers from `async def` to plain `def`. FastAPI runs plain def handlers in a threadpool, preventing event-loop blocking. |
 | 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | Accepted — UUIDv5 with SHA-1 is adequate for the homelab scale; collision probability is negligible for the expected event volume. |
 | 257 | No CLI or test helper for running targeted test subsets by file path | low | Added `make test-files FILES=tests/test_replay_coverage.py` target to Makefile. |
 | 268 | Webhook delivery has no retry or dead-letter mechanism | medium | Added `failure_count` and `max_failures` columns. Auto-pauses webhook after consecutive failures. Resets counter on success. Full retry/dead-letter deferred. |

@@ -567,12 +567,13 @@ class HookOps:
         self._consumer = consumer
 
     def register_validator(self, name: str, handler: Callable) -> None:
-        self._validators[name] = handler
+        self._validators = {**self._validators, name: handler}
 
     def register_handler(self, name: str, handler: Callable) -> None:
-        self._handlers[name] = handler
+        updated = {**self._handlers, name: handler}
+        self._handlers = updated
         if self._consumer is not None:
-            self._consumer._handlers = self._handlers
+            self._consumer._handlers = updated
 
     def start_consumer(self) -> None:
         if self._consumer is None:
