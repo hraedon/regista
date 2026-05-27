@@ -2,7 +2,7 @@
 number: "271"
 title: "CLI main() dispatch is a fragile 40-branch if/elif chain"
 severity: low
-status: accepted
+status: implemented
 kind: design
 author: reflection
 date: "2026-05-26"
@@ -18,4 +18,4 @@ Missing subcommand handling is inconsistent: some domains (hooks, timestamp, wit
 
 ## Resolution
 
-Accepted as design tension. The `set_defaults(func=...)` pattern would clean this up, but the refactor touches every existing command and has high regression risk for low payoff. The current pattern is verbose but correct and auditable.
+Refactored to use `set_defaults(func=...)` pattern on every leaf subparser. The 40-branch if/elif chain replaced with a single `hasattr(args, "func")` check. Adding a new command now requires only two changes: (1) argparse definition + `set_defaults(func=...)`, (2) command function. Consistent help-on-missing-subcommand behavior via fallback to `target.print_help()`.

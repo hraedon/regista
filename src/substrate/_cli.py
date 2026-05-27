@@ -579,6 +579,11 @@ def cmd_workflow_compose(args):
         sys.exit(1)
 
 
+def _print_help_and_exit(parser, code=2):
+    parser.print_help()
+    sys.exit(code)
+
+
 def cmd_work_item_create(args):
     dsn, project, hmac_key_path = _require_config(args)
     custom_fields = None
@@ -756,12 +761,14 @@ def main(argv=None):
     wf_val = wf_sub.add_parser("validate", help="Validate workflow YAML")
     wf_val.add_argument("file", help="Path to YAML file")
     wf_val.add_argument("--json", action="store_true", help="JSON output")
+    wf_val.set_defaults(func=cmd_workflow_validate)
 
     # work-item
     wi = subs.add_parser("work-item", help="Work item commands")
     wi_sub = wi.add_subparsers(dest="subcommand")
     wi_show = wi_sub.add_parser("show", help="Show a work item")
     wi_show.add_argument("id", help="Work item UUID")
+    wi_show.set_defaults(func=cmd_work_item_show)
     wi_list = wi_sub.add_parser("list", help="List work items")
     wi_list.add_argument("--workflow", help="Filter by workflow name")
     wi_list.add_argument("--state", action="append", help="Filter by state")
@@ -770,6 +777,7 @@ def main(argv=None):
     wi_list.add_argument("--claimable-now", action="store_true", help="Filter claimable now")
     wi_list.add_argument("--page-size", type=int, default=100)
     wi_list.add_argument("--cursor", help="Pagination cursor")
+    wi_list.set_defaults(func=cmd_work_item_list)
 
     # events
     ev = subs.add_parser("events", help="Event commands")
@@ -778,83 +786,99 @@ def main(argv=None):
     ev_show.add_argument("id", help="Work item UUID")
     ev_show.add_argument("--limit", type=int, default=100)
     ev_show.add_argument("--before-seq", type=int, default=None)
+    ev_show.set_defaults(func=cmd_events_show)
     ev_tail = ev_sub.add_parser("tail", help="Tail events across items")
     ev_tail.add_argument("--actor", help="Filter by actor_id")
     ev_tail.add_argument("--transition", help="Filter by transition name")
     ev_tail.add_argument("--since", help="ISO 8601 start timestamp")
     ev_tail.add_argument("--until", help="ISO 8601 end timestamp")
     ev_tail.add_argument("--limit", type=int, default=100)
+    ev_tail.set_defaults(func=cmd_events_tail)
+    ev_archive = ev_sub.add_parser("archive", help="Archive old events")
+    ev_archive.add_argument("--before", required=True, help="ISO 8601 timestamp")
+    ev_archive.add_argument("--dry-run", action="store_true", help="Count without archiving")
+    ev_archive.set_defaults(func=cmd_events_archive)
 
     # replay
     rep = subs.add_parser("replay", help="Run replay drift check")
     rep.add_argument("--continue-on-revoked", action="store_true", help="Skip revoked-key events")
+    rep.set_defaults(func=cmd_replay)
 
     # schema
     sc = subs.add_parser("schema", help="Schema commands")
     sc_sub = sc.add_subparsers(dest="subcommand")
-    sc_sub.add_parser("init", help="Initialize schema")
-    sc_sub.add_parser("status", help="Schema status")
+    sc_sub.add_parser("init", help="Initialize schema").set_defaults(func=cmd_schema_init)
+    sc_sub.add_parser("status", help="Schema status").set_defaults(func=cmd_schema_status)
 
     # hooks
     hk = subs.add_parser("hooks", help="Hook commands")
     hk_sub = hk.add_subparsers(dest="subcommand")
     hk_dl = hk_sub.add_parser("dead-letter", help="Dead-letter commands")
     hk_dl_sub = hk_dl.add_subparsers(dest="dl_command")
-    hk_dl_sub.add_parser("list", help="List dead-lettered hooks")
+    hk_dl_list = hk_dl_sub.add_parser("list", help="List dead-lettered hooks")
+    hk_dl_list.set_defaults(func=cmd_hooks_dead_letter_list)
     requeue = hk_dl_sub.add_parser("requeue", help="Requeue a dead-lettered hook")
     requeue.add_argument("id", help="Dead-letter entry ID")
+    requeue.set_defaults(func=cmd_hooks_dead_letter_requeue)
 
     # actor-roles
     ar = subs.add_parser("actor-roles", help="Actor role commands")
     ar_sub = ar.add_subparsers(dest="subcommand")
     ar_list = ar_sub.add_parser("list", help="List actor roles")
     ar_list.add_argument("--actor", help="Filter by actor_id")
+    ar_list.set_defaults(func=cmd_actor_roles_list)
 
     # recurrence
     rc = subs.add_parser("recurrence", help="Recurrence rule commands")
     rc_sub = rc.add_subparsers(dest="subcommand")
     rc_list = rc_sub.add_parser("list", help="List recurrence rules")
     rc_list.add_argument("--status", help="Filter by status (active/cancelled/exhausted)")
-    rc_sub.add_parser("due", help="Show due recurrence rules")
+    rc_list.set_defaults(func=cmd_recurrence_list)
+    rc_sub.add_parser("due", help="Show due recurrence rules").set_defaults(func=cmd_recurrence_due)
     rc_fire = rc_sub.add_parser("fire", help="Fire a due recurrence rule")
     rc_fire.add_argument("id", help="Rule UUID")
+    rc_fire.set_defaults(func=cmd_recurrence_fire)
     rc_cancel = rc_sub.add_parser("cancel", help="Cancel a recurrence rule")
     rc_cancel.add_argument("id", help="Rule UUID")
+    rc_cancel.set_defaults(func=cmd_recurrence_cancel)
     rc_update = rc_sub.add_parser("update", help="Update a recurrence rule")
     rc_update.add_argument("id", help="Rule UUID")
     rc_update.add_argument("--status", help="New status")
     rc_update.add_argument("--schedule-expr", help="New schedule expression")
     rc_update.add_argument("--template", help="New template (JSON string)")
+    rc_update.set_defaults(func=cmd_recurrence_update)
 
     # timestamp
     ts = subs.add_parser("timestamp", help="Timestamping commands")
     ts_sub = ts.add_subparsers(dest="subcommand")
-    ts_sub.add_parser("status", help="List timestamp batches")
-    ts_sub.add_parser("trigger", help="Trigger a new timestamp batch")
+    ts_status = ts_sub.add_parser("status", help="List timestamp batches")
+    ts_status.set_defaults(func=cmd_timestamp_status)
+    ts_trigger = ts_sub.add_parser("trigger", help="Trigger a new timestamp batch")
+    ts_trigger.set_defaults(func=cmd_timestamp_trigger)
     ts_verify = ts_sub.add_parser("verify", help="Verify a timestamp batch")
     ts_verify.add_argument("id", help="Batch UUID")
+    ts_verify.set_defaults(func=cmd_timestamp_verify)
 
     # witness
     wt = subs.add_parser("witness", help="Witness commands")
     wt_sub = wt.add_subparsers(dest="subcommand")
     wt_list = wt_sub.add_parser("list", help="List witness registrations")
     wt_list.add_argument("--status", help="Filter by status (active/paused/failed)")
-    wt_sub.add_parser("deliver", help="Deliver pending witness receipts")
+    wt_list.set_defaults(func=cmd_witness_list)
+    wt_deliver = wt_sub.add_parser("deliver", help="Deliver pending witness receipts")
+    wt_deliver.set_defaults(func=cmd_witness_deliver)
     wt_receipts = wt_sub.add_parser("receipts", help="List witness receipts")
     wt_receipts.add_argument("--event-id", help="Filter by event UUID")
     wt_receipts.add_argument("--witness-id", help="Filter by witness UUID")
     wt_receipts.add_argument("--status", help="Filter by receipt status")
     wt_receipts.add_argument("--limit", type=int, default=100)
-
-    # events archive
-    ev_archive = ev_sub.add_parser("archive", help="Archive old events")
-    ev_archive.add_argument("--before", required=True, help="ISO 8601 timestamp")
-    ev_archive.add_argument("--dry-run", action="store_true", help="Count without archiving")
+    wt_receipts.set_defaults(func=cmd_witness_receipts)
 
     # workflow compose
     wf_compose = wf_sub.add_parser("compose", help="Compose workflow with extends")
     wf_compose.add_argument("file", help="Path to YAML file")
     wf_compose.add_argument("--json", action="store_true", help="JSON output")
+    wf_compose.set_defaults(func=cmd_workflow_compose)
 
     # work-item create
     wi_create = wi_sub.add_parser("create", help="Create a work item")
@@ -864,6 +888,7 @@ def main(argv=None):
     wi_create.add_argument("--custom-fields", help="Custom fields (JSON)")
     wi_create.add_argument("--not-before", help="ISO 8601 timestamp")
     wi_create.add_argument("--confirm", action="store_true", help="Execute the action")
+    wi_create.set_defaults(func=cmd_work_item_create)
 
     # work-item transition
     wi_trans = wi_sub.add_parser("transition", help="Transition a work item")
@@ -874,6 +899,7 @@ def main(argv=None):
     wi_trans.add_argument("--payload", help="Transition payload (JSON)")
     wi_trans.add_argument("--custom-fields", help="Custom fields update (JSON)")
     wi_trans.add_argument("--confirm", action="store_true", help="Execute the action")
+    wi_trans.set_defaults(func=cmd_work_item_transition)
 
     # webhook
     wh = subs.add_parser("webhook", help="Webhook commands")
@@ -883,10 +909,13 @@ def main(argv=None):
     wh_reg.add_argument("--transitions", help="Comma-separated transition names")
     wh_reg.add_argument("--workflows", help="Comma-separated workflow names")
     wh_reg.add_argument("--confirm", action="store_true", help="Execute the action")
+    wh_reg.set_defaults(func=cmd_webhook_register)
     wh_list = wh_sub.add_parser("list", help="List webhooks")
     wh_list.add_argument("--status", help="Filter by status")
+    wh_list.set_defaults(func=cmd_webhook_list)
     wh_rm = wh_sub.add_parser("remove", help="Remove a webhook")
     wh_rm.add_argument("id", help="Webhook UUID")
+    wh_rm.set_defaults(func=cmd_webhook_remove)
 
     args = parser.parse_args(argv)
 
@@ -894,80 +923,8 @@ def main(argv=None):
         parser.print_help()
         sys.exit(2)
 
-    if args.command == "workflow" and args.subcommand == "validate":
-        cmd_workflow_validate(args)
-    elif args.command == "workflow" and args.subcommand == "compose":
-        cmd_workflow_compose(args)
-    elif args.command == "work-item" and args.subcommand == "show":
-        cmd_work_item_show(args)
-    elif args.command == "work-item" and args.subcommand == "list":
-        cmd_work_item_list(args)
-    elif args.command == "work-item" and args.subcommand == "create":
-        cmd_work_item_create(args)
-    elif args.command == "work-item" and args.subcommand == "transition":
-        cmd_work_item_transition(args)
-    elif args.command == "events" and args.subcommand == "show":
-        cmd_events_show(args)
-    elif args.command == "events" and args.subcommand == "tail":
-        cmd_events_tail(args)
-    elif args.command == "events" and args.subcommand == "archive":
-        cmd_events_archive(args)
-    elif args.command == "replay":
-        cmd_replay(args)
-    elif args.command == "schema" and args.subcommand == "init":
-        cmd_schema_init(args)
-    elif args.command == "schema" and args.subcommand == "status":
-        cmd_schema_status(args)
-    elif args.command == "hooks" and args.subcommand == "dead-letter":
-        if args.dl_command == "list":
-            cmd_hooks_dead_letter_list(args)
-        elif args.dl_command == "requeue":
-            cmd_hooks_dead_letter_requeue(args)
-        else:
-            hk_dl.print_help()
-            sys.exit(2)
-    elif args.command == "actor-roles" and args.subcommand == "list":
-        cmd_actor_roles_list(args)
-    elif args.command == "timestamp":
-        if args.subcommand == "status":
-            cmd_timestamp_status(args)
-        elif args.subcommand == "trigger":
-            cmd_timestamp_trigger(args)
-        elif args.subcommand == "verify":
-            cmd_timestamp_verify(args)
-        else:
-            ts.print_help()
-            sys.exit(2)
-    elif args.command == "recurrence" and args.subcommand == "list":
-        cmd_recurrence_list(args)
-    elif args.command == "recurrence" and args.subcommand == "due":
-        cmd_recurrence_due(args)
-    elif args.command == "recurrence" and args.subcommand == "fire":
-        cmd_recurrence_fire(args)
-    elif args.command == "recurrence" and args.subcommand == "cancel":
-        cmd_recurrence_cancel(args)
-    elif args.command == "recurrence" and args.subcommand == "update":
-        cmd_recurrence_update(args)
-    elif args.command == "witness":
-        if args.subcommand == "list":
-            cmd_witness_list(args)
-        elif args.subcommand == "deliver":
-            cmd_witness_deliver(args)
-        elif args.subcommand == "receipts":
-            cmd_witness_receipts(args)
-        else:
-            wt.print_help()
-            sys.exit(2)
-    elif args.command == "webhook":
-        if args.subcommand == "register":
-            cmd_webhook_register(args)
-        elif args.subcommand == "list":
-            cmd_webhook_list(args)
-        elif args.subcommand == "remove":
-            cmd_webhook_remove(args)
-        else:
-            wh.print_help()
-            sys.exit(2)
+    if hasattr(args, "func"):
+        args.func(args)
     else:
         target = subs.choices.get(args.command)
         if target:

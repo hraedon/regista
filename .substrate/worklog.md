@@ -4,6 +4,28 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-27 — Session 63: CLI refactor (BC-271), webhook/archive tests (BC-276)
+
+**Focus:** Address Glm feedback on CLI complexity, test coverage gaps, and sidecar boundaries.
+
+**Delivered:**
+
+1. **BC-271 — CLI dispatch refactor (low → implemented):**
+   - `_cli.py`: replaced 40-branch if/elif chain with `set_defaults(func=...)` pattern on every leaf subparser. Single `hasattr(args, "func")` check replaces all dispatch logic. Adding a new command now requires only 2 changes instead of 3.
+
+2. **BC-276 — Webhook and archive test coverage (high → in_progress):**
+   - `tests/test_webhooks_archive.py`: 15 new tests covering:
+     - Webhook lifecycle: register, list, unregister, pause/resume, workflows filter
+     - Archive: dry_run empty, dry_run with events, actual archive, idempotency
+     - Sidecar routes: webhook register/list/remove/pause/resume, archive dry_run, admin auth checks
+
+3. **BC-282 — Sidecar boundary design question (medium → proposed):**
+   - Filed breadcrumb for design discussion on whether sidecar should be thin HTTP layer or application server.
+
+**Test results:** 109+ tests passing (CLI + sidecar + webhook/archive + smoke + contract), lint clean.
+
+---
+
 ## 2026-05-27 — Session 62: Breadcrumb remediation (BC-275, BC-278–281)
 
 **Focus:** Scan repo, fix open breadcrumbs, tighten code.

@@ -36,14 +36,15 @@ _(none)_
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
-| 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | accepted |
-| 276 | Zero test coverage for webhooks, archive, and several sidecar routes | high | proposed |
+| 276 | Zero test coverage for webhooks, archive, and several sidecar routes | high | in_progress |
 | 277 | events_archive shares global_seq sequence with events table | medium | proposed |
+| 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | proposed |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | Refactored to use `set_defaults(func=...)` pattern. 40-branch if/elif chain replaced with single `hasattr(args, "func")` check. |
 | 281 | WITNESS_DELIVERY_FAILED and WITNESS_PAUSED error codes defined but never raised | low | Accepted — codes are part of ErrorCode enum (API contract §19.5) for downstream consumers. Delivery handles failures gracefully via status transitions, not exceptions. |
 | 280 | HookOps assigns _handlers dict non-atomically while consumer thread may iterate | medium | Fixed — register_handler and register_validator use copy-on-write pattern creating new dicts. Both InMemory and Postgres backends updated. |
 | 279 | Replay silently skips unknown transitions without warning | medium | Fixed — both Postgres and InMemory replay now increment warnings and log when encountering transition names not defined in the workflow. |
