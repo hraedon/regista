@@ -4,6 +4,31 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-27 — Session 64: Deepen sidecar test coverage (BC-276)
+
+**Focus:** Expand test coverage for untested sidecar routes and fix defensive test assertions.
+
+**Delivered:**
+
+1. **BC-276 — Sidecar route tests (high → in_progress):**
+   - `tests/sidecar/test_sidecar.py`: 16 new tests covering:
+     - `TestLinkRoutes`: create_link, remove_link
+     - `TestUpdateNotBeforeRoute`: update_not_before
+     - `TestHeartbeatClaimRoute`: heartbeat_claim
+     - `TestWitnessRoutes`: register, list, delete, pause, resume, receipts, deliver, admin check
+     - `TestRecurrenceRoutes`: register/list/cancel, fire/update admin checks
+     - `TestBatchRoutes`: create_work_items_batch, empty list rejection
+     - `TestReadEventsSinceRoute`: read_events_since
+     - `TestComposeWorkflowRoute`: compose_workflow, admin check
+
+2. **Defensive test hardening:**
+   - Fixed 19 `pytest.raises(Exception)` → `pytest.raises(SubstrateError)` across 8 test files
+   - Files: test_phase3.py, test_claim_link_idempotency.py, test_e2e.py, test_idempotency.py, test_phase2.py, test_sf2_workflows.py, test_signing_ed25519.py, test_validator_hardening.py
+
+**Test results:** 1029 tests passing, lint clean.
+
+---
+
 ## 2026-05-27 — Session 63: CLI refactor (BC-271), webhook/archive tests (BC-276)
 
 **Focus:** Address Glm feedback on CLI complexity, test coverage gaps, and sidecar boundaries.
