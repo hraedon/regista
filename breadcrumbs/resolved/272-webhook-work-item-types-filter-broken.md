@@ -2,7 +2,7 @@
 number: "272"
 title: "Webhook work_item_types filter reads from wrong event field — always skips"
 severity: high
-status: proposed
+status: resolved
 kind: bug
 author: design-review
 date: "2026-05-26"

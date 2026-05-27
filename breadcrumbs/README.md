@@ -35,7 +35,6 @@ _(none)_
 |---|---|---|---|
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
-| 269 | Witness and webhook are near-duplicate patterns that should be unified | medium | accepted |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | accepted |
 
@@ -46,6 +45,10 @@ _(none)_
 | 234 | Recurrence uses UUIDv5 (SHA-1) for deterministic event IDs — collision risk | low | Accepted — UUIDv5 with SHA-1 is adequate for the homelab scale; collision probability is negligible for the expected event volume. |
 | 257 | No CLI or test helper for running targeted test subsets by file path | low | Added `make test-files FILES=tests/test_replay_coverage.py` target to Makefile. |
 | 268 | Webhook delivery has no retry or dead-letter mechanism | medium | Added `failure_count` and `max_failures` columns. Auto-pauses webhook after consecutive failures. Resets counter on success. Full retry/dead-letter deferred. |
+| 274 | Webhook delivery uses WITNESS_NOT_FOUND error code — wrong domain | low | Resolved by Plan 017 — webhooks now delegate to witness machinery; error codes unified. |
+| 273 | Webhook resume does not reset failure_count — auto-repauses on next failure | medium | Resolved by Plan 017 — resume_webhook delegates to reactivate_witness which resets consecutive_failures=0. |
+| 272 | Webhook work_item_types filter reads from wrong event field — always skips | high | Resolved by Plan 017 — filter now reads top-level work_item_type key (matching witness behavior). Test added. |
+| 269 | Witness and webhook are near-duplicate patterns that should be unified | medium | Plan 017 — webhooks rewritten as thin wrapper around witness system. Migration 026: mode column, unified status to 'paused', dropped webhook_registrations. X-Substrate-Signature header. |
 | 267 | archive_events breaks hash chain and replay consistency | high | Changed `archive_events` to only archive complete work-items (max timestamp before cutoff). All events for a qualifying work-item move together, preserving hash chain integrity. |
 | 266 | Missing index on claims(expires_at) for sweep queries | low | Migration 023 adds `idx_claims_expires_at` partial index on `claims(expires_at) WHERE expires_at IS NOT NULL`. |
 | 265 | Replay temp tables leak on exception | low | Extracted `_replay_inner()`; `replay()` wraps in try/except and drops replay tables on exception using specific tag (not wildcard). |

@@ -2,7 +2,7 @@
 number: "273"
 title: "Webhook resume does not reset failure_count — auto-repauses on next failure"
 severity: medium
-status: proposed
+status: resolved
 kind: bug
 author: design-review
 date: "2026-05-26"

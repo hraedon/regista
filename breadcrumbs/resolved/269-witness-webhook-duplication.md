@@ -2,7 +2,7 @@
 number: "269"
 title: "Witness and webhook are near-duplicate patterns that should be unified"
 severity: medium
-status: accepted
+status: resolved
 kind: design
 author: reflection
 date: "2026-05-26"

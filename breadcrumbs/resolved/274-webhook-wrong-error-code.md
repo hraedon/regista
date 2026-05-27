@@ -2,7 +2,7 @@
 number: "274"
 title: "Webhook delivery uses WITNESS_NOT_FOUND error code — wrong domain"
 severity: low
-status: proposed
+status: resolved
 kind: bug
 author: design-review
 date: "2026-05-26"
