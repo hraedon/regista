@@ -4,6 +4,30 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-05-28 — Session 65: BC-196 verification, spec update, CI fix
+
+**Focus:** Verify BC-196/216/217 implementation, fix CI lint failures, update spec.
+
+**Delivered:**
+
+1. **BC-196 status update (accepted → implemented):**
+   - Verified all three breadcrumbs (BC-196, BC-216, BC-217) are fully implemented via Plan 011
+   - Updated breadcrumb status and acceptance criteria checklist (4 of 6 met)
+   - Updated `breadcrumbs/README.md` index entry
+
+2. **BC-196 AC 4 — Spec §17.9.1 (signing scheme trust implications):**
+   - Added `spec.md` §17.9.1 describing HMAC vs Ed25519 trust model differences
+   - Documented residual operator-forgery risk and transparency-log mitigation (not yet implemented)
+
+3. **CI fix — 8 lint errors in `_timestamping.py` and `test_timestamping.py`:**
+   - Removed 4 unused `asn1crypto` imports (`algos`, `cms`, `x509`)
+   - Broke 3 long lines (certificate comparison conditions, test assertion string)
+   - All errors were pre-existing from BC-229 TSA trust anchor implementation
+
+**Test results:** 1065 passed, 10 deselected, lint clean. CI green (3.11, 3.12, 3.13).
+
+---
+
 ## 2026-05-27 — Session 64: Deepen sidecar test coverage (BC-276)
 
 **Focus:** Expand test coverage for untested sidecar routes and fix defensive test assertions.
