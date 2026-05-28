@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "regista"
-version = "0.3.0"
+version = "0.4.0"
 description = "Coordination + state plane for agent pipelines over Postgres"
 requires-python = ">=3.11"
 dependencies = [
