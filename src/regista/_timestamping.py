@@ -230,8 +230,6 @@ def verify_tsa_signature(
         chains to *trust_anchor*.  *detail* describes the failure reason
         when *ok* is ``False``.
     """
-    from asn1crypto import algos, cms, x509
-
     try:
         ci = _extract_content_info(token)
         signed_data = ci["content"]
@@ -277,10 +275,11 @@ def _extract_content_info(token: bytes):
 
 def _find_signer_cert(signed_data, signer):
     """Locate the signer's certificate in the SignedData certificates bag."""
-    from asn1crypto import cms, x509
+    from asn1crypto import cms
 
     sid = signer["sid"]
     certs = signed_data["certificates"]
+    sid = signer["sid"]
 
     for cert_choice in certs:
         if cert_choice.name == "certificate":
@@ -313,7 +312,10 @@ def _verify_cert_chain(signer_cert, signed_data, trust_anchor) -> tuple[bool, st
     Supports a direct match (signer == anchor) or a single-intermediate chain.
     """
     # Direct match: signer IS the trust anchor
-    if signer_cert.subject == trust_anchor.subject and signer_cert.serial_number == trust_anchor.serial_number:
+    if (
+        signer_cert.subject == trust_anchor.subject
+        and signer_cert.serial_number == trust_anchor.serial_number
+    ):
         try:
             _verify_cert_signature(signer_cert, trust_anchor)
             return True, "Direct match with trust anchor"
@@ -327,7 +329,10 @@ def _verify_cert_chain(signer_cert, signed_data, trust_anchor) -> tuple[bool, st
     ]
 
     for inter in intermediates:
-        if inter.subject == trust_anchor.subject and inter.serial_number == trust_anchor.serial_number:
+        if (
+            inter.subject == trust_anchor.subject
+            and inter.serial_number == trust_anchor.serial_number
+        ):
             try:
                 _verify_cert_signature(signer_cert, inter)
                 return True, "Signer chains to trust anchor via intermediate"
@@ -378,8 +383,6 @@ def _verify_cert_signature(child_cert, parent_cert) -> None:
 
 def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
     """Verify the PKCS#7 signature in *signer* against *signer_cert*."""
-    from asn1crypto import cms
-
     sig_algo = signer["signature_algorithm"]
     signature_bytes = bytes(signer["signature"])
     signed_attrs = signer["signed_attrs"]
