@@ -90,8 +90,11 @@ class TestTSAConfig:
         import inspect
 
         src = inspect.getsource(TSAConfig)
-        assert "trust anchor" in src.lower() or "certificate" in src.lower(), (
-            "tsa_cert_path should describe its role as a trust anchor for TSA signature verification"
+        assert (
+            "trust anchor" in src.lower() or "certificate" in src.lower()
+        ), (
+            "tsa_cert_path should describe its role as a trust anchor"
+            " for TSA signature verification"
         )
 
 

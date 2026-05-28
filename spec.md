@@ -618,6 +618,16 @@ Consumers (UI, audit tooling, replay validators) MUST distinguish:
 
 The federated UI and downstream consumers should surface this distinction visually (e.g., role displayed with a "claimed" qualifier until enforcement lands) rather than treating all event fields as equally authoritative.
 
+### 17.9.1 Signing scheme trust implications
+
+The signing scheme (FR-15) affects what an *external* auditor can verify without trusting the operator's key custody:
+
+- **HMAC-SHA256 (default):** Symmetric — the same key signs and verifies. An auditor who holds the key can verify event integrity but cannot distinguish genuine historical events from events fabricated by anyone with access to the key (including the operator). Adequate for the homelab / single-operator threat model where the auditor *is* the operator.
+
+- **Ed25519 (opt-in):** Asymmetric — the operator holds the private key; auditors verify with the public key alone. An external auditor can verify event integrity and authenticity without receiving signing material. This enables external regulatory audit (HIPAA, SOC 2) and multi-party workflows where principals do not share key material.
+
+- **Residual risk under both schemes:** The operator (or anyone who obtains the signing key) can sign arbitrary events and insert them into the log. Asymmetric signing prevents *third-party* forgery but does not prevent *operator* forgery. Mitigations: the event hash chain (BC-233) makes retroactive tampering detectable (inserting or reordering events breaks the chain); a transparency-log anchor (publishing periodic Merkle roots to an append-only external store) would make *any* post-hoc modification detectable by an external party, including by the operator. Transparency-log anchoring is not yet implemented.
+
 ### 17.10 Heartbeat invariant
 
 Heartbeats (`heartbeat_claim`, FR-07) extend `claim_expires_at` by `ttl_seconds`. Since BC-194, heartbeats emit a `claim_heartbeat` event **coalesced** on a threshold: a heartbeat event is appended only when `(new_expires_at - last_emitted_expires_at) >= threshold`. The default threshold is `max(60s, ttl_seconds/2)`; callers may override via the `coalesce_threshold` parameter.

@@ -102,21 +102,33 @@ asymmetric signing.
 
 ## Acceptance criteria
 
-- [ ] Signing primitive is abstracted behind an interface; HMAC-SHA256 is one
-      implementation, not the only one.
-- [ ] Event payloads carry an `alg` (or equivalent) discriminator so a verifier
+- [x] Signing primitive is abstracted behind an interface; HMAC-SHA256 is one
+      implementation, not the only one. (Plan 011: `_signing_scheme.py` SigningScheme protocol)
+- [x] Event payloads carry an `alg` (or equivalent) discriminator so a verifier
       can dispatch to the right scheme. Existing HMAC events remain verifiable
       with no replay/migration required (back-compat for the homelab default).
-- [ ] At least one asymmetric scheme (recommend Ed25519) ships with full
+      (`scheme_id` column on events, migration 015; replay resolves per-event)
+- [x] At least one asymmetric scheme (recommend Ed25519) ships with full
       sign/verify/key-rotation parity with the current HMAC path.
-- [ ] Spec §FR-15 and §17.9 are updated to describe the trust model under
+      (`Ed25519Scheme` in `_signing_scheme.py`, optional via `pip install regista[ed25519]`)
+- [x] Spec §FR-15 and §17.9 are updated to describe the trust model under
       asymmetric signing and the residual "auditee forges with own private
       key" risk that asymmetric signing alone does not eliminate.
+      (§17.9.1 added: signing scheme trust implications, HMAC vs Ed25519
+      audit posture, residual operator-forgery risk, transparency-log note.)
 - [ ] compliance-substrate's README and any agent-provenance positioning
       documents are revisited to make accurate claims about who can verify
       and under what trust assumptions.
 - [ ] (Stretch) A design note exists for transparency-log anchoring, even if
       implementation is deferred.
+
+## Resolution note
+
+Plan 011 (pluggable signing, Ed25519) implemented the core technical
+acceptance criteria (AC 1–3). BC-216 (KeyEntry restructure) and BC-217
+(per-actor key resolution) landed in the same session. 18 tests in
+`tests/test_bc214_216_217_218.py`. Spec update (AC 4) and
+compliance-substrate positioning (AC 5) remain open.
 
 ## Non-goals
 
