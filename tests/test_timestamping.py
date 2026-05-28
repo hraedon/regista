@@ -81,19 +81,17 @@ class TestTSAConfig:
         cfg = TSAConfig(tsa_url="https://example.com/tsr", batch_size=500)
         assert cfg.batch_size == 500
 
-    def test_tsa_cert_path_reserved_docstring(self):
-        # BC-229: field must exist and carry a docstring warning callers it is
-        # not yet implemented.
+    def test_tsa_cert_path_field_exists(self):
+        # BC-229: field must exist and have a docstring describing its purpose.
         import dataclasses
 
         fields = {f.name: f for f in dataclasses.fields(TSAConfig)}
         assert "tsa_cert_path" in fields, "tsa_cert_path field must remain in TSAConfig"
-        # Confirm the class docstring / field docstring mentions "future"
         import inspect
 
         src = inspect.getsource(TSAConfig)
-        assert "RESERVED FOR FUTURE USE" in src or "future" in src.lower(), (
-            "tsa_cert_path should have a docstring noting it is not yet implemented"
+        assert "trust anchor" in src.lower() or "certificate" in src.lower(), (
+            "tsa_cert_path should describe its role as a trust anchor for TSA signature verification"
         )
 
 

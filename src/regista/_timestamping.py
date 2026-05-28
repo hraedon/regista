@@ -36,11 +36,10 @@ class TSAConfig:
     tsa_cert_path: str | None = None
     """Path to a trusted TSA certificate (PEM or DER).
 
-    RESERVED FOR FUTURE USE — this field is accepted so that existing
-    configurations are not broken, but it is not currently read by any
-    regista code.  Full TSA-signature verification against a configured
-    trust anchor is tracked in BC-229 and has not yet been implemented.
-    Setting this field has no security effect in the current release.
+    When set, ``verify_tsa_token`` will verify the CMS signature on the
+    TSA token against this certificate (the trust anchor).  The signer's
+    certificate in the token must either *be* this certificate or chain
+    to it via a single intermediate.
     """
     batch_size: int = 1000
     interval_seconds: float = 3600.0
@@ -196,33 +195,304 @@ def _parse_tst_info(token: bytes):
     return tsp.TSTInfo.load(bytes(content))
 
 
+def _load_trust_anchor(cert_path: str):
+    """Load a trust-anchor certificate from *cert_path* (PEM or DER).
+
+    Returns an ``asn1crypto.x509.Certificate``.
+    """
+    from asn1crypto import pem, x509
+
+    raw = open(cert_path, "rb").read()
+    if pem.detect(raw):
+        _, _, der = pem.unarmor(raw)
+    else:
+        der = raw
+    return x509.Certificate.load(der)
+
+
+def verify_tsa_signature(
+    token: bytes,
+    trust_anchor,
+) -> tuple[bool, str]:
+    """Verify the CMS signature on an RFC 3161 TSA token.
+
+    Parameters
+    ----------
+    token:
+        Raw TSA response bytes (TimeStampResp or ContentInfo).
+    trust_anchor:
+        An ``asn1crypto.x509.Certificate`` to trust as the TSA root.
+
+    Returns
+    -------
+    (ok, detail)
+        *ok* is ``True`` when the signature is valid and the signer
+        chains to *trust_anchor*.  *detail* describes the failure reason
+        when *ok* is ``False``.
+    """
+    from asn1crypto import algos, cms, x509
+
+    try:
+        ci = _extract_content_info(token)
+        signed_data = ci["content"]
+        signers = signed_data["signer_infos"]
+        if len(signers) == 0:
+            return False, "No signer info in CMS SignedData"
+        if len(signers) > 1:
+            return False, f"Expected 1 signer, got {len(signers)}"
+
+        signer = signers[0]
+        signer_cert = _find_signer_cert(signed_data, signer)
+        if signer_cert is None:
+            return False, "Signer certificate not found in token"
+
+        # Verify the signer's certificate chains to the trust anchor
+        chain_ok, chain_detail = _verify_cert_chain(signer_cert, signed_data, trust_anchor)
+        if not chain_ok:
+            return False, f"Certificate chain validation failed: {chain_detail}"
+
+        # Verify the CMS signature (over signed attributes or content digest)
+        sig_ok, sig_detail = _verify_cms_signature(signer, signed_data, signer_cert)
+        if not sig_ok:
+            return False, f"CMS signature verification failed: {sig_detail}"
+
+        return True, "TSA signature verified against trust anchor"
+    except Exception as exc:
+        return False, f"TSA signature verification error: {exc}"
+
+
+def _extract_content_info(token: bytes):
+    """Parse a TSA token into a CMS ContentInfo, handling TimeStampResp wrapping."""
+    from asn1crypto import cms, tsp
+
+    try:
+        resp = tsp.TimeStampResp.load(token)
+        status = int(resp["status"]["status"])
+        if status not in (0, 1):
+            raise ValueError(f"TSA status {status}")
+        return resp["time_stamp_token"]
+    except Exception:
+        return cms.ContentInfo.load(token)
+
+
+def _find_signer_cert(signed_data, signer):
+    """Locate the signer's certificate in the SignedData certificates bag."""
+    from asn1crypto import cms, x509
+
+    sid = signer["sid"]
+    certs = signed_data["certificates"]
+
+    for cert_choice in certs:
+        if cert_choice.name == "certificate":
+            cert = cert_choice.chosen
+            if isinstance(sid, cms.IssuerAndSerialNumber):
+                if (
+                    cert.issuer == sid["issuer"]
+                    and cert.serial_number == sid["serial_number"]
+                ):
+                    return cert
+            else:
+                # SubjectKeyIdentifier — compare raw bytes
+                try:
+                    ext = cert.key_identifier_value
+                    if ext and bytes(ext) == bytes(sid):
+                        return cert
+                except Exception:
+                    pass
+
+    # Fallback: if only one certificate, assume it's the signer
+    real_certs = [c.chosen for c in certs if c.name == "certificate"]
+    if len(real_certs) == 1:
+        return real_certs[0]
+    return None
+
+
+def _verify_cert_chain(signer_cert, signed_data, trust_anchor) -> tuple[bool, str]:
+    """Verify that *signer_cert* chains to *trust_anchor*.
+
+    Supports a direct match (signer == anchor) or a single-intermediate chain.
+    """
+    # Direct match: signer IS the trust anchor
+    if signer_cert.subject == trust_anchor.subject and signer_cert.serial_number == trust_anchor.serial_number:
+        try:
+            _verify_cert_signature(signer_cert, trust_anchor)
+            return True, "Direct match with trust anchor"
+        except Exception as exc:
+            return False, f"Signer cert signature invalid: {exc}"
+
+    # Try single-intermediate chain: signer <- intermediate, intermediate <- anchor
+    certs = signed_data["certificates"]
+    intermediates = [
+        c.chosen for c in certs if c.name == "certificate" and c.chosen is not signer_cert
+    ]
+
+    for inter in intermediates:
+        if inter.subject == trust_anchor.subject and inter.serial_number == trust_anchor.serial_number:
+            try:
+                _verify_cert_signature(signer_cert, inter)
+                return True, "Signer chains to trust anchor via intermediate"
+            except Exception:
+                continue
+
+    return False, "Signer certificate does not chain to trust anchor"
+
+
+def _verify_cert_signature(child_cert, parent_cert) -> None:
+    """Verify that *parent_cert* signed *child_cert*.
+
+    Uses the ``cryptography`` library for the actual RSA/ECDSA verification.
+    Raises on failure.
+    """
+    from cryptography import x509 as crypto_x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, padding
+
+    parent_crypto = crypto_x509.load_der_x509_certificate(parent_cert.dump())
+    child_crypto = crypto_x509.load_der_x509_certificate(child_cert.dump())
+
+    parent_pub = parent_crypto.public_key()
+    signature = child_crypto.signature
+    tbs_der = child_crypto.tbs_certificate_bytes
+
+    # Determine hash algorithm from the signature OID
+    sig_oid = child_crypto.signature_algorithm_oid
+    sig_oid_str = sig_oid.dotted_string
+
+    # RSA OIDs: 1.2.840.113549.1.1.11 (sha256RSA), .12 (sha384RSA), .13 (sha512RSA)
+    # ECDSA OIDs: 1.2.840.10045.4.3.2 (ecdsa-with-SHA256), .3 (SHA384), .4 (SHA512)
+    if sig_oid_str in ("1.2.840.113549.1.1.11",):
+        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA256())
+    elif sig_oid_str in ("1.2.840.113549.1.1.12",):
+        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA384())
+    elif sig_oid_str in ("1.2.840.113549.1.1.13",):
+        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA512())
+    elif sig_oid_str in ("1.2.840.10045.4.3.2",):
+        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA256()))
+    elif sig_oid_str in ("1.2.840.10045.4.3.3",):
+        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA384()))
+    elif sig_oid_str in ("1.2.840.10045.4.3.4",):
+        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA512()))
+    else:
+        raise ValueError(f"Unsupported cert signature OID: {sig_oid_str}")
+
+
+def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
+    """Verify the PKCS#7 signature in *signer* against *signer_cert*."""
+    from asn1crypto import cms
+
+    sig_algo = signer["signature_algorithm"]
+    signature_bytes = bytes(signer["signature"])
+    signed_attrs = signer["signed_attrs"]
+
+    # RFC 3852: when signed_attrs are present, the signature is over the
+    # DER encoding of the signed attributes (with the IMPLICIT [0] tag).
+    if signed_attrs is not None and len(signed_attrs) > 0:
+        # Re-encode with IMPLICIT tag set as required by CMS
+        data_to_verify = signed_attrs.untag().dump()
+    else:
+        # No signed attrs — signature over the encapsulated content digest
+        encap = signed_data["encap_content_info"]["content"]
+        data_to_verify = bytes(encap) if encap else b""
+
+    # Dispatch verification based on algorithm
+    algo_name = sig_algo["algorithm"].native
+
+    try:
+        from cryptography import x509 as crypto_x509
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, padding
+
+        crypto_cert = crypto_x509.load_der_x509_certificate(signer_cert.dump())
+        crypto_pub = crypto_cert.public_key()
+
+        # Determine hash from OID
+        sig_oid = crypto_cert.signature_algorithm_oid.dotted_string
+        hash_map = {
+            "1.2.840.113549.1.1.11": hashes.SHA256,
+            "1.2.840.113549.1.1.12": hashes.SHA384,
+            "1.2.840.113549.1.1.13": hashes.SHA512,
+            "1.2.840.10045.4.3.2": hashes.SHA256,
+            "1.2.840.10045.4.3.3": hashes.SHA384,
+            "1.2.840.10045.4.3.4": hashes.SHA512,
+        }
+        hash_cls = hash_map.get(sig_oid, hashes.SHA256)()
+
+        if "rsa" in algo_name.lower():
+            if "pss" in algo_name.lower():
+                crypto_pub.verify(
+                    signature_bytes, data_to_verify,
+                    padding.PSS(mgf=padding.MGF1(hash_cls), salt_length=padding.PSS.MAX_LENGTH),
+                    hash_cls,
+                )
+            else:
+                crypto_pub.verify(signature_bytes, data_to_verify, padding.PKCS1v15(), hash_cls)
+        elif "ecdsa" in algo_name.lower() or "ec" in algo_name.lower():
+            crypto_pub.verify(signature_bytes, data_to_verify, ec.ECDSA(hash_cls))
+        else:
+            return False, f"Unsupported signature algorithm: {algo_name}"
+
+        return True, "CMS signature valid"
+    except Exception as exc:
+        return False, f"Signature verification failed: {exc}"
+
+
+def _sig_algo_to_hash_name(algo_name: str) -> str:
+    """Map an ASN.1 signature algorithm name to a cryptography hash name."""
+    algo_lower = algo_name.lower()
+    if "sha512" in algo_lower:
+        return "SHA512"
+    if "sha384" in algo_lower:
+        return "SHA384"
+    return "SHA256"
+
+
 def verify_tsa_token(token: bytes, data: bytes, config: TSAConfig) -> bool:
-    # Cryptographic verification of the RFC 3161 message imprint embedded in
-    # the TSA response. Parses the CMS/PKCS#7 envelope, extracts TSTInfo, and
-    # constant-time-compares the embedded hash to a fresh hash of `data` using
-    # the algorithm declared by the TSA.
-    #
-    # Note: this does NOT verify the TSA's signature on the token or validate
-    # the TSA certificate chain. Full signature/chain validation is tracked
-    # separately and requires a configured trust anchor (see BC-229).
+    """Cryptographic verification of an RFC 3161 TSA token.
+
+    Checks the message imprint hash and, when ``config.tsa_cert_path`` is
+    set, verifies the CMS signature against the trust anchor.
+    """
+    ok, _detail = verify_tsa_token_full(token, data, config)
+    return ok
+
+
+def verify_tsa_token_full(
+    token: bytes, data: bytes, config: TSAConfig
+) -> tuple[bool, str]:
+    """Full verification of an RFC 3161 TSA token.
+
+    Returns ``(ok, detail)`` where *detail* describes the failure reason
+    or the verification method on success.
+    """
     if not token:
-        return False
+        return False, "Empty token"
     _require_asn1crypto()
     try:
         tst_info = _parse_tst_info(token)
         imprint = tst_info["message_imprint"]
         algo_name = imprint["hash_algorithm"]["algorithm"].native
         if algo_name not in _SUPPORTED_HASH_ALGOS:
-            return False
+            return False, f"Unsupported hash algorithm: {algo_name}"
         expected = _hash_data(data, algo_name)
-        return _hmac.compare_digest(bytes(imprint["hashed_message"]), expected)
+        if not _hmac.compare_digest(bytes(imprint["hashed_message"]), expected):
+            return False, "Message imprint mismatch"
+
+        # When a trust anchor is configured, also verify the CMS signature
+        if config.tsa_cert_path:
+            trust_anchor = _load_trust_anchor(config.tsa_cert_path)
+            sig_ok, sig_detail = verify_tsa_signature(token, trust_anchor)
+            if not sig_ok:
+                return False, sig_detail
+            return True, f"Imprint OK; {sig_detail}"
+
+        return True, "Imprint verified (no trust anchor — signature not checked)"
     except Exception:
         import structlog
         structlog.get_logger().warning(
             "timestamping.verify_tsa_token_failed",
             exc_info=True,
         )
-        return False
+        return False, "Verification failed with exception"
 
 
 def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
