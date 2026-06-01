@@ -170,8 +170,6 @@ def _verify_once(
     return scheme.verify(envelope, signature, canonical_hash, key)
 
 
-
-
 _V3_FIELDS = frozenset(
     {"event_id", "work_item_id", "actor_id", "key_id", "event_seq",
      "workflow_name", "workflow_version", "timestamp", "on_behalf_of",
@@ -250,6 +248,17 @@ def verify_event(
             )
         )
 
+        if stored_envelope is not None:
+            ver = classify_envelope_version(stored_envelope)
+            if ver == 3:
+                candidate_envelopes.insert(0, (stored_envelope, ver))
+
+        for envelope, _ver in candidate_envelopes:
+            if _verify_once(envelope, signature, canonical_hash, scheme, key):
+                return True
+
+        return False
+
     candidate_envelopes.append(
         (
             build_signing_envelope_v2(
@@ -278,14 +287,12 @@ def verify_event(
         if _verify_once(envelope, signature, canonical_hash, scheme, key):
             return True
 
-    # Backward compat: retry with old envelope shape for pre-v2 events
     old_envelope = build_signing_envelope(
         event_id, work_item_id, actor_id, transition, payload, on_behalf_of,
     )
     if _verify_once(old_envelope, signature, canonical_hash, scheme, key):
         return True
 
-    # Fallback: retry without on_behalf_of in old envelope (BC-197 compat)
     if on_behalf_of is not None:
         bare_envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None,

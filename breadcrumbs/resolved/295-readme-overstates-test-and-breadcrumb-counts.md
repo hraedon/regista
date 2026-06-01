@@ -2,7 +2,7 @@
 number: "295"
 title: "README/AGENTS overstate test count (992) and breadcrumb totals vs tree"
 severity: low
-status: proposed
+status: fixed
 kind: improvement
 author: adversarial-review
 date: "2026-05-31"

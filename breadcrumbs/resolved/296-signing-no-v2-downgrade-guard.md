@@ -2,7 +2,7 @@
 number: "296"
 title: "verify_event accepts downgraded v2 envelopes for v3-chained events (no downgrade guard)"
 severity: medium
-status: proposed
+status: fixed
 kind: bug
 author: adversarial-review
 date: "2026-06-01"

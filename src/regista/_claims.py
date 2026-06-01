@@ -327,23 +327,32 @@ def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:
     from ._events import append_event, lock_work_item
 
     now = datetime.now(UTC)
-    result = conn.execute(
-        SQL("DELETE FROM claims WHERE expires_at < %s RETURNING work_item_id, actor_id"),
+    expired = conn.execute(
+        SQL("SELECT work_item_id, actor_id FROM claims WHERE expires_at < %s"),
         [now],
     ).fetchall()
 
-    for row in result:
+    swept = 0
+    for row in expired:
         wi_id = row["work_item_id"]
         prior_actor_id = row["actor_id"]
 
         wi = lock_work_item(conn, wi_id)
 
-        fresh_claim = conn.execute(
-            SQL("SELECT 1 FROM claims WHERE work_item_id = %s"),
-            [wi_id],
+        still_expired = conn.execute(
+            SQL("SELECT actor_id FROM claims WHERE work_item_id = %s AND expires_at < %s"),
+            [wi_id, now],
         ).fetchone()
-        if fresh_claim is not None:
+        if still_expired is None:
             continue
+
+        if still_expired["actor_id"] != prior_actor_id:
+            continue
+
+        conn.execute(
+            SQL("DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s"),
+            [wi_id, prior_actor_id],
+        )
 
         cur = conn.execute(
             SQL(
@@ -372,4 +381,6 @@ def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:
                 _prelocked_wi=wi,
             )
 
-    return len(result)
+        swept += 1
+
+    return swept

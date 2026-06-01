@@ -2,7 +2,7 @@
 number: "282"
 title: "Sidecar boundary story: thin HTTP layer vs application server"
 severity: medium
-status: proposed
+status: accepted
 kind: design
 author: glm-feedback
 date: "2026-05-27"

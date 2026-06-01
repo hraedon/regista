@@ -562,7 +562,6 @@ class HookOps:
         self._project = project
         self._validators = validators
         self._handlers = handlers
-        self._channel = channel
         self._hook_channel = channel
         self._consumer = consumer
 
@@ -574,6 +573,11 @@ class HookOps:
         self._handlers = updated
         if self._consumer is not None:
             self._consumer._handlers = updated
+
+    def _sync_handlers(self, handlers: dict, consumer: object | None) -> None:
+        self._handlers = handlers
+        if consumer is not None:
+            consumer._handlers = handlers
 
     def start_consumer(self) -> None:
         if self._consumer is None:

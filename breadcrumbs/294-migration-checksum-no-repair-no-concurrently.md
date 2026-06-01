@@ -2,7 +2,7 @@
 number: "294"
 title: "migration runner is checksum-locked with no repair path and no CONCURRENTLY mode"
 severity: low
-status: proposed
+status: accepted
 kind: design
 author: adversarial-review
 date: "2026-05-31"

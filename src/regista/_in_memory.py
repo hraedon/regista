@@ -503,7 +503,12 @@ class InMemoryRegista:
             actor_id, actor_kind, actor_metadata, event_id=event_id,
         )
 
-    def replay(self, *, continue_on_revoked: bool = False) -> ReplayReport:
+    def replay(
+        self,
+        *,
+        continue_on_revoked: bool = False,
+        verify_timestamps: bool = False,
+    ) -> ReplayReport:
         from ._in_memory_replay import in_memory_replay
 
         return in_memory_replay(
@@ -1018,8 +1023,11 @@ class _InMemoryWitnessOps:
     def reactivate(self, witness_id: uuid.UUID) -> None:
         self._sub.reactivate_witness(witness_id)
 
-    def list(self, status: str | None = None) -> list[dict]:
-        return self._sub.list_witnesses(status=status)
+    def list(self, status: str | None = None, mode: str | None = None) -> list[dict]:
+        witnesses = self._sub.list_witnesses(status=status)
+        if mode is not None:
+            witnesses = [w for w in witnesses if w.get("mode") == mode]
+        return witnesses
 
     def receipts(
         self,

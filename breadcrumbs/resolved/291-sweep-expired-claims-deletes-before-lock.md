@@ -2,7 +2,7 @@
 number: "291"
 title: "sweep_expired_claims deletes claims before locking the work item (ordering inversion vs acquire)"
 severity: medium
-status: proposed
+status: fixed
 kind: bug
 author: adversarial-review
 date: "2026-05-31"

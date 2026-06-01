@@ -2,7 +2,7 @@
 number: "292"
 title: "validator statement_timeout reset to 0 mid-transaction; no real wall-clock bound on validators"
 severity: medium
-status: proposed
+status: fixed
 kind: bug
 author: adversarial-review
 date: "2026-05-31"

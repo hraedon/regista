@@ -4,6 +4,42 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-01 — Session 66: Full breadcrumb resolution + project scan + hardening
+
+**Focus:** Resolve all remaining open breadcrumbs, scan project for new issues, harden.
+
+**Delivered:**
+
+1. **BC-291 (medium, fixed):** `sweep_expired_claims` now locks work item before deleting expired claim row, mirroring `acquire_claim` ordering. Eliminates race window where concurrent acquire could lose steal accounting.
+
+2. **BC-292 (medium, fixed):** Removed `SET LOCAL statement_timeout = 0` after validator runs. 5s per-statement timeout remains active for rest of transaction, preventing unbounded lock holding.
+
+3. **BC-296 (medium, fixed):** `verify_event` now only accepts v3 envelopes when `prev_event_hash` is present. V2/v1/bare candidate envelopes are not generated for chained events, preventing chain-field stripping attacks.
+
+4. **BC-295 (low, fixed):** Updated README badge and prose from stale "992 tests" to 1079. Updated AGENTS.md from 998 to 1079. Updated breadcrumb count from 274/270 to 293/283.
+
+5. **Accepted BC-235, BC-282, BC-294, BC-297** as known design limitations (sidecar auth, sidecar boundary, migration checksum, witness HMAC).
+
+6. **Project scan — 10 additional fixes:**
+   - `REGISTA_VERSION` derived from `importlib.metadata.version("regista")` instead of hardcoded "0.1.0" (`_integrity.py`)
+   - `register_validator` and `register_hook_handler` on `Regista` use copy-on-write pattern (`__init__.py`)
+   - `HookOps._sync_handlers()` added; `start_hook_consumer` and `poll_hooks` sync handlers before use to prevent stale cached dict in long-lived HookOps instances (`_ops.py`)
+   - `hooks_drain` and `webhooks_registered` metrics registered in `_observability.py` counter map
+   - `InMemoryRegista.replay()` now accepts `verify_timestamps` parameter (API parity)
+   - `_InMemoryWitnessOps.list()` now accepts `mode` parameter (API parity)
+   - Removed redundant `_channel` attribute from `HookOps`
+   - Dead-lettered hooks endpoint now accepts `limit` query parameter with bounds (1-1000)
+   - Fixed stale comment in `spec.yaml` (v5 → v8)
+   - Removed extra blank lines in `_signing.py`
+
+**Test results:** 1069 passed, 10 deselected, lint clean.
+
+**Breadcrumbs resolved this session:** BC-291, BC-292, BC-295, BC-296.
+**Breadcrumbs accepted this session:** BC-235, BC-282, BC-294, BC-297.
+**Open breadcrumbs remaining:** 6 (all accepted design tensions: BC-213, BC-235, BC-270, BC-282, BC-294, BC-297).
+
+---
+
 ## 2026-05-28 — Session 65: BC-196 verification, spec update, CI fix
 
 **Focus:** Verify BC-196/216/217 implementation, fix CI lint failures, update spec.

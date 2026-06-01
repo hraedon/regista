@@ -148,7 +148,6 @@ def transition(
                             validator_name, handler, ctx,
                             metrics=metrics, project=project,
                         )
-                        conn.execute("SET LOCAL statement_timeout = 0")
                         metrics.inc("validators_succeeded", project)
                     except RegistaError:
                         # BC-192: VALIDATOR_TIMEOUT branch removed — validators

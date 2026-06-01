@@ -167,6 +167,14 @@ class Metrics:
                 "regista_witness_receipts_created_total",
                 "Witness receipts created",
             ),
+            "hooks_drain": (
+                "regista_hooks_drain_total",
+                "Hook queue drains via manual poll",
+            ),
+            "webhooks_registered": (
+                "regista_webhooks_registered_total",
+                "Webhooks registered",
+            ),
         }
         if name in counters:
             metric_name, doc = counters[name]

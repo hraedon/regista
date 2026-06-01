@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import importlib.metadata
+
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 from ._migrations import check_migrations_current
 
-REGISTA_VERSION = "0.1.0"
+try:
+    REGISTA_VERSION = importlib.metadata.version("regista")
+except importlib.metadata.PackageNotFoundError:
+    REGISTA_VERSION = "0.0.0"
 
 
 def _parse_semver(s: str) -> tuple[int, int, int]:

@@ -2,7 +2,7 @@
 number: "297"
 title: "witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable"
 severity: medium
-status: proposed
+status: accepted
 kind: design
 author: adversarial-review
 date: "2026-06-01"

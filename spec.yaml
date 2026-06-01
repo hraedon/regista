@@ -1,6 +1,6 @@
 # spec.yaml — regista
 # Machine-readable sidecar to spec.md. Source of truth is spec.md.
-# Regenerated against spec.md v5 (2026-05-18).
+# Regenerated against spec.md v8 (2026-05-26).
 
 meta:
   name: "regista"

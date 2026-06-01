@@ -34,14 +34,20 @@ _(none)_
 | # | Title | Severity | Status |
 |---|---|---|---|
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
-| 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | proposed |
+| 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | accepted |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
-| 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | proposed |
+| 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
+| 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
+| 297 | witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable | medium | accepted |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 296 | verify_event accepts downgraded v2 envelopes for v3-chained events (no downgrade guard) | medium | Fixed — verify_event now only accepts v3 envelopes when prev_event_hash is present; v2/v1/bare candidates are not generated for chained events. |
+| 295 | README/AGENTS overstate test count (992) and breadcrumb totals vs tree | low | Fixed — updated README badge and prose to 1079 tests / 293 breadcrumbs. Updated AGENTS.md to 1079. |
+| 292 | validator statement_timeout reset to 0 mid-transaction; no real wall-clock bound on validators | medium | Fixed — removed `SET LOCAL statement_timeout = 0` after validator; 5s per-statement timeout remains active for rest of transaction. |
+| 291 | sweep_expired_claims deletes claims before locking the work item (ordering inversion vs acquire) | medium | Fixed — sweep now SELECTs expired claims, locks work item first, then conditionally deletes claim row under that lock (mirrors acquire_claim ordering). |
 | 290 | archive_events orphans work_items_current projection rows; replay silently skips archived items | high | Fix option (a): archival deletes the projection row in the same transaction (copying it to new `work_items_archive` table, migration 029), so the live projection stays fully derivable. `test_archive_actual` rewritten to assert projection row gone + `replay().replayed_drift == 0`. |
 | 293 | archive_events has no terminal-state guard; can archive dormant non-terminal work items | low | Candidate selection now joins `work_items_current` + `workflow_registry` and requires `current_state` to be a declared terminal state. Test `test_archive_skips_non_terminal_dormant_item`. |
 | 277 | events_archive shares global_seq sequence with events table | medium | Migration 027 recreates events_archive with plain LIKE events (no sequence default). Restores non-sequence defaults, adds targeted indexes. 4 tests. |

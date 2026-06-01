@@ -2,7 +2,7 @@
 number: "235"
 title: Sidecar hook endpoints lack per-hook or per-work-item authorization
 severity: medium
-status: proposed
+status: accepted
 kind: improvement
 author: adversarial-review
 date: "2026-05-24"
