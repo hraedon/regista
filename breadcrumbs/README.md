@@ -42,6 +42,8 @@ _(none)_
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 290 | archive_events orphans work_items_current projection rows; replay silently skips archived items | high | Fix option (a): archival deletes the projection row in the same transaction (copying it to new `work_items_archive` table, migration 029), so the live projection stays fully derivable. `test_archive_actual` rewritten to assert projection row gone + `replay().replayed_drift == 0`. |
+| 293 | archive_events has no terminal-state guard; can archive dormant non-terminal work items | low | Candidate selection now joins `work_items_current` + `workflow_registry` and requires `current_state` to be a declared terminal state. Test `test_archive_skips_non_terminal_dormant_item`. |
 | 277 | events_archive shares global_seq sequence with events table | medium | Migration 027 recreates events_archive with plain LIKE events (no sequence default). Restores non-sequence defaults, adds targeted indexes. 4 tests. |
 | 276 | Zero test coverage for webhooks, archive, and several sidecar routes | high | 18 migration tests (021-027), 16 sidecar route tests, webhook/archive lifecycle tests, 19 pytest.raises fixes. All 1051 tests pass. |
 | 271 | CLI main() dispatch is a fragile 40-branch if/elif chain | low | Refactored to use `set_defaults(func=...)` pattern. 40-branch if/elif chain replaced with single `hasattr(args, "func")` check. |

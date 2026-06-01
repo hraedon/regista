@@ -259,3 +259,31 @@ class TestMigration026WebhookWitnessUnification:
         match = [w for w in witnesses if w["witness_id"] == str(witness_id)]
         assert len(match) == 1
         assert match[0]["mode"] == "witness"
+
+
+class TestMigration029WorkItemsArchive:
+    def test_work_items_archive_table_exists(self, schema):
+        with psycopg.connect(DSN) as conn:
+            assert _table_exists(conn, schema, "work_items_archive")
+
+    def test_work_items_archive_has_same_columns_as_current(self, schema):
+        with psycopg.connect(DSN, row_factory=psycopg.rows.dict_row) as conn:
+            current_cols = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = 'work_items_current' "
+                "ORDER BY ordinal_position",
+                [schema],
+            ).fetchall()
+            archive_cols = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = 'work_items_archive' "
+                "ORDER BY ordinal_position",
+                [schema],
+            ).fetchall()
+            assert [r["column_name"] for r in current_cols] == [
+                r["column_name"] for r in archive_cols
+            ]
+
+    def test_work_items_archive_has_pkey(self, schema):
+        with psycopg.connect(DSN) as conn:
+            assert _index_exists(conn, schema, "work_items_archive_pkey")
