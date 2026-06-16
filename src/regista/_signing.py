@@ -84,6 +84,7 @@ def build_signing_envelope_v3(
     on_behalf_of: dict | None = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
+    prev_global_event_hash: bytes | None = None,
 ) -> bytes:
     envelope: dict[str, object] = {
         "event_id": str(event_id),
@@ -102,6 +103,8 @@ def build_signing_envelope_v3(
         envelope["prev_event_hash"] = prev_event_hash.hex()
     if global_seq is not None:
         envelope["global_seq"] = global_seq
+    if prev_global_event_hash is not None:
+        envelope["prev_global_event_hash"] = prev_global_event_hash.hex()
     return canonicalize(envelope)
 
 
@@ -121,6 +124,7 @@ def sign_event(
     scheme=None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
+    prev_global_event_hash: bytes | None = None,
 ) -> tuple[bytes, bytes, bytes]:
     from ._signing_scheme import HMACSHA256Scheme
 
@@ -141,6 +145,7 @@ def sign_event(
             on_behalf_of=on_behalf_of,
             prev_event_hash=prev_event_hash,
             global_seq=global_seq,
+            prev_global_event_hash=prev_global_event_hash,
         )
     else:
         envelope = build_signing_envelope_v2(
@@ -173,7 +178,8 @@ def _verify_once(
 _V3_FIELDS = frozenset(
     {"event_id", "work_item_id", "actor_id", "key_id", "event_seq",
      "workflow_name", "workflow_version", "timestamp", "on_behalf_of",
-     "transition", "payload", "prev_event_hash", "global_seq"}
+     "transition", "payload", "prev_event_hash", "global_seq",
+     "prev_global_event_hash"}
 )
 _V2_FIELDS = frozenset(
     {"event_id", "work_item_id", "actor_id", "key_id", "event_seq",
@@ -218,6 +224,7 @@ def verify_event(
     scheme=None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
+    prev_global_event_hash: bytes | None = None,
 ) -> bool:
     from ._signing_scheme import HMACSHA256Scheme
 
@@ -243,6 +250,7 @@ def verify_event(
                     on_behalf_of=on_behalf_of,
                     prev_event_hash=prev_event_hash,
                     global_seq=global_seq,
+                    prev_global_event_hash=prev_global_event_hash,
                 ),
                 3,
             )

@@ -117,6 +117,7 @@ class Event:
     scheme_id: str = "hmac-sha256"
     prev_event_hash: bytes | None = None
     global_seq: int | None = None
+    prev_global_event_hash: bytes | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -144,6 +145,8 @@ class Event:
             d["prev_event_hash"] = self.prev_event_hash.hex()
         if self.global_seq is not None:
             d["global_seq"] = self.global_seq
+        if self.prev_global_event_hash is not None:
+            d["prev_global_event_hash"] = self.prev_global_event_hash.hex()
         return d
 
     @classmethod
@@ -176,6 +179,11 @@ class Event:
                 else None
             ),
             global_seq=data.get("global_seq"),
+            prev_global_event_hash=(
+                bytes.fromhex(data["prev_global_event_hash"])
+                if data.get("prev_global_event_hash")
+                else None
+            ),
         )
 
 

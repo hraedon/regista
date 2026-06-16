@@ -18,7 +18,7 @@ _EVENT_FIELDS = (
     "event_id, work_item_id, event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope, "
-    "on_behalf_of, scheme_id, prev_event_hash, global_seq"
+    "on_behalf_of, scheme_id, prev_event_hash, global_seq, prev_global_event_hash"
 )
 
 
@@ -45,6 +45,40 @@ def _row_to_event(row: dict) -> Event:
             bytes(row["prev_event_hash"]) if row.get("prev_event_hash") else None
         ),
         global_seq=row.get("global_seq"),
+        prev_global_event_hash=(
+            bytes(row["prev_global_event_hash"])
+            if row.get("prev_global_event_hash")
+            else None
+        ),
+    )
+
+
+def _lock_global_chain_head(conn: psycopg.Connection) -> bytes | None:
+    """Serialise global appends and return the hash the next event chains from.
+
+    Locks the single ``event_chain_head`` row ``FOR UPDATE`` so concurrent
+    appends across work items queue onto one line (no chain forks). Returns the
+    current head hash, or ``None`` for the genesis event (empty log).
+    """
+    row = conn.execute(
+        SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE FOR UPDATE")
+    ).fetchone()
+    return bytes(row["head_hash"]) if row else None
+
+
+def _advance_global_chain_head(
+    conn: psycopg.Connection, event_id: uuid.UUID, head_hash: bytes
+) -> None:
+    """Point the global chain head at the just-appended event."""
+    conn.execute(
+        SQL(
+            "INSERT INTO event_chain_head (id, head_hash, head_event_id) "
+            "VALUES (TRUE, %s, %s) "
+            "ON CONFLICT (id) DO UPDATE SET "
+            "head_hash = EXCLUDED.head_hash, "
+            "head_event_id = EXCLUDED.head_event_id, updated_at = now()"
+        ),
+        [head_hash, event_id],
     )
 
 
@@ -143,6 +177,8 @@ def append_event(
                     bytes(prev_env) + bytes(prev_sig)
                 ).digest()
 
+    prev_global_event_hash = _lock_global_chain_head(conn)
+
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -159,6 +195,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme=scheme,
         prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
     )
 
     event_seq = next_seq
@@ -168,8 +205,10 @@ def append_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+                "prev_global_event_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -190,6 +229,7 @@ def append_event(
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
                 prev_event_hash,
+                prev_global_event_hash,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -203,6 +243,12 @@ def append_event(
             ErrorCode.EVENT_ID_GLOBAL_COLLISION,
             f"event_id {event_id} already exists",
         )
+
+    _advance_global_chain_head(
+        conn,
+        event_id,
+        hashlib.sha256(bytes(canonical_envelope) + bytes(signature)).digest(),
+    )
 
     conn.execute(
         SQL(
@@ -232,6 +278,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
         prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
     )
 
 
@@ -301,6 +348,8 @@ def append_transition_event(
                     bytes(prev_env) + bytes(prev_sig)
                 ).digest()
 
+    prev_global_event_hash = _lock_global_chain_head(conn)
+
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -317,6 +366,7 @@ def append_transition_event(
         on_behalf_of=on_behalf_of,
         scheme=scheme,
         prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
     )
 
     event_seq = next_seq
@@ -329,8 +379,10 @@ def append_transition_event(
                 "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+                "prev_global_event_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
@@ -351,6 +403,7 @@ def append_transition_event(
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
                 prev_event_hash,
+                prev_global_event_hash,
             ],
         )
     except psycopg.errors.UniqueViolation:
@@ -364,6 +417,12 @@ def append_transition_event(
             ErrorCode.EVENT_ID_GLOBAL_COLLISION,
             f"event_id {event_id} already exists",
         )
+
+    _advance_global_chain_head(
+        conn,
+        event_id,
+        hashlib.sha256(bytes(canonical_envelope) + bytes(signature)).digest(),
+    )
 
     merged_fields = wi_row["custom_fields"]
     if custom_fields_update:
@@ -416,6 +475,7 @@ def append_transition_event(
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
         prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
     )
 
 
