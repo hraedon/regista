@@ -157,17 +157,23 @@ runs inside the transition transaction, not in caller-attested payload.
 |---|---|
 | Validator sees stale/inconsistent `on_behalf_of` | The value is the in-scope local `on_behalf_of` parameter, not a read from elsewhere; it is the same value the emitted event will carry. No consistency window. |
 | `on_behalf_of` is caller-attested at the API boundary | Unchanged from today: `on_behalf_of` is already a `transition()` parameter, validated for shape by `_validate_delegation_chain`. In-process, the library trusts the caller (the host app resolves it server-side). The sidecar (Plan 005) maps it from the bearer token. Asymmetric signing (Plan 011) is the deeper fix for caller attestation; this plan does not weaken the existing model. |
-| `on_behalf_of` is `dict`, not frozen — can the validator mutate it? | The chain dict is constructed by the caller and passed through. A malicious validator could mutate its reference, but the same mutation risk already exists for `payload`, `custom_fields`, `actor_metadata`, and every `Event.payload` in `prior_events`. Validators are trusted in-process code (BC-192 contract); if a consumer registers an untrusted validator they have already lost. Defense-in-depth (deep-copy at the boundary) is tracked separately if it becomes a pattern; this plan does not introduce new mutation surface beyond what Plan 020 already added. |
+| `on_behalf_of` is `dict`, not frozen — can the validator mutate it? | **Mitigated by shallow-copy at the boundary.** Both transition implementations pass `dict(on_behalf_of) if on_behalf_of is not None else None` into `ValidatorContext`, so a validator that rewrites `ctx.on_behalf_of["principal_id"] = "..."` cannot influence the chain that the appended event records and signs — that uses the original local. Matches the existing `payload` precedent (`_events.py` shallow-copies `dict(payload.value)` before the append; `_in_memory_transition.py` shallow-copies `dict(payload)`). Nested mutation (e.g. `ctx.on_behalf_of["scope"].append(...)`) is not blocked by the shallow copy; it is the same residual risk as nested mutation of `payload` / `custom_fields` / `actor_metadata`, and is tracked separately if it becomes a pattern. Validators remain trusted in-process code per BC-192; this is defense-in-depth, not the trust boundary. |
 | Cross-backend divergence on the new field | Both backends thread the same local parameter; the property-based conformance suite (extended under Plan 020) is extended to assert equality of `on_behalf_of` across backends for validator-bearing transitions. |
 
 ## 5. Conformance and backward compatibility
 
-- The in-memory and Postgres backends must populate `on_behalf_of` identically.
-  The hypothesis property-based conformance suite
-  (`tests/test_property_conformance.py`), already extended under Plan 020, is
-  extended to assert equality of `on_behalf_of` across backends for
-  validator-bearing transitions (including the `None` default and a delegation
-  chain dict).
+- The in-memory and Postgres backends populate `on_behalf_of` identically.
+  Coverage is the **manual** cross-backend conformance test
+  `TestConformanceAcrossBackends.test_actor_kind_prior_events_on_behalf_of_equal`
+  in `tests/test_validator_context_enrichment.py`, which asserts equality of
+  `on_behalf_of` (alongside `actor_kind` and `prior_events`) across backends for
+  a validator-bearing transition. The hypothesis property-based conformance
+  suite (`tests/test_property_conformance.py`) does **not** exercise validator
+  context — its workflow has no validators and its `_exec_op`/`_compare_state`
+  helpers do not register a recording validator. Extending the property suite
+  to cover validator context (filed as a follow-up breadcrumb, applies to both
+  Plan 020 and Plan 021) is the clean remedy; this plan ships with the manual
+  conformance test only.
 - `ValidatorContext` is constructed only by regista internals and via
   `from_dict`. Adding a field with a default is non-breaking for any consumer
   that constructs the context (there are none outside regista internals — see
@@ -192,13 +198,18 @@ runs inside the transition transaction, not in caller-attested payload.
    (c) a transition with no registered validator performs no extra work
        (inherited from Plan 020; assert behavior unchanged);
    (d) conformance equality across backends for a delegation-bearing
-       validator-bearing transition — extend the property-based suite;
+       validator-bearing transition — covered by extending the manual
+       `TestConformanceAcrossBackends` class (the property-based suite does
+       not currently exercise validator context — see §5);
    (e) `from_dict` tolerance of a payload lacking `on_behalf_of` (decodes to
        `None`) and round-trip equality when it is present;
    (f) a realistic separation-of-duties scenario: reviewer's
-       `on_behalf_of={"principal": A}` is rejected by a validator when `A` is
-       in the prior-events author set (the dossier WI-004 case, demonstrated
-       on both backends).
+       `on_behalf_of={"principal_id": A}` is rejected by a validator when `A`
+       is in the prior-events author set (the dossier WI-004 case, demonstrated
+       on both backends);
+   (g) **forge-via-mutation defense**: a validator that mutates
+       `ctx.on_behalf_of["principal_id"]` cannot influence the chain recorded
+       on the appended event (verified on both backends).
 5. Extend `CHANGELOG.md` under an Unreleased entry (alongside Plan 020's).
 6. `ruff check src/ tests/` and the full suite `pytest tests/`.
 

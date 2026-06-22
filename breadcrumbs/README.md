@@ -39,6 +39,8 @@ _(none)_
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
 | 297 | witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable | medium | accepted |
+| 298 | Property-based conformance suite does not exercise validator context (Plan 020/021 coverage gap) | low | accepted |
+| 299 | _validate_delegation_chain timestamp diverges from the persisted event timestamp | low | accepted |
 
 ## Resolved
 

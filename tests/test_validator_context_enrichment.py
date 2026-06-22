@@ -441,3 +441,35 @@ class TestDelegationSelfReviewScenarioPostgres:
         refreshed = pg_sub.get_work_item(wi.work_item_id)
         assert refreshed is not None
         assert refreshed.current_state == "done"
+
+
+class TestValidatorCannotMutateOnBehalfOfInMemory:
+    def test_event_records_original_not_mutated_chain(self, mem_sub):
+        def mutating_handler(ctx: ValidatorContext) -> None:
+            assert ctx.on_behalf_of is not None
+            ctx.on_behalf_of["principal_id"] = "human:attacker"
+
+        mem_sub.register_validator("record_ctx", mutating_handler)
+        wi = _setup_ready(mem_sub)
+        evt = mem_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:original-principal"},
+        )
+        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}
+
+
+class TestValidatorCannotMutateOnBehalfOfPostgres:
+    def test_event_records_original_not_mutated_chain(self, pg_sub):
+        def mutating_handler(ctx: ValidatorContext) -> None:
+            assert ctx.on_behalf_of is not None
+            ctx.on_behalf_of["principal_id"] = "human:attacker"
+
+        pg_sub.register_validator("record_ctx", mutating_handler)
+        wi = _setup_ready(pg_sub)
+        evt = pg_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:original-principal"},
+        )
+        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}
