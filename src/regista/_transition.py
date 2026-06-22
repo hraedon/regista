@@ -149,6 +149,7 @@ def transition(
                         actor_metadata=actor_metadata,
                         actor_kind=actor_kind,
                         prior_events=prior_events,
+                        on_behalf_of=on_behalf_of,
                     )
                     try:
                         run_validator(

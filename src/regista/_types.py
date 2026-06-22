@@ -615,6 +615,11 @@ class ValidatorContext:
     history in ascending ``event_seq``, capped to the most recent 100,000
     events (see ``regista._contract.VALIDATOR_HISTORY_LIMIT``); for typical
     review-gated work-items the full history is present.
+
+    ``on_behalf_of`` is the acting actor's delegation chain for this
+    transition (same shape as ``Event.on_behalf_of``, validated by
+    ``_validate_delegation_chain``), or ``None`` when the actor is acting on
+    their own behalf.
     """
 
     work_item_id: uuid.UUID
@@ -630,9 +635,10 @@ class ValidatorContext:
     actor_metadata: dict | None
     actor_kind: str
     prior_events: tuple[Event, ...]
+    on_behalf_of: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "work_item_id": str(self.work_item_id),
             "workflow_name": self.workflow_name,
             "workflow_version": self.workflow_version,
@@ -647,6 +653,9 @@ class ValidatorContext:
             "actor_kind": self.actor_kind,
             "prior_events": [e.to_dict() for e in self.prior_events],
         }
+        if self.on_behalf_of is not None:
+            d["on_behalf_of"] = self.on_behalf_of
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> ValidatorContext:
@@ -666,6 +675,7 @@ class ValidatorContext:
             prior_events=tuple(
                 Event.from_dict(e) for e in data.get("prior_events", [])
             ),
+            on_behalf_of=data.get("on_behalf_of"),
         )
 
 
