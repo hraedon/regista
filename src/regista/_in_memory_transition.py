@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from ._contract import (
+    VALIDATOR_HISTORY_LIMIT,
     Jsonb,
     check_actor_role_authorized,
     check_privileged_transition,
@@ -105,6 +106,12 @@ def in_memory_transition(
     if validator_name:
         handler = validators.get(validator_name)
         if handler is not None:
+            prior_events = tuple(
+                sorted(
+                    store.events.get(work_item_id, []),
+                    key=lambda e: e.event_seq,
+                )[-VALIDATOR_HISTORY_LIMIT:]
+            )
             ctx = ValidatorContext(
                 work_item_id=work_item_id,
                 workflow_name=wi["workflow_name"],
@@ -117,6 +124,8 @@ def in_memory_transition(
                 custom_fields=wi["custom_fields"] or {},
                 actor_id=actor_id,
                 actor_metadata=actor_metadata,
+                actor_kind=actor_kind,
+                prior_events=prior_events,
             )
             run_validator(validator_name, handler, ctx)
 

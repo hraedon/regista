@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from ._contract import VALIDATOR_HISTORY_LIMIT
 from ._contract import (
     Jsonb as _Jsonb,
 )
@@ -127,8 +128,13 @@ def transition(
             if validator_name:
                 handler = validators.get(validator_name)
                 if handler is not None:
+                    from ._events import read_events_by_work_item
                     from ._hooks import run_validator
 
+                    conn.execute("SET LOCAL statement_timeout = '5s'")
+                    prior_events = tuple(read_events_by_work_item(
+                        conn, work_item_id, limit=VALIDATOR_HISTORY_LIMIT,
+                    ))
                     ctx = ValidatorContext(
                         work_item_id=work_item_id,
                         workflow_name=wi_row["workflow_name"],
@@ -141,9 +147,10 @@ def transition(
                         custom_fields=wi_row["custom_fields"] or {},
                         actor_id=actor_id,
                         actor_metadata=actor_metadata,
+                        actor_kind=actor_kind,
+                        prior_events=prior_events,
                     )
                     try:
-                        conn.execute("SET LOCAL statement_timeout = '5s'")
                         run_validator(
                             validator_name, handler, ctx,
                             metrics=metrics, project=project,

@@ -11,6 +11,7 @@ from ._types import Event
 MAX_ACTOR_ID_LENGTH = 255
 MAX_ROLE_LENGTH = 255
 MAX_ACTOR_METADATA_BYTES = 65536
+VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
 

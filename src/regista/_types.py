@@ -608,6 +608,15 @@ class ReplayReportEntry:
 
 @dataclass(frozen=True)
 class ValidatorContext:
+    """Context passed to a sync transition validator (runs in-transition).
+
+    ``actor_kind`` is the authoritative kind of the actor performing this
+    transition. ``prior_events`` is the work-item's pre-transition event
+    history in ascending ``event_seq``, capped to the most recent 100,000
+    events (see ``regista._contract.VALIDATOR_HISTORY_LIMIT``); for typical
+    review-gated work-items the full history is present.
+    """
+
     work_item_id: uuid.UUID
     workflow_name: str
     workflow_version: int
@@ -619,6 +628,8 @@ class ValidatorContext:
     custom_fields: dict
     actor_id: str
     actor_metadata: dict | None
+    actor_kind: str
+    prior_events: tuple[Event, ...]
 
     def to_dict(self) -> dict:
         return {
@@ -633,6 +644,8 @@ class ValidatorContext:
             "custom_fields": self.custom_fields,
             "actor_id": self.actor_id,
             "actor_metadata": self.actor_metadata,
+            "actor_kind": self.actor_kind,
+            "prior_events": [e.to_dict() for e in self.prior_events],
         }
 
     @classmethod
@@ -649,6 +662,10 @@ class ValidatorContext:
             custom_fields=data["custom_fields"],
             actor_id=data["actor_id"],
             actor_metadata=data.get("actor_metadata"),
+            actor_kind=data.get("actor_kind", "agent"),
+            prior_events=tuple(
+                Event.from_dict(e) for e in data.get("prior_events", [])
+            ),
         )
 
 

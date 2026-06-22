@@ -65,6 +65,8 @@ def _make_ctx():
         custom_fields={},
         actor_id="agent-1",
         actor_metadata=None,
+        actor_kind="agent",
+        prior_events=(),
     )
 
 
