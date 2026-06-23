@@ -4,6 +4,50 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-23 — Cross-project milestone: agent-notes converged onto regista (dossier Plan 006 P1-P3)
+
+**Focus:** agent-notes becomes a *face* of regista (the agent/CLI face); regista is
+now the authoritative work-item store for it. Recorded here because it lands the
+first real cross-project consumer of the event-sourced model and it intersects the
+in-flight Plan 022 work. Work delivered in `/projects/agent-notes` (commits
+`0a40b85` P1+P2, `77de21c` P3); regista itself was **not** modified.
+
+**Delivered (agent-notes side):**
+
+1. **P1 — write-through.** A `breadcrumb` regista workflow (states
+   open/claimed/deferred/closed + `amend_*` self-transitions) registered in an
+   agent-notes-owned regista project (schema `agent_notes`, default). A
+   `RegistaFace` choke point (Actor-injected, mirrors dossier's `RegistaGateway`);
+   the write path switches to regista behind `AGENT_NOTES_REGISTA_WRITES` (legacy
+   op_log path unchanged when off); one-way `migrate-to-regista` (idempotent via
+   `source_identifier`); op_log retired for new writes (kept read-only).
+2. **P2 — outbox + reconcile (AC-1/2/3).** Centralized signed outbox
+   (`$XDG_STATE_HOME/regista/outbox/<project>/`); the write command never surfaces
+   regista-unreachable to the agent (transport errors → outbox; business/RegistaError
+   surfaces); reconcile verifies every signature (hand-edits rejected loudly),
+   blocks on conflict for a human, gates terminal transitions while the outbox is
+   non-empty.
+3. **P3 — projection + enforcement hooks.** Honest staleness (`orient` regista_sync
+   section, `doctor` health); `projection rebuild-from-regista` recovery; generated
+   md STALE banner; non-optional reconcile on lifecycle boundaries (opencode
+   `compacting` runs reconcile; Claude `Stop` hook).
+
+**Quality:** two implementer lineages (kimi/glm) + cross-lineage adversarial review
+(nemotron) at each phase; findings applied. agent-notes suite 324→389 (388 + 1
+environmental skip). Full design + recorded deviations D1-D9 in
+`agent-notes/plans/009-convergence-p1-p2-write-through-and-outbox.md`.
+
+**Coordination note for the Plan 022 Phase 1 work (in flight):** agent-notes pins
+the regista **0.4.0** API surface (`create_work_item`/`transition`/`append_event`/
+`query_work_items`/`read_events`). Plan 022 P1 (entity generalization + the
+`031_entity_generalization.sql` migration) is additive and does **not** break the
+breadcrumb workflow — agent-notes needs no change for it to land. dossier Plan 006
+**P4** (memories → regista non-workflow note entity + typed work-item↔note links) is
+gated on Plan 022 P1 and should not start until it does. Two non-blocking follow-ups
+filed in agent-notes: WI-010 (point the optional e2e at regista's pg15 test DSN — it
+currently skips on the pg17 testcontainer because regista migrations target pg15)
+and WI-012 (`export-index` needs a `git check-ignore` guard per dossier-006 §4.2).
+
 ## 2026-06-01 — Session 66: Full breadcrumb resolution + project scan + hardening
 
 **Focus:** Resolve all remaining open breadcrumbs, scan project for new issues, harden.
