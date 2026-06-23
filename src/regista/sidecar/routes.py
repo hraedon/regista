@@ -260,6 +260,9 @@ def register_routes(app, regista, tokens: TokenRegistry):
             actor_metadata=body.actor_metadata,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             payload=body.payload,
+            target_project=body.target_project,
+            target_entity_kind=body.target_entity_kind,
+            content_hash=body.content_hash,
         )
         return _serialize(result)
 
@@ -274,6 +277,7 @@ def register_routes(app, regista, tokens: TokenRegistry):
             actor_kind=actor.actor_kind,
             actor_metadata=body.actor_metadata,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
+            target_project=body.target_project,
         )
         return {"status": "ok"}
 

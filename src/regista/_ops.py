@@ -448,6 +448,9 @@ class LinkOps:
         *,
         event_id: uuid.UUID | None = None,
         payload: dict | None = None,
+        target_project: str | None = None,
+        target_entity_kind: str | None = None,
+        content_hash: str | None = None,
     ) -> Link:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -461,6 +464,9 @@ class LinkOps:
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id, payload=payload,
+            target_project=target_project,
+            target_entity_kind=target_entity_kind,
+            content_hash=content_hash,
         )
 
     def remove(
@@ -473,6 +479,7 @@ class LinkOps:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        target_project: str | None = None,
     ) -> None:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -486,6 +493,7 @@ class LinkOps:
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id,
+            target_project=target_project,
         )
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -11,7 +10,7 @@ from ._contract import Jsonb, check_expected_seq, check_key_role_policy
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import sign_event
-from ._signing_scheme import get_scheme
+from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
 
 _EVENT_FIELDS = (
@@ -177,7 +176,8 @@ def append_event(
             prev_env = prev_row["canonical_envelope"]
             prev_sig = prev_row["signature"]
             if prev_env and prev_sig:
-                prev_event_hash = hashlib.sha256(
+                _chain_fn = resolve_hash_function("sha-256")
+                prev_event_hash = _chain_fn(
                     bytes(prev_env) + bytes(prev_sig)
                 ).digest()
 
@@ -255,7 +255,7 @@ def append_event(
     _advance_global_chain_head(
         conn,
         event_id,
-        hashlib.sha256(bytes(canonical_envelope) + bytes(signature)).digest(),
+        resolve_hash_function("sha-256")(bytes(canonical_envelope) + bytes(signature)).digest(),
     )
 
     conn.execute(
@@ -355,7 +355,8 @@ def append_transition_event(
             prev_env = prev_row["canonical_envelope"]
             prev_sig = prev_row["signature"]
             if prev_env and prev_sig:
-                prev_event_hash = hashlib.sha256(
+                _chain_fn = resolve_hash_function("sha-256")
+                prev_event_hash = _chain_fn(
                     bytes(prev_env) + bytes(prev_sig)
                 ).digest()
 
@@ -436,7 +437,7 @@ def append_transition_event(
     _advance_global_chain_head(
         conn,
         event_id,
-        hashlib.sha256(bytes(canonical_envelope) + bytes(signature)).digest(),
+        resolve_hash_function("sha-256")(bytes(canonical_envelope) + bytes(signature)).digest(),
     )
 
     merged_fields = wi_row["custom_fields"]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -9,7 +8,7 @@ from ._contract import Jsonb, check_expected_seq, check_idempotency, check_key_r
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import sign_event
-from ._signing_scheme import get_scheme
+from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
 
 _DUMMY_KEY_ID = "in-memory"
@@ -78,7 +77,8 @@ def append_event(
         if prev_evts:
             prev_evt = prev_evts[0]
             if prev_evt.canonical_envelope and prev_evt.signature:
-                prev_event_hash = hashlib.sha256(
+                chain_hash_fn = resolve_hash_function("sha-256")
+                prev_event_hash = chain_hash_fn(
                     prev_evt.canonical_envelope + prev_evt.signature
                 ).digest()
 

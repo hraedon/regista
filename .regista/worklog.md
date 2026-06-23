@@ -4,6 +4,76 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-23 — Session 67: Plan 022 Phase 2 + Phase 4 (crypto-agility + cross-project value-references)
+
+**Focus:** Implement Plan 022 P2 (crypto-agility hardening) and P4 (typed links +
+cross-project value-references), with adversarial review at each step and an
+isolation-tenet gate review before P4.
+
+**Delivered:**
+
+### Phase 2 (P2) — Crypto-agility hardening
+
+1. **Kill the scheme allowlist** (`_keys.py`): Replaced `if scheme not in
+   ("hmac-sha256", "ed25519")` with registry resolution via
+   `get_scheme()`. A key is valid iff its declared scheme is registered. Removed
+   the early PyNaCl import check — dependency checking deferred to sign/verify
+   time (the scheme's own responsibility). Updated `KeyEntry.fingerprint()` to
+   use `self.scheme` instead of `self.alg` for the fingerprint prefix.
+
+2. **hash_alg agility wiring** (`_signing_scheme.py`, `_signing.py`, `_events.py`,
+   `_event_store.py`, `_replay.py`, `_in_memory_replay.py`): Added
+   `resolve_hash_function(hash_alg)` mapping `"sha-256"`/`"sha-384"`/`"sha-512"`/
+   `"sha3-256"`/`"sha3-384"`/`"sha3-512"` to hashlib constructors. Updated the
+   `SigningScheme` protocol's `sign()`/`verify()` to accept `hash_alg` parameter.
+   Threaded through `sign_event()`/`verify_event()`/`_verify_once()`. Chain hash
+   computation uses `resolve_hash_function`. Replay verification always uses
+   sha-256 for chain integrity (decoupled from signing hash per adversarial review).
+
+3. **Size/index audit**: Verified all signature/hash columns are uncapped `BYTEA`
+   with no indexes on raw signature bytes. DB introspection tests added.
+
+4. **Hybrid scheme seam**: Tests prove a mock composite scheme (HMAC + PQC mock)
+   works through the full sign/verify/sign_event/verify_event pipeline.
+
+### Phase 4 (P4) — Cross-project value-references
+
+5. **Isolation-tenet adversarial review** (GATE): Conducted before implementation.
+   Verdict: APPROVED WITH CONDITIONS. Five conditions met:
+   - Spec amended (§3, BR-04, FR-22b, AC-22, §10 Decisions)
+   - Link type validation: `validate_cross_project_link_type` checks name only
+   - `remove_link` parity: accepts `target_project`, skips target lookup
+   - `content_hash` semantics: opaque, referrer-supplied, in signed envelope
+   - Field naming: `to_work_item_id` is sole identifier
+
+6. **Cross-project value-reference implementation**: `create_link`/`remove_link`
+   accept `target_project` parameter. When provided, target is NOT looked up
+   locally — a signed assertion is recorded in the source project's event log.
+   `content_hash` and `target_entity_kind` are optional fields in the signed
+   payload. `remove_link` filters by `target_project` in the live-link query
+   (critical fix from adversarial review). Full API surface: `_contract.py`,
+   `_types.py`, `_links.py`, `_in_memory_links.py`, `_links_api.py`, `_ops.py`,
+   `__init__.py`, `_in_memory.py`, `sidecar/models.py`, `sidecar/routes.py`.
+
+### Adversarial reviews conducted:
+- **P2 review** (glm-based): Found critical chain hash mismatch (write vs replay),
+  registry mutability gap, ineffective size audit tests. All fixed.
+- **P4 isolation-tenet gate** (glm-based): Approved with conditions (spec amendment,
+  link type validation, remove_link parity, content_hash semantics, field naming).
+  All conditions met before implementation.
+- **P4 implementation review** (glm-based): Found critical bug — `remove_link`
+  didn't filter by `target_project` in live-link query (C-1), InMemory parity gap
+  (H-1), spec field name mismatch (H-2), empty target_project validation gap (M-2).
+  All fixed.
+
+**Test results:** 1140 passed, 10 deselected, lint clean.
+  - 30 new tests in `tests/test_plan022.py` (P2: 12, P4: 18)
+  - 2 existing tests updated (fingerprint format, Ed25519 deferred check)
+
+**Spec amendments:** §3 (success condition), BR-04, FR-22b (new), AC-22, §10
+Decisions — distinguish enforced cross-project links (prohibited) from
+value-references (supported).
+
 ## 2026-06-23 — Cross-project milestone: agent-notes converged onto regista (dossier Plan 006 P1-P3)
 
 **Focus:** agent-notes becomes a *face* of regista (the agent/CLI face); regista is

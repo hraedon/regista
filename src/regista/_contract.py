@@ -253,6 +253,19 @@ def validate_link_type(
     )
 
 
+def validate_cross_project_link_type(
+    link_types: list[dict],
+    link_type: str,
+) -> None:
+    for lt in link_types:
+        if lt["name"] == link_type:
+            return
+    raise RegistaError(
+        ErrorCode.LINK_TYPE_NOT_ALLOWED,
+        f"Link type {link_type!r} not declared in workflow",
+    )
+
+
 def should_escalate(
     attempt_threshold: int | None,
     has_escalated: bool,

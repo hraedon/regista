@@ -22,7 +22,7 @@
 
 **User/Operator:** Single operator running on a homelab K3s cluster with Postgres available. Currently zero humans-in-the-loop; agents are the primary actors. Non-revenue, license-cost-bound, token-spend unconstrained.
 
-**Success condition:** A regista defined as a strict, versioned core schema and protocol — work-items, events, claims/leases, actors, link types — that each project deploys as its own isolated instance (own Postgres schema within a shared database; no cross-project state). On top of the core, each project declares its workflow declaratively: states, transitions, role-gating per transition, typed custom fields per work-item type (with `ui_visible` flag), and link types. Side effects are hooks the project owns; the regista dispatches events but executes no project code. A future federated UI reads the contract and renders any project's workflow generically — pane-of-glass without shared state. Existing `reasoning.log` continues to work alongside.
+**Success condition:** A regista defined as a strict, versioned core schema and protocol — work-items, events, claims/leases, actors, link types — that each project deploys as its own isolated instance (own Postgres schema within a shared database; no cross-project enforced state). Cross-project value-references (local signed assertions, FR-22b) are supported without cross-schema coupling. On top of the core, each project declares its workflow declaratively: states, transitions, role-gating per transition, typed custom fields per work-item type (with `ui_visible` flag), and link types. Side effects are hooks the project owns; the regista dispatches events but executes no project code. A future federated UI reads the contract and renders any project's workflow generically — pane-of-glass without shared state. Existing `reasoning.log` continues to work alongside.
 
 ---
 
@@ -201,6 +201,7 @@
 - FR-20 **[MVP]**: Startup integrity check — verify (a) all schema migrations are applied; (b) every registered workflow declares a `regista_version` compatible with the running library version. Refuse to start otherwise; operator runs migration command and re-launches.
 - FR-21 **[MVP]**: Structured logs per regista operation including `project_id`, `work_item_id`, `operation`, `duration`, `outcome`, `actor_id`. Regista is a library, not a daemon: it exposes a `prometheus_client.CollectorRegistry` (or labelled metrics) that the host application mounts on its own HTTP server. Regista does not run an HTTP server. Counters: events appended, claims acquired/expired/stolen, hooks dispatched/succeeded/failed/dead-lettered, transitions accepted/rejected, validators succeeded/failed/timed-out, replay drift count, idempotency-key collisions, expected-seq-mismatch rejections.
 - FR-22 **[MVP]**: Create a link between work-items — validates target exists in same project DB, validates link type is allowed by workflow def for the work-item-type pair, records `link_created` event with `(from, to, type)`.
+- FR-22b: Create a cross-project value-reference — when `target_project` is explicitly provided, the target is not looked up locally; a `link_created` event is emitted with `{target_project, target_entity_kind, to_work_item_id, content_hash?}` in the payload. No cross-schema FK, join, or transaction occurs. Regista does not verify the existence, type, or content of the target. `content_hash` is an opaque, referrer-supplied value included in the signed envelope for tamper-evidence of what was referenced. The link type name is validated against the source workflow's declared link types.
 - FR-23 **[MVP]**: Remove a link between work-items — records `link_removed` event with `(from, to, type)`. Previous link history remains in event log.
 
 **Actor authorization:**
@@ -258,7 +259,7 @@ Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-
 - BR-01: Workflow registry is append-only. Regista provides no primitive to remove a registered workflow version. Operator-level removal is operator's responsibility; orphaned references are detected at next replay.
 - BR-02: Work-items pin the workflow version they were created against. In-flight work-items continue to operate on their pinned version regardless of newer versions registered later.
 - BR-03: Events are immutable. The event log is append-only. No update or delete primitive exists.
-- BR-04: Cross-project links are not supported. Links are restricted to work-items in the same project DB.
+- BR-04: Enforced cross-project links are not supported. Links between work-items in the same project DB are enforced (existence + type validation). Cross-project value-references (FR-22b) are local signed assertions recorded in the referring project's event log; they do not verify the target's existence, type, or content.
 - BR-05: The regista is not a durable execution engine. It is a coordination + state plane. Workflow orchestration (Temporal-style) is a layer projects may add on top using regista as the durable state record.
 - BR-06: The regista writes no project code, executes no project-supplied code outside of explicit hook contracts, and dispatches no notifications. All side effects are project-owned.
 - BR-07: Hooks are declarative-only at registration; their implementations are project-owned. The regista dispatches; the regista does not embed a sandbox.
@@ -388,7 +389,7 @@ When resolving any of these during implementation, the implementing agent must e
 - AC-19 [FR-19]: Connecting to a non-existent project DB fails fast with operator-actionable error. Multiple workflow definitions register in a single project DB.
 - AC-20 [FR-20]: Regista refuses to start when migrations are outstanding. Regista refuses to start when any registered workflow declares an incompatible regista version.
 - AC-21 [FR-21]: Every regista operation produces a structured log with the specified fields. Prometheus counters are exposed and increment on the corresponding events.
-- AC-22 [FR-22]: Link create with cross-project target rejects. Link create with disallowed type for the work-item-type pair rejects. Valid link creates and emits `link_created`. Target in terminal state still allowed.
+- AC-22 [FR-22]: Link create with cross-project target (no `target_project` parameter) rejects. Link create with disallowed type for the work-item-type pair rejects. Valid link creates and emits `link_created`. Target in terminal state still allowed. With explicit `target_project`, a cross-project value-reference is created without target lookup (FR-22b).
 - AC-23 [FR-23]: Link remove emits `link_removed`. Prior link history remains in event log.
 - AC-24 [BR-12 / FR-03]: Calling event append twice with the same `event_id` produces exactly one row in `events`. The second call returns the result of the first deterministically. Same property for `event_id` on transition, claim acquire, claim release, and link create / remove (all event-emitting mutations). `heartbeat_claim` is structurally idempotent (repeated heartbeats from the same claim-holder extend TTL without producing duplicate effects) and does not take an explicit key; it may emit a `claim_heartbeat` event subject to coalescing (§17.10).
 - AC-25 [FR-03]: Calling event append with `expected_event_seq` not equal to `current_max(event_seq) + 1` for the work-item rejects with "concurrent modification."
@@ -481,7 +482,7 @@ The implementing agent determines build sequence based on architectural dependen
 - Side effects via hooks: sync (in-transaction, 5s default timeout) or async (durable queue + LISTEN/NOTIFY + always-on polling).
 - Identity via pluggable verifier; HMAC default with key-set-with-status (active/deprecated/revoked); events carry `key_id`; OIDC-ready via the same actor model.
 - Postgres `now()` is the time authority; `event_seq` provides per-work-item total ordering.
-- Links are events (`link_created` / `link_removed`); current links are derived; cross-project links unsupported.
+- Links are events (`link_created` / `link_removed`); current links are derived; intra-project links enforce existence + type validation (FR-22); cross-project value-references are local signed assertions without target verification (FR-22b).
 - Regista does not retry on connection failure; caller's responsibility.
 - Workflow registry is append-only — no removal primitive.
 - **(v2)** Concurrency contract: canonical lock target = `work_items_current` row; READ COMMITTED + row lock; gap-free per-work-item `event_seq` allocator (§17).

@@ -34,13 +34,13 @@ class KeyEntry:
         )
 
     def fingerprint(self) -> str:
-        if self.alg == "HMAC-SHA256":
-            return f"hmac:sha256:{hashlib.sha256(self.secret).hexdigest()}"
+        if self.scheme == "hmac-sha256":
+            return f"{self.scheme}:sha256:{hashlib.sha256(self.secret).hexdigest()}"
         if self.public_key is not None:
-            return f"{self.alg}:sha256:{hashlib.sha256(self.public_key).hexdigest()}"
+            return f"{self.scheme}:sha256:{hashlib.sha256(self.public_key).hexdigest()}"
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
-            f"Cannot compute fingerprint for algorithm {self.alg!r} without public_key",
+            f"Cannot compute fingerprint for scheme {self.scheme!r} without public_key",
         )
 
 
@@ -134,21 +134,17 @@ class KeySet:
                 public_key = base64.b64decode(public_key)
 
             scheme = entry.get("scheme", "hmac-sha256")
-            if scheme not in ("hmac-sha256", "ed25519"):
+            from ._signing_scheme import get_scheme
+
+            try:
+                get_scheme(scheme)
+            except RegistaError:
                 raise RegistaError(
                     ErrorCode.KEY_LOAD_ERROR,
                     f"Key {key_id!r} has unknown scheme {scheme!r}; "
-                    "expected 'hmac-sha256' or 'ed25519'",
+                    f"not found in signing scheme registry "
+                    f"(available: see available_schemes())",
                 )
-            if scheme == "ed25519":
-                try:
-                    __import__("nacl")
-                except ImportError:
-                    raise RegistaError(
-                        ErrorCode.KEY_LOAD_ERROR,
-                        "Scheme 'ed25519' requires PyNaCl: "
-                        "pip install regista[ed25519]",
-                    )
 
             new_keys[key_id] = KeyEntry(
                 key_id=key_id,

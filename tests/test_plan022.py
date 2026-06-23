@@ -16,7 +16,7 @@ from regista._signing import (
     sign_event,
     verify_event,
 )
-from regista._types import Event
+from regista._types import Event, Link
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
@@ -729,3 +729,613 @@ class TestInMemoryEntityFields:
         report = s.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
+
+
+class TestRegistryDrivenSchemeResolution:
+    def test_unregistered_scheme_rejected_at_key_load(self, tmp_path):
+        from regista._errors import RegistaError
+        from regista._keys import KeySet
+
+        kf = tmp_path / "keys.json"
+        kf.write_text(json.dumps({
+            "keys": [
+                {"key_id": "k1", "secret": "c2VjcmV0", "status": "active",
+                 "scheme": "ml-dsa-65"},
+            ]
+        }))
+        with pytest.raises(RegistaError, match=r"unknown scheme.*ml-dsa-65"):
+            KeySet(str(kf))
+
+    def test_registered_scheme_accepted_at_key_load(self, tmp_path):
+        from regista._keys import KeySet
+        from regista._signing_scheme import register_scheme, unregister_scheme
+
+        @register_scheme
+        class MockScheme:
+            scheme_id: str = "mock-test-scheme"
+
+            def sign(self, envelope, key_material, hash_alg="sha-256"):
+                import hashlib
+                return (hashlib.sha256(envelope + key_material).digest(),
+                        hashlib.sha256(envelope).digest())
+
+            def verify(self, envelope, signature, envelope_hash, key_material,
+                       hash_alg="sha-256"):
+                import hashlib
+                import hmac
+                expected = hashlib.sha256(envelope + key_material).digest()
+                return (hmac.compare_digest(expected, signature)
+                        and hmac.compare_digest(
+                            hashlib.sha256(envelope).digest(), envelope_hash))
+
+        try:
+            kf = tmp_path / "keys.json"
+            kf.write_text(json.dumps({
+                "keys": [
+                    {"key_id": "k1", "secret": "c2VjcmV0", "status": "active",
+                     "scheme": "mock-test-scheme"},
+                ]
+            }))
+            ks = KeySet(str(kf))
+            assert ks.active_scheme() == "mock-test-scheme"
+        finally:
+            unregister_scheme("mock-test-scheme")
+
+    def test_available_schemes_lists_registered(self):
+        from regista._signing_scheme import available_schemes
+
+        schemes = available_schemes()
+        assert "hmac-sha256" in schemes
+        assert "ed25519" in schemes
+
+
+class TestHashAlgAgility:
+    def test_resolve_hash_function_sha256(self):
+        from regista._signing_scheme import resolve_hash_function
+
+        fn = resolve_hash_function("sha-256")
+        assert fn(b"test").hexdigest() == hashlib.sha256(b"test").hexdigest()
+
+    def test_resolve_hash_function_sha384(self):
+        from regista._signing_scheme import resolve_hash_function
+
+        fn = resolve_hash_function("sha-384")
+        assert fn(b"test").hexdigest() == hashlib.sha384(b"test").hexdigest()
+
+    def test_resolve_hash_function_unknown_raises(self):
+        from regista._errors import RegistaError
+        from regista._signing_scheme import resolve_hash_function
+
+        with pytest.raises(RegistaError, match="Unknown hash algorithm"):
+            resolve_hash_function("md5")
+
+    def test_sign_with_sha384(self):
+        eid = uuid.uuid4()
+        wid = uuid.uuid4()
+        now = datetime.now(UTC)
+
+        sig, chash, env = sign_event(
+            event_id=eid,
+            work_item_id=wid,
+            actor_id="a",
+            key_id="k",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=now,
+            transition="start",
+            payload={"x": 1},
+            key=_SECRET,
+            hash_alg="sha-384",
+        )
+        obj = json.loads(env)
+        assert obj["hash_alg"] == "sha-384"
+
+        assert verify_event(
+            event_id=eid,
+            work_item_id=wid,
+            actor_id="a",
+            key_id="k",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=now,
+            transition="start",
+            payload={"x": 1},
+            signature=sig,
+            canonical_hash=chash,
+            key=_SECRET,
+            stored_envelope=env,
+            hash_alg="sha-384",
+        )
+
+    def test_sign_with_sha384_rejects_sha256_verification(self):
+        eid = uuid.uuid4()
+        wid = uuid.uuid4()
+        now = datetime.now(UTC)
+
+        sig, chash, env = sign_event(
+            event_id=eid,
+            work_item_id=wid,
+            actor_id="a",
+            key_id="k",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=now,
+            transition="start",
+            payload=None,
+            key=_SECRET,
+            hash_alg="sha-384",
+        )
+        assert not verify_event(
+            event_id=eid,
+            work_item_id=wid,
+            actor_id="a",
+            key_id="k",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=now,
+            transition="start",
+            payload=None,
+            signature=sig,
+            canonical_hash=chash,
+            key=_SECRET,
+            stored_envelope=env,
+            hash_alg="sha-256",
+        )
+
+
+class TestHybridSchemeSeam:
+    def test_hybrid_scheme_signs_and_verifies(self):
+        import hashlib
+        import hmac as _hmac
+
+        from regista._signing_scheme import get_scheme, register_scheme, unregister_scheme
+
+        @register_scheme
+        class HybridHMACEd25519MockScheme:
+            scheme_id: str = "hybrid-hmac-ed25519-mock"
+
+            def sign(self, envelope, key_material, hash_alg="sha-256"):
+                from regista._signing_scheme import resolve_hash_function
+                hash_fn = resolve_hash_function(hash_alg)
+                hmac_sig = _hmac.new(key_material, envelope, hash_fn).digest()
+                mock_pqc_sig = hashlib.sha256(key_material + envelope).digest()
+                composite = hmac_sig + mock_pqc_sig
+                h = hash_fn(envelope).digest()
+                return (composite, h)
+
+            def verify(self, envelope, signature, envelope_hash, key_material,
+                       hash_alg="sha-256"):
+                from regista._signing_scheme import resolve_hash_function
+                hash_fn = resolve_hash_function(hash_alg)
+                if len(signature) != 64:
+                    return False
+                hmac_part = signature[:32]
+                pqc_part = signature[32:]
+                expected_hmac = _hmac.new(key_material, envelope, hash_fn).digest()
+                expected_pqc = hashlib.sha256(key_material + envelope).digest()
+                return (_hmac.compare_digest(expected_hmac, hmac_part)
+                        and _hmac.compare_digest(expected_pqc, pqc_part)
+                        and _hmac.compare_digest(
+                            hash_fn(envelope).digest(), envelope_hash))
+
+        try:
+            scheme = get_scheme("hybrid-hmac-ed25519-mock")
+            envelope = b"test envelope"
+            key = b"test-key-material"
+            sig, h = scheme.sign(envelope, key)
+            assert len(sig) == 64
+            assert scheme.verify(envelope, sig, h, key)
+            assert not scheme.verify(envelope, b"\x00" * 64, h, key)
+        finally:
+            unregister_scheme("hybrid-hmac-ed25519-mock")
+
+    def test_hybrid_scheme_through_sign_event(self):
+        import hashlib
+        import hmac as _hmac
+
+        from regista._signing_scheme import get_scheme, register_scheme, unregister_scheme
+
+        @register_scheme
+        class HybridTestScheme:
+            scheme_id: str = "hybrid-test-v2"
+
+            def sign(self, envelope, key_material, hash_alg="sha-256"):
+                from regista._signing_scheme import resolve_hash_function
+                hash_fn = resolve_hash_function(hash_alg)
+                leg1 = _hmac.new(key_material, envelope, hash_fn).digest()
+                leg2 = hashlib.sha256(key_material + envelope).digest()
+                return (leg1 + leg2, hash_fn(envelope).digest())
+
+            def verify(self, envelope, signature, envelope_hash, key_material,
+                       hash_alg="sha-256"):
+                from regista._signing_scheme import resolve_hash_function
+                hash_fn = resolve_hash_function(hash_alg)
+                if len(signature) != 64:
+                    return False
+                leg1 = _hmac.new(key_material, envelope, hash_fn).digest()
+                leg2 = hashlib.sha256(key_material + envelope).digest()
+                return (_hmac.compare_digest(leg1, signature[:32])
+                        and _hmac.compare_digest(leg2, signature[32:])
+                        and _hmac.compare_digest(
+                            hash_fn(envelope).digest(), envelope_hash))
+
+        try:
+            eid = uuid.uuid4()
+            wid = uuid.uuid4()
+            now = datetime.now(UTC)
+
+            scheme = get_scheme("hybrid-test-v2")
+
+            sig, chash, env = sign_event(
+                event_id=eid,
+                work_item_id=wid,
+                actor_id="a",
+                key_id="k",
+                event_seq=1,
+                workflow_name="wf",
+                workflow_version=1,
+                timestamp=now,
+                transition="start",
+                payload={"hybrid": True},
+                key=_SECRET,
+                scheme=scheme,
+                hash_alg="sha-256",
+            )
+            assert len(sig) == 64
+
+            assert verify_event(
+                event_id=eid,
+                work_item_id=wid,
+                actor_id="a",
+                key_id="k",
+                event_seq=1,
+                workflow_name="wf",
+                workflow_version=1,
+                timestamp=now,
+                transition="start",
+                payload={"hybrid": True},
+                signature=sig,
+                canonical_hash=chash,
+                key=_SECRET,
+                stored_envelope=env,
+                scheme=scheme,
+            )
+        finally:
+            unregister_scheme("hybrid-test-v2")
+
+
+class TestSizeAudit:
+    def test_signature_column_is_bytea(self, regista):
+        from regista._testing import raw_transaction
+
+        with raw_transaction(regista) as conn:
+            row = conn.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'events' AND column_name = 'signature'"
+            ).fetchone()
+        assert row is not None
+        assert row["data_type"] == "bytea"
+
+    def test_no_index_on_signature_column(self, regista):
+        from regista._testing import raw_transaction
+
+        with raw_transaction(regista) as conn:
+            rows = conn.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'events'"
+            ).fetchall()
+        for row in rows:
+            assert "signature" not in row["indexname"].lower(), (
+                f"Index {row['indexname']} appears to be on signature column"
+            )
+
+
+class TestCrossProjectValueReferences:
+    def test_cross_project_link_create(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "xproject source"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        assert link.target_project == "other_project"
+        assert link.target_entity_kind == "work_item"
+
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        link_events = [e for e in events if e.transition == "link_created"]
+        assert len(link_events) == 1
+        payload = link_events[0].payload
+        assert payload["target_project"] == "other_project"
+        assert payload["target_entity_kind"] == "work_item"
+
+    def test_cross_project_link_with_content_hash(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "content hash test"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash="sha256:abc123",
+        )
+        assert link.content_hash == "sha256:abc123"
+
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        link_events = [e for e in events if e.transition == "link_created"]
+        assert link_events[0].payload["content_hash"] == "sha256:abc123"
+
+    def test_cross_project_link_with_target_entity_kind(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "entity kind test"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            target_entity_kind="note",
+        )
+        assert link.target_entity_kind == "note"
+
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        link_events = [e for e in events if e.transition == "link_created"]
+        assert link_events[0].payload["target_entity_kind"] == "note"
+
+    def test_cross_project_link_rejects_undeclared_link_type(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "undeclared type test"},
+        )
+        target_id = uuid.uuid4()
+        with pytest.raises(Exception) as exc_info:
+            regista.create_link(
+                wi.work_item_id, target_id, "nonexistent_type", "agent-1",
+                target_project="other_project",
+            )
+        assert "LINK_TYPE_NOT_ALLOWED" in str(exc_info.value) or \
+               "not declared" in str(exc_info.value)
+
+    def test_cross_project_link_remove(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "xproject remove test"},
+        )
+        target_id = uuid.uuid4()
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        regista.remove_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        remove_events = [e for e in events if e.transition == "link_removed"]
+        assert len(remove_events) == 1
+        assert remove_events[0].payload.get("target_project") == "other_project"
+
+    def test_cross_project_link_does_not_lookup_target(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "no lookup test"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="nonexistent_project",
+        )
+        assert link.target_project == "nonexistent_project"
+
+    def test_cross_project_link_replay(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "replay xproject test"},
+        )
+        target_id = uuid.uuid4()
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash="sha256:test123",
+        )
+        report = regista.replay()
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+
+    def test_intra_project_link_still_works(self, regista):
+        wi1, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "intra 1"},
+        )
+        wi2, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "intra 2"},
+        )
+        link = regista.create_link(
+            wi1.work_item_id, wi2.work_item_id, "blocks", "agent-1",
+        )
+        assert link.target_project is None
+        assert link.target_entity_kind is None
+
+    def test_cross_project_link_target_not_needed_for_remove(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "remove no target"},
+        )
+        target_id = uuid.uuid4()
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        with pytest.raises(Exception):
+            regista.remove_link(
+                wi.work_item_id, uuid.uuid4(), "blocks", "agent-1",
+            )
+
+    def test_multiple_cross_project_links_same_target_distinct(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "multi xproject"},
+        )
+        target_id = uuid.uuid4()
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="project_a",
+        )
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="project_b",
+        )
+        regista.remove_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="project_a",
+        )
+        regista.remove_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="project_b",
+        )
+
+    def test_cross_project_remove_wrong_project_raises(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "wrong project remove"},
+        )
+        target_id = uuid.uuid4()
+        regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="project_a",
+        )
+        with pytest.raises(Exception):
+            regista.remove_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="project_b",
+            )
+
+    def test_empty_target_project_rejected(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "empty target_project"},
+        )
+        target_id = uuid.uuid4()
+        with pytest.raises(Exception):
+            regista.create_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="",
+            )
+
+
+class TestInMemoryCrossProjectValueReferences:
+    def test_in_memory_cross_project_link_create(self):
+        from regista.testing import InMemoryRegista
+
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "inmem xproject"},
+        )
+        target_id = uuid.uuid4()
+        link = s.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        assert link.target_project == "other_project"
+
+        events = s.read_events(work_item_id=wi.work_item_id)
+        link_events = [e for e in events if e.transition == "link_created"]
+        assert len(link_events) == 1
+        assert link_events[0].payload["target_project"] == "other_project"
+
+    def test_in_memory_cross_project_link_remove(self):
+        from regista.testing import InMemoryRegista
+
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "inmem remove"},
+        )
+        target_id = uuid.uuid4()
+        s.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        s.remove_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+        )
+        events = s.read_events(work_item_id=wi.work_item_id)
+        remove_events = [e for e in events if e.transition == "link_removed"]
+        assert len(remove_events) == 1
+        assert remove_events[0].payload.get("target_project") == "other_project"
+
+    def test_in_memory_cross_project_replay(self):
+        from regista.testing import InMemoryRegista
+
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "inmem replay xproject"},
+        )
+        target_id = uuid.uuid4()
+        s.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash="sha256:abc",
+        )
+        report = s.replay()
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+
+
+class TestLinkDataclassCrossProject:
+    def test_link_to_dict_includes_cross_project_fields(self):
+        link = Link(
+            link_id=uuid.uuid4(),
+            from_work_item_id=uuid.uuid4(),
+            to_work_item_id=uuid.uuid4(),
+            link_type="references",
+            target_project="other_project",
+            target_entity_kind="note",
+            content_hash="sha256:xyz",
+        )
+        d = link.to_dict()
+        assert d["target_project"] == "other_project"
+        assert d["target_entity_kind"] == "note"
+        assert d["content_hash"] == "sha256:xyz"
+
+    def test_link_from_dict_roundtrip_cross_project(self):
+        link = Link(
+            link_id=uuid.uuid4(),
+            from_work_item_id=uuid.uuid4(),
+            to_work_item_id=uuid.uuid4(),
+            link_type="references",
+            target_project="other_project",
+            target_entity_kind="note",
+            content_hash="sha256:xyz",
+        )
+        d = link.to_dict()
+        link2 = Link.from_dict(d)
+        assert link2.target_project == "other_project"
+        assert link2.target_entity_kind == "note"
+        assert link2.content_hash == "sha256:xyz"
+
+    def test_link_to_dict_omits_cross_project_when_none(self):
+        link = Link(
+            link_id=uuid.uuid4(),
+            from_work_item_id=uuid.uuid4(),
+            to_work_item_id=uuid.uuid4(),
+            link_type="blocks",
+        )
+        d = link.to_dict()
+        assert "target_project" not in d
+        assert "target_entity_kind" not in d
+        assert "content_hash" not in d

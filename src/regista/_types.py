@@ -529,6 +529,9 @@ class Link:
     to_work_item_id: uuid.UUID
     link_type: str
     payload: dict | None = None
+    target_project: str | None = None
+    target_entity_kind: str | None = None
+    content_hash: str | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -539,6 +542,12 @@ class Link:
         }
         if self.payload is not None:
             d["payload"] = self.payload
+        if self.target_project is not None:
+            d["target_project"] = self.target_project
+        if self.target_entity_kind is not None:
+            d["target_entity_kind"] = self.target_entity_kind
+        if self.content_hash is not None:
+            d["content_hash"] = self.content_hash
         return d
 
     @classmethod
@@ -549,6 +558,9 @@ class Link:
             to_work_item_id=uuid.UUID(data["to_work_item_id"]),
             link_type=data["link_type"],
             payload=data.get("payload"),
+            target_project=data.get("target_project"),
+            target_entity_kind=data.get("target_entity_kind"),
+            content_hash=data.get("content_hash"),
         )
 
 

@@ -58,7 +58,7 @@ class TestBC216KeyEntryRestructure:
         ])
         entry = KeySet(str(kf)).active_key()
         fp = entry.fingerprint()
-        assert fp.startswith("hmac:sha256:")
+        assert fp.startswith("hmac-sha256:sha256:")
 
     def test_fingerprint_ed25519(self, tmp_path):
         kf = _write_key_file(tmp_path / "keys.json", [
@@ -66,11 +66,12 @@ class TestBC216KeyEntryRestructure:
                 "key_id": "k1", "alg": "Ed25519",
                 "secret": SECRET, "status": "active",
                 "public_key": "dGVzdC1rZXk=",
+                "scheme": "ed25519",
             },
         ])
         entry = KeySet(str(kf)).active_key()
         fp = entry.fingerprint()
-        assert fp.startswith("Ed25519:sha256:")
+        assert fp.startswith("ed25519:sha256:")
 
 
 class TestBC218KeyRole:

@@ -131,6 +131,9 @@ class CreateLinkRequest(BaseModel):
     actor_metadata: dict | None = None
     event_id: str | None = None
     payload: dict | None = None
+    target_project: str | None = None
+    target_entity_kind: str | None = None
+    content_hash: str | None = None
 
 
 class RemoveLinkRequest(BaseModel):
@@ -141,6 +144,7 @@ class RemoveLinkRequest(BaseModel):
     actor_kind: str = "agent"
     actor_metadata: dict | None = None
     event_id: str | None = None
+    target_project: str | None = None
 
 
 class UpdateNotBeforeRequest(BaseModel):

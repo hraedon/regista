@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import hmac as _hmac
 from datetime import datetime
 
@@ -42,7 +41,10 @@ def _verify_hash_chain_in_memory(
     prev_sig = prev_event.signature
     if prev_env is None or prev_sig is None:
         return False, "previous event missing canonical_envelope or signature"
-    computed = hashlib.sha256(
+    from ._signing_scheme import resolve_hash_function
+
+    hash_fn = resolve_hash_function("sha-256")
+    computed = hash_fn(
         bytes(prev_env) + bytes(prev_sig)
     ).digest()
     if not _hmac.compare_digest(computed, bytes(expected)):

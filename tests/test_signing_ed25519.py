@@ -188,8 +188,12 @@ class TestEd25519KeyLoadErrors:
         monkeypatch.setitem(__import__("sys").modules, "nacl.signing", None)
         from regista._keys import KeySet as _KeySet
 
+        _KeySet(kf)
+        from regista._signing_scheme import Ed25519Scheme
+
+        scheme = Ed25519Scheme()
         with pytest.raises(RegistaError, match=r"ed25519.*PyNaCl"):
-            _KeySet(kf)
+            scheme.sign(b"envelope", b"key-material")
 
     def test_unknown_scheme_raises(self, tmp_path):
         from regista._errors import ErrorCode, RegistaError

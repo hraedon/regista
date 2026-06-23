@@ -1019,18 +1019,28 @@ class Regista:
         *,
         event_id: uuid.UUID | None = None,
         payload: dict | None = None,
+        target_project: str | None = None,
+        target_entity_kind: str | None = None,
+        content_hash: str | None = None,
     ) -> Link:
         """Create a typed directed link between two work items.
 
         Args:
             from_work_item_id: Source work item.
-            to_work_item_id: Target work item.
+            to_work_item_id: Target work item (or target entity ID for
+                cross-project value-references).
             link_type: Must be declared in the workflow definition.
             actor_id: Authenticated actor.
             actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
             actor_metadata: Optional JSONB metadata.
             event_id: UUIDv4 idempotency key.
             payload: Optional JSONB payload on the link.
+            target_project: If provided, creates a cross-project value-reference
+                without looking up the target locally (FR-22b).
+            target_entity_kind: Entity kind for cross-project references
+                (defaults to ``"work_item"``).
+            content_hash: Opaque referrer-supplied hash for tamper-evidence
+                of what was referenced.
 
         Returns:
             The created ``Link``.
@@ -1048,6 +1058,9 @@ class Regista:
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id, payload=payload,
+            target_project=target_project,
+            target_entity_kind=target_entity_kind,
+            content_hash=content_hash,
         )
 
     def remove_link(
@@ -1060,6 +1073,7 @@ class Regista:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        target_project: str | None = None,
     ) -> None:
         """Remove a typed directed link between two work items.
 
@@ -1071,6 +1085,8 @@ class Regista:
             actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
             actor_metadata: Optional JSONB metadata.
             event_id: UUIDv4 idempotency key.
+            target_project: If provided, removes a cross-project value-reference
+                without looking up the target locally.
 
         Raises:
             RegistaError: ``LINK_NOT_FOUND``.
@@ -1084,6 +1100,7 @@ class Regista:
             from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata,
             event_id=event_id,
+            target_project=target_project,
         )
 
     def replay(

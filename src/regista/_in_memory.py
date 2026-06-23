@@ -474,6 +474,9 @@ class InMemoryRegista:
         *,
         event_id: uuid.UUID | None = None,
         payload: dict | None = None,
+        target_project: str | None = None,
+        target_entity_kind: str | None = None,
+        content_hash: str | None = None,
     ) -> Link:
         from ._in_memory_links import in_memory_create_link
 
@@ -482,6 +485,9 @@ class InMemoryRegista:
             self._key_set, from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata, event_id=event_id,
             payload=payload,
+            target_project=target_project,
+            target_entity_kind=target_entity_kind,
+            content_hash=content_hash,
         )
 
     def remove_link(
@@ -494,6 +500,7 @@ class InMemoryRegista:
         actor_metadata: dict | None = None,
         *,
         event_id: uuid.UUID | None = None,
+        target_project: str | None = None,
     ) -> None:
         from ._in_memory_links import in_memory_remove_link
 
@@ -501,6 +508,7 @@ class InMemoryRegista:
             self._store, self._work_items, self._workflows, self._links,
             self._key_set, from_work_item_id, to_work_item_id, link_type,
             actor_id, actor_kind, actor_metadata, event_id=event_id,
+            target_project=target_project,
         )
 
     def replay(

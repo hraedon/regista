@@ -52,9 +52,10 @@ def _verify_hash_chain(
     prev_sig = prev_event.get("signature")
     if prev_env is None or prev_sig is None:
         return False, "previous event missing canonical_envelope or signature"
-    import hashlib
+    from ._signing_scheme import resolve_hash_function
 
-    computed = hashlib.sha256(
+    hash_fn = resolve_hash_function("sha-256")
+    computed = hash_fn(
         bytes(prev_env) + bytes(prev_sig)
     ).digest()
     if not _hmac.compare_digest(computed, bytes(expected)):

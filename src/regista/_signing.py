@@ -193,7 +193,7 @@ def sign_event(
         global_seq=global_seq,
         prev_global_event_hash=prev_global_event_hash,
     )
-    signature, canonical_hash = scheme.sign(envelope, key)
+    signature, canonical_hash = scheme.sign(envelope, key, hash_alg=hash_alg)
     return (signature, canonical_hash, envelope)
 
 
@@ -203,8 +203,9 @@ def _verify_once(
     canonical_hash: bytes,
     scheme,
     key: bytes,
+    hash_alg: str = "sha-256",
 ) -> bool:
-    return scheme.verify(envelope, signature, canonical_hash, key)
+    return scheme.verify(envelope, signature, canonical_hash, key, hash_alg=hash_alg)
 
 
 _V4_FIELDS = frozenset(
@@ -334,8 +335,12 @@ def verify_event(
             3,
         ))
 
-        for envelope, _ver in candidate_envelopes:
-            if _verify_once(envelope, signature, canonical_hash, scheme, key):
+        for envelope, ver in candidate_envelopes:
+            candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
+            if _verify_once(
+                envelope, signature, canonical_hash, scheme, key,
+                hash_alg=candidate_hash_alg,
+            ):
                 return True
 
         return False
@@ -362,8 +367,12 @@ def verify_event(
     if stored_ver == 4:
         candidate_envelopes.insert(0, (stored_envelope, stored_ver))
 
-    for envelope, _ver in candidate_envelopes:
-        if _verify_once(envelope, signature, canonical_hash, scheme, key):
+    for envelope, ver in candidate_envelopes:
+        candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
+        if _verify_once(
+            envelope, signature, canonical_hash, scheme, key,
+            hash_alg=candidate_hash_alg,
+        ):
             return True
 
     if stored_ver in (2, 3):
@@ -400,20 +409,20 @@ def verify_event(
     candidate_envelopes.append((v2_envelope, 2))
 
     for envelope, _ver in candidate_envelopes:
-        if _verify_once(envelope, signature, canonical_hash, scheme, key):
+        if _verify_once(envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
             return True
 
     old_envelope = build_signing_envelope(
         event_id, work_item_id, actor_id, transition, payload, on_behalf_of,
     )
-    if _verify_once(old_envelope, signature, canonical_hash, scheme, key):
+    if _verify_once(old_envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
         return True
 
     if on_behalf_of is not None:
         bare_envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None,
         )
-        if _verify_once(bare_envelope, signature, canonical_hash, scheme, key):
+        if _verify_once(bare_envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
             return True
 
     return False

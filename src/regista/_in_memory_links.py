@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import uuid
 
-from ._contract import Jsonb, validate_link_type, validate_mutation_params
+from ._contract import (
+    Jsonb,
+    validate_cross_project_link_type,
+    validate_link_type,
+    validate_mutation_params,
+)
 from ._errors import ErrorCode, RegistaError
 from ._event_store import append_event as _store_append
 from ._types import Link
@@ -23,6 +28,9 @@ def in_memory_create_link(
     *,
     event_id: uuid.UUID | None = None,
     payload: dict | None = None,
+    target_project: str | None = None,
+    target_entity_kind: str | None = None,
+    content_hash: str | None = None,
 ) -> Link:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -33,25 +41,10 @@ def in_memory_create_link(
     )
 
     from_wi = work_items.get(from_work_item_id)
-    to_wi = work_items.get(to_work_item_id)
-    if from_wi is None or to_wi is None:
+    if from_wi is None:
         raise RegistaError(
             ErrorCode.LINK_TARGET_NOT_FOUND,
-            "One or both work items not found for link",
-        )
-    if from_wi["workflow_name"] != to_wi["workflow_name"]:
-        raise RegistaError(
-            ErrorCode.LINK_CROSS_PROJECT,
-            "Cannot link work items from different projects",
-        )
-
-    wf_data = workflows.get((from_wi["workflow_name"], from_wi["workflow_version"]))
-    if wf_data is not None:
-        validate_link_type(
-            wf_data.get("link_types", []),
-            from_wi["work_item_type"],
-            to_wi["work_item_type"],
-            link_type,
+            f"Source work item {from_work_item_id} not found",
         )
 
     link_id = uuid.uuid4()
@@ -63,6 +56,48 @@ def in_memory_create_link(
     }
     if payload is not None:
         link_payload["link_payload"] = payload
+
+    if target_project is not None:
+        if not target_project or not target_project.strip():
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "target_project must be a non-empty string",
+            )
+        wf_data = workflows.get(
+            (from_wi["workflow_name"], from_wi["workflow_version"])
+        )
+        if wf_data is not None:
+            validate_cross_project_link_type(
+                wf_data.get("link_types", []),
+                link_type,
+            )
+        link_payload["target_project"] = target_project
+        link_payload["target_entity_kind"] = target_entity_kind or "work_item"
+        if content_hash is not None:
+            link_payload["content_hash"] = content_hash
+    else:
+        to_wi = work_items.get(to_work_item_id)
+        if to_wi is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                "Target work item not found for link",
+            )
+        if from_wi["workflow_name"] != to_wi["workflow_name"]:
+            raise RegistaError(
+                ErrorCode.LINK_CROSS_PROJECT,
+                "Cannot link work items from different projects",
+            )
+
+        wf_data = workflows.get(
+            (from_wi["workflow_name"], from_wi["workflow_version"])
+        )
+        if wf_data is not None:
+            validate_link_type(
+                wf_data.get("link_types", []),
+                from_wi["work_item_type"],
+                to_wi["work_item_type"],
+                link_type,
+            )
 
     _store_append(
         store,
@@ -84,6 +119,7 @@ def in_memory_create_link(
         "to_id": to_work_item_id,
         "link_type": link_type,
         "payload": payload,
+        "target_project": target_project,
     })
 
     return Link(
@@ -92,6 +128,13 @@ def in_memory_create_link(
         to_work_item_id=to_work_item_id,
         link_type=link_type,
         payload=payload,
+        target_project=target_project,
+        target_entity_kind=(
+            target_entity_kind
+            if target_project is None
+            else (target_entity_kind or "work_item")
+        ),
+        content_hash=content_hash,
     )
 
 
@@ -109,6 +152,7 @@ def in_memory_remove_link(
     actor_metadata: dict | None = None,
     *,
     event_id: uuid.UUID | None = None,
+    target_project: str | None = None,
 ) -> None:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -119,12 +163,19 @@ def in_memory_remove_link(
     )
 
     from_wi = work_items.get(from_work_item_id)
-    to_wi = work_items.get(to_work_item_id)
-    if from_wi is None or to_wi is None:
+    if from_wi is None:
         raise RegistaError(
             ErrorCode.LINK_TARGET_NOT_FOUND,
-            "One or both work items not found for link removal",
+            f"Source work item {from_work_item_id} not found",
         )
+
+    if target_project is None:
+        to_wi = work_items.get(to_work_item_id)
+        if to_wi is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                "Target work item not found for link removal",
+            )
 
     has_live = any(
         ln["from_id"] == from_work_item_id
@@ -156,6 +207,14 @@ def in_memory_remove_link(
                 f"from {from_work_item_id} to {to_work_item_id}",
             )
 
+    remove_payload = {
+        "from_work_item_id": str(from_work_item_id),
+        "to_work_item_id": str(to_work_item_id),
+        "link_type": link_type,
+    }
+    if target_project is not None:
+        remove_payload["target_project"] = target_project
+
     _store_append(
         store,
         work_item_id=from_wi["work_item_id"],
@@ -165,11 +224,7 @@ def in_memory_remove_link(
         workflow_name=from_wi["workflow_name"],
         workflow_version=from_wi["workflow_version"],
         transition="link_removed",
-        payload=Jsonb({
-            "from_work_item_id": str(from_work_item_id),
-            "to_work_item_id": str(to_work_item_id),
-            "link_type": link_type,
-        }),
+        payload=Jsonb(remove_payload),
         event_id=event_id,
         key_set=key_set,
     )
@@ -180,5 +235,6 @@ def in_memory_remove_link(
             ln["from_id"] == from_work_item_id
             and ln["to_id"] == to_work_item_id
             and ln["link_type"] == link_type
+            and ln.get("target_project") == target_project
         )
     ]
