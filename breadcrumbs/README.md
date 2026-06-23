@@ -39,6 +39,8 @@ _(none)_
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
 | 297 | witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable | medium | accepted |
+| 298 | PostgresEventStore.append() omits prev_global_event_hash from INSERT | high | proposed |
+| 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | proposed |
 
 ## Resolved
 

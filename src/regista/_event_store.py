@@ -102,6 +102,8 @@ def append_event(
             on_behalf_of=on_behalf_of,
             scheme=scheme,
             prev_event_hash=prev_event_hash,
+            entity_kind="work_item",
+            hash_alg="sha-256",
         )
         _scheme_id = scheme.scheme_id
     else:
@@ -114,6 +116,9 @@ def append_event(
     evt = Event(
         event_id=event_id,
         work_item_id=work_item_id,
+        entity_kind="work_item",
+        entity_id=work_item_id,
+        hash_alg="sha-256",
         event_seq=event_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
@@ -231,7 +236,8 @@ class InMemoryEventStore:
 
 class PostgresEventStore:
     _EVENT_FIELDS = (
-        "event_id, work_item_id, event_seq, actor_id, actor_kind, "
+        "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+        "event_seq, actor_id, actor_kind, "
         "actor_metadata, key_id, workflow_name, workflow_version, "
         "timestamp, transition, payload, payload_canonical_hash, signature, "
         "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, global_seq"
@@ -288,16 +294,20 @@ class PostgresEventStore:
         try:
             self._conn.execute(
                 SQL(
-                    "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
+                    "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+                    "event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
                     "timestamp, transition, payload, payload_canonical_hash, signature, "
                     "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s, %s, %s, %s, %s)"
                 ),
                 [
                     event.event_id,
                     event.work_item_id,
+                    event.entity_kind,
+                    event.effective_entity_id,
+                    event.hash_alg,
                     event.event_seq,
                     event.actor_id,
                     event.actor_kind,

@@ -118,6 +118,17 @@ class Event:
     prev_event_hash: bytes | None = None
     global_seq: int | None = None
     prev_global_event_hash: bytes | None = None
+    entity_kind: str = "work_item"
+    entity_id: uuid.UUID | None = None
+    hash_alg: str = "sha-256"
+
+    def __post_init__(self) -> None:
+        if self.entity_id is None:
+            object.__setattr__(self, "entity_id", self.work_item_id)
+
+    @property
+    def effective_entity_id(self) -> uuid.UUID:
+        return self.entity_id if self.entity_id is not None else self.work_item_id
 
     def to_dict(self) -> dict:
         d = {
@@ -135,6 +146,9 @@ class Event:
             "payload": self.payload,
             "payload_canonical_hash": self.payload_canonical_hash.hex(),
             "signature": self.signature.hex(),
+            "entity_kind": self.entity_kind,
+            "entity_id": str(self.effective_entity_id),
+            "hash_alg": self.hash_alg,
         }
         if self.canonical_envelope is not None:
             d["canonical_envelope"] = self.canonical_envelope.hex()
@@ -184,6 +198,13 @@ class Event:
                 if data.get("prev_global_event_hash")
                 else None
             ),
+            entity_kind=data.get("entity_kind", "work_item"),
+            entity_id=(
+                uuid.UUID(data["entity_id"])
+                if data.get("entity_id")
+                else None
+            ),
+            hash_alg=data.get("hash_alg", "sha-256"),
         )
 
 

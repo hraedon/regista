@@ -15,7 +15,8 @@ from ._signing_scheme import get_scheme
 from ._types import Event
 
 _EVENT_FIELDS = (
-    "event_id, work_item_id, event_seq, actor_id, actor_kind, "
+    "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+    "event_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, canonical_envelope, "
     "on_behalf_of, scheme_id, prev_event_hash, global_seq, prev_global_event_hash"
@@ -26,6 +27,9 @@ def _row_to_event(row: dict) -> Event:
     return Event(
         event_id=row["event_id"],
         work_item_id=row["work_item_id"],
+        entity_kind=row.get("entity_kind", "work_item"),
+        entity_id=row.get("entity_id"),
+        hash_alg=row.get("hash_alg", "sha-256"),
         event_seq=row["event_seq"],
         actor_id=row["actor_id"],
         actor_kind=row["actor_kind"],
@@ -202,17 +206,21 @@ def append_event(
     try:
         conn.execute(
             SQL(
-                "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
+                "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+                "event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
                 work_item_id,
+                "work_item",
+                work_item_id,
+                "sha-256",
                 event_seq,
                 actor_id,
                 actor_kind,
@@ -262,6 +270,9 @@ def append_event(
     return Event(
         event_id=event_id,
         work_item_id=work_item_id,
+        entity_kind="work_item",
+        entity_id=work_item_id,
+        hash_alg="sha-256",
         event_seq=event_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
@@ -376,17 +387,21 @@ def append_transition_event(
     try:
         conn.execute(
             SQL(
-                "INSERT INTO events (event_id, work_item_id, event_seq, actor_id, actor_kind, "
+                "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+                "event_seq, actor_id, actor_kind, "
                 "actor_metadata, key_id, workflow_name, workflow_version, "
                 "timestamp, transition, payload, payload_canonical_hash, signature, "
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
                 "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 event_id,
                 work_item_id,
+                "work_item",
+                work_item_id,
+                "sha-256",
                 event_seq,
                 actor_id,
                 actor_kind,
@@ -459,6 +474,9 @@ def append_transition_event(
     return Event(
         event_id=event_id,
         work_item_id=work_item_id,
+        entity_kind="work_item",
+        entity_id=work_item_id,
+        hash_alg="sha-256",
         event_seq=event_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,

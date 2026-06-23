@@ -71,7 +71,8 @@ class _ReplayHaltError(RegistaError):
         super().__init__(ErrorCode.REPLAY_HALTED, message)
 
 _EVENT_FIELDS = (
-    "event_id, work_item_id, event_seq, global_seq, actor_id, actor_kind, "
+    "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+    "event_seq, global_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, "
     "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash"
@@ -475,6 +476,8 @@ def _replay_work_item(
                 ),
                 on_behalf_of=evt["on_behalf_of"],
                 scheme=scheme,
+                entity_kind=evt.get("entity_kind", "work_item"),
+                hash_alg=evt.get("hash_alg", "sha-256"),
             ):
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "

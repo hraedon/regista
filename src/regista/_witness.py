@@ -378,10 +378,12 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
             with mgr.connect() as conn_r:
                 evt_rows = conn_r.execute(
                     SQL(
-                        "SELECT event_id, work_item_id, event_seq, actor_id, actor_kind, "
+                        "SELECT event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+                        "event_seq, actor_id, actor_kind, "
                         "actor_metadata, key_id, workflow_name, workflow_version, "
                         "timestamp, transition, payload, payload_canonical_hash, "
-                        "signature, on_behalf_of, scheme_id "
+                        "signature, on_behalf_of, scheme_id, prev_event_hash, "
+                        "global_seq, prev_global_event_hash "
                         "FROM events WHERE event_id = %s"
                     ),
                     [event_id],
@@ -391,6 +393,17 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
             evt = dict(evt_rows[0])
             evt["event_id"] = str(evt["event_id"])
             evt["work_item_id"] = str(evt["work_item_id"])
+            evt["entity_id"] = str(evt.get("entity_id") or evt["work_item_id"])
+            if evt.get("prev_event_hash") is not None:
+                evt["prev_event_hash"] = bytes(evt["prev_event_hash"]).hex()
+            else:
+                del evt["prev_event_hash"]
+            if evt.get("prev_global_event_hash") is not None:
+                evt["prev_global_event_hash"] = bytes(evt["prev_global_event_hash"]).hex()
+            else:
+                del evt["prev_global_event_hash"]
+            if evt.get("global_seq") is None:
+                del evt["global_seq"]
             evt["timestamp"] = evt["timestamp"].isoformat()
             evt["payload_canonical_hash"] = evt["payload_canonical_hash"].hex()
             evt["signature"] = bytes(evt["signature"]).hex()

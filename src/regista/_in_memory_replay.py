@@ -153,6 +153,8 @@ def in_memory_replay(
                             stored_envelope=evt.canonical_envelope,
                             on_behalf_of=evt.on_behalf_of,
                             scheme=scheme,
+                            entity_kind=evt.entity_kind,
+                            hash_alg=evt.hash_alg,
                         ):
                             raise RegistaError(
                                 ErrorCode.REPLAY_HALTED,
