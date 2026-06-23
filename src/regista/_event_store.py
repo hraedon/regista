@@ -18,7 +18,10 @@ _DUMMY_HASH = b"\x00" * 32
 
 @runtime_checkable
 class EventStore(Protocol):
-    def allocate_seq(self, work_item_id: uuid.UUID) -> int:
+    def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
+        ...
+
+    def lock_global_chain_head(self) -> bytes | None:
         ...
 
     def find_by_event_id(self, event_id: uuid.UUID) -> Event | None:
@@ -56,8 +59,9 @@ def append_event(
     key_set: KeySet | None = None,
     on_behalf_of: dict | None = None,
     _key_id: str | None = None,
+    entity_kind: str = "work_item",
 ) -> Event:
-    event_seq = store.allocate_seq(work_item_id)
+    event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
     existing_evt = store.find_by_event_id(event_id)
     existing = check_idempotency(existing_evt, actor_id, transition, work_item_id)
@@ -82,6 +86,8 @@ def append_event(
                     prev_evt.canonical_envelope + prev_evt.signature
                 ).digest()
 
+    prev_global_event_hash = store.lock_global_chain_head()
+
     if key_set is not None:
         key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
         key_id = key_entry.key_id
@@ -102,7 +108,8 @@ def append_event(
             on_behalf_of=on_behalf_of,
             scheme=scheme,
             prev_event_hash=prev_event_hash,
-            entity_kind="work_item",
+            prev_global_event_hash=prev_global_event_hash,
+            entity_kind=entity_kind,
             hash_alg="sha-256",
         )
         _scheme_id = scheme.scheme_id
@@ -116,7 +123,7 @@ def append_event(
     evt = Event(
         event_id=event_id,
         work_item_id=work_item_id,
-        entity_kind="work_item",
+        entity_kind=entity_kind,
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,
@@ -135,6 +142,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme_id=_scheme_id,
         prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
     )
 
     return store.append(evt)
@@ -145,20 +153,31 @@ class InMemoryEventStore:
         self.events: dict[uuid.UUID, list[Event]] = {}
         self.event_id_index: dict[uuid.UUID, Event] = {}
         self._work_items: dict[uuid.UUID, dict] = {}
+        self._entity_seqs: dict[tuple[str, uuid.UUID], dict] = {}
         self._next_global_seq: int = 1
         self._global_seq_by_event_id: dict[uuid.UUID, int] = {}
+        self._global_chain_head: bytes | None = None
 
     def bind(self, work_items: dict[uuid.UUID, dict]) -> None:
         self._work_items = work_items
 
-    def allocate_seq(self, work_item_id: uuid.UUID) -> int:
-        wi = self._work_items.get(work_item_id)
-        if wi is None:
-            raise RegistaError(
-                ErrorCode.WORK_ITEM_NOT_FOUND,
-                f"Work item {work_item_id} not found",
-            )
-        return wi["next_event_seq"]
+    def lock_global_chain_head(self) -> bytes | None:
+        return self._global_chain_head
+
+    def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
+        if entity_kind == "work_item":
+            wi = self._work_items.get(work_item_id)
+            if wi is not None:
+                return wi["next_event_seq"]
+        ent_key = (entity_kind, work_item_id)
+        ent = self._entity_seqs.get(ent_key)
+        if ent is not None:
+            return ent["next_event_seq"]
+        self._entity_seqs[ent_key] = {
+            "next_event_seq": 1,
+            "last_event_seq": 0,
+        }
+        return 1
 
     def find_by_event_id(self, event_id: uuid.UUID) -> Event | None:
         return self.event_id_index.get(event_id)
@@ -166,18 +185,38 @@ class InMemoryEventStore:
     def append(self, event: Event) -> Event:
         wid = event.work_item_id
         wi = self._work_items.get(wid)
-        if wi is None:
-            raise RegistaError(
-                ErrorCode.WORK_ITEM_NOT_FOUND,
-                f"Work item {wid} not found",
-            )
+        if wi is not None:
+            self.events.setdefault(wid, []).append(event)
+            self.event_id_index[event.event_id] = event
+            self._global_seq_by_event_id[event.event_id] = self._next_global_seq
+            self._next_global_seq += 1
+            wi["last_event_seq"] = event.event_seq
+            wi["last_event_at"] = event.timestamp
+            wi["next_event_seq"] = event.event_seq + 1
+            if event.canonical_envelope and event.signature:
+                import hashlib
+
+                self._global_chain_head = hashlib.sha256(
+                    bytes(event.canonical_envelope) + bytes(event.signature)
+                ).digest()
+            return event
+        ent_key = (getattr(event, "entity_kind", "work_item"), wid)
+        ent = self._entity_seqs.setdefault(ent_key, {
+            "next_event_seq": 1,
+            "last_event_seq": 0,
+        })
         self.events.setdefault(wid, []).append(event)
         self.event_id_index[event.event_id] = event
         self._global_seq_by_event_id[event.event_id] = self._next_global_seq
         self._next_global_seq += 1
-        wi["last_event_seq"] = event.event_seq
-        wi["last_event_at"] = event.timestamp
-        wi["next_event_seq"] = event.event_seq + 1
+        ent["last_event_seq"] = event.event_seq
+        ent["next_event_seq"] = event.event_seq + 1
+        if event.canonical_envelope and event.signature:
+            import hashlib
+
+            self._global_chain_head = hashlib.sha256(
+                bytes(event.canonical_envelope) + bytes(event.signature)
+            ).digest()
         return event
 
     def read(
@@ -247,6 +286,13 @@ class PostgresEventStore:
         self._conn = conn
         self._key_set = key_set
         self._locked_wis: dict[uuid.UUID, dict | None] = {}
+        self._prev_global_event_hash: bytes | None = None
+
+    def lock_global_chain_head(self) -> bytes | None:
+        from ._events import _lock_global_chain_head
+
+        self._prev_global_event_hash = _lock_global_chain_head(self._conn)
+        return self._prev_global_event_hash
 
     def prepare(
         self,
@@ -259,7 +305,26 @@ class PostgresEventStore:
         self._locked_wis[work_item_id] = wi
         return wi
 
-    def allocate_seq(self, work_item_id: uuid.UUID) -> int:
+    def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
+        if entity_kind != "work_item":
+            entity_bytes = work_item_id.bytes
+            key1 = int.from_bytes(entity_bytes[:8], "big", signed=False)
+            key2 = int.from_bytes(entity_bytes[8:], "big", signed=False)
+            if key1 >= 2**63:
+                key1 -= 2**64
+            if key2 >= 2**63:
+                key2 -= 2**64
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                [key1, key2],
+            )
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq "
+                "FROM events WHERE entity_kind = %s AND entity_id = %s",
+                [entity_kind, work_item_id],
+            ).fetchone()
+            return row["next_seq"]
+
         from ._events import lock_work_item
 
         wi = self._locked_wis.get(work_item_id)
@@ -298,9 +363,10 @@ class PostgresEventStore:
                     "event_seq, actor_id, actor_kind, "
                     "actor_metadata, key_id, workflow_name, workflow_version, "
                     "timestamp, transition, payload, payload_canonical_hash, signature, "
-                    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash) "
+                    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+                    "prev_global_event_hash) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s, %s, %s, %s)"
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 ),
                 [
                     event.event_id,
@@ -326,6 +392,7 @@ class PostgresEventStore:
                     ) if event.on_behalf_of is not None else None,
                     event.scheme_id,
                     event.prev_event_hash,
+                    event.prev_global_event_hash,
                 ],
             )
         except psycopg.errors.UniqueViolation:
@@ -345,14 +412,23 @@ class PostgresEventStore:
                 f"event_id {event.event_id} already exists",
             )
 
-        self._conn.execute(
-            SQL(
-                "UPDATE work_items_current SET "
-                "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
-                "WHERE work_item_id = %s"
-            ),
-            [event.event_seq, event.timestamp, event.event_seq + 1, event.work_item_id],
-        )
+        from ._events import _advance_global_chain_head
+
+        if event.canonical_envelope and event.signature:
+            new_head = resolve_hash_function("sha-256")(
+                bytes(event.canonical_envelope) + bytes(event.signature)
+            ).digest()
+            _advance_global_chain_head(self._conn, event.event_id, new_head)
+
+        if event.entity_kind == "work_item":
+            self._conn.execute(
+                SQL(
+                    "UPDATE work_items_current SET "
+                    "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
+                    "WHERE work_item_id = %s"
+                ),
+                [event.event_seq, event.timestamp, event.event_seq + 1, event.work_item_id],
+            )
 
         return event
 

@@ -136,17 +136,20 @@ def append_event(
     on_behalf_of: dict | None = None,
     _prelocked_wi: dict | None = None,
     _key_id: str | None = None,
+    entity_kind: str = "work_item",
 ) -> Event:
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
     check_key_role_policy(key_entry.role, transition)
 
-    wi_row = _prelocked_wi if _prelocked_wi is not None else lock_work_item(conn, work_item_id)
-    if wi_row is None:
-        raise RegistaError(
-            ErrorCode.WORK_ITEM_NOT_FOUND,
-            f"Work item {work_item_id} not found",
-        )
+    wi_row = None
+    if entity_kind == "work_item":
+        wi_row = _prelocked_wi if _prelocked_wi is not None else lock_work_item(conn, work_item_id)
+        if wi_row is None:
+            raise RegistaError(
+                ErrorCode.WORK_ITEM_NOT_FOUND,
+                f"Work item {work_item_id} not found",
+            )
 
     existing = check_idempotency(
         conn, event_id, actor_id=actor_id, transition=transition,
@@ -155,7 +158,17 @@ def append_event(
     if existing is not None:
         return existing
 
-    next_seq = wi_row["next_event_seq"]
+    if entity_kind == "work_item":
+        next_seq = wi_row["next_event_seq"]
+    else:
+        row = conn.execute(
+            SQL(
+                "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq "
+                "FROM events WHERE entity_kind = %s AND entity_id = %s"
+            ),
+            [entity_kind, work_item_id],
+        ).fetchone()
+        next_seq = row["next_seq"]
     check_expected_seq(next_seq, expected_event_seq)
 
     am = actor_metadata.value if actor_metadata is not None else None
@@ -168,9 +181,9 @@ def append_event(
         prev_row = conn.execute(
             SQL(
                 "SELECT canonical_envelope, signature FROM events "
-                "WHERE work_item_id = %s AND event_seq = %s"
+                "WHERE entity_kind = %s AND entity_id = %s AND event_seq = %s"
             ),
-            [work_item_id, next_seq - 1],
+            [entity_kind, work_item_id, next_seq - 1],
         ).fetchone()
         if prev_row is not None:
             prev_env = prev_row["canonical_envelope"]
@@ -218,7 +231,7 @@ def append_event(
             [
                 event_id,
                 work_item_id,
-                "work_item",
+                entity_kind,
                 work_item_id,
                 "sha-256",
                 event_seq,
@@ -258,19 +271,20 @@ def append_event(
         resolve_hash_function("sha-256")(bytes(canonical_envelope) + bytes(signature)).digest(),
     )
 
-    conn.execute(
-        SQL(
-            "UPDATE work_items_current SET "
-            "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
-            "WHERE work_item_id = %s"
-        ),
-        [event_seq, now, event_seq + 1, work_item_id],
-    )
+    if entity_kind == "work_item":
+        conn.execute(
+            SQL(
+                "UPDATE work_items_current SET "
+                "last_event_seq = %s, last_event_at = %s, next_event_seq = %s "
+                "WHERE work_item_id = %s"
+            ),
+            [event_seq, now, event_seq + 1, work_item_id],
+        )
 
     return Event(
         event_id=event_id,
         work_item_id=work_item_id,
-        entity_kind="work_item",
+        entity_kind=entity_kind,
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,

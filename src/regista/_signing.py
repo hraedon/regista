@@ -453,6 +453,7 @@ def verify_event_with_public_key(event, public_key: bytes) -> bool:
         on_behalf_of=event.on_behalf_of,
         scheme=scheme,
         prev_event_hash=event.prev_event_hash,
+        global_seq=event.global_seq,
         prev_global_event_hash=event.prev_global_event_hash,
         entity_kind=event.entity_kind,
         hash_alg=event.hash_alg,
