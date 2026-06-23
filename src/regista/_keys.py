@@ -44,6 +44,9 @@ class KeyEntry:
         )
 
 
+_ASYMMETRIC_SCHEMES = frozenset({"ed25519"})
+
+
 class KeySet:
     def __init__(
         self,
@@ -51,11 +54,13 @@ class KeySet:
         poll_interval: float = 30.0,
         expected_key_count: int | None = None,
         env_prefix: str = "REGISTA_HMAC_KEY_",
+        strict_asymmetric: bool = False,
     ) -> None:
         self._path = Path(path)
         self._poll_interval = poll_interval
         self._expected_key_count = expected_key_count
         self._env_prefix = env_prefix
+        self._strict_asymmetric = strict_asymmetric
         self._keys: dict[str, KeyEntry] = {}
         self._active_key_id: str | None = None
         self._last_mtime: float = 0.0
@@ -236,6 +241,28 @@ class KeySet:
             if e.status == "active" and e.principal_id == principal_id
         ]
 
+    def _enforce_strict_asymmetric(self, entry: KeyEntry, actor_id: str) -> None:
+        if entry.scheme not in _ASYMMETRIC_SCHEMES:
+            raise RegistaError(
+                ErrorCode.KEY_ROLE_NOT_PERMITTED,
+                f"strict_asymmetric: key {entry.key_id!r} uses scheme "
+                f"{entry.scheme!r}; asymmetric scheme required "
+                f"(allowed: {sorted(_ASYMMETRIC_SCHEMES)})",
+            )
+        if entry.public_key is None:
+            raise RegistaError(
+                ErrorCode.KEY_ROLE_NOT_PERMITTED,
+                f"strict_asymmetric: key {entry.key_id!r} has no public_key; "
+                f"asymmetric keys must include public_key for independent verification",
+            )
+        if entry.principal_id != actor_id:
+            raise RegistaError(
+                ErrorCode.KEY_ROLE_NOT_PERMITTED,
+                f"strict_asymmetric: key {entry.key_id!r} is bound to principal "
+                f"{entry.principal_id!r} but actor is {actor_id!r}; "
+                f"key must be bound to the signing actor",
+            )
+
     def resolve_signing_key(self, actor_id: str, key_id: str | None = None) -> KeyEntry:
         self._maybe_reload()
         if key_id is not None:
@@ -251,11 +278,52 @@ class KeySet:
                     key_id=key_id,
                     actor_id=actor_id,
                 )
+            if self._strict_asymmetric:
+                self._enforce_strict_asymmetric(entry, actor_id)
             return entry
         candidates = self.active_keys_for(actor_id)
+        if self._strict_asymmetric:
+            candidates = [c for c in candidates if c.scheme in _ASYMMETRIC_SCHEMES]
         if candidates:
-            return candidates[0]
+            entry = candidates[0]
+            if self._strict_asymmetric:
+                self._enforce_strict_asymmetric(entry, actor_id)
+            return entry
+        all_for_principal = [
+            e for e in self._keys.values() if e.principal_id == actor_id
+        ]
+        if all_for_principal and all(e.status == "revoked" for e in all_for_principal):
+            raise RegistaError(
+                ErrorCode.REVOKED_KEY_ID,
+                f"All keys for principal {actor_id!r} are revoked",
+            )
+        if self._strict_asymmetric:
+            raise RegistaError(
+                ErrorCode.UNKNOWN_KEY_ID,
+                f"strict_asymmetric: no active asymmetric key bound to "
+                f"actor {actor_id!r}; each actor must have a registered "
+                f"per-principal asymmetric key",
+            )
         return self.active_key()
+
+    def export_public_keys(self) -> list[dict[str, object]]:
+        self._maybe_reload()
+        import base64
+
+        out: list[dict[str, object]] = []
+        for entry in self._keys.values():
+            if entry.public_key is None:
+                continue
+            out.append({
+                "key_id": entry.key_id,
+                "scheme": entry.scheme,
+                "public_key": base64.b64encode(entry.public_key).decode("ascii"),
+                "fingerprint": entry.fingerprint(),
+                "principal_id": entry.principal_id,
+                "status": entry.status,
+                "revoked_at": entry.revoked_at,
+            })
+        return out
 
     def active_scheme(self) -> str:
         self._maybe_reload()

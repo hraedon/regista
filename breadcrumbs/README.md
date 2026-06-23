@@ -43,6 +43,7 @@ _(none)_
 | 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | proposed |
 | 300 | Global chain hash (prev_global_event_hash) is never verified during replay | medium | proposed |
 | 301 | content_hash and event payload have no size limit — resource exhaustion risk | medium | proposed |
+| 302 | Pre-existing uncommitted entity_kind changes in working tree cause test failures | medium | proposed |
 
 ## Resolved
 

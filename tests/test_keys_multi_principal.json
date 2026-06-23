@@ -1,0 +1,26 @@
+{
+  "keys": [
+    {
+      "key_id": "ed-alice-001",
+      "principal_id": "alice",
+      "secret": "netQro6paglKoa+1sSUuX0Fv7QA/CMi3fCNXLH6Yivg=",
+      "public_key": "nca5FYdj1bwfquqjjMvVG8C4QM/A2MP/gZu+kXPvzMA=",
+      "encoding": "base64",
+      "status": "active",
+      "scheme": "ed25519",
+      "alg": "Ed25519",
+      "role": "actor"
+    },
+    {
+      "key_id": "ed-bob-001",
+      "principal_id": "bob",
+      "secret": "BAEjPqacl3IXNLBSVwAW2MmuKgxvVpvLo8Uzm/OyIAE=",
+      "public_key": "MNf4KpjhSZskGX8dTgw8Qnep6mqfpjTebcAm4aOVid0=",
+      "encoding": "base64",
+      "status": "active",
+      "scheme": "ed25519",
+      "alg": "Ed25519",
+      "role": "actor"
+    }
+  ]
+}

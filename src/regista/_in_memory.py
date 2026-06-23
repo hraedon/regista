@@ -51,11 +51,12 @@ class InMemoryRegista:
         pool_max: int = 10,
         prometheus_registry=None,
         strict_roles: bool = False,
+        strict_asymmetric: bool = False,
     ) -> None:
         self._project = project
         self._key_set: KeySet | None = None
         if hmac_key_path:
-            self._key_set = KeySet(hmac_key_path)
+            self._key_set = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)
         self._workflows: dict[tuple[str, int], dict] = {}
         self._workflow_defs: dict[tuple[str, int], WorkflowDefinition] = {}
         self._workflow_hashes: dict[tuple[str, int], bytes] = {}
@@ -89,16 +90,41 @@ class InMemoryRegista:
         pool_max: int = 10,
         prometheus_registry=None,
         strict_roles: bool = False,
+        strict_asymmetric: bool = False,
     ) -> InMemoryRegista:
         return cls(
             dsn, project, hmac_key_path,
             pool_min=pool_min, pool_max=pool_max,
             prometheus_registry=prometheus_registry,
             strict_roles=strict_roles,
+            strict_asymmetric=strict_asymmetric,
         )
 
     def close(self) -> None:
         pass
+
+    def export_public_keys(self) -> list[dict[str, object]]:
+        if self._key_set is None:
+            return []
+        return self._key_set.export_public_keys()
+
+    def verify_event_signature(
+        self, event: Event, *, public_key: bytes | None = None,
+    ) -> bool:
+        from ._signing import verify_event_with_public_key
+
+        if public_key is None:
+            if self._key_set is None:
+                return False
+            try:
+                key_entry = self._key_set.get_key(event.key_id)
+            except RegistaError:
+                return False
+            if key_entry.public_key is not None:
+                public_key = key_entry.public_key
+            else:
+                public_key = key_entry.secret
+        return verify_event_with_public_key(event, public_key)
 
     @property
     def project(self) -> str:
@@ -276,6 +302,8 @@ class InMemoryRegista:
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
         on_behalf_of: dict | None = None,
+        entity_kind: str = "work_item",
+        hash_alg: str = "sha-256",
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
@@ -289,6 +317,8 @@ class InMemoryRegista:
             event_id=event_id,
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
+            entity_kind=entity_kind,
+            hash_alg=hash_alg,
         )
         self._try_create_witness_receipts(evt)
         return evt

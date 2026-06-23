@@ -4,6 +4,79 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-23 — Session 68: Plan 022 Phase 3 (per-principal Ed25519 key adoption)
+
+**Focus:** Implement P3 of Plan 022 — per-principal asymmetric key adoption.
+HMAC remains the zero-config default; Ed25519 is the opt-in path for deployments
+that need independent verifiability (agent-provenance, dossier regulated-provenance).
+
+**Delivered:**
+
+1. **`strict_asymmetric` flag** (`_keys.py`, `__init__.py`, `_in_memory.py`): When
+   enabled, `KeySet.resolve_signing_key` requires each actor to have a registered
+   per-principal asymmetric key (Ed25519). HMAC fallback is rejected. Keys must be
+   bound to the signing actor via `principal_id`. Missing `public_key` on an
+   asymmetric key is rejected. Mixed-scheme key selection: in strict mode, HMAC
+   candidates are filtered out before selection, so a principal with both HMAC and
+   Ed25519 keys gets the Ed25519 one.
+
+2. **`export_public_keys()` API** (`_keys.py`, `__init__.py`, `_in_memory.py`):
+   Returns public key material (base64) for all asymmetric keys, excluding secrets.
+   Includes `key_id`, `scheme`, `public_key`, `fingerprint`, `principal_id`,
+   `status`, `revoked_at`. An auditor who receives this export and the event log
+   can verify signatures without the signing secret.
+
+3. **`verify_event_with_public_key()` utility** (`_signing.py`): Standalone
+   function that verifies an Event's signature using only a public key — no
+   KeySet or database required. Passes `prev_event_hash` and
+   `prev_global_event_hash` (which ARE in the signed envelope) but not
+   `global_seq` (which is NOT in the signed envelope — assigned after signing).
+   Catches `SIGNING_SCHEME_NOT_FOUND` and returns `False` instead of raising.
+
+4. **`verify_event_signature()` method** (`__init__.py`, `_in_memory.py`):
+   Convenience method on Regista/InMemoryRegista. When `public_key` is omitted,
+   resolves from the key set. When provided, uses only the public key
+   (independent-verification path).
+
+5. **Sidecar endpoints** (`sidecar/routes.py`, `sidecar/models.py`):
+   `GET /keys/public` exports public keys. `POST /events/verify-signature`
+   verifies an event using `Event.from_dict()` (handles all fields including
+   chain fields). Malformed input returns 400.
+
+6. **`InMemoryRegista.create_project` parity**: Added `strict_asymmetric` parameter
+   to match `Regista.create_project`.
+
+7. **Revocation detection in `resolve_signing_key`**: When a principal has keys
+   but all are revoked, raises `REVOKED_KEY_ID` instead of falling through to
+   `active_key()` with a generic "No active signing key" error.
+
+### Adversarial review (glm-based)
+
+Found and fixed:
+- **C-1 (Critical):** `verify_event_with_public_key` omitted
+  `prev_global_event_hash` — silently broke external verification for all
+  Postgres events except genesis. Fixed by passing both `prev_event_hash` and
+  `prev_global_event_hash`. Also confirmed `global_seq` should NOT be passed
+  (it's not in the signed envelope).
+- **H-1:** `InMemoryRegista.create_project` missing `strict_asymmetric` parameter.
+  Fixed.
+- **H-2:** Sidecar verify-signature endpoint didn't pass chain fields. Fixed by
+  using `Event.from_dict()` instead of manual construction.
+- **H-3:** `resolve_signing_key` picked first candidate without filtering by
+  asymmetric scheme in strict mode. Fixed: filters candidates by
+  `_ASYMMETRIC_SCHEMES` before selection.
+- **M-4:** `_enforce_strict_asymmetric` didn't check for `public_key` presence.
+  Fixed: rejects asymmetric keys without `public_key`.
+- **M-5:** `verify_event_with_public_key` raised for unknown scheme. Fixed:
+  catches and returns `False`.
+- **M-3:** Added test for verifying without `canonical_envelope` on Postgres events.
+
+### Test results: 1164 passed, 10 deselected, lint clean.
+- 24 new tests in `tests/test_plan022_p3.py`
+- New test key file: `tests/test_keys_multi_principal.json` (two Ed25519 principals)
+
+---
+
 ## 2026-06-23 — Session 67: Plan 022 Phase 2 + Phase 4 (crypto-agility + cross-project value-references)
 
 **Focus:** Implement Plan 022 P2 (crypto-agility hardening) and P4 (typed links +

@@ -276,3 +276,9 @@ class RegisterWebhookRequest(BaseModel):
     workflows: list[str] | None = None
     max_failures: int = Field(default=10, ge=1)
     sign_secret: str | None = None
+
+
+class VerifyEventSignatureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event: dict
+    public_key: str | None = None

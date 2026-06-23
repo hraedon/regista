@@ -38,6 +38,7 @@ from .models import (
     UnregisterActorRoleRequest,
     UpdateNotBeforeRequest,
     UpdateRecurrenceRuleRequest,
+    VerifyEventSignatureRequest,
     _serialize,
 )
 from .rate_limit import make_limiter
@@ -564,5 +565,28 @@ def register_routes(app, regista, tokens: TokenRegistry):
         require_admin(request)
         regista.resume_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
+
+    @router.get("/keys/public")
+    def export_public_keys(request: Request):
+        get_actor(request)
+        return _serialize(regista.export_public_keys())
+
+    @router.post("/events/verify-signature")
+    def verify_event_signature(req: VerifyEventSignatureRequest, request: Request):
+        get_actor(request)
+        from regista._types import Event as _Event
+
+        try:
+            evt = _Event.from_dict(req.event)
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid event data: {e}",
+            )
+        import base64
+
+        pub_key = base64.b64decode(req.public_key) if req.public_key else None
+        result = regista.verify_event_signature(evt, public_key=pub_key)
+        return {"valid": result}
 
     app.include_router(router)

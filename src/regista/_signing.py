@@ -426,3 +426,34 @@ def verify_event(
             return True
 
     return False
+
+
+def verify_event_with_public_key(event, public_key: bytes) -> bool:
+    from ._signing_scheme import get_scheme
+
+    try:
+        scheme = get_scheme(event.scheme_id)
+    except Exception:
+        return False
+    return verify_event(
+        event_id=event.event_id,
+        work_item_id=event.work_item_id,
+        actor_id=event.actor_id,
+        key_id=event.key_id,
+        event_seq=event.event_seq,
+        workflow_name=event.workflow_name,
+        workflow_version=event.workflow_version,
+        timestamp=event.timestamp,
+        transition=event.transition,
+        payload=event.payload,
+        signature=event.signature,
+        canonical_hash=event.payload_canonical_hash,
+        key=public_key,
+        stored_envelope=event.canonical_envelope,
+        on_behalf_of=event.on_behalf_of,
+        scheme=scheme,
+        prev_event_hash=event.prev_event_hash,
+        prev_global_event_hash=event.prev_global_event_hash,
+        entity_kind=event.entity_kind,
+        hash_alg=event.hash_alg,
+    )

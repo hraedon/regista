@@ -95,6 +95,7 @@ class Regista:
         prometheus_registry=None,
         auto_partition: bool = True,
         strict_roles: bool = False,
+        strict_asymmetric: bool = False,
     ) -> None:
         """Connect to an existing project.
 
@@ -110,6 +111,10 @@ class Regista:
             auto_partition: Deprecated. Partitioning was removed in migration
                 014; this parameter is kept for backwards compatibility and
                 has no effect.
+            strict_roles: Reject unregistered actors and ``prompt``-source roles.
+            strict_asymmetric: Require per-principal asymmetric signing keys.
+                Each actor must have a registered Ed25519 (or future PQC) key
+                bound to their ``principal_id``; HMAC fallback is rejected.
 
         Raises:
             RegistaError: If migrations are pending or workflow versions are
@@ -127,7 +132,7 @@ class Regista:
         try:
             self._mgr.open()
             self._mgr.ensure_schema()
-            self._keys = KeySet(hmac_key_path)
+            self._keys = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)
             self._metrics = Metrics(registry=prometheus_registry)
             self._project = project
             self._validators: dict[str, Callable] = {}
@@ -168,6 +173,7 @@ class Regista:
         prometheus_registry=None,
         auto_partition: bool = True,
         strict_roles: bool = False,
+        strict_asymmetric: bool = False,
     ) -> Regista:
         """Create a new project: schema, migrations, and return a connected handle.
 
@@ -207,6 +213,7 @@ class Regista:
             prometheus_registry=prometheus_registry,
             auto_partition=auto_partition,
             strict_roles=strict_roles,
+            strict_asymmetric=strict_asymmetric,
         )
 
     def _run_auto_partition(self) -> None:
@@ -567,6 +574,52 @@ class Regista:
         except Exception:
             return False
 
+    def export_public_keys(self) -> list[dict[str, object]]:
+        """Export public key material for external signature verification.
+
+        Returns asymmetric keys only (Ed25519 and future PQC schemes). Secret
+        material is never included. An auditor who receives this export and
+        the event log can verify signatures without the signing secret.
+
+        Returns:
+            List of dicts with ``key_id``, ``scheme``, ``public_key``
+            (base64), ``fingerprint``, ``principal_id``, ``status``,
+            ``revoked_at``.
+        """
+        self._require_open()
+        return self._keys.export_public_keys()
+
+    def verify_event_signature(
+        self, event: Event, *, public_key: bytes | None = None,
+    ) -> bool:
+        """Verify an event's cryptographic signature.
+
+        When ``public_key`` is provided, verification uses only that key
+        (no secret material needed — the independent-verification path).
+        When omitted, the key is resolved from the project's key set.
+
+        Args:
+            event: The event to verify.
+            public_key: Optional raw public key bytes for external
+                verification. If omitted, the project's key set is used.
+
+        Returns:
+            ``True`` if the signature is valid, ``False`` otherwise.
+        """
+        from ._signing import verify_event_with_public_key
+
+        if public_key is None:
+            self._require_open()
+            try:
+                key_entry = self._keys.get_key(event.key_id)
+            except RegistaError:
+                return False
+            if key_entry.public_key is not None:
+                public_key = key_entry.public_key
+            else:
+                public_key = key_entry.secret
+        return verify_event_with_public_key(event, public_key)
+
     def register_workflow(
         self,
         yaml_content: str,
@@ -730,6 +783,8 @@ class Regista:
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
         on_behalf_of: dict | None = None,
+        entity_kind: str = "work_item",
+        hash_alg: str = "sha-256",
     ) -> Event:
         """Append a free-form event to the work-item log.
 
@@ -737,7 +792,8 @@ class Regista:
         ``transition()`` for state changes.
 
         Args:
-            work_item_id: Target work item.
+            work_item_id: Target work item (or entity_id for non-work-item
+                entities when ``entity_kind`` is set).
             actor_id: Authenticated actor.
             actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
             actor_metadata: Optional JSONB metadata.
@@ -746,6 +802,8 @@ class Regista:
             payload: Optional JSONB payload.
             event_id: UUIDv4 idempotency key.
             expected_event_seq: Optimistic-concurrency check.
+            entity_kind: Entity kind (``"work_item"`` or ``"session"``).
+            hash_alg: Hash algorithm for signing (default ``"sha-256"``).
 
         Returns:
             The appended ``Event``.
@@ -766,6 +824,8 @@ class Regista:
             event_id=event_id,
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
+            entity_kind=entity_kind,
+            hash_alg=hash_alg,
         )
         self._try_create_witness_receipts(evt)
         return evt
