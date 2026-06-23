@@ -41,6 +41,8 @@ _(none)_
 | 297 | witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable | medium | accepted |
 | 298 | PostgresEventStore.append() omits prev_global_event_hash from INSERT | high | proposed |
 | 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | proposed |
+| 300 | Global chain hash (prev_global_event_hash) is never verified during replay | medium | proposed |
+| 301 | content_hash and event payload have no size limit — resource exhaustion risk | medium | proposed |
 
 ## Resolved
 
