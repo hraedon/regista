@@ -2,10 +2,11 @@
 
 **Spec Level:** 3
 **Desired Level:** 3
-**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions, 2026-05-18 — v5, 2026-05-23 — v6, 2026-05-24 — v7, 2026-05-24 — v8)
+**Date:** 2026-05-03 (revised 2026-05-05 — review pass v3, 2026-05-05 — Phase 3 additions, 2026-05-18 — v5, 2026-05-23 — v6, 2026-05-24 — v7, 2026-05-24 — v8, 2026-06-23 — v9)
 **Extensions active:** None
 
 **Revision history:**
+- 2026-06-23 — v9: Plan 022 (entity generalization + crypto-agility). Envelope v4 adds `entity_kind`, `entity_id`, `prev_global_event_hash`, `hash_alg`. Global hash chain (BC-233/300): `prev_global_event_hash` links every event to its global predecessor; replay verifies it and the chain head. Per-principal Ed25519 keys (Plan 022 P3): `strict_asymmetric` mode, `export_public_keys()`, `verify_event_with_public_key()`. Crypto-agility: `SigningScheme.is_asymmetric` flag, dynamic asymmetric-scheme derivation. Witness asymmetric co-signing (BC-297): witnesses may register Ed25519 public keys; returned signatures verified at delivery. JSONB size limit (BC-301): `MAX_JSONB_BYTES = 1MB` enforced in `Jsonb` wrapper. Cross-project value-references (FR-22b): `create_link`/`remove_link` accept `target_project`. Dead code removed from `_signing.py`.
 - 2026-05-18 — v5: RFC-001 (revert migration 010 partitioning; events table is flat with global `UNIQUE(event_id)`). BC-194 (heartbeat coalescing: `claim_heartbeat` events suppressed within `max(60s, ttl/2)` threshold). `ensure_event_partitions` is now a no-op returning `[]`. Partition gauges (`events_default_rows`, `events_partition_horizon_days`) removed. Migrations renumbered 010–013 (no production data). `heartbeat_claim` gains optional `coalesce_threshold` parameter. Plan 010: `on_behalf_of` delegation field added to signing envelope; integrity-protected but self-attested.
 - 2026-05-23 — v6: Signing envelope updated to v2 (BC-214). Previously server-stamped fields (`timestamp`, `event_seq`, `key_id`, `workflow_name`, `workflow_version`) are now included in the canonical signing envelope, signed by the library before the event is persisted. This removes an ambiguity between InMemory and Postgres backends (BC-220) and prepares for asymmetric verification (Plan 011). Backward compat: replay verifies v2 first, then falls back to the old v1 envelope for pre-v6 events. KeyEntry gains `alg`, `public_key`, `role`, `revoked_at`, and `principal_id` fields (BC-216, BC-217, BC-218).
 - 2026-05-24 — v7: Plan 011 (pluggable signing, Ed25519 + HMAC-SHA256) implemented. `scheme_id` column added to `events` (migration 015). `SigningScheme` protocol, `HMACSHA256Scheme`, `Ed25519Scheme`, registry in `_signing_scheme.py`. KeyEntry gains `scheme` field (default `hmac-sha256`). Replay resolves scheme per event. Plan 012 (RFC 3161 timestamping) implemented with Merkle tree batching, `tsp_batches` table (migration 016), `TimestampOps` facade, `MaintenanceThread._maybe_timestamp_events`. Replay gains `verify_timestamps` parameter to cross-reference events against confirmed TSP batches. New error codes: `SIGNING_SCHEME_NOT_FOUND`, `TSA_NOT_CONFIGURED`, `TSA_SUBMISSION_FAILED`, `TSA_VERIFICATION_FAILED`.
@@ -248,6 +249,8 @@
 - `hook_dead_letter` — terminally-failed async hooks (quarantine, replayable via FR-14)
 - `actor_roles` — per-actor role mappings for FR-24 enforcement; opt-in, backward compatible
 - `workflow_registry` — registered workflow definitions, append-only (versioned, immutable once referenced)
+- `event_chain_head` — singleton row tracking the global hash chain head (BC-233/300)
+- `witness_registrations` / `witness_receipts` — external witness co-signing with optional Ed25519 verification (BC-297)
 - Migration metadata (regista-managed, e.g., Alembic-equivalent)
 
 Retention: indefinite for v1. Operator-driven archival when volume warrants. Re-partitioning is a known recipe (declarative `PARTITION BY RANGE (timestamp)`) if a single project exceeds ~10M events/month.
@@ -637,6 +640,32 @@ This makes `claim_expires_at` replayable within a bounded tolerance: replay upda
 
 Between coalesced heartbeats, the live `claim_expires_at` may be ahead of the replayed value by up to `coalesce_threshold`. This is expected and not reported as drift. A NULL `claim_expires_at` with a non-NULL `claimed_by` is treated as non-expired by `resolve_heartbeat`; this is by design.
 
+### 17.11 Global event hash chain
+
+Every event carries a `prev_global_event_hash` field: `SHA-256(prev.canonical_envelope || prev.signature)` of the **globally preceding** event (across all work items, in append order). This forms a single tamper-evident line across the entire project, independent of per-work-item chains.
+
+- The global chain head is serialized via a singleton `event_chain_head` row (`SELECT ... FOR UPDATE`). Cross-work-item appends queue on this lock, ensuring append order == `global_seq` order.
+- `global_seq` is `BIGSERIAL CACHE 100`; gaps are expected and harmless — the chain links by hash, not numeric adjacency.
+- Replay verifies the global chain (BC-300): events are sorted by `global_seq`, and each event's `prev_global_event_hash` is recomputed from its predecessor. The chain head is also compared to the stored `head_hash` to detect tail-event deletion.
+- `global_seq` is assigned **post-signing** and is NOT in the signed envelope. `prev_global_event_hash` IS in the signed envelope (v3/v4). External verification must pass `prev_global_event_hash` but NOT `global_seq`.
+
+### 17.12 Crypto-agility and per-principal keys
+
+The `SigningScheme` protocol (`_signing_scheme.py`) is the single extension point for signing algorithms. Schemes register via `register_scheme()` with a `scheme_id` and `is_asymmetric: bool` flag. The asymmetric scheme set is derived dynamically from the registry (not hardcoded), so new schemes (e.g., PQC) are included automatically.
+
+- **`strict_asymmetric` mode (Plan 022 P3):** When enabled on `KeySet`, every actor must have a registered per-principal asymmetric key (Ed25519). HMAC fallback is rejected. Keys are bound to the signing actor via `principal_id`.
+- **`export_public_keys()`:** Returns public key material (base64) for all asymmetric keys. An auditor with this export and the event log can verify signatures without the signing secret.
+- **`verify_event_with_public_key(event, public_key)`:** Standalone verification using only a public key — no KeySet or database required. Passes `prev_event_hash` and `prev_global_event_hash` (which ARE in the signed envelope) but NOT `global_seq` (which is not).
+- **`hash_alg` field:** Events declare their hash algorithm (sha-256, sha-384, sha-512, sha3-*). The chain-hash computation always uses sha-256 (decoupled from the signing hash).
+
+### 17.13 JSONB size limits
+
+All JSONB content (payloads, actor_metadata, custom_fields) passes through the `Jsonb` frozen dataclass wrapper, which enforces a `MAX_JSONB_BYTES = 1_048_576` (1 MB) limit at construction (BC-301). Values exceeding this are rejected with `INVALID_ARGUMENT`. The `actor_metadata` field has a separate stricter limit of 64 KB (`MAX_ACTOR_METADATA_BYTES`).
+
+### 17.14 Witness asymmetric co-signing
+
+Witnesses may register an Ed25519 public key (`public_key`, `key_scheme='ed25519'`) at registration time (BC-297). When a witness returns a `witness_signature` during delivery, it is verified against the registered public key using `Ed25519Scheme().verify()`. The signature covers the event's `canonical_envelope` bytes. If verification fails, the receipt is returned to `pending` status (for retry) and the witness's `consecutive_failures` is incremented. Witnesses without a registered public key (the default `hmac-sha256` path) are accepted unverified, preserving backward compatibility.
+
 ---
 
 ## 18. Projection Invariants
@@ -751,6 +780,15 @@ Stable, language-agnostic shapes:
 - Domain types: `WorkItem`, `Event`, `Claim`, `WorkflowDefinition`, `WorkflowVersion`, `Link`, `ActorIdentity` — value objects with documented JSON serialization.
 - Operation results: `AppendResult`, `ClaimResult`, `QueryPage` (with cursor), `ReplayReport`, `RegistrationResult`.
 - Errors: enumerated, named, machine-distinguishable (`workflow_not_registered`, `claim_contested`, `claim_lost`, `concurrent_modification`, `invalid_transition`, `role_not_permitted`, `library_is_sole_signer`, `idempotency_collision_with_different_payload`, `signing_scheme_not_found`, `tsa_not_configured`, `tsa_submission_failed`, `tsa_verification_failed`, etc.). Error codes are part of the API contract.
+
+### 19.6 Plan 022 additions to the API surface
+
+- `append_event(..., entity_kind="work_item", hash_alg="sha-256")` — entity generalization + hash algorithm per event
+- `export_public_keys()` — returns public key material for independent verification (Plan 022 P3)
+- `verify_event_signature(event_id=None, public_key=None)` — convenience method for signature verification
+- `register_witness(..., public_key=None, key_scheme="hmac-sha256")` — witness asymmetric co-signing (BC-297)
+- `Regista(dsn, project, hmac_key_path, strict_asymmetric=True)` — reject non-asymmetric signing keys (Plan 022 P3)
+- `verify_event_with_public_key(event, public_key)` — standalone verification utility (no database required)
 
 ---
 

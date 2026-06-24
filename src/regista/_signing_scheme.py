@@ -31,6 +31,7 @@ def resolve_hash_function(hash_alg: str) -> Callable[[bytes], hashlib._Hash]:
 @runtime_checkable
 class SigningScheme(Protocol):
     scheme_id: str
+    is_asymmetric: bool
 
     def sign(
         self, envelope: bytes, key_material: bytes, hash_alg: str = "sha-256"
@@ -86,9 +87,18 @@ def available_schemes() -> list[str]:
     return sorted(_registry.keys())
 
 
+def asymmetric_scheme_ids() -> frozenset[str]:
+    """Derive the set of asymmetric scheme ids from the live registry."""
+    return frozenset(
+        sid for sid, cls in _registry.items()
+        if getattr(cls, "is_asymmetric", False)
+    )
+
+
 @register_scheme
 class HMACSHA256Scheme:
     scheme_id: str = "hmac-sha256"
+    is_asymmetric: bool = False
 
     def sign(
         self, envelope: bytes, key_material: bytes, hash_alg: str = "sha-256"
@@ -116,6 +126,7 @@ class HMACSHA256Scheme:
 @register_scheme
 class Ed25519Scheme:
     scheme_id: str = "ed25519"
+    is_asymmetric: bool = True
 
     def sign(
         self, envelope: bytes, key_material: bytes, hash_alg: str = "sha-256"
@@ -152,7 +163,17 @@ class Ed25519Scheme:
                 ErrorCode.KEY_LOAD_ERROR,
                 "Scheme 'ed25519' requires PyNaCl: pip install regista[ed25519]",
             ) from e
-        verify_key = nacl.signing.VerifyKey(key_material)
+        try:
+            verify_key = nacl.signing.VerifyKey(key_material)
+        except (ValueError, TypeError):
+            return False
+        except Exception:
+            import structlog
+            structlog.get_logger().error(
+                "signing.ed25519_verify_unexpected_error",
+                exc_info=True,
+            )
+            return False
         try:
             verify_key.verify(envelope, signature)
         except nacl.exceptions.BadSignatureError:

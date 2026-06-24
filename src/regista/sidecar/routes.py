@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import uuid
 from datetime import datetime
@@ -146,6 +147,7 @@ def register_routes(app, regista, tokens: TokenRegistry):
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             expected_event_seq=body.expected_event_seq,
             on_behalf_of=body.on_behalf_of,
+            entity_kind=body.entity_kind,
         )
         return _serialize(result)
 
@@ -423,12 +425,18 @@ def register_routes(app, regista, tokens: TokenRegistry):
     @router.post("/witnesses")
     def register_witness(body: RegisterWitnessRequest, request: Request):
         require_admin(request)
+        try:
+            pub_key = base64.b64decode(body.public_key) if body.public_key else None
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64 public_key")
         witness_id = regista.register_witness(
             url=body.url,
             headers=body.headers,
             event_filter=body.event_filter,
             max_failures=body.max_failures,
             max_retries=body.max_retries,
+            public_key=pub_key,
+            key_scheme=body.key_scheme,
         )
         return {"witness_id": str(witness_id)}
 

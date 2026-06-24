@@ -4,6 +4,182 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-24 — Session 70: Adversarial review + post-Session-69 hardening
+
+**Focus:** Independent adversarial review of Session 69's integrity and witness
+work, implement findings, and re-review the fixes.
+
+**Delivered:**
+
+### 1. Witness delivery fail-closed + retry lifecycle (HIGH)
+
+- `_witness.py`: ed25519 witnesses now require a valid `witness_signature`; a
+  200 response with missing/invalid signature is treated as failure.
+- Extracted `_apply_receipt_failure()` helper so HTTP-error and
+  signature-verification-failure paths share the same max_retries/max_failures
+  handling, including receipt pause and witness auto-pause.
+- Added `witness_scheme` to `list_witness_receipts()` output.
+- Added regression tests for missing signature and retry/pause lifecycle.
+
+### 2. Malformed Ed25519 public key handling (HIGH)
+
+- `Ed25519Scheme.verify()` now catches `ValueError`/exceptions from
+  `nacl.signing.VerifyKey()` and returns `False` instead of crashing.
+- `register_witness()` rejects ed25519 `public_key` not exactly 32 bytes.
+- InMemory parity: same length check added to `InMemoryRegista.register_witness`.
+- Added tests for 16-byte key verify and 31-byte key registration rejection.
+
+### 3. `verify_key_status` timestamp comparison (MEDIUM)
+
+- Replaced brittle string comparison with parsed datetime comparison.
+- Catches `ValueError` and `TypeError` (naive/aware mismatches) and falls back
+  to safe "revoked" behavior.
+
+### 4. Code health fixes (LOW)
+
+- `InMemoryEventStore.read`: merged duplicate `start/end` condition.
+- `src/regista/_events.py`: forwarded `entity_kind`/`hash_alg` to `sign_event`
+  in the old append path for consistency.
+- `src/regista/_replay.py`: removed trailing whitespace in dict comprehension.
+- `migrations/032_witness_asymmetric_keys.sql`: added CHECK constraint requiring
+  `public_key IS NOT NULL` when `key_scheme = 'ed25519'`.
+
+### 5. Breadcrumbs and documentation
+
+- Filed and resolved: BC-303 (ed25519 missing signature accepted), BC-304
+  (verify_key_status string timestamp compare), BC-305 (malformed ed25519 public
+  key delivery crash).
+- Filed open: BC-306 (sidecar append_event accepts arbitrary entity_kind without
+  validation; accepted design tension).
+- Updated `breadcrumbs/README.md` index.
+- Updated README.md badge/status and AGENTS.md status to 1183 tests / 306
+  breadcrumbs tracked / 300 resolved / 6 open.
+
+### Test/lint status
+
+- Full suite: 1183 passed, 10 deselected.
+- Ruff: all checks passed.
+
+---
+
+## 2026-06-23 — Session 69: Holistic review + integrity fixes + code health
+
+**Focus:** Action all items identified in a holistic project review — integrity
+gaps, code health, documentation drift, and feature completion.
+
+**Delivered:**
+
+### 1. BC-302: Dirty working tree cleanup + entity_kind threading
+
+The working tree had partial Plan 022 P5 (entity_kind) changes that broke 35
+tests (`TypeError: EventOps.append() got an unexpected keyword argument
+'entity_kind'`). HEAD `f065665` was itself broken — the worklog's "1164 passed"
+was only true with uncommitted local fixes. User's commit `324db65` fixed the
+lower layers (`_event_store.py`, `_events.py`, `_signing.py`) but not the
+upper layers.
+
+- Preserved incomplete P5 WIP on branch `wip/plan-022-p5-entity-kind`
+- Completed entity_kind threading across all upper layers: `EventOps.append`
+  (`_ops.py`), `_events_api.append_event`, `_in_memory_events.in_memory_append_event`,
+  sidecar `models.py`/`routes.py`
+- Threaded `hash_alg` through the shared `_event_store.append_event` (replacing
+  hardcoded sha-256)
+- Reverted `global_seq=event.global_seq` in `verify_event_with_public_key`
+  (324db65 reintroduced the silent-verification bug that Session 68 had fixed —
+  `global_seq` is NOT in the signed envelope)
+
+### 2. BC-298: prev_global_event_hash persistence (resolved by 324db65 + field fix)
+
+- Verified 324db65 added `prev_global_event_hash` to `PostgresEventStore.append()`
+  INSERT (public API path)
+- Fixed `PostgresEventStore._EVENT_FIELDS` (used by `find_by_event_id`) — was
+  missing `prev_global_event_hash` (same pattern as BC-236)
+- Regression test: `test_bc298_public_append_event_persists_prev_global_event_hash`
+
+### 3. BC-300: Global hash chain replay verification
+
+- Added `_verify_global_hash_chain()` to both `_replay.py` and
+  `_in_memory_replay.py` — sorts all events by `global_seq`, recomputes
+  `prev_global_event_hash = SHA-256(prev_envelope + prev_signature)`, compares
+- Added chain-head comparison: last surviving event's hash vs stored
+  `event_chain_head.head_hash` — detects tail-event deletion
+- Added `prev_global_event_hash` to `_EVENT_FIELDS` SELECT in `_replay.py`
+- **Adversarial review (kimi):** Found CRITICAL bug — InMemory events never
+  carry `global_seq` (frozen dataclass, never populated by
+  `InMemoryEventStore.append`). Fixed with `dataclasses.replace`. Also found
+  the `_EVENT_FIELDS` omission (High). All findings addressed.
+- 3 new tests: Postgres tamper detection, InMemory clean chain, InMemory tamper
+
+### 4. BC-301: JSONB size limit
+
+- Added `MAX_JSONB_BYTES = 1_048_576` (1 MB) to `_contract.py`
+- Enforced in `Jsonb.__post_init__` — the single chokepoint for all payloads,
+  actor_metadata, and custom_fields
+- 3 new tests in `test_contract.py`
+- **Adversarial review (nemotron):** No real bugs found. The "HIGH" finding
+  (default `is_asymmetric=False` for unregistered schemes) was determined to
+  be fail-closed (scheme filtered OUT in strict mode, not allowed in).
+
+### 5. Dead code removal (`_signing.py`)
+
+- Removed `compute_hmac`, `compute_canonical_hash`, `verify_hmac` (hardcoded
+  SHA-256, bypassed SigningScheme abstraction)
+- Updated `test_bc214_216_217_218.py` to use `HMACSHA256Scheme().sign()` instead
+- Removed unused `hashlib`/`hmac` imports
+
+### 6. _ASYMMETRIC_SCHEMES dynamic derivation
+
+- Replaced hardcoded `frozenset({"ed25519"})` in `_keys.py` with
+  `asymmetric_scheme_ids()` derived from the live scheme registry
+- Added `is_asymmetric: bool` to `SigningScheme` protocol and both concrete
+  schemes (HMAC=False, Ed25519=True)
+- New PQC schemes registered via `register_scheme()` are automatically included
+- 2 new tests in `test_contract.py`
+
+### 7. BC-297: Witness asymmetric (Ed25519) co-signing
+
+- Migration 032: `public_key BYTEA`, `key_scheme TEXT` on
+  `witness_registrations`; `witness_scheme TEXT` on `witness_receipts`
+- `register_witness()` accepts `public_key` + `key_scheme` (validated:
+  ed25519 requires public_key)
+- Delivery verifies returned `witness_signature` against the witness's
+  Ed25519 public key via `Ed25519Scheme().verify()`. Invalid signatures →
+  receipt back to pending (retry), consecutive_failures incremented
+- Full API surface: `_witness.py`, `_ops.py`, `__init__.py`, `_in_memory.py`,
+  sidecar `models.py`/`routes.py`
+- **Adversarial review (kimi):** Found InMemory facade parity gap
+  (`_InMemoryWitnessOps.register` dropped new params) and sidecar base64
+  error handling. Both fixed.
+- 6 new tests: registration, validation, valid-sig delivery (mocked HTTP),
+  invalid-sig delivery, InMemory parity
+
+### 8. BC-299: Spec update to v9
+
+- Added §17.11 (global event hash chain), §17.12 (crypto-agility + per-principal
+  keys), §17.13 (JSONB size limits), §17.14 (witness asymmetric co-signing)
+- Added §19.6 (Plan 022 API additions)
+- Updated §6 (persisted state: event_chain_head, witness tables)
+- Updated revision history with v9 entry
+
+### 9. Rename residuals: verified complete
+
+- Zero "Substrate"/"SUBSTRATE" references in `src/` or `tests/`
+
+### 10. README + AGENTS.md
+
+- Test count updated: 1079 → 1179 (README badge + prose + AGENTS.md)
+- Breadcrumb counts updated
+- AGENTS.md status updated to "Plans 002-022 implemented"
+
+### Breadcrumbs resolved
+
+BC-297, BC-298, BC-299, BC-300, BC-301, BC-302 — all moved to `resolved/`.
+5 breadcrumbs remain open (all accepted design tensions).
+
+### Test results: 1179 passed, 10 deselected, lint clean.
+
+---
+
 ## 2026-06-23 — Session 68: Plan 022 Phase 3 (per-principal Ed25519 key adoption)
 
 **Focus:** Implement P3 of Plan 022 — per-principal asymmetric key adoption.

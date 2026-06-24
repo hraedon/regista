@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 from datetime import datetime
 from uuid import UUID
 
@@ -54,20 +52,6 @@ def build_signing_envelope_v2(
         "payload": payload,
     }
     return canonicalize(envelope)
-
-
-def compute_hmac(envelope_bytes: bytes, key: bytes) -> bytes:
-    return hmac.new(key, envelope_bytes, hashlib.sha256).digest()
-
-
-def compute_canonical_hash(envelope_bytes: bytes) -> bytes:
-    return hashlib.sha256(envelope_bytes).digest()
-
-
-def verify_hmac(envelope_bytes: bytes, signature: bytes, key: bytes) -> bool:
-    return hmac.compare_digest(
-        hmac.new(key, envelope_bytes, hashlib.sha256).digest(), signature
-    )
 
 
 def build_signing_envelope_v3(
@@ -453,7 +437,6 @@ def verify_event_with_public_key(event, public_key: bytes) -> bool:
         on_behalf_of=event.on_behalf_of,
         scheme=scheme,
         prev_event_hash=event.prev_event_hash,
-        global_seq=event.global_seq,
         prev_global_event_hash=event.prev_global_event_hash,
         entity_kind=event.entity_kind,
         hash_alg=event.hash_alg,

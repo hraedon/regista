@@ -44,6 +44,8 @@ def append_event(
     expected_event_seq: int | None = None,
     on_behalf_of: dict | None = None,
     key_id: str | None = None,
+    entity_kind: str = "work_item",
+    hash_alg: str = "sha-256",
 ) -> Event:
     timer = OpTimer(project, "append_event")
     try:
@@ -57,30 +59,37 @@ def append_event(
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
         with mgr.transaction() as conn:
-            wi_row = conn.execute(
-                "SELECT workflow_name, workflow_version FROM work_items_current "
-                "WHERE work_item_id = %s",
-                [work_item_id],
-            ).fetchone()
-            if wi_row is None:
-                raise RegistaError(
-                    ErrorCode.WORK_ITEM_NOT_FOUND,
-                    f"Work item {work_item_id} not found",
-                )
+            if entity_kind == "work_item":
+                wi_row = conn.execute(
+                    "SELECT workflow_name, workflow_version FROM work_items_current "
+                    "WHERE work_item_id = %s",
+                    [work_item_id],
+                ).fetchone()
+                if wi_row is None:
+                    raise RegistaError(
+                        ErrorCode.WORK_ITEM_NOT_FOUND,
+                        f"Work item {work_item_id} not found",
+                    )
+                wf_name = wi_row["workflow_name"]
+                wf_version = wi_row["workflow_version"]
+            else:
+                wf_name = ""
+                wf_version = 0
 
             if transition is not None:
                 _check_reserved_transition(transition)
-                wf_data = conn.execute(
-                    "SELECT definition FROM workflow_registry "
-                    "WHERE workflow_name = %s AND version = %s",
-                    [wi_row["workflow_name"], wi_row["workflow_version"]],
-                ).fetchone()
-                if wf_data is not None:
-                    _check_append_blocked(
-                        wf_data["definition"].get("transitions", []),
-                        transition,
-                        wi_row["workflow_name"],
-                    )
+                if entity_kind == "work_item":
+                    wf_data = conn.execute(
+                        "SELECT definition FROM workflow_registry "
+                        "WHERE workflow_name = %s AND version = %s",
+                        [wf_name, wf_version],
+                    ).fetchone()
+                    if wf_data is not None:
+                        _check_append_blocked(
+                            wf_data["definition"].get("transitions", []),
+                            transition,
+                            wf_name,
+                        )
 
             store = _PostgresEventStore(conn, keys)
             evt = _store_append_event(
@@ -89,8 +98,8 @@ def append_event(
                 actor_id=actor_id,
                 actor_kind=actor_kind,
                 actor_metadata=_Jsonb(actor_metadata) if actor_metadata is not None else None,
-                workflow_name=wi_row["workflow_name"],
-                workflow_version=wi_row["workflow_version"],
+                workflow_name=wf_name,
+                workflow_version=wf_version,
                 transition=transition,
                 payload=_Jsonb(payload) if payload is not None else None,
                 event_id=event_id,
@@ -98,6 +107,8 @@ def append_event(
                 key_set=keys,
                 on_behalf_of=on_behalf_of,
                 _key_id=key_id,
+                entity_kind=entity_kind,
+                hash_alg=hash_alg,
             )
 
         metrics.inc("events_appended", project)

@@ -885,6 +885,8 @@ class InMemoryRegista:
         *,
         mode: str = "witness",
         sign_secret: bytes | None = None,
+        public_key: bytes | None = None,
+        key_scheme: str = "hmac-sha256",
     ) -> uuid.UUID:
         from ._witness import _validate_event_filter, _validate_url
 
@@ -905,6 +907,23 @@ class InMemoryRegista:
                 ErrorCode.INVALID_ARGUMENT,
                 f"max_retries must be >= 1, got {max_retries}",
             )
+        if key_scheme not in ("hmac-sha256", "ed25519"):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"key_scheme must be 'hmac-sha256' or 'ed25519', got {key_scheme!r}",
+            )
+        if key_scheme == "ed25519":
+            if public_key is None:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "public_key is required when key_scheme is 'ed25519'",
+                )
+            if len(public_key) != 32:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "ed25519 public_key must be exactly 32 bytes, "
+                    f"got {len(public_key)}",
+                )
         witness_id = uuid.uuid4()
         self._witnesses[witness_id] = {
             "witness_id": witness_id,
@@ -917,6 +936,8 @@ class InMemoryRegista:
             "max_retries": max_retries,
             "mode": mode,
             "sign_secret": sign_secret,
+            "public_key": public_key,
+            "key_scheme": key_scheme,
             "last_success_at": None,
             "last_failure_at": None,
             "created_at": datetime.now(UTC),
@@ -1045,11 +1066,14 @@ class _InMemoryWitnessOps:
         *,
         mode: str = "witness",
         sign_secret: bytes | None = None,
+        public_key: bytes | None = None,
+        key_scheme: str = "hmac-sha256",
     ) -> uuid.UUID:
         return self._sub.register_witness(
             url, headers=headers, event_filter=event_filter,
             max_failures=max_failures, max_retries=max_retries,
             mode=mode, sign_secret=sign_secret,
+            public_key=public_key, key_scheme=key_scheme,
         )
 
     def unregister(self, witness_id: uuid.UUID) -> None:

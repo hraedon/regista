@@ -1391,6 +1391,9 @@ class Regista:
         event_filter: dict | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
+        *,
+        public_key: bytes | None = None,
+        key_scheme: str = "hmac-sha256",
     ) -> uuid.UUID:
         """Register an external witness. Returns witness_id.
 
@@ -1400,6 +1403,11 @@ class Regista:
             event_filter: Optional filter constraining which events trigger a receipt.
             max_failures: Consecutive failures before auto-pause (default 10).
             max_retries: Per-receipt retry limit before dead-lettering (default 3).
+            public_key: Optional asymmetric public key (Ed25519, raw 32 bytes).
+                When provided with ``key_scheme='ed25519'``, returned witness
+                signatures are verified against this key (BC-297).
+            key_scheme: Signing scheme for witness signature verification
+                (``'hmac-sha256'`` default, or ``'ed25519'``).
 
         Returns:
             UUID of the registered witness.
@@ -1407,6 +1415,7 @@ class Regista:
         return self.witnesses.register(
             url, headers=headers, event_filter=event_filter,
             max_failures=max_failures, max_retries=max_retries,
+            public_key=public_key, key_scheme=key_scheme,
         )
 
     def unregister_witness(self, witness_id: uuid.UUID) -> None:

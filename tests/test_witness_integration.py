@@ -183,3 +183,206 @@ class TestWitnessReceipts:
         regista.unregister_witness(wid)
         receipts = regista.list_witness_receipts()
         assert len(receipts) == 0
+
+
+class TestBC297AsymmetricWitnessKeys:
+    def test_register_witness_with_ed25519_public_key(self, regista):
+        pubkey = b"\x01" * 32
+        regista.register_witness(
+            "https://example.com/witness",
+            public_key=pubkey,
+            key_scheme="ed25519",
+        )
+        witnesses = regista.list_witnesses()
+        assert witnesses[0]["key_scheme"] == "ed25519"
+
+    def test_ed25519_public_key_wrong_length_rejected(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_witness(
+                "https://example.com/witness",
+                key_scheme="ed25519",
+                public_key=b"\x01" * 31,
+            )
+        assert exc_info.value.code.value == "INVALID_ARGUMENT"
+
+    def test_ed25519_without_public_key_rejected(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_witness(
+                "https://example.com/witness",
+                key_scheme="ed25519",
+            )
+        assert exc_info.value.code.value == "INVALID_ARGUMENT"
+
+    def test_invalid_key_scheme_rejected(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_witness(
+                "https://example.com/witness",
+                key_scheme="rsa",
+                public_key=b"\x01" * 32,
+            )
+        assert exc_info.value.code.value == "INVALID_ARGUMENT"
+
+    def test_hmac_witness_without_public_key_accepted(self, regista):
+        wid = regista.register_witness(
+            "https://example.com/witness",
+            key_scheme="hmac-sha256",
+        )
+        assert isinstance(wid, uuid.UUID)
+
+    def test_delivery_verifies_valid_ed25519_signature(self, regista):
+        try:
+            import nacl.signing
+        except ImportError:
+            pytest.skip("PyNaCl not installed")
+
+        from unittest.mock import MagicMock, patch
+
+        sk = nacl.signing.SigningKey.generate()
+        pk = bytes(sk.verify_key)
+
+        regista.register_witness(
+            "http://localhost:19999/witness",
+            public_key=pk,
+            key_scheme="ed25519",
+        )
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "actor-1",
+            custom_fields={"title": "bc297"},
+        )
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        created_evt = events[-1]
+        canonical_env = bytes(created_evt.canonical_envelope)
+        witness_sig = sk.sign(canonical_env).signature
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = (
+            '{"witness_signature": "' + witness_sig.hex() + '"}'
+        ).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
+            count = regista.deliver_pending_witness_receipts()
+
+        assert count == 1
+        receipts = regista.list_witness_receipts()
+        confirmed = [r for r in receipts if r["status"] == "confirmed"]
+        assert len(confirmed) == 1
+
+    def test_delivery_rejects_missing_ed25519_signature(self, regista):
+        try:
+            import nacl.signing
+        except ImportError:
+            pytest.skip("PyNaCl not installed")
+
+        from unittest.mock import MagicMock, patch
+
+        sk = nacl.signing.SigningKey.generate()
+        pk = bytes(sk.verify_key)
+
+        regista.register_witness(
+            "http://localhost:19999/witness",
+            public_key=pk,
+            key_scheme="ed25519",
+        )
+        _wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "actor-1",
+            custom_fields={"title": "bc297-missing"},
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{}'
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
+            count = regista.deliver_pending_witness_receipts()
+
+        assert count == 0
+        receipts = regista.list_witness_receipts()
+        pending = [r for r in receipts if r["status"] == "pending"]
+        assert len(pending) == 1
+        assert pending[0]["error_message"] == "witness signature verification failed"
+
+    def test_delivery_rejects_invalid_ed25519_signature(self, regista):
+        try:
+            import nacl.signing
+        except ImportError:
+            pytest.skip("PyNaCl not installed")
+
+        from unittest.mock import MagicMock, patch
+
+        sk = nacl.signing.SigningKey.generate()
+        pk = bytes(sk.verify_key)
+
+        regista.register_witness(
+            "http://localhost:19999/witness",
+            public_key=pk,
+            key_scheme="ed25519",
+        )
+        _wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "actor-1",
+            custom_fields={"title": "bc297-bad"},
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = (
+            '{"witness_signature": "' + (b"\xff" * 64).hex() + '"}'
+        ).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
+            count = regista.deliver_pending_witness_receipts()
+
+        assert count == 0
+        receipts = regista.list_witness_receipts()
+        pending = [r for r in receipts if r["status"] == "pending"]
+        assert len(pending) == 1
+        assert pending[0]["error_message"] == "witness signature verification failed"
+
+    def test_delivery_pauses_witness_and_receipt_after_invalid_ed25519_retries(self, regista):
+        try:
+            import nacl.signing
+        except ImportError:
+            pytest.skip("PyNaCl not installed")
+
+        from unittest.mock import MagicMock, patch
+
+        sk = nacl.signing.SigningKey.generate()
+        pk = bytes(sk.verify_key)
+
+        regista.register_witness(
+            "http://localhost:19999/witness",
+            public_key=pk,
+            key_scheme="ed25519",
+            max_failures=2,
+            max_retries=2,
+        )
+        _wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "actor-1",
+            custom_fields={"title": "bc297-retries"},
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = (
+            '{"witness_signature": "' + (b"\xff" * 64).hex() + '"}'
+        ).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
+            regista.deliver_pending_witness_receipts()
+            regista.deliver_pending_witness_receipts()
+
+        receipts = regista.list_witness_receipts()
+        assert len(receipts) == 1
+        assert receipts[0]["status"] == "paused"
+        assert receipts[0]["retry_count"] == 2
+        assert receipts[0]["witness_scheme"] == "ed25519"
+        witnesses = regista.list_witnesses()
+        assert witnesses[0]["status"] == "paused"

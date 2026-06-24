@@ -642,3 +642,64 @@ class TestValidateWorkItemExists:
             validate_work_item_exists(None, wid)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
         assert str(wid) in exc_info.value.message
+
+
+class TestBC301JsonbSizeLimit:
+    def test_normal_payload_accepted(self):
+        from regista._contract import Jsonb
+
+        Jsonb({"key": "value" * 100})
+
+    def test_oversized_payload_rejected(self):
+        from regista._contract import MAX_JSONB_BYTES, Jsonb
+
+        big = {"data": "x" * (MAX_JSONB_BYTES + 100)}
+        with pytest.raises(RegistaError) as exc_info:
+            Jsonb(big)
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+        assert exc_info.value.detail is not None
+        assert exc_info.value.detail["max"] == MAX_JSONB_BYTES
+
+    def test_none_value_accepted(self):
+        from regista._contract import Jsonb
+
+        Jsonb(None)
+
+
+class TestAsymmetricSchemeDerivation:
+    def test_ed25519_is_asymmetric_hmac_is_not(self):
+        from regista._signing_scheme import (
+            Ed25519Scheme,
+            HMACSHA256Scheme,
+            asymmetric_scheme_ids,
+        )
+
+        ids = asymmetric_scheme_ids()
+        assert "ed25519" in ids
+        assert "hmac-sha256" not in ids
+        assert Ed25519Scheme.is_asymmetric is True
+        assert HMACSHA256Scheme.is_asymmetric is False
+
+    def test_dynamically_registered_asymmetric_scheme_included(self):
+        from regista._signing_scheme import (
+            asymmetric_scheme_ids,
+            register_scheme,
+            unregister_scheme,
+        )
+
+        class MockPQCScheme:
+            scheme_id = "mock-pqc"
+            is_asymmetric = True
+
+            def sign(self, envelope, key_material, hash_alg="sha-256"):
+                return (b"\x00", b"\x00")
+
+            def verify(self, envelope, signature, envelope_hash, key_material, hash_alg="sha-256"):
+                return False
+
+        register_scheme(MockPQCScheme)
+        try:
+            assert "mock-pqc" in asymmetric_scheme_ids()
+        finally:
+            unregister_scheme("mock-pqc")
+        assert "mock-pqc" not in asymmetric_scheme_ids()

@@ -288,6 +288,8 @@ class EventOps:
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
         on_behalf_of: dict | None = None,
+        entity_kind: str = "work_item",
+        hash_alg: str = "sha-256",
     ) -> Event:
         from ._events_api import append_event as _impl
 
@@ -301,6 +303,8 @@ class EventOps:
             event_id=event_id,
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
+            entity_kind=entity_kind,
+            hash_alg=hash_alg,
         )
 
     def read(
@@ -753,10 +757,13 @@ class WitnessOps:
         *,
         mode: str = "witness",
         sign_secret: bytes | None = None,
+        public_key: bytes | None = None,
+        key_scheme: str = "hmac-sha256",
     ) -> uuid.UUID:
         return _register_witness(
             self._mgr, self._project, url, headers, event_filter,
             max_failures, max_retries, mode=mode, sign_secret=sign_secret,
+            public_key=public_key, key_scheme=key_scheme,
         )
 
     def unregister(self, witness_id: uuid.UUID) -> None:

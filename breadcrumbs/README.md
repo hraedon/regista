@@ -38,17 +38,21 @@ _(none)_
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
-| 297 | witness co-signing uses HMAC — no asymmetric witness keys, so witnessing is not independently verifiable | medium | accepted |
-| 298 | PostgresEventStore.append() omits prev_global_event_hash from INSERT | high | proposed |
-| 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | proposed |
-| 300 | Global chain hash (prev_global_event_hash) is never verified during replay | medium | proposed |
-| 301 | content_hash and event payload have no size limit — resource exhaustion risk | medium | proposed |
-| 302 | Pre-existing uncommitted entity_kind changes in working tree cause test failures | medium | proposed |
+| 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | accepted |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 297 | witness co-signing uses HMAC — no asymmetric witness keys | medium | Implemented — witnesses may register Ed25519 public keys (migration 032); returned signatures verified against public key at delivery time (BC-297). InMemory parity + sidecar base64 error handling fixed per adversarial review. |
+| 298 | PostgresEventStore.append() omits prev_global_event_hash from INSERT | high | Fixed — 324db65 added prev_global_event_hash to PostgresEventStore.append INSERT; PostgresEventStore._EVENT_FIELDS (find_by_event_id path) also fixed; regression test added. |
+| 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | Fixed — spec updated to v9 with §17.11 (global chain), §17.12 (crypto-agility), §17.13 (JSONB limits), §17.14 (witness asymmetric), §19.6 (API additions), §6 (persisted state), revision history. |
+| 300 | Global chain hash (prev_global_event_hash) is never verified during replay | medium | Fixed — replay now verifies the global hash chain (both Postgres and InMemory) by sorting events by global_seq and recomputing prev_global_event_hash. Chain head compared to stored head_hash for tail-deletion detection. InMemory global_seq population fixed per adversarial review. |
+| 301 | content_hash and event payload have no size limit — resource exhaustion risk | medium | Fixed — MAX_JSONB_BYTES (1MB) enforced in Jsonb.__post_init__, covering all payloads, actor_metadata, and custom_fields. |
+| 302 | Pre-existing uncommitted entity_kind changes in working tree cause test failures | medium | Fixed — WIP preserved on branch wip/plan-022-p5-entity-kind; entity_kind threading completed across all layers (EventOps, _events_api, _in_memory_events, sidecar); global_seq regression from 324db65 reverted. |
+| 303 | Witness ed25519 delivery accepted 200 OK response without witness_signature as confirmed | high | Fixed — ed25519 witnesses now require a valid witness_signature; missing/invalid signature is treated as a delivery failure with retry/pause logic. |
+| 304 | KeySet.verify_key_status compared revoked_at and event_timestamp as plain strings | medium | Fixed — timestamps are parsed to datetime before comparison; parse errors fall back to safe "revoked" default. |
+| 305 | Malformed ed25519 witness public key could crash delivery or bypass verification | high | Fixed — verify() catches VerifyKey errors; registration rejects non-32-byte keys; migration adds NOT NULL CHECK for ed25519 public keys. |
 | 296 | verify_event accepts downgraded v2 envelopes for v3-chained events (no downgrade guard) | medium | Fixed — verify_event now only accepts v3 envelopes when prev_event_hash is present; v2/v1/bare candidates are not generated for chained events. |
 | 295 | README/AGENTS overstate test count (992) and breadcrumb totals vs tree | low | Fixed — updated README badge and prose to 1079 tests / 293 breadcrumbs. Updated AGENTS.md to 1079. |
 | 292 | validator statement_timeout reset to 0 mid-transaction; no real wall-clock bound on validators | medium | Fixed — removed `SET LOCAL statement_timeout = 0` after validator; 5s per-statement timeout remains active for rest of transaction. |

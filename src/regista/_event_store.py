@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -60,6 +62,7 @@ def append_event(
     on_behalf_of: dict | None = None,
     _key_id: str | None = None,
     entity_kind: str = "work_item",
+    hash_alg: str = "sha-256",
 ) -> Event:
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
@@ -110,7 +113,7 @@ def append_event(
             prev_event_hash=prev_event_hash,
             prev_global_event_hash=prev_global_event_hash,
             entity_kind=entity_kind,
-            hash_alg="sha-256",
+            hash_alg=hash_alg,
         )
         _scheme_id = scheme.scheme_id
     else:
@@ -125,7 +128,7 @@ def append_event(
         work_item_id=work_item_id,
         entity_kind=entity_kind,
         entity_id=work_item_id,
-        hash_alg="sha-256",
+        hash_alg=hash_alg,
         event_seq=event_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
@@ -184,18 +187,18 @@ class InMemoryEventStore:
 
     def append(self, event: Event) -> Event:
         wid = event.work_item_id
+        seq = self._next_global_seq
+        self._next_global_seq += 1
+        event = dataclasses.replace(event, global_seq=seq)
         wi = self._work_items.get(wid)
         if wi is not None:
             self.events.setdefault(wid, []).append(event)
             self.event_id_index[event.event_id] = event
-            self._global_seq_by_event_id[event.event_id] = self._next_global_seq
-            self._next_global_seq += 1
+            self._global_seq_by_event_id[event.event_id] = seq
             wi["last_event_seq"] = event.event_seq
             wi["last_event_at"] = event.timestamp
             wi["next_event_seq"] = event.event_seq + 1
             if event.canonical_envelope and event.signature:
-                import hashlib
-
                 self._global_chain_head = hashlib.sha256(
                     bytes(event.canonical_envelope) + bytes(event.signature)
                 ).digest()
@@ -207,13 +210,10 @@ class InMemoryEventStore:
         })
         self.events.setdefault(wid, []).append(event)
         self.event_id_index[event.event_id] = event
-        self._global_seq_by_event_id[event.event_id] = self._next_global_seq
-        self._next_global_seq += 1
+        self._global_seq_by_event_id[event.event_id] = seq
         ent["last_event_seq"] = event.event_seq
         ent["next_event_seq"] = event.event_seq + 1
         if event.canonical_envelope and event.signature:
-            import hashlib
-
             self._global_chain_head = hashlib.sha256(
                 bytes(event.canonical_envelope) + bytes(event.signature)
             ).digest()
@@ -251,7 +251,6 @@ class InMemoryEventStore:
                 evts = [e for e in evts if e.transition == transition]
             if start is not None and end is not None:
                 evts = [e for e in evts if start <= e.timestamp <= end]
-            if start is not None and end is not None:
                 evts.sort(key=lambda e: (e.timestamp, e.event_seq))
             else:
                 evts.sort(key=lambda e: (e.timestamp, e.event_seq), reverse=True)
@@ -279,7 +278,8 @@ class PostgresEventStore:
         "event_seq, actor_id, actor_kind, "
         "actor_metadata, key_id, workflow_name, workflow_version, "
         "timestamp, transition, payload, payload_canonical_hash, signature, "
-        "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, global_seq"
+        "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+        "global_seq, prev_global_event_hash"
     )
 
     def __init__(self, conn, key_set: KeySet) -> None:

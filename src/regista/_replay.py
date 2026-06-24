@@ -67,6 +67,61 @@ def _verify_hash_chain(
     return True, ""
 
 
+def _verify_global_hash_chain(ordered_events: list[dict]) -> int:
+    """Verify the global event hash chain (BC-300).
+
+    Each event's ``prev_global_event_hash`` must equal
+    ``SHA-256(prev_canonical_envelope + prev_signature)`` of the globally
+    preceding event (ordered by ``global_seq``). Returns the warning count.
+    """
+    from ._signing_scheme import resolve_hash_function
+
+    hash_fn = resolve_hash_function("sha-256")
+    warnings = 0
+    prev_evt: dict | None = None
+    for evt in ordered_events:
+        expected = evt.get("prev_global_event_hash")
+        if expected is None:
+            prev_evt = evt
+            continue
+        if prev_evt is None:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt["event_id"]),
+                global_seq=evt["global_seq"],
+                detail="prev_global_event_hash set but no global predecessor",
+            )
+            prev_evt = evt
+            continue
+        prev_env = prev_evt.get("canonical_envelope")
+        prev_sig = prev_evt.get("signature")
+        if prev_env is None or prev_sig is None:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt["event_id"]),
+                global_seq=evt["global_seq"],
+                detail="global predecessor missing canonical_envelope or signature",
+            )
+            prev_evt = evt
+            continue
+        computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
+        if not _hmac.compare_digest(bytes(expected), computed):
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt["event_id"]),
+                global_seq=evt["global_seq"],
+                detail=(
+                    f"global chain mismatch: computed={computed.hex()} "
+                    f"expected={bytes(expected).hex()}"
+                ),
+            )
+        prev_evt = evt
+    return warnings
+
+
 class _ReplayHaltError(RegistaError):
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.REPLAY_HALTED, message)
@@ -76,7 +131,8 @@ _EVENT_FIELDS = (
     "event_seq, global_seq, actor_id, actor_kind, "
     "actor_metadata, key_id, workflow_name, workflow_version, "
     "timestamp, transition, payload, payload_canonical_hash, signature, "
-    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash"
+    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+    "prev_global_event_hash"
 )
 
 
@@ -279,6 +335,36 @@ def _replay_inner(
                 replayed_state["attempt_number"],
             ],
         )
+
+    global_ordered = sorted(all_events, key=lambda e: e["global_seq"])
+    total_warnings += _verify_global_hash_chain(global_ordered)
+
+    if global_ordered:
+        last = global_ordered[-1]
+        last_env = last.get("canonical_envelope")
+        last_sig = last.get("signature")
+        if last_env is not None and last_sig is not None:
+            from ._signing_scheme import resolve_hash_function
+
+            computed_head = resolve_hash_function("sha-256")(
+                bytes(last_env) + bytes(last_sig)
+            ).digest()
+            head_row = conn.execute(
+                SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
+            ).fetchone()
+            if (
+                head_row is not None
+                and head_row["head_hash"] is not None
+                and not _hmac.compare_digest(bytes(head_row["head_hash"]), computed_head)
+            ):
+                total_warnings += 1
+                log.warning(
+                    "replay.global_chain_head_mismatch",
+                    detail=(
+                        "event_chain_head does not match the last appended event; "
+                        "a tail event may have been deleted or the head tampered"
+                    ),
+                )
 
     if verify_timestamps:
         from ._timestamping import TSAConfig, compute_merkle_root, verify_tsa_token

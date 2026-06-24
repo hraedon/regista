@@ -116,3 +116,92 @@ def test_global_chain_survives_global_seq_gaps(regista):
             bytes(prev["canonical_envelope"]) + bytes(prev["signature"])
         ).digest()
         assert bytes(cur["prev_global_event_hash"]) == expected
+
+
+def test_bc298_public_append_event_persists_prev_global_event_hash(regista):
+    wi, _ = regista.create_work_item(
+        workflow_name="test_workflow", work_item_type="feature",
+        actor_id="agent-1", custom_fields={"title": "bc298"},
+    )
+    regista.append_event(
+        wi.work_item_id, "agent-1", transition="note", payload={"k": "v"},
+    )
+    regista.append_event(
+        wi.work_item_id, "agent-1", transition="note2", payload={"k": "v2"},
+    )
+
+    rows = _all_events_in_global_order(regista)
+    append_rows = [r for r in rows if r["global_seq"] > 1]
+    assert len(append_rows) >= 2
+    for r in append_rows:
+        assert r["prev_global_event_hash"] is not None
+
+
+def test_bc300_replay_detects_global_chain_tamper(regista):
+    for i in range(3):
+        regista.create_work_item(
+            workflow_name="test_workflow", work_item_type="feature",
+            actor_id="agent-1", custom_fields={"title": f"bc300-{i}"},
+        )
+
+    report = regista.replay()
+    assert report.replayed_drift == 0
+    assert report.warnings == 0
+
+    with regista._mgr.transaction() as conn:
+        conn.execute(
+            SQL(
+                "UPDATE events SET prev_global_event_hash = %s "
+                "WHERE global_seq = (SELECT MIN(global_seq) FROM events "
+                "WHERE prev_global_event_hash IS NOT NULL)"
+            ),
+            [b"\x00" * 32],
+        )
+
+    report = regista.replay()
+    assert report.warnings >= 1, "replay must warn on corrupted global chain"
+
+
+def test_bc300_replay_clean_global_chain_in_memory():
+    from regista.testing import InMemoryRegista
+
+    sub = InMemoryRegista(project="memory", hmac_key_path=KEY_PATH)
+    sub.register_workflow_file(WORKFLOW_PATH)
+    for i in range(3):
+        sub.create_work_item(
+            workflow_name="test_workflow", work_item_type="feature",
+            actor_id="agent-1", custom_fields={"title": f"im-{i}"},
+        )
+    report = sub.replay()
+    assert report.warnings == 0
+    assert report.replayed_drift == 0
+
+
+def test_bc300_in_memory_replay_detects_global_chain_tamper():
+    import dataclasses
+
+    from regista.testing import InMemoryRegista
+
+    sub = InMemoryRegista(project="memory", hmac_key_path=KEY_PATH)
+    sub.register_workflow_file(WORKFLOW_PATH)
+    for i in range(3):
+        sub.create_work_item(
+            workflow_name="test_workflow", work_item_type="feature",
+            actor_id="agent-1", custom_fields={"title": f"im-tamper-{i}"},
+        )
+
+    report = sub.replay()
+    assert report.warnings == 0
+
+    all_evts = []
+    for wid in sub._store.events:
+        all_evts.extend(sub._store.events[wid])
+    all_evts.sort(key=lambda e: e.global_seq)
+    target = all_evts[1]
+    corrupted = dataclasses.replace(target, prev_global_event_hash=b"\xff" * 32)
+    lst = sub._store.events[target.work_item_id]
+    lst[lst.index(target)] = corrupted
+    sub._store.event_id_index[target.event_id] = corrupted
+
+    report = sub.replay()
+    assert report.warnings >= 1, "InMemory replay must warn on corrupted global chain"

@@ -56,6 +56,59 @@ def _verify_hash_chain_in_memory(
     return True, ""
 
 
+def _verify_global_hash_chain_in_memory(ordered_events: list) -> int:
+    """Verify the global event hash chain across all events (BC-300).
+
+    Returns the warning count.
+    """
+    from ._signing_scheme import resolve_hash_function
+
+    hash_fn = resolve_hash_function("sha-256")
+    warnings = 0
+    prev_evt = None
+    for evt in ordered_events:
+        expected = evt.prev_global_event_hash
+        if expected is None:
+            prev_evt = evt
+            continue
+        if prev_evt is None:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt.event_id),
+                global_seq=evt.global_seq,
+                detail="prev_global_event_hash set but no global predecessor",
+            )
+            prev_evt = evt
+            continue
+        prev_env = prev_evt.canonical_envelope
+        prev_sig = prev_evt.signature
+        if prev_env is None or prev_sig is None:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt.event_id),
+                global_seq=evt.global_seq,
+                detail="global predecessor missing canonical_envelope or signature",
+            )
+            prev_evt = evt
+            continue
+        computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
+        if not _hmac.compare_digest(computed, bytes(expected)):
+            warnings += 1
+            log.warning(
+                "replay.global_chain_broken",
+                event_id=str(evt.event_id),
+                global_seq=evt.global_seq,
+                detail=(
+                    f"global chain mismatch: computed={computed.hex()} "
+                    f"expected={bytes(expected).hex()}"
+                ),
+            )
+        prev_evt = evt
+    return warnings
+
+
 def in_memory_replay(
     work_items: dict,
     workflows: dict,
@@ -279,6 +332,34 @@ def in_memory_replay(
                     drift += 1
                 else:
                     ok += 1
+
+    all_global_events = []
+    for wid in store.events:
+        all_global_events.extend(store.events[wid])
+    all_global_events.sort(key=lambda e: (e.global_seq if e.global_seq is not None else 0))
+    warnings += _verify_global_hash_chain_in_memory(all_global_events)
+
+    if all_global_events:
+        last = all_global_events[-1]
+        if last.canonical_envelope is not None and last.signature is not None:
+            from ._signing_scheme import resolve_hash_function
+
+            computed_head = resolve_hash_function("sha-256")(
+                bytes(last.canonical_envelope) + bytes(last.signature)
+            ).digest()
+            stored_head = getattr(store, "_global_chain_head", None)
+            if (
+                stored_head is not None
+                and not _hmac.compare_digest(bytes(stored_head), computed_head)
+            ):
+                warnings += 1
+                log.warning(
+                    "replay.global_chain_head_mismatch",
+                    detail=(
+                        "global chain head does not match the last appended event; "
+                        "a tail event may have been deleted or the head tampered"
+                    ),
+                )
 
     return ReplayReport(
         table_name="in_memory_replay",

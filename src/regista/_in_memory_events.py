@@ -31,6 +31,8 @@ def in_memory_append_event(
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
     on_behalf_of: dict | None = None,
+    entity_kind: str = "work_item",
+    hash_alg: str = "sha-256",
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -40,18 +42,25 @@ def in_memory_append_event(
         event_id=event_id,
     )
 
-    wi = work_items.get(work_item_id)
-    validate_work_item_exists(wi, work_item_id)
+    if entity_kind == "work_item":
+        wi = work_items.get(work_item_id)
+        validate_work_item_exists(wi, work_item_id)
+        wf_name = wi["workflow_name"]
+        wf_version = wi["workflow_version"]
+    else:
+        wf_name = ""
+        wf_version = 0
 
     if transition is not None:
         check_reserved_transition(transition)
-        wf_data = workflows.get((wi["workflow_name"], wi["workflow_version"]))
-        if wf_data is not None:
-            check_append_blocked(
-                wf_data.get("transitions", []),
-                transition,
-                wi["workflow_name"],
-            )
+        if entity_kind == "work_item":
+            wf_data = workflows.get((wf_name, wf_version))
+            if wf_data is not None:
+                check_append_blocked(
+                    wf_data.get("transitions", []),
+                    transition,
+                    wf_name,
+                )
 
     return _store_append(
         store,
@@ -59,8 +68,8 @@ def in_memory_append_event(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
-        workflow_name=wi["workflow_name"],
-        workflow_version=wi["workflow_version"],
+        workflow_name=wf_name,
+        workflow_version=wf_version,
         transition=transition,
         payload=Jsonb(payload) if payload is not None else None,
         event_id=event_id,
@@ -68,6 +77,8 @@ def in_memory_append_event(
         key_set=key_set,
         on_behalf_of=on_behalf_of,
         _key_id=key_id,
+        entity_kind=entity_kind,
+        hash_alg=hash_alg,
     )
 
 

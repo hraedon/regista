@@ -11,6 +11,7 @@ from ._types import Event
 MAX_ACTOR_ID_LENGTH = 255
 MAX_ROLE_LENGTH = 255
 MAX_ACTOR_METADATA_BYTES = 65536
+MAX_JSONB_BYTES = 1_048_576
 VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
@@ -497,6 +498,22 @@ class Jsonb:
     def __post_init__(self) -> None:
         if self.value is not None:
             validate_json_safe_value(self.value, "value")
+            import json
+
+            try:
+                serialized = json.dumps(self.value)
+            except (TypeError, ValueError) as e:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"Jsonb value is not JSON-serializable: {e}",
+                )
+            size = len(serialized.encode("utf-8"))
+            if size > MAX_JSONB_BYTES:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"JSONB value exceeds maximum size of {MAX_JSONB_BYTES} bytes",
+                    detail={"size": size, "max": MAX_JSONB_BYTES},
+                )
 
 
 def _check_string_safe(value: str, label: str) -> None:

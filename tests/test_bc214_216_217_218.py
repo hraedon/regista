@@ -9,6 +9,7 @@ import pytest
 from regista._errors import ErrorCode, RegistaError
 from regista._keys import KeySet
 from regista._signing import sign_event, verify_event
+from regista._signing_scheme import Ed25519Scheme
 
 
 def _write_key_file(path: Path, keys: list[dict]) -> Path:
@@ -260,11 +261,10 @@ class TestBC214EnvelopeV2:
         assert b"workflow_version" in env
 
     def test_backward_compat_verifies(self, tmp_path):
-        import hashlib
         from datetime import UTC, datetime
 
         from regista._jcs import canonicalize
-        from regista._signing import compute_hmac
+        from regista._signing_scheme import HMACSHA256Scheme
 
         key = b"x" * 32
         now = datetime.now(UTC)
@@ -284,8 +284,7 @@ class TestBC214EnvelopeV2:
             "payload": {"a": 1},
         }
         envelope_bytes = canonicalize(env2)
-        sig = compute_hmac(envelope_bytes, key)
-        ch = hashlib.sha256(envelope_bytes).digest()
+        sig, ch = HMACSHA256Scheme().sign(envelope_bytes, key)
 
         # Verify via public API (should retry old envelope internally)
         assert verify_event(
@@ -398,3 +397,16 @@ work_item_types:
             )
         assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
         sub.close()
+
+
+class TestEd25519SchemeVerify:
+    def test_verify_with_short_public_key_returns_false(self):
+        import importlib.util
+
+        if importlib.util.find_spec("nacl.signing") is None:
+            pytest.skip("PyNaCl not installed")
+
+        scheme = Ed25519Scheme()
+        envelope = b"test envelope"
+        signature = b"\x00" * 64
+        assert scheme.verify(envelope, signature, b"\x00" * 32, b"\x01" * 16) is False

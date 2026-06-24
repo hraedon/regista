@@ -213,6 +213,8 @@ def append_event(
         scheme=scheme,
         prev_event_hash=prev_event_hash,
         prev_global_event_hash=prev_global_event_hash,
+        entity_kind=entity_kind,
+        hash_alg="sha-256",
     )
 
     event_seq = next_seq

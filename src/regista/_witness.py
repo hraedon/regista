@@ -85,6 +85,8 @@ def register_witness(
     *,
     mode: str = "witness",
     sign_secret: bytes | None = None,
+    public_key: bytes | None = None,
+    key_scheme: str = "hmac-sha256",
 ) -> uuid.UUID:
     _validate_url(url)
     event_filter = _validate_event_filter(event_filter)
@@ -103,14 +105,31 @@ def register_witness(
             ErrorCode.INVALID_ARGUMENT,
             f"max_retries must be >= 1, got {max_retries}",
         )
+    if key_scheme not in ("hmac-sha256", "ed25519"):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"key_scheme must be 'hmac-sha256' or 'ed25519', got {key_scheme!r}",
+        )
+    if key_scheme == "ed25519":
+        if public_key is None:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "public_key is required when key_scheme is 'ed25519'",
+            )
+        if len(public_key) != 32:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "ed25519 public_key must be exactly 32 bytes, "
+                f"got {len(public_key)}",
+            )
     witness_id = uuid.uuid4()
     with mgr.transaction() as conn:
         conn.execute(
             SQL(
                 "INSERT INTO witness_registrations "
                 "(witness_id, url, headers, event_filter, "
-                "max_failures, max_retries, mode, sign_secret) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                "max_failures, max_retries, mode, sign_secret, public_key, key_scheme) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             ),
             [
                 witness_id,
@@ -121,6 +140,8 @@ def register_witness(
                 max_retries,
                 mode,
                 sign_secret,
+                public_key,
+                key_scheme,
             ],
         )
     log.info(
@@ -217,6 +238,7 @@ def list_witnesses(
             SQL(
                 "SELECT witness_id, url, headers, event_filter, status, "
                 "max_failures, consecutive_failures, max_retries, mode, sign_secret, "
+                "key_scheme, public_key, "
                 "last_success_at, last_failure_at, created_at, updated_at "
                 f"FROM witness_registrations WHERE {where} ORDER BY created_at"
             ),
@@ -304,7 +326,7 @@ def list_witness_receipts(
             SQL(
                 f"SELECT receipt_id, witness_id, event_id, status, retry_count, "
                 f"submitted_at, last_attempt_at, confirmed_at, "
-                f"witness_signature, witness_response, error_message, created_at "
+                f"witness_signature, witness_response, witness_scheme, error_message, created_at "
                 f"FROM witness_receipts WHERE {where} "
                 f"ORDER BY created_at DESC LIMIT %s"
             ),
@@ -325,6 +347,66 @@ def list_witness_receipts(
     return results
 
 
+def _apply_receipt_failure(
+    conn,
+    *,
+    receipt_id: uuid.UUID,
+    witness_id: uuid.UUID,
+    project: str,
+    error_message: str,
+    witness_key_scheme: str,
+    now: datetime,
+    max_retries: int,
+    max_failures: int,
+) -> None:
+    conn.execute(
+        SQL(
+            "UPDATE witness_receipts "
+            "SET retry_count = retry_count + 1, "
+            "last_attempt_at = %s, error_message = %s, witness_scheme = %s, "
+            "status = 'pending' "
+            "WHERE receipt_id = %s AND status = 'in_progress'"
+        ),
+        [now, error_message, witness_key_scheme, receipt_id],
+    )
+    new_failures_row = conn.execute(
+        SQL(
+            "UPDATE witness_registrations "
+            "SET consecutive_failures = consecutive_failures + 1, "
+            "last_failure_at = %s, updated_at = %s "
+            "WHERE witness_id = %s "
+            "RETURNING consecutive_failures"
+        ),
+        [now, now, witness_id],
+    ).fetchone()
+    if new_failures_row is not None:
+        new_failures = new_failures_row["consecutive_failures"]
+        if new_failures >= max_failures:
+            conn.execute(
+                SQL(
+                    "UPDATE witness_registrations "
+                    "SET status = 'paused' WHERE witness_id = %s"
+                ),
+                [witness_id],
+            )
+            log.warning(
+                "witness.auto_paused",
+                project=project,
+                witness_id=str(witness_id),
+                consecutive_failures=new_failures,
+            )
+
+    receipt_row = conn.execute(
+        SQL("SELECT retry_count FROM witness_receipts WHERE receipt_id = %s"),
+        [receipt_id],
+    ).fetchone()
+    if receipt_row and receipt_row["retry_count"] >= max_retries:
+        conn.execute(
+            SQL("UPDATE witness_receipts SET status = 'paused' WHERE receipt_id = %s"),
+            [receipt_id],
+        )
+
+
 def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
     import http.client
     from urllib.parse import urlparse
@@ -334,7 +416,8 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
         witnesses = conn.execute(
             SQL(
                 "SELECT witness_id, url, headers, max_retries, max_failures, "
-                "consecutive_failures, status, sign_secret FROM witness_registrations "
+                "consecutive_failures, status, sign_secret, public_key, key_scheme "
+                "FROM witness_registrations "
                 "WHERE status = 'active'"
             ),
         ).fetchall()
@@ -345,6 +428,8 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
         max_retries = w["max_retries"]
         max_failures = w["max_failures"]
         sign_secret = w["sign_secret"]
+        witness_pubkey = w["public_key"]
+        witness_key_scheme = w["key_scheme"]
         parsed = urlparse(url)
         host = parsed.hostname
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -382,18 +467,31 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                         "event_seq, actor_id, actor_kind, "
                         "actor_metadata, key_id, workflow_name, workflow_version, "
                         "timestamp, transition, payload, payload_canonical_hash, "
-                        "signature, on_behalf_of, scheme_id, prev_event_hash, "
-                        "global_seq, prev_global_event_hash "
+                        "signature, canonical_envelope, on_behalf_of, scheme_id, "
+                        "prev_event_hash, global_seq, prev_global_event_hash "
                         "FROM events WHERE event_id = %s"
                     ),
                     [event_id],
                 ).fetchall()
             if not evt_rows:
                 continue
-            evt = dict(evt_rows[0])
+            raw_row = evt_rows[0]
+            raw_env = (
+                bytes(raw_row["canonical_envelope"])
+                if raw_row["canonical_envelope"] else None
+            )
+            raw_hash = (
+                bytes(raw_row["payload_canonical_hash"])
+                if raw_row["payload_canonical_hash"] else None
+            )
+            evt = dict(raw_row)
             evt["event_id"] = str(evt["event_id"])
             evt["work_item_id"] = str(evt["work_item_id"])
             evt["entity_id"] = str(evt.get("entity_id") or evt["work_item_id"])
+            if evt.get("canonical_envelope") is not None:
+                evt["canonical_envelope"] = bytes(evt["canonical_envelope"]).hex()
+            else:
+                del evt["canonical_envelope"]
             if evt.get("prev_event_hash") is not None:
                 evt["prev_event_hash"] = bytes(evt["prev_event_hash"]).hex()
             else:
@@ -466,86 +564,81 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                 except (json.JSONDecodeError, ValueError, KeyError):
                     witness_resp_dict = {"raw": response_body[:2000]}
 
+                requires_witness_signature = witness_key_scheme == "ed25519"
+                if requires_witness_signature:
+                    if (
+                        witness_pubkey is not None
+                        and witness_sig is not None
+                        and raw_env is not None
+                        and raw_hash is not None
+                    ):
+                        from ._signing_scheme import Ed25519Scheme
+
+                        sig_verified = Ed25519Scheme().verify(
+                            raw_env, witness_sig, raw_hash, witness_pubkey,
+                        )
+                    else:
+                        sig_verified = False
+                else:
+                    sig_verified = True
+
                 with mgr.transaction() as conn:
-                    conn.execute(
-                        SQL(
-                            "UPDATE witness_receipts "
-                            "SET status = 'confirmed', confirmed_at = %s, "
-                            "witness_signature = %s, witness_response = %s, "
-                            "submitted_at = COALESCE(submitted_at, %s) "
-                            "WHERE receipt_id = %s AND status = 'in_progress'"
-                        ),
-                        [
-                            now,
-                            witness_sig if witness_sig else None,
-                            psycopg.types.json.Jsonb(witness_resp_dict)
-                            if witness_resp_dict else None,
-                            now,
-                            receipt_id,
-                        ],
-                    )
-                    conn.execute(
-                        SQL(
-                            "UPDATE witness_registrations "
-                            "SET consecutive_failures = 0, last_success_at = %s, updated_at = %s "
-                            "WHERE witness_id = %s"
-                        ),
-                        [now, now, witness_id],
-                    )
-                total += 1
+                    if sig_verified:
+                        conn.execute(
+                            SQL(
+                                "UPDATE witness_receipts "
+                                "SET status = 'confirmed', confirmed_at = %s, "
+                                "witness_signature = %s, witness_response = %s, "
+                                "witness_scheme = %s, "
+                                "submitted_at = COALESCE(submitted_at, %s) "
+                                "WHERE receipt_id = %s AND status = 'in_progress'"
+                            ),
+                            [
+                                now,
+                                witness_sig if witness_sig else None,
+                                psycopg.types.json.Jsonb(witness_resp_dict)
+                                if witness_resp_dict else None,
+                                witness_key_scheme,
+                                now,
+                                receipt_id,
+                            ],
+                        )
+                        conn.execute(
+                            SQL(
+                                "UPDATE witness_registrations "
+                                "SET consecutive_failures = 0, "
+                                "last_success_at = %s, updated_at = %s "
+                                "WHERE witness_id = %s"
+                            ),
+                            [now, now, witness_id],
+                        )
+                        total += 1
+                    else:
+                        _apply_receipt_failure(
+                            conn,
+                            receipt_id=receipt_id,
+                            witness_id=witness_id,
+                            project=project,
+                            error_message="witness signature verification failed",
+                            witness_key_scheme=witness_key_scheme,
+                            now=now,
+                            max_retries=max_retries,
+                            max_failures=max_failures,
+                        )
             else:
                 if error_msg is None:
                     error_msg = f"HTTP {status_code}"
                 with mgr.transaction() as conn:
-                    conn.execute(
-                        SQL(
-                            "UPDATE witness_receipts "
-                            "SET retry_count = retry_count + 1, "
-                            "last_attempt_at = %s, error_message = %s, "
-                            "status = 'pending' "
-                            "WHERE receipt_id = %s AND status = 'in_progress'"
-                        ),
-                        [now, error_msg, receipt_id],
+                    _apply_receipt_failure(
+                        conn,
+                        receipt_id=receipt_id,
+                        witness_id=witness_id,
+                        project=project,
+                        error_message=error_msg,
+                        witness_key_scheme=witness_key_scheme,
+                        now=now,
+                        max_retries=max_retries,
+                        max_failures=max_failures,
                     )
-                    new_failures_row = conn.execute(
-                        SQL(
-                            "UPDATE witness_registrations "
-                            "SET consecutive_failures = consecutive_failures + 1, "
-                            "last_failure_at = %s, updated_at = %s "
-                            "WHERE witness_id = %s "
-                            "RETURNING consecutive_failures"
-                        ),
-                        [now, now, witness_id],
-                    ).fetchone()
-                    new_failures = new_failures_row["consecutive_failures"]
-                    if new_failures >= max_failures:
-                        conn.execute(
-                            SQL(
-                                "UPDATE witness_registrations "
-                                "SET status = 'paused' WHERE witness_id = %s"
-                            ),
-                            [witness_id],
-                        )
-                        log.warning(
-                            "witness.auto_paused",
-                            project=project,
-                            witness_id=str(witness_id),
-                            consecutive_failures=new_failures,
-                        )
-
-                    receipt_row = conn.execute(
-                        SQL(
-                            "SELECT retry_count FROM witness_receipts WHERE receipt_id = %s"
-                        ),
-                        [receipt_id],
-                    ).fetchone()
-                    if receipt_row and receipt_row["retry_count"] >= max_retries:
-                        conn.execute(
-                            SQL(
-                                "UPDATE witness_receipts SET status = 'paused' "
-                            "WHERE receipt_id = %s"
-                            ),
-                            [receipt_id],
-                        )
 
     return total

@@ -44,7 +44,10 @@ class KeyEntry:
         )
 
 
-_ASYMMETRIC_SCHEMES = frozenset({"ed25519"})
+def _asymmetric_schemes() -> frozenset[str]:
+    from ._signing_scheme import asymmetric_scheme_ids
+
+    return asymmetric_scheme_ids()
 
 
 class KeySet:
@@ -242,12 +245,13 @@ class KeySet:
         ]
 
     def _enforce_strict_asymmetric(self, entry: KeyEntry, actor_id: str) -> None:
-        if entry.scheme not in _ASYMMETRIC_SCHEMES:
+        asym = _asymmetric_schemes()
+        if entry.scheme not in asym:
             raise RegistaError(
                 ErrorCode.KEY_ROLE_NOT_PERMITTED,
                 f"strict_asymmetric: key {entry.key_id!r} uses scheme "
                 f"{entry.scheme!r}; asymmetric scheme required "
-                f"(allowed: {sorted(_ASYMMETRIC_SCHEMES)})",
+                f"(allowed: {sorted(asym)})",
             )
         if entry.public_key is None:
             raise RegistaError(
@@ -283,7 +287,8 @@ class KeySet:
             return entry
         candidates = self.active_keys_for(actor_id)
         if self._strict_asymmetric:
-            candidates = [c for c in candidates if c.scheme in _ASYMMETRIC_SCHEMES]
+            asym = _asymmetric_schemes()
+            candidates = [c for c in candidates if c.scheme in asym]
         if candidates:
             entry = candidates[0]
             if self._strict_asymmetric:
@@ -336,17 +341,29 @@ class KeySet:
         return entry.scheme
 
     def verify_key_status(self, key_id: str, event_timestamp: str | None = None) -> KeyEntry:
+        from datetime import datetime
+
         entry = self.get_key(key_id)
         if entry.status == "revoked":
             if event_timestamp is not None and entry.revoked_at is not None:
-                if event_timestamp < entry.revoked_at:
-                    log.warning(
-                        "keys.revoked_key_predates_event",
-                        key_id=key_id,
-                        revoked_at=entry.revoked_at,
-                        event_timestamp=event_timestamp,
+                try:
+                    event_dt = datetime.fromisoformat(
+                        event_timestamp.replace("Z", "+00:00")
                     )
-                    return entry
+                    revoked_dt = datetime.fromisoformat(
+                        entry.revoked_at.replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pass
+                else:
+                    if event_dt < revoked_dt:
+                        log.warning(
+                            "keys.revoked_key_predates_event",
+                            key_id=key_id,
+                            revoked_at=entry.revoked_at,
+                            event_timestamp=event_timestamp,
+                        )
+                        return entry
             raise RegistaError(
                 ErrorCode.REVOKED_KEY_ID,
                 f"Key {key_id!r} is revoked",

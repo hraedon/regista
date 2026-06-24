@@ -51,6 +51,7 @@ class AppendEventRequest(BaseModel):
     event_id: str | None = None
     expected_event_seq: int | None = None
     on_behalf_of: dict | None = None
+    entity_kind: str = "work_item"
 
 
 class TransitionRequest(BaseModel):
@@ -241,6 +242,8 @@ class RegisterWitnessRequest(BaseModel):
     event_filter: dict | None = None
     max_failures: int = Field(default=10, ge=1)
     max_retries: int = Field(default=3, ge=1)
+    public_key: str | None = None
+    key_scheme: str = "hmac-sha256"
 
 
 class ReactivateWitnessRequest(BaseModel):
