@@ -4,6 +4,73 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-25 — Session 71: Structural review + envelope hardening
+
+**Focus:** Validate four structural concerns raised by user, resolve fixable
+issues, adversarial review, commit, push, CI watch.
+
+**Delivered:**
+
+### 1. Postgres/InMemory parity (CONFIRMED, accepted)
+
+- Verified `InMemoryRegista.deliver_pending_witness_receipts()` returns 0
+  (`_in_memory.py:1019`). Receipts created but never delivered.
+- 42 resolved breadcrumbs are InMemory parity issues — most common defect class.
+- Filed BC-307 (accepted design limitation; InMemory is test backend, no HTTP).
+
+### 2. Signing envelope complexity (CONFIRMED, fixed)
+
+- Found `append_transition_event` (`_events.py:382`) was not forwarding
+  `entity_kind`/`hash_alg` to `sign_event()` — relied on defaults.
+  Session 70 fixed `append_event` but missed this path.
+- Also found prev_event_hash query used `work_item_id` instead of
+  entity-aware `(entity_kind, entity_id)` query.
+- **Fixed both** in `_events.py`.
+- Filed BC-308 (proposed): envelope version consolidation plan — derive
+  version from stored envelope, reject downgrades, deprecate v1/v2/v3.
+
+### 3. Scope accumulation (CONFIRMED, healthy)
+
+- 22 plans, 50 source files, ~19K lines, 296 resolved breadcrumbs, 8 open.
+- All 6 pre-existing open breadcrumbs are `accepted` design tensions —
+  correct state for pre-1.0.
+
+### 4. Process fragility (CONFIRMED, currently healthy)
+
+- Session 69 HEAD was broken (35 failures from partial entity_kind work).
+- Current HEAD: 1184 tests pass, working tree clean, CI green.
+- Root cause: work committed without running tests. Process discipline issue.
+
+### Adversarial review (kimi agent)
+
+- Reviewed all changes. No critical/high bugs found.
+- Caught BC-308 factual errors: v3 description was wrong (doesn't add
+  entity_kind/entity_id — that's v4), risk wording overstated tamper
+  acceptance. **Corrected both.**
+- Identified missing regression test for transition-event signature
+  verification. **Added**
+  `test_transition_event_signature_verifies_with_stored_envelope`.
+- Noted read-path entity-kind filtering latent inconsistency (not filed).
+
+### Test/lint status
+
+- Full suite: 1184 passed, 10 deselected.
+- Ruff: all checks passed.
+- CI: green (run 28150805018).
+
+### Breadcrumbs
+
+- BC-307: InMemory witness delivery noop (accepted)
+- BC-308: Envelope version proliferation (proposed)
+- README index updated.
+
+### Commit
+
+- `5792002` fix: forward entity_kind/hash_alg in append_transition_event,
+  add regression test
+
+---
+
 ## 2026-06-24 — Session 70: Adversarial review + post-Session-69 hardening
 
 **Focus:** Independent adversarial review of Session 69's integrity and witness
