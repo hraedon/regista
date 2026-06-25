@@ -119,3 +119,49 @@ class TestAC26JsonbDriftSurvival:
             key=key_entry.secret,
             stored_envelope=evt.canonical_envelope,
         )
+
+    def test_transition_event_signature_verifies_with_stored_envelope(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "transition verify"},
+        )
+        regista.register_actor_role("agent-1", "agent")
+        regista.transition(
+            work_item_id=wi.work_item_id,
+            transition_name="start",
+            actor_id="agent-1",
+            actor_metadata={"role": "agent"},
+        )
+
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        transition_evt = events[1]
+        assert transition_evt.transition == "start"
+        assert transition_evt.canonical_envelope is not None
+        assert transition_evt.entity_kind == "work_item"
+        assert transition_evt.hash_alg == "sha-256"
+
+        key_set = KeySet(KEY_PATH)
+        key_entry = key_set.active_key()
+
+        assert verify_event(
+            event_id=transition_evt.event_id,
+            work_item_id=transition_evt.work_item_id,
+            actor_id=transition_evt.actor_id,
+            key_id=transition_evt.key_id,
+            event_seq=transition_evt.event_seq,
+            workflow_name=transition_evt.workflow_name,
+            workflow_version=transition_evt.workflow_version,
+            timestamp=transition_evt.timestamp,
+            transition=transition_evt.transition,
+            payload=transition_evt.payload,
+            signature=transition_evt.signature,
+            canonical_hash=transition_evt.payload_canonical_hash,
+            key=key_entry.secret,
+            stored_envelope=transition_evt.canonical_envelope,
+            entity_kind=transition_evt.entity_kind,
+            hash_alg=transition_evt.hash_alg,
+            prev_event_hash=transition_evt.prev_event_hash,
+            prev_global_event_hash=transition_evt.prev_global_event_hash,
+        )

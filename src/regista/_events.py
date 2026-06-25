@@ -363,9 +363,9 @@ def append_transition_event(
         prev_row = conn.execute(
             SQL(
                 "SELECT canonical_envelope, signature FROM events "
-                "WHERE work_item_id = %s AND event_seq = %s"
+                "WHERE entity_kind = %s AND entity_id = %s AND event_seq = %s"
             ),
-            [work_item_id, next_seq - 1],
+            ["work_item", work_item_id, next_seq - 1],
         ).fetchone()
         if prev_row is not None:
             prev_env = prev_row["canonical_envelope"]
@@ -395,6 +395,8 @@ def append_transition_event(
         scheme=scheme,
         prev_event_hash=prev_event_hash,
         prev_global_event_hash=prev_global_event_hash,
+        entity_kind="work_item",
+        hash_alg="sha-256",
     )
 
     event_seq = next_seq

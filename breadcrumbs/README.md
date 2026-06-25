@@ -39,6 +39,8 @@ _(none)_
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
 | 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | accepted |
+| 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | accepted |
+| 308 | Four signing envelope versions with complex backward-compat retry — correctness minefield | medium | proposed |
 
 ## Resolved
 
