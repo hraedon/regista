@@ -546,7 +546,14 @@ class InMemoryRegista:
         *,
         continue_on_revoked: bool = False,
         verify_timestamps: bool = False,
+        work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:
+        if work_item_id is not None and work_item_id not in self._work_items:
+            if work_item_id not in self._store.events:
+                raise RegistaError(
+                    ErrorCode.WORK_ITEM_NOT_FOUND,
+                    f"Work item {work_item_id} not found for scoped replay",
+                )
         from ._in_memory_replay import in_memory_replay
 
         return in_memory_replay(
@@ -555,6 +562,7 @@ class InMemoryRegista:
             self._store,
             self._key_set,
             continue_on_revoked=continue_on_revoked,
+            work_item_id=work_item_id,
         )
 
     def requeue_dead_lettered_hook(self, dead_letter_id: int) -> None:

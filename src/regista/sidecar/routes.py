@@ -303,6 +303,7 @@ def register_routes(app, regista, tokens: TokenRegistry):
         result = regista.replay(
             continue_on_revoked=body.continue_on_revoked,
             verify_timestamps=body.verify_timestamps,
+            work_item_id=_parse_uuid(body.work_item_id) if body.work_item_id else None,
         )
         return _serialize(result)
 

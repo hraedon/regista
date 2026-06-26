@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac as _hmac
+import uuid
 from datetime import datetime
 
 import structlog
@@ -116,35 +117,50 @@ def in_memory_replay(
     key_set,
     *,
     continue_on_revoked: bool = False,
+    work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
     ok = 0
     drift = 0
     halted = 0
     warnings = 0
+    scoped = work_item_id is not None
 
-    # Orphan-event detection: events whose work_item_id has no entry in work_items
-    all_event_wi_ids = set(store.events.keys())
-    wi_ids = set(work_items.keys())
-    orphan_ids = all_event_wi_ids - wi_ids
-    for orphan_id in orphan_ids:
-        orphan_evts = sorted(store.events.get(orphan_id, []), key=lambda e: e.event_seq)
-        is_created = len(orphan_evts) > 0 and orphan_evts[0].transition == "created"
-        if not is_created:
+    if not scoped:
+        # Orphan-event detection: events whose work_item_id has no entry in work_items
+        all_event_wi_ids = set(store.events.keys())
+        wi_ids = set(work_items.keys())
+        orphan_ids = all_event_wi_ids - wi_ids
+        for orphan_id in orphan_ids:
+            orphan_evts = sorted(store.events.get(orphan_id, []), key=lambda e: e.event_seq)
+            is_created = len(orphan_evts) > 0 and orphan_evts[0].transition == "created"
+            if not is_created:
+                halted += 1
+                log.error(
+                    "replay.orphan_events",
+                    work_item_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+            else:
+                warnings += 1
+                log.warning(
+                    "replay.orphan_work_item",
+                    work_item_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+
+    if scoped:
+        items = [(work_item_id, work_items[work_item_id])] if work_item_id in work_items else []
+        if work_item_id not in work_items and work_item_id in store.events:
             halted += 1
             log.error(
-                "replay.orphan_events",
-                work_item_id=str(orphan_id),
-                event_count=len(orphan_evts),
+                "replay.projection_row_missing",
+                work_item_id=str(work_item_id),
+                event_count=len(store.events.get(work_item_id, [])),
             )
-        else:
-            warnings += 1
-            log.warning(
-                "replay.orphan_work_item",
-                work_item_id=str(orphan_id),
-                event_count=len(orphan_evts),
-            )
+    else:
+        items = work_items.items()
 
-    for wi_id, wi in work_items.items():
+    for wi_id, wi in items:
         evts = store.events.get(wi_id, [])
         if not evts:
             continue
@@ -333,33 +349,37 @@ def in_memory_replay(
                 else:
                     ok += 1
 
-    all_global_events = []
-    for wid in store.events:
-        all_global_events.extend(store.events[wid])
-    all_global_events.sort(key=lambda e: (e.global_seq if e.global_seq is not None else 0))
-    warnings += _verify_global_hash_chain_in_memory(all_global_events)
+    if not scoped:
+        all_global_events = []
+        for wid in store.events:
+            all_global_events.extend(store.events[wid])
+        all_global_events.sort(key=lambda e: (e.global_seq if e.global_seq is not None else 0))
+        warnings += _verify_global_hash_chain_in_memory(all_global_events)
 
-    if all_global_events:
-        last = all_global_events[-1]
-        if last.canonical_envelope is not None and last.signature is not None:
-            from ._signing_scheme import resolve_hash_function
+        if all_global_events:
+            last = all_global_events[-1]
+            if last.canonical_envelope is not None and last.signature is not None:
+                from ._signing_scheme import resolve_hash_function
 
-            computed_head = resolve_hash_function("sha-256")(
-                bytes(last.canonical_envelope) + bytes(last.signature)
-            ).digest()
-            stored_head = getattr(store, "_global_chain_head", None)
-            if (
-                stored_head is not None
-                and not _hmac.compare_digest(bytes(stored_head), computed_head)
-            ):
-                warnings += 1
-                log.warning(
-                    "replay.global_chain_head_mismatch",
-                    detail=(
-                        "global chain head does not match the last appended event; "
-                        "a tail event may have been deleted or the head tampered"
-                    ),
-                )
+                computed_head = resolve_hash_function("sha-256")(
+                    bytes(last.canonical_envelope) + bytes(last.signature)
+                ).digest()
+                stored_head = getattr(store, "_global_chain_head", None)
+                if (
+                    stored_head is not None
+                    and not _hmac.compare_digest(bytes(stored_head), computed_head)
+                ):
+                    warnings += 1
+                    log.warning(
+                        "replay.global_chain_head_mismatch",
+                        detail=(
+                            "global chain head does not match the last appended event; "
+                            "a tail event may have been deleted or the head tampered"
+                        ),
+                    )
+    else:
+        warnings += 1
+        log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
     return ReplayReport(
         table_name="in_memory_replay",

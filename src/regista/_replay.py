@@ -143,6 +143,7 @@ def replay(
     key_set: KeySet,
     continue_on_revoked: bool = False,
     verify_timestamps: bool = False,
+    work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
     import uuid as _uuid
 
@@ -170,6 +171,7 @@ def replay(
             conn, schema, project, key_set, replay_table, report_table,
             continue_on_revoked=continue_on_revoked,
             verify_timestamps=verify_timestamps,
+            work_item_id=work_item_id,
         )
     except Exception:
         _drop_replay_tables(conn, replay_table, report_table)
@@ -186,10 +188,19 @@ def _replay_inner(
     *,
     continue_on_revoked: bool = False,
     verify_timestamps: bool = False,
+    work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
-    wi_rows = conn.execute(
-        SQL("SELECT work_item_id FROM work_items_current ORDER BY work_item_id")
-    ).fetchall()
+    scoped = work_item_id is not None
+
+    if scoped:
+        wi_rows = conn.execute(
+            SQL("SELECT work_item_id FROM work_items_current WHERE work_item_id = %s"),
+            [work_item_id],
+        ).fetchall()
+    else:
+        wi_rows = conn.execute(
+            SQL("SELECT work_item_id FROM work_items_current ORDER BY work_item_id")
+        ).fetchall()
 
     wi_ids = {row["work_item_id"] for row in wi_rows}
 
@@ -198,42 +209,73 @@ def _replay_inner(
     halted_count = 0
     total_warnings = 0
 
-    all_events = conn.execute(
-        SQL(
-            f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq"
-        ),
-    ).fetchall()
+    if scoped:
+        all_events = conn.execute(
+            SQL(
+                f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"
+            ),
+            [work_item_id],
+        ).fetchall()
+    else:
+        all_events = conn.execute(
+            SQL(
+                f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq"
+            ),
+        ).fetchall()
 
     events_by_wi: dict = {}
     for evt in all_events:
         wid = evt["work_item_id"]
         events_by_wi.setdefault(wid, []).append(evt)
 
-    orphan_events = set(events_by_wi.keys()) - wi_ids
-    for orphan_id in orphan_events:
-        orphan_evts = events_by_wi[orphan_id]
-        is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
-        if not is_created:
-            halted_count += 1
-            log.error(
-                "replay.orphan_events",
-                work_item_id=str(orphan_id),
-                event_count=len(orphan_evts),
-            )
-            conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                    "VALUES (%s, %s, %s, %s)"
-                ).format(Identifier(report_table)),
-                [orphan_id, "halted", "Orphaned events with no work_item and no created event", 0],
-            )
-        else:
-            total_warnings += 1
-            log.warning(
-                "replay.orphan_work_item",
-                work_item_id=str(orphan_id),
-                event_count=len(orphan_evts),
-            )
+    if not scoped:
+        orphan_events = set(events_by_wi.keys()) - wi_ids
+        for orphan_id in orphan_events:
+            orphan_evts = events_by_wi[orphan_id]
+            is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
+            if not is_created:
+                halted_count += 1
+                log.error(
+                    "replay.orphan_events",
+                    work_item_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+                conn.execute(
+                    SQL(
+                        "INSERT INTO {} (work_item_id, category, detail, warnings) "
+                        "VALUES (%s, %s, %s, %s)"
+                    ).format(Identifier(report_table)),
+                    [
+                    orphan_id, "halted",
+                    "Orphaned events with no work_item and no created event", 0,
+                ],
+                )
+            else:
+                total_warnings += 1
+                log.warning(
+                    "replay.orphan_work_item",
+                    work_item_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+
+    if scoped and work_item_id not in wi_ids:
+        orphan_evts = events_by_wi.get(work_item_id, [])
+        halted_count += 1
+        log.error(
+            "replay.projection_row_missing",
+            work_item_id=str(work_item_id),
+            event_count=len(orphan_evts),
+        )
+        conn.execute(
+            SQL(
+                "INSERT INTO {} (work_item_id, category, detail, warnings) "
+                "VALUES (%s, %s, %s, %s)"
+            ).format(Identifier(report_table)),
+            [
+                work_item_id, "halted",
+                "events exist but projection row missing from work_items_current", 0,
+            ],
+        )
 
     for row in wi_rows:
         wi_id = row["work_item_id"]
@@ -336,37 +378,38 @@ def _replay_inner(
             ],
         )
 
-    global_ordered = sorted(all_events, key=lambda e: e["global_seq"])
-    total_warnings += _verify_global_hash_chain(global_ordered)
+    if not scoped:
+        global_ordered = sorted(all_events, key=lambda e: e["global_seq"])
+        total_warnings += _verify_global_hash_chain(global_ordered)
 
-    if global_ordered:
-        last = global_ordered[-1]
-        last_env = last.get("canonical_envelope")
-        last_sig = last.get("signature")
-        if last_env is not None and last_sig is not None:
-            from ._signing_scheme import resolve_hash_function
+        if global_ordered:
+            last = global_ordered[-1]
+            last_env = last.get("canonical_envelope")
+            last_sig = last.get("signature")
+            if last_env is not None and last_sig is not None:
+                from ._signing_scheme import resolve_hash_function
 
-            computed_head = resolve_hash_function("sha-256")(
-                bytes(last_env) + bytes(last_sig)
-            ).digest()
-            head_row = conn.execute(
-                SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
-            ).fetchone()
-            if (
-                head_row is not None
-                and head_row["head_hash"] is not None
-                and not _hmac.compare_digest(bytes(head_row["head_hash"]), computed_head)
-            ):
-                total_warnings += 1
-                log.warning(
-                    "replay.global_chain_head_mismatch",
-                    detail=(
-                        "event_chain_head does not match the last appended event; "
-                        "a tail event may have been deleted or the head tampered"
-                    ),
-                )
+                computed_head = resolve_hash_function("sha-256")(
+                    bytes(last_env) + bytes(last_sig)
+                ).digest()
+                head_row = conn.execute(
+                    SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
+                ).fetchone()
+                if (
+                    head_row is not None
+                    and head_row["head_hash"] is not None
+                    and not _hmac.compare_digest(bytes(head_row["head_hash"]), computed_head)
+                ):
+                    total_warnings += 1
+                    log.warning(
+                        "replay.global_chain_head_mismatch",
+                        detail=(
+                            "event_chain_head does not match the last appended event; "
+                            "a tail event may have been deleted or the head tampered"
+                        ),
+                    )
 
-    if verify_timestamps:
+    if verify_timestamps and not scoped:
         from ._timestamping import TSAConfig, compute_merkle_root, verify_tsa_token
 
         batch_rows = conn.execute(
@@ -432,6 +475,10 @@ def _replay_inner(
                 count=len(uncovered),
                 sample=uncovered[:10],
             )
+
+    if scoped:
+        total_warnings += 1
+        log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
     return ReplayReport(
         table_name=replay_table,

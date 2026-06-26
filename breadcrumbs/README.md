@@ -41,6 +41,7 @@ _(none)_
 | 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | accepted |
 | 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | accepted |
 | 308 | Four signing envelope versions with complex backward-compat retry — correctness minefield | medium | proposed |
+| 310 | replay reads events and live projection in separate statements under READ COMMITTED — scoped and full replay can report false drift under concurrent writes | high | proposed |
 
 ## Resolved
 

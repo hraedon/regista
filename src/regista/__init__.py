@@ -1168,6 +1168,7 @@ class Regista:
         *,
         continue_on_revoked: bool = False,
         verify_timestamps: bool = False,
+        work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:
         """Rebuild projection from the event log and compare with live state.
 
@@ -1176,6 +1177,9 @@ class Regista:
                 of halting replay.
             verify_timestamps: Check that events are covered by confirmed TSP
                 batches and emit warnings for uncovered events.
+            work_item_id: Scope replay to a single work item. Global chain and
+                timestamp coverage checks are skipped; one warning is emitted
+                to note the scoped verification.
 
         Returns:
             ``ReplayReport`` with counts of ok, drift, halted, and warnings.
@@ -1195,10 +1199,26 @@ class Regista:
         timer = OpTimer(self._project, "replay")
         try:
             with self._mgr.transaction() as conn:
+                if work_item_id is not None:
+                    row = conn.execute(
+                        "SELECT 1 FROM work_items_current WHERE work_item_id = %s",
+                        [work_item_id],
+                    ).fetchone()
+                    if row is None:
+                        evt = conn.execute(
+                            "SELECT 1 FROM events WHERE work_item_id = %s",
+                            [work_item_id],
+                        ).fetchone()
+                        if evt is None:
+                            raise RegistaError(
+                                ErrorCode.WORK_ITEM_NOT_FOUND,
+                                f"Work item {work_item_id} not found for scoped replay",
+                            )
                 report = _replay(
                     conn, self._mgr.schema, self._project, self._keys,
                     continue_on_revoked=continue_on_revoked,
                     verify_timestamps=verify_timestamps,
+                    work_item_id=work_item_id,
                 )
 
             if report.replayed_drift > 0:
