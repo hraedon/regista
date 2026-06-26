@@ -488,78 +488,96 @@ def verify_tsa_token_full(
         return False, "Verification failed with exception"
 
 
-def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
+def trigger_timestamping(mgr, config: TSAConfig) -> TimestampBatch | None:
     import structlog
 
     log = structlog.get_logger()
-    batch_row = conn.execute(
-        "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
-    ).fetchone()
-    last_confirmed_seq = batch_row["max_seq"] or 0
 
-    rows = conn.execute(
-        "SELECT event_id, global_seq, timestamp FROM events "
-        "WHERE global_seq > %s ORDER BY global_seq LIMIT %s",
-        [last_confirmed_seq, config.batch_size],
-    ).fetchall()
-    if not rows:
-        return None
+    with mgr.transaction() as conn:
+        batch_row = conn.execute(
+            "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
+        ).fetchone()
+        last_confirmed_seq = batch_row["max_seq"] or 0
 
-    event_ids = [r["event_id"] for r in rows]
-    merkle_root = compute_merkle_root(event_ids)
-    first_global_seq = rows[0]["global_seq"]
-    last_global_seq = rows[-1]["global_seq"]
-    first_event_at = rows[0]["timestamp"]
-    last_event_at = rows[-1]["timestamp"]
+        rows = conn.execute(
+            "SELECT event_id, global_seq, timestamp FROM events "
+            "WHERE global_seq > %s ORDER BY global_seq LIMIT %s",
+            [last_confirmed_seq, config.batch_size],
+        ).fetchall()
+        if not rows:
+            return None
 
-    batch_id = uuid.uuid4()
-    conn.execute(
-        "INSERT INTO tsp_batches "
-        "(batch_id, merkle_root, first_global_seq, last_global_seq, "
-        "first_event_at, last_event_at, event_count, status, submitted_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())",
-        [
-            batch_id,
-            merkle_root,
-            first_global_seq,
-            last_global_seq,
-            first_event_at,
-            last_event_at,
-            len(rows),
-            "pending",
-        ],
-    )
-    log.info(
-        "timestamping.batch_created",
-        batch_id=str(batch_id),
-        event_count=len(rows),
-        first_seq=first_global_seq,
-        last_seq=last_global_seq,
-    )
+        event_ids = [r["event_id"] for r in rows]
+        merkle_root = compute_merkle_root(event_ids)
+        first_global_seq = rows[0]["global_seq"]
+        last_global_seq = rows[-1]["global_seq"]
+        first_event_at = rows[0]["timestamp"]
+        last_event_at = rows[-1]["timestamp"]
+
+        batch_id = uuid.uuid4()
+        conn.execute(
+            "INSERT INTO tsp_batches "
+            "(batch_id, merkle_root, first_global_seq, last_global_seq, "
+            "first_event_at, last_event_at, event_count, status, submitted_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())",
+            [
+                batch_id,
+                merkle_root,
+                first_global_seq,
+                last_global_seq,
+                first_event_at,
+                last_event_at,
+                len(rows),
+                "pending",
+            ],
+        )
+        log.info(
+            "timestamping.batch_created",
+            batch_id=str(batch_id),
+            event_count=len(rows),
+            first_seq=first_global_seq,
+            last_seq=last_global_seq,
+        )
 
     now_utc = datetime.now(UTC)
     try:
         token = submit_to_tsa(merkle_root, config)
         confirmed_at = datetime.now(UTC)
-        # Derive tsa_timestamp from the token's TSTInfo gen_time when possible.
         tsa_timestamp: datetime | None = None
         try:
             tsa_timestamp = _parse_tst_info(token)["gen_time"].native
             if tsa_timestamp is not None and tsa_timestamp.tzinfo is None:
                 tsa_timestamp = tsa_timestamp.replace(tzinfo=UTC)
         except Exception:
-            import structlog
             structlog.get_logger().warning(
                 "timestamping.tsa_token_gen_time_parse_failed",
                 exc_info=True,
             )
             tsa_timestamp = confirmed_at
-        conn.execute(
-            "UPDATE tsp_batches SET status = 'confirmed', "
-            "tsa_token = %s, tsa_timestamp = %s, confirmed_at = now() "
-            "WHERE batch_id = %s",
-            [token, tsa_timestamp, batch_id],
-        )
+        with mgr.transaction() as conn:
+            row = conn.execute(
+                "UPDATE tsp_batches SET status = 'confirmed', "
+                "tsa_token = %s, tsa_timestamp = %s, confirmed_at = now() "
+                "WHERE batch_id = %s AND status = 'pending' "
+                "RETURNING status",
+                [token, tsa_timestamp, batch_id],
+            ).fetchone()
+            if row is None:
+                log.warning(
+                    "timestamping.batch_swept_during_submission",
+                    batch_id=str(batch_id),
+                )
+                return TimestampBatch(
+                    batch_id=batch_id,
+                    event_ids=event_ids,
+                    merkle_root=merkle_root,
+                    tsa_token=token,
+                    tsa_timestamp=tsa_timestamp,
+                    submitted_at=now_utc,
+                    confirmed_at=None,
+                    status="failed",
+                    error_message="batch swept as stale during TSA submission",
+                )
         return TimestampBatch(
             batch_id=batch_id,
             event_ids=event_ids,
@@ -571,10 +589,12 @@ def trigger_timestamping(conn, config: TSAConfig) -> TimestampBatch | None:
             status="confirmed",
         )
     except Exception as e:
-        conn.execute(
-            "UPDATE tsp_batches SET status = 'failed', error_message = %s WHERE batch_id = %s",
-            [str(e)[:500], batch_id],
-        )
+        with mgr.transaction() as conn:
+            conn.execute(
+                "UPDATE tsp_batches SET status = 'failed', "
+                "error_message = %s WHERE batch_id = %s AND status = 'pending'",
+                [str(e)[:500], batch_id],
+            )
         log.error("timestamping.tsa_failed", batch_id=str(batch_id), error=str(e))
         return TimestampBatch(
             batch_id=batch_id,
@@ -629,3 +649,31 @@ def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
             )
         )
     return result
+
+
+def sweep_stale_timestamp_batches(mgr, max_age_seconds: int = 300) -> int:
+    import structlog
+
+    if max_age_seconds <= 0:
+        from ._errors import ErrorCode, RegistaError
+
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "max_age_seconds must be a positive integer",
+        )
+    log = structlog.get_logger()
+    with mgr.transaction() as conn:
+        rows = conn.execute(
+            "UPDATE tsp_batches SET status = 'failed', "
+            "error_message = 'stale: no confirmation within threshold' "
+            "WHERE status = 'pending' "
+            "AND submitted_at < now() - make_interval(secs => %s) "
+            "RETURNING batch_id",
+            [max_age_seconds],
+        ).fetchall()
+        for r in rows:
+            log.warning(
+                "timestamping.swept_stale_batch",
+                batch_id=str(r["batch_id"]),
+            )
+        return len(rows)

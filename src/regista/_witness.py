@@ -641,3 +641,30 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     )
 
     return total
+
+
+def sweep_stuck_witness_receipts(mgr: ConnectionManager, max_age_seconds: int = 300) -> int:
+    import structlog
+
+    if max_age_seconds <= 0:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "max_age_seconds must be a positive integer",
+        )
+    log = structlog.get_logger()
+    with mgr.transaction() as conn:
+        rows = conn.execute(
+            "UPDATE witness_receipts "
+            "SET status = 'pending' "
+            "WHERE status = 'in_progress' "
+            "AND last_attempt_at < now() - make_interval(secs => %s) "
+            "RETURNING receipt_id, witness_id",
+            [max_age_seconds],
+        ).fetchall()
+        for r in rows:
+            log.info(
+                "witness.swept_stuck_receipt",
+                receipt_id=str(r["receipt_id"]),
+                witness_id=str(r["witness_id"]),
+            )
+        return len(rows)

@@ -262,10 +262,13 @@ class TestBC228UTCTimestamps:
             MagicMock(),  # INSERT
             MagicMock(),  # UPDATE (failed)
         ]
+        mock_conn = MagicMock()
         mock_conn.execute.side_effect = call_results
+        mock_mgr = MagicMock()
+        mock_mgr.transaction.return_value.__enter__.return_value = mock_conn
 
         with patch("regista._timestamping.submit_to_tsa", side_effect=RuntimeError("tsa down")):
-            result = trigger_timestamping(mock_conn, cfg)
+            result = trigger_timestamping(mock_mgr, cfg)
 
         assert result is not None
         assert result.status == "failed"
@@ -294,9 +297,11 @@ class TestBC228UTCTimestamps:
         ]
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = call_results
+        mock_mgr = MagicMock()
+        mock_mgr.transaction.return_value.__enter__.return_value = mock_conn
 
         with patch("regista._timestamping.submit_to_tsa", return_value=token):
-            result = trigger_timestamping(mock_conn, cfg)
+            result = trigger_timestamping(mock_mgr, cfg)
 
         assert result is not None
         assert result.status == "confirmed"
@@ -597,7 +602,7 @@ class TestPlan014GlobalSeq:
 
             # Patch submit_to_tsa to return a fake token that passes verify.
             with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
-                batch = trigger_timestamping(raw_conn, cfg)
+                batch = trigger_timestamping(timestamp_regista._mgr, cfg)
 
             assert batch is not None
             assert batch.status == "confirmed"

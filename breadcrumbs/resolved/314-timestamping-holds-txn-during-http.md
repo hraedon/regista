@@ -2,7 +2,7 @@
 number: "314"
 title: trigger_timestamping holds a DB transaction open during HTTP call to TSA
 severity: high
-status: proposed
+status: resolved
 kind: bug
 author: code-review
 date: "2026-06-26"

@@ -2,7 +2,7 @@
 number: "315"
 title: No recovery sweep for stuck in_progress witness receipts
 severity: high
-status: proposed
+status: resolved
 kind: bug
 author: code-review
 date: "2026-06-26"

@@ -1208,6 +1208,12 @@ class InMemoryRegista:
 
         return total
 
+    def sweep_stuck_witness_receipts(self, max_age_seconds: int = 300) -> int:
+        return self.witnesses.sweep_stuck(max_age_seconds)
+
+    def sweep_stale_timestamp_batches(self, max_age_seconds: int = 300) -> int:
+        return 0
+
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import event_matches_filter
 
@@ -1295,6 +1301,24 @@ class _InMemoryWitnessOps:
 
     def deliver(self) -> int:
         return self._sub.deliver_pending_witness_receipts()
+
+    def sweep_stuck(self, max_age_seconds: int = 300) -> int:
+        if max_age_seconds <= 0:
+            from ._errors import ErrorCode, RegistaError
+
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "max_age_seconds must be a positive integer",
+            )
+        now = datetime.now(UTC)
+        threshold = now - timedelta(seconds=max_age_seconds)
+        count = 0
+        for r in self._sub._witness_receipts:
+            if r["status"] == "in_progress" and r.get("last_attempt_at") is not None:
+                if r["last_attempt_at"] < threshold:
+                    r["status"] = "pending"
+                    count += 1
+        return count
 
     def create_receipts_for_event(self, event_dict: dict) -> int:
         from regista._types import Event

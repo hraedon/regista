@@ -528,8 +528,12 @@ class TimestampOps:
             )
         from ._timestamping import trigger_timestamping
 
-        with self._mgr.transaction() as conn:
-            return trigger_timestamping(conn, self._tsa_config)
+        return trigger_timestamping(self._mgr, self._tsa_config)
+
+    def sweep_stale(self, max_age_seconds: int = 300) -> int:
+        from ._timestamping import sweep_stale_timestamp_batches
+
+        return sweep_stale_timestamp_batches(self._mgr, max_age_seconds)
 
     def list_batches(self, status: str | None = None) -> list[Any]:
         from ._timestamping import list_batches
@@ -795,6 +799,11 @@ class WitnessOps:
 
     def deliver(self) -> int:
         return _deliver_pending_receipts(self._mgr, self._project)
+
+    def sweep_stuck(self, max_age_seconds: int = 300) -> int:
+        from ._witness import sweep_stuck_witness_receipts
+
+        return sweep_stuck_witness_receipts(self._mgr, max_age_seconds)
 
     def create_receipts_for_event(self, event_dict: dict) -> int:
         return _create_receipts(self._mgr, event_dict)

@@ -70,11 +70,15 @@ class MaintenanceThread:
 
                 self._regista.sweep_expired_hook_leases()
 
+                self._sweep_stuck_witness_receipts()
+
                 self._fire_due_recurrences()
 
                 self._regista.ensure_event_partitions(3)
 
                 self._regista.refresh_hook_queue_metrics()
+
+                self._sweep_stale_timestamp_batches()
 
                 self._maybe_timestamp_events()
 
@@ -149,4 +153,26 @@ class MaintenanceThread:
                     "maintenance.recurrence_fire_error",
                     rule_id=str(rule["rule_id"]),
                     error=str(e),
+                )
+
+    def _sweep_stuck_witness_receipts(self) -> None:
+        witness_ops = getattr(self._regista, "witnesses", None)
+        if witness_ops is not None and hasattr(witness_ops, "sweep_stuck"):
+            count = witness_ops.sweep_stuck()
+            if count > 0:
+                log.info(
+                    "maintenance.witness_receipts_swept",
+                    project=self._project,
+                    count=count,
+                )
+
+    def _sweep_stale_timestamp_batches(self) -> None:
+        ts_ops = getattr(self._regista, "timestamping", None)
+        if ts_ops is not None and hasattr(ts_ops, "sweep_stale"):
+            count = ts_ops.sweep_stale()
+            if count > 0:
+                log.warning(
+                    "maintenance.timestamp_batches_swept",
+                    project=self._project,
+                    count=count,
                 )

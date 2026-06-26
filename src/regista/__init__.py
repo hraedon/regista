@@ -1482,6 +1482,14 @@ class Regista:
         """Manually trigger one delivery cycle. Returns count of receipts processed."""
         return self.witnesses.deliver()
 
+    def sweep_stuck_witness_receipts(self, max_age_seconds: int = 300) -> int:
+        """Reset ``in_progress`` witness receipts stuck for longer than the threshold."""
+        return self.witnesses.sweep_stuck(max_age_seconds)
+
+    def sweep_stale_timestamp_batches(self, max_age_seconds: int = 300) -> int:
+        """Mark ``pending`` timestamp batches older than the threshold as ``failed``."""
+        return self.timestamping.sweep_stale(max_age_seconds)
+
     @staticmethod
     def validate_actor_metadata(        event: Event,
         expected_schema: dict | None = None,
