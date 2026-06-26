@@ -862,9 +862,9 @@ class InMemoryRegista:
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
-        timestamp_interval: float = 300.0,
-        tsa_config: object | None = None,
-        witness_interval: float = 60.0,
+        timestamp_interval: float = 3600.0,
+        tsa_config=None,
+        witness_interval: float = 30.0,
     ) -> None:
         pass
 

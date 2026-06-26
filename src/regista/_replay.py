@@ -381,7 +381,7 @@ def _replay_inner(
     if not scoped:
         global_ordered = sorted(
             all_events,
-            key=lambda e: (e["global_seq"] is None, e["global_seq"] or 0),
+            key=lambda e: (e["global_seq"] if e["global_seq"] is not None else 0),
         )
         total_warnings += _verify_global_hash_chain(global_ordered)
 

@@ -558,5 +558,21 @@ class TestHookNotFound:
 
 class TestDeadLetterLimit:
     def test_list_dead_lettered_hooks_respects_limit(self, regista):
+        from datetime import UTC, datetime
+
+        with raw_transaction(regista) as conn:
+            for i in range(10):
+                conn.execute(
+                    "INSERT INTO hook_dead_letter "
+                    "(event_id, hook_name, hook_type, payload, retry_count, "
+                    "max_retries, error_message, dead_lettered_at, original_hook_queue_id) "
+                    "VALUES (%s, %s, %s, NULL, %s, %s, %s, %s, %s)",
+                    [
+                        uuid.uuid4(), f"test_hook_{i}", "event",
+                        3, 3, "test error", datetime.now(UTC), i + 1000,
+                    ],
+                )
         result = regista.list_dead_lettered_hooks(limit=5)
-        assert len(result) <= 5
+        assert len(result) == 5
+        all_entries = regista.list_dead_lettered_hooks(limit=100)
+        assert len(all_entries) == 10

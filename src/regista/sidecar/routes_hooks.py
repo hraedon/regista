@@ -41,7 +41,10 @@ def _filter_hooks_by_workflow_access(regista, actor, hooks):
         if workflow_name is not None and workflow_name in allowed:
             result.append(ctx)
         elif workflow_name is None:
-            regista.fail_hook(ctx.hook_queue_id, "work_item_not_found")
+            try:
+                regista.fail_hook(ctx.hook_queue_id, "work_item_not_found")
+            except Exception:
+                _release_hook(regista, ctx.hook_queue_id)
         else:
             _release_hook(regista, ctx.hook_queue_id)
     return result

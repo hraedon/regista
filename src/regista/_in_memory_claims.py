@@ -101,7 +101,7 @@ def in_memory_heartbeat_claim(
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
 ) -> Claim:
-    validate_mutation_params(actor_id=actor_id, ttl_seconds=ttl_seconds)
+    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
 

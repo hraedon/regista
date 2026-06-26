@@ -114,7 +114,6 @@ class HeartbeatClaimRequest(BaseModel):
     ttl_seconds: int = 300
     expected_attempt_number: int | None = None
     coalesce_threshold: float | None = None
-    actor_kind: str = "agent"
 
 
 class ReleaseClaimRequest(BaseModel):
