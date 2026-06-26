@@ -226,6 +226,8 @@ def in_memory_replay(
                             scheme=scheme,
                             entity_kind=evt.entity_kind,
                             hash_alg=evt.hash_alg,
+                            prev_event_hash=evt.prev_event_hash,
+                            prev_global_event_hash=evt.prev_global_event_hash,
                         ):
                             raise RegistaError(
                                 ErrorCode.REPLAY_HALTED,

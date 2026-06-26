@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import uuid
 from pathlib import Path
 
@@ -73,11 +74,19 @@ def test_repair_checksums_no_drift(fresh_project):
         mgr.close()
 
 
-def test_autocommit_migration_mode(fresh_project):
+def test_autocommit_migration_mode(fresh_project, tmp_path):
+    import regista._migrations as mig_mod
+
     project = fresh_project
-    migrations_dir = _migrations_dir()
+    real_migrations = Path(mig_mod._migrations_dir())
+    fake_migrations = tmp_path / "migrations"
+    shutil.copytree(real_migrations, fake_migrations)
+
+    original_migrations_dir = mig_mod._migrations_dir
+    mig_mod._migrations_dir = lambda: fake_migrations
+
     version = 999
-    path = migrations_dir / f"{version:03d}_test_concurrent.sql"
+    path = fake_migrations / f"{version:03d}_test_concurrent.sql"
     try:
         path.write_text(
             "-- regista: autocommit\n"
@@ -98,12 +107,11 @@ def test_autocommit_migration_mode(fresh_project):
             ).fetchone()
             assert row is not None
     finally:
-        if path.exists():
-            path.unlink()
-            with psycopg.connect(DSN) as conn:
-                conn.execute(SQL("SET search_path TO {}").format(Identifier(project)))
-                conn.execute("DROP INDEX IF EXISTS idx_test_concurrent")
-                conn.commit()
+        mig_mod._migrations_dir = original_migrations_dir
+        with psycopg.connect(DSN) as conn:
+            conn.execute(SQL("SET search_path TO {}").format(Identifier(project)))
+            conn.execute("DROP INDEX IF EXISTS idx_test_concurrent")
+            conn.commit()
 
 
 def test_cli_schema_repair_checksums(fresh_project, capsys):

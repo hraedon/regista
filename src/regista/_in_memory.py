@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,9 +10,9 @@ import structlog
 import yaml
 
 from ._contract import (
-    _ALLOWED_ENTITY_KINDS,
     Jsonb,
     validate_delegation_chain,
+    validate_entity_kind,
 )
 from ._errors import ErrorCode, RegistaError
 from ._event_store import InMemoryEventStore
@@ -41,6 +42,13 @@ from ._workflow import (
 log = structlog.get_logger()
 
 
+@dataclass(frozen=True)
+class TransportResult:
+    status_code: int
+    body: dict | None = None
+    error: str | None = None
+
+
 class InMemoryRegista:
     def __init__(
         self,
@@ -53,6 +61,7 @@ class InMemoryRegista:
         prometheus_registry=None,
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
+        witness_transport: Callable[..., TransportResult] | None = None,
     ) -> None:
         self._project = project
         self._key_set: KeySet | None = None
@@ -77,6 +86,7 @@ class InMemoryRegista:
         self._hook_consumer_running = False
         self._recurrence_rules: dict[uuid.UUID, dict] = {}
         self._strict_roles = strict_roles
+        self._witness_transport = witness_transport
         self._witnesses: dict[uuid.UUID, dict] = {}
         self._witness_receipts: list[dict] = []
 
@@ -92,6 +102,7 @@ class InMemoryRegista:
         prometheus_registry=None,
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
+        witness_transport: Callable[..., TransportResult] | None = None,
     ) -> InMemoryRegista:
         return cls(
             dsn, project, hmac_key_path,
@@ -99,6 +110,7 @@ class InMemoryRegista:
             prometheus_registry=prometheus_registry,
             strict_roles=strict_roles,
             strict_asymmetric=strict_asymmetric,
+            witness_transport=witness_transport,
         )
 
     def close(self) -> None:
@@ -308,11 +320,7 @@ class InMemoryRegista:
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
-        if entity_kind not in _ALLOWED_ENTITY_KINDS:
-            raise RegistaError(
-                ErrorCode.INVALID_ARGUMENT,
-                f"Unknown entity_kind {entity_kind!r}. Allowed: {sorted(_ALLOWED_ENTITY_KINDS)}",
-            )
+        validate_entity_kind(entity_kind)
         validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         evt = in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,
@@ -1027,11 +1035,173 @@ class InMemoryRegista:
             for key in ("submitted_at", "last_attempt_at", "confirmed_at", "created_at"):
                 if d.get(key) is not None:
                     d[key] = d[key].isoformat()
+            if d.get("witness_signature") is not None:
+                d["witness_signature"] = bytes(d["witness_signature"]).hex()
             results.append(d)
         return results[:limit]
 
     def deliver_pending_witness_receipts(self) -> int:
-        return 0
+        if self._witness_transport is None:
+            return 0
+        import hashlib
+        import hmac as _hmac
+        import json
+
+        total = 0
+        active_witnesses = [
+            w for w in self._witnesses.values()
+            if w["status"] == "active"
+        ]
+
+        for w in active_witnesses:
+            witness_id = w["witness_id"]
+            url = w["url"]
+            base_headers = dict(w["headers"]) if w["headers"] else {}
+            max_retries = w["max_retries"]
+            max_failures = w["max_failures"]
+            sign_secret = w["sign_secret"]
+            witness_key_scheme = w["key_scheme"]
+
+            pending = [
+                r for r in self._witness_receipts
+                if r["witness_id"] == witness_id and r["status"] == "pending"
+            ]
+            if not pending:
+                continue
+
+            for receipt in pending:
+                receipt["status"] = "in_progress"
+                receipt["last_attempt_at"] = datetime.now(UTC)
+
+            for receipt in pending:
+                event_id = receipt["event_id"]
+                event = self._store.find_by_event_id(event_id)
+                if event is None:
+                    receipt["status"] = "pending"
+                    receipt["error_message"] = "event not found"
+                    receipt["last_attempt_at"] = datetime.now(UTC)
+                    continue
+
+                evt_dict = event.to_dict()
+                payload = {
+                    "event": evt_dict,
+                    "receipt_id": str(receipt["receipt_id"]),
+                    "witness_id": str(witness_id),
+                    "submitted_at": datetime.now(UTC).isoformat(),
+                }
+                body = json.dumps(payload)
+                req_headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "regista-delivery/0",
+                    **base_headers,
+                }
+                if sign_secret:
+                    sig = _hmac.new(
+                        sign_secret, body.encode(), hashlib.sha256,
+                    ).hexdigest()
+                    req_headers["X-Regista-Signature"] = f"sha256={sig}"
+
+                try:
+                    result = self._witness_transport(url, req_headers, payload)
+                except Exception as exc:
+                    result = TransportResult(
+                        status_code=0, error=str(exc)[:500],
+                    )
+
+                now = datetime.now(UTC)
+
+                if 200 <= result.status_code < 300 and result.error is None:
+                    witness_sig = None
+                    if result.body and "witness_signature" in result.body:
+                        try:
+                            witness_sig = bytes.fromhex(
+                                result.body["witness_signature"],
+                            )
+                        except (ValueError, TypeError):
+                            witness_sig = None
+
+                    witness_pubkey = w.get("public_key")
+                    sig_verified = True
+                    if witness_key_scheme == "ed25519":
+                        sig_verified = False
+                        if (
+                            witness_pubkey is not None
+                            and witness_sig is not None
+                            and event.canonical_envelope is not None
+                            and event.payload_canonical_hash is not None
+                        ):
+                            try:
+                                from ._signing_scheme import Ed25519Scheme
+
+                                sig_verified = Ed25519Scheme().verify(
+                                    event.canonical_envelope,
+                                    witness_sig,
+                                    event.payload_canonical_hash,
+                                    witness_pubkey,
+                                )
+                            except Exception:
+                                sig_verified = False
+
+                    if sig_verified:
+                        receipt["status"] = "confirmed"
+                        receipt["confirmed_at"] = now
+                        receipt["witness_response"] = result.body
+                        receipt["witness_signature"] = witness_sig
+                        receipt["witness_scheme"] = witness_key_scheme
+                        receipt["submitted_at"] = receipt["submitted_at"] or now
+                        receipt["error_message"] = None
+                        w["consecutive_failures"] = 0
+                        w["last_success_at"] = now
+                        w["updated_at"] = now
+                        total += 1
+                    else:
+                        error_msg = "ed25519 signature verification failed"
+                        receipt["retry_count"] += 1
+                        receipt["last_attempt_at"] = now
+                        receipt["error_message"] = error_msg
+                        receipt["witness_scheme"] = witness_key_scheme
+                        receipt["status"] = "pending"
+
+                        w["consecutive_failures"] += 1
+                        w["last_failure_at"] = now
+                        w["updated_at"] = now
+
+                        if receipt["retry_count"] >= max_retries:
+                            receipt["status"] = "paused"
+
+                        if w["consecutive_failures"] >= max_failures:
+                            w["status"] = "paused"
+                            log.warning(
+                                "witness.auto_paused",
+                                project=self._project,
+                                witness_id=str(witness_id),
+                                consecutive_failures=w["consecutive_failures"],
+                            )
+                else:
+                    error_msg = result.error or f"HTTP {result.status_code}"
+                    receipt["retry_count"] += 1
+                    receipt["last_attempt_at"] = now
+                    receipt["error_message"] = error_msg
+                    receipt["witness_scheme"] = witness_key_scheme
+                    receipt["status"] = "pending"
+
+                    w["consecutive_failures"] += 1
+                    w["last_failure_at"] = now
+                    w["updated_at"] = now
+
+                    if receipt["retry_count"] >= max_retries:
+                        receipt["status"] = "paused"
+
+                    if w["consecutive_failures"] >= max_failures:
+                        w["status"] = "paused"
+                        log.warning(
+                            "witness.auto_paused",
+                            project=self._project,
+                            witness_id=str(witness_id),
+                            consecutive_failures=w["consecutive_failures"],
+                        )
+
+        return total
 
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import event_matches_filter
@@ -1054,6 +1224,7 @@ class InMemoryRegista:
                     "confirmed_at": None,
                     "witness_signature": None,
                     "witness_response": None,
+                    "witness_scheme": None,
                     "error_message": None,
                     "created_at": datetime.now(UTC),
                 })

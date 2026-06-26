@@ -34,16 +34,18 @@ _(none)_
 | # | Title | Severity | Status |
 |---|---|---|---|
 | 213 | heartbeat_claim return type doesn't distinguish TTL extension from event emission | low | accepted |
-| 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | accepted |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
-| 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | accepted |
-| 311 | Replay verify_event call omits chain fields — stored envelope is the only matching candidate for chained events | medium | proposed |
+| 312 | InMemory witness delivery has no concurrency lock — double-delivery risk under start_maintenance | medium | proposed |
+| 313 | Sidecar hook authorization TOCTOU — workflow check and complete/fail run in separate transactions | medium | proposed |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 311 | Replay verify_event call omits chain fields — stored envelope is the only matching candidate for chained events | medium | Fixed — replay now forwards `prev_event_hash` and `prev_global_event_hash` to `verify_event()`. `global_seq` intentionally NOT forwarded (post-signing, not in envelope per spec §17.11). `verify_event_with_public_key()` also confirmed correct. 2 regression tests (Postgres + InMemory). |
+| 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | Fixed — pluggable `witness_transport` callable on `InMemoryRegista`; `deliver_pending_witness_receipts()` now delivers via transport with retry, auto-pause, HMAC signature. Ed25519 signature verification added per adversarial review. 19 tests. |
+| 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | Fixed — `allowed_workflows` field on `AuthenticatedActor` with `can_access_workflow()` method; token file parsing with type validation and empty-list rejection. Claim filtering releases filtered hooks back to pending (per adversarial review). Complete/fail enforce 403 for disallowed workflows. 6 tests. |
 | 310 | replay reads events and live projection in separate statements under READ COMMITTED — scoped and full replay can report false drift under concurrent writes | high | Fixed — replay now runs at REPEATABLE READ via `transaction_repeatable_read()`; spec §17.1 amended. SSL breakage fixed per adversarial review (`conn.isolation_level`). 5 tests including concurrency test. |
 | 308 | Four signing envelope versions with complex backward-compat retry — correctness minefield | medium | Fixed — `verify_event()` filters backward-compat candidates by stored envelope version. `classify_envelope_version()` v3 detection fixed. Dead code removed. 4 tests. |
 | 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | Fixed — sidecar uses `Literal["work_item"]`; core API + InMemory validate against centralized `_ALLOWED_ENTITY_KINDS` in `_contract.py`. Docstring fixed. 7 tests. |

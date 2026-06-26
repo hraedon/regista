@@ -267,3 +267,57 @@ class TestBC233HashChainInMemory:
         assert len(evts) == 2
         assert evts[0].prev_event_hash is None
         assert evts[1].prev_event_hash is not None
+
+
+class TestBC311ReplayChainFields:
+    def test_replay_succeeds_with_missing_envelope_postgres(self, regista):
+        sub = regista
+        sub.register_actor_role("agent-1", "agent")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "bc311"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+
+        with sub._mgr.connect() as conn:
+            conn.execute(
+                "UPDATE events SET canonical_envelope = NULL "
+                "WHERE work_item_id = %s AND event_seq = 2",
+                [wi.work_item_id],
+            )
+
+        report = sub.replay()
+        assert report.halted == 0
+        assert report.warnings == 0
+
+    def test_replay_succeeds_with_missing_envelope_in_memory(self):
+        import dataclasses
+
+        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "bc311"},
+        )
+        sub.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+
+        for wid, evts in sub._store.events.items():
+            for i, evt in enumerate(evts):
+                if evt.event_seq == 2:
+                    evts[i] = dataclasses.replace(evt, canonical_envelope=None)
+                    break
+
+        report = sub.replay()
+        assert report.halted == 0
+        assert report.warnings == 0

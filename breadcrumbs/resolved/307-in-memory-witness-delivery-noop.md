@@ -2,7 +2,7 @@
 number: "307"
 title: "InMemory witness delivery is a noop — receipts created but never delivered"
 severity: low
-status: accepted
+status: resolved
 kind: design
 author: structural-review
 date: "2026-06-25"
@@ -40,3 +40,16 @@ testing correctly uses the Postgres integration tests.
 If future testing needs delivery lifecycle without a real HTTP server, a
 pluggable transport interface (injectable callable) would be the right design —
 not an HTTP mock inside InMemory.
+
+## Resolution
+
+Implemented pluggable transport interface per the design suggestion above.
+`InMemoryRegista.__init__` now accepts an optional `witness_transport:
+Callable[[str, dict, dict], TransportResult]` parameter. When set,
+`deliver_pending_witness_receipts()` iterates active witnesses, finds pending
+receipts, builds the delivery payload (event dict + HMAC signature header,
+matching Postgres format), calls the transport, and updates receipt/witness
+state (confirmed, retry, pause) following the same logic as the Postgres
+backend. When no transport is provided, the method returns 0 (backward
+compatible). `TransportResult` is a frozen dataclass with `status_code`,
+`body`, and `error` fields. 19 tests in `tests/test_witness_in_memory.py`.

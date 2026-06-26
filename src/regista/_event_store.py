@@ -6,7 +6,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
-from ._contract import Jsonb, check_expected_seq, check_idempotency, check_key_role_policy
+from ._contract import (
+    Jsonb,
+    check_expected_seq,
+    check_idempotency,
+    check_key_role_policy,
+    validate_entity_kind,
+)
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import sign_event
@@ -64,6 +70,7 @@ def append_event(
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
+    validate_entity_kind(entity_kind)
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
     existing_evt = store.find_by_event_id(event_id)

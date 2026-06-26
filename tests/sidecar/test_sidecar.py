@@ -8,6 +8,8 @@ import uuid
 
 import pytest
 
+from regista._errors import RegistaError
+
 pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
 
@@ -869,3 +871,366 @@ class TestErrorCodeCoverage:
             assert status in valid, (
                 f"_STATUS_MAP[{code!r}] = {status} is not a standard HTTP error status"
             )
+
+
+HOOK_TEST_WORKFLOW_B_YAML = """\
+name: hook_test_workflow_b
+version: 1
+regista_version: "0.1.0"
+
+states:
+  - name: new
+    initial: true
+  - name: done
+    terminal: true
+
+transitions:
+  - name: complete
+    from: new
+    to: done
+    hooks:
+      - on_complete_b
+
+roles:
+  - name: agent
+
+work_item_types:
+  - name: task
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+
+link_types: []
+attempt_threshold: 3
+"""
+
+
+def _make_workflow_scoped_token_file():
+    scoped_raw = "scoped-secret-token-abc"
+    scoped_sha256 = hashlib.sha256(scoped_raw.encode()).hexdigest()
+    admin_raw = "admin-all-workflows-token-xyz"
+    admin_sha256 = hashlib.sha256(admin_raw.encode()).hexdigest()
+    data = {
+        "tokens": [
+            {
+                "token_sha256": scoped_sha256,
+                "actor_id": "scoped-agent",
+                "actor_kind": "agent",
+                "allowed_roles": ["agent"],
+                "allowed_workflows": ["hook_test_workflow"],
+            },
+            {
+                "token_sha256": admin_sha256,
+                "actor_id": "admin-agent",
+                "actor_kind": "agent",
+                "allowed_roles": ["agent", "admin"],
+            },
+        ]
+    }
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    json.dump(data, f)
+    f.close()
+    return f.name, scoped_raw, admin_raw
+
+
+@pytest.fixture(scope="module")
+def scoped_token_file():
+    path, scoped_raw, admin_raw = _make_workflow_scoped_token_file()
+    yield path, scoped_raw, admin_raw
+    os.unlink(path)
+
+
+@pytest.fixture(scope="module")
+def scoped_client(regista_instance, scoped_token_file):
+    regista_instance.register_workflow(HOOK_TEST_WORKFLOW_YAML)
+    regista_instance.register_workflow(HOOK_TEST_WORKFLOW_B_YAML)
+    token_path, _, _ = scoped_token_file
+    from regista.sidecar.app import create_app
+    from regista.sidecar.auth import TokenRegistry
+
+    tokens = TokenRegistry.from_file(token_path)
+    app = create_app(regista_instance, tokens)
+    return TestClient(app)
+
+
+@pytest.fixture(scope="module")
+def scoped_headers(scoped_token_file):
+    _, scoped_raw, _ = scoped_token_file
+    return {"Authorization": f"Bearer {scoped_raw}"}
+
+
+@pytest.fixture(scope="module")
+def admin_all_workflows_headers(scoped_token_file):
+    _, _, admin_raw = scoped_token_file
+    return {"Authorization": f"Bearer {admin_raw}"}
+
+
+class TestHookWorkflowScoping:
+    def test_token_with_allowed_workflows_claims_only_matching_hooks(
+        self, scoped_client, scoped_headers, admin_all_workflows_headers,
+    ):
+        resp = scoped_client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "hook_test_workflow",
+                "work_item_type": "task",
+                "custom_fields": {"title": "scoped wf_a"},
+            },
+            headers=scoped_headers,
+        )
+        assert resp.status_code == 200
+        wi_a_id = resp.json()["work_item"]["work_item_id"]
+
+        scoped_client.post(
+            "/v1/register_actor_role",
+            json={"role": "agent"},
+            headers=scoped_headers,
+        )
+
+        resp = scoped_client.post(
+            "/v1/transition",
+            json={
+                "work_item_id": wi_a_id,
+                "transition_name": "complete",
+                "actor_metadata": {"role": "agent"},
+            },
+            headers=scoped_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = scoped_client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "hook_test_workflow_b",
+                "work_item_type": "task",
+                "custom_fields": {"title": "scoped wf_b"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        wi_b_id = resp.json()["work_item"]["work_item_id"]
+
+        scoped_client.post(
+            "/v1/register_actor_role",
+            json={"role": "agent"},
+            headers=admin_all_workflows_headers,
+        )
+
+        resp = scoped_client.post(
+            "/v1/transition",
+            json={
+                "work_item_id": wi_b_id,
+                "transition_name": "complete",
+                "actor_metadata": {"role": "agent"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = scoped_client.post(
+            "/v1/hooks/claim",
+            json={"max_batch": 10, "lease_seconds": 60},
+            headers=scoped_headers,
+        )
+        assert resp.status_code == 200
+        hooks = resp.json()
+        assert len(hooks) >= 1
+        for h in hooks:
+            assert h["hook_name"] == "on_complete"
+
+    def test_scoped_token_complete_forbidden_for_unallowed_workflow(
+        self, scoped_client, scoped_headers, admin_all_workflows_headers,
+    ):
+        resp = scoped_client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "hook_test_workflow_b",
+                "work_item_type": "task",
+                "custom_fields": {"title": "unauthorized wf_b"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        wi_b_id = resp.json()["work_item"]["work_item_id"]
+
+        scoped_client.post(
+            "/v1/register_actor_role",
+            json={"role": "agent"},
+            headers=admin_all_workflows_headers,
+        )
+
+        resp = scoped_client.post(
+            "/v1/transition",
+            json={
+                "work_item_id": wi_b_id,
+                "transition_name": "complete",
+                "actor_metadata": {"role": "agent"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = scoped_client.post(
+            "/v1/hooks/claim",
+            json={"max_batch": 10, "lease_seconds": 60},
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        wf_b_hooks = [
+            h for h in resp.json() if h["hook_name"] == "on_complete_b"
+        ]
+        assert len(wf_b_hooks) >= 1
+        hook_b_id = wf_b_hooks[0]["hook_queue_id"]
+
+        resp = scoped_client.post(
+            f"/v1/hooks/{hook_b_id}/complete",
+            json={},
+            headers=scoped_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_scoped_token_fail_forbidden_for_unallowed_workflow(
+        self, scoped_client, scoped_headers, admin_all_workflows_headers,
+    ):
+        resp = scoped_client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "hook_test_workflow_b",
+                "work_item_type": "task",
+                "custom_fields": {"title": "fail wf_b"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        wi_b_id = resp.json()["work_item"]["work_item_id"]
+
+        scoped_client.post(
+            "/v1/register_actor_role",
+            json={"role": "agent"},
+            headers=admin_all_workflows_headers,
+        )
+
+        resp = scoped_client.post(
+            "/v1/transition",
+            json={
+                "work_item_id": wi_b_id,
+                "transition_name": "complete",
+                "actor_metadata": {"role": "agent"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = scoped_client.post(
+            "/v1/hooks/claim",
+            json={"max_batch": 10, "lease_seconds": 60},
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        hook_b_id = None
+        for h in resp.json():
+            if h["hook_name"] == "on_complete_b":
+                hook_b_id = h["hook_queue_id"]
+                break
+        assert hook_b_id is not None
+
+        resp = scoped_client.post(
+            f"/v1/hooks/{hook_b_id}/fail",
+            json={"error": "should be forbidden"},
+            headers=scoped_headers,
+        )
+        assert resp.status_code == 403
+
+    def test_unrestricted_token_can_access_all_workflow_hooks(
+        self, scoped_client, admin_all_workflows_headers,
+    ):
+        resp = scoped_client.post(
+            "/v1/create_work_item",
+            json={
+                "workflow_name": "hook_test_workflow",
+                "work_item_type": "task",
+                "custom_fields": {"title": "unrestricted wf_a"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        wi_a_id = resp.json()["work_item"]["work_item_id"]
+
+        scoped_client.post(
+            "/v1/register_actor_role",
+            json={"role": "agent"},
+            headers=admin_all_workflows_headers,
+        )
+
+        resp = scoped_client.post(
+            "/v1/transition",
+            json={
+                "work_item_id": wi_a_id,
+                "transition_name": "complete",
+                "actor_metadata": {"role": "agent"},
+            },
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+
+        resp = scoped_client.post(
+            "/v1/hooks/claim",
+            json={"max_batch": 10, "lease_seconds": 60},
+            headers=admin_all_workflows_headers,
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) >= 1
+
+    def test_token_file_parses_allowed_workflows(self):
+        raw_token = "wf-scoped-token"
+        token_sha256 = hashlib.sha256(raw_token.encode()).hexdigest()
+        data = {
+            "tokens": [
+                {
+                    "token_sha256": token_sha256,
+                    "actor_id": "wf-only",
+                    "actor_kind": "agent",
+                    "allowed_roles": ["agent"],
+                    "allowed_workflows": ["wf_a", "wf_b"],
+                }
+            ]
+        }
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        json.dump(data, f)
+        f.close()
+        try:
+            from regista.sidecar.auth import TokenRegistry
+            registry = TokenRegistry.from_file(f.name)
+            actor = registry.authenticate(raw_token)
+            assert actor is not None
+            assert actor.allowed_workflows == ("wf_a", "wf_b")
+            assert actor.can_access_workflow("wf_a") is True
+            assert actor.can_access_workflow("wf_c") is False
+            assert actor.can_access_workflow(None) is False
+        finally:
+            os.unlink(f.name)
+
+    def test_empty_allowed_workflows_rejected(self):
+        raw_token = "empty-wf-token"
+        token_sha256 = hashlib.sha256(raw_token.encode()).hexdigest()
+        data = {
+            "tokens": [
+                {
+                    "token_sha256": token_sha256,
+                    "actor_id": "restricted-wf",
+                    "actor_kind": "agent",
+                    "allowed_roles": ["agent"],
+                    "allowed_workflows": [],
+                }
+            ]
+        }
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+        json.dump(data, f)
+        f.close()
+        try:
+            from regista.sidecar.auth import TokenRegistry
+            with pytest.raises(RegistaError, match="cannot be empty"):
+                TokenRegistry.from_file(f.name)
+        finally:
+            os.unlink(f.name)

@@ -4,9 +4,6 @@ import uuid
 from datetime import UTC, datetime
 
 from ._contract import (
-    _ALLOWED_ENTITY_KINDS,
-)
-from ._contract import (
     Jsonb as _Jsonb,
 )
 from ._contract import (
@@ -17,6 +14,9 @@ from ._contract import (
 )
 from ._contract import (
     validate_delegation_chain as _validate_delegation_chain,
+)
+from ._contract import (
+    validate_entity_kind,
 )
 from ._contract import (
     validate_mutation_params as _validate_mutation_params,
@@ -52,11 +52,7 @@ def append_event(
 ) -> Event:
     timer = OpTimer(project, "append_event")
     try:
-        if entity_kind not in _ALLOWED_ENTITY_KINDS:
-            raise RegistaError(
-                ErrorCode.INVALID_ARGUMENT,
-                f"Unknown entity_kind {entity_kind!r}. Allowed: {sorted(_ALLOWED_ENTITY_KINDS)}",
-            )
+        validate_entity_kind(entity_kind)
         if event_id is None:
             event_id = uuid.uuid4()
         _validate_mutation_params(

@@ -76,6 +76,14 @@ def validate_actor_kind(actor_kind: str) -> None:
         )
 
 
+def validate_entity_kind(entity_kind: str) -> None:
+    if entity_kind not in _ALLOWED_ENTITY_KINDS:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"Unknown entity_kind {entity_kind!r}. Allowed: {sorted(_ALLOWED_ENTITY_KINDS)}",
+        )
+
+
 def validate_ttl(ttl_seconds: int) -> None:
     if ttl_seconds <= 0:
         raise RegistaError(

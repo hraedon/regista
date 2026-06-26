@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import psycopg
 from psycopg.sql import SQL
 
-from ._contract import Jsonb, check_expected_seq, check_key_role_policy
+from ._contract import Jsonb, check_expected_seq, check_key_role_policy, validate_entity_kind
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import sign_event
@@ -138,6 +138,7 @@ def append_event(
     _key_id: str | None = None,
     entity_kind: str = "work_item",
 ) -> Event:
+    validate_entity_kind(entity_kind)
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
     check_key_role_policy(key_entry.role, transition)

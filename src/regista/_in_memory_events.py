@@ -7,6 +7,7 @@ from ._contract import (
     Jsonb,
     check_append_blocked,
     check_reserved_transition,
+    validate_entity_kind,
     validate_mutation_params,
     validate_read_events_filters,
     validate_work_item_exists,
@@ -34,6 +35,7 @@ def in_memory_append_event(
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
+    validate_entity_kind(entity_kind)
     if event_id is None:
         event_id = uuid.uuid4()
     validate_mutation_params(

@@ -15,10 +15,22 @@ class AuthenticatedActor:
     actor_id: str
     actor_kind: str
     allowed_roles: tuple[str, ...]
+    allowed_workflows: tuple[str, ...] | None = None
 
     def __post_init__(self):
         if not isinstance(self.allowed_roles, tuple):
             object.__setattr__(self, "allowed_roles", tuple(self.allowed_roles))
+        if self.allowed_workflows is not None and not isinstance(
+            self.allowed_workflows, tuple
+        ):
+            object.__setattr__(self, "allowed_workflows", tuple(self.allowed_workflows))
+
+    def can_access_workflow(self, workflow_name: str | None) -> bool:
+        if self.allowed_workflows is None:
+            return True
+        if workflow_name is None:
+            return False
+        return workflow_name in self.allowed_workflows
 
 
 def get_actor(request: Request) -> AuthenticatedActor:
@@ -78,10 +90,30 @@ class TokenRegistry:
                     ErrorCode.INVALID_ARGUMENT,
                     f"Token file entry missing 'actor_id' string in {path}",
                 )
+            raw_workflows = entry.get("allowed_workflows")
+            if raw_workflows is not None:
+                if not isinstance(raw_workflows, list):
+                    raise RegistaError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"Token file entry 'allowed_workflows' must be a list in {path}",
+                    )
+                if len(raw_workflows) == 0:
+                    raise RegistaError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"Token file entry 'allowed_workflows' cannot be empty "
+                        f"(omit the field for unrestricted access) in {path}",
+                    )
+                if not all(isinstance(wf, str) for wf in raw_workflows):
+                    raise RegistaError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"Token file entry 'allowed_workflows' must contain only "
+                        f"strings in {path}",
+                    )
             actor = AuthenticatedActor(
                 actor_id=actor_id,
                 actor_kind=entry.get("actor_kind", "agent"),
                 allowed_roles=entry.get("allowed_roles", []),
+                allowed_workflows=entry.get("allowed_workflows"),
             )
             reg._tokens[token_sha256] = actor
         return reg

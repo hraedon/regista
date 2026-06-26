@@ -612,6 +612,14 @@ def _replay_work_item(
                 scheme=scheme,
                 entity_kind=evt.get("entity_kind", "work_item"),
                 hash_alg=evt.get("hash_alg", "sha-256"),
+                prev_event_hash=(
+                    bytes(evt["prev_event_hash"]) if evt.get("prev_event_hash") else None
+                ),
+                prev_global_event_hash=(
+                    bytes(evt["prev_global_event_hash"])
+                    if evt.get("prev_global_event_hash")
+                    else None
+                ),
             ):
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "

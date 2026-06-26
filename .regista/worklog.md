@@ -4,6 +4,84 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-26 — Session 73: BC-311, BC-306, BC-294, BC-235, BC-307 + spec audit
+
+**Focus:** Resolve 5 breadcrumbs and conduct spec audit. Implementations
+reviewed by adversarial reviewers from different model lineages (Kimi, GLM).
+
+**Delivered:**
+
+### BC-311: Forward chain fields to verify_event in replay paths
+- `src/regista/_replay.py`: Forward `prev_event_hash` and
+  `prev_global_event_hash` from event row to `verify_event()`.
+- `src/regista/_in_memory_replay.py`: Same forwarding for InMemory replay.
+- `src/regista/_signing.py`: Confirmed `verify_event_with_public_key()` already
+  correct (passes `prev_event_hash` and `prev_global_event_hash` but not
+  `global_seq`).
+- **Spec audit correction:** `global_seq` intentionally NOT forwarded — spec
+  §17.11 says it's post-signing and not in the signed envelope. The original
+  breadcrumb was wrong to suggest forwarding it.
+- `tests/test_hash_chain.py`: Added `TestBC311ReplayChainFields` with 2
+  regression tests (Postgres + InMemory) that null out `canonical_envelope`
+  for a chained event and assert replay succeeds.
+
+### BC-306: Centralize entity_kind validation in _contract.py
+- `src/regista/_contract.py`: Added `validate_entity_kind()` helper using
+  existing `_ALLOWED_ENTITY_KINDS` frozenset.
+- `src/regista/_events.py`, `_event_store.py`, `_in_memory_events.py`: Call
+  `validate_entity_kind(entity_kind)` at top of each internal append path.
+- `src/regista/_events_api.py`, `_in_memory.py`: Replaced inline validation
+  with shared helper; removed unused `_ALLOWED_ENTITY_KINDS` imports.
+
+### BC-294: Fix test_autocommit_migration_mode test hygiene
+- `tests/test_bc294_migration_repair.py`: Rewrote `test_autocommit_migration_mode`
+  to use `tmp_path` + copy migrations to temp dir + patch `_migrations_dir`
+  (matching `test_migration_safety.py` pattern). Added `shutil` import.
+
+### BC-235: Sidecar hook authorization per-workflow token scoping
+- `src/regista/sidecar/auth.py`: Added `allowed_workflows` field to
+  `AuthenticatedActor`, `can_access_workflow()` method, type validation and
+  empty-list rejection in `TokenRegistry.from_file`.
+- `src/regista/sidecar/routes_hooks.py`: Claim filtering releases filtered
+  hooks back to pending (via `_release_hook()`). Complete/fail enforce 403
+  for disallowed workflows. Changed handlers to sync `def` per BC-275.
+- `tests/sidecar/test_sidecar.py`: Added `TestHookWorkflowScoping` with 6 tests.
+- **Adversarial review (GLM) fixes:** C1 (stuck `in_progress` hooks),
+  C2 (empty list = unrestricted), M1 (string-to-char-tuple bug).
+
+### BC-307: InMemory witness pluggable transport interface
+- `src/regista/_in_memory.py`: Added `TransportResult` frozen dataclass,
+  `witness_transport` parameter on `__init__`/`create_project`, full
+  `deliver_pending_witness_receipts()` implementation with retry, auto-pause,
+  HMAC signature.
+- `tests/test_witness_in_memory.py`: 19 tests covering success, failure,
+  auto-pause, HMAC, event payload, backward compat.
+- **Adversarial review (Kimi) fixes:** Ed25519 signature verification added,
+  missing event handling (revert to pending with error).
+
+### Spec audit (§17, §19)
+- Checked all §17 and §19 claims against implementation.
+- Found one issue: BC-311 breadcrumb incorrectly suggested forwarding
+  `global_seq` — corrected per spec §17.11.
+- All other §17.11 (global chain), §17.12 (crypto-agility), §17.14 (witness
+  asymmetric), §19.6 (API additions) claims verified correct.
+
+**Breadcrumbs resolved:** BC-311, BC-235, BC-307 (BC-306, BC-294 already
+resolved in prior sessions).
+
+**Test results:**
+- 1255 passed, 10 deselected (slow property tests)
+- `ruff check src/ tests/` — clean
+
+**Adversarial reviews:**
+- BC-311/306/294 reviewed by Kimi — found missing regression test (added).
+- BC-235 reviewed by GLM — found C1 (stuck hooks), C2 (empty list), M1
+  (string-to-char-tuple). All fixed.
+- BC-307 reviewed by Kimi — found Ed25519 verification gap, missing event
+  handling. Both fixed.
+
+---
+
 ## 2026-06-26 — Session 72: BC-308 reject downgraded envelopes in verify_event
 
 **Focus:** Implement BC-308: use `classify_envelope_version()` to filter
