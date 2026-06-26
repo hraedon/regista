@@ -4,6 +4,66 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-26 — Session 74: In-depth review + BC-314/315 resolution
+
+**Focus:** Comprehensive codebase review, fix 8 code issues, resolve BC-314
+(timestamping txn split) and BC-315 (witness receipt sweep), add maintenance
+thread test coverage, adversarial review (Kimi).
+
+**Delivered:**
+
+### In-depth review (8 code fixes)
+- `heartbeat_claim`: Threaded `actor_kind` through entire call chain (8 files)
+- `_replay.py`: Fixed crash on `None` `global_seq` (parity with InMemory)
+- `sidecar/routes.py`: Passed `limit` through `list_dead_lettered_hooks`
+- `sidecar/routes_hooks.py`: Dead-letter hooks for missing work items instead
+  of infinite release-reclaim loop; fixed `not` → `is None`
+- `_in_memory.py`: `start_maintenance` signature parity with Regista
+- `_timestamping.py`: Removed dead `_sig_algo_to_hash_name`
+- `_event_store.py`: Removed dead `_prev_global_event_hash` attribute
+- `_witness.py`: Stopped loading `sign_secret` into memory in `list_witnesses`
+
+### BC-314: Timestamping transaction split
+- `trigger_timestamping` now takes `ConnectionManager` instead of raw `conn`
+- Split into: (1) insert batch as pending + commit, (2) HTTP call to TSA
+  outside any transaction, (3) update to confirmed/failed in new transaction
+- Phase 3 UPDATEs guarded with `WHERE status = 'pending'` + `RETURNING`
+- Added `sweep_stale_timestamp_batches` for crash recovery
+- Wired into maintenance thread
+
+### BC-315: Witness receipt sweep
+- Added `sweep_stuck_witness_receipts` — resets old `in_progress` receipts
+- Wired into maintenance thread `_run()` loop
+- InMemory parity with equivalent implementation
+- `max_age_seconds` validation on all sweep entry points
+
+### Maintenance thread tests (7 new)
+- Hook lease sweep, recurrence firing, witness receipt sweep (direct + from
+  thread), timestamp batch sweep (stale + recent), metrics refresh
+
+### Adversarial review (Kimi) — 12 findings addressed
+- Sidecar heartbeat: use `actor.actor_kind` from token (not body)
+- InMemory heartbeat: add `actor_kind` to `validate_mutation_params`
+- `start_maintenance` defaults aligned with Regista
+- Replay None global_seq sort aligned with InMemory
+- Dead-letter limit test: created real entries
+- InMemory conformance test: fixture with `hmac_key_path`
+- `fail_hook` wrapped in try/except in routes_hooks
+- Removed unused `actor_kind` from `HeartbeatClaimRequest`
+- Phase 3 race: `WHERE status = 'pending'` guard
+- `max_age_seconds <= 0` validation
+- Witness sweep: plain parameterized SQL
+- Maintenance sweep errors bubble to `_run` try/except
+
+### Breadcrumbs
+- BC-314, BC-315: Resolved
+- BC-316: Filed (concurrent timestamping duplicate batches)
+
+**Test results:** 1273 passed, 1 skipped, 10 deselected. `ruff check` clean.
+**Release:** Tagged `v0.5.1-rc1`, CI green on Python 3.11/3.12/3.13.
+
+---
+
 ## 2026-06-26 — Session 73: BC-311, BC-306, BC-294, BC-235, BC-307 + spec audit
 
 **Focus:** Resolve 5 breadcrumbs and conduct spec audit. Implementations
