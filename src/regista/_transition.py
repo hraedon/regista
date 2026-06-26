@@ -149,6 +149,9 @@ def transition(
                         actor_metadata=actor_metadata,
                         actor_kind=actor_kind,
                         prior_events=prior_events,
+                        on_behalf_of=(
+                            dict(on_behalf_of) if on_behalf_of is not None else None
+                        ),
                     )
                     try:
                         run_validator(

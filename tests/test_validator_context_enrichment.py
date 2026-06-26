@@ -1,10 +1,11 @@
-"""Plan 020 — ValidatorContext enrichment (actor_kind + prior_events).
+"""Plan 020 + Plan 021 — ValidatorContext enrichment.
 
 Verifies that sync transition validators receive the acting actor's
-``actor_kind`` and the work-item's pre-transition event history on both the
-InMemory and Postgres backends, that non-validator transitions are unaffected,
-and that ``ValidatorContext`` serialization round-trips the new fields while
-tolerating their absence (forward-compat with pre-Plan-020 payloads).
+``actor_kind``, the work-item's pre-transition event history, and the acting
+actor's ``on_behalf_of`` delegation chain on both the InMemory and Postgres
+backends, that non-validator transitions are unaffected, and that
+``ValidatorContext`` serialization round-trips the new fields while tolerating
+their absence (forward-compat with pre-Plan-020/021 payloads).
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from regista._errors import ErrorCode, RegistaError
 from regista._types import ValidatorContext
 from regista.testing import InMemoryRegista, drop_project_schema
 
@@ -166,12 +168,29 @@ class TestSerializationRoundTrip:
         mem_sub.transition(
             wi.work_item_id, "finish", "finisher-1",
             actor_kind="human",
+            on_behalf_of={"principal_id": "human:roundtrip-1"},
         )
         ctx = recorded[0]
         rt = ValidatorContext.from_dict(ctx.to_dict())
         assert rt == ctx
         assert rt.actor_kind == "human"
         assert rt.prior_events == ctx.prior_events
+        assert rt.on_behalf_of == {"principal_id": "human:roundtrip-1"}
+
+    def test_on_behalf_of_round_trip_with_none(self, mem_sub):
+        recorded, handler = _make_recorder()
+        mem_sub.register_validator("record_ctx", handler)
+        wi = _setup_ready(mem_sub)
+        mem_sub.transition(
+            wi.work_item_id, "finish", "finisher-1",
+            actor_kind="human",
+        )
+        ctx = recorded[0]
+        d = ctx.to_dict()
+        assert "on_behalf_of" not in d
+        rt = ValidatorContext.from_dict(d)
+        assert rt.on_behalf_of is None
+        assert rt == ctx
 
 
 class TestFromDictTolerance:
@@ -190,6 +209,7 @@ class TestFromDictTolerance:
         ctx = ValidatorContext.from_dict(base)
         assert ctx.actor_kind == "agent"
         assert ctx.prior_events == ()
+        assert ctx.on_behalf_of is None
 
 
 class TestPostgresActorKind:
@@ -227,14 +247,69 @@ class TestPostgresPriorEvents:
         assert prior[1].actor_id == "preparer-1"
 
 
+class TestOnBehalfOfInMemory:
+    def test_recorded_on_behalf_of(self, mem_sub):
+        recorded, handler = _make_recorder()
+        mem_sub.register_validator("record_ctx", handler)
+        wi = _setup_ready(mem_sub)
+        mem_sub.transition(
+            wi.work_item_id, "finish", "finisher-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:reviewer-boss"},
+        )
+        assert len(recorded) == 1
+        assert recorded[0].on_behalf_of == {"principal_id": "human:reviewer-boss"}
+
+
+class TestOnBehalfOfNoneDefaultInMemory:
+    def test_on_behalf_of_defaults_to_none(self, mem_sub):
+        recorded, handler = _make_recorder()
+        mem_sub.register_validator("record_ctx", handler)
+        wi = _setup_ready(mem_sub)
+        mem_sub.transition(
+            wi.work_item_id, "finish", "finisher-1",
+            actor_kind="agent",
+        )
+        assert len(recorded) == 1
+        assert recorded[0].on_behalf_of is None
+
+
+class TestPostgresOnBehalfOf:
+    def test_recorded_on_behalf_of(self, pg_sub):
+        recorded, handler = _make_recorder()
+        pg_sub.register_validator("record_ctx", handler)
+        wi = _setup_ready(pg_sub)
+        pg_sub.transition(
+            wi.work_item_id, "finish", "finisher-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:reviewer-boss"},
+        )
+        assert len(recorded) == 1
+        assert recorded[0].on_behalf_of == {"principal_id": "human:reviewer-boss"}
+
+
+class TestPostgresOnBehalfOfNoneDefault:
+    def test_on_behalf_of_defaults_to_none(self, pg_sub):
+        recorded, handler = _make_recorder()
+        pg_sub.register_validator("record_ctx", handler)
+        wi = _setup_ready(pg_sub)
+        pg_sub.transition(
+            wi.work_item_id, "finish", "finisher-1",
+            actor_kind="agent",
+        )
+        assert len(recorded) == 1
+        assert recorded[0].on_behalf_of is None
+
+
 class TestConformanceAcrossBackends:
-    def test_actor_kind_and_prior_events_equal(self, mem_sub, pg_sub):
+    def test_actor_kind_prior_events_on_behalf_of_equal(self, mem_sub, pg_sub):
         recorded_mem, handler_mem = _make_recorder()
         mem_sub.register_validator("record_ctx", handler_mem)
         wi_mem = _setup_ready(mem_sub, creator="c", preparer="p")
         mem_sub.transition(
             wi_mem.work_item_id, "finish", "f",
             actor_kind="human",
+            on_behalf_of={"principal_id": "human:principal-1"},
         )
 
         recorded_pg, handler_pg = _make_recorder()
@@ -243,11 +318,13 @@ class TestConformanceAcrossBackends:
         pg_sub.transition(
             wi_pg.work_item_id, "finish", "f",
             actor_kind="human",
+            on_behalf_of={"principal_id": "human:principal-1"},
         )
 
         ctx_mem = recorded_mem[0]
         ctx_pg = recorded_pg[0]
         assert ctx_mem.actor_kind == ctx_pg.actor_kind
+        assert ctx_mem.on_behalf_of == ctx_pg.on_behalf_of
         assert (
             [_event_comparable(e) for e in ctx_mem.prior_events]
             == [_event_comparable(e) for e in ctx_pg.prior_events]
@@ -296,3 +373,103 @@ class TestPriorEventsCapPostgres:
         seqs = [e.event_seq for e in ctx.prior_events]
         assert seqs == sorted(seqs)
         assert seqs == [4, 5, 6]
+
+
+def _make_self_review_validator():
+    def handler(ctx: ValidatorContext) -> None:
+        if ctx.on_behalf_of is None:
+            return
+        principal = ctx.on_behalf_of.get("principal_id")
+        if principal is None:
+            return
+        authors = {e.actor_id for e in ctx.prior_events}
+        if principal in authors:
+            raise ValueError("self-review via delegation")
+
+    return handler
+
+
+class TestDelegationSelfReviewScenario:
+    def test_rejects_when_principal_is_author(self, mem_sub):
+        mem_sub.register_validator("record_ctx", _make_self_review_validator())
+        wi = _setup_ready(mem_sub, creator="human:author-1", preparer="agent:prep-1")
+        with pytest.raises(RegistaError) as exc_info:
+            mem_sub.transition(
+                wi.work_item_id, "finish", "agent:reviewer-1",
+                actor_kind="agent",
+                on_behalf_of={"principal_id": "human:author-1"},
+            )
+        assert exc_info.value.code == ErrorCode.VALIDATOR_FAILED
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "self-review via delegation" in str(exc_info.value.__cause__)
+
+    def test_accepts_when_principal_is_not_author(self, mem_sub):
+        mem_sub.register_validator("record_ctx", _make_self_review_validator())
+        wi = _setup_ready(mem_sub, creator="human:author-1", preparer="agent:prep-1")
+        mem_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:someone-else"},
+        )
+        refreshed = mem_sub.get_work_item(wi.work_item_id)
+        assert refreshed is not None
+        assert refreshed.current_state == "done"
+
+
+class TestDelegationSelfReviewScenarioPostgres:
+    def test_rejects_when_principal_is_author(self, pg_sub):
+        pg_sub.register_validator("record_ctx", _make_self_review_validator())
+        wi = _setup_ready(pg_sub, creator="human:author-1", preparer="agent:prep-1")
+        with pytest.raises(RegistaError) as exc_info:
+            pg_sub.transition(
+                wi.work_item_id, "finish", "agent:reviewer-1",
+                actor_kind="agent",
+                on_behalf_of={"principal_id": "human:author-1"},
+            )
+        assert exc_info.value.code == ErrorCode.VALIDATOR_FAILED
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        assert "self-review via delegation" in str(exc_info.value.__cause__)
+
+    def test_accepts_when_principal_is_not_author(self, pg_sub):
+        pg_sub.register_validator("record_ctx", _make_self_review_validator())
+        wi = _setup_ready(pg_sub, creator="human:author-1", preparer="agent:prep-1")
+        pg_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:someone-else"},
+        )
+        refreshed = pg_sub.get_work_item(wi.work_item_id)
+        assert refreshed is not None
+        assert refreshed.current_state == "done"
+
+
+class TestValidatorCannotMutateOnBehalfOfInMemory:
+    def test_event_records_original_not_mutated_chain(self, mem_sub):
+        def mutating_handler(ctx: ValidatorContext) -> None:
+            assert ctx.on_behalf_of is not None
+            ctx.on_behalf_of["principal_id"] = "human:attacker"
+
+        mem_sub.register_validator("record_ctx", mutating_handler)
+        wi = _setup_ready(mem_sub)
+        evt = mem_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:original-principal"},
+        )
+        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}
+
+
+class TestValidatorCannotMutateOnBehalfOfPostgres:
+    def test_event_records_original_not_mutated_chain(self, pg_sub):
+        def mutating_handler(ctx: ValidatorContext) -> None:
+            assert ctx.on_behalf_of is not None
+            ctx.on_behalf_of["principal_id"] = "human:attacker"
+
+        pg_sub.register_validator("record_ctx", mutating_handler)
+        wi = _setup_ready(pg_sub)
+        evt = pg_sub.transition(
+            wi.work_item_id, "finish", "agent:reviewer-1",
+            actor_kind="agent",
+            on_behalf_of={"principal_id": "human:original-principal"},
+        )
+        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}

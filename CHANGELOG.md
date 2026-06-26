@@ -7,6 +7,7 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 ### Added
 
 - **Plan 020 (Validator context enrichment):** `ValidatorContext` (the object passed to sync transition validators) gains two additive fields: `actor_kind` (the acting actor's kind, identical to the `transition()` argument) and `prior_events` (the work-item's complete pre-transition event history as a tuple of `Event` objects, ascending `event_seq`). Both are populated only inside the registered-validator branch (zero-cost when no validator is registered), on the transition's own connection/store handle for transactional consistency. `to_dict()`/`from_dict()` round-trip both fields; `from_dict` tolerates their absence for forward-compatibility with pre-Plan-020 payloads (missing `actor_kind` decodes to `"agent"`, missing `prior_events` to `()`).
+- **Plan 021 (Validator delegation chain on context):** `ValidatorContext` now also exposes the acting actor's `on_behalf_of` delegation chain (the same value passed to `transition()`). This enables separation-of-duties validators to detect self-review-via-delegation by comparing the transition's principal against prior-event authors. The field is zero-cost when no validator is registered and round-trips through `to_dict()`/`from_dict()`; `from_dict` tolerates its absence for forward-compatibility (missing `on_behalf_of` decodes to `None`).
 
 ## [0.4.0] — 2026-05-27
 
