@@ -597,3 +597,22 @@ class TestBC189OrphanEventDetection:
 
         report = mem_sub.replay()
         assert report.halted >= 1
+
+
+class TestHeartbeatActorKindConformance:
+    def test_heartbeat_actor_kind_emitted(self, sub):
+        key_set = getattr(sub, "_key_set", None) or getattr(sub, "_keys", None)
+        if key_set is None:
+            pytest.skip("key_set required for event emission")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="human-1",
+            custom_fields={"title": "actor_kind conformance"},
+        )
+        sub.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        sub.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
+        assert len(heartbeat_events) == 1
+        assert heartbeat_events[0].actor_kind == "human"

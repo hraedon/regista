@@ -157,7 +157,9 @@ def in_memory_requeue_dead_lettered_hook(
     return new_counter
 
 
-def in_memory_list_dead_lettered_hooks(dead_letter: dict) -> list[DeadLetterEntry]:
+def in_memory_list_dead_lettered_hooks(
+    dead_letter: dict, limit: int = 100,
+) -> list[DeadLetterEntry]:
     return [
         DeadLetterEntry(
             id=e["id"],
@@ -176,4 +178,4 @@ def in_memory_list_dead_lettered_hooks(dead_letter: dict) -> list[DeadLetterEntr
             key=lambda x: x["dead_lettered_at"],
             reverse=True,
         )
-    ]
+    ][:limit]

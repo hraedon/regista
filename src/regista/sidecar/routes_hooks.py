@@ -28,7 +28,7 @@ def _hook_work_item_id(regista, hook_id: int) -> uuid.UUID | None:
 
 
 def _filter_hooks_by_workflow_access(regista, actor, hooks):
-    if not actor.allowed_workflows:
+    if actor.allowed_workflows is None:
         return hooks
     allowed = set(actor.allowed_workflows)
     workflows: dict[uuid.UUID, str | None] = {}
@@ -40,6 +40,8 @@ def _filter_hooks_by_workflow_access(regista, actor, hooks):
         workflow_name = workflows[ctx.work_item_id]
         if workflow_name is not None and workflow_name in allowed:
             result.append(ctx)
+        elif workflow_name is None:
+            regista.fail_hook(ctx.hook_queue_id, "work_item_not_found")
         else:
             _release_hook(regista, ctx.hook_queue_id)
     return result

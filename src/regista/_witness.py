@@ -237,7 +237,7 @@ def list_witnesses(
         rows = conn.execute(
             SQL(
                 "SELECT witness_id, url, headers, event_filter, status, "
-                "max_failures, consecutive_failures, max_retries, mode, sign_secret, "
+                "max_failures, consecutive_failures, max_retries, mode, "
                 "key_scheme, public_key, "
                 "last_success_at, last_failure_at, created_at, updated_at "
                 f"FROM witness_registrations WHERE {where} ORDER BY created_at"
@@ -248,7 +248,6 @@ def list_witnesses(
     for row in rows:
         d = dict(row)
         d["witness_id"] = str(d["witness_id"])
-        d.pop("sign_secret", None)
         for key in ("last_success_at", "last_failure_at", "created_at", "updated_at"):
             if d.get(key) is not None:
                 d[key] = d[key].isoformat()

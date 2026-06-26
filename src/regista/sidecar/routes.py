@@ -231,6 +231,7 @@ def register_routes(app, regista, tokens: TokenRegistry):
             ttl_seconds=body.ttl_seconds,
             expected_attempt_number=body.expected_attempt_number,
             coalesce_threshold=body.coalesce_threshold,
+            actor_kind=body.actor_kind,
         )
         return _serialize(result)
 
@@ -311,8 +312,8 @@ def register_routes(app, regista, tokens: TokenRegistry):
     def list_dead_lettered_hooks(request: Request, limit: int = 100):
         require_admin(request)
         limit = max(1, min(limit, 1000))
-        result = regista.list_dead_lettered_hooks()
-        return _serialize(result[:limit])
+        result = regista.list_dead_lettered_hooks(limit=limit)
+        return _serialize(result)
 
     @router.post("/requeue_dead_lettered_hook")
     def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request):

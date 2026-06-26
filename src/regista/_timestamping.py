@@ -439,16 +439,6 @@ def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
         return False, f"Signature verification failed: {exc}"
 
 
-def _sig_algo_to_hash_name(algo_name: str) -> str:
-    """Map an ASN.1 signature algorithm name to a cryptography hash name."""
-    algo_lower = algo_name.lower()
-    if "sha512" in algo_lower:
-        return "SHA512"
-    if "sha384" in algo_lower:
-        return "SHA384"
-    return "SHA256"
-
-
 def verify_tsa_token(token: bytes, data: bytes, config: TSAConfig) -> bool:
     """Cryptographic verification of an RFC 3161 TSA token.
 

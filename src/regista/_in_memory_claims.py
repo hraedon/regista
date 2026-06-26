@@ -99,6 +99,7 @@ def in_memory_heartbeat_claim(
     *,
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
+    actor_kind: str = "agent",
 ) -> Claim:
     validate_mutation_params(actor_id=actor_id, ttl_seconds=ttl_seconds)
     wi = work_items.get(work_item_id)
@@ -128,7 +129,7 @@ def in_memory_heartbeat_claim(
             store,
             work_item_id=wi["work_item_id"],
             actor_id=actor_id,
-            actor_kind="agent",
+            actor_kind=actor_kind,
             actor_metadata=None,
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],

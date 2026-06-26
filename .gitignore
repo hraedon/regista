@@ -11,3 +11,4 @@ dist/
 build/
 product-concepts/
 Credentials/
+.claude/

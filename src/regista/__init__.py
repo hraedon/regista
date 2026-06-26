@@ -1007,6 +1007,7 @@ class Regista:
         *,
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
+        actor_kind: str = "agent",
     ) -> Claim:
         """Renew a claim's TTL. Rejects if claim is held by a different actor.
 
@@ -1017,6 +1018,7 @@ class Regista:
             expected_attempt_number: Detect stale sessions after claim theft.
             coalesce_threshold: Minimum seconds between emitted ``claim_heartbeat``
                 events. ``None`` (default) uses ``max(60, ttl_seconds/2)``.
+            actor_kind: Kind of actor (default "agent").
 
         Returns:
             The renewed ``Claim``.
@@ -1025,11 +1027,12 @@ class Regista:
             RegistaError: ``CLAIM_LOST``, ``CLAIM_NOT_FOUND``,
                 ``INVALID_ARGUMENT``.
         """
-        _validate_mutation_params(actor_id=actor_id, ttl_seconds=ttl_seconds)
+        _validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
         return self.claims.heartbeat(
             work_item_id, actor_id, ttl_seconds,
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
+            actor_kind=actor_kind,
         )
 
     def release_claim(
@@ -1251,13 +1254,16 @@ class Regista:
         """
         self.hooks.requeue_dead_letter(dead_letter_id)
 
-    def list_dead_lettered_hooks(self) -> list[DeadLetterEntry]:
+    def list_dead_lettered_hooks(self, limit: int = 100) -> list[DeadLetterEntry]:
         """List all dead-lettered hooks in reverse chronological order.
+
+        Args:
+            limit: Maximum number of entries to return (default 100).
 
         Returns:
             List of ``DeadLetterEntry`` objects.
         """
-        return self.hooks.list_dead_letter()
+        return self.hooks.list_dead_letter(limit=limit)
 
     def update_not_before(
         self,

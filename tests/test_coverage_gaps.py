@@ -493,3 +493,70 @@ class TestHmacKeyPathRequired:
 
             Regista(DSN, "nonexistent_project", hmac_key_path=None)
         assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
+
+
+class TestHeartbeatActorKind:
+    def test_heartbeat_emits_correct_actor_kind(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="human-1",
+            custom_fields={"title": "Actor kind test"},
+        )
+        regista.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        regista.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
+        assert len(heartbeat_events) == 1
+        assert heartbeat_events[0].actor_kind == "human"
+
+    def test_heartbeat_defaults_to_agent(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "Default kind"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        events = regista.read_events(work_item_id=wi.work_item_id)
+        heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
+        assert len(heartbeat_events) == 1
+        assert heartbeat_events[0].actor_kind == "agent"
+
+
+class TestCloseBehavior:
+    def test_close_is_idempotent(self, regista):
+        regista.close()
+        regista.close()
+
+    def test_operation_after_close_raises(self, regista):
+        regista.close()
+        with pytest.raises(RegistaError) as exc_info:
+            regista.get_work_item(uuid.uuid4())
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_pool_healthy_true_when_open(self, regista):
+        assert regista.pool_healthy is True
+
+    def test_pool_healthy_false_after_close(self, regista):
+        regista.close()
+        assert regista.pool_healthy is False
+
+
+class TestHookNotFound:
+    def test_complete_hook_not_found(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.complete_hook(999999)
+        assert exc_info.value.code == ErrorCode.HOOK_NOT_FOUND
+
+    def test_fail_hook_not_found(self, regista):
+        with pytest.raises(RegistaError) as exc_info:
+            regista.fail_hook(999999, "error")
+        assert exc_info.value.code == ErrorCode.HOOK_NOT_FOUND
+
+
+class TestDeadLetterLimit:
+    def test_list_dead_lettered_hooks_respects_limit(self, regista):
+        result = regista.list_dead_lettered_hooks(limit=5)
+        assert len(result) <= 5

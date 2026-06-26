@@ -475,6 +475,7 @@ class InMemoryRegista:
         *,
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
+        actor_kind: str = "agent",
     ) -> Claim:
         from ._in_memory_claims import in_memory_heartbeat_claim
 
@@ -483,6 +484,7 @@ class InMemoryRegista:
             work_item_id, actor_id, ttl_seconds,
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
+            actor_kind=actor_kind,
         )
 
     def release_claim(
@@ -587,10 +589,10 @@ class InMemoryRegista:
             dead_letter_id,
         )
 
-    def list_dead_lettered_hooks(self) -> list[DeadLetterEntry]:
+    def list_dead_lettered_hooks(self, limit: int = 100) -> list[DeadLetterEntry]:
         from ._in_memory_hooks import in_memory_list_dead_lettered_hooks
 
-        return in_memory_list_dead_lettered_hooks(self._dead_letter)
+        return in_memory_list_dead_lettered_hooks(self._dead_letter, limit=limit)
 
     def claim_hooks(
         self,
@@ -860,6 +862,9 @@ class InMemoryRegista:
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
+        timestamp_interval: float = 300.0,
+        tsa_config: object | None = None,
+        witness_interval: float = 60.0,
     ) -> None:
         pass
 

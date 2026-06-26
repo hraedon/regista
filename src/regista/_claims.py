@@ -193,6 +193,7 @@ def heartbeat_claim(
     expected_attempt_number: int | None = None,
     key_set: KeySet | None = None,
     coalesce_threshold: float | None = None,
+    actor_kind: str = "agent",
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
@@ -230,7 +231,7 @@ def heartbeat_claim(
             conn=conn,
             work_item_id=work_item_id,
             actor_id=actor_id,
-            actor_kind="agent",
+            actor_kind=actor_kind,
             actor_metadata=None,
             key_set=key_set,
             workflow_name=wi["workflow_name"],

@@ -293,13 +293,11 @@ class PostgresEventStore:
         self._conn = conn
         self._key_set = key_set
         self._locked_wis: dict[uuid.UUID, dict | None] = {}
-        self._prev_global_event_hash: bytes | None = None
 
     def lock_global_chain_head(self) -> bytes | None:
         from ._events import _lock_global_chain_head
 
-        self._prev_global_event_hash = _lock_global_chain_head(self._conn)
-        return self._prev_global_event_hash
+        return _lock_global_chain_head(self._conn)
 
     def prepare(
         self,

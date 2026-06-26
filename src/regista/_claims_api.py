@@ -52,6 +52,7 @@ def heartbeat_claim(
     *,
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
+    actor_kind: str = "agent",
 ):
     from ._claims import heartbeat_claim as _heartbeat
 
@@ -63,6 +64,7 @@ def heartbeat_claim(
                 expected_attempt_number=expected_attempt_number,
                 key_set=keys,
                 coalesce_threshold=coalesce_threshold,
+                actor_kind=actor_kind,
             )
         timer.log("ok", work_item_id=str(work_item_id))
         return claim

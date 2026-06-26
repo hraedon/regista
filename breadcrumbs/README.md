@@ -38,6 +38,8 @@ _(none)_
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 312 | InMemory witness delivery has no concurrency lock — double-delivery risk under start_maintenance | medium | proposed |
 | 313 | Sidecar hook authorization TOCTOU — workflow check and complete/fail run in separate transactions | medium | proposed |
+| 314 | trigger_timestamping holds DB transaction open during 30s HTTP call to TSA | high | proposed |
+| 315 | No recovery sweep for stuck in_progress witness receipts | high | proposed |
 
 ## Resolved
 
