@@ -38,6 +38,7 @@ _(none)_
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | accepted |
+| 311 | Replay verify_event call omits chain fields — stored envelope is the only matching candidate for chained events | medium | proposed |
 
 ## Resolved
 
