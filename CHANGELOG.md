@@ -6,8 +6,25 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- _Nothing yet._
+
+## [0.5.0] — 2026-06-26
+
+### Added
+
 - **Plan 020 (Validator context enrichment):** `ValidatorContext` (the object passed to sync transition validators) gains two additive fields: `actor_kind` (the acting actor's kind, identical to the `transition()` argument) and `prior_events` (the work-item's complete pre-transition event history as a tuple of `Event` objects, ascending `event_seq`). Both are populated only inside the registered-validator branch (zero-cost when no validator is registered), on the transition's own connection/store handle for transactional consistency. `to_dict()`/`from_dict()` round-trip both fields; `from_dict` tolerates their absence for forward-compatibility with pre-Plan-020 payloads (missing `actor_kind` decodes to `"agent"`, missing `prior_events` to `()`).
 - **Plan 021 (Validator delegation chain on context):** `ValidatorContext` now also exposes the acting actor's `on_behalf_of` delegation chain (the same value passed to `transition()`). This enables separation-of-duties validators to detect self-review-via-delegation by comparing the transition's principal against prior-event authors. The field is zero-cost when no validator is registered and round-trips through `to_dict()`/`from_dict()`; `from_dict` tolerates its absence for forward-compatibility (missing `on_behalf_of` decodes to `None`).
+- **Plan 022 (Entity generalization and crypto agility):** events carry `entity_kind`/`entity_id` (generalizing beyond `work_item_id`), a global event hash chain (`global_seq` + `prev_global_event_hash`), signing envelope v4, and per-event `hash_alg`. Spec updated to v9 (§17.11–17.14). Additive and backward-compatible via envelope-version retry in `verify_event`.
+- **Witness Ed25519 co-signing (BC-297/303/305):** witnesses may register Ed25519 public keys; witness signatures verified against the public key at delivery time. Missing/invalid signatures treated as delivery failures.
+- **WI-003 (Per-work-item scoped replay):** `replay()` now accepts an optional `work_item_id` keyword argument to replay and verify a single work item in isolation. Scoped replay runs per-item hash chain, signature, and projection checks, compares the derived state to the live projection row, and reports one warning that global-chain verification was skipped. Global chain, chain-head, and TSP timestamp coverage checks remain full-`replay()` concerns. A scoped id whose projection row is missing but whose events exist is reported as `halted` (corruption) rather than `WORK_ITEM_NOT_FOUND`.
+
+### Fixed
+
+- **BC-298/300:** `PostgresEventStore.append()` persists `prev_global_event_hash`; replay now verifies the global hash chain and detects tail-deletion via the `event_chain_head`.
+- **BC-301:** `MAX_JSONB_BYTES` (1MB) enforced on all JSONB-bearing fields (payloads, `actor_metadata`, `custom_fields`) via the `Jsonb` wrapper.
+- **BC-304:** `KeySet.verify_key_status` parses timestamps to `datetime` before comparison (was plain-string compare).
+- **Adversarial review batch (Session 66–71):** numerous input-validation, parity, signature-verification, and replay-coverage fixes tracked under BC-276–BC-308.
+
 
 ## [0.4.0] — 2026-05-27
 
