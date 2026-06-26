@@ -58,3 +58,13 @@ related corruption-masking case (events exist but projection row missing now
 reports `halted` instead of `WORK_ITEM_NOT_FOUND`) but deliberately left the
 isolation gap for a dedicated change, since the proper fix (REPEATABLE READ)
 touches the whole replay path, not just scoping.
+
+## Resolution
+
+Implemented the "All replay (correct)" option: replay now runs at REPEATABLE READ isolation via `ConnectionManager.transaction_repeatable_read()`. This ensures every statement in the replay transaction shares one snapshot, preventing spurious drift/halt from concurrent writes.
+
+Spec §17.1 amended: mutating transactions remain READ COMMITTED; replay (read-only) is the sole exception at REPEATABLE READ.
+
+Adversarial review (Kimi) caught that `SET TRANSACTION ISOLATION LEVEL` after `_verify_ssl()` SELECT breaks `require_ssl=True` deployments. Fixed by using `conn.isolation_level` attribute (set before transaction block, reset in finally) and rolling back the SSL probe's implicit transaction.
+
+Tests: 5 tests including a concurrency test that writes from a second connection during replay and verifies the snapshot doesn't see the new event.

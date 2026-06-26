@@ -37,3 +37,14 @@ Either:
 - `src/regista/sidecar/models.py`
 - `src/regista/sidecar/routes.py`
 - `src/regista/_events_api.py`
+
+## Resolution
+
+Implemented validation at both the sidecar and core API boundaries:
+
+- **Sidecar**: `AppendEventRequest.entity_kind` changed from `str = "work_item"` to `Literal["work_item"]`. Pydantic rejects unknown values with 422 before the route handler runs.
+- **Core API**: `_events_api.py` validates `entity_kind` against `_ALLOWED_ENTITY_KINDS` (centralized in `_contract.py`, shared with InMemory backend) before any database interaction. Raises `INVALID_ARGUMENT` for unknown kinds.
+- **InMemory**: Same validation in `InMemoryRegista.append_event()`.
+- **Docstring**: Fixed `Regista.append_event()` docstring to say `"work_item" only` instead of `"work_item" or "session"`.
+
+Tests: 7 tests covering sidecar, core API, and InMemory. Adversarial review (Kimi) caught the docstring regression and the lack of a shared source of truth for the allowed set — both fixed.

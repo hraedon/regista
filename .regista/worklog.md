@@ -4,6 +4,48 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-26 — Session 72: BC-308 reject downgraded envelopes in verify_event
+
+**Focus:** Implement BC-308: use `classify_envelope_version()` to filter
+backward-compat candidates in `verify_event()` and harden version
+classification.
+
+**Delivered:**
+
+- `src/regista/_signing.py`:
+  - `verify_event()` now filters candidate envelopes by stored version:
+    - stored v4 → only v4 candidates
+    - stored v3 → v3/v4 candidates
+    - stored v2 → v2/v3/v4 candidates
+    - stored v1 / unknown → all candidates (backward compat)
+  - Refactored the non-chained branch into a single candidate list + filter +
+    verify loop, matching the chained branch pattern.
+  - `classify_envelope_version()`: tightened v2 detection from subset match to
+    exact field equality, so legacy v1 envelopes (a strict subset) classify
+    as 1 instead of 2. v3-without-chain-fields still classifies as 2 because
+    it is structurally identical to v2.
+
+- `tests/test_signing.py`:
+  - Added `TestDowngradeEnvelopeFiltering` with 4 tests:
+    - `test_verify_rejects_downgrade_when_stored_v4`
+    - `test_verify_all_candidates_when_no_stored_envelope`
+    - `test_verify_v4_event_does_not_match_v3_envelope`
+    - `test_classify_envelope_version_correct`
+  - Imported `sign_event`, `build_signing_envelope*`, `classify_envelope_version`,
+    and `HMACSHA256Scheme` for the new tests.
+
+- Breadcrumbs:
+  - Moved BC-308 from `breadcrumbs/` to `breadcrumbs/resolved/`.
+  - Updated `breadcrumbs/README.md` index.
+
+**Test results:**
+- `tests/test_signing.py` — 9 passed
+- `tests/test_replay.py tests/test_replay_coverage.py tests/test_hash_chain.py` — 33 passed
+- `tests/test_plan022.py` — 57 passed
+- `ruff check src/regista/_signing.py tests/test_signing.py` — clean
+
+---
+
 ## 2026-06-25 — Session 71: Structural review + envelope hardening
 
 **Focus:** Validate four structural concerns raised by user, resolve fixable

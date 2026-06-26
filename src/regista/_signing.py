@@ -211,20 +211,20 @@ _V2_FIELDS = frozenset(
 )
 
 
+_V3_CHAIN_FIELDS = {"prev_event_hash", "global_seq", "prev_global_event_hash"}
+
+
 def classify_envelope_version(envelope: bytes) -> int:
     import json
 
     try:
         obj = json.loads(envelope)
         keys = set(obj.keys())
-        if "entity_kind" in keys and "hash_alg" in keys:
-            if _V4_FIELDS.issuperset(keys) and "prev_event_hash" in keys:
-                return 4
-            if _V4_FIELDS.issuperset(keys):
-                return 4
-        if _V3_FIELDS.issuperset(keys) and "prev_event_hash" in keys:
+        if "entity_kind" in keys and "hash_alg" in keys and _V4_FIELDS.issuperset(keys):
+            return 4
+        if _V3_FIELDS.issuperset(keys) and (keys & _V3_CHAIN_FIELDS):
             return 3
-        if _V2_FIELDS.issuperset(keys):
+        if keys == _V2_FIELDS:
             return 2
         return 1
     except json.JSONDecodeError:
@@ -319,6 +319,15 @@ def verify_event(
             3,
         ))
 
+        if stored_ver >= 4:
+            candidate_envelopes = [
+                (env, ver) for env, ver in candidate_envelopes if ver >= 4
+            ]
+        elif stored_ver == 3:
+            candidate_envelopes = [
+                (env, ver) for env, ver in candidate_envelopes if ver >= 3
+            ]
+
         for envelope, ver in candidate_envelopes:
             candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
             if _verify_once(
@@ -348,18 +357,7 @@ def verify_event(
     )
     candidate_envelopes.append((v4_envelope, 4))
 
-    if stored_ver == 4:
-        candidate_envelopes.insert(0, (stored_envelope, stored_ver))
-
-    for envelope, ver in candidate_envelopes:
-        candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
-        if _verify_once(
-            envelope, signature, canonical_hash, scheme, key,
-            hash_alg=candidate_hash_alg,
-        ):
-            return True
-
-    if stored_ver in (2, 3):
+    if stored_ver == 2:
         candidate_envelopes.append((stored_envelope, stored_ver))
 
     v3_envelope = build_signing_envelope_v3(
@@ -392,21 +390,28 @@ def verify_event(
     )
     candidate_envelopes.append((v2_envelope, 2))
 
-    for envelope, _ver in candidate_envelopes:
-        if _verify_once(envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
-            return True
-
     old_envelope = build_signing_envelope(
         event_id, work_item_id, actor_id, transition, payload, on_behalf_of,
     )
-    if _verify_once(old_envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
-        return True
+    candidate_envelopes.append((old_envelope, 1))
 
     if on_behalf_of is not None:
         bare_envelope = build_signing_envelope(
             event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None,
         )
-        if _verify_once(bare_envelope, signature, canonical_hash, scheme, key, hash_alg="sha-256"):
+        candidate_envelopes.append((bare_envelope, 1))
+
+    if stored_ver == 2:
+        candidate_envelopes = [
+            (env, ver) for env, ver in candidate_envelopes if ver >= 2
+        ]
+
+    for envelope, ver in candidate_envelopes:
+        candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
+        if _verify_once(
+            envelope, signature, canonical_hash, scheme, key,
+            hash_alg=candidate_hash_alg,
+        ):
             return True
 
     return False

@@ -9,6 +9,7 @@ import structlog
 import yaml
 
 from ._contract import (
+    _ALLOWED_ENTITY_KINDS,
     Jsonb,
     validate_delegation_chain,
 )
@@ -307,6 +308,11 @@ class InMemoryRegista:
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
+        if entity_kind not in _ALLOWED_ENTITY_KINDS:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Unknown entity_kind {entity_kind!r}. Allowed: {sorted(_ALLOWED_ENTITY_KINDS)}",
+            )
         validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         evt = in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,

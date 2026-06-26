@@ -544,7 +544,7 @@ This section is normative. All implementations of regista operations must confor
 
 ### 17.1 Isolation level
 
-All regista transactions run at Postgres isolation level **READ COMMITTED**. SERIALIZABLE is not required; regista provides serialization via explicit row locks at well-defined points. REPEATABLE READ and SERIALIZABLE are not supported (regista has not been designed against their stricter semantics; using them may surface false-positive serialization failures with no correctness benefit).
+All regista *mutating* transactions run at Postgres isolation level **READ COMMITTED**. SERIALIZABLE is not required; regista provides serialization via explicit row locks at well-defined points. **Replay (FR-16)** is the sole exception: it runs at **REPEATABLE READ** so that the event-log scan and the per-item live-projection read share a single snapshot, preventing spurious drift/halt under concurrent writes. This exception is safe because replay is read-only (it creates temp tables but never mutates `events` or `work_items_current`). REPEATABLE READ for mutating transactions is not supported; using it may surface false-positive serialization failures with no correctness benefit.
 
 ### 17.2 Canonical lock target
 

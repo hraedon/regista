@@ -261,6 +261,25 @@ def cmd_schema_status(args):
         sub.close()
 
 
+def cmd_schema_repair_checksums(args):
+    dsn, project, _ = _require_config(args)
+    from regista._connection import ConnectionManager
+    from regista._migrations import repair_checksums
+
+    mgr = ConnectionManager(dsn, project)
+    try:
+        mgr.open()
+        repaired = repair_checksums(mgr)
+        if repaired:
+            print(f"Repaired checksums for migrations: {repaired}")
+        else:
+            print("No checksum drift detected")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        mgr.close()
+
+
 def cmd_hooks_dead_letter_list(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -809,6 +828,9 @@ def main(argv=None):
     sc_sub = sc.add_subparsers(dest="subcommand")
     sc_sub.add_parser("init", help="Initialize schema").set_defaults(func=cmd_schema_init)
     sc_sub.add_parser("status", help="Schema status").set_defaults(func=cmd_schema_status)
+    sc_sub.add_parser(
+        "repair-checksums", help="Repair migration checksums after file edits"
+    ).set_defaults(func=cmd_schema_repair_checksums)
 
     # hooks
     hk = subs.add_parser("hooks", help="Hook commands")

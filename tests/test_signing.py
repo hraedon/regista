@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from regista._testing import KeySet, raw_transaction, verify_event
+from regista._signing import (
+    build_signing_envelope,
+    build_signing_envelope_v2,
+    build_signing_envelope_v3,
+    build_signing_envelope_v4,
+    classify_envelope_version,
+)
+from regista._signing_scheme import HMACSHA256Scheme
+from regista._testing import KeySet, raw_transaction, sign_event, verify_event
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
@@ -165,3 +174,266 @@ class TestAC26JsonbDriftSurvival:
             prev_event_hash=transition_evt.prev_event_hash,
             prev_global_event_hash=transition_evt.prev_global_event_hash,
         )
+
+
+class TestDowngradeEnvelopeFiltering:
+    def test_verify_rejects_downgrade_when_stored_v4(self):
+        key_set = KeySet(KEY_PATH)
+        key_entry = key_set.active_key()
+        event_id = uuid.uuid4()
+        work_item_id = uuid.uuid4()
+        timestamp = datetime.now(UTC)
+        payload = {"foo": "bar"}
+
+        signature, canonical_hash, envelope = sign_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            key=key_entry.secret,
+        )
+
+        assert classify_envelope_version(envelope) == 4
+        assert verify_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            signature=signature,
+            canonical_hash=canonical_hash,
+            key=key_entry.secret,
+            stored_envelope=envelope,
+        )
+
+        tampered_envelope = build_signing_envelope_v4(
+            event_id=event_id,
+            entity_kind="work_item",
+            entity_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            hash_alg="sha-256",
+            transition="t",
+            payload={"foo": "tampered"},
+        )
+        assert not verify_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload={"foo": "tampered"},
+            signature=signature,
+            canonical_hash=canonical_hash,
+            key=key_entry.secret,
+            stored_envelope=tampered_envelope,
+        )
+
+    def test_verify_all_candidates_when_no_stored_envelope(self):
+        key_set = KeySet(KEY_PATH)
+        key_entry = key_set.active_key()
+        event_id = uuid.uuid4()
+        work_item_id = uuid.uuid4()
+        timestamp = datetime.now(UTC)
+        payload = {"foo": "bar"}
+        scheme = HMACSHA256Scheme()
+
+        legacy_envelope = build_signing_envelope(
+            event_id, work_item_id, "actor-1", "t", payload, None,
+        )
+        legacy_signature, legacy_canonical_hash = scheme.sign(
+            legacy_envelope, key_entry.secret,
+        )
+
+        assert verify_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            signature=legacy_signature,
+            canonical_hash=legacy_canonical_hash,
+            key=key_entry.secret,
+            stored_envelope=None,
+        )
+
+    def test_verify_v4_event_does_not_match_v3_envelope(self):
+        key_set = KeySet(KEY_PATH)
+        key_entry = key_set.active_key()
+        event_id = uuid.uuid4()
+        work_item_id = uuid.uuid4()
+        timestamp = datetime.now(UTC)
+        payload = {"foo": "bar"}
+        prev_event_hash = b"\x00" * 32
+        global_seq = 7
+        prev_global_event_hash = b"\x11" * 32
+
+        signature, canonical_hash, envelope = sign_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            key=key_entry.secret,
+            prev_event_hash=prev_event_hash,
+            global_seq=global_seq,
+            prev_global_event_hash=prev_global_event_hash,
+        )
+
+        assert classify_envelope_version(envelope) == 4
+
+        v3_envelope = build_signing_envelope_v3(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            prev_event_hash=prev_event_hash,
+            global_seq=global_seq,
+            prev_global_event_hash=prev_global_event_hash,
+        )
+        assert classify_envelope_version(v3_envelope) == 3
+
+        assert not verify_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            signature=signature,
+            canonical_hash=canonical_hash,
+            key=key_entry.secret,
+            stored_envelope=v3_envelope,
+        )
+
+    def test_classify_envelope_version_correct(self):
+        event_id = uuid.uuid4()
+        work_item_id = uuid.uuid4()
+        timestamp = datetime.now(UTC)
+        prev_event_hash = b"\x00" * 32
+        global_seq = 7
+        prev_global_event_hash = b"\x11" * 32
+
+        v1_envelope = build_signing_envelope(
+            event_id, work_item_id, "actor-1", "t", {"x": 1}, None,
+        )
+        assert classify_envelope_version(v1_envelope) == 1
+
+        v2_envelope = build_signing_envelope_v2(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id="k1",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload={"x": 1},
+        )
+        assert classify_envelope_version(v2_envelope) == 2
+
+        v3_envelope = build_signing_envelope_v3(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id="k1",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload={"x": 1},
+        )
+        assert classify_envelope_version(v3_envelope) == 2
+
+        v3_chain_envelope = build_signing_envelope_v3(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id="k1",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload={"x": 1},
+            prev_event_hash=prev_event_hash,
+            global_seq=global_seq,
+            prev_global_event_hash=prev_global_event_hash,
+        )
+        assert classify_envelope_version(v3_chain_envelope) == 3
+
+        v4_envelope = build_signing_envelope_v4(
+            event_id=event_id,
+            entity_kind="work_item",
+            entity_id=work_item_id,
+            actor_id="actor-1",
+            key_id="k1",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            hash_alg="sha-256",
+            transition="t",
+            payload={"x": 1},
+        )
+        assert classify_envelope_version(v4_envelope) == 4
+
+        v4_chain_envelope = build_signing_envelope_v4(
+            event_id=event_id,
+            entity_kind="work_item",
+            entity_id=work_item_id,
+            actor_id="actor-1",
+            key_id="k1",
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            hash_alg="sha-256",
+            transition="t",
+            payload={"x": 1},
+            prev_event_hash=prev_event_hash,
+            global_seq=global_seq,
+            prev_global_event_hash=prev_global_event_hash,
+        )
+        assert classify_envelope_version(v4_chain_envelope) == 4

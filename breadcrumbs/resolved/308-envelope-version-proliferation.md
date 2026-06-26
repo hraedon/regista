@@ -74,3 +74,12 @@ Session 69 reverted a `global_seq` regression. Session 70 found
 `append_transition_event` was not forwarding `entity_kind`/`hash_alg` to
 `sign_event()` (fixed this session). These near-misses confirm the complexity
 is actively causing defects.
+
+## Resolution
+
+Implemented short-term fix from the proposed resolution: `verify_event()` now filters backward-compat envelope candidates by the stored envelope's classified version. When `stored_ver == 4`, only v4 candidates are tried; when `stored_ver == 3`, only v3/v4; when `stored_ver == 2`, only v2/v3/v4. Lower versions are tried only when `stored_ver <= 1` or unknown (backward compat preserved).
+
+Also fixed `classify_envelope_version()`: v3 detection now checks for any chain field (`prev_event_hash`, `global_seq`, `prev_global_event_hash`), not just `prev_event_hash`, so v3 envelopes with only `global_seq` or `prev_global_event_hash` are correctly classified. Removed dead code in the non-chained branch (unreachable v4/v3 filter cases). Removed redundant v4 detection branch.
+
+Tests: 4 new tests in `TestDowngradeEnvelopeFiltering` class. Adversarial review (GLM) caught the v3 misclassification and dead code, both fixed.
+

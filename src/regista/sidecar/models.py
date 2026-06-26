@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,7 +51,7 @@ class AppendEventRequest(BaseModel):
     event_id: str | None = None
     expected_event_seq: int | None = None
     on_behalf_of: dict | None = None
-    entity_kind: str = "work_item"
+    entity_kind: Literal["work_item"] = "work_item"
 
 
 class TransitionRequest(BaseModel):

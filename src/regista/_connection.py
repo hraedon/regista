@@ -122,6 +122,24 @@ class ConnectionManager:
                 )
                 yield conn
 
+    @contextmanager
+    def transaction_repeatable_read(self) -> Generator[psycopg.Connection, None, None]:
+        with self._pool.connection() as conn:
+            self._verify_ssl(conn)
+            conn.rollback()
+            prev_iso = conn.isolation_level
+            conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            try:
+                with conn.transaction():
+                    conn.execute(
+                        SQL("SET LOCAL search_path TO {}").format(
+                            Identifier(self._schema)
+                        )
+                    )
+                    yield conn
+            finally:
+                conn.isolation_level = prev_iso
+
     def schema_exists(self) -> bool:
         with self._pool.connection() as conn:
             self._verify_ssl(conn)

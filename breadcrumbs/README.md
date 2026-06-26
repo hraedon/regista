@@ -37,16 +37,16 @@ _(none)_
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | accepted |
 | 270 | API layer functions don't accept an existing connection for batch/transactional use | low | accepted |
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
-| 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | accepted |
-| 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | accepted |
 | 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | accepted |
-| 308 | Four signing envelope versions with complex backward-compat retry — correctness minefield | medium | proposed |
-| 310 | replay reads events and live projection in separate statements under READ COMMITTED — scoped and full replay can report false drift under concurrent writes | high | proposed |
 
 ## Resolved
 
 | # | Title | Severity | Resolution |
 |---|---|---|---|
+| 310 | replay reads events and live projection in separate statements under READ COMMITTED — scoped and full replay can report false drift under concurrent writes | high | Fixed — replay now runs at REPEATABLE READ via `transaction_repeatable_read()`; spec §17.1 amended. SSL breakage fixed per adversarial review (`conn.isolation_level`). 5 tests including concurrency test. |
+| 308 | Four signing envelope versions with complex backward-compat retry — correctness minefield | medium | Fixed — `verify_event()` filters backward-compat candidates by stored envelope version. `classify_envelope_version()` v3 detection fixed. Dead code removed. 4 tests. |
+| 306 | Sidecar append_event accepts arbitrary entity_kind without validation | low | Fixed — sidecar uses `Literal["work_item"]`; core API + InMemory validate against centralized `_ALLOWED_ENTITY_KINDS` in `_contract.py`. Docstring fixed. 7 tests. |
+| 294 | migration runner is checksum-locked with no repair path and no CONCURRENTLY mode | low | Fixed — `repair_checksums()` with advisory lock + CLI `schema repair-checksums`; `-- regista: autocommit` directive for non-transactional migrations. CLI fixed per adversarial review. 4 tests. |
 | 297 | witness co-signing uses HMAC — no asymmetric witness keys | medium | Implemented — witnesses may register Ed25519 public keys (migration 032); returned signatures verified against public key at delivery time (BC-297). InMemory parity + sidecar base64 error handling fixed per adversarial review. |
 | 298 | PostgresEventStore.append() omits prev_global_event_hash from INSERT | high | Fixed — 324db65 added prev_global_event_hash to PostgresEventStore.append INSERT; PostgresEventStore._EVENT_FIELDS (find_by_event_id path) also fixed; regression test added. |
 | 299 | Spec not updated for Plan 022 Phase 1 (entity generalization, envelope v4) | medium | Fixed — spec updated to v9 with §17.11 (global chain), §17.12 (crypto-agility), §17.13 (JSONB limits), §17.14 (witness asymmetric), §19.6 (API additions), §6 (persisted state), revision history. |

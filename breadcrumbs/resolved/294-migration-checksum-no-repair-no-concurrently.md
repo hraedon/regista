@@ -33,3 +33,15 @@ Add an explicit, audited checksum-override / repair command; document that
 migrations are immutable once shipped (and that fixes ship as new migrations);
 and reserve a non-transactional migration mode (autocommit) for `CONCURRENTLY`
 index builds.
+
+## Resolution
+
+Implemented both suggested fixes:
+
+1. **Checksum repair**: `repair_checksums(mgr)` function in `_migrations.py` updates stored checksums to match current file checksums for already-applied migrations. Acquires the advisory lock to serialize with concurrent migration runs. Logs each repair at warning level for audit trail. CLI command: `regista schema repair-checksums`.
+
+2. **Autocommit mode**: Migration files annotated with `-- regista: autocommit` (checked in first 5 lines, whitespace-tolerant) execute outside a transaction block, enabling `CREATE INDEX CONCURRENTLY`. The migration row is recorded in a separate transaction after the migration SQL succeeds.
+
+Adversarial review (GLM) caught three issues: `repair_checksums` missing advisory lock (TOCTOU race), CLI using `_resolve_config` instead of `_require_config` (missing-config crash), and CLI missing `RegistaError` handling. All three fixed.
+
+Tests: 4 tests covering repair-with-drift, repair-no-drift, autocommit migration mode, and CLI command.

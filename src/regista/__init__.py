@@ -802,7 +802,8 @@ class Regista:
             payload: Optional JSONB payload.
             event_id: UUIDv4 idempotency key.
             expected_event_seq: Optimistic-concurrency check.
-            entity_kind: Entity kind (``"work_item"`` or ``"session"``).
+            entity_kind: Entity kind (``"work_item"`` only; other kinds
+                blocked until entity generalization is complete).
             hash_alg: Hash algorithm for signing (default ``"sha-256"``).
 
         Returns:
@@ -1172,6 +1173,10 @@ class Regista:
     ) -> ReplayReport:
         """Rebuild projection from the event log and compare with live state.
 
+        The report reflects consistency as of a single point-in-time snapshot
+        (Postgres REPEATABLE READ). Drift committed after snapshot acquisition
+        will only be visible in a later replay run.
+
         Args:
             continue_on_revoked: Skip revoked-key events with warnings instead
                 of halting replay.
@@ -1198,7 +1203,7 @@ class Regista:
 
         timer = OpTimer(self._project, "replay")
         try:
-            with self._mgr.transaction() as conn:
+            with self._mgr.transaction_repeatable_read() as conn:
                 if work_item_id is not None:
                     row = conn.execute(
                         "SELECT 1 FROM work_items_current WHERE work_item_id = %s",
