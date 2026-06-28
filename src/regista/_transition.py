@@ -152,6 +152,7 @@ def transition(
                         on_behalf_of=(
                             dict(on_behalf_of) if on_behalf_of is not None else None
                         ),
+                        validator_params=transition_def.get("validator_params"),
                     )
                     try:
                         run_validator(

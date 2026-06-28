@@ -78,7 +78,9 @@ class InMemoryRegista:
         self._links: list[dict] = []
         self._actor_roles: set[tuple[str, str]] = set()
         self._actor_role_created: dict[tuple[str, str], datetime] = {}
-        self._validators: dict[str, Callable] = {}
+        from ._review_validators import BUILTIN_REVIEW_VALIDATORS
+
+        self._validators: dict[str, Callable] = dict(BUILTIN_REVIEW_VALIDATORS)
         self._hook_handlers: dict[str, Callable] = {}
         self._hook_queue: list[dict] = []
         self._hook_id_counter = 0

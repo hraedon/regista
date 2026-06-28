@@ -180,6 +180,7 @@ def _rebuild_wf(data: dict) -> WorkflowDefinition:
             allowed_roles=t.get("allowed_roles", []),
             validator=t.get("validator"),
             hooks=t.get("hooks", []),
+            validator_params=t.get("validator_params"),
         )
         for t in data.get("transitions", [])
     ]

@@ -129,6 +129,7 @@ def in_memory_transition(
                 on_behalf_of=(
                     dict(on_behalf_of) if on_behalf_of is not None else None
                 ),
+                validator_params=transition_def.get("validator_params"),
             )
             run_validator(validator_name, handler, ctx)
 

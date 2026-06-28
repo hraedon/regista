@@ -4,7 +4,73 @@ Structured log of development sessions and milestones.
 
 ---
 
-## 2026-06-26 — Session 74: In-depth review + BC-314/315 resolution
+## 2026-06-28 — Session 75: Plan 023 — Built-in review-gate validators + dual-mode accept policy
+
+**Focus:** Implement Plan 023 — port dossier's `adversarial_review` and
+`human_gate` validators into regista as auto-registered built-ins,
+parameterize the human-accept requirement into a dual-mode gate policy
+(strict/relaxed), and update dossier to consume from regista.
+
+**Delivered:**
+
+### WI-1: Port validators into regista
+- New module `src/regista/_review_validators.py` with `adversarial_review`,
+  `human_gate`, helpers (`derive_authors`, `_check_separation_of_duties`,
+  `_require_review_note`, `_adversarial_pass_identities`, `_event_lineage`),
+  `ReviewRejected` exception, `BUILTIN_REVIEW_VALIDATORS` registry
+- `adversarial_review` ported verbatim from dossier (Invariant G — unchanged)
+- `human_gate` parameterized with `require_human: bool` (dual-mode)
+
+### WI-2: validator_params infrastructure
+- Added `validator_params: dict | None` to `TransitionDef` and
+  `ValidatorContext` (with serialization)
+- Added `validator_params` to JSON Schema (`_workflow_schema.json`)
+- Workflow parsing (`_workflow.py`) reads `validator_params` from YAML
+- Both transition paths (`_transition.py` Postgres +
+  `_in_memory_transition.py` InMemory) pass `validator_params` to ctx
+- `_human_gate_builtin` wrapper reads `require_human` from
+  `ctx.validator_params`, validates it's a boolean (fails closed on
+  non-bool — adversarial review M1 fix)
+- Dual-mode: strict (human required + SoD + two-stage independence),
+  relaxed (default: review note + two-stage independence only, self-close
+  permitted after independent cross-lineage pass)
+
+### WI-3: Auto-registration
+- `Regista.__init__` and `InMemoryRegista.__init__` pre-populate
+  `self._validators` with `BUILTIN_REVIEW_VALIDATORS`
+- Workflow YAML references `adversarial_review` / `human_gate` by name
+  without consumer-supplied implementation
+- User-registered validators override built-ins (backward compatible)
+
+### WI-4: Dossier consumes from regista (cross-repo)
+- Deleted `dossier/src/dossier/validators.py`
+- Removed `register_validator` calls from `RegistaGateway.__init__`
+- Added `validator_params: {require_human: true}` to `accept` and
+  `reject` transitions in `dossier.workflow.yaml`
+- Updated test imports to use `regista._review_validators`
+- 34 dossier validator tests + 5 gateway tests pass
+
+### WI-5: Tests
+- `tests/test_plan023_review_validators.py` — 54 tests
+- Unit tests: `derive_authors` (6), `adversarial_review` (14),
+  `human_gate` strict (8), relaxed (5), direct param (3),
+  builtin type validation (3)
+- Integration tests: relaxed flow (5), strict flow (2), delegation (2),
+  auto-registration (2), YAML params (2), full review cycle (1)
+
+### Adversarial review (GLM)
+- M1 (fixed): Non-boolean `require_human` silently degrades strict →
+  relaxed. Added `isinstance(raw, bool)` check, fails closed.
+- L1 (fixed): `_rebuild_wf` in `_work_items.py` missing
+  `validator_params`. Added.
+- L2 (fixed): `callable` → `Callable` type annotation.
+- M2 (fixed): Added undeclared reviewer lineage ack-passes test.
+- L3 (fixed): Added non-human reject in strict mode test.
+
+**Tests:** 1327 passed, 1 skipped, 10 deselected. Ruff clean.
+**Breadcrumbs resolved:** none
+**Breadcrumbs opened:** none
+
 
 **Focus:** Comprehensive codebase review, fix 8 code issues, resolve BC-314
 (timestamping txn split) and BC-315 (witness receipt sweep), add maintenance

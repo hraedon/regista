@@ -135,7 +135,9 @@ class Regista:
             self._keys = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)
             self._metrics = Metrics(registry=prometheus_registry)
             self._project = project
-            self._validators: dict[str, Callable] = {}
+            from ._review_validators import BUILTIN_REVIEW_VALIDATORS
+
+            self._validators: dict[str, Callable] = dict(BUILTIN_REVIEW_VALIDATORS)
             self._hook_handlers: dict[str, Callable] = {}
             self._hook_channel = f"regista_hooks_{self._mgr.schema}"
             self._hook_consumer = None

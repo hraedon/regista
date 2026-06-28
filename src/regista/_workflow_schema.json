@@ -110,6 +110,10 @@
           "privileged": {
             "type": "boolean",
             "default": false
+          },
+          "validator_params": {
+            "type": "object",
+            "default": {}
           }
         }
       }

@@ -396,6 +396,7 @@ class TransitionDef:
     validator: str | None
     hooks: list[str]
     privileged: bool = False
+    validator_params: dict | None = None
 
     def to_dict(self) -> dict:
         result = {
@@ -408,6 +409,8 @@ class TransitionDef:
         }
         if self.privileged:
             result["privileged"] = True
+        if self.validator_params is not None:
+            result["validator_params"] = self.validator_params
         return result
 
     @classmethod
@@ -420,6 +423,7 @@ class TransitionDef:
             validator=data.get("validator"),
             hooks=data.get("hooks", []),
             privileged=data.get("privileged", False),
+            validator_params=data.get("validator_params"),
         )
 
 
@@ -669,6 +673,7 @@ class ValidatorContext:
     actor_kind: str
     prior_events: tuple[Event, ...]
     on_behalf_of: dict | None = None
+    validator_params: dict | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -688,6 +693,8 @@ class ValidatorContext:
         }
         if self.on_behalf_of is not None:
             d["on_behalf_of"] = self.on_behalf_of
+        if self.validator_params is not None:
+            d["validator_params"] = self.validator_params
         return d
 
     @classmethod
@@ -709,6 +716,7 @@ class ValidatorContext:
                 Event.from_dict(e) for e in data.get("prior_events", [])
             ),
             on_behalf_of=data.get("on_behalf_of"),
+            validator_params=data.get("validator_params"),
         )
 
 
