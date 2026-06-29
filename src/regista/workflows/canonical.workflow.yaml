@@ -180,7 +180,7 @@ work_item_types:
         ui_visible: true
       - name: severity
         type: enum
-        enum_values: [low, medium, high, urgent]
+        enum_values: [low, medium, high, urgent, critical]
         default: medium
         ui_visible: true
       - name: kind
