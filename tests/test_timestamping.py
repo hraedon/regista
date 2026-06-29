@@ -255,6 +255,7 @@ class TestBC228UTCTimestamps:
         # That's fine: if max_seq == last_confirmed_seq we return None — so
         # make last_confirmed_seq < max_seq by returning different values.
         call_results = [
+            MagicMock(),  # pg_advisory_xact_lock
             MagicMock(**{"fetchone.return_value": {"max_seq": 0}}),  # tsp_batches confirmed
             MagicMock(**{"fetchall.return_value": [
                 {"event_id": uuid.uuid4(), "global_seq": 1, "timestamp": None},
@@ -288,6 +289,7 @@ class TestBC228UTCTimestamps:
         token = _build_fake_tsa_token(b"x")  # valid-ish token for parsing
 
         call_results = [
+            MagicMock(),  # pg_advisory_xact_lock
             MagicMock(**{"fetchone.return_value": {"max_seq": 0}}),
             MagicMock(**{"fetchall.return_value": [
                 {"event_id": fake_event_id, "global_seq": 1, "timestamp": None},
@@ -705,3 +707,123 @@ class TestPlan014GlobalSeq:
         report = timestamp_regista.replay(verify_timestamps=True)
         assert report.warnings >= 1
         assert report.halted == 0
+
+
+class TestBC316ConcurrentTimestamping:
+    """BC-316: concurrent trigger_timestamping calls must not create duplicate batches."""
+
+    def test_pending_batch_prevents_reselection(self, timestamp_regista):
+        from unittest.mock import patch
+
+        from regista._timestamping import TSAConfig, trigger_timestamping
+
+        timestamp_regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "wi1"},
+        )
+
+        cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr", batch_size=1000)
+        fake_token = _build_fake_tsa_token(b"placeholder")
+
+        with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
+            first_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert first_batch is not None
+        assert first_batch.status == "confirmed"
+
+        with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
+            second_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert second_batch is None
+
+    def test_failed_batch_allows_reselection(self, timestamp_regista):
+        from unittest.mock import patch
+
+        from regista._timestamping import TSAConfig, trigger_timestamping
+
+        timestamp_regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "wi1"},
+        )
+
+        cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr", batch_size=1000)
+
+        with patch("regista._timestamping.submit_to_tsa", side_effect=RuntimeError("tsa down")):
+            first_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert first_batch is not None
+        assert first_batch.status == "failed"
+
+        fake_token = _build_fake_tsa_token(first_batch.merkle_root)
+        with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
+            second_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert second_batch is not None
+        assert second_batch.status == "confirmed"
+        assert second_batch.batch_id != first_batch.batch_id
+
+    def test_pending_batch_allows_non_overlapping_events(self, timestamp_regista):
+        from unittest.mock import patch
+
+        import psycopg
+        from psycopg.rows import dict_row
+
+        from regista._timestamping import TSAConfig, trigger_timestamping
+
+        wi1, _ = timestamp_regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "wi1"},
+        )
+
+        cfg = TSAConfig(tsa_url="https://tsa.example.com/tsr", batch_size=1000)
+        fake_token = _build_fake_tsa_token(b"placeholder")
+
+        with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
+            first_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert first_batch is not None
+
+        wi2, _ = timestamp_regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "wi2"},
+        )
+
+        with psycopg.connect(DSN, row_factory=dict_row) as raw_conn:
+            schema = timestamp_regista._mgr.schema
+            raw_conn.execute(f"SET search_path TO {schema}")
+            raw_conn.execute(
+                "UPDATE tsp_batches SET status = 'pending', confirmed_at = NULL, tsa_token = NULL "
+                "WHERE batch_id = %s",
+                [first_batch.batch_id],
+            )
+            wi1_event_ids = {
+                str(r["event_id"])
+                for r in raw_conn.execute(
+                    "SELECT event_id FROM events WHERE work_item_id = %s",
+                    [wi1.work_item_id],
+                ).fetchall()
+            }
+            wi2_event_ids = {
+                str(r["event_id"])
+                for r in raw_conn.execute(
+                    "SELECT event_id FROM events WHERE work_item_id = %s",
+                    [wi2.work_item_id],
+                ).fetchall()
+            }
+
+        with patch("regista._timestamping.submit_to_tsa", return_value=fake_token):
+            second_batch = trigger_timestamping(timestamp_regista._mgr, cfg)
+
+        assert second_batch is not None
+        assert second_batch.status == "confirmed"
+        second_ids = {str(eid) for eid in second_batch.event_ids}
+        assert second_ids == wi2_event_ids
+        assert second_ids.isdisjoint(wi1_event_ids)

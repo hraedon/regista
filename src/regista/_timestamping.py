@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 
 _SUPPORTED_HASH_ALGOS = {"sha256", "sha384", "sha512"}
 
+_TIMESTAMPING_LOCK_ID = -4278120043630045183
+
 
 def _hash_data(data: bytes, algo: str) -> bytes:
     if algo not in _SUPPORTED_HASH_ALGOS:
@@ -494,14 +496,22 @@ def trigger_timestamping(mgr, config: TSAConfig) -> TimestampBatch | None:
     log = structlog.get_logger()
 
     with mgr.transaction() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", [_TIMESTAMPING_LOCK_ID])
+
         batch_row = conn.execute(
             "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
         ).fetchone()
         last_confirmed_seq = batch_row["max_seq"] or 0
 
         rows = conn.execute(
-            "SELECT event_id, global_seq, timestamp FROM events "
-            "WHERE global_seq > %s ORDER BY global_seq LIMIT %s",
+            "SELECT e.event_id, e.global_seq, e.timestamp FROM events e "
+            "WHERE e.global_seq > %s "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM tsp_batches b "
+            "    WHERE b.status = 'pending' "
+            "      AND e.global_seq BETWEEN b.first_global_seq AND b.last_global_seq"
+            "  ) "
+            "ORDER BY e.global_seq LIMIT %s",
             [last_confirmed_seq, config.batch_size],
         ).fetchall()
         if not rows:

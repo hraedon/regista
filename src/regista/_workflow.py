@@ -26,6 +26,19 @@ from ._types import (
 log = structlog.get_logger()
 
 _SCHEMA_PATH = Path(__file__).parent / "_workflow_schema.json"
+_CANONICAL_WORKFLOW_PATH = Path(__file__).parent / "workflows" / "canonical.workflow.yaml"
+
+
+def canonical_workflow_yaml() -> str:
+    """Return the canonical agentic-lifecycle workflow YAML.
+
+    This is the single workflow definition both faces of the stack (dossier =
+    human/web, agent-notes = agent/CLI) register, so a work-item is governed by
+    one shared workflow instead of per-face copies. Register the exact bytes
+    with ``reg.register_workflow(canonical_workflow_yaml())``; registration is
+    idempotent. See dossier ``plans/010-unify-canonical-workflow.md``.
+    """
+    return _CANONICAL_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
 def _require_unique(items: list, label: str, key_fn=None) -> None:

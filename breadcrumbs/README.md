@@ -38,7 +38,6 @@ _(none)_
 | 282 | Sidecar boundary story: thin HTTP layer vs application server | medium | accepted |
 | 312 | InMemory witness delivery has no concurrency lock — double-delivery risk under start_maintenance | medium | proposed |
 | 313 | Sidecar hook authorization TOCTOU — workflow check and complete/fail run in separate transactions | medium | proposed |
-| 316 | Concurrent trigger_timestamping calls can create duplicate TSA batches for the same events | medium | proposed |
 
 ## Resolved
 
@@ -46,6 +45,7 @@ _(none)_
 |---|---|---|---|
 | 314 | trigger_timestamping holds DB transaction open during 30s HTTP call to TSA | high | Fixed — `trigger_timestamping` now takes `ConnectionManager` and splits into two transactions: (1) insert batch as `pending` + commit, (2) HTTP call to TSA outside any transaction, (3) update to `confirmed`/`failed` in new transaction with `WHERE status = 'pending'` guard. Added `sweep_stale_timestamp_batches` for crash recovery. 7 maintenance thread integration tests. Adversarial review (Kimi) addressed: race guard, max_age validation. |
 | 315 | No recovery sweep for stuck in_progress witness receipts | high | Fixed — `sweep_stuck_witness_receipts` resets old `in_progress` receipts to `pending`; wired into maintenance thread. InMemory parity. max_age_seconds validation. Adversarial review (Kimi) addressed: input validation, SQL consistency, test hardening. |
+| 316 | Concurrent trigger_timestamping calls can create duplicate TSA batches for the same events | medium | Fixed — NOT EXISTS filter in event selection excludes events covered by pending batches; transaction-scoped `pg_advisory_xact_lock` serializes selection+insert phase. 3 tests. |
 | 311 | Replay verify_event call omits chain fields — stored envelope is the only matching candidate for chained events | medium | Fixed — replay now forwards `prev_event_hash` and `prev_global_event_hash` to `verify_event()`. `global_seq` intentionally NOT forwarded (post-signing, not in envelope per spec §17.11). `verify_event_with_public_key()` also confirmed correct. 2 regression tests (Postgres + InMemory). |
 | 307 | InMemory witness delivery is a noop — receipts created but never delivered | low | Fixed — pluggable `witness_transport` callable on `InMemoryRegista`; `deliver_pending_witness_receipts()` now delivers via transport with retry, auto-pause, HMAC signature. Ed25519 signature verification added per adversarial review. 19 tests. |
 | 235 | Sidecar hook endpoints lack per-hook or per-work-item authorization | medium | Fixed — `allowed_workflows` field on `AuthenticatedActor` with `can_access_workflow()` method; token file parsing with type validation and empty-list rejection. Claim filtering releases filtered hooks back to pending (per adversarial review). Complete/fail enforce 403 for disallowed workflows. 6 tests. |

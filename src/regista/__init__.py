@@ -65,6 +65,7 @@ from ._types import (
 from ._types import (
     WorkflowDefinition as WorkflowDefinition,
 )
+from ._workflow import canonical_workflow_yaml as canonical_workflow_yaml
 from ._workflow import parse_and_validate as parse_and_validate
 from ._workflow import parse_file as parse_file
 from ._workflow import parse_workflow_yaml as parse_workflow_yaml

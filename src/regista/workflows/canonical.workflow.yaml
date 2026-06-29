@@ -1,0 +1,263 @@
+# The canonical agentic lifecycle — the SINGLE workflow both faces of the stack
+# register (dossier = human/web face, agent-notes = agent/CLI face). Shipped from
+# regista (the authoritative store) so there is exactly one definition and no
+# per-face drift. See dossier plans/010-unify-canonical-workflow.md.
+#
+# Reach it via regista.canonical_workflow_yaml(); register the exact bytes with
+# reg.register_workflow(regista.canonical_workflow_yaml()). Registration is
+# idempotent, so both faces registering it against one project is a no-op the
+# second time.
+#
+# Lifecycle states: open / in_progress / blocked / deferred / in_review /
+# in_human_review / done. `done` is terminal and reachable ONLY through the
+# two-stage review (adversarial_review + human_gate), except the one
+# review-exempt `close_from_open` (pre-work dismissal — won't-fix/duplicate).
+#
+# Review gate (regista built-in dual-mode validators, Plan 023, referenced by
+# name — auto-available on every Regista instance):
+#   - `adversarial_review` on the `in_review` exits: the reviewer must differ
+#     from every author (cross-lineage), with explicit same-lineage acknowledgment.
+#   - `human_gate` on the `in_human_review` exits: **relaxed default**
+#     (`require_human: false`) — any actor (incl. the author, after an independent
+#     cross-lineage adversarial pass) may accept; the validator still requires a
+#     distinct accepter, so `done` always carries a real mixed chain (Invariant
+#     G). A workplace deployment can register a strict copy (`require_human: true`).
+#
+# `deferred` is a first-class non-terminal idle state (deliberate park, no
+# dependency), distinct from `blocked` (external dependency). Neither carries a
+# review gate.
+#
+# Lease is NOT a lifecycle state: claim/heartbeat/release go to regista's native
+# claims primitive (a concurrency/liveness axis orthogonal to workflow state).
+#
+# Amend: field-only updates use the `amend` self-transition (one definition per
+# non-terminal state; regista resolves by `from`). Like `comment`, it is an
+# attributed event that does not change lifecycle state. `done` (terminal) cannot
+# be amended directly — reopen first.
+#
+# Roles mirror actor_kind so the cross-lineage gate can distinguish an agent from
+# a human: `human` (authenticated people — dossier maps its users here), `agent`
+# (model-driven actors — agent-notes' default), `system` (regista/maintenance).
+name: canonical
+version: 1
+regista_version: "0.4.0"
+
+states:
+  - name: open
+    initial: true
+  - name: in_progress
+  - name: blocked
+  - name: deferred
+  - name: in_review
+  - name: in_human_review
+  - name: done
+    terminal: true
+
+roles:
+  - name: human
+  - name: agent
+  - name: system
+
+transitions:
+  # Active work -----------------------------------------------------------
+  - name: start
+    from: open
+    to: in_progress
+    allowed_roles: [human, agent, system]
+  - name: start
+    from: deferred
+    to: in_progress
+    allowed_roles: [human, agent, system]
+
+  # Blocked (external dependency) ----------------------------------------
+  - name: block
+    from: in_progress
+    to: blocked
+    allowed_roles: [human, agent, system]
+  - name: unblock
+    from: blocked
+    to: in_progress
+    allowed_roles: [human, agent, system]
+
+  # Deferred (deliberate park, no dependency) ----------------------------
+  - name: defer
+    from: open
+    to: deferred
+    allowed_roles: [human, agent, system]
+  - name: defer
+    from: in_progress
+    to: deferred
+    allowed_roles: [human, agent, system]
+  - name: resume
+    from: deferred
+    to: open
+    allowed_roles: [human, agent, system]
+
+  # Two-stage review gate -------------------------------------------------
+  # Stage 1: cross-lineage adversarial pass.
+  - name: submit_for_review
+    from: in_progress
+    to: in_review
+    allowed_roles: [human, agent, system]
+  - name: adversarial_pass
+    from: in_review
+    to: in_human_review
+    allowed_roles: [human, agent, system]
+    validator: adversarial_review
+  - name: request_changes
+    from: in_review
+    to: in_progress
+    allowed_roles: [human, agent, system]
+    validator: adversarial_review
+  # Stage 2: final acceptance (relaxed — any actor may accept after the
+  # independent adversarial pass; the validator enforces a distinct accepter).
+  - name: accept
+    from: in_human_review
+    to: done
+    allowed_roles: [human, agent, system]
+    validator: human_gate
+    validator_params:
+      require_human: false
+  - name: reject
+    from: in_human_review
+    to: in_progress
+    allowed_roles: [human, agent, system]
+    validator: human_gate
+    validator_params:
+      require_human: false
+
+  # Reopen a completed item.
+  - name: reopen
+    from: done
+    to: open
+    allowed_roles: [human, agent, system]
+
+  # The ONE review-exempt path: dismiss before any work (won't-fix/duplicate).
+  - name: close_from_open
+    from: open
+    to: done
+    allowed_roles: [human, agent, system]
+
+  # Amend: field-only self-transitions (non-state events). One per non-terminal
+  # state; regista resolves `amend` by the work-item's current `from` state.
+  - name: amend
+    from: open
+    to: open
+    allowed_roles: [human, agent, system]
+  - name: amend
+    from: in_progress
+    to: in_progress
+    allowed_roles: [human, agent, system]
+  - name: amend
+    from: blocked
+    to: blocked
+    allowed_roles: [human, agent, system]
+  - name: amend
+    from: deferred
+    to: deferred
+    allowed_roles: [human, agent, system]
+  - name: amend
+    from: in_review
+    to: in_review
+    allowed_roles: [human, agent, system]
+  - name: amend
+    from: in_human_review
+    to: in_human_review
+    allowed_roles: [human, agent, system]
+
+# Work-item types — the union both faces create under the one workflow.
+# `breadcrumb` is agent-notes' type; `bug`/`task` are dossier's.
+work_item_types:
+  - name: breadcrumb
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+        ui_visible: true
+      - name: description
+        type: string
+        required: false
+        ui_visible: true
+      - name: severity
+        type: enum
+        enum_values: [low, medium, high, urgent]
+        default: medium
+        ui_visible: true
+      - name: kind
+        type: enum
+        enum_values:
+          - todo
+          - observation
+          - decision
+          - risk
+          - task
+          - bug
+          - feature
+          - improvement
+          - question
+          - experiment
+          - spike
+          - refactor
+          - docs
+          - ci
+          - job
+        default: todo
+        ui_visible: true
+      - name: external_refs
+        type: json
+        required: false
+        ui_visible: true
+      - name: diagnostic_keys
+        type: json
+        required: false
+        ui_visible: true
+      - name: source_identifier
+        type: string
+        required: false
+        ui_visible: true
+  - name: bug
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+        ui_visible: true
+      - name: description
+        type: string
+        required: false
+        ui_visible: true
+      - name: team
+        type: string
+        required: false
+        ui_visible: true
+      - name: assignee
+        type: string
+        required: false
+        ui_visible: true
+      - name: priority
+        type: enum
+        enum_values: [low, normal, high, urgent]
+        default: normal
+        ui_visible: true
+  - name: task
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+        ui_visible: true
+      - name: description
+        type: string
+        required: false
+        ui_visible: true
+      - name: team
+        type: string
+        required: false
+        ui_visible: true
+      - name: assignee
+        type: string
+        required: false
+        ui_visible: true
+      - name: priority
+        type: enum
+        enum_values: [low, normal, high, urgent]
+        default: normal
+        ui_visible: true
