@@ -99,6 +99,7 @@ def claim_hooks(
     conn: psycopg.Connection,
     max_batch: int = 10,
     lease_seconds: int = 60,
+    actor_id: str | None = None,
 ) -> list[HookContext]:
     rows = conn.execute(
         SQL(
@@ -148,19 +149,36 @@ def claim_hooks(
     conn.execute(
         SQL(
             "UPDATE hook_queue SET status = 'in_progress', "
-            "lease_expires_at = %s, updated_at = now() "
+            "lease_expires_at = %s, claimed_by = %s, updated_at = now() "
             "WHERE id = ANY(%s)"
         ),
-        [lease_expires_at, valid_ids],
+        [lease_expires_at, actor_id, valid_ids],
     )
     return result
 
 
-def complete_hook(conn: psycopg.Connection, hook_queue_id: int) -> None:
+def complete_hook(
+    conn: psycopg.Connection, hook_queue_id: int, actor_id: str | None = None,
+) -> None:
+    if actor_id is not None:
+        row = conn.execute(
+            SQL("SELECT claimed_by FROM hook_queue WHERE id = %s"),
+            [hook_queue_id],
+        ).fetchone()
+        if row is None:
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found",
+            )
+        if row["claimed_by"] != actor_id:
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
+                f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
+            )
     result = conn.execute(
         SQL(
             "UPDATE hook_queue SET status = 'completed', "
-            "lease_expires_at = NULL, updated_at = now() "
+            "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
             "WHERE id = %s"
         ),
         [hook_queue_id],
@@ -179,11 +197,12 @@ def fail_hook(
     key_set: KeySet,
     metrics: Metrics | None = None,
     project: str | None = None,
+    actor_id: str | None = None,
 ) -> None:
     row = conn.execute(
         SQL(
-            "SELECT id, event_id, hook_name, hook_type, payload, retry_count, max_retries "
-            "FROM hook_queue WHERE id = %s"
+            "SELECT id, event_id, hook_name, hook_type, payload, retry_count, "
+            "max_retries, claimed_by FROM hook_queue WHERE id = %s"
         ),
         [hook_queue_id],
     ).fetchone()
@@ -192,6 +211,12 @@ def fail_hook(
         raise RegistaError(
             ErrorCode.HOOK_NOT_FOUND,
             f"Hook {hook_queue_id} not found",
+        )
+
+    if actor_id is not None and row["claimed_by"] != actor_id:
+        raise RegistaError(
+            ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
+            f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
         )
 
     retry_count = row["retry_count"] + 1
@@ -207,8 +232,8 @@ def fail_hook(
         conn.execute(
             SQL(
                 "UPDATE hook_queue SET status = 'pending', retry_count = %s, "
-                "next_retry_at = %s, lease_expires_at = NULL, updated_at = now() "
-                "WHERE id = %s"
+                "next_retry_at = %s, lease_expires_at = NULL, claimed_by = NULL, "
+                "updated_at = now() WHERE id = %s"
             ),
             [retry_count, next_retry, hook_queue_id],
         )
@@ -221,7 +246,7 @@ def sweep_expired_hook_leases(conn: psycopg.Connection) -> int:
     result = conn.execute(
         SQL(
             "UPDATE hook_queue SET status = 'pending', "
-            "lease_expires_at = NULL, updated_at = now() "
+            "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
             "WHERE status = 'in_progress' AND lease_expires_at < now()"
         ),
     )

@@ -625,23 +625,28 @@ class HookOps:
             self._metrics.inc("hooks_drain", self._project, amount=count)
         return count
 
-    def claim(self, max_batch: int, lease_seconds: int) -> list[HookContext]:
+    def claim(
+        self, max_batch: int, lease_seconds: int, actor_id: str | None = None,
+    ) -> list[HookContext]:
         from ._hooks import claim_hooks
 
         with self._mgr.transaction() as conn:
-            return claim_hooks(conn, max_batch, lease_seconds)
+            return claim_hooks(conn, max_batch, lease_seconds, actor_id=actor_id)
 
-    def complete(self, hook_queue_id: int) -> None:
+    def complete(self, hook_queue_id: int, actor_id: str | None = None) -> None:
         from ._hooks import complete_hook
 
         with self._mgr.transaction() as conn:
-            complete_hook(conn, hook_queue_id)
+            complete_hook(conn, hook_queue_id, actor_id=actor_id)
 
-    def fail(self, hook_queue_id: int, error: str) -> None:
+    def fail(self, hook_queue_id: int, error: str, actor_id: str | None = None) -> None:
         from ._hooks import fail_hook
 
         with self._mgr.transaction() as conn:
-            fail_hook(conn, hook_queue_id, error, self._keys, self._metrics, self._project)
+            fail_hook(
+                conn, hook_queue_id, error, self._keys,
+                self._metrics, self._project, actor_id=actor_id,
+            )
 
     def sweep_expired_leases(self) -> int:
         from ._hooks import sweep_expired_hook_leases

@@ -1,0 +1,1 @@
+ALTER TABLE hook_queue ADD COLUMN IF NOT EXISTS claimed_by TEXT;

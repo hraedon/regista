@@ -489,6 +489,7 @@ class Regista:
         self,
         max_batch: int = 10,
         lease_seconds: int = 60,
+        actor_id: str | None = None,
     ) -> list[HookContext]:
         """Claim a batch of pending hooks for external processing.
 
@@ -499,24 +500,34 @@ class Regista:
         Args:
             max_batch: Maximum number of hooks to claim (default 10).
             lease_seconds: Lease duration in seconds (default 60).
+            actor_id: Optional actor identity stored as ``claimed_by`` on
+                each claimed row.  When provided, subsequent
+                ``complete_hook`` / ``fail_hook`` calls must pass the same
+                ``actor_id`` or they will be rejected.
 
         Returns:
             List of ``HookContext`` objects describing each claimed hook.
         """
-        return self.hooks.claim(max_batch, lease_seconds)
+        return self.hooks.claim(max_batch, lease_seconds, actor_id=actor_id)
 
-    def complete_hook(self, hook_queue_id: int) -> None:
+    def complete_hook(self, hook_queue_id: int, actor_id: str | None = None) -> None:
         """Mark a previously claimed hook as successfully completed.
 
         Args:
             hook_queue_id: The ``hook_queue_id`` from ``claim_hooks``.
+            actor_id: When provided, the hook must have been claimed by
+                this actor (``claimed_by`` column).  Mismatch raises
+                ``HOOK_NOT_CLAIMED_BY_CALLER``.  ``None`` skips the check
+                (backward compatible).
 
         Raises:
             RegistaError: ``HOOK_NOT_FOUND`` if the row does not exist.
+                ``HOOK_NOT_CLAIMED_BY_CALLER`` if ``actor_id`` does not
+                match the claim owner.
         """
-        self.hooks.complete(hook_queue_id)
+        self.hooks.complete(hook_queue_id, actor_id=actor_id)
 
-    def fail_hook(self, hook_queue_id: int, error: str) -> None:
+    def fail_hook(self, hook_queue_id: int, error: str, actor_id: str | None = None) -> None:
         """Record a hook processing failure.
 
         Increments ``retry_count``. If below ``max_retries``, requeues the
@@ -526,11 +537,17 @@ class Regista:
         Args:
             hook_queue_id: The ``hook_queue_id`` from ``claim_hooks``.
             error: Human-readable error description.
+            actor_id: When provided, the hook must have been claimed by
+                this actor (``claimed_by`` column).  Mismatch raises
+                ``HOOK_NOT_CLAIMED_BY_CALLER``.  ``None`` skips the check
+                (backward compatible).
 
         Raises:
             RegistaError: ``HOOK_NOT_FOUND`` if the row does not exist.
+                ``HOOK_NOT_CLAIMED_BY_CALLER`` if ``actor_id`` does not
+                match the claim owner.
         """
-        self.hooks.fail(hook_queue_id, error)
+        self.hooks.fail(hook_queue_id, error, actor_id=actor_id)
 
     def sweep_expired_hook_leases(self) -> int:
         """Requeue in-progress hooks whose leases have expired.

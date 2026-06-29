@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -91,6 +92,7 @@ class InMemoryRegista:
         self._witness_transport = witness_transport
         self._witnesses: dict[uuid.UUID, dict] = {}
         self._witness_receipts: list[dict] = []
+        self._witness_delivery_lock = threading.Lock()
 
     @classmethod
     def create_project(
@@ -600,6 +602,7 @@ class InMemoryRegista:
         self,
         max_batch: int = 10,
         lease_seconds: int = 60,
+        actor_id: str | None = None,
     ) -> list[HookContext]:
         now = datetime.now(UTC)
         lease_expires_at = now + timedelta(seconds=lease_seconds)
@@ -632,11 +635,12 @@ class InMemoryRegista:
         for entry in valid:
             entry["status"] = "in_progress"
             entry["lease_expires_at"] = lease_expires_at
+            entry["claimed_by"] = actor_id
             entry["updated_at"] = now
 
         return result
 
-    def complete_hook(self, hook_queue_id: int) -> None:
+    def complete_hook(self, hook_queue_id: int, actor_id: str | None = None) -> None:
         entry = next(
             (e for e in self._hook_queue if e.get("id") == hook_queue_id),
             None,
@@ -646,11 +650,17 @@ class InMemoryRegista:
                 ErrorCode.HOOK_NOT_FOUND,
                 f"Hook {hook_queue_id} not found",
             )
+        if actor_id is not None and entry.get("claimed_by") != actor_id:
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
+                f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
+            )
         entry["status"] = "completed"
         entry["lease_expires_at"] = None
+        entry["claimed_by"] = None
         entry["updated_at"] = datetime.now(UTC)
 
-    def fail_hook(self, hook_queue_id: int, error: str) -> None:
+    def fail_hook(self, hook_queue_id: int, error: str, actor_id: str | None = None) -> None:
         from ._in_memory_hooks import _in_memory_move_to_dead_letter
 
         entry = next(
@@ -661,6 +671,12 @@ class InMemoryRegista:
             raise RegistaError(
                 ErrorCode.HOOK_NOT_FOUND,
                 f"Hook {hook_queue_id} not found",
+            )
+
+        if actor_id is not None and entry.get("claimed_by") != actor_id:
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
+                f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
             )
 
         retry_count = entry.get("retry_count", 0) + 1
@@ -675,6 +691,7 @@ class InMemoryRegista:
             entry["retry_count"] = retry_count
             entry["status"] = "pending"
             entry["lease_expires_at"] = None
+            entry["claimed_by"] = None
             entry["updated_at"] = datetime.now(UTC)
 
     def sweep_expired_hook_leases(self) -> int:
@@ -688,6 +705,7 @@ class InMemoryRegista:
             ):
                 entry["status"] = "pending"
                 entry["lease_expires_at"] = None
+                entry["claimed_by"] = None
                 entry["updated_at"] = now
                 swept += 1
         return swept
@@ -1054,115 +1072,139 @@ class InMemoryRegista:
         import hmac as _hmac
         import json
 
-        total = 0
-        active_witnesses = [
-            w for w in self._witnesses.values()
-            if w["status"] == "active"
-        ]
-
-        for w in active_witnesses:
-            witness_id = w["witness_id"]
-            url = w["url"]
-            base_headers = dict(w["headers"]) if w["headers"] else {}
-            max_retries = w["max_retries"]
-            max_failures = w["max_failures"]
-            sign_secret = w["sign_secret"]
-            witness_key_scheme = w["key_scheme"]
-
-            pending = [
-                r for r in self._witness_receipts
-                if r["witness_id"] == witness_id and r["status"] == "pending"
+        with self._witness_delivery_lock:
+            total = 0
+            active_witnesses = [
+                w for w in self._witnesses.values()
+                if w["status"] == "active"
             ]
-            if not pending:
-                continue
 
-            for receipt in pending:
-                receipt["status"] = "in_progress"
-                receipt["last_attempt_at"] = datetime.now(UTC)
+            for w in active_witnesses:
+                witness_id = w["witness_id"]
+                url = w["url"]
+                base_headers = dict(w["headers"]) if w["headers"] else {}
+                max_retries = w["max_retries"]
+                max_failures = w["max_failures"]
+                sign_secret = w["sign_secret"]
+                witness_key_scheme = w["key_scheme"]
 
-            for receipt in pending:
-                event_id = receipt["event_id"]
-                event = self._store.find_by_event_id(event_id)
-                if event is None:
-                    receipt["status"] = "pending"
-                    receipt["error_message"] = "event not found"
-                    receipt["last_attempt_at"] = datetime.now(UTC)
+                pending = [
+                    r for r in self._witness_receipts
+                    if r["witness_id"] == witness_id and r["status"] == "pending"
+                ]
+                if not pending:
                     continue
 
-                evt_dict = event.to_dict()
-                payload = {
-                    "event": evt_dict,
-                    "receipt_id": str(receipt["receipt_id"]),
-                    "witness_id": str(witness_id),
-                    "submitted_at": datetime.now(UTC).isoformat(),
-                }
-                body = json.dumps(payload)
-                req_headers = {
-                    "Content-Type": "application/json",
-                    "User-Agent": "regista-delivery/0",
-                    **base_headers,
-                }
-                if sign_secret:
-                    sig = _hmac.new(
-                        sign_secret, body.encode(), hashlib.sha256,
-                    ).hexdigest()
-                    req_headers["X-Regista-Signature"] = f"sha256={sig}"
+                for receipt in pending:
+                    receipt["status"] = "in_progress"
+                    receipt["last_attempt_at"] = datetime.now(UTC)
 
-                try:
-                    result = self._witness_transport(url, req_headers, payload)
-                except Exception as exc:
-                    result = TransportResult(
-                        status_code=0, error=str(exc)[:500],
-                    )
+                for receipt in pending:
+                    event_id = receipt["event_id"]
+                    event = self._store.find_by_event_id(event_id)
+                    if event is None:
+                        receipt["status"] = "pending"
+                        receipt["error_message"] = "event not found"
+                        receipt["last_attempt_at"] = datetime.now(UTC)
+                        continue
 
-                now = datetime.now(UTC)
+                    evt_dict = event.to_dict()
+                    payload = {
+                        "event": evt_dict,
+                        "receipt_id": str(receipt["receipt_id"]),
+                        "witness_id": str(witness_id),
+                        "submitted_at": datetime.now(UTC).isoformat(),
+                    }
+                    body = json.dumps(payload)
+                    req_headers = {
+                        "Content-Type": "application/json",
+                        "User-Agent": "regista-delivery/0",
+                        **base_headers,
+                    }
+                    if sign_secret:
+                        sig = _hmac.new(
+                            sign_secret, body.encode(), hashlib.sha256,
+                        ).hexdigest()
+                        req_headers["X-Regista-Signature"] = f"sha256={sig}"
 
-                if 200 <= result.status_code < 300 and result.error is None:
-                    witness_sig = None
-                    if result.body and "witness_signature" in result.body:
-                        try:
-                            witness_sig = bytes.fromhex(
-                                result.body["witness_signature"],
-                            )
-                        except (ValueError, TypeError):
-                            witness_sig = None
+                    try:
+                        result = self._witness_transport(url, req_headers, payload)
+                    except Exception as exc:
+                        result = TransportResult(
+                            status_code=0, error=str(exc)[:500],
+                        )
 
-                    witness_pubkey = w.get("public_key")
-                    sig_verified = True
-                    if witness_key_scheme == "ed25519":
-                        sig_verified = False
-                        if (
-                            witness_pubkey is not None
-                            and witness_sig is not None
-                            and event.canonical_envelope is not None
-                            and event.payload_canonical_hash is not None
-                        ):
+                    now = datetime.now(UTC)
+
+                    if 200 <= result.status_code < 300 and result.error is None:
+                        witness_sig = None
+                        if result.body and "witness_signature" in result.body:
                             try:
-                                from ._signing_scheme import Ed25519Scheme
-
-                                sig_verified = Ed25519Scheme().verify(
-                                    event.canonical_envelope,
-                                    witness_sig,
-                                    event.payload_canonical_hash,
-                                    witness_pubkey,
+                                witness_sig = bytes.fromhex(
+                                    result.body["witness_signature"],
                                 )
-                            except Exception:
-                                sig_verified = False
+                            except (ValueError, TypeError):
+                                witness_sig = None
 
-                    if sig_verified:
-                        receipt["status"] = "confirmed"
-                        receipt["confirmed_at"] = now
-                        receipt["witness_response"] = result.body
-                        receipt["witness_signature"] = witness_sig
-                        receipt["witness_scheme"] = witness_key_scheme
-                        receipt["submitted_at"] = receipt["submitted_at"] or now
-                        receipt["error_message"] = None
-                        w["consecutive_failures"] = 0
-                        w["last_success_at"] = now
-                        w["updated_at"] = now
-                        total += 1
+                        witness_pubkey = w.get("public_key")
+                        sig_verified = True
+                        if witness_key_scheme == "ed25519":
+                            sig_verified = False
+                            if (
+                                witness_pubkey is not None
+                                and witness_sig is not None
+                                and event.canonical_envelope is not None
+                                and event.payload_canonical_hash is not None
+                            ):
+                                try:
+                                    from ._signing_scheme import Ed25519Scheme
+
+                                    sig_verified = Ed25519Scheme().verify(
+                                        event.canonical_envelope,
+                                        witness_sig,
+                                        event.payload_canonical_hash,
+                                        witness_pubkey,
+                                    )
+                                except Exception:
+                                    sig_verified = False
+
+                        if sig_verified:
+                            receipt["status"] = "confirmed"
+                            receipt["confirmed_at"] = now
+                            receipt["witness_response"] = result.body
+                            receipt["witness_signature"] = witness_sig
+                            receipt["witness_scheme"] = witness_key_scheme
+                            receipt["submitted_at"] = receipt["submitted_at"] or now
+                            receipt["error_message"] = None
+                            w["consecutive_failures"] = 0
+                            w["last_success_at"] = now
+                            w["updated_at"] = now
+                            total += 1
+                        else:
+                            error_msg = "ed25519 signature verification failed"
+                            receipt["retry_count"] += 1
+                            receipt["last_attempt_at"] = now
+                            receipt["error_message"] = error_msg
+                            receipt["witness_scheme"] = witness_key_scheme
+                            receipt["status"] = "pending"
+
+                            w["consecutive_failures"] += 1
+                            w["last_failure_at"] = now
+                            w["updated_at"] = now
+
+                            if receipt["retry_count"] >= max_retries:
+                                receipt["status"] = "paused"
+
+                            if w["consecutive_failures"] >= max_failures:
+                                w["status"] = "paused"
+                                log.warning(
+                                    "witness.auto_paused",
+                                    project=self._project,
+                                    witness_id=str(witness_id),
+                                    consecutive_failures=w["consecutive_failures"],
+                                )
                     else:
-                        error_msg = "ed25519 signature verification failed"
+                        error_msg = result.error or f"HTTP {result.status_code}"
                         receipt["retry_count"] += 1
                         receipt["last_attempt_at"] = now
                         receipt["error_message"] = error_msg
@@ -1184,31 +1226,8 @@ class InMemoryRegista:
                                 witness_id=str(witness_id),
                                 consecutive_failures=w["consecutive_failures"],
                             )
-                else:
-                    error_msg = result.error or f"HTTP {result.status_code}"
-                    receipt["retry_count"] += 1
-                    receipt["last_attempt_at"] = now
-                    receipt["error_message"] = error_msg
-                    receipt["witness_scheme"] = witness_key_scheme
-                    receipt["status"] = "pending"
 
-                    w["consecutive_failures"] += 1
-                    w["last_failure_at"] = now
-                    w["updated_at"] = now
-
-                    if receipt["retry_count"] >= max_retries:
-                        receipt["status"] = "paused"
-
-                    if w["consecutive_failures"] >= max_failures:
-                        w["status"] = "paused"
-                        log.warning(
-                            "witness.auto_paused",
-                            project=self._project,
-                            witness_id=str(witness_id),
-                            consecutive_failures=w["consecutive_failures"],
-                        )
-
-        return total
+            return total
 
     def sweep_stuck_witness_receipts(self, max_age_seconds: int = 300) -> int:
         return self.witnesses.sweep_stuck(max_age_seconds)

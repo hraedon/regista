@@ -57,6 +57,7 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.REPLAY_HALTED: 500,
     ErrorCode.DB_NOT_FOUND: 500,
     ErrorCode.VALIDATOR_FAILED: 500,
+    ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER: 409,
 }
 
 

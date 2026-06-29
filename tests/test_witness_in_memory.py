@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from regista._in_memory import InMemoryRegista, TransportResult
 
@@ -396,3 +398,83 @@ class TestCreateProjectWithTransport:
 
         count = sub.deliver_pending_witness_receipts()
         assert count == 1
+
+
+class TestConcurrentDelivery:
+    def test_concurrent_delivery_no_double_delivery(self):
+        import time
+
+        delivery_count = 0
+        counter_lock = threading.Lock()
+
+        def transport(url, headers, payload):
+            time.sleep(0.05)
+            with counter_lock:
+                nonlocal delivery_count
+                delivery_count += 1
+            return TransportResult(status_code=200, body={"ok": True})
+
+        sub = _make_sub(transport)
+        sub.register_witness("https://example.com/hook")
+        sub.create_work_item("test", "task", "actor-1")
+
+        errors: list[Exception] = []
+
+        def deliver():
+            try:
+                sub.deliver_pending_witness_receipts()
+            except Exception as exc:
+                errors.append(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(deliver) for _ in range(2)]
+            for f in futures:
+                f.result(timeout=10)
+
+        assert not errors, f"Errors during concurrent delivery: {errors}"
+        assert delivery_count == 1, (
+            f"Expected exactly 1 transport call, got {delivery_count}"
+        )
+        receipts = sub.list_witness_receipts()
+        assert len(receipts) == 1
+        assert receipts[0]["status"] == "confirmed"
+
+    def test_concurrent_delivery_multiple_receipts_no_double(self):
+        import time
+
+        delivered_payloads: list[str] = []
+        counter_lock = threading.Lock()
+
+        def transport(url, headers, payload):
+            time.sleep(0.05)
+            with counter_lock:
+                delivered_payloads.append(payload["receipt_id"])
+            return TransportResult(status_code=200, body={"ok": True})
+
+        sub = _make_sub(transport)
+        sub.register_witness("https://example.com/hook")
+        for i in range(5):
+            sub.create_work_item("test", "task", f"actor-{i}")
+
+        errors: list[Exception] = []
+
+        def deliver():
+            try:
+                sub.deliver_pending_witness_receipts()
+            except Exception as exc:
+                errors.append(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(deliver) for _ in range(2)]
+            for f in futures:
+                f.result(timeout=10)
+
+        assert not errors, f"Errors during concurrent delivery: {errors}"
+        assert len(delivered_payloads) == 5, (
+            f"Expected exactly 5 transport calls, got {len(delivered_payloads)}"
+        )
+        assert len(set(delivered_payloads)) == 5, (
+            f"Duplicate receipt IDs delivered: {delivered_payloads}"
+        )
+        confirmed = sub.list_witness_receipts(status="confirmed")
+        assert len(confirmed) == 5

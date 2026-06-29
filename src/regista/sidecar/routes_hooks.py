@@ -56,6 +56,7 @@ def _release_hook(regista, hook_id: int) -> None:
             if entry.get("id") == hook_id:
                 entry["status"] = "pending"
                 entry["lease_expires_at"] = None
+                entry["claimed_by"] = None
                 entry["next_retry_at"] = None
                 return
         return
@@ -64,7 +65,7 @@ def _release_hook(regista, hook_id: int) -> None:
     with regista._mgr.transaction() as conn:
         conn.execute(
             "UPDATE hook_queue SET status = 'pending', "
-            "lease_expires_at = NULL, next_retry_at = NULL, "
+            "lease_expires_at = NULL, claimed_by = NULL, next_retry_at = NULL, "
             "updated_at = %s WHERE id = %s",
             [datetime.now(UTC), hook_id],
         )
@@ -90,6 +91,7 @@ def register_hook_routes(app, regista, tokens: TokenRegistry):
         result = regista.claim_hooks(
             max_batch=body.max_batch,
             lease_seconds=body.lease_seconds,
+            actor_id=actor.actor_id,
         )
         result = _filter_hooks_by_workflow_access(regista, actor, result)
         return _serialize(result)
@@ -98,14 +100,14 @@ def register_hook_routes(app, regista, tokens: TokenRegistry):
     def complete_hook(hook_id: int, body: CompleteHookRequest, request: Request):
         actor = get_actor(request)
         _authorize_hook_workflow_access(regista, actor, hook_id)
-        regista.complete_hook(hook_id)
+        regista.complete_hook(hook_id, actor_id=actor.actor_id)
         return {"status": "ok"}
 
     @router.post("/{hook_id}/fail")
     def fail_hook(hook_id: int, body: FailHookRequest, request: Request):
         actor = get_actor(request)
         _authorize_hook_workflow_access(regista, actor, hook_id)
-        regista.fail_hook(hook_id, body.error)
+        regista.fail_hook(hook_id, body.error, actor_id=actor.actor_id)
         return {"status": "ok"}
 
     app.include_router(router)
