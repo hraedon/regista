@@ -650,6 +650,12 @@ class InMemoryRegista:
                 ErrorCode.HOOK_NOT_FOUND,
                 f"Hook {hook_queue_id} not found",
             )
+        if entry.get("status") != "in_progress":
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found or not in progress "
+                f"(status={entry.get('status')})",
+            )
         if actor_id is not None and entry.get("claimed_by") != actor_id:
             raise RegistaError(
                 ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
@@ -677,6 +683,12 @@ class InMemoryRegista:
             raise RegistaError(
                 ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
                 f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
+            )
+        if entry.get("status") != "in_progress":
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found or not in progress "
+                f"(status={entry.get('status')})",
             )
 
         retry_count = entry.get("retry_count", 0) + 1
@@ -1103,19 +1115,46 @@ class InMemoryRegista:
                     event_id = receipt["event_id"]
                     event = self._store.find_by_event_id(event_id)
                     if event is None:
+                        now = datetime.now(UTC)
                         receipt["status"] = "pending"
+                        receipt["retry_count"] += 1
                         receipt["error_message"] = "event not found"
-                        receipt["last_attempt_at"] = datetime.now(UTC)
+                        receipt["last_attempt_at"] = now
+                        receipt["witness_scheme"] = witness_key_scheme
+                        if receipt["retry_count"] >= max_retries:
+                            receipt["status"] = "paused"
                         continue
 
-                    evt_dict = event.to_dict()
-                    payload = {
-                        "event": evt_dict,
-                        "receipt_id": str(receipt["receipt_id"]),
-                        "witness_id": str(witness_id),
-                        "submitted_at": datetime.now(UTC).isoformat(),
-                    }
-                    body = json.dumps(payload)
+                    try:
+                        evt_dict = event.to_dict()
+                        payload = {
+                            "event": evt_dict,
+                            "receipt_id": str(receipt["receipt_id"]),
+                            "witness_id": str(witness_id),
+                            "submitted_at": datetime.now(UTC).isoformat(),
+                        }
+                        body = json.dumps(payload)
+                    except Exception as exc:
+                        now = datetime.now(UTC)
+                        receipt["status"] = "pending"
+                        receipt["retry_count"] += 1
+                        receipt["last_attempt_at"] = now
+                        receipt["error_message"] = f"payload error: {str(exc)[:400]}"
+                        receipt["witness_scheme"] = witness_key_scheme
+                        w["consecutive_failures"] += 1
+                        w["last_failure_at"] = now
+                        w["updated_at"] = now
+                        if receipt["retry_count"] >= max_retries:
+                            receipt["status"] = "paused"
+                        if w["consecutive_failures"] >= max_failures:
+                            w["status"] = "paused"
+                            log.warning(
+                                "witness.auto_paused",
+                                project=self._project,
+                                witness_id=str(witness_id),
+                                consecutive_failures=w["consecutive_failures"],
+                            )
+                        continue
                     req_headers = {
                         "Content-Type": "application/json",
                         "User-Agent": "regista-delivery/0",
@@ -1334,11 +1373,12 @@ class _InMemoryWitnessOps:
         now = datetime.now(UTC)
         threshold = now - timedelta(seconds=max_age_seconds)
         count = 0
-        for r in self._sub._witness_receipts:
-            if r["status"] == "in_progress" and r.get("last_attempt_at") is not None:
-                if r["last_attempt_at"] < threshold:
-                    r["status"] = "pending"
-                    count += 1
+        with self._sub._witness_delivery_lock:
+            for r in self._sub._witness_receipts:
+                if r["status"] == "in_progress" and r.get("last_attempt_at") is not None:
+                    if r["last_attempt_at"] < threshold:
+                        r["status"] = "pending"
+                        count += 1
         return count
 
     def create_receipts_for_event(self, event_dict: dict) -> int:

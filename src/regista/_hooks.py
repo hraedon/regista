@@ -161,33 +161,43 @@ def complete_hook(
     conn: psycopg.Connection, hook_queue_id: int, actor_id: str | None = None,
 ) -> None:
     if actor_id is not None:
-        row = conn.execute(
-            SQL("SELECT claimed_by FROM hook_queue WHERE id = %s"),
-            [hook_queue_id],
-        ).fetchone()
-        if row is None:
-            raise RegistaError(
-                ErrorCode.HOOK_NOT_FOUND,
-                f"Hook {hook_queue_id} not found",
-            )
-        if row["claimed_by"] != actor_id:
+        result = conn.execute(
+            SQL(
+                "UPDATE hook_queue SET status = 'completed', "
+                "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
+                "WHERE id = %s AND claimed_by = %s AND status = 'in_progress'"
+            ),
+            [hook_queue_id, actor_id],
+        )
+        if result.rowcount == 0:
+            row = conn.execute(
+                SQL("SELECT claimed_by, status FROM hook_queue WHERE id = %s"),
+                [hook_queue_id],
+            ).fetchone()
+            if row is None:
+                raise RegistaError(
+                    ErrorCode.HOOK_NOT_FOUND,
+                    f"Hook {hook_queue_id} not found",
+                )
             raise RegistaError(
                 ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
-                f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
+                f"Hook {hook_queue_id} is not claimed by {actor_id!r} "
+                f"(status={row['status']}, claimed_by={row['claimed_by']})",
             )
-    result = conn.execute(
-        SQL(
-            "UPDATE hook_queue SET status = 'completed', "
-            "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
-            "WHERE id = %s"
-        ),
-        [hook_queue_id],
-    )
-    if result.rowcount == 0:
-        raise RegistaError(
-            ErrorCode.HOOK_NOT_FOUND,
-            f"Hook {hook_queue_id} not found",
+    else:
+        result = conn.execute(
+            SQL(
+                "UPDATE hook_queue SET status = 'completed', "
+                "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
+                "WHERE id = %s AND status = 'in_progress'"
+            ),
+            [hook_queue_id],
         )
+        if result.rowcount == 0:
+            raise RegistaError(
+                ErrorCode.HOOK_NOT_FOUND,
+                f"Hook {hook_queue_id} not found or not in progress",
+            )
 
 
 def fail_hook(
@@ -202,7 +212,8 @@ def fail_hook(
     row = conn.execute(
         SQL(
             "SELECT id, event_id, hook_name, hook_type, payload, retry_count, "
-            "max_retries, claimed_by FROM hook_queue WHERE id = %s"
+            "max_retries, claimed_by, status FROM hook_queue "
+            "WHERE id = %s FOR UPDATE"
         ),
         [hook_queue_id],
     ).fetchone()
@@ -217,6 +228,13 @@ def fail_hook(
         raise RegistaError(
             ErrorCode.HOOK_NOT_CLAIMED_BY_CALLER,
             f"Hook {hook_queue_id} is not claimed by {actor_id!r}",
+        )
+
+    if row["status"] != "in_progress":
+        raise RegistaError(
+            ErrorCode.HOOK_NOT_FOUND,
+            f"Hook {hook_queue_id} not found or not in progress "
+            f"(status={row['status']})",
         )
 
     retry_count = row["retry_count"] + 1
