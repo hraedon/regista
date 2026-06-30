@@ -4,6 +4,130 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-06-30 — Session 77: Plan 024 gap closure + adversarial review
+
+**Focus:** Close the actionable items and gaps surfaced in the Plan 024 review:
+genesis race, smoke-test fragility, and two adversarial-review rounds.
+
+### Genesis race (migration 035)
+- `event_chain_head` (migration 030) had `head_hash`/`head_event_id` NOT NULL,
+  so the singleton row existed only after the first event. Before that,
+  `SELECT ... FOR UPDATE` locked nothing → two concurrent first-events could
+  both chain from NULL (silent chain fork).
+- Fix: `migrations/035_event_chain_head_genesis_sentinel.sql` drops the NOT NULL
+  constraints and pre-seeds `(id=TRUE, head_hash=NULL, head_event_id=NULL)` via
+  `ON CONFLICT DO NOTHING`. `_events.py:_lock_global_chain_head` now returns
+  None when `head_hash` is NULL (genesis), so the sentinel is transparent to
+  callers while guaranteeing FOR UPDATE always has a row.
+- Covers both Postgres append paths (`_events.py` L203/L389 and
+  `_event_store.py:PostgresEventStore` which delegates to the same lock).
+- `InMemoryEventStore` documents a single-threaded contract (no real
+  cross-call lock); the genesis race fix is Postgres-only, which is the SoT.
+
+### Smoke-test robustness
+- `tests/test_smoke.py` module fixture now registers the workflow itself, so
+  `test_replay_no_drift` passes under `-k` filtered runs (it previously only
+  passed when `test_register_workflow` ran first — every selective run reported
+  a false failure). Full suite goes 1367 passed / 0 failed.
+
+### Adversarial review (two independent reviewers)
+- Round 1 converged on: deploy-ordering hazard (migration 035 + old code =
+  TypeError), misleading cycle test, cycle early-return skipping orphan sweep,
+  stale spec.md, dead `Jsonb(stored_payload)` expression.
+- Fixes applied:
+  - Migration 035 deploy note (loud failure if applied without code update;
+    reverse direction is safe).
+  - Cycle `return` → `break` so the orphan sweep still runs after a cycle.
+  - Renamed `test_hash_walk_detects_cycle` → `test_hash_walk_no_genesis_reports_orphans`
+    (honest: corrupting the only genesis event removes the root the walk needs).
+  - Added `test_unit_detects_cycle` (genuine reachable cycle via a synthetic
+    event list where E3 reuses E1's envelope so head(E3)==head(E1)) and
+    `test_unit_detects_fork` — both exercise branches the DB-backed tests
+    cannot reach cryptographically.
+  - Updated `spec.md` (hash walk not sort; CACHE 1; genesis sentinel).
+  - Removed dead `Jsonb(stored_payload)` at `_events.py:369`.
+
+### Files changed
+- `migrations/035_event_chain_head_genesis_sentinel.sql` — genesis sentinel
+- `src/regista/_events.py` — NULL head_hash handling; dead-expr cleanup
+- `src/regista/_replay.py`, `_in_memory_replay.py` — cycle break (orphan sweep)
+- `src/regista/_event_store.py` — InMemoryEventStore single-threaded docstring
+- `tests/test_smoke.py` — robust module fixture
+- `tests/test_plan024_global_chain.py` — genesis-race test + honest cycle/fork tests
+- `spec.md` — global-chain section corrected
+
+**Tests:** 1367 passed, 1 skipped, 10 deselected. Ruff clean.
+**Breadcrumbs resolved:** none
+**Breadcrumbs opened:** none
+
+
+
+**Focus:** Implement Plan 024 — investigate global hash chain breakage
+reported across 14 of 15 production schemas, determine root cause
+(verifier bug vs data corruption), fix, and re-verify.
+
+**Phase 0 Finding: VERIFIER BUG (not data corruption).**
+
+### Phase 0a/0b: Manual recompute + chain walk
+- Wrote read-only scripts (`/tmp/opencode/phase0_*.py`) to recompute the
+  global chain outside `_replay` on the production store (`mvmpostgres01`).
+- **Chain walk**: all 11 schemas with events show CHAIN INTACT — 100% of
+  events reachable from genesis via `prev_global_event_hash` links, zero
+  orphans, zero forks, zero broken links.
+- **Root cause of false reports**: `events_global_seq_seq` uses `CACHE 100`
+  (migration 017). Different sessions cache disjoint blocks of 100 values.
+  When sessions interleave appends, `global_seq` order diverges from actual
+  append (chain-link) order. The verifier sorted by `global_seq` and checked
+  links sequentially → false positives.
+- Per-item chains, signatures, projection: all verify (drift=0, halted=0).
+
+### Phase 0c: Genesis
+- `global_seq=1` stores `prev_global_event_hash=NULL` in every schema —
+  correct. Replay seeds from NULL. No off-by-one.
+
+### Phase 2a: Verifier fix (`src/regista/_replay.py`, `_in_memory_replay.py`)
+- Rewrote `_verify_global_hash_chain` to walk the chain by following
+  `prev_global_event_hash` links from genesis, instead of sorting by
+  `global_seq`. Detects: multiple genesis, forks, cycles, orphans,
+  head-vs-tail mismatch.
+- Updated head-vs-last check to use chain tail (not `global_seq` sort tail).
+
+### Phase 2b: Append path fix (`migrations/034_global_seq_cache_one.sql`)
+- `ALTER SEQUENCE events_global_seq_seq CACHE 1`.
+- The append path already calls `nextval` after acquiring the
+  `event_chain_head` FOR UPDATE lock. With CACHE 1, every nextval round-trips
+  to the sequence server → values assigned in lock-acquisition order →
+  matches chain-link order. Prevents future divergence.
+
+### Phase 2c: Regression tests (`tests/test_plan024_global_chain.py`, 6 tests)
+- `test_concurrent_transitions_replay_clean`: 10 workers × 3 transitions,
+  replay warnings == 0.
+- `test_concurrent_raw_appends_replay_clean`: 8 workers × 3 raw appends,
+  hash walk warnings == 0.
+- `test_hash_walk_detects_orphan`: corrupted `prev_global_event_hash`
+  → warning.
+- `test_hash_walk_detects_cycle`: cycle → warning.
+- `test_in_memory_replay_walks_chain`: InMemory replay walks chain.
+- `test_global_seq_matches_chain_order_with_cache1`: global_seq order
+  matches chain order under concurrent appends.
+
+### Phase 4: Re-verify production
+- Ran fixed `_verify_global_hash_chain` against all 11 production schemas.
+  All report CLEAN (0 warnings).
+
+### Files changed
+- `src/regista/_replay.py` — verifier hash-walk fix
+- `src/regista/_in_memory_replay.py` — same fix for InMemory
+- `migrations/034_global_seq_cache_one.sql` — CACHE 1
+- `tests/test_plan024_global_chain.py` — 6 regression tests
+- `plans/024-global-chain-integrity-investigation-and-repair.md` — updated
+  with Phase 0 finding and resolution
+
+**Tests:** 1358 passed, 1 skipped, 16 deselected (pre-existing
+`test_replay_no_drift` failure unrelated to this change). Ruff clean.
+**Breadcrumbs resolved:** none
+**Breadcrumbs opened:** none
+
 ## 2026-06-28 — Session 75: Plan 023 — Built-in review-gate validators + dual-mode accept policy
 
 **Focus:** Implement Plan 023 — port dossier's `adversarial_review` and

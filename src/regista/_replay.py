@@ -55,76 +55,125 @@ def _verify_hash_chain(
     from ._signing_scheme import resolve_hash_function
 
     hash_fn = resolve_hash_function("sha-256")
-    computed = hash_fn(
-        bytes(prev_env) + bytes(prev_sig)
-    ).digest()
+    computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
     if not _hmac.compare_digest(computed, bytes(expected)):
-        detail = (
-            f"hash chain mismatch: computed={computed.hex()} "
-            f"expected={bytes(expected).hex()}"
-        )
+        detail = f"hash chain mismatch: computed={computed.hex()} expected={bytes(expected).hex()}"
         return False, detail
     return True, ""
 
 
-def _verify_global_hash_chain(ordered_events: list[dict]) -> int:
-    """Verify the global event hash chain (BC-300).
+def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
+    """Verify the global event hash chain by walking ``prev_global_event_hash``
+    links (BC-300 / Plan 024).
 
-    Each event's ``prev_global_event_hash`` must equal
-    ``SHA-256(prev_canonical_envelope + prev_signature)`` of the globally
-    preceding event (ordered by ``global_seq``). Returns the warning count.
+    The chain is walked from genesis (NULL ``prev_global_event_hash``) by
+    following hash links, NOT by sorting on ``global_seq``.  The
+    ``events_global_seq_seq`` sequence uses ``CACHE 100``, so under
+    concurrent appends different sessions consume disjoint blocks of
+    sequence values and ``global_seq`` order can diverge from actual
+    append (chain-link) order.  A hash walk is immune to this: it follows
+    the same links the append path established under the
+    ``event_chain_head`` row lock.
+
+    Returns ``(warning_count, chain_tail)`` where *chain_tail* is the last
+    event reached by the walk (or ``None`` if the event list is empty).
     """
+    from collections import defaultdict
+
     from ._signing_scheme import resolve_hash_function
 
+    if not events:
+        return 0, None
+
     hash_fn = resolve_hash_function("sha-256")
-    warnings = 0
-    prev_evt: dict | None = None
-    for evt in ordered_events:
+
+    link_map: dict[str, list[dict]] = defaultdict(list)
+    genesis_events: list[dict] = []
+    for evt in events:
         expected = evt.get("prev_global_event_hash")
         if expected is None:
-            prev_evt = evt
-            continue
-        if prev_evt is None:
+            genesis_events.append(evt)
+        else:
+            link_map[bytes(expected).hex()].append(evt)
+
+    warnings = 0
+
+    if len(genesis_events) > 1:
+        for g in genesis_events[1:]:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
-                event_id=str(evt["event_id"]),
-                global_seq=evt["global_seq"],
-                detail="prev_global_event_hash set but no global predecessor",
+                "replay.global_chain_multiple_genesis",
+                event_id=str(g["event_id"]),
+                global_seq=g.get("global_seq"),
             )
-            prev_evt = evt
-            continue
-        prev_env = prev_evt.get("canonical_envelope")
-        prev_sig = prev_evt.get("signature")
-        if prev_env is None or prev_sig is None:
+
+    if not genesis_events:
+        for evt in events:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
+                "replay.global_chain_orphan",
                 event_id=str(evt["event_id"]),
-                global_seq=evt["global_seq"],
-                detail="global predecessor missing canonical_envelope or signature",
+                global_seq=evt.get("global_seq"),
+                detail="no genesis event (no event with NULL prev_global_event_hash)",
             )
-            prev_evt = evt
-            continue
-        computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
-        if not _hmac.compare_digest(bytes(expected), computed):
+        return warnings, None
+
+    current = genesis_events[0]
+    visited: set = set()
+
+    while True:
+        eid = current["event_id"]
+        if eid in visited:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
-                event_id=str(evt["event_id"]),
-                global_seq=evt["global_seq"],
-                detail=(
-                    f"global chain mismatch: computed={computed.hex()} "
-                    f"expected={bytes(expected).hex()}"
-                ),
+                "replay.global_chain_cycle",
+                event_id=str(eid),
+                global_seq=current.get("global_seq"),
             )
-        prev_evt = evt
-    return warnings
+            break
+
+        visited.add(eid)
+
+        env = current.get("canonical_envelope")
+        sig = current.get("signature")
+        if env is None or sig is None:
+            break
+
+        head_hash = hash_fn(bytes(env) + bytes(sig)).digest()
+        successors = link_map.get(head_hash.hex(), [])
+
+        if not successors:
+            break
+
+        if len(successors) > 1:
+            for s in successors[1:]:
+                warnings += 1
+                log.warning(
+                    "replay.global_chain_fork",
+                    event_id=str(s["event_id"]),
+                    global_seq=s.get("global_seq"),
+                    detail=f"multiple events chain from event {eid}",
+                )
+
+        current = successors[0]
+
+    for evt in events:
+        if evt["event_id"] not in visited:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_orphan",
+                event_id=str(evt["event_id"]),
+                global_seq=evt.get("global_seq"),
+                detail="event not reachable from genesis via prev_global_event_hash links",
+            )
+
+    return warnings, current
 
 
 class _ReplayHaltError(RegistaError):
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.REPLAY_HALTED, message)
+
 
 _EVENT_FIELDS = (
     "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
@@ -152,9 +201,9 @@ def replay(
     report_table = f"replay_report_{tag}"
 
     conn.execute(
-        SQL(
-            "CREATE TABLE {} AS SELECT * FROM work_items_current WHERE 1=0"
-        ).format(Identifier(replay_table))
+        SQL("CREATE TABLE {} AS SELECT * FROM work_items_current WHERE 1=0").format(
+            Identifier(replay_table)
+        )
     )
     conn.execute(
         SQL(
@@ -168,7 +217,12 @@ def replay(
 
     try:
         return _replay_inner(
-            conn, schema, project, key_set, replay_table, report_table,
+            conn,
+            schema,
+            project,
+            key_set,
+            replay_table,
+            report_table,
             continue_on_revoked=continue_on_revoked,
             verify_timestamps=verify_timestamps,
             work_item_id=work_item_id,
@@ -211,16 +265,12 @@ def _replay_inner(
 
     if scoped:
         all_events = conn.execute(
-            SQL(
-                f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"
-            ),
+            SQL(f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"),
             [work_item_id],
         ).fetchall()
     else:
         all_events = conn.execute(
-            SQL(
-                f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq"
-            ),
+            SQL(f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq"),
         ).fetchall()
 
     events_by_wi: dict = {}
@@ -246,9 +296,11 @@ def _replay_inner(
                         "VALUES (%s, %s, %s, %s)"
                     ).format(Identifier(report_table)),
                     [
-                    orphan_id, "halted",
-                    "Orphaned events with no work_item and no created event", 0,
-                ],
+                        orphan_id,
+                        "halted",
+                        "Orphaned events with no work_item and no created event",
+                        0,
+                    ],
                 )
             else:
                 total_warnings += 1
@@ -268,12 +320,13 @@ def _replay_inner(
         )
         conn.execute(
             SQL(
-                "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                "VALUES (%s, %s, %s, %s)"
+                "INSERT INTO {} (work_item_id, category, detail, warnings) VALUES (%s, %s, %s, %s)"
             ).format(Identifier(report_table)),
             [
-                work_item_id, "halted",
-                "events exist but projection row missing from work_items_current", 0,
+                work_item_id,
+                "halted",
+                "events exist but projection row missing from work_items_current",
+                0,
             ],
         )
 
@@ -286,7 +339,11 @@ def _replay_inner(
 
         try:
             replayed_state, wi_warnings = _replay_work_item(
-                conn, wi_id, events, key_set, continue_on_revoked,
+                conn,
+                wi_id,
+                events,
+                key_set,
+                continue_on_revoked,
             )
             total_warnings += wi_warnings
         except _ReplayHaltError as e:
@@ -304,7 +361,9 @@ def _replay_inner(
             halted_count += 1
             log.error(
                 "replay.unexpected_error",
-                work_item_id=str(wi_id), error=str(e), exc_info=True,
+                work_item_id=str(wi_id),
+                error=str(e),
+                exc_info=True,
             )
             conn.execute(
                 SQL(
@@ -317,11 +376,11 @@ def _replay_inner(
 
         live_row = conn.execute(
             SQL(
-            "SELECT work_item_id, workflow_name, workflow_version, work_item_type, "
-            "current_state, custom_fields, needs_review, not_before, "
-            "last_event_seq, last_event_at, next_event_seq, "
-            "claimed_by, claim_expires_at, attempt_number "
-            "FROM work_items_current WHERE work_item_id = %s"
+                "SELECT work_item_id, workflow_name, workflow_version, work_item_type, "
+                "current_state, custom_fields, needs_review, not_before, "
+                "last_event_seq, last_event_at, next_event_seq, "
+                "claimed_by, claim_expires_at, attempt_number "
+                "FROM work_items_current WHERE work_item_id = %s"
             ),
             [wi_id],
         ).fetchone()
@@ -329,9 +388,9 @@ def _replay_inner(
         if _states_match(replayed_state, live_row):
             ok_count += 1
             conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, warnings) VALUES (%s, %s, %s)"
-                ).format(Identifier(report_table)),
+                SQL("INSERT INTO {} (work_item_id, category, warnings) VALUES (%s, %s, %s)").format(
+                    Identifier(report_table)
+                ),
                 [wi_id, "replayed_ok", wi_warnings],
             )
         else:
@@ -379,16 +438,12 @@ def _replay_inner(
         )
 
     if not scoped:
-        global_ordered = sorted(
-            all_events,
-            key=lambda e: (e["global_seq"] if e["global_seq"] is not None else 0),
-        )
-        total_warnings += _verify_global_hash_chain(global_ordered)
+        chain_warnings, chain_tail = _verify_global_hash_chain(all_events)
+        total_warnings += chain_warnings
 
-        if global_ordered:
-            last = global_ordered[-1]
-            last_env = last.get("canonical_envelope")
-            last_sig = last.get("signature")
+        if chain_tail is not None:
+            last_env = chain_tail.get("canonical_envelope")
+            last_sig = chain_tail.get("signature")
             if last_env is not None and last_sig is not None:
                 from ._signing_scheme import resolve_hash_function
 
@@ -407,7 +462,7 @@ def _replay_inner(
                     log.warning(
                         "replay.global_chain_head_mismatch",
                         detail=(
-                            "event_chain_head does not match the last appended event; "
+                            "event_chain_head does not match the chain tail; "
                             "a tail event may have been deleted or the head tampered"
                         ),
                     )
@@ -499,6 +554,7 @@ def _parse_claim_expires(expires_str: str | None) -> datetime | None:
         return datetime.fromisoformat(expires_str)
     except (ValueError, TypeError):
         import structlog
+
         structlog.get_logger().warning(
             "replay.malformed_claim_expires",
             expires_str=expires_str,
@@ -515,6 +571,7 @@ def _parse_not_before(value: str | datetime | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except (ValueError, TypeError):
         import structlog
+
         structlog.get_logger().warning(
             "replay.malformed_not_before",
             value=str(value),
@@ -560,11 +617,7 @@ def _replay_work_item(
         try:
             key_entry = key_set.verify_key_status(
                 evt["key_id"],
-                event_timestamp=(
-                    evt["timestamp"].isoformat()
-                    if evt.get("timestamp")
-                    else None
-                ),
+                event_timestamp=(evt["timestamp"].isoformat() if evt.get("timestamp") else None),
             )
         except RegistaError as e:
             if e.code == ErrorCode.REVOKED_KEY_ID and continue_on_revoked:
@@ -694,9 +747,7 @@ def _replay_work_item(
                     found = True
                     break
             if not found:
-                name_matches = any(
-                    t["name"] == transition for t in defn.get("transitions", [])
-                )
+                name_matches = any(t["name"] == transition for t in defn.get("transitions", []))
                 if name_matches:
                     raise _ReplayHaltError(
                         f"Transition {transition!r} exists but not valid from state {state!r}"
@@ -749,7 +800,9 @@ def _states_match(replayed: dict, live: dict) -> bool:
         return False
     threshold = replayed.get("claim_coalesce_threshold", 0.0)
     if not _ts_equal_within(
-        replayed["claim_expires_at"], live["claim_expires_at"], threshold,
+        replayed["claim_expires_at"],
+        live["claim_expires_at"],
+        threshold,
     ):
         return False
     return True
@@ -773,7 +826,9 @@ def _diff_fields(replayed: dict, live: dict) -> list[str]:
         diffs.append("claimed_by")
     threshold = replayed.get("claim_coalesce_threshold", 0.0)
     if not _ts_equal_within(
-        replayed["claim_expires_at"], live["claim_expires_at"], threshold,
+        replayed["claim_expires_at"],
+        live["claim_expires_at"],
+        threshold,
     ):
         diffs.append("claim_expires_at")
     return diffs

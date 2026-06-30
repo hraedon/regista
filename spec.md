@@ -644,9 +644,9 @@ Between coalesced heartbeats, the live `claim_expires_at` may be ahead of the re
 
 Every event carries a `prev_global_event_hash` field: `SHA-256(prev.canonical_envelope || prev.signature)` of the **globally preceding** event (across all work items, in append order). This forms a single tamper-evident line across the entire project, independent of per-work-item chains.
 
-- The global chain head is serialized via a singleton `event_chain_head` row (`SELECT ... FOR UPDATE`). Cross-work-item appends queue on this lock, ensuring append order == `global_seq` order.
-- `global_seq` is `BIGSERIAL CACHE 100`; gaps are expected and harmless — the chain links by hash, not numeric adjacency.
-- Replay verifies the global chain (BC-300): events are sorted by `global_seq`, and each event's `prev_global_event_hash` is recomputed from its predecessor. The chain head is also compared to the stored `head_hash` to detect tail-event deletion.
+- The global chain head is serialized via a singleton `event_chain_head` row (`SELECT ... FOR UPDATE`). Cross-work-item appends queue on this lock, ensuring append (chain-link) order. A genesis sentinel row (migration 035) guarantees the lock always has a row, even before the first event, closing the concurrent-first-append genesis race.
+- `global_seq` is `BIGSERIAL` with `CACHE 1` (migration 034); the append path calls `nextval` after acquiring the head lock, so values are assigned in lock-acquisition (append) order. (Earlier `CACHE 100` let interleaved sessions consume disjoint blocks, diverging `global_seq` order from chain order — see Plan 024.)
+- Replay verifies the global chain (BC-300) by **walking `prev_global_event_hash` links from genesis**, not by sorting on `global_seq`. The walk detects multiple genesis, forks, cycles, orphans, and head-vs-tail mismatch. The chain head is also compared to the stored `head_hash` to detect tail-event deletion.
 - `global_seq` is assigned **post-signing** and is NOT in the signed envelope. `prev_global_event_hash` IS in the signed envelope (v3/v4). External verification must pass `prev_global_event_hash` but NOT `global_seq`.
 
 ### 17.12 Crypto-agility and per-principal keys

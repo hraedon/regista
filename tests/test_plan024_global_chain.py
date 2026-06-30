@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+import hashlib
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import pytest
+
+from regista.testing import InMemoryRegista, drop_project_schema
+
+TESTS_DIR = Path(__file__).parent
+DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
+KEY_PATH = str(TESTS_DIR / "test_keys.json")
+WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
+
+
+@pytest.fixture
+def regista():
+    from regista import Regista
+
+    project = f"test_p024_{uuid.uuid4().hex[:8]}"
+    sub = Regista.create_project(DSN, project, KEY_PATH)
+    sub.register_workflow_file(WORKFLOW_PATH)
+    sub.register_actor_role("agent-1", "agent")
+    sub.register_actor_role("reviewer-1", "reviewer")
+    yield sub
+    sub.close()
+    drop_project_schema(DSN, project)
+
+
+class TestPlan024ConcurrentGlobalChain:
+    """Plan 024: concurrent appends must replay with global_chain_broken == 0."""
+
+    def test_concurrent_transitions_replay_clean(self, regista):
+        num_workers = 10
+        work_items = []
+        for i in range(num_workers):
+            wi, _ = regista.create_work_item(
+                workflow_name="test_workflow",
+                work_item_type="feature",
+                actor_id="agent-1",
+                custom_fields={"title": f"p024-{i}"},
+            )
+            work_items.append(wi)
+
+        errors: list[Exception] = []
+
+        def do_transitions(idx):
+            try:
+                wi = work_items[idx]
+                regista.transition(
+                    wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"}
+                )
+                regista.transition(
+                    wi.work_item_id, "submit_review", "agent-1", actor_metadata={"role": "agent"}
+                )
+                regista.transition(
+                    wi.work_item_id, "approve", "reviewer-1", actor_metadata={"role": "reviewer"}
+                )
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = [pool.submit(do_transitions, i) for i in range(num_workers)]
+            for f in futures:
+                f.result()
+
+        assert not errors, f"Errors during concurrent transitions: {errors}"
+
+        report = regista.replay()
+        assert report.halted == 0
+        assert report.warnings == 0, (
+            f"Expected 0 warnings, got {report.warnings}. "
+            f"ok={report.replayed_ok}, drift={report.replayed_drift}"
+        )
+
+    def test_concurrent_raw_appends_replay_clean(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "p024-raw"},
+        )
+
+        num_workers = 8
+        events_per_worker = 3
+        errors: list[Exception] = []
+
+        def append_events(worker_id):
+            try:
+                for i in range(events_per_worker):
+                    regista.append_event(
+                        work_item_id=wi.work_item_id,
+                        actor_id=f"worker-{worker_id}",
+                        transition=f"raw_{worker_id}_{i}",
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = [pool.submit(append_events, w) for w in range(num_workers)]
+            for f in futures:
+                f.result()
+
+        assert not errors, f"Errors during concurrent appends: {errors}"
+
+        with regista._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {regista._project}, public")
+            chain_warnings, _ = _walk_global_chain(conn)
+
+        assert chain_warnings == 0, (
+            f"Global chain has {chain_warnings} broken/orphan/fork warnings "
+            f"after concurrent appends"
+        )
+
+
+class TestPlan024VerifierHashWalk:
+    """Plan 024: the verifier walks by prev_global_event_hash links, not global_seq sort."""
+
+    def test_hash_walk_detects_orphan(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "p024-orphan"},
+        )
+        regista.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        with regista._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {regista._project}, public")
+            conn.execute(
+                "UPDATE events SET prev_global_event_hash = decode("
+                "'deadbeef00000000000000000000000000000000000000000000000000000000', 'hex') "
+                "WHERE work_item_id = %s AND event_seq = 2",
+                [wi.work_item_id],
+            )
+
+        report = regista.replay()
+        assert report.halted == 0
+        assert report.warnings >= 1, (
+            f"Expected >=1 warning for orphaned event, got {report.warnings}"
+        )
+
+    def test_hash_walk_no_genesis_reports_orphans(self, regista):
+        # Corrupt the genesis event so it is no longer a root (prev != NULL).
+        # The verifier then has no genesis to start from and must report every
+        # event as an orphan. (A prior version of this test claimed to detect a
+        # cycle, but corrupting the only genesis event removes the root the
+        # walk needs to even reach a cycle — see test_unit_detects_cycle for a
+        # genuine reachable-cycle case.)
+        _wi1, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "p024-noroot-1"},
+        )
+        _wi2, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "p024-noroot-2"},
+        )
+
+        with regista._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {regista._project}, public")
+            rows = conn.execute(
+                "SELECT event_id, global_seq, prev_global_event_hash, "
+                "canonical_envelope, signature FROM events ORDER BY global_seq"
+            ).fetchall()
+
+            if len(rows) >= 2:
+                first = rows[0]
+                first_head = hashlib.sha256(
+                    bytes(first["canonical_envelope"]) + bytes(first["signature"])
+                ).digest()
+                conn.execute(
+                    "UPDATE events SET prev_global_event_hash = %s WHERE event_id = %s",
+                    [first_head, first["event_id"]],
+                )
+
+        report = regista.replay()
+        assert report.halted == 0
+        assert report.warnings >= 1, (
+            f"Expected >=1 orphan warning with no genesis, got {report.warnings}"
+        )
+
+    def test_unit_detects_cycle(self):
+        # Exercise the cycle branch directly. A cryptographically-reachable
+        # cycle cannot arise from valid signed events (it needs two events with
+        # the same head hash), so we feed the verifier a synthetic event list:
+        # E1 genesis -> E2 -> E3, where E3 reuses E1's envelope/signature so
+        # head(E3) == head(E1), making E2 a successor of E3 -> the walk revisits
+        # E2 and trips the cycle guard.
+        from regista._replay import _verify_global_hash_chain
+
+        def mk(eid, prev, env, sig):
+            return {
+                "event_id": eid,
+                "global_seq": 0,
+                "prev_global_event_hash": prev,
+                "canonical_envelope": env,
+                "signature": sig,
+            }
+
+        env_a, sig_a = b"env-A", b"sig-A"
+        head_a = hashlib.sha256(env_a + sig_a).digest()
+        env_b, sig_b = b"env-B", b"sig-B"
+        head_b = hashlib.sha256(env_b + sig_b).digest()
+
+        events = [
+            mk("e1", None, env_a, sig_a),  # genesis, head = head_a
+            mk("e2", head_a, env_b, sig_b),  # chains from e1, head = head_b
+            mk("e3", head_b, env_a, sig_a),  # chains from e2, head = head_a
+            # e3's head (head_a) has successor e2 (prev=head_a) -> walk e1->e2->e3->e2 cycle
+        ]
+        warnings, _ = _verify_global_hash_chain(events)
+        assert warnings >= 1, f"Expected cycle warning, got {warnings}"
+
+    def test_unit_detects_fork(self):
+        # Two events claiming the same predecessor hash -> fork warning.
+        from regista._replay import _verify_global_hash_chain
+
+        env_a, sig_a = b"env-A", b"sig-A"
+        head_a = hashlib.sha256(env_a + sig_a).digest()
+
+        events = [
+            {
+                "event_id": "e1",
+                "global_seq": 0,
+                "prev_global_event_hash": None,
+                "canonical_envelope": env_a,
+                "signature": sig_a,
+            },
+            {
+                "event_id": "e2a",
+                "global_seq": 1,
+                "prev_global_event_hash": head_a,
+                "canonical_envelope": b"B",
+                "signature": b"s",
+            },
+            {
+                "event_id": "e2b",
+                "global_seq": 2,
+                "prev_global_event_hash": head_a,
+                "canonical_envelope": b"C",
+                "signature": b"s",
+            },
+        ]
+        warnings, _ = _verify_global_hash_chain(events)
+        assert warnings >= 1, f"Expected fork warning, got {warnings}"
+
+    def test_in_memory_replay_walks_chain(self):
+        sub = InMemoryRegista(project="test_p024_im", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+
+        items = []
+        for i in range(5):
+            wi, _ = sub.create_work_item(
+                workflow_name="test_workflow",
+                work_item_type="feature",
+                actor_id="agent-1",
+                custom_fields={"title": f"im-{i}"},
+            )
+            items.append(wi)
+
+        for wi in items:
+            sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        report = sub.replay()
+        assert report.halted == 0
+        assert report.warnings == 0, (
+            f"Expected 0 warnings for in-memory replay, got {report.warnings}"
+        )
+
+    def test_global_seq_matches_chain_order_with_cache1(self, regista):
+        """With CACHE 1, global_seq order must match chain-link order."""
+        num_workers = 6
+        work_items = []
+        for i in range(num_workers):
+            wi, _ = regista.create_work_item(
+                workflow_name="test_workflow",
+                work_item_type="feature",
+                actor_id="agent-1",
+                custom_fields={"title": f"p024-seq-{i}"},
+            )
+            work_items.append(wi)
+
+        errors: list[Exception] = []
+
+        def do_transitions(idx):
+            try:
+                wi = work_items[idx]
+                regista.transition(
+                    wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"}
+                )
+                regista.transition(
+                    wi.work_item_id, "submit_review", "agent-1", actor_metadata={"role": "agent"}
+                )
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = [pool.submit(do_transitions, i) for i in range(num_workers)]
+            for f in futures:
+                f.result()
+
+        assert not errors, f"Errors: {errors}"
+
+        with regista._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {regista._project}, public")
+            chain_order_matches = _verify_chain_order_matches_global_seq(conn)
+
+        assert chain_order_matches, (
+            "global_seq order does not match chain-link order — CACHE 1 fix not working"
+        )
+
+
+class TestPlan024GenesisRace:
+    """Plan 024 gap: concurrent first-events must not produce two genesis rows.
+
+    The genesis sentinel (migration 035) ensures FOR UPDATE always has a row to
+    lock, so only one event can chain from NULL even when multiple writers race
+    on a fresh schema's first append.
+    """
+
+    def test_concurrent_genesis_single_root(self, regista):
+        # Fresh schema: fire N create_work_item concurrently so their genesis
+        # ("created") events race for the single NULL prev_global_event_hash
+        # slot. The sentinel row (migration 035) guarantees FOR UPDATE always
+        # has a row to lock, so only one event may chain from NULL.
+        num_workers = 8
+        errors: list[Exception] = []
+        created: list = []
+
+        def do_create(idx):
+            try:
+                wi, _ = regista.create_work_item(
+                    workflow_name="test_workflow",
+                    work_item_type="feature",
+                    actor_id="agent-1",
+                    custom_fields={"title": f"p024-gen-{idx}"},
+                )
+                created.append(wi.work_item_id)
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = [pool.submit(do_create, i) for i in range(num_workers)]
+            for f in futures:
+                f.result()
+
+        assert not errors, f"Errors during concurrent genesis: {errors}"
+        assert len(created) == num_workers
+
+        with regista._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {regista._project}, public")
+            genesis_count = conn.execute(
+                "SELECT count(*) AS n FROM events WHERE prev_global_event_hash IS NULL"
+            ).fetchone()["n"]
+
+        assert genesis_count == 1, (
+            f"Expected exactly 1 genesis event (NULL prev_global_event_hash), "
+            f"got {genesis_count} — genesis race not closed"
+        )
+
+        report = regista.replay()
+        assert report.warnings == 0, (
+            f"Replay reported warnings after concurrent genesis: {report.warnings}"
+        )
+
+
+def _walk_global_chain(conn) -> tuple[int, dict | None]:
+    """Walk the global chain by prev_global_event_hash links. Returns (warnings, tail)."""
+    from collections import defaultdict
+
+    rows = conn.execute(
+        "SELECT event_id, global_seq, canonical_envelope, signature, "
+        "prev_global_event_hash FROM events ORDER BY global_seq"
+    ).fetchall()
+
+    if not rows:
+        return 0, None
+
+    link_map: dict[str, list] = defaultdict(list)
+    genesis: list = []
+    for r in rows:
+        pgh = r["prev_global_event_hash"]
+        if pgh is None:
+            genesis.append(r)
+        else:
+            link_map[bytes(pgh).hex()].append(r)
+
+    warnings = 0
+    if not genesis:
+        return len(rows), None
+
+    current = genesis[0]
+    visited = set()
+    while True:
+        eid = current["event_id"]
+        if eid in visited:
+            return warnings + 1, current
+        visited.add(eid)
+
+        env = current["canonical_envelope"]
+        sig = current["signature"]
+        if env is None or sig is None:
+            break
+
+        head = hashlib.sha256(bytes(env) + bytes(sig)).digest()
+        succs = link_map.get(head.hex(), [])
+        if not succs:
+            break
+        current = succs[0]
+
+    warnings += sum(1 for r in rows if r["event_id"] not in visited)
+    return warnings, current
+
+
+def _verify_chain_order_matches_global_seq(conn) -> bool:
+    """Check that walking the chain by links produces events in global_seq order."""
+    from collections import defaultdict
+
+    rows = conn.execute(
+        "SELECT event_id, global_seq, canonical_envelope, signature, "
+        "prev_global_event_hash FROM events ORDER BY global_seq"
+    ).fetchall()
+
+    if not rows:
+        return True
+
+    link_map: dict[str, list] = defaultdict(list)
+    genesis = None
+    for r in rows:
+        pgh = r["prev_global_event_hash"]
+        if pgh is None:
+            genesis = r
+        else:
+            link_map[bytes(pgh).hex()].append(r)
+
+    if genesis is None:
+        return False
+
+    chain_gseqs = []
+    current = genesis
+    visited = set()
+    while current and current["event_id"] not in visited:
+        visited.add(current["event_id"])
+        chain_gseqs.append(current["global_seq"])
+        env = current["canonical_envelope"]
+        sig = current["signature"]
+        if env is None or sig is None:
+            break
+        head = hashlib.sha256(bytes(env) + bytes(sig)).digest()
+        succs = link_map.get(head.hex(), [])
+        if not succs:
+            break
+        current = succs[0]
+
+    return chain_gseqs == sorted(chain_gseqs)

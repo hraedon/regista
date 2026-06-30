@@ -26,6 +26,7 @@ def _try_fromisoformat(value):
         )
         return None
 
+
 log = structlog.get_logger()
 
 
@@ -45,69 +46,109 @@ def _verify_hash_chain_in_memory(
     from ._signing_scheme import resolve_hash_function
 
     hash_fn = resolve_hash_function("sha-256")
-    computed = hash_fn(
-        bytes(prev_env) + bytes(prev_sig)
-    ).digest()
+    computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
     if not _hmac.compare_digest(computed, bytes(expected)):
-        detail = (
-            f"hash chain mismatch: computed={computed.hex()} "
-            f"expected={bytes(expected).hex()}"
-        )
+        detail = f"hash chain mismatch: computed={computed.hex()} expected={bytes(expected).hex()}"
         return False, detail
     return True, ""
 
 
-def _verify_global_hash_chain_in_memory(ordered_events: list) -> int:
-    """Verify the global event hash chain across all events (BC-300).
+def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | None]:
+    """Walk the global hash chain by following ``prev_global_event_hash`` links
+    (BC-300 / Plan 024).
 
-    Returns the warning count.
+    Immune to ``global_seq`` ordering issues (CACHE 100 interleaving).
+    Returns ``(warning_count, chain_tail)``.
     """
+    from collections import defaultdict
+
     from ._signing_scheme import resolve_hash_function
 
+    if not events:
+        return 0, None
+
     hash_fn = resolve_hash_function("sha-256")
+
+    link_map: dict[str, list] = defaultdict(list)
+    genesis_events: list = []
+    for evt in events:
+        if evt.prev_global_event_hash is None:
+            genesis_events.append(evt)
+        else:
+            link_map[bytes(evt.prev_global_event_hash).hex()].append(evt)
+
     warnings = 0
-    prev_evt = None
-    for evt in ordered_events:
-        expected = evt.prev_global_event_hash
-        if expected is None:
-            prev_evt = evt
-            continue
-        if prev_evt is None:
+
+    if len(genesis_events) > 1:
+        for g in genesis_events[1:]:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
-                event_id=str(evt.event_id),
-                global_seq=evt.global_seq,
-                detail="prev_global_event_hash set but no global predecessor",
+                "replay.global_chain_multiple_genesis",
+                event_id=str(g.event_id),
+                global_seq=g.global_seq,
             )
-            prev_evt = evt
-            continue
-        prev_env = prev_evt.canonical_envelope
-        prev_sig = prev_evt.signature
-        if prev_env is None or prev_sig is None:
+
+    if not genesis_events:
+        for evt in events:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
+                "replay.global_chain_orphan",
                 event_id=str(evt.event_id),
                 global_seq=evt.global_seq,
-                detail="global predecessor missing canonical_envelope or signature",
+                detail="no genesis event",
             )
-            prev_evt = evt
-            continue
-        computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
-        if not _hmac.compare_digest(computed, bytes(expected)):
+        return warnings, None
+
+    current = genesis_events[0]
+    visited: set = set()
+
+    while True:
+        eid = current.event_id
+        if eid in visited:
             warnings += 1
             log.warning(
-                "replay.global_chain_broken",
+                "replay.global_chain_cycle",
+                event_id=str(eid),
+                global_seq=current.global_seq,
+            )
+            break
+
+        visited.add(eid)
+
+        env = current.canonical_envelope
+        sig = current.signature
+        if env is None or sig is None:
+            break
+
+        head_hash = hash_fn(bytes(env) + bytes(sig)).digest()
+        successors = link_map.get(head_hash.hex(), [])
+
+        if not successors:
+            break
+
+        if len(successors) > 1:
+            for s in successors[1:]:
+                warnings += 1
+                log.warning(
+                    "replay.global_chain_fork",
+                    event_id=str(s.event_id),
+                    global_seq=s.global_seq,
+                    detail=f"multiple events chain from event {eid}",
+                )
+
+        current = successors[0]
+
+    for evt in events:
+        if evt.event_id not in visited:
+            warnings += 1
+            log.warning(
+                "replay.global_chain_orphan",
                 event_id=str(evt.event_id),
                 global_seq=evt.global_seq,
-                detail=(
-                    f"global chain mismatch: computed={computed.hex()} "
-                    f"expected={bytes(expected).hex()}"
-                ),
+                detail="event not reachable from genesis via prev_global_event_hash links",
             )
-        prev_evt = evt
-    return warnings
+
+    return warnings, current
 
 
 def in_memory_replay(
@@ -241,13 +282,15 @@ def in_memory_replay(
                     derived_fields = p.get("custom_fields", {})
                     nb = p.get("not_before")
                     if nb:
-                        derived_not_before = (
-                            _try_fromisoformat(nb)
-                            if isinstance(nb, str) else nb
-                        )
+                        derived_not_before = _try_fromisoformat(nb) if isinstance(nb, str) else nb
                 elif evt.transition in (
-                    "claim_acquired", "claim_released", "claim_expired",
-                    "claim_stolen", "claim_heartbeat", "link_created", "link_removed",
+                    "claim_acquired",
+                    "claim_released",
+                    "claim_expired",
+                    "claim_stolen",
+                    "claim_heartbeat",
+                    "link_created",
+                    "link_removed",
                     "hook_dead_lettered",
                 ):
                     if evt.transition in ("claim_acquired", "claim_stolen"):
@@ -280,10 +323,7 @@ def in_memory_replay(
                     p = evt.payload or {}
                     nb = p.get("not_before")
                     if nb:
-                        derived_not_before = (
-                            _try_fromisoformat(nb)
-                            if isinstance(nb, str) else nb
-                        )
+                        derived_not_before = _try_fromisoformat(nb) if isinstance(nb, str) else nb
                     else:
                         derived_not_before = None
                 else:
@@ -291,8 +331,7 @@ def in_memory_replay(
                     if wf_data is None:
                         raise RegistaError(
                             ErrorCode.REPLAY_HALTED,
-                            f"Missing workflow {wi['workflow_name']!r} "
-                            f"v{wi['workflow_version']}",
+                            f"Missing workflow {wi['workflow_name']!r} v{wi['workflow_version']}",
                         )
                     found = False
                     for t in wf_data.get("transitions", []):
@@ -335,7 +374,9 @@ def in_memory_replay(
             if derived_state is not None:
                 live_expires = wi.get("claim_expires_at")
                 expires_match = _ts_equal_within(
-                    derived_claim_expires_at, live_expires, derived_coalesce_threshold,
+                    derived_claim_expires_at,
+                    live_expires,
+                    derived_coalesce_threshold,
                 )
                 if (
                     derived_state != wi["current_state"]
@@ -355,11 +396,11 @@ def in_memory_replay(
         all_global_events = []
         for wid in store.events:
             all_global_events.extend(store.events[wid])
-        all_global_events.sort(key=lambda e: (e.global_seq if e.global_seq is not None else 0))
-        warnings += _verify_global_hash_chain_in_memory(all_global_events)
+        chain_warnings, chain_tail = _verify_global_hash_chain_in_memory(all_global_events)
+        warnings += chain_warnings
 
-        if all_global_events:
-            last = all_global_events[-1]
+        if chain_tail is not None:
+            last = chain_tail
             if last.canonical_envelope is not None and last.signature is not None:
                 from ._signing_scheme import resolve_hash_function
 
@@ -367,15 +408,14 @@ def in_memory_replay(
                     bytes(last.canonical_envelope) + bytes(last.signature)
                 ).digest()
                 stored_head = getattr(store, "_global_chain_head", None)
-                if (
-                    stored_head is not None
-                    and not _hmac.compare_digest(bytes(stored_head), computed_head)
+                if stored_head is not None and not _hmac.compare_digest(
+                    bytes(stored_head), computed_head
                 ):
                     warnings += 1
                     log.warning(
                         "replay.global_chain_head_mismatch",
                         detail=(
-                            "global chain head does not match the last appended event; "
+                            "global chain head does not match the chain tail; "
                             "a tail event may have been deleted or the head tampered"
                         ),
                     )

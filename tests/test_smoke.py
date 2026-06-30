@@ -20,6 +20,11 @@ def regista():
 
     project = f"test_smoke_{uuid.uuid4().hex[:8]}"
     sub = Regista.create_project(DSN, project, KEY_PATH)
+    # Register in the fixture so any subset of tests (e.g. -k filtered runs)
+    # works without depending on TestWorkflow.test_register_workflow ordering.
+    sub.register_workflow_file(WORKFLOW_PATH)
+    sub.register_actor_role("agent-1", "agent")
+    sub.register_actor_role("reviewer-1", "reviewer")
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -142,12 +147,13 @@ class TestTransition:
 
     def test_full_lifecycle(self, regista):
         wi = self._create_feature(regista)
-        regista.transition(wi.work_item_id, "start", "agent-1",
-                             actor_metadata={"role": "agent"})
-        regista.transition(wi.work_item_id, "submit_review", "agent-1",
-                             actor_metadata={"role": "agent"})
-        regista.transition(wi.work_item_id, "approve", "reviewer-1",
-                             actor_metadata={"role": "reviewer"})
+        regista.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+        regista.transition(
+            wi.work_item_id, "submit_review", "agent-1", actor_metadata={"role": "agent"}
+        )
+        regista.transition(
+            wi.work_item_id, "approve", "reviewer-1", actor_metadata={"role": "reviewer"}
+        )
 
         refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed.current_state == "done"
@@ -304,7 +310,8 @@ class TestLinks:
 
         events = regista.read_events(work_item_id=wi1.work_item_id)
         link_removed = [
-            e for e in events
+            e
+            for e in events
             if e.transition == "link_removed"
             and (e.payload or {}).get("link_type") == "fixes"
             and (e.payload or {}).get("to_work_item_id") == str(wi2.work_item_id)

@@ -44,14 +44,10 @@ def _row_to_event(row: dict) -> Event:
         canonical_envelope=bytes(row["canonical_envelope"]) if row["canonical_envelope"] else None,
         on_behalf_of=row.get("on_behalf_of"),
         scheme_id=row.get("scheme_id", "hmac-sha256"),
-        prev_event_hash=(
-            bytes(row["prev_event_hash"]) if row.get("prev_event_hash") else None
-        ),
+        prev_event_hash=(bytes(row["prev_event_hash"]) if row.get("prev_event_hash") else None),
         global_seq=row.get("global_seq"),
         prev_global_event_hash=(
-            bytes(row["prev_global_event_hash"])
-            if row.get("prev_global_event_hash")
-            else None
+            bytes(row["prev_global_event_hash"]) if row.get("prev_global_event_hash") else None
         ),
     )
 
@@ -62,11 +58,19 @@ def _lock_global_chain_head(conn: psycopg.Connection) -> bytes | None:
     Locks the single ``event_chain_head`` row ``FOR UPDATE`` so concurrent
     appends across work items queue onto one line (no chain forks). Returns the
     current head hash, or ``None`` for the genesis event (empty log).
+
+    A genesis sentinel row (head_hash = NULL, migration 035) guarantees the
+    row always exists, so FOR UPDATE serialises even the very first append —
+    closing the window where two concurrent first-events could both observe an
+    empty table and both chain from NULL. ``head_hash`` is NULL only for that
+    sentinel; once the first event lands it is non-NULL forever after.
     """
     row = conn.execute(
         SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE FOR UPDATE")
     ).fetchone()
-    return bytes(row["head_hash"]) if row else None
+    if row is None or row["head_hash"] is None:
+        return None
+    return bytes(row["head_hash"])
 
 
 def _advance_global_chain_head(
@@ -153,7 +157,10 @@ def append_event(
             )
 
     existing = check_idempotency(
-        conn, event_id, actor_id=actor_id, transition=transition,
+        conn,
+        event_id,
+        actor_id=actor_id,
+        transition=transition,
         work_item_id=work_item_id,
     )
     if existing is not None:
@@ -191,9 +198,7 @@ def append_event(
             prev_sig = prev_row["signature"]
             if prev_env and prev_sig:
                 _chain_fn = resolve_hash_function("sha-256")
-                prev_event_hash = _chain_fn(
-                    bytes(prev_env) + bytes(prev_sig)
-                ).digest()
+                prev_event_hash = _chain_fn(bytes(prev_env) + bytes(prev_sig)).digest()
 
     prev_global_event_hash = _lock_global_chain_head(conn)
 
@@ -258,7 +263,10 @@ def append_event(
         )
     except psycopg.errors.UniqueViolation:
         existing = check_idempotency(
-            conn, event_id, actor_id=actor_id, transition=transition,
+            conn,
+            event_id,
+            actor_id=actor_id,
+            transition=transition,
             work_item_id=work_item_id,
         )
         if existing is not None:
@@ -340,7 +348,10 @@ def append_transition_event(
         )
 
     existing = check_idempotency(
-        conn, event_id, actor_id=actor_id, transition=transition_name,
+        conn,
+        event_id,
+        actor_id=actor_id,
+        transition=transition_name,
         work_item_id=work_item_id,
     )
     if existing is not None:
@@ -354,8 +365,6 @@ def append_transition_event(
     stored_payload = dict(payload.value) if payload is not None else {}
     if custom_fields_update:
         stored_payload["custom_fields_update"] = custom_fields_update
-
-    Jsonb(stored_payload)
 
     now = datetime.now(UTC)
 
@@ -373,9 +382,7 @@ def append_transition_event(
             prev_sig = prev_row["signature"]
             if prev_env and prev_sig:
                 _chain_fn = resolve_hash_function("sha-256")
-                prev_event_hash = _chain_fn(
-                    bytes(prev_env) + bytes(prev_sig)
-                ).digest()
+                prev_event_hash = _chain_fn(bytes(prev_env) + bytes(prev_sig)).digest()
 
     prev_global_event_hash = _lock_global_chain_head(conn)
 
@@ -443,7 +450,10 @@ def append_transition_event(
         )
     except psycopg.errors.UniqueViolation:
         existing = check_idempotency(
-            conn, event_id, actor_id=actor_id, transition=transition_name,
+            conn,
+            event_id,
+            actor_id=actor_id,
+            transition=transition_name,
             work_item_id=work_item_id,
         )
         if existing is not None:
@@ -474,7 +484,9 @@ def append_transition_event(
             "UPDATE work_items_current SET "
             "current_state = %s, custom_fields = %s, "
             "last_event_seq = %s, last_event_at = %s, next_event_seq = %s"
-        ) + claim_clear + SQL(" WHERE work_item_id = %s"),
+        )
+        + claim_clear
+        + SQL(" WHERE work_item_id = %s"),
         [
             new_state,
             psycopg.types.json.Jsonb(merged_fields),

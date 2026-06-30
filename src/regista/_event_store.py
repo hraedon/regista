@@ -26,17 +26,13 @@ _DUMMY_HASH = b"\x00" * 32
 
 @runtime_checkable
 class EventStore(Protocol):
-    def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
-        ...
+    def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int: ...
 
-    def lock_global_chain_head(self) -> bytes | None:
-        ...
+    def lock_global_chain_head(self) -> bytes | None: ...
 
-    def find_by_event_id(self, event_id: uuid.UUID) -> Event | None:
-        ...
+    def find_by_event_id(self, event_id: uuid.UUID) -> Event | None: ...
 
-    def append(self, event: Event) -> Event:
-        ...
+    def append(self, event: Event) -> Event: ...
 
     def read(
         self,
@@ -48,8 +44,7 @@ class EventStore(Protocol):
         transition: str | None = None,
         limit: int = 100,
         before_seq: int | None = None,
-    ) -> list[Event]:
-        ...
+    ) -> list[Event]: ...
 
 
 def append_event(
@@ -159,6 +154,17 @@ def append_event(
 
 
 class InMemoryEventStore:
+    """In-process event store for tests and local development.
+
+    Single-threaded contract: unlike the Postgres store (which serializes
+    global-chain appends via the `event_chain_head` FOR UPDATE row lock plus the
+    genesis sentinel), this store has no real cross-call lock. `lock_global_chain_head`
+    is a plain read and `append` does a non-atomic read-modify-write of
+    `_global_chain_head` / `_next_global_seq`. Concurrent use from multiple
+    threads can therefore still produce the genesis race that migration 035
+    closes for Postgres. Do not use InMemoryRegista from multiple threads.
+    """
+
     def __init__(self) -> None:
         self.events: dict[uuid.UUID, list[Event]] = {}
         self.event_id_index: dict[uuid.UUID, Event] = {}
@@ -211,10 +217,13 @@ class InMemoryEventStore:
                 ).digest()
             return event
         ent_key = (getattr(event, "entity_kind", "work_item"), wid)
-        ent = self._entity_seqs.setdefault(ent_key, {
-            "next_event_seq": 1,
-            "last_event_seq": 0,
-        })
+        ent = self._entity_seqs.setdefault(
+            ent_key,
+            {
+                "next_event_seq": 1,
+                "last_event_seq": 0,
+            },
+        )
         self.events.setdefault(wid, []).append(event)
         self.event_id_index[event.event_id] = event
         self._global_seq_by_event_id[event.event_id] = seq
@@ -392,9 +401,9 @@ class PostgresEventStore:
                     event.payload_canonical_hash,
                     event.signature,
                     event.canonical_envelope,
-                    psycopg.types.json.Jsonb(
-                        event.on_behalf_of
-                    ) if event.on_behalf_of is not None else None,
+                    psycopg.types.json.Jsonb(event.on_behalf_of)
+                    if event.on_behalf_of is not None
+                    else None,
                     event.scheme_id,
                     event.prev_event_hash,
                     event.prev_global_event_hash,
@@ -404,6 +413,7 @@ class PostgresEventStore:
             existing = self.find_by_event_id(event.event_id)
             if existing is not None:
                 from ._contract import check_idempotency as _contract_check
+
                 match = _contract_check(
                     existing,
                     actor_id=event.actor_id,
