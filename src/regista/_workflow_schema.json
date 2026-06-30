@@ -113,7 +113,13 @@
           },
           "validator_params": {
             "type": "object",
-            "default": {}
+            "default": {},
+            "properties": {
+              "require_human": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true
           }
         }
       }

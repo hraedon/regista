@@ -473,46 +473,75 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     [event_id],
                 ).fetchall()
             if not evt_rows:
+                now = datetime.now(UTC)
+                with mgr.transaction() as conn:
+                    _apply_receipt_failure(
+                        conn,
+                        receipt_id=receipt_id,
+                        witness_id=witness_id,
+                        project=project,
+                        error_message="event not found",
+                        witness_key_scheme=witness_key_scheme,
+                        now=now,
+                        max_retries=max_retries,
+                        max_failures=max_failures,
+                    )
                 continue
-            raw_row = evt_rows[0]
-            raw_env = (
-                bytes(raw_row["canonical_envelope"])
-                if raw_row["canonical_envelope"] else None
-            )
-            raw_hash = (
-                bytes(raw_row["payload_canonical_hash"])
-                if raw_row["payload_canonical_hash"] else None
-            )
-            evt = dict(raw_row)
-            evt["event_id"] = str(evt["event_id"])
-            evt["work_item_id"] = str(evt["work_item_id"])
-            evt["entity_id"] = str(evt.get("entity_id") or evt["work_item_id"])
-            if evt.get("canonical_envelope") is not None:
-                evt["canonical_envelope"] = bytes(evt["canonical_envelope"]).hex()
-            else:
-                del evt["canonical_envelope"]
-            if evt.get("prev_event_hash") is not None:
-                evt["prev_event_hash"] = bytes(evt["prev_event_hash"]).hex()
-            else:
-                del evt["prev_event_hash"]
-            if evt.get("prev_global_event_hash") is not None:
-                evt["prev_global_event_hash"] = bytes(evt["prev_global_event_hash"]).hex()
-            else:
-                del evt["prev_global_event_hash"]
-            if evt.get("global_seq") is None:
-                del evt["global_seq"]
-            evt["timestamp"] = evt["timestamp"].isoformat()
-            evt["payload_canonical_hash"] = evt["payload_canonical_hash"].hex()
-            evt["signature"] = bytes(evt["signature"]).hex()
-            if evt.get("on_behalf_of") is None:
-                del evt["on_behalf_of"]
+            try:
+                raw_row = evt_rows[0]
+                raw_env = (
+                    bytes(raw_row["canonical_envelope"])
+                    if raw_row["canonical_envelope"] else None
+                )
+                raw_hash = (
+                    bytes(raw_row["payload_canonical_hash"])
+                    if raw_row["payload_canonical_hash"] else None
+                )
+                evt = dict(raw_row)
+                evt["event_id"] = str(evt["event_id"])
+                evt["work_item_id"] = str(evt["work_item_id"])
+                evt["entity_id"] = str(evt.get("entity_id") or evt["work_item_id"])
+                if evt.get("canonical_envelope") is not None:
+                    evt["canonical_envelope"] = bytes(evt["canonical_envelope"]).hex()
+                else:
+                    del evt["canonical_envelope"]
+                if evt.get("prev_event_hash") is not None:
+                    evt["prev_event_hash"] = bytes(evt["prev_event_hash"]).hex()
+                else:
+                    del evt["prev_event_hash"]
+                if evt.get("prev_global_event_hash") is not None:
+                    evt["prev_global_event_hash"] = bytes(evt["prev_global_event_hash"]).hex()
+                else:
+                    del evt["prev_global_event_hash"]
+                if evt.get("global_seq") is None:
+                    del evt["global_seq"]
+                evt["timestamp"] = evt["timestamp"].isoformat()
+                evt["payload_canonical_hash"] = evt["payload_canonical_hash"].hex()
+                evt["signature"] = bytes(evt["signature"]).hex()
+                if evt.get("on_behalf_of") is None:
+                    del evt["on_behalf_of"]
 
-            body = json.dumps({
-                "event": evt,
-                "receipt_id": str(receipt_id),
-                "witness_id": str(witness_id),
-                "submitted_at": datetime.now(UTC).isoformat(),
-            })
+                body = json.dumps({
+                    "event": evt,
+                    "receipt_id": str(receipt_id),
+                    "witness_id": str(witness_id),
+                    "submitted_at": datetime.now(UTC).isoformat(),
+                })
+            except Exception as exc:
+                now = datetime.now(UTC)
+                with mgr.transaction() as conn:
+                    _apply_receipt_failure(
+                        conn,
+                        receipt_id=receipt_id,
+                        witness_id=witness_id,
+                        project=project,
+                        error_message=f"payload error: {str(exc)[:400]}",
+                        witness_key_scheme=witness_key_scheme,
+                        now=now,
+                        max_retries=max_retries,
+                        max_failures=max_failures,
+                    )
+                continue
 
             status_code = 0
             response_body = None

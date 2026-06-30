@@ -1121,8 +1121,19 @@ class InMemoryRegista:
                         receipt["error_message"] = "event not found"
                         receipt["last_attempt_at"] = now
                         receipt["witness_scheme"] = witness_key_scheme
+                        w["consecutive_failures"] += 1
+                        w["last_failure_at"] = now
+                        w["updated_at"] = now
                         if receipt["retry_count"] >= max_retries:
                             receipt["status"] = "paused"
+                        if w["consecutive_failures"] >= max_failures:
+                            w["status"] = "paused"
+                            log.warning(
+                                "witness.auto_paused",
+                                project=self._project,
+                                witness_id=str(witness_id),
+                                consecutive_failures=w["consecutive_failures"],
+                            )
                         continue
 
                     try:
