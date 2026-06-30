@@ -29,13 +29,19 @@ docker compose -f docker-compose.test.yml up -d 2>&1 | tail -3
 
 ---
 
-### 3. Move resolved breadcrumbs
+### 3. Resolve work-items
 
-Identify breadcrumbs resolved this session. For each:
+Work-items live in **regista** (the SoT); transition them via the agent-notes CLI
+— do not touch `breadcrumbs/` files (retired). For each item resolved this session:
 
-1. Update the file's frontmatter `status: proposed` → `status: implemented`
-2. Move it from `breadcrumbs/` to `breadcrumbs/resolved/`
-3. Update `breadcrumbs/README.md` — remove from the Open table, add to the Resolved table with a link
+```bash
+# Move through the lifecycle; `done` requires the cross-lineage review gate,
+# or use close_from_open for a won't-fix / duplicate dismissal.
+agent-notes breadcrumb update --path . <WI-id> --status <state>
+```
+
+Confirm with `agent-notes breadcrumb find --path . --status open` that the backlog
+reflects reality before committing.
 
 ---
 
@@ -82,7 +88,7 @@ Check if any of the following were changed this session:
 - New public API methods → add to AGENTS.md Public API section
 - New error codes → note in AGENTS.md
 - New conventions discovered → add to AGENTS.md Conventions section
-- New breadcrumbs conventions → update `breadcrumbs/README.md`
+- New work-tracking conventions → update the AGENTS.md "Work tracking" section
 
 Only update if there's a concrete addition. Do not rewrite for style.
 

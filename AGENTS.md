@@ -275,11 +275,41 @@ BC-171: `work_item_ref` custom fields now accept `target_work_item_types: [typeA
 
 This project tracks work outside the code. New agents should orient to these conventions before making changes.
 
-### Breadcrumbs (`breadcrumbs/`)
+### Work tracking (issues)
 
-Defects, design questions, and improvements live one-file-per-item under `breadcrumbs/`, with resolved items moved to `breadcrumbs/resolved/`. Schema and severity definitions are in `breadcrumbs/README.md`. Open the index before starting work — it's the canonical "what's known to be wrong" list.
+Work-items for this project live in **regista** — the single source of truth.
+regista is the authoritative, signed, hash-chained event log; the local
+agent-notes store is a read projection of it. **Do not create physical breadcrumb
+files** (`breadcrumbs/`, `OPEN_BREADCRUMBS.txt`, `*.breadcrumb.md`) — the
+file-based store is retired; its history was migrated into regista's own project
+schema. (regista dogfoods its own convergence: it tracks its work in regista.)
 
-When you notice an issue you're not fixing in this session, file a breadcrumb. When you fix one, move it to `resolved/` and update the README index. The `/end` skill automates both.
+**Agent face — the `agent-notes` CLI (and the `/file-breadcrumb` etc. skills).**
+Run from the repo root so `--path .` resolves this project; the CLI routes to this
+project's regista schema automatically (you never set the schema).
+
+```
+# File an issue
+agent-notes breadcrumb file --path . --title "<short title>" \
+    --type <kind> [--severity low|medium|high|critical] [--body "<details>"]
+
+# Find / show / update
+agent-notes breadcrumb find  --path . [--status open] [--type bug] [--text "<q>"]
+agent-notes breadcrumb get   --path . <WI-id>
+agent-notes breadcrumb update --path . <WI-id> [--status <state>] [--title ...] [--body ...]
+```
+
+**Lifecycle (canonical workflow):**
+`open → in_progress → (blocked | deferred) → in_review → in_human_review → done`.
+`done` is reachable only through the two-stage review gate (a cross-lineage
+adversarial-review pass, then accept), except a pre-work `close_from_open`
+dismissal (won't-fix / duplicate). "Who's working this" is a regista **claim**
+(a separate liveness axis), not a lifecycle state.
+
+Open the backlog before starting work — `agent-notes breadcrumb find --path .
+--status open` is the canonical "what's known to be wrong" list. When you notice
+an issue you're not fixing, file it; when you fix one, transition it. The `/end`
+command does both via the CLI.
 
 ### Worklog (`.regista/worklog.md`)
 

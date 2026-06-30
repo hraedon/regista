@@ -8,14 +8,15 @@ Orient yourself at the start of a session in the regista project.
 
 Read `.regista/worklog.md` and extract the most recent entry (identified by `##` heading with date). Summarise it in 2-3 sentences: what was completed, what was left open.
 
-### 2. Open breadcrumbs
+### 2. Open work-items
 
-Run:
+Work-items live in **regista** (the SoT); query them via the agent-notes CLI:
 ```bash
-ls breadcrumbs/*.md 2>/dev/null | grep -v README | sort
+agent-notes breadcrumb find --path . --status open
 ```
 
-For each file, extract `number`, `title`, `severity`, and `status` from the frontmatter. Group output by severity (critical → high → medium → low). Skip the `resolved/` subdirectory.
+Group output by severity (critical → high → medium → low). Do **not** read
+`breadcrumbs/` files — that file-based store is retired (the directory is gone).
 
 ### 3. Test suite
 
