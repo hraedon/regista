@@ -39,7 +39,7 @@
 # a human: `human` (authenticated people — dossier maps its users here), `agent`
 # (model-driven actors — agent-notes' default), `system` (regista/maintenance).
 name: canonical
-version: 1
+version: 2
 regista_version: "0.4.0"
 
 states:
@@ -167,12 +167,19 @@ transitions:
 
 # Work-item types — the union both faces create under the one workflow.
 # `breadcrumb` is agent-notes' type; `bug`/`task` are dossier's.
+# `display_key` (v2) is a human-friendly <PREFIX>-<N> key minted by the
+# creating face (dossier for bug/task, agent-notes may set it for breadcrumb).
+# It is optional so pre-v2 items and cross-face items work without it.
 work_item_types:
   - name: breadcrumb
     custom_fields:
       - name: title
         type: string
         required: true
+        ui_visible: true
+      - name: display_key
+        type: string
+        required: false
         ui_visible: true
       - name: description
         type: string
@@ -221,6 +228,10 @@ work_item_types:
         type: string
         required: true
         ui_visible: true
+      - name: display_key
+        type: string
+        required: false
+        ui_visible: true
       - name: description
         type: string
         required: false
@@ -243,6 +254,10 @@ work_item_types:
       - name: title
         type: string
         required: true
+        ui_visible: true
+      - name: display_key
+        type: string
+        required: false
         ui_visible: true
       - name: description
         type: string
