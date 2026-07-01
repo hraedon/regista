@@ -4,6 +4,56 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-01 — Session 78: In-depth adversarial review + 13 fixes
+
+**Focus:** Comprehensive adversarial review of the entire codebase, followed
+by implementation and second-round review of all confirmed new findings.
+
+### Review (4 parallel subagents)
+- Kimi: event chain, signing, replay, migrations
+- GLM: workflows, transitions, claims, links, actor roles
+- Nemotron: hooks, witness, timestamping, sidecar, CLI
+- MiniMax: connection, migrations, InMemory, testing, __init__
+
+### Findings triaged
+- ~40 findings total; ~50% overlap with existing BC-090–099, BC-172, BC-194
+- 13 confirmed new issues fixed (not previously tracked)
+
+### Fixes applied (commit c5a570b)
+1. **check_idempotency payload comparison** — now compares payload, not just
+   actor_id/transition. Reserved transitions skip (internally generated
+   payloads have non-deterministic fields).
+2. **strict_roles bypass** — enforced for ALL transitions, not just those
+   with allowed_roles.
+3. **Reserved transition names** — all 12 checked, not just "checkpoint".
+4. **Link lock order** — ascending UUID via ORDER BY FOR UPDATE.
+5. **Non-work_item seq advisory lock** — matches PostgresEventStore.
+6. **statement_timeout reset** — in finally after validator, not unconditional.
+7. **register_actor_role ON CONFLICT** — eliminates check-then-insert race.
+8. **Facade registration desync** — in-place mutation, not copy-on-write.
+9. **UniqueViolation constraint inspection** — distinguishes seq vs event_id collision.
+10. **KeySet hot reload atomicity** — threading.Lock, snapshot reads, env-var collision.
+11. **Scoped replay warning** — info log, not warning count inflation.
+12. **Hook dead-letter DELETE-first** — prevents duplicate dead-letter entries.
+13. **compose_workflow path traversal** — requires workflow_dir config.
+
+### Second-round adversarial review (Kimi + GLM)
+- Caught critical regression: `append_transition_event` idempotency used
+  raw payload instead of stored_payload (with custom_fields_update). Fixed.
+- Caught statement_timeout running unconditionally. Fixed with finally.
+- Caught KeySet torn-read race. Fixed with lock snapshots.
+- Caught hardcoded hook_type="async" in dead-letter. Fixed to use RETURNING.
+- compose_workflow now rejects when workflow_dir not configured.
+
+### Files changed
+- 21 files, +235/-132 lines
+- 1367 tests pass, 1 skipped, ruff clean.
+
+**Breadcrumbs resolved:** none (reconcile failed due to migration 35 gap)
+**Breadcrumbs opened:** none
+
+---
+
 ## 2026-06-30 — Session 77: Plan 024 gap closure + adversarial review
 
 **Focus:** Close the actionable items and gaps surfaced in the Plan 024 review:
