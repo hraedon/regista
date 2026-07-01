@@ -87,7 +87,7 @@ def in_memory_transition(
         actor_metadata,
         transition_name,
     )
-    if role is not None:
+    if role is not None or strict_roles:
         registered = {r for (aid, r) in actor_roles if aid == actor_id}
         check_actor_role_authorized(
             registered, actor_id, role,

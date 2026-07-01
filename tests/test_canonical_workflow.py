@@ -22,7 +22,7 @@ REVIEW_NOTE = {"review_note": "looks good"}
 def test_canonical_yaml_parses_and_validates():
     wf = parse_and_validate(canonical_workflow_yaml())
     assert wf.name == "canonical"
-    assert wf.version == 1
+    assert wf.version == 2
     assert set(wf.states) == {
         "open", "in_progress", "blocked", "deferred",
         "in_review", "in_human_review", "done",

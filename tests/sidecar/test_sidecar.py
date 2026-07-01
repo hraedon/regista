@@ -78,7 +78,7 @@ def client(regista_instance, token_file):
     from regista.sidecar.auth import TokenRegistry
 
     tokens = TokenRegistry.from_file(token_path)
-    app = create_app(regista_instance, tokens)
+    app = create_app(regista_instance, tokens, workflow_dir=os.path.dirname(TEST_WORKFLOW))
     return TestClient(app)
 
 

@@ -10,7 +10,7 @@ import jsonschema
 import structlog
 import yaml
 
-from ._contract import validate_json_safe_value
+from ._contract import _RESERVED_TRANSITIONS, validate_json_safe_value
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._types import (
@@ -147,10 +147,10 @@ def _validate_semantics(data: dict) -> None:
         )
 
     for t in transitions:
-        if t["name"] == "checkpoint":
+        if t["name"] in _RESERVED_TRANSITIONS:
             raise RegistaError(
                 ErrorCode.RESERVED_TRANSITION_NAME,
-                "Transition name 'checkpoint' is reserved and cannot be used in workflow YAML",
+                f"Transition name {t['name']!r} is reserved and cannot be used in workflow YAML",
             )
         if t["from"] not in state_names:
             raise RegistaError(

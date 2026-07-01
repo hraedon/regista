@@ -86,19 +86,43 @@ def create_link(
     if event_id is None:
         event_id = uuid.uuid4()
 
-    from_row = conn.execute(
-        SQL(
-            "SELECT work_item_id, work_item_type, workflow_name, workflow_version "
-            "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
-        ),
-        [from_work_item_id],
-    ).fetchone()
-
-    if from_row is None:
-        raise RegistaError(
-            ErrorCode.LINK_TARGET_NOT_FOUND,
-            f"Source work item {from_work_item_id} not found",
-        )
+    if target_project is not None:
+        from_row = conn.execute(
+            SQL(
+                "SELECT work_item_id, work_item_type, workflow_name, workflow_version "
+                "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
+            ),
+            [from_work_item_id],
+        ).fetchone()
+        if from_row is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                f"Source work item {from_work_item_id} not found",
+            )
+        to_row = None
+    else:
+        rows = conn.execute(
+            SQL(
+                "SELECT work_item_id, work_item_type, workflow_name, workflow_version "
+                "FROM work_items_current "
+                "WHERE work_item_id IN (%s, %s) "
+                "ORDER BY work_item_id FOR UPDATE"
+            ),
+            [from_work_item_id, to_work_item_id],
+        ).fetchall()
+        row_map = {r["work_item_id"]: r for r in rows}
+        from_row = row_map.get(from_work_item_id)
+        to_row = row_map.get(to_work_item_id)
+        if from_row is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                f"Source work item {from_work_item_id} not found",
+            )
+        if to_row is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                "Target work item not found for link",
+            )
 
     link_id = uuid.uuid4()
     link_payload = {
@@ -127,20 +151,6 @@ def create_link(
         if content_hash is not None:
             link_payload["content_hash"] = content_hash
     else:
-        to_row = conn.execute(
-            SQL(
-                "SELECT work_item_id, work_item_type, workflow_name, workflow_version "
-                "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
-            ),
-            [to_work_item_id],
-        ).fetchone()
-
-        if to_row is None:
-            raise RegistaError(
-                ErrorCode.LINK_TARGET_NOT_FOUND,
-                "Target work item not found for link",
-            )
-
         if from_row["workflow_name"] != to_row["workflow_name"]:
             raise RegistaError(
                 ErrorCode.LINK_CROSS_PROJECT,
@@ -201,33 +211,41 @@ def remove_link(
     if event_id is None:
         event_id = uuid.uuid4()
 
-    from_row = conn.execute(
-        SQL(
-            "SELECT work_item_id, workflow_name, workflow_version "
-            "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
-        ),
-        [from_work_item_id],
-    ).fetchone()
-
-    if from_row is None:
-        raise RegistaError(
-            ErrorCode.LINK_TARGET_NOT_FOUND,
-            f"Source work item {from_work_item_id} not found",
-        )
-
     if target_project is None:
-        to_row = conn.execute(
+        rows = conn.execute(
             SQL(
                 "SELECT work_item_id, workflow_name, workflow_version "
-                "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
+                "FROM work_items_current "
+                "WHERE work_item_id IN (%s, %s) "
+                "ORDER BY work_item_id FOR UPDATE"
             ),
-            [to_work_item_id],
-        ).fetchone()
-
+            [from_work_item_id, to_work_item_id],
+        ).fetchall()
+        row_map = {r["work_item_id"]: r for r in rows}
+        from_row = row_map.get(from_work_item_id)
+        to_row = row_map.get(to_work_item_id)
+        if from_row is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                f"Source work item {from_work_item_id} not found",
+            )
         if to_row is None:
             raise RegistaError(
                 ErrorCode.LINK_TARGET_NOT_FOUND,
                 "Target work item not found for link removal",
+            )
+    else:
+        from_row = conn.execute(
+            SQL(
+                "SELECT work_item_id, workflow_name, workflow_version "
+                "FROM work_items_current WHERE work_item_id = %s FOR UPDATE"
+            ),
+            [from_work_item_id],
+        ).fetchone()
+        if from_row is None:
+            raise RegistaError(
+                ErrorCode.LINK_TARGET_NOT_FOUND,
+                f"Source work item {from_work_item_id} not found",
             )
 
     live_link = conn.execute(

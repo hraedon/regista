@@ -109,7 +109,7 @@ def transition(
                 actor_metadata,
                 transition_name,
             )
-            if transition_def.get("allowed_roles"):
+            if transition_def.get("allowed_roles") or strict_roles:
                 role = (actor_metadata or {}).get("role")
                 from ._actor_roles import check_actor_role_authorized
                 check_actor_role_authorized(
@@ -167,6 +167,8 @@ def transition(
                         # not RegistaError.
                         metrics.inc("validators_failed", project)
                         raise
+                    finally:
+                        conn.execute("SET LOCAL statement_timeout = '0'")
                 else:
                     log.warning(
                         "validator.not_registered",

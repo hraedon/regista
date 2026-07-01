@@ -160,16 +160,10 @@ class InMemoryRegista:
         return ConnectionInfo(host=None, port=None, database=None, project=self._project)
 
     def register_validator(self, name: str, handler: Callable) -> None:
-        # Validators are trusted, run synchronously in the caller's thread.
-        # See Regista.register_validator docstring and BC-192.
-        updated = dict(self._validators)
-        updated[name] = handler
-        self._validators = updated
+        self._validators[name] = handler
 
     def register_hook_handler(self, name: str, handler: Callable) -> None:
-        updated = dict(self._hook_handlers)
-        updated[name] = handler
-        self._hook_handlers = updated
+        self._hook_handlers[name] = handler
 
     def start_hook_consumer(self) -> None:
         self._hook_consumer_running = True

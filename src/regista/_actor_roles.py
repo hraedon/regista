@@ -15,17 +15,10 @@ def register_actor_role(
 ) -> None:
     validate_actor_id(actor_id)
     validate_role(role)
-    existing = conn.execute(
-        SQL(
-            "SELECT 1 FROM actor_roles WHERE actor_id = %s AND role = %s"
-        ),
-        [actor_id, role],
-    ).fetchone()
-    if existing is not None:
-        return
     conn.execute(
         SQL(
-            "INSERT INTO actor_roles (actor_id, role) VALUES (%s, %s)"
+            "INSERT INTO actor_roles (actor_id, role) VALUES (%s, %s) "
+            "ON CONFLICT (actor_id, role) DO NOTHING"
         ),
         [actor_id, role],
     )

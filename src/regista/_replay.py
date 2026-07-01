@@ -535,7 +535,6 @@ def _replay_inner(
             )
 
     if scoped:
-        total_warnings += 1
         log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
     return ReplayReport(

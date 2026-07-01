@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 import psycopg
 from psycopg.sql import SQL
 
-from ._contract import Jsonb, check_expected_seq, check_key_role_policy, validate_entity_kind
+from ._contract import (
+    _RESERVED_TRANSITIONS,
+    Jsonb,
+    check_expected_seq,
+    check_key_role_policy,
+    validate_entity_kind,
+)
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import sign_event
@@ -112,6 +118,7 @@ def check_idempotency(
     actor_id: str | None = None,
     transition: str | None = None,
     work_item_id: uuid.UUID | None = None,
+    payload: dict | None = None,
 ) -> Event | None:
     from ._contract import check_idempotency as _contract_check
 
@@ -121,7 +128,9 @@ def check_idempotency(
     ).fetchone()
     if row is None:
         return None
-    return _contract_check(_row_to_event(row), actor_id, transition, work_item_id)
+    return _contract_check(
+        _row_to_event(row), actor_id, transition, work_item_id, payload=payload,
+    )
 
 
 def append_event(
@@ -156,12 +165,16 @@ def append_event(
                 f"Work item {work_item_id} not found",
             )
 
+    _idem_payload = None if transition in _RESERVED_TRANSITIONS else (
+        payload.value if payload is not None else None
+    )
     existing = check_idempotency(
         conn,
         event_id,
         actor_id=actor_id,
         transition=transition,
         work_item_id=work_item_id,
+        payload=_idem_payload,
     )
     if existing is not None:
         return existing
@@ -169,6 +182,14 @@ def append_event(
     if entity_kind == "work_item":
         next_seq = wi_row["next_event_seq"]
     else:
+        entity_bytes = work_item_id.bytes
+        key1 = int.from_bytes(entity_bytes[:8], "big", signed=False)
+        key2 = int.from_bytes(entity_bytes[8:], "big", signed=False)
+        if key1 >= 2**63:
+            key1 -= 2**64
+        if key2 >= 2**63:
+            key2 -= 2**64
+        conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", [key1, key2])
         row = conn.execute(
             SQL(
                 "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq "
@@ -261,20 +282,28 @@ def append_event(
                 prev_global_event_hash,
             ],
         )
-    except psycopg.errors.UniqueViolation:
+    except psycopg.errors.UniqueViolation as exc:
+        constraint = exc.diag.constraint_name or ""
+        if constraint == "events_entity_event_seq_key":
+            raise RegistaError(
+                ErrorCode.CONCURRENT_MODIFICATION,
+                f"Concurrent event_seq collision for entity_kind={entity_kind}, "
+                f"entity_id={work_item_id}",
+            ) from exc
         existing = check_idempotency(
             conn,
             event_id,
             actor_id=actor_id,
             transition=transition,
             work_item_id=work_item_id,
+            payload=_idem_payload,
         )
         if existing is not None:
             return existing
         raise RegistaError(
             ErrorCode.EVENT_ID_GLOBAL_COLLISION,
             f"event_id {event_id} already exists",
-        )
+        ) from exc
 
     _advance_global_chain_head(
         conn,
@@ -347,12 +376,17 @@ def append_transition_event(
             f"Work item {work_item_id} not found",
         )
 
+    stored_payload = dict(payload.value) if payload is not None else {}
+    if custom_fields_update:
+        stored_payload["custom_fields_update"] = custom_fields_update
+
     existing = check_idempotency(
         conn,
         event_id,
         actor_id=actor_id,
         transition=transition_name,
         work_item_id=work_item_id,
+        payload=stored_payload if payload is not None else None,
     )
     if existing is not None:
         return existing
@@ -361,10 +395,6 @@ def append_transition_event(
     check_expected_seq(next_seq, expected_event_seq)
 
     am = actor_metadata.value if actor_metadata is not None else None
-
-    stored_payload = dict(payload.value) if payload is not None else {}
-    if custom_fields_update:
-        stored_payload["custom_fields_update"] = custom_fields_update
 
     now = datetime.now(UTC)
 
@@ -448,20 +478,27 @@ def append_transition_event(
                 prev_global_event_hash,
             ],
         )
-    except psycopg.errors.UniqueViolation:
+    except psycopg.errors.UniqueViolation as exc:
+        constraint = exc.diag.constraint_name or ""
+        if constraint == "events_entity_event_seq_key":
+            raise RegistaError(
+                ErrorCode.CONCURRENT_MODIFICATION,
+                f"Concurrent event_seq collision for work_item_id={work_item_id}",
+            ) from exc
         existing = check_idempotency(
             conn,
             event_id,
             actor_id=actor_id,
             transition=transition_name,
             work_item_id=work_item_id,
+            payload=stored_payload if payload is not None else None,
         )
         if existing is not None:
             return existing
         raise RegistaError(
             ErrorCode.EVENT_ID_GLOBAL_COLLISION,
             f"event_id {event_id} already exists",
-        )
+        ) from exc
 
     _advance_global_chain_head(
         conn,

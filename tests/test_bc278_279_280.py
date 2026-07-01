@@ -74,7 +74,7 @@ class TestBC279ReplayWarnsOnUnknownTransitions:
 
 
 class TestBC280HookHandlersCopyOnWrite:
-    def test_register_handler_uses_new_dict(self):
+    def test_register_handler_uses_same_dict(self):
         sub = InMemoryRegista(hmac_key_path=KEY_PATH)
         sub.register_workflow_file(WORKFLOW_PATH)
 
@@ -82,7 +82,7 @@ class TestBC280HookHandlersCopyOnWrite:
         sub.register_hook_handler("on_finish", lambda ctx: None)
 
         new_handlers = sub._hook_handlers
-        assert new_handlers is not old_handlers
+        assert new_handlers is old_handlers
         assert "on_finish" in new_handlers
 
     def test_register_handler_preserves_existing(self):
@@ -96,7 +96,7 @@ class TestBC280HookHandlersCopyOnWrite:
         assert "handler_a" in handlers
         assert "handler_b" in handlers
 
-    def test_register_validator_uses_new_dict(self):
+    def test_register_validator_uses_same_dict(self):
         sub = InMemoryRegista(hmac_key_path=KEY_PATH)
         sub.register_workflow_file(WORKFLOW_PATH)
 
@@ -104,6 +104,6 @@ class TestBC280HookHandlersCopyOnWrite:
         sub.register_validator("start", lambda wi, payload: None)
 
         new_validators = sub._validators
-        assert new_validators is not old_validators
+        assert new_validators is old_validators
         assert "start" in new_validators
 

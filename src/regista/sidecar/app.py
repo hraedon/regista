@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -19,6 +20,7 @@ def create_app(
     *,
     docs_url: str | None = None,
     openapi_url: str | None = None,
+    workflow_dir: str | Path | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Regista Sidecar",
@@ -99,7 +101,7 @@ def create_app(
                     pass
         return await call_next(request)
 
-    register_routes(app, regista, tokens)
+    register_routes(app, regista, tokens, workflow_dir=workflow_dir)
     register_hook_routes(app, regista, tokens)
 
     @app.exception_handler(RegistaError)

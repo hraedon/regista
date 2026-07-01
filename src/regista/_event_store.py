@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from ._contract import (
+    _RESERVED_TRANSITIONS,
     Jsonb,
     check_expected_seq,
     check_idempotency,
@@ -69,7 +70,13 @@ def append_event(
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
     existing_evt = store.find_by_event_id(event_id)
-    existing = check_idempotency(existing_evt, actor_id, transition, work_item_id)
+    _idem_payload = None if transition in _RESERVED_TRANSITIONS else (
+        payload.value if payload is not None else None
+    )
+    existing = check_idempotency(
+        existing_evt, actor_id, transition, work_item_id,
+        payload=_idem_payload,
+    )
     if existing is not None:
         return existing
 
@@ -409,16 +416,24 @@ class PostgresEventStore:
                     event.prev_global_event_hash,
                 ],
             )
-        except psycopg.errors.UniqueViolation:
+        except psycopg.errors.UniqueViolation as exc:
+            constraint = exc.diag.constraint_name or ""
+            if constraint == "events_entity_event_seq_key":
+                raise RegistaError(
+                    ErrorCode.CONCURRENT_MODIFICATION,
+                    f"Concurrent event_seq collision for entity_id={event.work_item_id}",
+                ) from exc
             existing = self.find_by_event_id(event.event_id)
             if existing is not None:
                 from ._contract import check_idempotency as _contract_check
 
+                _idem_pl = None if event.transition in _RESERVED_TRANSITIONS else event.payload
                 match = _contract_check(
                     existing,
                     actor_id=event.actor_id,
                     transition=event.transition,
                     work_item_id=event.work_item_id,
+                    payload=_idem_pl,
                 )
                 if match is not None:
                     return match

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +69,7 @@ class KeySet:
         self._active_key_id: str | None = None
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
+        self._lock = threading.Lock()
         self._load()
 
     def _env_var_name(self, key_id: str) -> str:
@@ -75,6 +77,8 @@ class KeySet:
 
     def _load(self) -> None:
         try:
+            st = self._path.stat()
+            mtime = st.st_mtime
             raw = self._path.read_text()
         except OSError as e:
             raise RegistaError(
@@ -99,6 +103,7 @@ class KeySet:
         new_keys: dict[str, KeyEntry] = {}
         new_active: str | None = None
         key_sources: dict[str, str] = {}
+        seen_env_vars: dict[str, str] = {}
         for entry in data["keys"]:
             key_id = entry["key_id"]
             status = entry.get("status", "active")
@@ -120,6 +125,13 @@ class KeySet:
             principal_id = entry.get("principal_id")
 
             env_var = self._env_var_name(key_id)
+            if env_var in seen_env_vars:
+                raise RegistaError(
+                    ErrorCode.KEY_LOAD_ERROR,
+                    f"Key IDs {key_id!r} and {seen_env_vars[env_var]!r} both map to "
+                    f"env var {env_var}; rename one to avoid ambiguity",
+                )
+            seen_env_vars[env_var] = key_id
             env_val = os.environ.get(env_var)
             if env_val is not None:
                 secret = env_val.encode("utf-8")
@@ -168,29 +180,30 @@ class KeySet:
             if status == "active" and new_active is None:
                 new_active = key_id
 
-        self._keys = new_keys
-        self._active_key_id = new_active
-        self._last_mtime = self._path.stat().st_mtime
-        self._last_check = time.monotonic()
-
         if self._expected_key_count is not None and len(new_keys) != self._expected_key_count:
             raise RegistaError(
                 ErrorCode.KEY_LOAD_ERROR,
                 f"Expected {self._expected_key_count} keys but loaded {len(new_keys)}",
             )
 
+        with self._lock:
+            self._keys = new_keys
+            self._active_key_id = new_active
+            self._last_mtime = mtime
+            self._last_check = time.monotonic()
+
         log.warning("keys.plaintext_at_rest", path=str(self._path))
         log.info(
             "keys_loaded",
-            key_count=len(self._keys),
-            active_key_id=self._active_key_id,
+            key_count=len(new_keys),
+            active_key_id=new_active,
             key_sources=key_sources,
         )
         log.info(
             "keys.loaded",
             path=str(self._path),
-            key_count=len(self._keys),
-            active=self._active_key_id,
+            key_count=len(new_keys),
+            active=new_active,
         )
 
     def _maybe_reload(self) -> None:
@@ -208,7 +221,8 @@ class KeySet:
 
     def get_key(self, key_id: str) -> KeyEntry:
         self._maybe_reload()
-        entry = self._keys.get(key_id)
+        with self._lock:
+            entry = self._keys.get(key_id)
         if entry is None:
             log.warning(
                 "keys.unknown_key_id",
@@ -222,8 +236,9 @@ class KeySet:
 
     def active_key(self) -> KeyEntry:
         self._maybe_reload()
-        keys = self._keys
-        active_id = self._active_key_id
+        with self._lock:
+            keys = self._keys
+            active_id = self._active_key_id
         if active_id is None or active_id not in keys:
             raise RegistaError(
                 ErrorCode.UNKNOWN_KEY_ID,
@@ -239,8 +254,10 @@ class KeySet:
 
     def active_keys_for(self, principal_id: str) -> list[KeyEntry]:
         self._maybe_reload()
+        with self._lock:
+            keys = list(self._keys.values())
         return [
-            e for e in self._keys.values()
+            e for e in keys
             if e.status == "active" and e.principal_id == principal_id
         ]
 
@@ -294,9 +311,10 @@ class KeySet:
             if self._strict_asymmetric:
                 self._enforce_strict_asymmetric(entry, actor_id)
             return entry
-        all_for_principal = [
-            e for e in self._keys.values() if e.principal_id == actor_id
-        ]
+        with self._lock:
+            all_for_principal = [
+                e for e in self._keys.values() if e.principal_id == actor_id
+            ]
         if all_for_principal and all(e.status == "revoked" for e in all_for_principal):
             raise RegistaError(
                 ErrorCode.REVOKED_KEY_ID,
@@ -315,8 +333,10 @@ class KeySet:
         self._maybe_reload()
         import base64
 
+        with self._lock:
+            entries = list(self._keys.values())
         out: list[dict[str, object]] = []
-        for entry in self._keys.values():
+        for entry in entries:
             if entry.public_key is None:
                 continue
             out.append({

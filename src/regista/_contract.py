@@ -209,6 +209,7 @@ def check_idempotency(
     actor_id: str | None,
     transition: str | None,
     work_item_id: uuid.UUID | None = None,
+    payload: dict | None = None,
 ) -> Event | None:
     if existing_event is None:
         return None
@@ -229,6 +230,11 @@ def check_idempotency(
             ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
             f"event_id {existing_event.event_id} already used with transition "
             f"{existing_event.transition!r}, not {transition!r}",
+        )
+    if payload is not None and existing_event.payload != payload:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used with different payload",
         )
     return existing_event
 

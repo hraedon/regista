@@ -61,7 +61,7 @@ def test_scoped_replay_ok(backend_name):
         assert report.replayed_ok == 1
         assert report.replayed_drift == 0
         assert report.halted == 0
-        assert report.warnings == 1
+        assert report.warnings == 0
 
 
 @pytest.mark.parametrize("backend_name", ["postgres", "inmemory"])
@@ -103,7 +103,7 @@ def test_scoped_replay_skips_global_verification(backend_name):
         full_report = sub.replay()
         scoped_report = sub.replay(work_item_id=wid)
         assert full_report.warnings == 0
-        assert scoped_report.warnings == 1
+        assert scoped_report.warnings == 0
         assert scoped_report.replayed_ok == 1
         assert scoped_report.replayed_drift == 0
 

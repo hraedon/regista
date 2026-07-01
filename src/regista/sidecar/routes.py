@@ -61,9 +61,10 @@ def _parse_datetime(val: str | None) -> datetime | None:
         raise HTTPException(status_code=400, detail=f"Invalid datetime: {val!r}")
 
 
-def register_routes(app, regista, tokens: TokenRegistry):
+def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | Path | None = None):
     router = APIRouter(prefix="/v1")
     limiter = make_limiter()
+    _workflow_base = Path(workflow_dir).resolve() if workflow_dir else None
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -522,6 +523,18 @@ def register_routes(app, regista, tokens: TokenRegistry):
     def compose_workflow_route(body: ComposeWorkflowRequest, request: Request):
         require_admin(request)
         file_path = Path(body.file_path).resolve()
+        if _workflow_base is None:
+            raise HTTPException(
+                status_code=403,
+                detail="workflow_dir not configured; compose_workflow is disabled",
+            )
+        try:
+            file_path.relative_to(_workflow_base)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail="file_path must be within the configured workflow directory",
+            )
         if not file_path.exists():
             raise HTTPException(status_code=400, detail=f"File not found: {body.file_path}")
         if file_path.suffix not in (".yaml", ".yml"):

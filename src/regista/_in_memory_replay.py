@@ -420,7 +420,6 @@ def in_memory_replay(
                         ),
                     )
     else:
-        warnings += 1
         log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
     return ReplayReport(

@@ -385,7 +385,7 @@ class Regista:
                 DB operations made via the transaction's connection, but not
                 against pure-Python loops, sleeps, or external I/O.
         """
-        self._validators = {**self._validators, name: handler}
+        self._validators[name] = handler
 
     def register_hook_handler(self, name: str, handler: Callable) -> None:
         """Register an async hook handler dispatched via the hook queue.
@@ -394,7 +394,7 @@ class Regista:
             name: Must match a hook name listed in a workflow transition's ``hooks``.
             handler: ``Callable[[HookContext], None]``.
         """
-        self._hook_handlers = {**self._hook_handlers, name: handler}
+        self._hook_handlers[name] = handler
         if self._hook_consumer is not None:
             self._hook_consumer._handlers = self._hook_handlers
 

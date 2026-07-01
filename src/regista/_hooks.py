@@ -339,6 +339,17 @@ def _move_to_dead_letter(
 ) -> None:
     import psycopg.types.json
 
+    deleted = conn.execute(
+        SQL(
+            "DELETE FROM hook_queue WHERE id = %s "
+            "RETURNING id, event_id, hook_name, hook_type, payload, "
+            "retry_count, max_retries"
+        ),
+        [hook_row["id"]],
+    ).fetchone()
+    if deleted is None:
+        return
+
     conn.execute(
         SQL(
             "INSERT INTO hook_dead_letter "
@@ -347,24 +358,19 @@ def _move_to_dead_letter(
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         ),
         [
-            hook_row["event_id"],
-            hook_row["hook_name"],
-            "async",
+            deleted["event_id"],
+            deleted["hook_name"],
+            deleted["hook_type"],
             (
-                psycopg.types.json.Jsonb(hook_row["payload"])
-                if hook_row["payload"]
+                psycopg.types.json.Jsonb(deleted["payload"])
+                if deleted["payload"]
                 else None
             ),
-            hook_row["retry_count"],
-            hook_row.get("max_retries", 3),
+            deleted["retry_count"],
+            deleted.get("max_retries", 3),
             error_message,
-            hook_row["id"],
+            deleted["id"],
         ],
-    )
-
-    conn.execute(
-        SQL("DELETE FROM hook_queue WHERE id = %s"),
-        [hook_row["id"]],
     )
 
     evt_row = conn.execute(
@@ -372,7 +378,7 @@ def _move_to_dead_letter(
             "SELECT work_item_id, workflow_name, workflow_version "
             "FROM events WHERE event_id = %s"
         ),
-        [hook_row["event_id"]],
+        [deleted["event_id"]],
     ).fetchone()
 
     if evt_row is not None:
@@ -383,7 +389,7 @@ def _move_to_dead_letter(
         work_item_id = None
         workflow_name = None
         workflow_version = None
-        payload = hook_row.get("payload") or {}
+        payload = deleted.get("payload") or {}
         raw_wi = payload.get("work_item_id")
         if raw_wi is not None:
             try:
@@ -420,8 +426,8 @@ def _move_to_dead_letter(
         workflow_version=workflow_version,
         transition="hook_dead_lettered",
         payload=Jsonb({
-            "hook_name": hook_row["hook_name"],
-            "hook_queue_id": hook_row["id"],
+            "hook_name": deleted["hook_name"],
+            "hook_queue_id": deleted["id"],
             "error_message": error_message,
             "original_event_missing": evt_row is None,
         }),
