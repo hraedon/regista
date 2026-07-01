@@ -239,8 +239,22 @@ def in_memory_replay(
                         if e.code == ErrorCode.REVOKED_KEY_ID and continue_on_revoked:
                             key_entry = key_set.get_key(evt.key_id)
                             warnings += 1
+                            log.warning(
+                                "replay.revoked_key_signature_verified",
+                                work_item_id=str(wi_id),
+                                event_id=str(evt.event_id),
+                                event_seq=evt.event_seq,
+                                key_id=evt.key_id,
+                            )
                         elif e.code == ErrorCode.UNKNOWN_KEY_ID and continue_on_revoked:
                             warnings += 1
+                            log.warning(
+                                "replay.unknown_key_skipped",
+                                work_item_id=str(wi_id),
+                                event_id=str(evt.event_id),
+                                event_seq=evt.event_seq,
+                                key_id=evt.key_id,
+                            )
                         else:
                             raise
                     if key_entry is not None:

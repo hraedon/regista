@@ -287,8 +287,8 @@ def query_work_items(
 
     if claimable_now is True:
         conditions.append(
-            "(claimed_by IS NULL OR claim_expires_at < now()) "
-            "AND (not_before IS NULL OR not_before <= now())"
+            "(claimed_by IS NULL OR claim_expires_at < clock_timestamp()) "
+            "AND (not_before IS NULL OR not_before <= clock_timestamp())"
         )
 
     if custom_field_filters:

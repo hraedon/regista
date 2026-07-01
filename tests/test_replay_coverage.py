@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,13 +46,17 @@ class TestReplayClaimLifecycle:
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "steal replay"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        import time
+        time.sleep(2)
         regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
 
         report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
+        live = regista.get_work_item(wi.work_item_id)
+        assert live.claimed_by == "agent-2"
+        assert live.attempt_number == 2
 
     def test_replay_derives_claim_released(self, regista):
         wi, _ = regista.create_work_item(
@@ -412,3 +417,193 @@ class TestInMemoryReplayParity:
         assert report.replayed_ok == 3
         assert report.halted == 0
         assert report.replayed_drift == 0
+
+
+class TestBC090ClaimStateDriftDetection:
+    def test_claimed_by_tampered_detected_as_drift(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "claim drift by"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+
+        with raw_transaction(regista) as conn:
+            conn.execute(
+                "UPDATE work_items_current SET claimed_by = 'tampered-actor' "
+                "WHERE work_item_id = %s",
+                [wi.work_item_id],
+            )
+
+        report = regista.replay()
+        assert report.replayed_drift >= 1
+
+    def test_claim_expires_at_tampered_detected_as_drift(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "claim drift expires"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+
+        with raw_transaction(regista) as conn:
+            conn.execute(
+                "UPDATE work_items_current "
+                "SET claim_expires_at = now() + interval '1 day' "
+                "WHERE work_item_id = %s",
+                [wi.work_item_id],
+            )
+
+        report = regista.replay()
+        assert report.replayed_drift >= 1
+
+    def test_claim_state_cleared_after_workflow_transition(self, regista):
+        regista.register_actor_role("agent-1", "agent")
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "claim cleared"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.transition(
+            wi.work_item_id, "start", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+
+        report = regista.replay()
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        live = regista.get_work_item(wi.work_item_id)
+        assert live.claimed_by is None
+        assert live.claim_expires_at is None
+
+    def test_claim_state_correct_after_acquire_and_heartbeat(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "claim hb replay"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
+
+        report = regista.replay()
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        live = regista.get_work_item(wi.work_item_id)
+        assert live.claimed_by == "agent-1"
+        assert live.claim_expires_at is not None
+
+    def test_claim_attempt_number_reconstructed(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "attempt replay"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+
+        report = regista.replay()
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        live = regista.get_work_item(wi.work_item_id)
+        assert live.attempt_number == 2
+        assert live.claimed_by == "agent-2"
+
+    def test_claim_stolen_replay_drift_detection(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "steal drift detect"},
+        )
+        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        import time
+        time.sleep(2)
+        regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+
+        with raw_transaction(regista) as conn:
+            conn.execute(
+                "UPDATE work_items_current SET claimed_by = 'tampered' "
+                "WHERE work_item_id = %s",
+                [wi.work_item_id],
+            )
+
+        report = regista.replay()
+        assert report.replayed_drift >= 1
+
+
+class TestBC095InMemoryReplaySignatureVerification:
+    def test_in_memory_signature_mismatch_halts(self):
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "sig tamper"},
+        )
+
+        events = s._store.events[wi.work_item_id]
+        tampered = dataclasses.replace(events[0], signature=b"\x00" * 32)
+        events[0] = tampered
+        s._store.event_id_index[tampered.event_id] = tampered
+
+        report = s.replay()
+        assert report.halted >= 1
+
+    def test_in_memory_unknown_key_with_continue_on_revoked(self):
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "unknown key skip"},
+        )
+
+        events = s._store.events[wi.work_item_id]
+        tampered = dataclasses.replace(events[0], key_id="nonexistent-key")
+        events[0] = tampered
+        s._store.event_id_index[tampered.event_id] = tampered
+
+        report = s.replay(continue_on_revoked=True)
+        assert report.warnings >= 1
+        assert report.halted == 0
+        assert report.replayed_ok >= 1
+
+    def test_in_memory_unknown_key_without_continue_on_revoked_halts(self):
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "unknown key halt"},
+        )
+
+        events = s._store.events[wi.work_item_id]
+        tampered = dataclasses.replace(events[0], key_id="nonexistent-key")
+        events[0] = tampered
+        s._store.event_id_index[tampered.event_id] = tampered
+
+        report = s.replay()
+        assert report.halted >= 1
+
+    def test_in_memory_no_key_set_skips_verification(self):
+        s = InMemoryRegista(project="test")
+        s.register_workflow_file(WORKFLOW_PATH)
+
+        _wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "no keys"},
+        )
+
+        report = s.replay()
+        assert report.replayed_ok >= 1
+        assert report.halted == 0
+
+    def test_in_memory_replay_verifies_and_detects_drift(self):
+        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s.register_workflow_file(WORKFLOW_PATH)
+
+        wi, _ = s.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "drift detect"},
+        )
+        s.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+
+        s._work_items[wi.work_item_id]["claimed_by"] = "tampered"
+
+        report = s.replay()
+        assert report.replayed_drift >= 1

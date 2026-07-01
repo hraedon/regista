@@ -106,7 +106,7 @@ def claim_hooks(
             "SELECT id, event_id, hook_name, payload, retry_count, max_retries "
             "FROM hook_queue "
             "WHERE status = 'pending' "
-            "AND (next_retry_at IS NULL OR next_retry_at <= now()) "
+            "AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp()) "
             "ORDER BY id LIMIT %s "
             "FOR UPDATE SKIP LOCKED"
         ),
@@ -265,7 +265,7 @@ def sweep_expired_hook_leases(conn: psycopg.Connection) -> int:
         SQL(
             "UPDATE hook_queue SET status = 'pending', "
             "lease_expires_at = NULL, claimed_by = NULL, updated_at = now() "
-            "WHERE status = 'in_progress' AND lease_expires_at < now()"
+            "WHERE status = 'in_progress' AND lease_expires_at < clock_timestamp()"
         ),
     )
     return result.rowcount

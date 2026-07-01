@@ -686,7 +686,7 @@ def sweep_stuck_witness_receipts(mgr: ConnectionManager, max_age_seconds: int = 
             "UPDATE witness_receipts "
             "SET status = 'pending' "
             "WHERE status = 'in_progress' "
-            "AND last_attempt_at < now() - make_interval(secs => %s) "
+            "AND last_attempt_at < clock_timestamp() - make_interval(secs => %s) "
             "RETURNING receipt_id, witness_id",
             [max_age_seconds],
         ).fetchall()

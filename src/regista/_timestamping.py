@@ -677,7 +677,7 @@ def sweep_stale_timestamp_batches(mgr, max_age_seconds: int = 300) -> int:
             "UPDATE tsp_batches SET status = 'failed', "
             "error_message = 'stale: no confirmation within threshold' "
             "WHERE status = 'pending' "
-            "AND submitted_at < now() - make_interval(secs => %s) "
+            "AND submitted_at < clock_timestamp() - make_interval(secs => %s) "
             "RETURNING batch_id",
             [max_age_seconds],
         ).fetchall()
