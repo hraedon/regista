@@ -3,7 +3,6 @@
 Coordination and durable state for agent pipelines over Postgres.
 
 [![CI](https://github.com/hraedon/regista/actions/workflows/ci.yml/badge.svg)](https://github.com/hraedon/regista/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-1273%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 Regista is a Python library that provides durable claims, event-sourced state, validated state transitions, and typed links for multi-role agent pipelines. Each project deploys regista as its own isolated instance using schema-per-project isolation within a single Postgres database.
@@ -326,6 +325,9 @@ pytest tests/sidecar/ -v
 
 # Lint
 ruff check src/ tests/
+
+# Type-check (strict; burndown list in pyproject.toml [tool.mypy])
+mypy
 ```
 
 Test DSN: `postgresql://regista_test:regista_test@localhost:5432/regista_test`
@@ -340,7 +342,7 @@ Test DSN: `postgresql://regista_test:regista_test@localhost:5432/regista_test`
 
 ## Status
 
-All features through Plan 022 implemented. 1273 tests passing (core, sidecar, property-based, witness, timestamping, and plan-specific). FR-01 through FR-29 in tree. 310 breadcrumbs tracked, 307 resolved. See `AGENTS.md` for detailed status.
+All features through Plan 022 implemented. FR-01 through FR-29 in tree. See `AGENTS.md` for detailed status.
 
 ## License
 

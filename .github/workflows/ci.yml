@@ -44,6 +44,9 @@ jobs:
       - name: Lint
         run: ruff check src/ tests/
 
+      - name: Type-check (strict; burndown list in pyproject [tool.mypy])
+        run: mypy
+
       - name: Test
         run: pytest tests/ -v
 

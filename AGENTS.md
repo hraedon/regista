@@ -96,6 +96,9 @@ docker compose -f docker-compose.test.yml up -d
 
 # Lint
 .venv/bin/ruff check src/ tests/
+
+# Type-check (strict; burndown list in pyproject.toml [tool.mypy])
+.venv/bin/mypy
 ```
 
 Test DSN: `postgresql://regista_test:regista_test@localhost:5432/regista_test`
@@ -226,9 +229,9 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-022 implemented. All FRs FR-01 through FR-29 are in tree. 1273 tests passing (including sidecar, property-based, witness, timestamping, and plan-specific tests).
+MVP + Phase 2 + Phase 3 + Plans 002-022 implemented. All FRs FR-01 through FR-29 are in tree. Full test suite (core, sidecar, property-based, witness, timestamping, and plan-specific) — run `pytest tests/ -v` for current count.
 
-Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md.
+Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md, mypy --strict type-checking (burndown ratchet — see `[tool.mypy]` in `pyproject.toml`).
 
 Phase 3 additions: FR-24 (actor → allowed_roles enforcement, closes BR-09), FR-25 (continue-on-revoked replay flag), FR-26 (update_not_before API), FR-27 (custom field validation at transition time). Migration `005_actor_roles.sql` adds the actor_roles table. ReplayReport gains `warnings` field.
 

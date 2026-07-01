@@ -1,16 +1,20 @@
-.PHONY: all lint test test-files cov check clean
+.PHONY: all lint typecheck test test-files cov check clean
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
 RUFF := $(VENV)/bin/ruff
+MYPY := $(VENV)/bin/mypy
 PYTEST := $(VENV)/bin/pytest
 
 all: check
 
-check: lint test
+check: lint typecheck test
 
 lint:
 	$(RUFF) check src/ tests/
+
+typecheck:
+	$(MYPY)
 
 test:
 	$(PYTEST) tests/ -v
