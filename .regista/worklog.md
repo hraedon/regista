@@ -4,6 +4,64 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-01 — Session 80: Work-item reconciliation + mypy --strict + BC-295
+
+**Focus:** Triage and close the open work-item backlog; adopt mypy --strict;
+fix stale documentation counts.
+
+### Work-item reconciliation (10 items closed)
+
+Verified that 10 of 13 requested work items were already resolved in code
+but never transitioned in the agent-notes DB. Closed after verification:
+
+- **BC-027**: SF2 workflow round-trip test exists (`tests/test_sf2_workflows.py`)
+- **BC-030**: Long-history replay test (10k events, `test_replay_long_history`)
+- **BC-037**: Runtime `validate_work_item_refs` (existence + type, create + transition)
+- **BC-047**: Unused dev deps removed from pyproject.toml
+- **BC-053**: CI config at `.github/workflows/ci.yml`
+- **BC-202**: Sweep race fixed (lock-first, re-verify before delete)
+- **BC-204**: Dead-letter always emits audit event (nil-UUID sentinel for orphans)
+- **BC-205**: `validate_actor_id` / `validate_role` / `validate_actor_metadata`
+- **BC-208**: P1M=31-days documented in spec.md FR-28
+- **BC-301**: `MAX_JSONB_BYTES = 1MB` enforced via `Jsonb` wrapper
+
+### BC-295: Stale test/breadcrumb counts
+
+Removed hardcoded test counts from README.md and AGENTS.md prose. The numbers
+(992 → 1079 → 1273) drifted every session. Tests badge now links to the CI
+workflow. Prose says "run `pytest tests/ -v` for current count."
+
+### WI-005: mypy --strict burndown ratchet
+
+Adopted mypy --strict as a ratchet: strict is on globally; full strict is
+enforced on the ~10 already-clean modules and every NEW module; ~55 dirty
+modules quarantined with `ignore_errors`. mypy runs in CI and via
+`make typecheck`. `assert_never` intentionally not adopted (data-driven
+dispatch, no Python-enum match sites). Also added type stubs
+(types-PyYAML, types-jsonschema, types-python-dateutil).
+
+### WI-004: Design breadcrumbs migration
+
+Verified already resolved — breadcrumbs directory retired in commit `964d63a`;
+work tracked in regista's own schema via agent-notes CLI. Applied missing
+migration 036 to production dogfooding schema.
+
+### Adversarial review (2 reviewers)
+
+- GLM: No CRITICAL/HIGH. Fixed bare-package-name gap in ignore_missing_imports,
+  added mypy to README testing section.
+- Kimi: No CRITICAL. Noted burndown boundary leaks `Any` (inherent to the
+  ratchet approach); flagged `_projects` in burndown (pre-existing uncommitted
+  WIP — added explanatory comment).
+
+### Test/lint/type-check results
+- 1378 tests pass, 1 skipped
+- mypy: Success (64 files checked)
+- ruff: clean on modified files (pre-existing projects-catalog lint errors
+  are from uncommitted prior-session work)
+
+---
+
 ## 2026-07-01 — Session 78: In-depth adversarial review + 13 fixes
 
 **Focus:** Comprehensive adversarial review of the entire codebase, followed
