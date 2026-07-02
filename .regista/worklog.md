@@ -4,6 +4,29 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-02 — Session 81: Mixin decomposition of __init__.py and _in_memory.py
+
+**Focus:** Decompose the two largest source files into domain-scoped mixin classes.
+
+**Context:** `__init__.py` was 1,802 lines and `_in_memory.py` was 1,514 lines. Both had ~50-74 public methods inline in a single class. The existing facade decomposition (`_ops.py`) already extracted the real implementations; the top-level methods were thin delegators with docstrings.
+
+**Delivered:**
+- `__init__.py`: 1,802 → 460 lines. Extracted into 6 mixin modules (`_api_base.py`, `_api_workflow.py`, `_api_claim.py`, `_api_async.py`, `_api_external.py`, `_api_meta.py`).
+- `_in_memory.py`: 1,514 → 145 lines. Extracted into 7 mixin modules (`_in_mem_base.py`, `_in_mem_workflow.py`, `_in_mem_claim.py`, `_in_mem_hook.py`, `_in_mem_witness.py`, `_in_mem_ops.py`).
+- Both use a `_RegistaBase` / `_InMemoryBase` TYPE_CHECKING stub pattern for shared attribute declarations.
+- Pre-existing WIP (project catalog, `_projects.py`, migration 037) committed alongside.
+- Adversarial review dispatched twice (per file); test-surface safety verified independently.
+- Fixes from adversarial review: restored `Jsonb` type hints on `_append_simple_event`, fixed `_get_catalog` to use `cls._catalog`.
+- Also fixed pre-existing ruff lint errors in `_links.py` (line too long) and `_projects.py` (unused import) that blocked CI.
+
+**Test results:** 1,378 passed, 1 skipped, 10 deselected. Ruff clean. Mypy 0 issues. CI green on Python 3.11/3.12/3.13.
+
+**Breadcrumbs resolved:** Reconcile closed 7 previously-resolved items (090, 093, 094, 095, 098, 209, 295, WI-002) that had no commit linkage.
+
+**Reflection:** `.regista/reflections/2026-07-02-glm-5-2.md` (ingested into agent-notes memory store).
+
+---
+
 ## 2026-07-01 — Session 80: Work-item reconciliation + mypy --strict + BC-295
 
 **Focus:** Triage and close the open work-item backlog; adopt mypy --strict;
