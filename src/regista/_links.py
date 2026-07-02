@@ -297,3 +297,61 @@ def remove_link(
         payload=Jsonb(remove_payload),
         event_id=event_id,
     )
+
+
+def list_links(
+    conn: psycopg.Connection,
+    work_item_id: uuid.UUID,
+) -> list[Link]:
+    """Return all live (non-removed) outbound links from *work_item_id*.
+
+    A link is live if it has a ``link_created`` event without a matching
+    ``link_removed`` event (matched on ``to_work_item_id`` + ``link_type`` +
+    ``target_project``).  This returns outbound links only — links
+    originating from this work item.  Inbound links (other items linking
+    *to* this one) are not currently discovered by this query.
+
+    This is a read — no mutation, no event appended.
+    """
+    rows = conn.execute(
+        SQL(
+            "SELECT payload, event_id FROM events "
+            "WHERE work_item_id = %s "
+            "AND transition = 'link_created' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM events e_r "
+            "WHERE e_r.work_item_id = events.work_item_id "
+            "AND e_r.transition = 'link_removed' "
+            "AND e_r.payload->>'to_work_item_id' = events.payload->>'to_work_item_id' "
+            "AND e_r.payload->>'link_type' = events.payload->>'link_type' "
+            "AND e_r.payload->>'target_project' IS NOT DISTINCT FROM "
+            "events.payload->>'target_project' "
+            "AND e_r.event_seq > events.event_seq"
+            ") "
+            "ORDER BY event_seq"
+        ),
+        [work_item_id],
+    ).fetchall()
+
+    links: list[Link] = []
+    for row in rows:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            import json
+
+            payload = json.loads(payload)
+        if not isinstance(payload, dict):
+            continue
+        links.append(
+            Link(
+                link_id=uuid.UUID(payload["link_id"]) if payload.get("link_id") else row["event_id"],
+                from_work_item_id=work_item_id,
+                to_work_item_id=uuid.UUID(payload["to_work_item_id"]),
+                link_type=payload["link_type"],
+                payload=payload.get("link_payload"),
+                target_project=payload.get("target_project"),
+                target_entity_kind=payload.get("target_entity_kind"),
+                content_hash=payload.get("content_hash"),
+            )
+        )
+    return links

@@ -927,3 +927,44 @@ class RecurrenceRule:
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
         )
+
+
+@dataclass(frozen=True)
+class ProjectCatalogEntry:
+    """A row in the shared ``public.projects`` catalog (Plan 012).
+
+    The catalog is the authoritative source of truth for which regista
+    projects exist and who owns each one. It lives in the ``public``
+    schema (shared across all projects) — a deliberate softening of §3's
+    schema-isolation tenet, with precedent in Plan 022's cross-project
+    value-references.
+    """
+
+    schema_name: str
+    display_name: str | None = None
+    owner_actor_id: str | None = None
+    created_by: str | None = None
+    created_at: datetime | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_name": self.schema_name,
+            "display_name": self.display_name,
+            "owner_actor_id": self.owner_actor_id,
+            "created_by": self.created_by,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ProjectCatalogEntry:
+        return cls(
+            schema_name=data["schema_name"],
+            display_name=data.get("display_name"),
+            owner_actor_id=data.get("owner_actor_id"),
+            created_by=data.get("created_by"),
+            created_at=(
+                datetime.fromisoformat(data["created_at"])
+                if data.get("created_at")
+                else None
+            ),
+        )

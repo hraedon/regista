@@ -502,6 +502,15 @@ class LinkOps:
             target_project=target_project,
         )
 
+    def list(
+        self,
+        work_item_id: uuid.UUID,
+    ) -> list[Link]:
+        """Return all live (non-removed) links from *work_item_id*."""
+        from ._links_api import list_links as _impl
+
+        return _impl(self._mgr, work_item_id)
+
 
 class TimestampOps:
     def __init__(

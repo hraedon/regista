@@ -5,6 +5,7 @@ import uuid
 from ._contract import Jsonb as _Jsonb
 from ._errors import RegistaError
 from ._observability import OpTimer
+from ._types import Link
 
 
 def create_link(
@@ -90,3 +91,14 @@ def remove_link(
     except RegistaError:
         timer.log("error")
         raise
+
+
+def list_links(
+    mgr,
+    work_item_id: uuid.UUID,
+) -> list[Link]:
+    """Return all live (non-removed) links from *work_item_id*."""
+    from ._links import list_links as _list
+
+    with mgr.transaction() as conn:
+        return _list(conn, work_item_id)
