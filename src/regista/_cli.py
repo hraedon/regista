@@ -768,6 +768,175 @@ def cmd_webhook_remove(args):
         sub.close()
 
 
+def cmd_version(args):
+    from regista._version_info import versions as _versions
+    info = _versions()
+    if args.json:
+        _dump_json(info)
+    else:
+        print(f"regista {info.library_version}")
+        print(f"  schema_version:           {info.schema_version}")
+        print(f"  canonical_workflow_ver:   {info.canonical_workflow_version}")
+        print(f"  envelope_version:         {info.envelope_version}")
+        print(f"  canonical_workflow_hash:  {info.canonical_workflow_hash[:16]}...")
+        print(f"  signing_schemes:          {', '.join(info.available_signing_schemes)}")
+
+
+def cmd_doctor(args):
+    from regista._config import resolve as resolve_config
+    from regista._doctor import run_doctor
+
+    cfg = resolve_config()
+    dsn = args.dsn or cfg.dsn
+    project = args.project or cfg.project
+    require_ssl = cfg.require_ssl
+
+    report = run_doctor(dsn, project=project, require_ssl=require_ssl)
+    if args.json:
+        _dump_json(report)
+    else:
+        print(f"component: {report.component}")
+        print(f"version:   {report.version}")
+        print(f"reachable: {report.reachable}")
+        if report.schema_version is not None:
+            print(f"schema:    {report.schema_version}")
+        if report.projects:
+            print(f"projects:  {', '.join(p['name'] for p in report.projects)}")
+        print()
+        for check in report.checks:
+            print(f"  [{check.status:>4}] {check.name}: {check.detail}")
+        if any(c.status == "fail" for c in report.checks):
+            sys.exit(1)
+
+
+def _mask_dsn(dsn: str | None) -> str:
+    if not dsn:
+        return "(not set)"
+    from urllib.parse import urlparse
+    parsed = urlparse(dsn)
+    if parsed.password:
+        netloc = f"{parsed.username}:***@{parsed.hostname}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        masked = parsed._replace(netloc=netloc)
+        return masked.geturl()
+    return dsn
+
+
+def cmd_config_show(args):
+    from regista._config import resolve as resolve_config
+    cfg = resolve_config()
+    if args.json:
+        safe = cfg.to_dict()
+        safe["dsn"] = _mask_dsn(cfg.dsn)
+        print(json.dumps(safe, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"dsn:         {_mask_dsn(cfg.dsn)}")
+        print(f"key_path:    {cfg.key_path or '(not set)'}")
+        print(f"require_ssl: {cfg.require_ssl}")
+        print(f"project:     {cfg.project or '(not set)'}")
+        if cfg.source:
+            print()
+            print("Sources:")
+            for var, src in sorted(cfg.source.items()):
+                print(f"  {var}: {src}")
+
+
+def cmd_secrets_resolve(args):
+    from regista._secrets import available_providers
+    from regista._secrets import resolve as resolve_secret
+    if args.list_providers:
+        print("Available providers:")
+        for p in available_providers():
+            print(f"  {p}")
+        return
+    if not args.ref:
+        print("Error: --ref is required (or --list-providers)", file=sys.stderr)
+        sys.exit(2)
+    try:
+        data = resolve_secret(args.ref)
+        if args.hex:
+            print(data.hex())
+        else:
+            try:
+                print(data.decode("utf-8"))
+            except UnicodeDecodeError:
+                print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
+    except RegistaError as e:
+        _handle_error(e)
+
+
+def cmd_principal_list(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        from regista._principal_keys import list_principal_keys
+        entries = list_principal_keys(sub._mgr, principal_id=args.principal, status=args.status)
+        if args.json:
+            _dump_json(entries)
+        else:
+            for e in entries:
+                print(
+                    f"{e.principal_id:20s} {e.key_id:20s} {e.scheme:12s} "
+                    f"{e.status:10s} {e.fingerprint[:16]}..."
+                )
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_principal_register(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    import base64
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        from regista._principal_keys import register_principal_key
+        pub_key = base64.b64decode(args.public_key)
+        entry = register_principal_key(
+            sub._mgr,
+            args.principal,
+            pub_key,
+            args.scheme,
+            key_id=args.key_id,
+            registered_by=args.registered_by or "cli",
+        )
+        if args.json:
+            _dump_json(entry)
+        else:
+            print(f"Registered key {entry.key_id} for principal {entry.principal_id}")
+            print(f"  scheme:      {entry.scheme}")
+            print(f"  fingerprint: {entry.fingerprint}")
+            print(f"  status:      {entry.status}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_principal_revoke(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        from regista._principal_keys import revoke_principal_key
+        entry = revoke_principal_key(
+            sub._mgr,
+            args.principal,
+            args.key_id,
+            reason=args.reason or "unspecified",
+        )
+        if args.json:
+            _dump_json(entry)
+        else:
+            print(f"Revoked key {entry.key_id} for principal {entry.principal_id}")
+            print(f"  reason:      {entry.revoked_reason}")
+            print(f"  revoked_at:  {entry.revoked_at}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="regista", description="Regista admin CLI")
@@ -938,6 +1107,54 @@ def main(argv=None):
     wh_rm = wh_sub.add_parser("remove", help="Remove a webhook")
     wh_rm.add_argument("id", help="Webhook UUID")
     wh_rm.set_defaults(func=cmd_webhook_remove)
+
+    # version
+    ver_parser = subs.add_parser("version", help="Show regista version info")
+    ver_parser.add_argument("--json", action="store_true", help="JSON output")
+    ver_parser.set_defaults(func=cmd_version)
+
+    # doctor
+    doc_parser = subs.add_parser("doctor", help="Health check")
+    doc_parser.add_argument("--json", action="store_true", help="JSON output")
+    doc_parser.set_defaults(func=cmd_doctor)
+
+    # config
+    cfg_parser = subs.add_parser("config", help="Show resolved config")
+    cfg_parser.add_argument("--json", action="store_true", help="JSON output")
+    cfg_parser.set_defaults(func=cmd_config_show)
+
+    # secrets
+    sec_parser = subs.add_parser("secrets", help="Resolve a secret reference")
+    sec_parser.add_argument(
+        "--ref",
+        help="Secret reference (e.g. file:/path, env:VAR, vault:mount/path/key)",
+    )
+    sec_parser.add_argument("--hex", action="store_true", help="Output as hex")
+    sec_parser.add_argument(
+        "--list-providers", action="store_true",
+        help="List available secret providers",
+    )
+    sec_parser.set_defaults(func=cmd_secrets_resolve)
+
+    # principal (Plan 026)
+    pr_parser = subs.add_parser("principal", help="Principal key registry commands")
+    pr_sub = pr_parser.add_subparsers(dest="subcommand")
+    pr_list = pr_sub.add_parser("list", help="List principal keys")
+    pr_list.add_argument("--principal", help="Filter by principal_id")
+    pr_list.add_argument("--status", help="Filter by status (active/revoked/superseded)")
+    pr_list.set_defaults(func=cmd_principal_list)
+    pr_reg = pr_sub.add_parser("register", help="Register a principal public key")
+    pr_reg.add_argument("--principal", required=True, help="Principal ID")
+    pr_reg.add_argument("--public-key", required=True, help="Base64-encoded public key")
+    pr_reg.add_argument("--scheme", default="ed25519", help="Signing scheme (default: ed25519)")
+    pr_reg.add_argument("--key-id", help="Optional key ID")
+    pr_reg.add_argument("--registered-by", help="Who is registering this key")
+    pr_reg.set_defaults(func=cmd_principal_register)
+    pr_revoke = pr_sub.add_parser("revoke", help="Revoke a principal key")
+    pr_revoke.add_argument("--principal", required=True, help="Principal ID")
+    pr_revoke.add_argument("--key-id", required=True, help="Key ID to revoke")
+    pr_revoke.add_argument("--reason", help="Revocation reason")
+    pr_revoke.set_defaults(func=cmd_principal_revoke)
 
     args = parser.parse_args(argv)
 

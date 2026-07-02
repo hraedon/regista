@@ -43,6 +43,13 @@ vendor-check = [
 timestamping = [
     "asn1crypto>=1.5",
 ]
+vault = [
+    "hvac>=2.0",
+]
+azure = [
+    "azure-identity>=1.16",
+    "azure-keyvault-secrets>=4.8",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/regista"]
@@ -164,5 +171,10 @@ module = [
     "regista._workflow",
     "regista._work_items_api",
     "regista._work_items",
+    "regista._config",
+    "regista._secrets",
+    "regista._version_info",
+    "regista._doctor",
+    "regista._principal_keys",
 ]
 ignore_errors = true

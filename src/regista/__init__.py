@@ -4,6 +4,8 @@ from collections.abc import Callable
 
 import structlog
 
+from . import _config as _config
+from . import _secrets as _secrets
 from ._api_async import AsyncApiMixin
 from ._api_claim import ClaimApiMixin
 from ._api_external import ExternalApiMixin
@@ -21,6 +23,7 @@ from ._ops import (
     EventOps,
     HookOps,
     LinkOps,
+    PrincipalKeyOps,
     RecurrenceOps,
     TimestampOps,
     WebhookOps,
@@ -80,12 +83,17 @@ from ._types import (
 from ._types import (
     WorkItem as WorkItem,
 )
+from ._version_info import VersionInfo as VersionInfo
+from ._version_info import versions as versions
 from ._workflow import canonical_workflow_yaml as canonical_workflow_yaml
 from ._workflow import parse_and_validate as parse_and_validate
 from ._workflow import parse_file as parse_file
 from ._workflow import parse_workflow_yaml as parse_workflow_yaml
 from ._workflow import validate_yaml as validate_yaml
 from ._workflow_compose import compose_workflow as compose_workflow
+
+config = _config
+secrets = _secrets
 
 log = structlog.get_logger()
 
@@ -401,6 +409,15 @@ class Regista(
         if not hasattr(self, "_webhook_ops"):
             self._webhook_ops = WebhookOps(self._mgr, self._project)
         return self._webhook_ops
+
+    @property
+    def principals(self) -> PrincipalKeyOps:
+        self._require_open()
+        if not hasattr(self, "_principal_ops"):
+            self._principal_ops = PrincipalKeyOps(
+                self._mgr, self._keys, self._metrics, self._project,
+            )
+        return self._principal_ops
 
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import create_receipts as _create_receipts

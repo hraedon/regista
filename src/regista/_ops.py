@@ -881,3 +881,94 @@ class WebhookOps:
         from ._webhooks import resume_webhook as _impl
 
         _impl(self._mgr, webhook_id)
+
+
+class PrincipalKeyOps:
+    """Facade for principal key registry operations (Plan 026)."""
+
+    def __init__(
+        self,
+        mgr: ConnectionManager,
+        keys: KeySet,
+        metrics: Metrics,
+        project: str,
+    ) -> None:
+        self._mgr = mgr
+        self._keys = keys
+        self._metrics = metrics
+        self._project = project
+
+    def register(
+        self,
+        principal_id: str,
+        public_key: bytes,
+        scheme: str = "ed25519",
+        *,
+        key_id: str | None = None,
+        registered_by: str = "system",
+    ) -> dict:
+        from ._principal_keys import register_principal_key as _impl
+
+        entry = _impl(
+            self._mgr, principal_id, public_key, scheme,
+            key_id=key_id, registered_by=registered_by,
+        )
+        self._metrics.inc("principal_key_registered", self._project)
+        return entry.to_dict()
+
+    def list(
+        self,
+        principal_id: str | None = None,
+        *,
+        status: str | None = None,
+    ) -> list[dict]:
+        from ._principal_keys import list_principal_keys as _impl
+
+        entries = _impl(self._mgr, principal_id, status=status)
+        return [e.to_dict() for e in entries]
+
+    def get_active(self, principal_id: str) -> dict:
+        from ._principal_keys import get_active_key as _impl
+
+        entry = _impl(self._mgr, principal_id)
+        return entry.to_dict()
+
+    def rotate(
+        self,
+        principal_id: str,
+        new_public_key: bytes,
+        scheme: str = "ed25519",
+        *,
+        registered_by: str = "system",
+    ) -> dict:
+        from ._principal_keys import rotate_principal_key as _impl
+
+        entry = _impl(
+            self._mgr, principal_id, new_public_key, scheme,
+            registered_by=registered_by,
+        )
+        self._metrics.inc("principal_key_rotated", self._project)
+        return entry.to_dict()
+
+    def revoke(
+        self,
+        principal_id: str,
+        key_id: str,
+        *,
+        reason: str = "unspecified",
+    ) -> dict:
+        from ._principal_keys import revoke_principal_key as _impl
+
+        entry = _impl(self._mgr, principal_id, key_id, reason=reason)
+        self._metrics.inc("principal_key_revoked", self._project)
+        return entry.to_dict()
+
+    def verify_binding(
+        self,
+        principal_id: str,
+        actor_id: str,
+    ) -> dict:
+        from ._principal_keys import verify_principal_binding as _impl
+
+        entry = _impl(self._mgr, principal_id, actor_id)
+        return entry.to_dict()

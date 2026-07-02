@@ -68,6 +68,11 @@ src/regista/
   _hooks_api.py        # Postgres-only hooks helpers for _ops facades
   _in_memory_replay.py # InMemory replay engine (FR-16)
   _witness.py          # Witness registration, receipt creation, event filtering, delivery (Plan 013)
+  _config.py           # Suite config resolver: layered env → user suite.env → system (Plan 025)
+  _secrets.py          # Secret backend resolver: file/env/literal/vault/azure (Plan 025)
+  _version_info.py     # Version surface: library/schema/workflow/envelope versions (Plan 025)
+  _doctor.py           # Health check JSON contract: `regista doctor --json` (Plan 025)
+  _principal_keys.py   # Principal→public-key registry: register/rotate/revoke (Plan 026)
   _vendor/             # Vendored dependencies
     __init__.py
     rfc8785.py         # Vendored rfc8785 0.1.4 (Plan 008 WS-3)
@@ -80,6 +85,9 @@ src/regista/
     routes_hooks.py     # Hook claim/complete/fail endpoints
     models.py           # Pydantic request/response models (extra="forbid")
     errors.py           # ErrorCode → HTTP status mapping
+  docs/
+    suite-config.md     # Suite config contract: vars, precedence, doctor shape, version surface (Plan 025)
+  suite.env.example     # Template for ~/.config/agent-suite/suite.env (Plan 025)
 ```
 
 ## Testing
@@ -196,6 +204,23 @@ sub.start_maintenance(sweep_interval=30, recurrence_interval=10)  # background t
 sub.stop_maintenance()
 sub.maintenance_healthy  # True when thread is running and healthy (or not started)
 
+# Suite cohesion (Plan 025)
+regista.config.resolve()  # -> SuiteConfig (dsn, key_path, require_ssl, project, source)
+regista.secrets.resolve(ref)  # -> bytes (file:/env:/literal:/vault:/azure:)
+regista.versions()  # -> VersionInfo (library/schema/workflow/envelope versions)
+regista version --json  # CLI: version surface
+regista doctor --json   # CLI: health check
+regista config           # CLI: show resolved config
+regista secrets --list-providers  # CLI: list secret backends
+
+# Principal key registry (Plan 026)
+sub.principals.register(principal_id, public_key, scheme="ed25519", *, key_id=None, registered_by="system")
+sub.principals.list(principal_id=None, *, status=None)
+sub.principals.get_active(principal_id)
+sub.principals.rotate(principal_id, new_public_key, scheme="ed25519", *, registered_by="system")
+sub.principals.revoke(principal_id, key_id, *, reason="unspecified")
+sub.principals.verify_binding(principal_id, actor_id)  # actor_id must match principal_id
+
 # Trust hardening (Plan 008)
 sub = Regista(dsn, project, hmac_key_path, strict_roles=True)  # reject unregistered actors
 # Env-var key injection: REGISTA_HMAC_KEY_<KEY_ID> overrides file secrets
@@ -214,6 +239,7 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 - Hooks dead-letter after max retries and emit `hook_dead_lettered`; replay handles both `escalated` and `hook_dead_lettered`
 - `strict_roles=True` requires all actors to have registered roles before transitioning; `prompt`-source roles are rejected (Plan 008 WS-1)
 - `start_maintenance()` subsumes `start_hook_consumer()` — calling both is unnecessary but harmless
+- Principal key registry (Plan 026): `SELECT FOR UPDATE` prevents concurrent-registration race; a `UNIQUE` partial index on `(principal_id) WHERE status = 'active'` enforces one-active-key at the DB level; rotation is atomic (supersede + insert in one transaction); `verify_binding` raises `ACTOR_SIGNER_MISMATCH` if `actor_id != principal_id`, `UNREGISTERED_SIGNER` if no active key exists
 
 ## Key Design Decisions
 
@@ -236,7 +262,7 @@ Production readiness additions: migration packaging for pip installs (importlib.
 Phase 3 additions: FR-24 (actor → allowed_roles enforcement, closes BR-09), FR-25 (continue-on-revoked replay flag), FR-26 (update_not_before API), FR-27 (custom field validation at transition time). Migration `005_actor_roles.sql` adds the actor_roles table. ReplayReport gains `warnings` field.
 
 Plans 002-004 additions:
-- **Plan 002 (Admin CLI):** `regista` console entry point (`src/regista/_cli.py`). Commands: `workflow validate`, `work-item show/list`, `events show/tail`, `replay`, `schema init/status`, `hooks dead-letter list/requeue`, `actor-roles list`, `recurrence list/due/fire/cancel/update`. No DB required for `workflow validate`. Structlog routes to stderr in CLI mode.
+- **Plan 002 (Admin CLI):** `regista` console entry point (`src/regista/_cli.py`). Commands: `workflow validate`, `work-item show/list`, `events show/tail`, `replay`, `schema init/status`, `hooks dead-letter list/requeue`, `actor-roles list`, `recurrence list/due/fire/cancel/update`. Plan 025 adds: `version --json`, `doctor --json`, `config show`, `secrets --list-providers`. Plan 026 adds: `principal list/register/revoke`. No DB required for `workflow validate` or `version`. Structlog routes to stderr in CLI mode.
 - **Plan 003 (Recurring work-items, FR-28):** New `recurrence_rules` table (migration 011). Schedule kinds: `interval` and `rrule`. Public API on `Regista` and `InMemoryRegista`: `register_recurrence_rule`, `list_recurrence_rules`, `due_recurrences`, `fire_recurrence`, `cancel_recurrence_rule`, `update_recurrence_rule`. New error codes: `RECURRENCE_RULE_NOT_FOUND`, `RECURRENCE_RULE_EXHAUSTED`, `RECURRENCE_SCHEDULE_INVALID`, `RECURRENCE_TEMPLATE_INVALID`. Dependency: `python-dateutil`.
 - **Plan 004 (Workflow composition, FR-29):** `_workflow_compose.py` with `resolve_includes`, `_deep_merge`, and `compose_workflow`. `extends:` field added to JSON Schema. `parse_file()` now resolves composition. Keyed list merge by `(name, from)` for transitions, `__append`/`__remove` list modifiers. New error code `WORKFLOW_COMPOSE_ERROR`.
 
@@ -262,6 +288,15 @@ RFC-062: Single-source-of-truth backend contract via `_contract.py` — 20 pure 
 BC-139: `query_work_items` accepts `custom_field_filters: dict[str, object] | None` for equality filtering on custom field values (AND semantics). Postgres uses JSONB containment (`@>`) with a GIN index. InMemory uses equivalent dict matching. Migration `009_custom_fields_gin.sql` adds the index. Unknown filter keys produce empty results, not errors.
 
 BC-171: `work_item_ref` custom fields now accept `target_work_item_types: [typeA, typeB]` (plural list) in addition to the existing singular `target_work_item_type`. The plural form constrains the referent to one of an enumerated set; each listed type must exist in the workflow. Specifying both singular and plural is rejected at registration (by JSON Schema first, then `_validate_semantics` as defense-in-depth). Omitting both retains the existing behavior: UUID format + existence validation only, no type enforcement.
+
+Plan 025 additions (Suite cohesion spine):
+- **Plan 025 WI-1.1 (Config resolver):** `_config.py` with `resolve()` implementing layered resolution: process env → per-user `~/.config/agent-suite/suite.env` → system `/etc/agent-suite/suite.env` → default. Canonical vars: `REGISTA_DSN`, `REGISTA_KEY_PATH`, `REGISTA_REQUIRE_SSL`, `REGISTA_PROJECT`. Deprecated alias: `REGISTA_HMAC_KEY_PATH` → `REGISTA_KEY_PATH` (one-release). `suite.env.example` ships with placeholders. `docs/suite-config.md` documents the vocabulary + precedence + alias policy.
+- **Plan 025 WI-1.2 (Secret backend resolver):** `_secrets.py` with `resolve(ref)` supporting `file:`, `env:`, `literal:`, `vault:` (HashiCorp KV v2), `azure:` (AKV) providers. Pluggable via `register_provider()`. Vault requires `[vault]` extra (`hvac`); Azure requires `[azure]` extra (`azure-identity`, `azure-keyvault-secrets`). Auto-detection of prefix; bare paths default to `file:`.
+- **Plan 025 WI-3.1 (Doctor JSON contract):** `_doctor.py` with `run_doctor()` emitting `{component, version, reachable, schema_version, projects, checks}` shape. CLI: `regista doctor --json`. Check statuses: `ok`/`warn`/`fail`/`skip`. Unreachable DSN is a clean fail, not a traceback. Error details are sanitized (no credentials leaked). DSN passwords masked in `config show`.
+- **Plan 025 WI-4.1 (Version surface):** `_version_info.py` with `versions()` returning `VersionInfo` (frozen dataclass): `library_version`, `schema_version` (38), `canonical_workflow_version`, `envelope_version` (4), `canonical_workflow_hash`, `available_signing_schemes`. CLI: `regista version --json`. API: `regista.versions()`. Schema version is the highest migration number; envelope version is the signed-envelope format version. `docs/suite-config.md` documents the shape a `SUITE.lock` records.
+
+Plan 026 additions (Per-actor Ed25519 non-repudiation):
+- **Plan 026 WI-1.1 (Principal→public-key registry):** `_principal_keys.py` with register/rotate/revoke/list/get_active/verify_binding. Migration `038_principal_keys.sql` creates `principal_keys` table with `UNIQUE` partial index enforcing one active key per principal. `PrincipalKeyOps` facade (`sub.principals.register/list/get_active/rotate/revoke/verify_binding`). CLI: `regista principal list/register/revoke`. Row-level locking (`SELECT FOR UPDATE`) prevents concurrent-registration race. Rotation is atomic (single transaction). Error codes: `PRINCIPAL_KEY_NOT_FOUND`, `PRINCIPAL_KEY_ALREADY_EXISTS`, `ACTOR_SIGNER_MISMATCH`, `UNREGISTERED_SIGNER`.
 
 ## Conventions
 
