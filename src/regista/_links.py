@@ -344,7 +344,11 @@ def list_links(
             continue
         links.append(
             Link(
-                link_id=uuid.UUID(payload["link_id"]) if payload.get("link_id") else row["event_id"],
+                link_id=(
+                    uuid.UUID(payload["link_id"])
+                    if payload.get("link_id")
+                    else row["event_id"]
+                ),
                 from_work_item_id=work_item_id,
                 to_work_item_id=uuid.UUID(payload["to_work_item_id"]),
                 link_type=payload["link_type"],
