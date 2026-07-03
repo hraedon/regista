@@ -937,6 +937,85 @@ def cmd_principal_revoke(args):
         sub.close()
 
 
+def cmd_provision(args):
+    from regista._config import resolve as resolve_config
+    from regista._provision import provision as _provision
+
+    cfg = resolve_config()
+    dsn = args.dsn or cfg.dsn
+    if not dsn:
+        print("Missing required config: --dsn or REGISTA_DSN", file=sys.stderr)
+        sys.exit(2)
+    projects = args.projects or ([cfg.project] if cfg.project else [])
+    if not projects:
+        print("Missing required: --project or REGISTA_PROJECT", file=sys.stderr)
+        sys.exit(2)
+
+    results = _provision(dsn, projects, dry_run=args.dry_run)
+    if args.json:
+        _dump_json(results)
+    else:
+        for r in results:
+            if r.error:
+                print(f"[FAIL] {r.project}: {r.error}")
+            else:
+                actions = []
+                if r.schema_created:
+                    actions.append("schema created")
+                else:
+                    actions.append("schema exists")
+                if r.migrations_applied:
+                    actions.append(f"migrations: {r.migrations_applied}")
+                if r.service_role_created:
+                    actions.append("service role created")
+                else:
+                    actions.append("service role exists")
+                print(f"[OK] {r.project}: {', '.join(actions)}")
+        if any(r.error for r in results):
+            sys.exit(1)
+
+
+def cmd_provision_principal(args):
+    from regista._config import resolve as resolve_config
+    from regista._provision import provision_principal as _provision_principal
+
+    cfg = resolve_config()
+    dsn = args.dsn or cfg.dsn
+    if not dsn:
+        print("Missing required config: --dsn or REGISTA_DSN", file=sys.stderr)
+        sys.exit(2)
+    project = args.project or cfg.project
+    if not project:
+        print("Missing required: --project or REGISTA_PROJECT", file=sys.stderr)
+        sys.exit(2)
+    key_path = args.hmac_key_path or cfg.key_path
+
+    result = _provision_principal(
+        dsn,
+        project,
+        args.principal,
+        hmac_key_path=key_path,
+        private_key_dir=args.private_key_dir,
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        _dump_json(result)
+    else:
+        if result.already_existed:
+            print(f"Principal {result.principal_id} already has an active key:")
+            print(f"  key_id:      {result.key_id}")
+            print(f"  fingerprint: {result.fingerprint}")
+        elif result.error:
+            print(f"[FAIL] {result.error}")
+            sys.exit(1)
+        else:
+            print(f"Provisioned principal {result.principal_id}:")
+            print(f"  key_id:      {result.key_id}")
+            print(f"  fingerprint: {result.fingerprint}")
+            print(f"  private key stored: {result.private_key_stored}")
+            print(f"  public key registered: {result.public_key_registered}")
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="regista", description="Regista admin CLI")
@@ -1155,6 +1234,29 @@ def main(argv=None):
     pr_revoke.add_argument("--key-id", required=True, help="Key ID to revoke")
     pr_revoke.add_argument("--reason", help="Revocation reason")
     pr_revoke.set_defaults(func=cmd_principal_revoke)
+
+    # provision (Plan 025 WI-2.1)
+    prov_parser = subs.add_parser("provision", help="Provision project schemas and service roles")
+    prov_parser.add_argument(
+        "--project", action="append", dest="projects",
+        help="Project slug (can be repeated for multiple projects)",
+    )
+    prov_parser.add_argument("--dry-run", action="store_true", help="Print plan without writing")
+    prov_parser.add_argument("--json", action="store_true", help="JSON output")
+    prov_parser.set_defaults(func=cmd_provision)
+
+    # provision-principal (Plan 025 WI-2.1 + Plan 026)
+    prov_princ_parser = subs.add_parser(
+        "provision-principal", help="Issue and register a per-principal Ed25519 key",
+    )
+    prov_princ_parser.add_argument("--principal", required=True, help="Principal ID")
+    prov_princ_parser.add_argument("--project", help="Project slug (or REGISTA_PROJECT)")
+    prov_princ_parser.add_argument("--private-key-dir", help="Directory for private key files")
+    prov_princ_parser.add_argument(
+        "--dry-run", action="store_true", help="Print plan without writing",
+    )
+    prov_princ_parser.add_argument("--json", action="store_true", help="JSON output")
+    prov_princ_parser.set_defaults(func=cmd_provision_principal)
 
     args = parser.parse_args(argv)
 

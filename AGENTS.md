@@ -73,6 +73,7 @@ src/regista/
   _version_info.py     # Version surface: library/schema/workflow/envelope versions (Plan 025)
   _doctor.py           # Health check JSON contract: `regista doctor --json` (Plan 025)
   _principal_keys.py   # Principal→public-key registry: register/rotate/revoke (Plan 026)
+  _provision.py        # Schema + service-role + principal-key provisioning (Plan 025 WI-2.1)
   _vendor/             # Vendored dependencies
     __init__.py
     rfc8785.py         # Vendored rfc8785 0.1.4 (Plan 008 WS-3)
@@ -221,6 +222,14 @@ sub.principals.rotate(principal_id, new_public_key, scheme="ed25519", *, registe
 sub.principals.revoke(principal_id, key_id, *, reason="unspecified")
 sub.principals.verify_binding(principal_id, actor_id)  # actor_id must match principal_id
 
+# Provisioning (Plan 025 WI-2.1)
+from regista._provision import provision, provision_principal
+provision(dsn, ["project1", "project2"], dry_run=False)  # create schemas + service roles
+provision_principal(dsn, project, "alice", hmac_key_path=key_path)  # issue+register Ed25519 keypair
+
+# Signer binding verification (Plan 026 WI-1.2)
+sub.verify_event_principal_binding(event)  # -> dict: verified, principal_id, key_id, error
+
 # Trust hardening (Plan 008)
 sub = Regista(dsn, project, hmac_key_path, strict_roles=True)  # reject unregistered actors
 # Env-var key injection: REGISTA_HMAC_KEY_<KEY_ID> overrides file secrets
@@ -240,6 +249,9 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 - `strict_roles=True` requires all actors to have registered roles before transitioning; `prompt`-source roles are rejected (Plan 008 WS-1)
 - `start_maintenance()` subsumes `start_hook_consumer()` — calling both is unnecessary but harmless
 - Principal key registry (Plan 026): `SELECT FOR UPDATE` prevents concurrent-registration race; a `UNIQUE` partial index on `(principal_id) WHERE status = 'active'` enforces one-active-key at the DB level; rotation is atomic (supersede + insert in one transaction); `verify_binding` raises `ACTOR_SIGNER_MISMATCH` if `actor_id != principal_id`, `UNREGISTERED_SIGNER` if no active key exists
+- Signer binding (Plan 026 WI-1.2): `verify_event_principal_binding` looks up the active key for the event's `actor_id` in the registry, verifies the signature under that public key, and confirms actor↔signer equality. Returns `unregistered-signer` if no active key, `scheme-mismatch` if event scheme differs from registered key scheme, `signature-verification-failed` if the signature is invalid
+- Per-principal signing (Plan 026 WI-2.1): key file entries support `secret_ref` field (e.g. `"secret_ref": "file:/path/to/key"`) resolved via `regista._secrets.resolve()`; the private key is loaded from the secret backend, not embedded in the key file. `provision-principal` issues an Ed25519 keypair, stores the private key via the secret backend, registers the public key in the principal_keys registry, and adds a key file entry with `secret_ref`
+- Provisioning (Plan 025 WI-2.1): `regista provision` creates per-project schemas, runs migrations, and creates scoped service roles (`regista_<slug>`) with privileges only on their own schema. `regista provision-principal` issues and registers Ed25519 keypairs. Both are idempotent; `--dry-run` writes nothing
 
 ## Key Design Decisions
 

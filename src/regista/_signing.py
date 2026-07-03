@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 
 
@@ -445,4 +447,65 @@ def verify_event_with_public_key(event, public_key: bytes) -> bool:
         prev_global_event_hash=event.prev_global_event_hash,
         entity_kind=event.entity_kind,
         hash_alg=event.hash_alg,
+    )
+
+
+@dataclass(frozen=True)
+class PrincipalVerificationResult:
+    verified: bool
+    principal_id: str | None
+    key_id: str | None
+    error: str | None
+
+
+def verify_event_with_principal_binding(
+    event,
+    mgr,
+) -> PrincipalVerificationResult:
+    from ._principal_keys import get_active_key
+
+    actor_id = event.actor_id
+
+    try:
+        principal_entry = get_active_key(mgr, actor_id)
+    except RegistaError as e:
+        if e.code == ErrorCode.UNREGISTERED_SIGNER:
+            return PrincipalVerificationResult(
+                verified=False,
+                principal_id=None,
+                key_id=None,
+                error=f"unregistered-signer: no active key for actor {actor_id!r}",
+            )
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=None,
+            key_id=None,
+            error=str(e),
+        )
+
+    if principal_entry.scheme != event.scheme_id:
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=principal_entry.principal_id,
+            key_id=principal_entry.key_id,
+            error=(
+                f"scheme-mismatch: event scheme_id={event.scheme_id!r} "
+                f"but registered key scheme={principal_entry.scheme!r}"
+            ),
+        )
+
+    sig_ok = verify_event_with_public_key(event, principal_entry.public_key)
+    if not sig_ok:
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=principal_entry.principal_id,
+            key_id=principal_entry.key_id,
+            error="signature-verification-failed: signature invalid under registered public key",
+        )
+
+    return PrincipalVerificationResult(
+        verified=True,
+        principal_id=principal_entry.principal_id,
+        key_id=principal_entry.key_id,
+        error=None,
     )

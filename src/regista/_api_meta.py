@@ -53,6 +53,34 @@ class MetaApiMixin(_RegistaBase):
                 public_key = key_entry.secret
         return verify_event_with_public_key(event, public_key)
 
+    def verify_event_principal_binding(
+        self, event: Event,
+    ) -> dict[str, object]:
+        """Verify an event's signature against the principal key registry.
+
+        Looks up the active public key for the event's ``actor_id`` in the
+        principal_keys registry, verifies the signature under that key, and
+        confirms the actor↔signer binding. This is the non-repudiation
+        verification path (Plan 026 WI-1.2).
+
+        Args:
+            event: The event to verify.
+
+        Returns:
+            Dict with ``verified`` (bool), ``principal_id`` (str|None),
+            ``key_id`` (str|None), and ``error`` (str|None).
+        """
+        from ._signing import verify_event_with_principal_binding
+
+        self._require_open()
+        result = verify_event_with_principal_binding(event, self._mgr)
+        return {
+            "verified": result.verified,
+            "principal_id": result.principal_id,
+            "key_id": result.key_id,
+            "error": result.error,
+        }
+
     @staticmethod
     def validate_actor_metadata(
         event: Event,

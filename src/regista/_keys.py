@@ -136,6 +136,11 @@ class KeySet:
             if env_val is not None:
                 secret = env_val.encode("utf-8")
                 key_sources[key_id] = "env"
+            elif "secret_ref" in entry:
+                from ._secrets import resolve as _resolve_secret
+
+                secret = _resolve_secret(entry["secret_ref"])
+                key_sources[key_id] = f"secret_ref:{entry['secret_ref'].split(':')[0]}"
             else:
                 secret = entry["secret"]
                 encoding = entry.get("encoding", "utf8")
