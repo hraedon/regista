@@ -103,7 +103,7 @@ class TestSidecarEntityKindValidation:
             json={
                 "work_item_id": work_item_id,
                 "transition": "note",
-                "entity_kind": "session",
+                "entity_kind": "bogus_kind",
             },
             headers=auth_headers,
         )
@@ -140,7 +140,7 @@ class TestCoreApiEntityKindValidation:
                 work_item_id=uuid.UUID(work_item_id),
                 actor_id="test-agent",
                 transition="note",
-                entity_kind="session",
+                entity_kind="bogus_kind",
             )
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -168,7 +168,7 @@ class TestInMemoryEntityKindValidation:
                 work_item_id=wi.work_item_id,
                 actor_id="test-agent",
                 transition="note",
-                entity_kind="session",
+                entity_kind="bogus_kind",
             )
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
