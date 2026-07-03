@@ -176,3 +176,50 @@ class TestKeySetSecretRef:
         ks = KeySet(str(key_file))
         entry = ks.get_key("env-key")
         assert entry.secret == b"env-secret-value"
+
+
+class TestKeyRotationHistoricalVerification:
+    def test_rotated_key_still_verifies_old_events(self, principal_setup):
+        sub, principal_id, _key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "rotation-test"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert len(events) > 0
+        old_event = events[0]
+
+        result_before = sub.verify_event_principal_binding(old_event)
+        assert result_before["verified"] is True
+
+        from regista._principal_keys import rotate_principal_key
+        _new_sk, new_vk = _generate_ed25519_keypair()
+        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+
+        result_after = sub.verify_event_principal_binding(old_event)
+        assert result_after["verified"] is True
+        assert result_after["key_id"] == _key_id
+
+
+class TestPathTraversal:
+    def test_provision_principal_rejects_path_traversal(self, tmp_path):
+        from regista._provision import provision_principal
+        project = f"prov_{uuid.uuid4().hex[:8]}"
+        from regista.testing import drop_project_schema
+        try:
+            from regista._provision import provision as _prov
+            _prov(DSN, [project])
+            with pytest.raises(RegistaError) as exc_info:
+                provision_principal(
+                    DSN, project, "../../../etc/cron.d/evil",
+                    hmac_key_path=str(tmp_path / "keys.json"),
+                )
+            assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+        finally:
+            drop_project_schema(DSN, project)
+            import psycopg
+            with psycopg.connect(DSN, autocommit=True) as conn:
+                conn.execute(f'DROP ROLE IF EXISTS "regista_{project}"')

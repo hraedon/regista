@@ -139,8 +139,17 @@ class KeySet:
             elif "secret_ref" in entry:
                 from ._secrets import resolve as _resolve_secret
 
-                secret = _resolve_secret(entry["secret_ref"])
-                key_sources[key_id] = f"secret_ref:{entry['secret_ref'].split(':')[0]}"
+                try:
+                    secret = _resolve_secret(entry["secret_ref"])
+                except RegistaError:
+                    raise
+                except Exception as e:
+                    raise RegistaError(
+                        ErrorCode.KEY_LOAD_ERROR,
+                        f"Failed to resolve secret_ref for key {key_id!r}: "
+                        f"{type(e).__name__}: {e}",
+                    ) from e
+                key_sources[key_id] = f"secret_ref:{entry['secret_ref'].split(':', 1)[0]}"
             else:
                 secret = entry["secret"]
                 encoding = entry.get("encoding", "utf8")
@@ -197,7 +206,8 @@ class KeySet:
             self._last_mtime = mtime
             self._last_check = time.monotonic()
 
-        log.warning("keys.plaintext_at_rest", path=str(self._path))
+        if any(s == "file" for s in key_sources.values()):
+            log.warning("keys.plaintext_at_rest", path=str(self._path))
         log.info(
             "keys_loaded",
             key_count=len(new_keys),

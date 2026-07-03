@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 
 
@@ -462,50 +461,59 @@ def verify_event_with_principal_binding(
     event,
     mgr,
 ) -> PrincipalVerificationResult:
-    from ._principal_keys import get_active_key
+    from ._principal_keys import list_principal_keys
 
     actor_id = event.actor_id
 
-    try:
-        principal_entry = get_active_key(mgr, actor_id)
-    except RegistaError as e:
-        if e.code == ErrorCode.UNREGISTERED_SIGNER:
-            return PrincipalVerificationResult(
-                verified=False,
-                principal_id=None,
-                key_id=None,
-                error=f"unregistered-signer: no active key for actor {actor_id!r}",
-            )
+    entries = list_principal_keys(mgr, actor_id, status=None)
+    if not entries:
         return PrincipalVerificationResult(
             verified=False,
             principal_id=None,
             key_id=None,
-            error=str(e),
+            error=f"unregistered-signer: no key for actor {actor_id!r}",
         )
 
-    if principal_entry.scheme != event.scheme_id:
+    non_revoked = [e for e in entries if e.status != "revoked"]
+    if not non_revoked:
         return PrincipalVerificationResult(
             verified=False,
-            principal_id=principal_entry.principal_id,
-            key_id=principal_entry.key_id,
+            principal_id=actor_id,
+            key_id=None,
+            error=f"key-revoked: all keys for principal {actor_id!r} have been revoked",
+        )
+
+    scheme_mismatch = False
+    for entry in non_revoked:
+        if entry.scheme != event.scheme_id:
+            scheme_mismatch = True
+            continue
+
+        sig_ok = verify_event_with_public_key(event, entry.public_key)
+        if sig_ok:
+            return PrincipalVerificationResult(
+                verified=True,
+                principal_id=entry.principal_id,
+                key_id=entry.key_id,
+                error=None,
+            )
+
+    if scheme_mismatch and all(
+        e.scheme != event.scheme_id for e in non_revoked
+    ):
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=non_revoked[0].principal_id,
+            key_id=non_revoked[0].key_id,
             error=(
                 f"scheme-mismatch: event scheme_id={event.scheme_id!r} "
-                f"but registered key scheme={principal_entry.scheme!r}"
+                f"but no registered key uses that scheme for principal {actor_id!r}"
             ),
         )
 
-    sig_ok = verify_event_with_public_key(event, principal_entry.public_key)
-    if not sig_ok:
-        return PrincipalVerificationResult(
-            verified=False,
-            principal_id=principal_entry.principal_id,
-            key_id=principal_entry.key_id,
-            error="signature-verification-failed: signature invalid under registered public key",
-        )
-
     return PrincipalVerificationResult(
-        verified=True,
-        principal_id=principal_entry.principal_id,
-        key_id=principal_entry.key_id,
-        error=None,
+        verified=False,
+        principal_id=non_revoked[0].principal_id,
+        key_id=non_revoked[0].key_id,
+        error="signature-verification-failed: signature invalid under all registered public keys",
     )

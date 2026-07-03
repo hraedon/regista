@@ -241,6 +241,22 @@ def _generate_ed25519_keypair() -> tuple[bytes, bytes]:
     return private_key, public_key
 
 
+def _validate_principal_id(principal_id: str) -> str:
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", principal_id):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"Invalid principal_id {principal_id!r}: must be alphanumeric, "
+            "dot, hyphen, or underscore only",
+        )
+    if len(principal_id) > 256:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "principal_id must be at most 256 characters",
+        )
+    return principal_id
+
+
 def provision_principal(
     dsn: str,
     project: str,
@@ -256,6 +272,7 @@ def provision_principal(
             ErrorCode.INVALID_ARGUMENT,
             "principal_id is required",
         )
+    _validate_principal_id(principal_id)
     if not hmac_key_path:
         from ._config import resolve as resolve_config
         cfg = resolve_config()
@@ -305,12 +322,17 @@ def provision_principal(
             else Path(hmac_key_path).parent / "principals"
         )
         key_dir.mkdir(parents=True, exist_ok=True)
+        import os as _os
+
         priv_key_path = key_dir / f"{principal_id}_ed25519.key"
-        priv_key_path.write_bytes(private_key)
+        fd = _os.open(
+            str(priv_key_path),
+            _os.O_CREAT | _os.O_WRONLY | _os.O_TRUNC, 0o600,
+        )
         try:
-            priv_key_path.chmod(0o600)
-        except OSError:
-            pass
+            _os.write(fd, private_key)
+        finally:
+            _os.close(fd)
 
         entry = register_principal_key(
             mgr,
@@ -349,6 +371,7 @@ def _update_key_file(
     private_key_path: str,
 ) -> None:
     import base64
+    import os as _os
 
     path = Path(key_file_path)
     if not path.is_file():
@@ -384,4 +407,7 @@ def _update_key_file(
         "status": "active",
     })
     data["keys"] = keys
-    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    _os.replace(str(tmp_path), str(path))
