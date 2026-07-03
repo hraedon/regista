@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 from regista._errors import RegistaError
@@ -54,7 +51,7 @@ class TestLiteralProvider:
 class TestResolveStr:
     def test_utf8_decode(self, tmp_path):
         key_file = tmp_path / "key.txt"
-        key_file.write_bytes("hello-world".encode("utf-8"))
+        key_file.write_bytes(b"hello-world")
         result = resolve_str(f"file:{key_file}")
         assert result == "hello-world"
 

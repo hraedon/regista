@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from regista._doctor import DoctorCheck, DoctorReport, run_doctor
@@ -65,10 +63,11 @@ class TestRunDoctor:
         assert report.schema_version == SCHEMA_VERSION
 
     def test_with_project_checks_schema(self):
-        from tests.conftest import DSN, KEY_PATH
+        import uuid
+
         from regista import Regista
         from regista.testing import drop_project_schema
-        import uuid
+        from tests.conftest import DSN, KEY_PATH
 
         project = f"test_doc_{uuid.uuid4().hex[:8]}"
         Regista.create_project(DSN, project, KEY_PATH)

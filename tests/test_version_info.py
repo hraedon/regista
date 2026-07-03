@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-
-import pytest
 
 from regista._version_info import (
     ENVELOPE_VERSION,
@@ -76,9 +72,10 @@ class TestVersions:
 
 class TestCLIVersion:
     def test_version_json(self):
-        from regista._cli import main
-        import io
         import contextlib
+        import io
+
+        from regista._cli import main
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             try:
@@ -91,9 +88,10 @@ class TestCLIVersion:
         assert "schema_version" in data
 
     def test_version_text(self):
-        from regista._cli import main
-        import io
         import contextlib
+        import io
+
+        from regista._cli import main
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             try:

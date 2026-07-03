@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
-import uuid
 
 import pytest
 
 from regista._errors import RegistaError
 from regista._principal_keys import (
-    PrincipalKeyEntry,
     get_active_key,
     list_principal_keys,
     register_principal_key,
@@ -38,7 +34,7 @@ def principal_keys(regista_instance):
 
 class TestRegisterPrincipalKey:
     def test_register_returns_entry(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry = register_principal_key(
             principal_keys._mgr,
             "alice@example.com",
@@ -54,7 +50,7 @@ class TestRegisterPrincipalKey:
         assert entry.fingerprint.startswith("ed25519:sha256:")
 
     def test_register_idempotent_same_key_id(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry1 = register_principal_key(
             principal_keys._mgr,
             "bob@example.com",
@@ -73,7 +69,7 @@ class TestRegisterPrincipalKey:
         assert entry2.status == "active"
 
     def test_register_new_key_supersedes_old(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
         entry1 = register_principal_key(
             principal_keys._mgr,
             "carol@example.com",
@@ -82,7 +78,7 @@ class TestRegisterPrincipalKey:
         )
         assert entry1.status == "active"
 
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         entry2 = register_principal_key(
             principal_keys._mgr,
             "carol@example.com",
@@ -100,7 +96,7 @@ class TestRegisterPrincipalKey:
         assert statuses[entry2.key_id] == "active"
 
     def test_register_empty_principal_raises(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
             register_principal_key(
                 principal_keys._mgr,
@@ -123,8 +119,8 @@ class TestRegisterPrincipalKey:
 
 class TestListPrincipalKeys:
     def test_list_all(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         register_principal_key(principal_keys._mgr, "p1", bytes(vk1), "ed25519")
         register_principal_key(principal_keys._mgr, "p2", bytes(vk2), "ed25519")
         all_keys = list_principal_keys(principal_keys._mgr)
@@ -133,16 +129,16 @@ class TestListPrincipalKeys:
         assert "p2" in principals
 
     def test_list_by_principal(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         register_principal_key(principal_keys._mgr, "p3", bytes(vk1), "ed25519")
         register_principal_key(principal_keys._mgr, "p4", bytes(vk2), "ed25519")
         keys = list_principal_keys(principal_keys._mgr, "p3")
         assert all(k.principal_id == "p3" for k in keys)
 
     def test_list_by_status(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         entry1 = register_principal_key(principal_keys._mgr, "p5", bytes(vk1), "ed25519")
         entry2 = register_principal_key(principal_keys._mgr, "p5", bytes(vk2), "ed25519")
         active = list_principal_keys(principal_keys._mgr, "p5", status="active")
@@ -155,7 +151,7 @@ class TestListPrincipalKeys:
 
 class TestGetActiveKey:
     def test_returns_active_key(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         register_principal_key(principal_keys._mgr, "p6", bytes(vk), "ed25519")
         active = get_active_key(principal_keys._mgr, "p6")
         assert active.principal_id == "p6"
@@ -170,9 +166,9 @@ class TestGetActiveKey:
 
 class TestRotatePrincipalKey:
     def test_rotation_supersedes_old(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
         entry1 = register_principal_key(principal_keys._mgr, "p7", bytes(vk1), "ed25519")
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         entry2 = rotate_principal_key(
             principal_keys._mgr, "p7", bytes(vk2), "ed25519",
         )
@@ -185,9 +181,9 @@ class TestRotatePrincipalKey:
         assert old.valid_to is not None
 
     def test_rotation_keeps_old_key_for_history(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
-        entry1 = register_principal_key(principal_keys._mgr, "p8", bytes(vk1), "ed25519")
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
+        register_principal_key(principal_keys._mgr, "p8", bytes(vk1), "ed25519")
+        _sk2, vk2 = _generate_ed25519_keypair()
         rotate_principal_key(principal_keys._mgr, "p8", bytes(vk2), "ed25519")
         all_keys = list_principal_keys(principal_keys._mgr, "p8")
         assert len(all_keys) == 2
@@ -195,7 +191,7 @@ class TestRotatePrincipalKey:
 
 class TestRevokePrincipalKey:
     def test_revoke_sets_status(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry = register_principal_key(principal_keys._mgr, "p9", bytes(vk), "ed25519")
         revoked = revoke_principal_key(
             principal_keys._mgr, "p9", entry.key_id, reason="compromised",
@@ -205,7 +201,7 @@ class TestRevokePrincipalKey:
         assert revoked.revoked_at is not None
 
     def test_revoke_idempotent(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry = register_principal_key(principal_keys._mgr, "p10", bytes(vk), "ed25519")
         revoke_principal_key(principal_keys._mgr, "p10", entry.key_id)
         revoked2 = revoke_principal_key(principal_keys._mgr, "p10", entry.key_id)
@@ -220,14 +216,14 @@ class TestRevokePrincipalKey:
 
 class TestVerifyPrincipalBinding:
     def test_matching_principal_succeeds(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         register_principal_key(principal_keys._mgr, "p11", bytes(vk), "ed25519")
         entry = verify_principal_binding(principal_keys._mgr, "p11", "p11")
         assert entry.status == "active"
 
     def test_mismatch_raises(self, principal_keys):
         from regista._errors import ErrorCode
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         register_principal_key(principal_keys._mgr, "p12", bytes(vk), "ed25519")
         with pytest.raises(RegistaError) as exc_info:
             verify_principal_binding(principal_keys._mgr, "p12", "impostor")
@@ -236,7 +232,7 @@ class TestVerifyPrincipalBinding:
 
 class TestFingerprint:
     def test_fingerprint_matches_sha256(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         pub = bytes(vk)
         entry = register_principal_key(principal_keys._mgr, "p13", pub, "ed25519")
         expected = f"ed25519:sha256:{hashlib.sha256(pub).hexdigest()}"
@@ -245,7 +241,7 @@ class TestFingerprint:
 
 class TestToDict:
     def test_to_dict_shape(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry = register_principal_key(principal_keys._mgr, "p14", bytes(vk), "ed25519")
         d = entry.to_dict()
         assert d["principal_id"] == "p14"
@@ -260,7 +256,7 @@ class TestToDict:
 
 class TestFacadeAPI:
     def test_register_via_facade(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         result = principal_keys.principals.register(
             "p15", bytes(vk), "ed25519",
         )
@@ -268,26 +264,26 @@ class TestFacadeAPI:
         assert result["status"] == "active"
 
     def test_list_via_facade(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         principal_keys.principals.register("p16", bytes(vk), "ed25519")
         result = principal_keys.principals.list()
         assert any(r["principal_id"] == "p16" for r in result)
 
     def test_rotate_via_facade(self, principal_keys):
-        sk1, vk1 = _generate_ed25519_keypair()
+        _sk1, vk1 = _generate_ed25519_keypair()
         principal_keys.principals.register("p17", bytes(vk1), "ed25519")
-        sk2, vk2 = _generate_ed25519_keypair()
+        _sk2, vk2 = _generate_ed25519_keypair()
         result = principal_keys.principals.rotate("p17", bytes(vk2), "ed25519")
         assert result["status"] == "active"
 
     def test_revoke_via_facade(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         entry = principal_keys.principals.register("p18", bytes(vk), "ed25519")
         result = principal_keys.principals.revoke("p18", entry["key_id"])
         assert result["status"] == "revoked"
 
     def test_verify_binding_via_facade(self, principal_keys):
-        sk, vk = _generate_ed25519_keypair()
+        _sk, vk = _generate_ed25519_keypair()
         principal_keys.principals.register("p19", bytes(vk), "ed25519")
         result = principal_keys.principals.verify_binding("p19", "p19")
         assert result["status"] == "active"
