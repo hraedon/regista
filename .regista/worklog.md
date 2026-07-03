@@ -4,6 +4,26 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-03 — Session 82: Plan 025 WI-2.1 (provision) + Plan 026 WI-1.2/WI-2.1 (signer binding)
+
+**Focus:** Implement the two highest-priority work items: B1 (provisioning CLI) and B2 (per-principal signing + signer binding verification).
+
+**Context:** Previous agent (Session 81, commit c6bfb4b) shipped Plan 025 (config, secrets, doctor, version) and Plan 026 WI-1.1 (principal key registry). The sidecar error code mapping test was failing and 45 ruff lint errors were uncommitted. B1 and B2 were the gated work items blocking every consumer's adoption.
+
+**Delivered:**
+- Fixed previous agent's commit: added 5 missing ErrorCode mappings in `sidecar/errors.py`, fixed 49 ruff lint errors (unused imports, unsorted blocks, unused variables). Commit `26469f8`.
+- **B1 (Plan 025 WI-2.1):** `_provision.py` with `provision()` (create schemas, run migrations, create scoped service roles with cross-schema denial) and `provision_principal()` (issue Ed25519 keypair, store private key, register public key, update key file with `secret_ref`). CLI commands `regista provision` and `regista provision-principal`. 9 tests.
+- **B2 (Plan 026 WI-1.2):** `verify_event_with_principal_binding()` in `_signing.py` — looks up all non-revoked keys for actor_id, verifies signature against each, handles rotation correctly. Named failure states: `unregistered-signer`, `scheme-mismatch`, `signature-verification-failed`, `key-revoked`. Wired into `MetaApiMixin.verify_event_principal_binding()`.
+- **B2 (Plan 026 WI-2.1):** `secret_ref` support in `KeySet._load()` — key file entries can reference `file:`, `env:`, `vault:`, `azure:`, `literal:` backends instead of embedding raw key material. Commit `3613d95`.
+- **Adversarial review (Nemotron 3 Ultra):** Found 6 critical + 8 high issues. Fixed: private key permissions via `os.open(0o600)`, key rotation historical verification, path traversal prevention, secret resolution error wrapping, atomic key file write, `plaintext_at_rest` warning gating. Commit `8758aaa`.
+- Updated AGENTS.md with provision/signer-binding API docs.
+
+**Test results:** 1,466 passed, 1 skipped, 11 deselected. Ruff clean. Mypy strict 0 issues (82 source files).
+
+**Reflection:** `.regista/reflections/2026-07-03-glm-5-2.md` (ingested into agent-notes memory store as memory #363).
+
+---
+
 ## 2026-07-02 — Session 81: Mixin decomposition of __init__.py and _in_memory.py
 
 **Focus:** Decompose the two largest source files into domain-scoped mixin classes.
