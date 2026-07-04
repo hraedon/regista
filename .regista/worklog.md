@@ -4,6 +4,32 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-04 — Session 83: Plan 026 WI-2.2 (replay principal binding) + Plan 025 WI-4.3 (spec entity)
+
+**Focus:** Implement the two remaining work items: replay-time principal binding verification (WI-2.2) and spec.yaml as a signed founding artifact (WI-4.3).
+
+**Context:** Previous agent (Session 82, commit 8758aaa) shipped provision + signer binding. The uncommitted working tree had WI-2.2 replay principal binding changes in progress (11 files dirty). WI-4.3 was the last item in Plan 025.
+
+**Delivered:**
+- **WI-2.2 (replay principal binding):** `replay(verify_principal_binding=True)` verifies each event's signature against the `principal_keys` registry. Refactored `_verify_principal_binding_core` as shared function with `verify_fn` callback. Added `verify_event_dict_principal_binding` for dict-based (DB row) verification. Added `list_principal_keys_for_conn` for direct connection queries. CLI: `--verify-principal-binding`. Sidecar: `ReplayRequest.verify_principal_binding`. InMemory: no-op warning. 6 tests in `TestReplayPrincipalBinding`.
+- **WI-4.3 (spec entity):** `sign_spec()` stores spec.yaml as a signed `entity_kind="spec"` event — the project's founding artifact. Regista does not parse the spec. Unrecognized `spec_schema_version` is stored and flagged (non-fatal). `read_spec_events()` queries spec-entity events. Added "spec" to `_ALLOWED_ENTITY_KINDS`. CLI: `regista spec sign/events`. Sidecar: `POST /spec/sign` (uses token-derived actor_id), `GET /spec/events`. Replay: non-work-item entities skipped in orphan detection. Both Postgres and InMemory. 18 tests in `test_spec_entity.py`.
+- **Adversarial review (two independent reviewers — GLM + Kimi):** Found 3 critical + 7 high + 8 medium issues. Fixed before commit:
+  - H-1: Sidecar `sign_spec` used `actor_id` from request body → fixed to use authenticated token identity
+  - H-2: InMemory `read_spec_events` truncated at 10k events → fixed to iterate store directly
+  - C-1: `verify_event_dict_principal_binding` let exceptions escape and halt replay → wrapped in try/except
+  - M-1/M-2: CLI spec commands lacked `RegistaError` handling and read file before opening DB
+  - M-3: Sidecar GET /spec/events had `request: Request = None` default → fixed parameter ordering
+  - M-8: InMemory principal binding no-op logged at info → changed to warning
+  - H-6: Principal key status filter `!= "revoked"` too permissive → restricted to `active`+`superseded`
+- Commit `ea904fd`. All 95 targeted tests pass. mypy --strict clean. ruff clean.
+
+**Known gaps (filed in reflection, not blocking):**
+- `valid_from`/`valid_to` ignored in principal binding verification (Plan 026 WI-3.1 scope)
+- `psycopg.errors.UndefinedTable` catch silently disables binding if table dropped
+- No `key_id` binding check (key substitution risk)
+
+---
+
 ## 2026-07-03 — Session 82: Plan 025 WI-2.1 (provision) + Plan 026 WI-1.2/WI-2.1 (signer binding)
 
 **Focus:** Implement the two highest-priority work items: B1 (provisioning CLI) and B2 (per-principal signing + signer binding verification).
