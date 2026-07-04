@@ -329,15 +329,12 @@ class PostgresEventStore:
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
         if entity_kind != "work_item":
             entity_bytes = work_item_id.bytes
-            key1 = int.from_bytes(entity_bytes[:8], "big", signed=False)
-            key2 = int.from_bytes(entity_bytes[8:], "big", signed=False)
-            if key1 >= 2**63:
-                key1 -= 2**64
-            if key2 >= 2**63:
-                key2 -= 2**64
+            key = int.from_bytes(entity_bytes[:8], "big", signed=False)
+            if key >= 2**63:
+                key -= 2**64
             self._conn.execute(
-                "SELECT pg_advisory_xact_lock(%s, %s)",
-                [key1, key2],
+                "SELECT pg_advisory_xact_lock(%s)",
+                [key],
             )
             row = self._conn.execute(
                 "SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq "
