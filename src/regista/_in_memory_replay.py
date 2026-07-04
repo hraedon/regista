@@ -158,6 +158,7 @@ def in_memory_replay(
     key_set,
     *,
     continue_on_revoked: bool = False,
+    verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
     ok = 0
@@ -166,13 +167,30 @@ def in_memory_replay(
     warnings = 0
     scoped = work_item_id is not None
 
+    if verify_principal_binding:
+        log.warning(
+            "replay.in_memory_principal_binding_noop",
+            detail="InMemory backend has no principal_keys registry; "
+                   "verify_principal_binding is a no-op",
+        )
+
     if not scoped:
-        # Orphan-event detection: events whose work_item_id has no entry in work_items
         all_event_wi_ids = set(store.events.keys())
         wi_ids = set(work_items.keys())
         orphan_ids = all_event_wi_ids - wi_ids
         for orphan_id in orphan_ids:
             orphan_evts = sorted(store.events.get(orphan_id, []), key=lambda e: e.event_seq)
+            is_non_work_item = any(
+                e.entity_kind != "work_item" for e in orphan_evts
+            )
+            if is_non_work_item:
+                warnings += 1
+                log.info(
+                    "replay.non_work_item_entity",
+                    entity_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+                continue
             is_created = len(orphan_evts) > 0 and orphan_evts[0].transition == "created"
             if not is_created:
                 halted += 1

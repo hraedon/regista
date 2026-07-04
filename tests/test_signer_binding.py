@@ -223,3 +223,157 @@ class TestPathTraversal:
             import psycopg
             with psycopg.connect(DSN, autocommit=True) as conn:
                 conn.execute(f'DROP ROLE IF EXISTS "regista_{project}"')
+
+
+class TestReplayPrincipalBinding:
+    """End-to-end tests: replay(verify_principal_binding=True) closes the
+    non-repudiation loop — a forged actor with a valid key-set key is caught.
+    """
+
+    def test_valid_ed25519_event_passes(self, principal_setup):
+        sub, principal_id, _key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "valid-ed25519"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert events[0].scheme_id == "ed25519"
+
+        report = sub.replay(verify_principal_binding=True)
+        baseline = sub.replay(verify_principal_binding=False)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings == baseline.warnings
+
+    def test_forged_hmac_event_caught(self, principal_setup):
+        sub, _principal_id, _key_id, _sk, vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="hmac-forger",
+            custom_fields={"title": "forged"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert events[0].scheme_id == "hmac-sha256"
+
+        from regista._principal_keys import register_principal_key
+        register_principal_key(sub._mgr, "hmac-forger", vk, "ed25519")
+
+        baseline = sub.replay(verify_principal_binding=False)
+        report = sub.replay(verify_principal_binding=True)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings > baseline.warnings
+
+    def test_forged_actor_with_victim_id_caught(self, principal_setup):
+        """The headline attack: attacker has valid HMAC key, forges event
+        with actor_id=victim (who has a registered Ed25519 key). The event
+        passes key-set verification (valid HMAC) but principal binding
+        catches the scheme mismatch."""
+        sub, principal_id, _key_id, _sk, _vk = principal_setup
+
+        hmac_only_key_file = {
+            "keys": [
+                {
+                    "key_id": "bootstrap-hmac",
+                    "secret": "dGVzdA==",
+                    "encoding": "base64",
+                    "status": "active",
+                }
+            ]
+        }
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(hmac_only_key_file, f)
+            hmac_key_path = f.name
+
+        hmac_sub = Regista(DSN, sub.project, hmac_key_path)
+        try:
+            wi, _evt = hmac_sub.create_work_item(
+                workflow_name="test_workflow",
+                work_item_type="feature",
+                actor_id=principal_id,
+                custom_fields={"title": "forged-actor-id"},
+            )
+            events = hmac_sub.read_events(work_item_id=wi.work_item_id)
+            assert events[0].scheme_id == "hmac-sha256"
+        finally:
+            hmac_sub.close()
+
+        baseline = sub.replay(verify_principal_binding=False)
+        report = sub.replay(verify_principal_binding=True)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings > baseline.warnings
+
+        import os
+
+        os.unlink(hmac_key_path)
+
+    def test_no_principal_keys_backward_compat(self, principal_setup):
+        sub, _principal_id, _key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="unregistered-actor",
+            custom_fields={"title": "no-principal"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert events[0].scheme_id == "hmac-sha256"
+
+        baseline = sub.replay(verify_principal_binding=False)
+        report = sub.replay(verify_principal_binding=True)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings == baseline.warnings
+
+    def test_revoked_principal_key_warning(self, principal_setup):
+        sub, principal_id, key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "revoked-test"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert events[0].scheme_id == "ed25519"
+
+        from regista._principal_keys import revoke_principal_key
+        revoke_principal_key(sub._mgr, principal_id, key_id, reason="compromised")
+
+        baseline = sub.replay(verify_principal_binding=False, continue_on_revoked=True)
+        report = sub.replay(verify_principal_binding=True, continue_on_revoked=True)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings > baseline.warnings
+
+    def test_rotated_key_old_event_passes(self, principal_setup):
+        sub, principal_id, _key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "rotation-replay"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        assert events[0].scheme_id == "ed25519"
+
+        from regista._principal_keys import rotate_principal_key
+        _new_sk, new_vk = _generate_ed25519_keypair()
+        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+
+        baseline = sub.replay(verify_principal_binding=False)
+        report = sub.replay(verify_principal_binding=True)
+        assert report.replayed_drift == 0
+        assert report.halted == 0
+        assert report.warnings == baseline.warnings

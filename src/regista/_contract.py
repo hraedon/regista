@@ -15,7 +15,7 @@ MAX_JSONB_BYTES = 1_048_576
 VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
-_ALLOWED_ENTITY_KINDS = frozenset({"work_item", "session"})
+_ALLOWED_ENTITY_KINDS = frozenset({"work_item", "session", "spec"})
 
 _RESERVED_TRANSITIONS = frozenset({
     "created",

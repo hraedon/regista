@@ -161,6 +161,7 @@ class ReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     continue_on_revoked: bool = False
     verify_timestamps: bool = False
+    verify_principal_binding: bool = False
     work_item_id: str | None = None
 
 
@@ -286,3 +287,18 @@ class VerifyEventSignatureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event: dict
     public_key: str | None = None
+
+
+class SignSpecRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    spec_yaml: str
+    spec_md_hash: str
+    spec_schema_version: str
+    actor_metadata: dict | None = None
+    spec_id: str | None = None
+
+
+class ReadSpecEventsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    spec_id: str | None = None
+    limit: int = Field(default=100, ge=1, le=10000)

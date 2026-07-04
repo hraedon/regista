@@ -312,6 +312,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         *,
         continue_on_revoked: bool = False,
         verify_timestamps: bool = False,
+        verify_principal_binding: bool = False,
         work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:
         if work_item_id is not None and work_item_id not in self._work_items:
@@ -328,6 +329,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             self._store,
             self._key_set,
             continue_on_revoked=continue_on_revoked,
+            verify_principal_binding=verify_principal_binding,
             work_item_id=work_item_id,
         )
 
@@ -363,3 +365,84 @@ class InMemWorkflowMixin(_InMemoryBase):
             event_id=event_id,
             key_set=self._key_set,
         )
+
+    def sign_spec(
+        self,
+        spec_yaml: str,
+        spec_md_hash: str,
+        spec_schema_version: str,
+        actor_id: str,
+        *,
+        actor_kind: str = "system",
+        actor_metadata: dict | None = None,
+        spec_id: uuid.UUID | None = None,
+        known_spec_schema_versions: frozenset[str] | None = None,
+    ) -> Event:
+        import structlog
+
+        log = structlog.get_logger()
+
+        if not spec_yaml:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_yaml must not be empty",
+            )
+        if not spec_schema_version:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_schema_version must not be empty",
+            )
+        if not spec_md_hash:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_md_hash must not be empty",
+            )
+
+        if spec_id is None:
+            spec_id = uuid.uuid4()
+
+        known = (
+            known_spec_schema_versions
+            if known_spec_schema_versions is not None
+            else frozenset()
+        )
+        if spec_schema_version not in known:
+            log.warning(
+                "spec.schema_version_unknown",
+                spec_schema_version=spec_schema_version,
+                spec_id=str(spec_id),
+            )
+
+        payload = {
+            "spec_yaml": spec_yaml,
+            "spec_md_hash": spec_md_hash,
+            "spec_schema_version": spec_schema_version,
+        }
+
+        evt = self.append_event(
+            spec_id,
+            actor_id,
+            actor_kind,
+            actor_metadata,
+            transition="spec_signed",
+            payload=payload,
+            entity_kind="spec",
+        )
+        return evt
+
+    def read_spec_events(
+        self,
+        *,
+        spec_id: uuid.UUID | None = None,
+        limit: int = 100,
+    ) -> list[Event]:
+        all_events: list[Event] = []
+        for evts in self._store.events.values():
+            all_events.extend(evts)
+        spec_events = [e for e in all_events if e.entity_kind == "spec"]
+        if spec_id is not None:
+            spec_events = [e for e in spec_events if e.effective_entity_id == spec_id]
+            spec_events.sort(key=lambda e: e.event_seq)
+        else:
+            spec_events.sort(key=lambda e: (e.timestamp, e.event_seq), reverse=True)
+        return spec_events[:limit]

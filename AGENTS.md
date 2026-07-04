@@ -143,6 +143,9 @@ sub.create_link(from_id, to_id, link_type, actor_id, payload=...)
 sub.remove_link(from_id, to_id, link_type, actor_id)
 sub.replay()  # -> ReplayReport with drift detection
 sub.replay(continue_on_revoked=True)  # skip revoked-key events with warnings
+sub.replay(verify_principal_binding=True)  # verify event signatures against principal_keys registry (Plan 026 WI-2.2)
+sub.sign_spec(spec_yaml, spec_md_hash, spec_schema_version, actor_id, ...)  # sign spec.yaml as founding artifact (Plan 025 WI-4.3)
+sub.read_spec_events(spec_id=None, limit=100)  # read spec-entity events (Plan 025 WI-4.3)
 sub.close()
 
 # Phase 2 — hooks, validators, escalation, lint
@@ -251,7 +254,9 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 - Principal key registry (Plan 026): `SELECT FOR UPDATE` prevents concurrent-registration race; a `UNIQUE` partial index on `(principal_id) WHERE status = 'active'` enforces one-active-key at the DB level; rotation is atomic (supersede + insert in one transaction); `verify_binding` raises `ACTOR_SIGNER_MISMATCH` if `actor_id != principal_id`, `UNREGISTERED_SIGNER` if no active key exists
 - Signer binding (Plan 026 WI-1.2): `verify_event_principal_binding` looks up the active key for the event's `actor_id` in the registry, verifies the signature under that public key, and confirms actor↔signer equality. Returns `unregistered-signer` if no active key, `scheme-mismatch` if event scheme differs from registered key scheme, `signature-verification-failed` if the signature is invalid
 - Per-principal signing (Plan 026 WI-2.1): key file entries support `secret_ref` field (e.g. `"secret_ref": "file:/path/to/key"`) resolved via `regista._secrets.resolve()`; the private key is loaded from the secret backend, not embedded in the key file. `provision-principal` issues an Ed25519 keypair, stores the private key via the secret backend, registers the public key in the principal_keys registry, and adds a key file entry with `secret_ref`
+- Replay principal binding (Plan 026 WI-2.2): `replay(verify_principal_binding=True)` closes the non-repudiation loop end-to-end. During replay, each event's signature is verified against the principal_keys registry (not just the key set). A forged actor with a valid key-set key but no matching principal key is caught. Events whose `actor_id` has no registered principal keys are skipped (backward compatible with HMAC-only deployments). Emits warnings, not halts. CLI: `regista replay --verify-principal-binding`. Sidecar: `ReplayRequest.verify_principal_binding`
 - Provisioning (Plan 025 WI-2.1): `regista provision` creates per-project schemas, runs migrations, and creates scoped service roles (`regista_<slug>`) with privileges only on their own schema. `regista provision-principal` issues and registers Ed25519 keypairs. Both are idempotent; `--dry-run` writes nothing
+- Spec entity (Plan 025 WI-4.3): `sign_spec` stores a `spec.yaml` as a signed `entity_kind="spec"` event — the project's founding artifact. Regista does not parse the spec; it stores and signs it. An unrecognized `spec_schema_version` is a named, non-fatal state (stored, flagged via `SPEC_SCHEMA_VERSION_UNKNOWN` warning). CLI: `regista spec sign/events`. Sidecar: `POST /spec/sign`, `GET /spec/events`
 
 ## Key Design Decisions
 

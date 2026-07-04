@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
+
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 
@@ -183,6 +185,25 @@ def list_principal_keys(
     query += " ORDER BY registered_at DESC"
     with mgr.transaction() as conn:
         rows = conn.execute(query, params).fetchall()
+    return [_row_to_entry(r) for r in rows]
+
+
+def list_principal_keys_for_conn(
+    conn: psycopg.Connection,
+    principal_id: str | None = None,
+    *,
+    status: str | None = None,
+) -> list[PrincipalKeyEntry]:
+    query = "SELECT * FROM principal_keys WHERE 1=1"
+    params: list[Any] = []
+    if principal_id is not None:
+        query += " AND principal_id = %s"
+        params.append(principal_id)
+    if status is not None:
+        query += " AND status = %s"
+        params.append(status)
+    query += " ORDER BY registered_at DESC"
+    rows = conn.execute(query, params).fetchall()
     return [_row_to_entry(r) for r in rows]
 
 

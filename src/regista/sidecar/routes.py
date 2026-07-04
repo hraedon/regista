@@ -35,6 +35,7 @@ from .models import (
     RemoveLinkRequest,
     ReplayRequest,
     RequeueDeadLetteredHookRequest,
+    SignSpecRequest,
     TransitionRequest,
     UnregisterActorRoleRequest,
     UpdateNotBeforeRequest,
@@ -305,6 +306,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         result = regista.replay(
             continue_on_revoked=body.continue_on_revoked,
             verify_timestamps=body.verify_timestamps,
+            verify_principal_binding=body.verify_principal_binding,
             work_item_id=_parse_uuid(body.work_item_id) if body.work_item_id else None,
         )
         return _serialize(result)
@@ -611,5 +613,31 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         pub_key = base64.b64decode(req.public_key) if req.public_key else None
         result = regista.verify_event_signature(evt, public_key=pub_key)
         return {"valid": result}
+
+    @router.post("/spec/sign")
+    def sign_spec(req: SignSpecRequest, request: Request):
+        actor = get_actor(request)
+        spec_id = _parse_uuid(req.spec_id) if req.spec_id else None
+        evt = regista.sign_spec(
+            spec_yaml=req.spec_yaml,
+            spec_md_hash=req.spec_md_hash,
+            spec_schema_version=req.spec_schema_version,
+            actor_id=actor.actor_id,
+            actor_kind=actor.actor_kind,
+            actor_metadata=req.actor_metadata,
+            spec_id=spec_id,
+        )
+        return _serialize(evt)
+
+    @router.get("/spec/events")
+    def read_spec_events(
+        request: Request,
+        spec_id: str | None = None,
+        limit: int = 100,
+    ):
+        get_actor(request)
+        sid = _parse_uuid(spec_id) if spec_id else None
+        events = regista.read_spec_events(spec_id=sid, limit=limit)
+        return _serialize(events)
 
     app.include_router(router)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -457,15 +458,12 @@ class PrincipalVerificationResult:
     error: str | None
 
 
-def verify_event_with_principal_binding(
-    event,
-    mgr,
+def _verify_principal_binding_core(
+    entries: list,
+    actor_id: str,
+    scheme_id: str,
+    verify_fn: Callable[[bytes], bool],
 ) -> PrincipalVerificationResult:
-    from ._principal_keys import list_principal_keys
-
-    actor_id = event.actor_id
-
-    entries = list_principal_keys(mgr, actor_id, status=None)
     if not entries:
         return PrincipalVerificationResult(
             verified=False,
@@ -474,7 +472,7 @@ def verify_event_with_principal_binding(
             error=f"unregistered-signer: no key for actor {actor_id!r}",
         )
 
-    non_revoked = [e for e in entries if e.status != "revoked"]
+    non_revoked = [e for e in entries if e.status in ("active", "superseded")]
     if not non_revoked:
         return PrincipalVerificationResult(
             verified=False,
@@ -485,12 +483,11 @@ def verify_event_with_principal_binding(
 
     scheme_mismatch = False
     for entry in non_revoked:
-        if entry.scheme != event.scheme_id:
+        if entry.scheme != scheme_id:
             scheme_mismatch = True
             continue
 
-        sig_ok = verify_event_with_public_key(event, entry.public_key)
-        if sig_ok:
+        if verify_fn(entry.public_key):
             return PrincipalVerificationResult(
                 verified=True,
                 principal_id=entry.principal_id,
@@ -499,14 +496,14 @@ def verify_event_with_principal_binding(
             )
 
     if scheme_mismatch and all(
-        e.scheme != event.scheme_id for e in non_revoked
+        e.scheme != scheme_id for e in non_revoked
     ):
         return PrincipalVerificationResult(
             verified=False,
             principal_id=non_revoked[0].principal_id,
             key_id=non_revoked[0].key_id,
             error=(
-                f"scheme-mismatch: event scheme_id={event.scheme_id!r} "
+                f"scheme-mismatch: event scheme_id={scheme_id!r} "
                 f"but no registered key uses that scheme for principal {actor_id!r}"
             ),
         )
@@ -516,4 +513,82 @@ def verify_event_with_principal_binding(
         principal_id=non_revoked[0].principal_id,
         key_id=non_revoked[0].key_id,
         error="signature-verification-failed: signature invalid under all registered public keys",
+    )
+
+
+def verify_event_with_principal_binding(
+    event,
+    mgr,
+) -> PrincipalVerificationResult:
+    from ._principal_keys import list_principal_keys
+
+    entries = list_principal_keys(mgr, event.actor_id, status=None)
+    return _verify_principal_binding_core(
+        entries,
+        actor_id=event.actor_id,
+        scheme_id=event.scheme_id,
+        verify_fn=lambda pk: verify_event_with_public_key(event, pk),
+    )
+
+
+def verify_event_dict_principal_binding(
+    evt: dict,
+    entries: list,
+) -> PrincipalVerificationResult:
+    scheme_id = evt.get("scheme_id") or "hmac-sha256"
+    entity_kind = evt.get("entity_kind") or "work_item"
+    hash_alg = evt.get("hash_alg") or "sha-256"
+
+    try:
+        from ._signing_scheme import get_scheme
+
+        scheme = get_scheme(scheme_id)
+    except Exception:
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=None,
+            key_id=None,
+            error=f"unknown-scheme: cannot resolve scheme_id={scheme_id!r}",
+        )
+
+    def _verify_with_key(public_key: bytes) -> bool:
+        try:
+            return verify_event(
+                event_id=evt["event_id"],
+                work_item_id=evt["work_item_id"],
+                actor_id=evt["actor_id"],
+                key_id=evt["key_id"],
+                event_seq=evt["event_seq"],
+                workflow_name=evt["workflow_name"],
+                workflow_version=evt["workflow_version"],
+                timestamp=evt["timestamp"],
+                transition=evt["transition"],
+                payload=evt["payload"],
+                signature=bytes(evt["signature"]),
+                canonical_hash=bytes(evt["payload_canonical_hash"]),
+                key=public_key,
+                stored_envelope=(
+                    bytes(evt["canonical_envelope"]) if evt.get("canonical_envelope") else None
+                ),
+                on_behalf_of=evt.get("on_behalf_of"),
+                scheme=scheme,
+                entity_kind=entity_kind,
+                hash_alg=hash_alg,
+                prev_event_hash=(
+                    bytes(evt["prev_event_hash"]) if evt.get("prev_event_hash") else None
+                ),
+                prev_global_event_hash=(
+                    bytes(evt["prev_global_event_hash"])
+                    if evt.get("prev_global_event_hash")
+                    else None
+                ),
+            )
+        except Exception:
+            return False
+
+    return _verify_principal_binding_core(
+        entries,
+        actor_id=evt["actor_id"],
+        scheme_id=scheme_id,
+        verify_fn=_verify_with_key,
     )

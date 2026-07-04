@@ -420,6 +420,7 @@ class WorkflowApiMixin(_RegistaBase):
         *,
         continue_on_revoked: bool = False,
         verify_timestamps: bool = False,
+        verify_principal_binding: bool = False,
         work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:
         """Rebuild projection from the event log and compare with live state.
@@ -433,6 +434,12 @@ class WorkflowApiMixin(_RegistaBase):
                 of halting replay.
             verify_timestamps: Check that events are covered by confirmed TSP
                 batches and emit warnings for uncovered events.
+            verify_principal_binding: Verify each event's signature against the
+                principal_keys registry, closing the non-repudiation loop.
+                Events whose actor_id has registered principal keys but whose
+                signature does not verify under any of those keys emit a
+                warning. Events whose actor_id has no registered principal keys
+                are skipped (backward compatible with HMAC-only deployments).
             work_item_id: Scope replay to a single work item. Global chain and
                 timestamp coverage checks are skipped; one warning is emitted
                 to note the scoped verification.
@@ -474,6 +481,7 @@ class WorkflowApiMixin(_RegistaBase):
                     conn, self._mgr.schema, self._project, self._keys,
                     continue_on_revoked=continue_on_revoked,
                     verify_timestamps=verify_timestamps,
+                    verify_principal_binding=verify_principal_binding,
                     work_item_id=work_item_id,
                 )
 

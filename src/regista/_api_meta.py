@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import uuid
+
 from ._api_base import _RegistaBase
-from ._errors import RegistaError
+from ._errors import ErrorCode, RegistaError
 from ._types import Event
+
+_KNOWN_SPEC_SCHEMA_VERSIONS: frozenset[str] = frozenset()
 
 
 class MetaApiMixin(_RegistaBase):
@@ -116,3 +120,146 @@ class MetaApiMixin(_RegistaBase):
         from ._lint import actor_metadata_complete as _complete
 
         return _complete(events, expected_keys)
+
+    def sign_spec(
+        self,
+        spec_yaml: str,
+        spec_md_hash: str,
+        spec_schema_version: str,
+        actor_id: str,
+        *,
+        actor_kind: str = "system",
+        actor_metadata: dict | None = None,
+        spec_id: uuid.UUID | None = None,
+        known_spec_schema_versions: frozenset[str] | None = None,
+    ) -> Event:
+        """Sign a ``spec.yaml`` into a project as a founding artifact.
+
+        The spec is stored as a signed event with ``entity_kind="spec"``
+        so the audit chain runs spec -> work -> review -> done. Regista
+        does not parse or interpret the spec; it stores and signs it
+        (Plan 025 WI-4.3).
+
+        An unrecognized ``spec_schema_version`` is a named, non-fatal
+        state: the event is stored, a warning is logged, but no error
+        is raised. The caller decides whether to treat the warning as
+        blocking.
+
+        Args:
+            spec_yaml: The spec.yaml content as a string.
+            spec_md_hash: Hex hash of the companion spec.md.
+            spec_schema_version: Declared version of the spec schema
+                (owned by socratic-specification, not regista).
+            actor_id: Authenticated actor signing the spec.
+            actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
+            actor_metadata: Optional JSONB metadata.
+            spec_id: Optional UUID for the spec entity. If omitted, a
+                random UUIDv4 is generated.
+            known_spec_schema_versions: Optional override for the known
+                versions set. If the provided ``spec_schema_version``
+                is not in this set, a warning is logged. Defaults to
+                an empty set (all versions flagged as unrecognized).
+
+        Returns:
+            The signed ``Event``.
+
+        Raises:
+            RegistaError: ``INVALID_ARGUMENT`` if ``spec_yaml`` is empty
+                or ``spec_schema_version`` is empty.
+        """
+        import structlog
+
+        from ._observability import OpTimer
+
+        log = structlog.get_logger()
+
+        if not spec_yaml:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_yaml must not be empty",
+            )
+        if not spec_schema_version:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_schema_version must not be empty",
+            )
+        if not spec_md_hash:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "spec_md_hash must not be empty",
+            )
+
+        if spec_id is None:
+            spec_id = uuid.uuid4()
+
+        known = known_spec_schema_versions
+        if known is None:
+            known = _KNOWN_SPEC_SCHEMA_VERSIONS
+
+        if spec_schema_version not in known:
+            log.warning(
+                "spec.schema_version_unknown",
+                spec_schema_version=spec_schema_version,
+                spec_id=str(spec_id),
+            )
+
+        payload = {
+            "spec_yaml": spec_yaml,
+            "spec_md_hash": spec_md_hash,
+            "spec_schema_version": spec_schema_version,
+        }
+
+        timer = OpTimer(self.project, "sign_spec")
+        evt = self.append_event(
+            spec_id,
+            actor_id,
+            actor_kind,
+            actor_metadata,
+            transition="spec_signed",
+            payload=payload,
+            entity_kind="spec",
+        )
+        timer.log("ok", spec_id=str(spec_id))
+        return evt
+
+    def read_spec_events(
+        self,
+        *,
+        spec_id: uuid.UUID | None = None,
+        limit: int = 100,
+    ) -> list[Event]:
+        """Read spec-entity events from the project.
+
+        Args:
+            spec_id: Filter to a specific spec entity. If omitted,
+                returns all spec events (most recent first).
+            limit: Maximum events to return.
+
+        Returns:
+            List of ``Event`` objects with ``entity_kind="spec"``.
+        """
+        self._require_open()
+        from psycopg.sql import SQL
+
+        from ._events import _EVENT_FIELDS, _row_to_event
+
+        with self._mgr.transaction() as conn:
+            if spec_id is not None:
+                rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE entity_kind = 'spec' AND entity_id = %s "
+                        "ORDER BY event_seq ASC LIMIT %s"
+                    ),
+                    [spec_id, limit],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE entity_kind = 'spec' "
+                        "ORDER BY timestamp DESC, event_seq DESC LIMIT %s"
+                    ),
+                    [limit],
+                ).fetchall()
+            return [_row_to_event(r) for r in rows]

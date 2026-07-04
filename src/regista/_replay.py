@@ -12,7 +12,7 @@ from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
-from ._signing import verify_event
+from ._signing import verify_event, verify_event_dict_principal_binding
 from ._signing_scheme import get_scheme
 from ._types import ReplayReport
 
@@ -192,6 +192,7 @@ def replay(
     key_set: KeySet,
     continue_on_revoked: bool = False,
     verify_timestamps: bool = False,
+    verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
     import uuid as _uuid
@@ -225,6 +226,7 @@ def replay(
             report_table,
             continue_on_revoked=continue_on_revoked,
             verify_timestamps=verify_timestamps,
+            verify_principal_binding=verify_principal_binding,
             work_item_id=work_item_id,
         )
     except Exception:
@@ -242,6 +244,7 @@ def _replay_inner(
     *,
     continue_on_revoked: bool = False,
     verify_timestamps: bool = False,
+    verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
     scoped = work_item_id is not None
@@ -282,6 +285,18 @@ def _replay_inner(
         orphan_events = set(events_by_wi.keys()) - wi_ids
         for orphan_id in orphan_events:
             orphan_evts = events_by_wi[orphan_id]
+            is_non_work_item = any(
+                e.get("entity_kind", "work_item") != "work_item"
+                for e in orphan_evts
+            )
+            if is_non_work_item:
+                total_warnings += 1
+                log.info(
+                    "replay.non_work_item_entity",
+                    entity_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+                continue
             is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
             if not is_created:
                 halted_count += 1
@@ -344,6 +359,7 @@ def _replay_inner(
                 events,
                 key_set,
                 continue_on_revoked,
+                verify_principal_binding=verify_principal_binding,
             )
             total_warnings += wi_warnings
         except _ReplayHaltError as e:
@@ -584,6 +600,8 @@ def _replay_work_item(
     events: list[dict],
     key_set: KeySet,
     continue_on_revoked: bool = False,
+    *,
+    verify_principal_binding: bool = False,
 ) -> tuple[dict, int]:
     state = None
     custom_fields: dict = {}
@@ -595,6 +613,8 @@ def _replay_work_item(
     claim_expires_at: datetime | None = None
     claim_coalesce_threshold: float = 0.0
     warnings = 0
+
+    _principal_key_cache: dict[str, list] = {}
 
     prev_evt: dict | None = None
     for evt in events:
@@ -680,6 +700,32 @@ def _replay_work_item(
                     f"Signature verification failed for event {evt['event_id']} "
                     f"at seq {evt['event_seq']}"
                 )
+
+        if verify_principal_binding:
+            from ._principal_keys import list_principal_keys_for_conn
+
+            actor_id = evt["actor_id"]
+            if actor_id not in _principal_key_cache:
+                try:
+                    _principal_key_cache[actor_id] = list_principal_keys_for_conn(
+                        conn, actor_id,
+                    )
+                except psycopg.errors.UndefinedTable:
+                    _principal_key_cache[actor_id] = []
+            pk_entries = _principal_key_cache[actor_id]
+            if pk_entries:
+                pb_result = verify_event_dict_principal_binding(evt, pk_entries)
+                if not pb_result.verified:
+                    warnings += 1
+                    log.warning(
+                        "replay.principal_binding_failed",
+                        work_item_id=str(wi_id),
+                        event_id=str(evt["event_id"]),
+                        event_seq=evt["event_seq"],
+                        actor_id=actor_id,
+                        scheme_id=evt.get("scheme_id") or "hmac-sha256",
+                        error=pb_result.error,
+                    )
 
         if transition == "created":
             payload = evt["payload"] or {}

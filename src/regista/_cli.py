@@ -228,7 +228,10 @@ def cmd_replay(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
-        report = sub.replay(continue_on_revoked=args.continue_on_revoked)
+        report = sub.replay(
+            continue_on_revoked=args.continue_on_revoked,
+            verify_principal_binding=args.verify_principal_binding,
+        )
         if args.json:
             _dump_json(report)
         else:
@@ -1016,6 +1019,76 @@ def cmd_provision_principal(args):
             print(f"  public key registered: {result.public_key_registered}")
 
 
+def cmd_spec_sign(args):
+    import hashlib
+
+    try:
+        with open(args.spec_file) as f:
+            spec_yaml = f.read()
+    except FileNotFoundError:
+        print(f"File not found: {args.spec_file}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.spec_md_file:
+        with open(args.spec_md_file, "rb") as f:
+            spec_md_hash = hashlib.sha256(f.read()).hexdigest()
+    else:
+        spec_md_hash = args.spec_md_hash or ""
+
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        evt = sub.sign_spec(
+            spec_yaml=spec_yaml,
+            spec_md_hash=spec_md_hash,
+            spec_schema_version=args.schema_version,
+            actor_id=args.actor_id,
+            actor_kind=args.actor_kind,
+            spec_id=uuid.UUID(args.spec_id) if args.spec_id else None,
+        )
+        if args.json:
+            _dump_json(evt)
+        else:
+            print(f"Spec signed: event_id={evt.event_id}")
+            print(f"  entity_id:   {evt.effective_entity_id}")
+            print(f"  event_seq:   {evt.event_seq}")
+            print(f"  transition:  {evt.transition}")
+            print(f"  timestamp:   {evt.timestamp.isoformat()}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_spec_events(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        events = sub.read_spec_events(
+            spec_id=uuid.UUID(args.spec_id) if args.spec_id else None,
+            limit=args.limit,
+        )
+        if args.json:
+            _dump_json([e.to_dict() for e in events])
+        else:
+            if not events:
+                print("No spec events found.")
+                return
+            for evt in events:
+                payload = evt.payload or {}
+                print(f"  {evt.timestamp.isoformat()}  seq={evt.event_seq}")
+                print(f"    event_id:    {evt.event_id}")
+                print(f"    entity_id:   {evt.effective_entity_id}")
+                print(f"    actor:       {evt.actor_id}")
+                print(f"    version:     {payload.get('spec_schema_version', '?')}")
+                print(f"    md_hash:     {payload.get('spec_md_hash', '?')[:16]}...")
+                print()
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def main(argv=None):
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="regista", description="Regista admin CLI")
@@ -1069,6 +1142,11 @@ def main(argv=None):
     # replay
     rep = subs.add_parser("replay", help="Run replay drift check")
     rep.add_argument("--continue-on-revoked", action="store_true", help="Skip revoked-key events")
+    rep.add_argument(
+        "--verify-principal-binding",
+        action="store_true",
+        help="Verify event signatures against the principal_keys registry",
+    )
     rep.set_defaults(func=cmd_replay)
 
     # schema
@@ -1257,6 +1335,28 @@ def main(argv=None):
     )
     prov_princ_parser.add_argument("--json", action="store_true", help="JSON output")
     prov_princ_parser.set_defaults(func=cmd_provision_principal)
+
+    # spec (Plan 025 WI-4.3)
+    spec_parser = subs.add_parser("spec", help="Spec entity commands")
+    spec_sub = spec_parser.add_subparsers(dest="subcommand")
+    spec_sign = spec_sub.add_parser("sign", help="Sign a spec.yaml into the project")
+    spec_sign.add_argument("spec_file", help="Path to spec.yaml")
+    spec_sign.add_argument("--schema-version", required=True, help="Spec schema version")
+    spec_sign.add_argument("--spec-md-file", help="Path to spec.md (hash computed automatically)")
+    spec_sign.add_argument(
+        "--spec-md-hash",
+        help="Hex hash of spec.md (alternative to --spec-md-file)",
+    )
+    spec_sign.add_argument("--actor-id", required=True, help="Actor ID")
+    spec_sign.add_argument("--actor-kind", default="system", help="Actor kind (agent/human/system)")
+    spec_sign.add_argument("--spec-id", help="UUID for the spec entity (auto-generated if omitted)")
+    spec_sign.add_argument("--json", action="store_true", help="JSON output")
+    spec_sign.set_defaults(func=cmd_spec_sign)
+    spec_list = spec_sub.add_parser("events", help="List spec events")
+    spec_list.add_argument("--spec-id", help="Filter by spec entity UUID")
+    spec_list.add_argument("--limit", type=int, default=100)
+    spec_list.add_argument("--json", action="store_true", help="JSON output")
+    spec_list.set_defaults(func=cmd_spec_events)
 
     args = parser.parse_args(argv)
 
