@@ -47,6 +47,51 @@ def _make_ed25519_key_file(tmp_path: Path, principal_id: str) -> tuple[str, byte
     return str(key_file), sk, vk, str(priv_path)
 
 
+def _make_multi_ed25519_key_file(
+    tmp_path: Path, principal_id: str,
+) -> tuple[str, bytes, bytes, bytes, bytes]:
+    sk1, vk1 = _generate_ed25519_keypair()
+    sk2, vk2 = _generate_ed25519_keypair()
+    priv1 = tmp_path / f"{principal_id}_priv1.key"
+    priv2 = tmp_path / f"{principal_id}_priv2.key"
+    priv1.write_bytes(sk1)
+    priv2.write_bytes(sk2)
+    try:
+        priv1.chmod(0o600)
+        priv2.chmod(0o600)
+    except OSError:
+        pass
+    key_file = tmp_path / "keys.json"
+    v2_key_id = f"ed25519-{principal_id}-v2"
+    key_file.write_text(json.dumps({"keys": [
+        {
+            "key_id": "bootstrap-hmac",
+            "secret": "dGVzdA==",
+            "encoding": "base64",
+            "status": "active",
+        },
+        {
+            "key_id": f"ed25519-{principal_id}",
+            "scheme": "ed25519",
+            "principal_id": principal_id,
+            "secret_ref": f"file:{priv1}",
+            "public_key": base64.b64encode(vk1).decode("ascii"),
+            "role": "actor",
+            "status": "active",
+        },
+        {
+            "key_id": v2_key_id,
+            "scheme": "ed25519",
+            "principal_id": principal_id,
+            "secret_ref": f"file:{priv2}",
+            "public_key": base64.b64encode(vk2).decode("ascii"),
+            "role": "actor",
+            "status": "active",
+        },
+    ]}))
+    return str(key_file), sk1, vk1, sk2, vk2
+
+
 @pytest.fixture
 def principal_setup(tmp_path):
     project = f"signbind_{uuid.uuid4().hex[:8]}"
@@ -60,8 +105,88 @@ def principal_setup(tmp_path):
     try:
         sub.register_workflow_file(WORKFLOW_PATH)
         from regista._principal_keys import register_principal_key
-        entry = register_principal_key(sub._mgr, principal_id, vk, "ed25519")
+        key_id = f"ed25519-{principal_id}"
+        entry = register_principal_key(
+            sub._mgr, principal_id, vk, "ed25519", key_id=key_id,
+        )
         yield sub, principal_id, entry.key_id, sk, vk
+    finally:
+        sub.close()
+        drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def multi_key_setup(tmp_path):
+    project = f"signbind_{uuid.uuid4().hex[:8]}"
+    principal_id = f"test_principal_{uuid.uuid4().hex[:8]}"
+    from regista.testing import drop_project_schema
+
+    key_path, sk1, vk1, sk2, vk2 = _make_multi_ed25519_key_file(tmp_path, principal_id)
+
+    Regista.create_project(DSN, project, key_path)
+    sub = Regista(DSN, project, key_path)
+    try:
+        sub.register_workflow_file(WORKFLOW_PATH)
+        from regista._principal_keys import register_principal_key
+        key_id = f"ed25519-{principal_id}"
+        entry = register_principal_key(
+            sub._mgr, principal_id, vk1, "ed25519", key_id=key_id,
+        )
+        yield sub, principal_id, entry.key_id, sk1, vk1, sk2, vk2
+    finally:
+        sub.close()
+        drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def rotated_key_setup(tmp_path):
+    project = f"signbind_{uuid.uuid4().hex[:8]}"
+    principal_id = f"test_principal_{uuid.uuid4().hex[:8]}"
+    from regista.testing import drop_project_schema
+
+    sk1, vk1 = _generate_ed25519_keypair()
+    sk2, vk2 = _generate_ed25519_keypair()
+    priv1 = tmp_path / f"{principal_id}_priv1.key"
+    priv2 = tmp_path / f"{principal_id}_priv2.key"
+    priv1.write_bytes(sk1)
+    priv2.write_bytes(sk2)
+    try:
+        priv1.chmod(0o600)
+        priv2.chmod(0o600)
+    except OSError:
+        pass
+    old_key_id = f"ed25519-{principal_id}"
+    key_file = tmp_path / "keys.json"
+    key_file.write_text(json.dumps({"keys": [
+        {
+            "key_id": "bootstrap-hmac",
+            "secret": "dGVzdA==",
+            "encoding": "base64",
+            "status": "active",
+        },
+        {
+            "key_id": old_key_id,
+            "scheme": "ed25519",
+            "principal_id": principal_id,
+            "secret_ref": f"file:{priv1}",
+            "public_key": base64.b64encode(vk1).decode("ascii"),
+            "role": "actor",
+            "status": "active",
+        },
+    ]}))
+
+    Regista.create_project(DSN, project, str(key_file))
+    sub = Regista(DSN, project, str(key_file))
+    try:
+        sub.register_workflow_file(WORKFLOW_PATH)
+        from regista._principal_keys import register_principal_key
+        register_principal_key(
+            sub._mgr, principal_id, vk1, "ed25519", key_id=old_key_id,
+        )
+        import time
+        # Stagger so the old event predates the rotation's valid_to.
+        time.sleep(0.15)
+        yield sub, principal_id, old_key_id, sk1, vk1, sk2, vk2
     finally:
         sub.close()
         drop_project_schema(DSN, project)
@@ -377,3 +502,114 @@ class TestReplayPrincipalBinding:
         assert report.replayed_drift == 0
         assert report.halted == 0
         assert report.warnings == baseline.warnings
+
+    def test_rotated_key_old_event_still_verifies(self, multi_key_setup):
+        sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
+
+        from regista._principal_keys import register_principal_key
+        v2_key_id = f"ed25519-{principal_id}-v2"
+        register_principal_key(
+            sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
+        )
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "pre-rotation"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        old_event = events[0]
+        assert old_event.key_id in (key_id, v2_key_id)
+
+        from regista._principal_keys import rotate_principal_key
+        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+
+        result = sub.verify_event_principal_binding(old_event)
+        assert result["verified"] is True
+        assert result["key_id"] == old_event.key_id
+
+    def test_event_after_valid_to_rejected(self, multi_key_setup):
+        import time
+
+        sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
+
+        from regista._principal_keys import register_principal_key, rotate_principal_key
+        v2_key_id = f"ed25519-{principal_id}-v2"
+        register_principal_key(
+            sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
+        )
+
+        wi1, _evt1 = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "old"},
+        )
+        old_event = sub.read_events(work_item_id=wi1.work_item_id)[0]
+        signed_key_id = old_event.key_id
+        assert signed_key_id in (key_id, v2_key_id)
+
+        old_result = sub.verify_event_principal_binding(old_event)
+        assert old_result["verified"] is True
+        assert old_result["key_id"] == signed_key_id
+
+        time.sleep(0.05)
+        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        # Rotate again so that the active key_id matches the v2 secret in the
+        # key set and a new event can be signed successfully.
+        time.sleep(0.05)
+        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+
+        time.sleep(0.05)
+        wi2, _evt2 = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "new"},
+        )
+        new_event = sub.read_events(work_item_id=wi2.work_item_id)[0]
+        assert new_event.key_id == v2_key_id
+        new_result = sub.verify_event_principal_binding(new_event)
+        assert new_result["verified"] is False
+        assert new_result["error"] is not None
+        assert "key-not-valid-at-time" in (new_result["error"] or "")
+
+
+    def test_ed25519_key_id_mismatch_rejected(self, multi_key_setup):
+        import time
+
+        sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
+
+        from regista._principal_keys import register_principal_key, rotate_principal_key
+        v2_key_id = f"ed25519-{principal_id}-v2"
+        register_principal_key(
+            sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
+        )
+
+        # Rotate twice so the original key_id is no longer among non-revoked
+        # keys while the event was signed with it.
+        time.sleep(0.05)
+        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        time.sleep(0.05)
+        _new_sk, new_vk = _generate_ed25519_keypair()
+        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "mismatch"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        evt = events[0]
+        assert evt.key_id in (key_id, v2_key_id)
+
+        result = sub.verify_event_principal_binding(evt)
+        assert result["verified"] is False
+        assert result["error"] is not None
+        assert any(
+            fragment in (result["error"] or "")
+            for fragment in ("key-id-mismatch", "key-not-valid-at-time")
+        )
+

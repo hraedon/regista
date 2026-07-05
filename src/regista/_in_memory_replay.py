@@ -168,6 +168,7 @@ def in_memory_replay(
     scoped = work_item_id is not None
 
     if verify_principal_binding:
+        warnings += 1
         log.warning(
             "replay.in_memory_principal_binding_noop",
             detail="InMemory backend has no principal_keys registry; "

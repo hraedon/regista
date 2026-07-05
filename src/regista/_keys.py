@@ -276,6 +276,18 @@ class KeySet:
             if e.status == "active" and e.principal_id == principal_id
         ]
 
+    def _latest_active_key_for(self, principal_id: str) -> KeyEntry | None:
+        candidates = self.active_keys_for(principal_id)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        asym = _asymmetric_schemes()
+        asym_candidates = [c for c in candidates if c.scheme in asym]
+        if asym_candidates:
+            return asym_candidates[-1]
+        return candidates[-1]
+
     def _enforce_strict_asymmetric(self, entry: KeyEntry, actor_id: str) -> None:
         asym = _asymmetric_schemes()
         if entry.scheme not in asym:
@@ -322,7 +334,11 @@ class KeySet:
             asym = _asymmetric_schemes()
             candidates = [c for c in candidates if c.scheme in asym]
         if candidates:
-            entry = candidates[0]
+            latest = self._latest_active_key_for(actor_id)
+            if latest is not None:
+                entry = latest
+            else:
+                entry = candidates[0]
             if self._strict_asymmetric:
                 self._enforce_strict_asymmetric(entry, actor_id)
             return entry

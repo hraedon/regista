@@ -712,6 +712,15 @@ def _replay_work_item(
                     )
                 except psycopg.errors.UndefinedTable:
                     _principal_key_cache[actor_id] = []
+                    warnings += 1
+                    log.warning(
+                        "replay.principal_keys_table_missing",
+                        work_item_id=str(wi_id),
+                        event_id=str(evt["event_id"]),
+                        event_seq=evt["event_seq"],
+                        actor_id=actor_id,
+                        detail="principal_keys table missing; principal binding skipped",
+                    )
             pk_entries = _principal_key_cache[actor_id]
             if pk_entries:
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)

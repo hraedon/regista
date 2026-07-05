@@ -458,11 +458,70 @@ class PrincipalVerificationResult:
     error: str | None
 
 
+def _event_timestamp_for_binding(
+    event_or_evt: object,
+) -> datetime | None:
+    ts = None
+    if hasattr(event_or_evt, "timestamp"):
+        ts = getattr(event_or_evt, "timestamp")
+    elif isinstance(event_or_evt, dict):
+        ts = event_or_evt.get("timestamp")
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return _ensure_aware(ts)
+    try:
+        return _ensure_aware(datetime.fromisoformat(str(ts)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_key_valid_at(entry: object, when: datetime | None) -> bool:
+    if when is None:
+        return False
+    valid_from = None
+    valid_to = None
+    if hasattr(entry, "valid_from"):
+        valid_from = getattr(entry, "valid_from")
+        valid_to = getattr(entry, "valid_to")
+    elif isinstance(entry, dict):
+        valid_from = entry.get("valid_from")
+        valid_to = entry.get("valid_to")
+    if isinstance(valid_from, str):
+        try:
+            valid_from = datetime.fromisoformat(valid_from)
+        except (ValueError, TypeError):
+            return False
+    if isinstance(valid_to, str):
+        try:
+            valid_to = datetime.fromisoformat(valid_to)
+        except (ValueError, TypeError):
+            return False
+    if valid_from is not None:
+        valid_from = _ensure_aware(valid_from)
+    if valid_to is not None:
+        valid_to = _ensure_aware(valid_to)
+    if valid_from is not None and when < valid_from:
+        return False
+    if valid_to is not None and when > valid_to:
+        return False
+    return True
+
+
+def _ensure_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        from datetime import UTC
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def _verify_principal_binding_core(
     entries: list,
     actor_id: str,
     scheme_id: str,
     verify_fn: Callable[[bytes], bool],
+    event_key_id: str | None = None,
+    event_timestamp: datetime | None = None,
 ) -> PrincipalVerificationResult:
     if not entries:
         return PrincipalVerificationResult(
@@ -481,10 +540,39 @@ def _verify_principal_binding_core(
             error=f"key-revoked: all keys for principal {actor_id!r} have been revoked",
         )
 
+    if event_key_id is not None:
+        matching = [e for e in non_revoked if e.key_id == event_key_id]
+        if matching:
+            non_revoked = matching
+        elif scheme_id == "hmac-sha256":
+            pass
+        else:
+            return PrincipalVerificationResult(
+                verified=False,
+                principal_id=non_revoked[0].principal_id,
+                key_id=event_key_id,
+                error=(
+                    f"key-id-mismatch: event key_id={event_key_id!r} "
+                    f"not found among non-revoked keys for principal {actor_id!r}"
+                ),
+            )
+
+    candidate_keys = non_revoked
+    if len(non_revoked) > 1 and event_key_id is None:
+        candidate_keys = [
+            e for e in non_revoked
+            if _is_key_valid_at(e, event_timestamp) and e.scheme == scheme_id
+        ]
+
     scheme_mismatch = False
-    for entry in non_revoked:
+    temporal_skip = False
+    for entry in candidate_keys:
         if entry.scheme != scheme_id:
             scheme_mismatch = True
+            continue
+
+        if not _is_key_valid_at(entry, event_timestamp):
+            temporal_skip = True
             continue
 
         if verify_fn(entry.public_key):
@@ -494,6 +582,18 @@ def _verify_principal_binding_core(
                 key_id=entry.key_id,
                 error=None,
             )
+
+    if temporal_skip:
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=non_revoked[0].principal_id,
+            key_id=non_revoked[0].key_id,
+            error=(
+                f"key-not-valid-at-time: event timestamp "
+                f"{event_timestamp.isoformat() if event_timestamp else None} "
+                f"outside validity window for principal {actor_id!r}"
+            ),
+        )
 
     if scheme_mismatch and all(
         e.scheme != scheme_id for e in non_revoked
@@ -528,6 +628,8 @@ def verify_event_with_principal_binding(
         actor_id=event.actor_id,
         scheme_id=event.scheme_id,
         verify_fn=lambda pk: verify_event_with_public_key(event, pk),
+        event_key_id=event.key_id,
+        event_timestamp=_event_timestamp_for_binding(event),
     )
 
 
@@ -591,4 +693,6 @@ def verify_event_dict_principal_binding(
         actor_id=evt["actor_id"],
         scheme_id=scheme_id,
         verify_fn=_verify_with_key,
+        event_key_id=evt.get("key_id"),
+        event_timestamp=_event_timestamp_for_binding(evt),
     )
