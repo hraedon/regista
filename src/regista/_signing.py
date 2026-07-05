@@ -547,6 +547,20 @@ def _verify_principal_binding_core(
         elif scheme_id == "hmac-sha256":
             pass
         else:
+            revoked_match = [
+                e for e in entries
+                if e.key_id == event_key_id and e.status == "revoked"
+            ]
+            if revoked_match:
+                return PrincipalVerificationResult(
+                    verified=False,
+                    principal_id=revoked_match[0].principal_id,
+                    key_id=event_key_id,
+                    error=(
+                        f"key-revoked: event key_id={event_key_id!r} "
+                        f"for principal {actor_id!r} has been revoked"
+                    ),
+                )
             return PrincipalVerificationResult(
                 verified=False,
                 principal_id=non_revoked[0].principal_id,
@@ -558,7 +572,9 @@ def _verify_principal_binding_core(
             )
 
     candidate_keys = non_revoked
+    pre_filtered = False
     if len(non_revoked) > 1 and event_key_id is None:
+        pre_filtered = True
         candidate_keys = [
             e for e in non_revoked
             if _is_key_valid_at(e, event_timestamp) and e.scheme == scheme_id
@@ -566,6 +582,16 @@ def _verify_principal_binding_core(
 
     scheme_mismatch = False
     temporal_skip = False
+    if pre_filtered and not candidate_keys:
+        any_scheme_match = any(e.scheme == scheme_id for e in non_revoked)
+        any_valid = any(
+            _is_key_valid_at(e, event_timestamp) for e in non_revoked
+            if e.scheme == scheme_id
+        )
+        if not any_scheme_match:
+            scheme_mismatch = True
+        elif not any_valid:
+            temporal_skip = True
     for entry in candidate_keys:
         if entry.scheme != scheme_id:
             scheme_mismatch = True
@@ -623,11 +649,18 @@ def verify_event_with_principal_binding(
     from ._principal_keys import list_principal_keys
 
     entries = list_principal_keys(mgr, event.actor_id, status=None)
+
+    def _verify_with_key(public_key: bytes) -> bool:
+        try:
+            return verify_event_with_public_key(event, public_key)
+        except Exception:
+            return False
+
     return _verify_principal_binding_core(
         entries,
         actor_id=event.actor_id,
         scheme_id=event.scheme_id,
-        verify_fn=lambda pk: verify_event_with_public_key(event, pk),
+        verify_fn=_verify_with_key,
         event_key_id=event.key_id,
         event_timestamp=_event_timestamp_for_binding(event),
     )

@@ -587,8 +587,6 @@ class TestReplayPrincipalBinding:
             sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
         )
 
-        # Rotate twice so the original key_id is no longer among non-revoked
-        # keys while the event was signed with it.
         time.sleep(0.05)
         rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
         time.sleep(0.05)
@@ -612,4 +610,162 @@ class TestReplayPrincipalBinding:
             fragment in (result["error"] or "")
             for fragment in ("key-id-mismatch", "key-not-valid-at-time")
         )
+
+    def test_revoked_key_error_distinguished(self, principal_setup):
+        from regista._principal_keys import revoke_principal_key
+
+        sub, principal_id, key_id, _sk, _vk = principal_setup
+
+        wi, _evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=principal_id,
+            custom_fields={"title": "will-be-revoked"},
+        )
+        events = sub.read_events(work_item_id=wi.work_item_id)
+        evt = events[0]
+
+        revoke_principal_key(
+            sub._mgr, principal_id, key_id, reason="compromised",
+        )
+
+        result = sub.verify_event_principal_binding(evt)
+        assert result["verified"] is False
+        assert result["error"] is not None
+        assert "key-revoked" in (result["error"] or "")
+
+    def test_verify_principal_binding_no_crash_on_malformed_event(
+        self, principal_setup,
+    ):
+        sub, principal_id, _key_id, _sk, _vk = principal_setup
+
+        class MalformedEvent:
+            actor_id = principal_id
+            scheme_id = "ed25519"
+            key_id = _key_id
+            timestamp = None
+            signature = None
+            payload_canonical_hash = None
+            canonical_envelope = None
+            on_behalf_of = None
+            prev_event_hash = None
+            prev_global_event_hash = None
+            entity_kind = "work_item"
+            hash_alg = "sha-256"
+            event_id = uuid.uuid4()
+            work_item_id = uuid.uuid4()
+            event_seq = 1
+            workflow_name = "test"
+            workflow_version = 1
+            transition: str = "created"
+            payload: dict = {}  # noqa: RUF012
+
+        result = sub.verify_event_principal_binding(MalformedEvent())
+        assert result["verified"] is False
+        assert result["error"] is not None
+
+
+class TestVerifyPrincipalBindingCoreEdgeCases:
+    def _make_entry(
+        self,
+        key_id="k1",
+        scheme="ed25519",
+        status="active",
+        valid_from=None,
+        valid_to=None,
+        public_key=b"\x00" * 32,
+    ):
+        from datetime import UTC, datetime
+
+        from regista._principal_keys import PrincipalKeyEntry
+        now = datetime.now(UTC)
+        return PrincipalKeyEntry(
+            principal_id="alice",
+            key_id=key_id,
+            scheme=scheme,
+            public_key=public_key,
+            fingerprint=f"{scheme}:sha256:abc",
+            status=status,
+            valid_from=valid_from or now,
+            valid_to=valid_to,
+            registered_by="system",
+            registered_at=now,
+            revoked_at=None,
+            revoked_reason=None,
+        )
+
+    def test_missing_timestamp_fail_closed(self):
+        from datetime import UTC, datetime
+
+        from regista._signing import _verify_principal_binding_core
+
+        entry = self._make_entry(valid_from=datetime.now(UTC))
+        result = _verify_principal_binding_core(
+            [entry],
+            actor_id="alice",
+            scheme_id="ed25519",
+            verify_fn=lambda pk: True,
+            event_key_id="k1",
+            event_timestamp=None,
+        )
+        assert not result.verified
+        assert "key-not-valid-at-time" in (result.error or "")
+
+    def test_pre_filtered_temporal_diagnostic(self):
+        from datetime import UTC, datetime, timedelta
+
+        from regista._signing import _verify_principal_binding_core
+
+        now = datetime.now(UTC)
+        old_valid_to = now - timedelta(days=1)
+        e1 = self._make_entry(key_id="k1", valid_to=old_valid_to)
+        e2 = self._make_entry(key_id="k2", valid_to=old_valid_to)
+
+        result = _verify_principal_binding_core(
+            [e1, e2],
+            actor_id="alice",
+            scheme_id="ed25519",
+            verify_fn=lambda pk: True,
+            event_key_id=None,
+            event_timestamp=now,
+        )
+        assert not result.verified
+        assert "key-not-valid-at-time" in (result.error or "")
+
+    def test_pre_filtered_scheme_diagnostic(self):
+        from datetime import UTC, datetime
+
+        from regista._signing import _verify_principal_binding_core
+
+        now = datetime.now(UTC)
+        e1 = self._make_entry(key_id="k1", scheme="hmac-sha256")
+        e2 = self._make_entry(key_id="k2", scheme="hmac-sha256")
+
+        result = _verify_principal_binding_core(
+            [e1, e2],
+            actor_id="alice",
+            scheme_id="ed25519",
+            verify_fn=lambda pk: True,
+            event_key_id=None,
+            event_timestamp=now,
+        )
+        assert not result.verified
+        assert "scheme-mismatch" in (result.error or "")
+
+    def test_revoked_key_specific_error(self):
+        from datetime import UTC, datetime
+
+        from regista._signing import _verify_principal_binding_core
+
+        revoked_entry = self._make_entry(key_id="k1", status="revoked")
+        result = _verify_principal_binding_core(
+            [revoked_entry],
+            actor_id="alice",
+            scheme_id="ed25519",
+            verify_fn=lambda pk: True,
+            event_key_id="k1",
+            event_timestamp=datetime.now(UTC),
+        )
+        assert not result.verified
+        assert "key-revoked" in (result.error or "")
 
