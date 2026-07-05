@@ -4,6 +4,48 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-05 — Session 86: Plan 027 review assurance + Windows DPAPI + test import fix
+
+**Focus:** Implement Plan 027 (review assurance: gate honesty under a single model), add the missing Windows DPAPI secret provider (Plan 025 WI-1.2 gap), fix the fragile `from tests.conftest import` pattern, and update plan headers.
+
+**Context:** Opus review identified three outstanding issues: (1) Windows-native secret backend missing from `_secrets.py`, (2) CI breakage from `from tests.conftest import DSN` pattern, (3) plan headers 025/026 still say "Proposed" while substantially landed. Plan 027 was the next feature to implement.
+
+**Delivered:**
+- **Plan 027 (review assurance):**
+  - `src/regista/_assurance.py`: `AssuranceLevel` (NONE/SELF_REVIEWED/INDEPENDENTLY_REVIEWED/HUMAN_ACCEPTED/INDEPENDENT_AND_ACCEPTED), `GateProfile` (RELAXED/STRICT), `same_lineage()`, `compute_assurance_level()` — pure function of event log, `compute_assurance_level_from_dicts()`, `gate_rationale()`, `gate_permits_done()`
+  - `src/regista/_review_validators.py`: `human_gate` gains `require_human_on_same_lineage` param for strict gate profile
+  - `src/regista/_workflow.py`: `canonical_workflow_yaml(strict=True)` emits strict variant
+  - API: `Regista.compute_assurance()`, `Regista.gate_rationale()` on both Postgres and InMemory
+  - CLI: `regista assurance <id> [--strict] [--json]`
+  - Sidecar: `GET /v1/work-items/{id}/assurance?profile=relaxed|strict`
+  - `docs/review-assurance.md`: full documentation
+  - 68 tests (unit + integration + reopen cycle edge cases)
+- **Windows DPAPI provider (Plan 025 WI-1.2 gap):**
+  - `src/regista/_secrets.py`: `windows:` provider uses DPAPI `CRYPTPROTECT_LOCAL_MACHINE` to decrypt base64-encoded blobs; hybrid ctypes→.NET/PowerShell fallback for non-interactive SSH sessions
+  - `protect_windows_secret()` helper for encryption
+  - `_detect_prefix` fix: known-but-unregistered providers raise `SECRET_RESOLVE_FAILED` instead of silently falling through to `literal:`
+  - Error code changed from `SIGNING_SCHEME_NOT_FOUND` to `SECRET_RESOLVE_FAILED`
+  - Tested on mvmcitest01 (Windows, Python 3.14.5, SSH session): round-trip confirmed
+  - 6 Windows tests (skipped on non-Windows)
+- **Test import fix (Opus review feedback):**
+  - `tests/_helpers.py`: extracted DSN/KEY_PATH/WORKFLOW_PATH constants
+  - `pyproject.toml`: added "tests" to `pythonpath`
+  - 4 test files updated: `from tests.conftest` → `from _helpers`
+- **Plan header updates:** Plans 025/026: Proposed → Implemented; Plan 027: Proposed → In progress
+- **Adversarial review (kimi):** Found CRITICAL stale-accept bug in reopened work items + 5 HIGH issues. Fixed before commit:
+  - CRITICAL: `compute_assurance_level` now only considers accepts after the last `adversarial_pass` index (not the entire history)
+  - HIGH: `gate_rationale` validates `GateProfile` string input, raises `RegistaError(INVALID_ARGUMENT)` for unknown profiles
+  - HIGH: DPAPI .NET error messages sanitized (no stderr leakage)
+  - MEDIUM: `_win_dpapi_cache` thread-safe with `threading.Lock`
+  - Added 3 reopen-cycle tests
+
+**Test results:** 82 passed, 6 skipped (Windows-only). ruff clean. mypy --strict clean (83 source files).
+
+**Commit:** `a19fbf9` feat: Plan 027 review assurance + Windows DPAPI provider + test import fix
+**Reflection:** `.regista/reflections/2026-07-05-glm-5-2-2.md` (ingested into agent-notes memory store).
+
+---
+
 ## 2026-07-05 — Session 85: Adversarial review hardening of principal binding
 
 **Focus:** Adversarial review of Session 84's principal-binding fixes (commit 70da917), then correct the issues found.
