@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# regista local identifier gate.
+#
+# Mirrors the CI identifier-gate job so a work-domain identifier is caught
+# BEFORE it lands in a commit. The denylist is never committed.
+#
+# Activate (once per clone):   git config core.hooksPath githooks
+# Or run:                      scripts/install-git-hooks.sh
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+if [ -z "${REGISTA_FORBIDDEN_IDENTIFIERS:-}" ]; then
+  for candidate in \
+    "$repo_root/.identifiers-denylist.local" \
+    "$HOME/.config/regista/forbidden-identifiers"; do
+    if [ -f "$candidate" ]; then
+      REGISTA_FORBIDDEN_IDENTIFIERS="$(cat "$candidate")"
+      export REGISTA_FORBIDDEN_IDENTIFIERS
+      break
+    fi
+  done
+fi
+
+if [ -z "${REGISTA_FORBIDDEN_IDENTIFIERS:-}" ]; then
+  echo "regista pre-commit: identifier gate INACTIVE — no denylist found." >&2
+  echo "  Set \$REGISTA_FORBIDDEN_IDENTIFIERS, or create" >&2
+  echo "  .identifiers-denylist.local (gitignored) or" >&2
+  echo "  ~/.config/regista/forbidden-identifiers to enable it. Allowing commit." >&2
+  exit 0
+fi
+
+python_bin="$(command -v python3 || command -v python)"
+
+exec "$python_bin" "$repo_root/scripts/check_committed_identifiers.py" --staged
