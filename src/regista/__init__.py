@@ -24,6 +24,7 @@ from ._migrations import run_migrations
 from ._observability import Metrics
 from ._ops import (
     ArchiveOps,
+    AssuranceOps,
     ClaimOps,
     EventOps,
     HookOps,
@@ -337,6 +338,15 @@ class Regista(
         return self._workflows_ops
 
     @property
+    def assurance(self) -> AssuranceOps:
+        self._require_open()
+        if not hasattr(self, "_assurance_ops"):
+            self._assurance_ops = AssuranceOps(
+                lambda **kw: self.read_events(**kw), self._project,
+            )
+        return self._assurance_ops
+
+    @property
     def work_items(self) -> WorkItemOps:
         self._require_open()
         if not hasattr(self, "_work_items_ops"):
@@ -405,7 +415,7 @@ class Regista(
     def archive(self) -> ArchiveOps:
         self._require_open()
         if not hasattr(self, "_archive_ops"):
-            self._archive_ops = ArchiveOps(self._mgr, self._project)
+            self._archive_ops = ArchiveOps(self._mgr, self._keys, self._project)
         return self._archive_ops
 
     @property

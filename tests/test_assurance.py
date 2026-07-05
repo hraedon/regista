@@ -15,6 +15,7 @@ from regista._assurance import (
     gate_rationale,
     same_lineage,
 )
+from regista._errors import ErrorCode, RegistaError
 from regista._review_validators import ReviewRejected, human_gate
 from regista.testing import InMemoryRegista
 
@@ -378,6 +379,13 @@ class TestGateRationale:
         events = _author_events("glm") + _pass_events("r1", "kimi")
         r = gate_rationale(events, GateProfile.RELAXED)
         assert gate_permits_done(r) is False
+
+    def test_invalid_profile_string_raises_regista_error(self):
+        events = _author_events("glm")
+        with pytest.raises(RegistaError) as exc:
+            gate_rationale(events, "unknown_profile")
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "unknown_profile" in exc.value.message
 
 
 class TestStrictGateProfile:

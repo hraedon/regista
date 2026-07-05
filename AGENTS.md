@@ -41,6 +41,8 @@ src/regista/
   _claims.py        # Claim lifecycle
   _links.py         # Typed directed links
   _event_store.py   # EventStore protocol + shared append + InMemory/Postgres stores (BC-128)
+  _archive.py        # Archive complete dormant work-items (BC-258)
+  _archive_segments.py  # Plan 028: segment sealing for chain-preserving retention
   _replay.py        # Rebuild projection from event log
   _integrity.py     # Startup version compatibility checks
   _workflow.py      # YAML parse, JSON Schema validate, semantic checks
@@ -88,6 +90,8 @@ src/regista/
     errors.py           # ErrorCode → HTTP status mapping
   docs/
     suite-config.md     # Suite config contract: vars, precedence, doctor shape, version surface (Plan 025)
+    review-assurance.md # Review assurance levels and gate profiles (Plan 027)
+    retention.md        # Event-log retention + segment sealing model (Plan 028)
   suite.env.example     # Template for ~/.config/agent-suite/suite.env (Plan 025)
 ```
 

@@ -1,6 +1,6 @@
 # Plan 028 — Event-log retention & archival without breaking the chain
 
-**Status:** Proposed 2026-07-02
+**Status:** Implemented 2026-07-05
 **Author:** Claude (Fable 5), from the 2026-07-02 suite-gaps review
 **Strategic role:** The converged store's event log is append-only and grows
 forever; agent-notes adds pgvector embeddings on top. For a year that is fine; for

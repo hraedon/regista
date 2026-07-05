@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from ._observability import Metrics
     from ._ops import (
         ArchiveOps,
+        AssuranceOps,
         ClaimOps,
         EventOps,
         HookOps,
@@ -55,6 +56,9 @@ class _RegistaBase:
 
         @property
         def workflows(self) -> WorkflowOps: ...
+
+        @property
+        def assurance(self) -> AssuranceOps: ...
 
         @property
         def work_items(self) -> WorkItemOps: ...

@@ -583,6 +583,105 @@ def cmd_events_archive(args):
         sub.close()
 
 
+def cmd_archive_seal(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        ts = datetime.fromisoformat(args.before_timestamp)
+    except ValueError:
+        print(f"Invalid timestamp: {args.before_timestamp!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        result = sub.archive.seal(
+            before_timestamp=ts,
+            dry_run=args.dry_run,
+            archive_path=args.archive_path,
+        )
+        if args.json:
+            _dump_json(result)
+        else:
+            if result.get("event_count", 0) == 0:
+                print("No events to seal.")
+            else:
+                print(f"Sealed segment {result['segment_id']}")
+                print(f"  events:          {result['event_count']}")
+                print(f"  first_global_seq: {result['first_global_seq']}")
+                print(f"  last_global_seq:  {result['last_global_seq']}")
+                print(f"  head_hash:       {result['head_hash'][:16]}...")
+                if result.get("dry_run"):
+                    print("  (dry-run — nothing written)")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_archive_verify(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        seg_id = uuid.UUID(args.segment_id)
+        result = sub.archive.verify(segment_id=seg_id)
+        if args.json:
+            _dump_json(result)
+        else:
+            status = "OK" if result.get("valid") else "FAILED"
+            print(f"Segment {args.segment_id}: {status}")
+            if result.get("event_count") is not None:
+                print(f"  events:          {result['event_count']}")
+            if result.get("head_hash"):
+                hh = result["head_hash"]
+                if isinstance(hh, (bytes, bytearray)):
+                    hh = hh.hex()
+                print(f"  head_hash:       {str(hh)[:16]}...")
+            if result.get("seal_event_id"):
+                print(f"  seal_event_id:   {result['seal_event_id']}")
+            if result.get("errors"):
+                for err in result["errors"]:
+                    print(f"  error:           {err}")
+            if result.get("warnings"):
+                for w in result["warnings"]:
+                    print(f"  warning:         {w}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_archive_list(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        archived: bool | None = None
+        if args.archived is not None:
+            archived = args.archived.lower() in ("true", "yes", "1")
+        segments = sub.archive.list_segments(archived=archived, limit=args.limit)
+        if args.json:
+            _dump_json(segments)
+        else:
+            if not segments:
+                print("No segments found.")
+            else:
+                header = (
+                    f"{'segment_id':<38} "
+                    f"{'first_seq':>10} {'last_seq':>10} "
+                    f"{'events':>7} {'archived':>8}"
+                )
+                print(header)
+                for seg in segments:
+                    print(
+                        f"{seg['segment_id']!s:<38} "
+                        f"{seg.get('first_global_seq', '?'):>10} "
+                        f"{seg.get('last_global_seq', '?'):>10} "
+                        f"{seg.get('event_count', '?'):>7} "
+                        f"{'yes' if seg.get('archived') else 'no':>8}"
+                    )
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def cmd_workflow_compose(args):
     from regista._workflow_compose import compose_workflow as _compose
 
@@ -1170,6 +1269,27 @@ def main(argv=None):
     ev_archive.add_argument("--before", required=True, help="ISO 8601 timestamp")
     ev_archive.add_argument("--dry-run", action="store_true", help="Count without archiving")
     ev_archive.set_defaults(func=cmd_events_archive)
+
+    # archive
+    arch = subs.add_parser("archive", help="Archive and segment commands")
+    arch_sub = arch.add_subparsers(dest="subcommand")
+    arch_seal = arch_sub.add_parser("seal", help="Seal a segment of the event log")
+    arch_seal.add_argument("--before-timestamp", required=True, help="ISO 8601 timestamp cutoff")
+    arch_seal.add_argument("--dry-run", action="store_true", help="Compute without writing")
+    arch_seal.add_argument("--archive-path", help="Optional archive storage path")
+    arch_seal.add_argument("--json", action="store_true", help="JSON output")
+    arch_seal.set_defaults(func=cmd_archive_seal)
+
+    arch_verify = arch_sub.add_parser("verify", help="Verify a sealed segment")
+    arch_verify.add_argument("segment_id", help="Segment UUID to verify")
+    arch_verify.add_argument("--json", action="store_true", help="JSON output")
+    arch_verify.set_defaults(func=cmd_archive_verify)
+
+    arch_list = arch_sub.add_parser("list", help="List sealed segments")
+    arch_list.add_argument("--archived", default=None, help="Filter: true/false")
+    arch_list.add_argument("--limit", type=int, default=100)
+    arch_list.add_argument("--json", action="store_true", help="JSON output")
+    arch_list.set_defaults(func=cmd_archive_list)
 
     # replay
     rep = subs.add_parser("replay", help="Run replay drift check")

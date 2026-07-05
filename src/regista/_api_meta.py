@@ -102,11 +102,8 @@ class MetaApiMixin(_RegistaBase):
         Returns:
             The :class:`AssuranceLevel` derived from the event log.
         """
-        from ._assurance import compute_assurance_level
-
         self._require_open()
-        events = self.read_events(work_item_id=work_item_id, limit=10000)
-        return compute_assurance_level(events)
+        return self.assurance.compute_assurance(work_item_id)
 
     def gate_rationale(
         self,
@@ -127,14 +124,8 @@ class MetaApiMixin(_RegistaBase):
             Dict with ``profile``, ``reason``, ``assurance_level``,
             ``reviewer_lineage``, and ``author_lineages``.
         """
-        from ._assurance import GateProfile
-        from ._assurance import gate_rationale as _gate_rationale
-
         self._require_open()
-        if isinstance(profile, str):
-            profile = GateProfile(profile)
-        events = self.read_events(work_item_id=work_item_id, limit=10000)
-        return _gate_rationale(events, profile)
+        return self.assurance.gate_rationale(work_item_id, profile=profile)
 
     @staticmethod
     def validate_actor_metadata(

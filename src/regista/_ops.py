@@ -8,6 +8,18 @@ from typing import Any
 
 import structlog
 
+from ._assurance import (
+    AssuranceLevel as _AssuranceLevel,
+)
+from ._assurance import (
+    GateProfile as _GateProfile,
+)
+from ._assurance import (
+    compute_assurance_level as _compute_assurance_level,
+)
+from ._assurance import (
+    gate_rationale as _gate_rationale,
+)
 from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
 from ._contract import validate_delegation_chain as _validate_delegation_chain
@@ -83,6 +95,44 @@ class WorkflowOps:
         from ._workflow_api import get_workflow as _impl
 
         return _impl(self._mgr, self._project, workflow_name, version)
+
+
+class AssuranceOps:
+    """Facade for review-assurance computations (Plan 027)."""
+
+    def __init__(
+        self,
+        read_events_fn: Callable[..., list[Event]],
+        project: str,
+    ) -> None:
+        self._read_events = read_events_fn
+        self._project = project
+
+    def compute_assurance(self, work_item_id: uuid.UUID) -> _AssuranceLevel:
+        """Compute the assurance level for a work item from its event log.
+
+        The assurance level is a pure view over the signed event history —
+        it is computed, never stored, so it can never disagree with the
+        record (Plan 027 WI-1.2).
+        """
+        events = self._read_events(work_item_id=work_item_id, limit=10000)
+        return _compute_assurance_level(events)
+
+    def gate_rationale(
+        self,
+        work_item_id: uuid.UUID,
+        *,
+        profile: _GateProfile | str = "relaxed",
+    ) -> dict[str, Any]:
+        """Compute the gate rationale for a work item.
+
+        Explains why ``done`` was (or would be) permitted under the given
+        gate profile (Plan 027 WI-2.2).
+        """
+        if isinstance(profile, str):
+            profile = _GateProfile(profile)
+        events = self._read_events(work_item_id=work_item_id, limit=10000)
+        return _gate_rationale(events, profile)
 
 
 class WorkItemOps:
@@ -827,14 +877,44 @@ class WitnessOps:
 
 
 class ArchiveOps:
-    def __init__(self, mgr: ConnectionManager, project: str) -> None:
+    def __init__(
+        self, mgr: ConnectionManager, keys: KeySet, project: str,
+    ) -> None:
         self._mgr = mgr
+        self._keys = keys
         self._project = project
 
     def archive_events(self, before_timestamp: datetime, *, dry_run: bool = False) -> int:
         from ._archive import archive_events as _impl
 
         return _impl(self._mgr, self._project, before_timestamp, dry_run=dry_run)
+
+    def seal(
+        self,
+        before_timestamp: datetime,
+        *,
+        dry_run: bool = False,
+        archive_path: str | None = None,
+        actor_id: str = "system",
+    ) -> dict:
+        from ._archive_segments import seal_segment as _impl
+
+        return _impl(
+            self._mgr, self._keys, before_timestamp,
+            dry_run=dry_run, actor_id=actor_id, archive_path=archive_path,
+        )
+
+    def verify(self, segment_id: uuid.UUID) -> dict:
+        from ._archive_segments import verify_segment as _impl
+
+        return _impl(self._mgr, segment_id, self._keys)
+
+    def list_segments(
+        self, archived: bool | None = None, limit: int = 100,
+    ) -> list[dict]:
+        from ._archive_segments import list_segments as _impl
+
+        return _impl(self._mgr, archived=archived, limit=limit)
 
 
 class WebhookOps:

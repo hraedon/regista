@@ -143,3 +143,15 @@ class InMemoryRegista(
         from ._in_mem_witness import _InMemoryWitnessOps
 
         return _InMemoryWitnessOps(self)
+
+    @property
+    def assurance(self):
+        from ._ops import AssuranceOps
+
+        return AssuranceOps(self.read_events, self._project)
+
+    @property
+    def archive(self):
+        raise NotImplementedError(
+            "Segment sealing is not supported on the InMemory backend"
+        )

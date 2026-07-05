@@ -62,7 +62,10 @@ def _verify_hash_chain(
     return True, ""
 
 
-def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
+def _verify_global_hash_chain(
+    events: list[dict],
+    segments: list[dict] | None = None,
+) -> tuple[int, dict | None]:
     """Verify the global event hash chain by walking ``prev_global_event_hash``
     links (BC-300 / Plan 024).
 
@@ -75,8 +78,16 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
     the same links the append path established under the
     ``event_chain_head`` row lock.
 
+    When *segments* is provided, sealed segment records are used to bridge
+    across archived ranges.  A segment whose ``first_event_prev_hash``
+    matches the current head hash lets the walk jump to
+    ``segment.head_hash`` and continue, preventing orphan warnings when
+    older events have been sealed and potentially archived.  Segments can
+    be chained iteratively, and a segment with a NULL
+    ``first_event_prev_hash`` can stand in for an archived genesis event.
+
     Returns ``(warning_count, chain_tail)`` where *chain_tail* is the last
-    event reached by the walk (or ``None`` if the event list is empty).
+    live event reached by the walk (or ``None`` if the event list is empty).
     """
     from collections import defaultdict
 
@@ -86,6 +97,13 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
         return 0, None
 
     hash_fn = resolve_hash_function("sha-256")
+
+    seg_by_prev: dict[str, dict] = {}
+    if segments:
+        for seg in segments:
+            feph = seg.get("first_event_prev_hash")
+            key = bytes(feph).hex() if feph is not None else ""
+            seg_by_prev[key] = seg
 
     link_map: dict[str, list[dict]] = defaultdict(list)
     genesis_events: list[dict] = []
@@ -107,23 +125,64 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
                 global_seq=g.get("global_seq"),
             )
 
-    if not genesis_events:
-        for evt in events:
-            warnings += 1
-            log.warning(
-                "replay.global_chain_orphan",
-                event_id=str(evt["event_id"]),
-                global_seq=evt.get("global_seq"),
-                detail="no genesis event (no event with NULL prev_global_event_hash)",
-            )
-        return warnings, None
+    current_head_hex = ""
+    start_from_segment = False
 
-    current = genesis_events[0]
-    visited: set = set()
+    if not genesis_events:
+        genesis_seg = seg_by_prev.get("")
+        if genesis_seg is None:
+            for evt in events:
+                warnings += 1
+                log.warning(
+                    "replay.global_chain_orphan",
+                    event_id=str(evt["event_id"]),
+                    global_seq=evt.get("global_seq"),
+                    detail="no genesis event and no segment bridges from genesis",
+                )
+            return warnings, None
+        current_head_hex = bytes(genesis_seg["head_hash"]).hex()
+        start_from_segment = True
+
+    visited_events: set = set()
+    visited_segments: set = set()
+    last_event: dict | None = None
+    current: dict | None = genesis_events[0] if genesis_events else None
 
     while True:
+        if start_from_segment:
+            successors = link_map.get(current_head_hex, [])
+            if not successors:
+                bridging_seg = seg_by_prev.get(current_head_hex)
+                if bridging_seg is None:
+                    break
+                seg_id = bridging_seg.get("segment_id")
+                if seg_id in visited_segments:
+                    warnings += 1
+                    log.warning(
+                        "replay.global_chain_segment_cycle",
+                        segment_id=str(seg_id),
+                    )
+                    break
+                visited_segments.add(seg_id)
+                current_head_hex = bytes(bridging_seg["head_hash"]).hex()
+                continue
+            start_from_segment = False
+            current = successors[0]
+            if len(successors) > 1:
+                for s in successors[1:]:
+                    warnings += 1
+                    log.warning(
+                        "replay.global_chain_fork",
+                        event_id=str(s["event_id"]),
+                        global_seq=s.get("global_seq"),
+                        detail="multiple events chain from segment head",
+                    )
+
+        if current is None:
+            break
+
         eid = current["event_id"]
-        if eid in visited:
+        if eid in visited_events:
             warnings += 1
             log.warning(
                 "replay.global_chain_cycle",
@@ -132,7 +191,8 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
             )
             break
 
-        visited.add(eid)
+        visited_events.add(eid)
+        last_event = current
 
         env = current.get("canonical_envelope")
         sig = current.get("signature")
@@ -143,7 +203,21 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
         successors = link_map.get(head_hash.hex(), [])
 
         if not successors:
-            break
+            bridging_seg = seg_by_prev.get(head_hash.hex())
+            if bridging_seg is None:
+                break
+            seg_id = bridging_seg.get("segment_id")
+            if seg_id in visited_segments:
+                warnings += 1
+                log.warning(
+                    "replay.global_chain_segment_cycle",
+                    segment_id=str(seg_id),
+                )
+                break
+            visited_segments.add(seg_id)
+            current_head_hex = bytes(bridging_seg["head_hash"]).hex()
+            start_from_segment = True
+            continue
 
         if len(successors) > 1:
             for s in successors[1:]:
@@ -158,7 +232,7 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
         current = successors[0]
 
     for evt in events:
-        if evt["event_id"] not in visited:
+        if evt["event_id"] not in visited_events:
             warnings += 1
             log.warning(
                 "replay.global_chain_orphan",
@@ -167,7 +241,7 @@ def _verify_global_hash_chain(events: list[dict]) -> tuple[int, dict | None]:
                 detail="event not reachable from genesis via prev_global_event_hash links",
             )
 
-    return warnings, current
+    return warnings, last_event
 
 
 class _ReplayHaltError(RegistaError):
@@ -454,7 +528,20 @@ def _replay_inner(
         )
 
     if not scoped:
-        chain_warnings, chain_tail = _verify_global_hash_chain(all_events)
+        segment_rows: list[dict] = []
+        try:
+            segment_rows = conn.execute(
+                SQL(
+                    "SELECT segment_id, first_event_prev_hash, head_hash "
+                    "FROM event_segments ORDER BY first_global_seq"
+                )
+            ).fetchall()
+        except psycopg.errors.UndefinedTable:
+            pass
+
+        chain_warnings, chain_tail = _verify_global_hash_chain(
+            all_events, segments=segment_rows if segment_rows else None,
+        )
         total_warnings += chain_warnings
 
         if chain_tail is not None:

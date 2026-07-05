@@ -4,9 +4,14 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Plan 028 (Event-log retention & segment sealing):** `event_segments` table (migration 039) records sealed contiguous ranges of the global event chain. `sub.archive.seal(before_timestamp)` verifies global and per-work-item hash chains, signs a `segment_sealed` event, and stores the segment seal. Replay bridges across sealed ranges via `first_event_prev_hash` / `head_hash`, so older events can be moved out of the hot store without orphan warnings. CLI: `regista archive seal/verify/list`. Added `docs/retention.md`.
+
 ### Fixed
 
 - **BC-310:** Replay now runs at REPEATABLE READ isolation to prevent spurious drift/halt under concurrent writes. Spec §17.1 amended: mutating transactions remain READ COMMITTED; replay (read-only) is the sole exception. `ConnectionManager.transaction_repeatable_read()` uses `conn.isolation_level` for SSL-safe isolation setting.
+- **Plan 027 follow-up:** Added `AssuranceOps` facade (`sub.assurance.compute_assurance()` / `sub.assurance.gate_rationale()`) so review-assurance computations live in the ops layer alongside other Plan 007 facades. Top-level `compute_assurance()`/`gate_rationale()` delegate to the facade.
 - **BC-308:** `verify_event()` now filters backward-compat envelope candidates by the stored envelope's classified version — v4 events try only v4 candidates, v3 try v3/v4, v2 try v2/v3/v4. `classify_envelope_version()` v3 detection fixed to check any chain field (not just `prev_event_hash`). Dead code removed from non-chained branch.
 - **BC-306:** `entity_kind` validated at sidecar (`Literal["work_item"]` → 422 on unknown), core API, and InMemory boundaries. Allowed set centralized in `_contract.py`. Public API docstring corrected.
 - **BC-294:** Migration runner gains `repair_checksums()` (with advisory lock) and CLI `schema repair-checksums` command. `-- regista: autocommit` directive enables non-transactional migrations for `CREATE INDEX CONCURRENTLY`.
