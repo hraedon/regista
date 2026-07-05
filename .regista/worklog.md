@@ -4,6 +4,25 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-05 — Session 85: Adversarial review hardening of principal binding
+
+**Focus:** Adversarial review of Session 84's principal-binding fixes (commit 70da917), then correct the issues found.
+
+**Context:** Session 84 closed three gaps (validity window, UndefinedTable warning, key_id mismatch). This session ran an independent adversarial review, which found one HIGH and three MEDIUM issues. Fixed all four.
+
+**Delivered:**
+- `src/regista/_signing.py`: 
+  - HIGH-1 fix: `verify_event_with_principal_binding` now wraps `verify_fn` in `try/except Exception: return False`, matching the dict-path (replay) behavior. Previously a malformed event (None signature, missing field) would crash the public API.
+  - MEDIUM-3 fix: When an event's key_id matches a revoked principal key, the error is now `key-revoked` (not `key-id-mismatch`), so operators can distinguish compromise from substitution.
+  - MEDIUM-4 fix: When `event_key_id is None` and multiple keys exist, the pre-filtered candidate list is now analyzed directly for scheme/temporal diagnostics, instead of falling through to a generic `signature-verification-failed`.
+- `tests/test_signer_binding.py`: 6 new adversarial tests (24 total): revoked-key diagnostic, malformed-event no-crash, missing-timestamp fail-closed, pre-filtered temporal/scheme diagnostics, revoked-key core unit test.
+
+**Test results:** Full non-slow suite: 1500 passed, 1 skipped, 10 deselected. ruff clean. mypy --strict clean.
+
+**Breadcrumbs resolved:** None (adversarial review findings, not tracked breadcrumbs).
+
+---
+
 ## 2026-07-05 — Session 84: Close principal-binding gaps (validity window, key_id mismatch, UndefinedTable warning)
 
 **Focus:** Address the three gaps left open at the end of Session 83: principal binding ignored `valid_from`/`valid_to`, an `UndefinedTable` catch silently disabled binding, and there was no `key_id` binding check for asymmetric events.
