@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from ._api_base import _RegistaBase
 from ._errors import ErrorCode, RegistaError
 from ._types import Event
+
+if TYPE_CHECKING:
+    from ._assurance import AssuranceLevel, GateProfile
 
 _KNOWN_SPEC_SCHEMA_VERSIONS: frozenset[str] = frozenset()
 
@@ -84,6 +88,53 @@ class MetaApiMixin(_RegistaBase):
             "key_id": result.key_id,
             "error": result.error,
         }
+
+    def compute_assurance(self, work_item_id: uuid.UUID) -> AssuranceLevel:
+        """Compute the assurance level for a work item from its event log.
+
+        The assurance level is a pure view over the signed event history —
+        it is computed, never stored, so it can never disagree with the
+        record (Plan 027 WI-1.2).
+
+        Args:
+            work_item_id: The work item to inspect.
+
+        Returns:
+            The :class:`AssuranceLevel` derived from the event log.
+        """
+        from ._assurance import compute_assurance_level
+
+        self._require_open()
+        events = self.read_events(work_item_id=work_item_id, limit=10000)
+        return compute_assurance_level(events)
+
+    def gate_rationale(
+        self,
+        work_item_id: uuid.UUID,
+        *,
+        profile: GateProfile | str = "relaxed",
+    ) -> dict:
+        """Compute the gate rationale for a work item.
+
+        Explains why ``done`` was (or would be) permitted under the given
+        gate profile (Plan 027 WI-2.2).
+
+        Args:
+            work_item_id: The work item to inspect.
+            profile: Gate profile (``"relaxed"`` or ``"strict"``).
+
+        Returns:
+            Dict with ``profile``, ``reason``, ``assurance_level``,
+            ``reviewer_lineage``, and ``author_lineages``.
+        """
+        from ._assurance import GateProfile
+        from ._assurance import gate_rationale as _gate_rationale
+
+        self._require_open()
+        if isinstance(profile, str):
+            profile = GateProfile(profile)
+        events = self.read_events(work_item_id=work_item_id, limit=10000)
+        return _gate_rationale(events, profile)
 
     @staticmethod
     def validate_actor_metadata(

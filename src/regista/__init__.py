@@ -11,6 +11,11 @@ from ._api_claim import ClaimApiMixin
 from ._api_external import ExternalApiMixin
 from ._api_meta import MetaApiMixin
 from ._api_workflow import WorkflowApiMixin
+from ._assurance import AssuranceLevel as AssuranceLevel
+from ._assurance import GateProfile as GateProfile
+from ._assurance import compute_assurance_level as compute_assurance_level
+from ._assurance import gate_rationale as gate_rationale
+from ._assurance import same_lineage as same_lineage
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 from ._integrity import REGISTA_VERSION, check_integrity

@@ -1,6 +1,6 @@
 # Plan 027 — Review assurance: gate honesty under a single model
 
-**Status:** Proposed 2026-07-02
+**Status:** In progress 2026-07-05. Implementation started Session 86.
 **Author:** Claude (Fable 5), from the 2026-07-02 single-model deployment review
 **Strategic role:** The suite deploys **Claude-only at first**, which quietly
 weakens the family's central correctness mechanism. The canonical workflow's

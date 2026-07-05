@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import uuid
 
+from _helpers import DSN
+
 from regista._provision import (
     provision,
     provision_principal,
 )
-from tests.conftest import DSN
 
 
 def _drop_schema(project: str) -> None:

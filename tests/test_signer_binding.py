@@ -6,10 +6,10 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _helpers import DSN, WORKFLOW_PATH
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
-from tests.conftest import DSN, WORKFLOW_PATH
 
 
 def _generate_ed25519_keypair() -> tuple[bytes, bytes]:

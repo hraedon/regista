@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from regista._errors import RegistaError
@@ -83,3 +85,74 @@ class TestAvailableProviders:
             pass
         else:
             assert "vault" not in providers
+
+
+class TestKnownProviderDetection:
+    def test_windows_prefix_raises_on_non_windows(self):
+        if sys.platform == "win32":
+            pytest.skip("test only runs on non-Windows")
+        with pytest.raises(RegistaError) as exc_info:
+            resolve("windows:my_secret_target")
+        assert "SECRET_RESOLVE_FAILED" in str(exc_info.value)
+        assert "windows" in str(exc_info.value)
+
+    def test_vault_prefix_raises_without_hvac(self):
+        providers = available_providers()
+        if "vault" in providers:
+            pytest.skip("vault provider is available")
+        with pytest.raises(RegistaError) as exc_info:
+            resolve("vault:mount/path/key")
+        assert "SECRET_RESOLVE_FAILED" in str(exc_info.value)
+
+    def test_azure_prefix_raises_without_sdk(self):
+        providers = available_providers()
+        if "azure" in providers:
+            pytest.skip("azure provider is available")
+        with pytest.raises(RegistaError) as exc_info:
+            resolve("azure:my-secret")
+        assert "SECRET_RESOLVE_FAILED" in str(exc_info.value)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPAPI only")
+class TestWindowsProvider:
+    def test_round_trip(self):
+        from regista._secrets import protect_windows_secret, resolve
+
+        secret = b'{"key": "windows-test-value"}'
+        blob = protect_windows_secret(secret)
+        result = resolve(f"windows:{blob}")
+        assert result == secret
+
+    def test_binary_secret(self):
+        from regista._secrets import protect_windows_secret, resolve
+
+        secret = bytes(range(256))
+        blob = protect_windows_secret(secret)
+        result = resolve(f"windows:{blob}")
+        assert result == secret
+
+    def test_text_secret(self):
+        from regista._secrets import protect_windows_secret, resolve
+
+        secret = b"my-dsn-password-12345"
+        blob = protect_windows_secret(secret)
+        result = resolve(f"windows:{blob}")
+        assert result == secret
+
+    def test_invalid_base64_raises(self):
+        with pytest.raises(RegistaError) as exc_info:
+            resolve("windows:not-valid-base64!!!")
+        assert "INVALID_ARGUMENT" in str(exc_info.value)
+
+    def test_windows_in_available_providers(self):
+        providers = available_providers()
+        assert "windows" in providers
+
+    def test_protect_returns_base64(self):
+        import base64
+
+        from regista._secrets import protect_windows_secret
+
+        blob = protect_windows_secret(b"test")
+        decoded = base64.b64decode(blob)
+        assert len(decoded) > 0

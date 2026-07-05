@@ -4,10 +4,10 @@ import hashlib
 import uuid
 
 import pytest
+from _helpers import DSN, KEY_PATH
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
-from tests.conftest import DSN, KEY_PATH
 
 SPEC_YAML = """\
 name: test-project

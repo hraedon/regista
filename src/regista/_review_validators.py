@@ -132,7 +132,22 @@ def adversarial_review(ctx) -> None:
             )
 
 
-def human_gate(ctx, *, require_human: bool = False) -> None:
+def _last_adversarial_pass_lineage(prior_events) -> str | None:
+    last_pass = None
+    for event in prior_events:
+        if getattr(event, "transition", None) == "adversarial_pass":
+            last_pass = event
+    if last_pass is None:
+        return None
+    return _event_lineage(last_pass)
+
+
+def human_gate(
+    ctx,
+    *,
+    require_human: bool = False,
+    require_human_on_same_lineage: bool = False,
+) -> None:
     if require_human:
         if ctx.actor_kind != "human":
             raise ReviewRejected(
@@ -143,6 +158,25 @@ def human_gate(ctx, *, require_human: bool = False) -> None:
             ctx.prior_events
         )
         _check_separation_of_duties(ctx, author_ids, "human_gate")
+
+    if require_human_on_same_lineage:
+        from ._assurance import same_lineage
+
+        reviewer_lineage = _last_adversarial_pass_lineage(ctx.prior_events)
+        _author_ids, _author_kinds, author_lineages, _undeclared = derive_authors(
+            ctx.prior_events
+        )
+        if same_lineage(author_lineages, reviewer_lineage) and ctx.actor_kind != "human":
+            raise ReviewRejected(
+                "human_gate: same-lineage review requires a human acceptor "
+                "under the strict gate profile",
+                detail={
+                    "actor_id": ctx.actor_id,
+                    "actor_kind": ctx.actor_kind,
+                    "reviewer_lineage": reviewer_lineage,
+                    "author_lineages": sorted(author_lineages),
+                },
+            )
 
     _require_review_note(ctx, "human_gate")
 
@@ -173,7 +207,18 @@ def _human_gate_builtin(ctx) -> None:
             f"got {type(raw).__name__}",
             detail={"require_human": raw},
         )
-    human_gate(ctx, require_human=raw)
+    raw_same = params.get("require_human_on_same_lineage", False)
+    if not isinstance(raw_same, bool):
+        raise ReviewRejected(
+            f"human_gate: validator_params.require_human_on_same_lineage "
+            f"must be a boolean, got {type(raw_same).__name__}",
+            detail={"require_human_on_same_lineage": raw_same},
+        )
+    human_gate(
+        ctx,
+        require_human=raw,
+        require_human_on_same_lineage=raw_same,
+    )
 
 
 BUILTIN_REVIEW_VALIDATORS: dict[str, Callable] = {

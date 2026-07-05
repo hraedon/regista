@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -67,12 +69,18 @@ register_provider(FileProvider())
 register_provider(EnvProvider())
 register_provider(LiteralProvider())
 
+_KNOWN_PROVIDER_NAMES = frozenset(
+    {"file", "env", "literal", "vault", "azure", "windows"}
+)
+
 
 def _detect_prefix(ref: str) -> tuple[str, str]:
     if ":" not in ref:
         return "file", ref
     prefix, _, rest = ref.partition(":")
     if prefix in _PROVIDERS:
+        return prefix, rest
+    if prefix in _KNOWN_PROVIDER_NAMES:
         return prefix, rest
     if ref.startswith("/") or ref.startswith("~") or ref.startswith("."):
         return "file", ref
@@ -91,7 +99,7 @@ def resolve(ref: str) -> bytes:
     provider = _PROVIDERS.get(provider_name)
     if provider is None:
         raise RegistaError(
-            ErrorCode.SIGNING_SCHEME_NOT_FOUND,
+            ErrorCode.SECRET_RESOLVE_FAILED,
             f"Unknown secret provider: {provider_name!r}. "
             f"Available: {available_providers()}",
         )
@@ -207,3 +215,208 @@ def try_register_azure() -> None:
 
 try_register_vault()
 try_register_azure()
+
+
+def try_register_windows() -> None:
+    if sys.platform != "win32":
+        return
+
+    class WindowsProvider:
+        name: str = "windows"
+
+        def resolve(self, ref: str) -> bytes:
+            import base64
+
+            try:
+                encrypted = base64.b64decode(ref)
+            except Exception as e:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"windows: ref is not valid base64: {e!s}",
+                ) from e
+
+            try:
+                return _dpapi_unprotect_ctypes(encrypted)
+            except RegistaError:
+                return _dpapi_unprotect_dotnet(encrypted)
+
+    register_provider(WindowsProvider())
+
+
+_win_dpapi_cache: dict[str, Any] | None = None
+_win_dpapi_lock = threading.Lock()
+
+
+def _win_dpapi_bindings() -> dict[str, Any]:
+    global _win_dpapi_cache
+    if _win_dpapi_cache is not None:
+        return _win_dpapi_cache
+
+    with _win_dpapi_lock:
+        if _win_dpapi_cache is not None:
+            return _win_dpapi_cache
+
+    import ctypes
+    import ctypes.wintypes
+
+    class _DataBlob(ctypes.Structure):
+        _fields_ = [
+            ("cbData", ctypes.wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_char)),
+        ]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    crypt32.CryptProtectData.restype = ctypes.wintypes.BOOL
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        ctypes.wintypes.LPCWSTR,
+        ctypes.POINTER(_DataBlob),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptUnprotectData.restype = ctypes.wintypes.BOOL
+    crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        ctypes.wintypes.LPCWSTR,
+        ctypes.POINTER(_DataBlob),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(_DataBlob),
+    ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    _win_dpapi_cache = {
+        "ctypes": ctypes,
+        "crypt32": crypt32,
+        "kernel32": kernel32,
+        "data_blob": _DataBlob,
+        "cryptprotect_local_machine": 0x1,
+    }
+    return _win_dpapi_cache
+
+
+def _dpapi_unprotect_ctypes(encrypted: bytes) -> bytes:
+    b = _win_dpapi_bindings()
+    ctypes_mod = b["ctypes"]
+
+    in_blob = b["data_blob"]()
+    in_buf = ctypes_mod.create_string_buffer(encrypted, len(encrypted))
+    in_blob.cbData = len(encrypted)
+    in_blob.pbData = ctypes_mod.cast(in_buf, ctypes_mod.POINTER(ctypes_mod.c_char))
+
+    out_blob = b["data_blob"]()
+    ok = b["crypt32"].CryptUnprotectData(
+        ctypes_mod.byref(in_blob), None, None, None, None,
+        b["cryptprotect_local_machine"],
+        ctypes_mod.byref(out_blob),
+    )
+    if not ok:
+        err = ctypes_mod.get_last_error()
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"windows: CryptUnprotectData failed (Win32 error {err})",
+        )
+    try:
+        return ctypes_mod.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        b["kernel32"].LocalFree(out_blob.pbData)
+
+
+def _dpapi_protect_ctypes(data: bytes) -> bytes:
+    b = _win_dpapi_bindings()
+    ctypes_mod = b["ctypes"]
+
+    in_blob = b["data_blob"]()
+    in_buf = ctypes_mod.create_string_buffer(data, len(data))
+    in_blob.cbData = len(data)
+    in_blob.pbData = ctypes_mod.cast(in_buf, ctypes_mod.POINTER(ctypes_mod.c_char))
+
+    out_blob = b["data_blob"]()
+    ok = b["crypt32"].CryptProtectData(
+        ctypes_mod.byref(in_blob), None, None, None, None,
+        b["cryptprotect_local_machine"],
+        ctypes_mod.byref(out_blob),
+    )
+    if not ok:
+        err = ctypes_mod.get_last_error()
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"windows: CryptProtectData failed (Win32 error {err})",
+        )
+    try:
+        return ctypes_mod.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        b["kernel32"].LocalFree(out_blob.pbData)
+
+
+def _dpapi_unprotect_dotnet(encrypted: bytes) -> bytes:
+    import base64
+    import subprocess
+
+    b64_input = base64.b64encode(encrypted).decode("ascii")
+    ps_script = (
+        "Add-Type -AssemblyName System.Security;"
+        f"$b=[Convert]::FromBase64String('{b64_input}');"
+        "$d=[System.Security.Cryptography.ProtectedData]::Unprotect("
+        "$b,$null,[System.Security.Cryptography.DataProtectionScope]::LocalMachine);"
+        "[Convert]::ToBase64String($d)"
+    )
+    result = subprocess.run(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", ps_script],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            "windows: DPAPI unprotect via .NET failed",
+        )
+    return base64.b64decode(result.stdout.strip())
+
+
+def _dpapi_protect_dotnet(data: bytes) -> bytes:
+    import base64
+    import subprocess
+
+    b64_input = base64.b64encode(data).decode("ascii")
+    ps_script = (
+        "Add-Type -AssemblyName System.Security;"
+        f"$b=[Convert]::FromBase64String('{b64_input}');"
+        "$e=[System.Security.Cryptography.ProtectedData]::Protect("
+        "$b,$null,[System.Security.Cryptography.DataProtectionScope]::LocalMachine);"
+        "[Convert]::ToBase64String($e)"
+    )
+    result = subprocess.run(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", ps_script],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            "windows: DPAPI protect via .NET failed",
+        )
+    return base64.b64decode(result.stdout.strip())
+
+
+def protect_windows_secret(data: bytes) -> str:
+    if sys.platform != "win32":
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "windows: DPAPI protection is only available on win32",
+        )
+
+    import base64
+
+    try:
+        encrypted = _dpapi_protect_ctypes(data)
+    except RegistaError:
+        encrypted = _dpapi_protect_dotnet(data)
+    return base64.b64encode(encrypted).decode("ascii")
+
+
+try_register_windows()

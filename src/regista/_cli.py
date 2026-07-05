@@ -869,6 +869,38 @@ def cmd_secrets_resolve(args):
         _handle_error(e)
 
 
+def cmd_assurance(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    try:
+        work_item_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid work item ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        profile = "strict" if args.strict else "relaxed"
+        level = sub.compute_assurance(work_item_id)
+        rationale = sub.gate_rationale(work_item_id, profile=profile)
+        if args.json:
+            output = {
+                "assurance_level": level.value,
+                "rationale": rationale,
+            }
+            print(json.dumps(output, indent=2, sort_keys=True, default=str))
+        else:
+            print(f"Assurance level: {level.value}")
+            print(f"Profile:          {rationale['profile']}")
+            print(f"Reason:           {rationale['reason']}")
+            reviewer = rationale.get("reviewer_lineage")
+            print(f"Reviewer lineage: {reviewer or '(none)'}")
+            authors = rationale.get("author_lineages", [])
+            print(f"Author lineages:  {', '.join(authors) if authors else '(none)'}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def cmd_principal_list(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -1292,6 +1324,18 @@ def main(argv=None):
         help="List available secret providers",
     )
     sec_parser.set_defaults(func=cmd_secrets_resolve)
+
+    # assurance (Plan 027)
+    assurance_parser = subs.add_parser(
+        "assurance", help="Compute review assurance level for a work item",
+    )
+    assurance_parser.add_argument("id", help="Work item UUID")
+    assurance_parser.add_argument(
+        "--strict", action="store_true",
+        help="Use the strict gate profile (same-lineage review requires human accept)",
+    )
+    assurance_parser.add_argument("--json", action="store_true", help="JSON output")
+    assurance_parser.set_defaults(func=cmd_assurance)
 
     # principal (Plan 026)
     pr_parser = subs.add_parser("principal", help="Principal key registry commands")

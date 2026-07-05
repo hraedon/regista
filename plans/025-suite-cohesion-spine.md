@@ -1,6 +1,6 @@
 # Plan 025 — Suite cohesion: the spine's contracts
 
-**Status:** Proposed 2026-07-02
+**Status:** Implemented 2026-07-05. WI-1.1 through WI-4.3 landed (Sessions 80–83). Windows DPAPI provider added Session 86.
 **Author:** Claude (Fable 5), from the 2026-07-02 agent-suite deployment review
 **Strategic role:** regista is the spine every other suite member is a client of,
 so the contracts that let the suite deploy *as a suite* — one config vocabulary,

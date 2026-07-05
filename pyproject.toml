@@ -50,6 +50,7 @@ azure = [
     "azure-identity>=1.16",
     "azure-keyvault-secrets>=4.8",
 ]
+windows = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/regista"]
@@ -62,7 +63,7 @@ regista = "regista._cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "."]
+pythonpath = ["src", ".", "tests"]
 addopts = "-m 'not slow' --strict-markers"
 markers = [
     "slow: scale benchmarks, skipped by default",

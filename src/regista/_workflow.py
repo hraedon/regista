@@ -29,7 +29,7 @@ _SCHEMA_PATH = Path(__file__).parent / "_workflow_schema.json"
 _CANONICAL_WORKFLOW_PATH = Path(__file__).parent / "workflows" / "canonical.workflow.yaml"
 
 
-def canonical_workflow_yaml() -> str:
+def canonical_workflow_yaml(strict: bool = False) -> str:
     """Return the canonical agentic-lifecycle workflow YAML.
 
     This is the single workflow definition both faces of the stack (dossier =
@@ -37,8 +37,22 @@ def canonical_workflow_yaml() -> str:
     one shared workflow instead of per-face copies. Register the exact bytes
     with ``reg.register_workflow(canonical_workflow_yaml())``; registration is
     idempotent. See dossier ``plans/010-unify-canonical-workflow.md``.
+
+    Args:
+        strict: If True, returns the strict gate-profile variant where
+            same-lineage adversarial review requires a human acceptor to
+            reach ``done`` (Plan 027). Cross-lineage review is unaffected.
+            The relaxed default (homelab) permits any actor to accept after
+            any adversarial pass.
     """
-    return _CANONICAL_WORKFLOW_PATH.read_text(encoding="utf-8")
+    raw = _CANONICAL_WORKFLOW_PATH.read_text(encoding="utf-8")
+    if not strict:
+        return raw
+    return raw.replace(
+        "    validator_params:\n      require_human: false\n",
+        "    validator_params:\n      require_human: false\n"
+        "      require_human_on_same_lineage: true\n",
+    )
 
 
 def _require_unique(items: list, label: str, key_fn=None) -> None:

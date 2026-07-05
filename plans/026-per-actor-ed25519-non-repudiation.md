@@ -1,6 +1,6 @@
 # Plan 026 — Per-actor Ed25519 signing (non-repudiation for the multi-user suite)
 
-**Status:** Proposed 2026-07-02
+**Status:** Implemented 2026-07-05. WI-1.1–2.2 landed (Sessions 80–85); principal binding hardened (Sessions 84–85).
 **Author:** Claude (Fable 5), from the 2026-07-02 agent-suite deployment review
 **Strategic role:** Promote per-actor cryptographic non-repudiation to **v1** of
 the suite. Today regista can sign an event log with *a* key; the multi-user suite

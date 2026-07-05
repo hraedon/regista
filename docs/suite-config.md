@@ -55,8 +55,38 @@ that provided it, e.g. `"REGISTA_DSN": "env"`, `"REGISTA_KEY_PATH": "user:/home/
 | `literal:` | `literal:plain-text-value` | Return the literal string as bytes |
 | `vault:` | `vault:secret/data/regista/key` | HashiCorp Vault KV v2 (requires `pip install regista[vault]`) |
 | `azure:` | `azure:key-name` | Azure Key Vault (requires `pip install regista[azure]`) |
+| `windows:` | `windows:AQAAANCMnd8BFdERjHoAwE/...` | Windows DPAPI-protected blob (base64). Auto-available on win32; uses `CRYPTPROTECT_LOCAL_MACHINE` scope. Encrypt with `regista._secrets.protect_windows_secret(data)`. |
 
 If no prefix is recognized, the resolver treats the value as a file path.
+
+### Windows DPAPI provider
+
+The `windows:` provider decrypts a base64-encoded DPAPI blob using the
+machine key (`CRYPTPROTECT_LOCAL_MACHINE`). This works in any Windows session
+type — interactive, service, or SSH — because the machine key is always
+available. The encryption side (`protect_windows_secret`) tries the fast
+ctypes path first and falls back to .NET/PowerShell if the user profile
+isn't loaded (e.g. non-interactive SSH sessions).
+
+To create a DPAPI-protected secret:
+
+```python
+from regista._secrets import protect_windows_secret
+
+blob = protect_windows_secret(b"my-dsn-password")
+# blob is a base64 string — store it in an env var or config file
+# Then reference it as: windows:<blob>
+```
+
+Or via PowerShell:
+
+```powershell
+Add-Type -AssemblyName System.Security
+$bytes = [System.Text.Encoding]::UTF8.GetBytes("my-dsn-password")
+$encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
+    $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+[Convert]::ToBase64String($encrypted)
+```
 
 ### Available providers
 

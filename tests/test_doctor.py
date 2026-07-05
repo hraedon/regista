@@ -56,7 +56,7 @@ class TestRunDoctor:
         assert db_check.status == "fail"
 
     def test_reachable_db_with_no_projects(self):
-        from tests.conftest import DSN
+        from _helpers import DSN
 
         report = run_doctor(DSN)
         assert report.reachable is True
@@ -65,9 +65,10 @@ class TestRunDoctor:
     def test_with_project_checks_schema(self):
         import uuid
 
+        from _helpers import DSN, KEY_PATH
+
         from regista import Regista
         from regista.testing import drop_project_schema
-        from tests.conftest import DSN, KEY_PATH
 
         project = f"test_doc_{uuid.uuid4().hex[:8]}"
         Regista.create_project(DSN, project, KEY_PATH)

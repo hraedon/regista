@@ -333,6 +333,21 @@ class InMemWorkflowMixin(_InMemoryBase):
             work_item_id=work_item_id,
         )
 
+    def compute_assurance(self, work_item_id: uuid.UUID):
+        from ._assurance import compute_assurance_level
+
+        events = self.read_events(work_item_id=work_item_id, limit=10000)
+        return compute_assurance_level(events)
+
+    def gate_rationale(self, work_item_id: uuid.UUID, *, profile: str = "relaxed") -> dict:
+        from ._assurance import GateProfile
+        from ._assurance import gate_rationale as _gate_rationale
+
+        if isinstance(profile, str):
+            profile = GateProfile(profile)
+        events = self.read_events(work_item_id=work_item_id, limit=10000)
+        return _gate_rationale(events, profile)
+
     def _resolve_wf_def(self, workflow_name: str) -> tuple[dict, WorkflowDefinition, int]:
         versions = [(k, v) for k, v in self._workflows.items() if k[0] == workflow_name]
         if not versions:

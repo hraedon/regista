@@ -640,4 +640,16 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         events = regista.read_spec_events(spec_id=sid, limit=limit)
         return _serialize(events)
 
+    @router.get("/work-items/{work_item_id}/assurance")
+    def get_assurance(work_item_id: str, request: Request):
+        get_actor(request)
+        wi_id = _parse_uuid(work_item_id)
+        profile = request.query_params.get("profile", "relaxed")
+        level = regista.compute_assurance(wi_id)
+        rationale = regista.gate_rationale(wi_id, profile=profile)
+        return {
+            "assurance_level": level.value,
+            "rationale": _serialize(rationale),
+        }
+
     app.include_router(router)

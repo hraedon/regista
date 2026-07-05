@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from enum import StrEnum
+from types import SimpleNamespace
+from typing import Any
+
+
+class AssuranceLevel(StrEnum):
+    NONE = "none"
+    SELF_REVIEWED = "self_reviewed"
+    INDEPENDENTLY_REVIEWED = "independently_reviewed"
+    HUMAN_ACCEPTED = "human_accepted"
+    INDEPENDENT_AND_ACCEPTED = "independently_and_accepted"
+
+
+class GateProfile(StrEnum):
+    RELAXED = "relaxed"
+    STRICT = "strict"
+
+
+_REVIEW_VERDICTS = frozenset(
+    {"accept", "request_changes", "adversarial_pass", "reject", "comment"}
+)
+
+
+def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> bool:
+    if not reviewer_lineage:
+        return False
+    if not author_lineages:
+        return False
+    return reviewer_lineage in author_lineages
+
+
+def _event_lineage(event: Any) -> str | None:
+    meta = getattr(event, "actor_metadata", None)
+    if isinstance(meta, dict):
+        lineage = meta.get("model_lineage")
+        if lineage:
+            return str(lineage)
+    return None
+
+
+def _extract_author_lineages(events: Sequence[Any]) -> set[str]:
+    author_lineages: set[str] = set()
+    for event in events:
+        transition = getattr(event, "transition", None)
+        if transition in _REVIEW_VERDICTS:
+            continue
+        lineage = _event_lineage(event)
+        if lineage:
+            author_lineages.add(lineage)
+        delegation = getattr(event, "on_behalf_of", None)
+        if isinstance(delegation, dict):
+            principal_lineage = delegation.get("principal_lineage")
+            if principal_lineage:
+                author_lineages.add(str(principal_lineage))
+    return author_lineages
+
+
+def compute_assurance_level(events: Sequence[Any]) -> AssuranceLevel:
+    author_lineages = _extract_author_lineages(events)
+
+    last_pass_idx = -1
+    for i, e in enumerate(events):
+        if getattr(e, "transition", None) == "adversarial_pass":
+            last_pass_idx = i
+
+    if last_pass_idx < 0:
+        return AssuranceLevel.NONE
+
+    last_pass = events[last_pass_idx]
+    reviewer_lineage = _event_lineage(last_pass)
+    is_same = same_lineage(author_lineages, reviewer_lineage)
+
+    accept_events = [
+        e for i, e in enumerate(events)
+        if getattr(e, "transition", None) == "accept" and i > last_pass_idx
+    ]
+    if not accept_events:
+        if is_same:
+            return AssuranceLevel.SELF_REVIEWED
+        return AssuranceLevel.INDEPENDENTLY_REVIEWED
+
+    last_accept = accept_events[-1]
+    accepter_kind = getattr(last_accept, "actor_kind", None)
+    human_accepted = accepter_kind == "human"
+
+    if human_accepted:
+        if is_same:
+            return AssuranceLevel.HUMAN_ACCEPTED
+        return AssuranceLevel.INDEPENDENT_AND_ACCEPTED
+
+    if is_same:
+        return AssuranceLevel.SELF_REVIEWED
+    return AssuranceLevel.INDEPENDENTLY_REVIEWED
+
+
+def compute_assurance_level_from_dicts(
+    events: Sequence[dict[str, Any]],
+) -> AssuranceLevel:
+    converted: list[SimpleNamespace] = []
+    for e in events:
+        converted.append(
+            SimpleNamespace(
+                transition=e.get("transition"),
+                actor_id=e.get("actor_id", ""),
+                actor_kind=e.get("actor_kind", ""),
+                actor_metadata=e.get("actor_metadata"),
+                on_behalf_of=e.get("on_behalf_of"),
+                payload=e.get("payload"),
+            )
+        )
+    return compute_assurance_level(converted)
+
+
+def gate_rationale(
+    events: Sequence[Any],
+    profile: GateProfile | str,
+) -> dict[str, Any]:
+    if isinstance(profile, str):
+        try:
+            profile = GateProfile(profile)
+        except ValueError as exc:
+            from ._errors import ErrorCode, RegistaError
+
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Unknown gate profile: {profile!r}. Valid: {[p.value for p in GateProfile]}",
+            ) from exc
+
+    author_lineages = _extract_author_lineages(events)
+
+    last_pass_idx = -1
+    for i, e in enumerate(events):
+        if getattr(e, "transition", None) == "adversarial_pass":
+            last_pass_idx = i
+
+    if last_pass_idx < 0:
+        close_events = [
+            e for e in events if getattr(e, "transition", None) == "close_from_open"
+        ]
+        if close_events:
+            reason = "close_from_open"
+        else:
+            reason = "not_done"
+        return {
+            "profile": profile.value,
+            "reason": reason,
+            "assurance_level": AssuranceLevel.NONE,
+            "reviewer_lineage": None,
+            "author_lineages": sorted(author_lineages),
+        }
+
+    last_pass = events[last_pass_idx]
+    reviewer_lineage = _event_lineage(last_pass)
+    is_same = same_lineage(author_lineages, reviewer_lineage)
+
+    accept_events = [
+        e for i, e in enumerate(events)
+        if getattr(e, "transition", None) == "accept" and i > last_pass_idx
+    ]
+
+    if not accept_events:
+        level = (
+            AssuranceLevel.SELF_REVIEWED
+            if is_same
+            else AssuranceLevel.INDEPENDENTLY_REVIEWED
+        )
+        return {
+            "profile": profile.value,
+            "reason": "not_done",
+            "assurance_level": level,
+            "reviewer_lineage": reviewer_lineage,
+            "author_lineages": sorted(author_lineages),
+        }
+
+    last_accept = accept_events[-1]
+    accepter_kind = getattr(last_accept, "actor_kind", None)
+    human_accepted = accepter_kind == "human"
+
+    if not is_same:
+        reason = "cross_lineage_review"
+    elif human_accepted:
+        reason = "human_accept_for_same_lineage"
+    else:
+        reason = "same_lineage_acknowledged"
+
+    level = compute_assurance_level(events)
+
+    return {
+        "profile": profile.value,
+        "reason": reason,
+        "assurance_level": level,
+        "reviewer_lineage": reviewer_lineage,
+        "author_lineages": sorted(author_lineages),
+    }
+
+
+def gate_permits_done(rationale: dict[str, Any]) -> bool:
+    reason = rationale.get("reason")
+    profile = rationale.get("profile")
+
+    if reason == "close_from_open":
+        return True
+    if reason == "not_done":
+        return False
+    if reason == "cross_lineage_review":
+        return True
+    if reason == "human_accept_for_same_lineage":
+        return True
+    if reason == "same_lineage_acknowledged":
+        return profile == GateProfile.RELAXED.value
+    return False
