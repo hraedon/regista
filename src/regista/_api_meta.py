@@ -305,3 +305,127 @@ class MetaApiMixin(_RegistaBase):
                     [limit],
                 ).fetchall()
             return [_row_to_event(r) for r in rows]
+
+    def enroll_principal(
+        self,
+        principal_id: str,
+        *,
+        actor_id: str = "system",
+        actor_kind: str = "system",
+        actor_metadata: dict | None = None,
+        private_key_dir: str | None = None,
+    ) -> dict:
+        """Provision and register an Ed25519 keypair for a principal.
+
+        Reuses :func:`regista._provision.provision_principal` for key
+        generation, custody, and registry insertion, then emits a signed
+        ``principal_enrolled`` event into the audit chain. The event is
+        emitted only when no ``principal_enrolled`` event already exists for
+        the active key, so a re-enrollment after a prior event-append failure
+        repairs the chain rather than short-circuiting forever (Plan 026
+        WI-3.3); a normal re-enroll of an already-recorded principal is a
+        no-op that emits no duplicate event.
+
+        Args:
+            principal_id: Identifier for the principal.
+            actor_id: Actor performing the enrollment (default ``"system"``).
+            actor_kind: ``"agent"`` | ``"human"`` | ``"system"``.
+            actor_metadata: Optional JSONB metadata.
+            private_key_dir: Optional directory for the private key file.
+                Defaults to a ``principals`` subdirectory next to the key file.
+
+        Returns:
+            Dict from :class:`regista._provision.PrincipalProvisionResult`.
+
+        Raises:
+            RegistaError: If ``principal_id`` is invalid or key custody fails.
+        """
+        from ._observability import OpTimer
+        from ._principal_keys import principal_entity_id
+        from ._provision import provision_principal
+
+        self._require_open()
+
+        timer = OpTimer(self.project, "enroll_principal")
+        result = provision_principal(
+            self._mgr.dsn,
+            self._project,
+            principal_id,
+            hmac_key_path=self._hmac_key_path,
+            private_key_dir=private_key_dir,
+        )
+
+        existing = self.read_principal_enrollment_events(
+            principal_id=principal_id, limit=100
+        )
+        already_recorded = any(
+            (e.payload or {}).get("key_id") == result.key_id for e in existing
+        )
+        if not already_recorded:
+            entity_id = principal_entity_id(principal_id)
+            payload = {
+                "principal_id": principal_id,
+                "key_id": result.key_id,
+                "fingerprint": result.fingerprint,
+                "scheme": result.scheme,
+            }
+            self.append_event(
+                entity_id,
+                actor_id,
+                actor_kind,
+                actor_metadata,
+                transition="principal_enrolled",
+                payload=payload,
+                entity_kind="principal",
+            )
+
+        timer.log(
+            "noop" if already_recorded else "ok",
+            principal_id=principal_id,
+            key_id=result.key_id,
+        )
+        return result.to_dict()
+
+    def read_principal_enrollment_events(
+        self,
+        *,
+        principal_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Event]:
+        """Read principal-enrollment events from the project.
+
+        Args:
+            principal_id: Filter to a specific principal. If omitted,
+                returns all principal enrollment events (most recent first).
+            limit: Maximum events to return.
+
+        Returns:
+            List of ``Event`` objects with ``entity_kind="principal"``.
+        """
+        self._require_open()
+        from psycopg.sql import SQL
+
+        from ._events import _EVENT_FIELDS, _row_to_event
+        from ._principal_keys import principal_entity_id
+
+        with self._mgr.transaction() as conn:
+            if principal_id is not None:
+                entity_id = principal_entity_id(principal_id)
+                rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE entity_kind = 'principal' AND entity_id = %s "
+                        "ORDER BY event_seq ASC LIMIT %s"
+                    ),
+                    [entity_id, limit],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE entity_kind = 'principal' "
+                        "ORDER BY timestamp DESC, event_seq DESC LIMIT %s"
+                    ),
+                    [limit],
+                ).fetchall()
+            return [_row_to_event(r) for r in rows]

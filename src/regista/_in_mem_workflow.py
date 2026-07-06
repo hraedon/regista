@@ -461,3 +461,39 @@ class InMemWorkflowMixin(_InMemoryBase):
         else:
             spec_events.sort(key=lambda e: (e.timestamp, e.event_seq), reverse=True)
         return spec_events[:limit]
+
+    def enroll_principal(
+        self,
+        principal_id: str,
+        *,
+        actor_id: str = "system",
+        actor_kind: str = "system",
+        actor_metadata: dict | None = None,
+        private_key_dir: str | None = None,
+    ) -> dict:
+        raise NotImplementedError(
+            "Principal enrollment requires the Postgres backend; "
+            "InMemoryRegista has no principal-keys registry"
+        )
+
+    def read_principal_enrollment_events(
+        self,
+        *,
+        principal_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Event]:
+        all_events: list[Event] = []
+        for evts in self._store.events.values():
+            all_events.extend(evts)
+        principal_events = [e for e in all_events if e.entity_kind == "principal"]
+        if principal_id is not None:
+            from ._principal_keys import principal_entity_id
+
+            entity_id = principal_entity_id(principal_id)
+            principal_events = [
+                e for e in principal_events if e.effective_entity_id == entity_id
+            ]
+            principal_events.sort(key=lambda e: e.event_seq)
+        else:
+            principal_events.sort(key=lambda e: (e.timestamp, e.event_seq), reverse=True)
+        return principal_events[:limit]

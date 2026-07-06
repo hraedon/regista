@@ -161,6 +161,7 @@ class Regista(
                 ErrorCode.UNKNOWN_KEY_ID,
                 "hmac_key_path is required",
             )
+        self._hmac_key_path = hmac_key_path
         self._mgr = ConnectionManager(
             dsn, project, pool_min=pool_min, pool_max=pool_max,
             pool_max_lifetime=pool_max_lifetime, require_ssl=require_ssl,

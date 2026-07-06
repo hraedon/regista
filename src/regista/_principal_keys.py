@@ -52,6 +52,10 @@ def _generate_key_id() -> str:
     return f"pk_{uuid.uuid4().hex[:16]}"
 
 
+def principal_entity_id(principal_id: str) -> uuid.UUID:
+    return uuid.uuid5(uuid.NAMESPACE_OID, f"principal:{principal_id}")
+
+
 def register_principal_key(
     mgr: ConnectionManager,
     principal_id: str,

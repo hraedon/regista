@@ -38,6 +38,7 @@ class PrincipalProvisionResult:
     project: str
     key_id: str
     fingerprint: str
+    scheme: str
     private_key_stored: bool
     public_key_registered: bool
     already_existed: bool = False
@@ -49,6 +50,7 @@ class PrincipalProvisionResult:
             "project": self.project,
             "key_id": self.key_id,
             "fingerprint": self.fingerprint,
+            "scheme": self.scheme,
             "private_key_stored": self.private_key_stored,
             "public_key_registered": self.public_key_registered,
             "already_existed": self.already_existed,
@@ -289,6 +291,7 @@ def provision_principal(
             project=project,
             key_id="(dry-run)",
             fingerprint="(dry-run)",
+            scheme="ed25519",
             private_key_stored=False,
             public_key_registered=False,
         )
@@ -308,6 +311,7 @@ def provision_principal(
                 project=project,
                 key_id=existing.key_id,
                 fingerprint=existing.fingerprint,
+                scheme=existing.scheme,
                 private_key_stored=False,
                 public_key_registered=False,
                 already_existed=True,
@@ -356,6 +360,7 @@ def provision_principal(
             project=project,
             key_id=entry.key_id,
             fingerprint=entry.fingerprint,
+            scheme=entry.scheme,
             private_key_stored=True,
             public_key_registered=True,
         )

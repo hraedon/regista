@@ -1048,6 +1048,30 @@ def cmd_principal_register(args):
         sub.close()
 
 
+def cmd_principal_enroll(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        result = sub.enroll_principal(
+            args.principal,
+            private_key_dir=args.private_key_dir,
+        )
+        if args.json:
+            _dump_json(result)
+        else:
+            if result["already_existed"]:
+                print(f"Principal {result['principal_id']} already has an active key:")
+            else:
+                print(f"Enrolled principal {result['principal_id']}:")
+            print(f"  key_id:      {result['key_id']}")
+            print(f"  fingerprint: {result['fingerprint']}")
+            print(f"  scheme:      {result['scheme']}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def cmd_principal_revoke(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -1471,6 +1495,10 @@ def main(argv=None):
     pr_reg.add_argument("--key-id", help="Optional key ID")
     pr_reg.add_argument("--registered-by", help="Who is registering this key")
     pr_reg.set_defaults(func=cmd_principal_register)
+    pr_enroll = pr_sub.add_parser("enroll", help="Issue and register a per-principal Ed25519 key")
+    pr_enroll.add_argument("--principal", required=True, help="Principal ID")
+    pr_enroll.add_argument("--private-key-dir", help="Directory for private key files")
+    pr_enroll.set_defaults(func=cmd_principal_enroll)
     pr_revoke = pr_sub.add_parser("revoke", help="Revoke a principal key")
     pr_revoke.add_argument("--principal", required=True, help="Principal ID")
     pr_revoke.add_argument("--key-id", required=True, help="Key ID to revoke")

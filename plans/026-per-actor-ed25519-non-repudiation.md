@@ -1,6 +1,6 @@
 # Plan 026 — Per-actor Ed25519 signing (non-repudiation for the multi-user suite)
 
-**Status:** Implemented 2026-07-05. WI-1.1–2.2 landed (Sessions 80–85); principal binding hardened (Sessions 84–85).
+**Status:** Implemented 2026-07-06. WI-1.1–3.3 landed (Sessions 80–86); principal binding and enrollment lifecycle complete.
 **Author:** Claude (Fable 5), from the 2026-07-02 agent-suite deployment review
 **Strategic role:** Promote per-actor cryptographic non-repudiation to **v1** of
 the suite. Today regista can sign an event log with *a* key; the multi-user suite
@@ -120,14 +120,18 @@ plan defines).
   describes the migration + the guarantee's honest boundary (it proves *who signed*,
   not that what they wrote is *true*).
 
-### WI-3.3 — Enrollment, escrow, and break-glass (the lifecycle mechanics)
+### WI-3.3 — Enrollment, escrow, and break-glass (the lifecycle mechanics) ✅ Landed
 - The mechanics the human key-lifecycle UX (dossier Plan 015) and operational
   runbook (agent-suite Plan 001) sit on:
-  - **Enrollment** — `regista enroll-principal --principal <id>` (used by
-    provisioning and by a new-user onboarding): issue keypair, private key → secret
-    backend, public key → registry, emit a signed enrollment event. **Humans never
-    handle raw key material** — the private key lives in the backend and a face signs
-    on the authenticated human's behalf; the human sees only a public fingerprint.
+  - **Enrollment** — `regista principal enroll --principal <id>` and
+    ``Regista.enroll_principal(...)``: issue keypair, private key → secret
+    backend (file: by default), public key → registry, emit a signed enrollment
+    event with ``entity_kind="principal"``, ``transition="principal_enrolled"``.
+    Reuses ``provision_principal`` for custody and short-circuits when an active
+    key already exists, so re-enrollment is idempotent and emits no duplicate
+    event. **Humans never handle raw key material** — the private key lives in the
+    backend and a face signs on the authenticated human's behalf; the human sees
+    only a public fingerprint.
   - **Escrow / backup** — the private key's durability is the secret backend's own
     backup (Vault/AKV DR); the *registry* (public keys) rides the store's DR
     (Plan 001). An optional **break-glass escrow** seals a recovery key under

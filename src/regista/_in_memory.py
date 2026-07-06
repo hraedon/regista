@@ -53,6 +53,7 @@ class InMemoryRegista(
         witness_transport: Callable[..., TransportResult] | None = None,
     ) -> None:
         self._project = project
+        self._hmac_key_path = hmac_key_path
         self._key_set: KeySet | None = None
         if hmac_key_path:
             self._key_set = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)

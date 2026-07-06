@@ -150,6 +150,8 @@ sub.replay(continue_on_revoked=True)  # skip revoked-key events with warnings
 sub.replay(verify_principal_binding=True)  # verify event signatures against principal_keys registry (Plan 026 WI-2.2)
 sub.sign_spec(spec_yaml, spec_md_hash, spec_schema_version, actor_id, ...)  # sign spec.yaml as founding artifact (Plan 025 WI-4.3)
 sub.read_spec_events(spec_id=None, limit=100)  # read spec-entity events (Plan 025 WI-4.3)
+sub.enroll_principal(principal_id, *, actor_id="system", private_key_dir=None)  # issue+register Ed25519 keypair, emit signed enrollment event (Plan 026 WI-3.3)
+sub.read_principal_enrollment_events(principal_id=None, limit=100)  # read principal enrollment events (Plan 026 WI-3.3)
 sub.close()
 
 # Phase 2 — hooks, validators, escalation, lint
