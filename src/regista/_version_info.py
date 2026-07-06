@@ -7,7 +7,7 @@ from typing import Any
 
 from ._integrity import REGISTA_VERSION
 
-SCHEMA_VERSION: int = 39
+SCHEMA_VERSION: int = 40
 ENVELOPE_VERSION: int = 4
 
 
