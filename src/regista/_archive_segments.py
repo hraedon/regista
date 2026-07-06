@@ -110,66 +110,91 @@ def _verify_global_chain(
     events: list[Event],
     anchor_hash: bytes | None = None,
 ) -> tuple[bool, str, Event | None]:
-    """Verify that *events* form a single chain starting from *anchor_hash*.
+    """Verify the global hash chain within *events*.
 
-    If *anchor_hash* is ``None``, the chain must start with an event whose
-    ``prev_global_event_hash`` is ``None`` (the global genesis).  Otherwise it
-    must start with the one event whose ``prev_global_event_hash`` equals
-    *anchor_hash*.  Returns the chain-tail event so callers can use the real
-    chain end rather than an arbitrary ordering.
+    When *anchor_hash* is ``None``, the chain must start with an event whose
+    ``prev_global_event_hash`` is ``None`` (the global genesis).  Otherwise the
+    first event (by ``global_seq``) must have ``prev_global_event_hash`` equal
+    to *anchor_hash*.
+
+    With terminal-only sealing (Finding 2), the selected events may not form a
+    single contiguous global chain — events from non-terminal work-items are
+    excluded, creating gaps.  This function handles non-contiguous chains by
+    accepting *bridge points*: events whose ``prev_global_event_hash`` does not
+    match any event within the set are treated as chain-fragment starts that
+    link from outside the segment.
+
+    Returns ``(ok, error, tail)`` where *tail* is the event with the highest
+    ``global_seq`` among all chain-fragment tails (or ``None`` if empty).
     """
     if not events:
         return True, "", None
 
     link_map: dict[str, list[Event]] = {}
-    heads: list[Event] = []
+    event_hashes: set[bytes] = set()
     for evt in events:
+        head = _hash_event(evt)
+        if head is not None:
+            event_hashes.add(head)
         prev = evt.prev_global_event_hash
         prev_hex = bytes(prev).hex() if prev is not None else ""
         link_map.setdefault(prev_hex, []).append(evt)
 
-        if anchor_hash is None:
-            if prev is None:
-                heads.append(evt)
-        else:
-            if prev is not None and _hmac.compare_digest(bytes(prev), anchor_hash):
-                heads.append(evt)
+    if anchor_hash is not None:
+        sorted_by_seq = sorted(events, key=lambda e: e.global_seq or 0)
+        first_evt = sorted_by_seq[0]
+        if first_evt.prev_global_event_hash is None:
+            return False, "anchor expected but first event has null prev_global_event_hash", None
+        if not _hmac.compare_digest(bytes(first_evt.prev_global_event_hash), anchor_hash):
+            return False, "first event's prev_global_event_hash does not match anchor", None
 
-    if not heads:
-        return False, "no event chains from the given anchor", None
-    if len(heads) > 1:
-        return False, f"expected one chain start, found {len(heads)} forks", None
+    entry_points: list[Event] = []
+    for evt in events:
+        prev = evt.prev_global_event_hash
+        if prev is None:
+            if anchor_hash is not None:
+                continue
+            entry_points.append(evt)
+        elif bytes(prev) not in event_hashes:
+            entry_points.append(evt)
 
-    current = heads[0]
+    if not entry_points:
+        return False, "no chain entry points found (no genesis or bridge events)", None
+
     visited: set[uuid.UUID] = set()
+    tails: list[Event] = []
 
-    while True:
-        if current.event_id in visited:
-            return False, f"cycle detected at event {current.event_id}", None
-        visited.add(current.event_id)
-
-        head = _hash_event(current)
-        if head is None:
-            return (
-                False,
-                f"event {current.event_id} missing canonical_envelope or signature",
-                None,
-            )
-
-        successors = link_map.get(head.hex(), [])
-        if not successors:
-            break
-        current = successors[0]
+    for entry in entry_points:
+        current: Event | None = entry
+        while current is not None:
+            if current.event_id in visited:
+                break
+            visited.add(current.event_id)
+            head = _hash_event(current)
+            if head is None:
+                return (
+                    False,
+                    f"event {current.event_id} missing canonical_envelope or signature",
+                    None,
+                )
+            successors = link_map.get(head.hex(), [])
+            if not successors:
+                tails.append(current)
+                break
+            if len(successors) > 1:
+                return False, f"fork detected at event {current.event_id}", None
+            current = successors[0]
 
     if len(visited) != len(events):
         unvisited = [e for e in events if e.event_id not in visited]
         return (
             False,
-            f"{len(unvisited)} event(s) not reachable from chain start",
+            f"{len(unvisited)} event(s) not reachable from any entry point",
             None,
         )
 
-    return True, "", current
+    tails.sort(key=lambda e: e.global_seq or 0, reverse=True)
+    return True, "", tails[0] if tails else None
 
 
 def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
@@ -182,13 +207,22 @@ def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
 
     for (ek, eid), entity_events in by_entity.items():
         entity_events.sort(key=lambda e: e.event_seq)
+
+        entity_event_hashes: set[bytes] = set()
+        for evt in entity_events:
+            head = _hash_event(evt)
+            if head is not None:
+                entity_event_hashes.add(head)
+
         prev_hash: bytes | None = None
         for i, evt in enumerate(entity_events):
             if i == 0:
                 if evt.prev_event_hash is not None:
-                    return False, (
-                        f"first event for {ek}/{eid} has non-null prev_event_hash"
-                    )
+                    if bytes(evt.prev_event_hash) in entity_event_hashes:
+                        return False, (
+                            f"first event for {ek}/{eid} references an event "
+                            f"within the segment — slice is incomplete"
+                        )
             else:
                 if evt.prev_event_hash is None:
                     return False, (
@@ -246,12 +280,33 @@ def seal_segment(
     archive_path: str | None = None,
 ) -> dict:
     with mgr.transaction() as conn:
+        conn.execute(SQL("LOCK TABLE event_segments IN EXCLUSIVE MODE"))
+
         rows = conn.execute(
             SQL(
-                f"SELECT {_EVENT_FIELDS} FROM events "
-                "WHERE timestamp < %s ORDER BY global_seq"
+                f"SELECT {_EVENT_FIELDS} FROM events e "
+                "WHERE e.timestamp < %s "
+                "AND e.entity_kind != 'segment' "
+                "AND e.work_item_id IN ("
+                "  SELECT wic.work_item_id FROM work_items_current wic "
+                "  JOIN workflow_registry wr "
+                "    ON wr.workflow_name = wic.workflow_name "
+                "    AND wr.version = wic.workflow_version "
+                "  WHERE wic.current_state IN ("
+                "    SELECT jsonb_array_elements_text(wr.definition -> 'terminal_states')"
+                "  ) "
+                "  AND wic.work_item_id IN ("
+                "    SELECT work_item_id FROM events "
+                "    GROUP BY work_item_id HAVING max(timestamp) < %s"
+                "  )"
+                ") "
+                "AND e.work_item_id NOT IN ("
+                "  SELECT UNNEST(work_item_ids) FROM event_segments"
+                "  WHERE work_item_ids != '{}'"
+                ") "
+                "ORDER BY e.global_seq"
             ),
-            [before_timestamp],
+            [before_timestamp, before_timestamp],
         ).fetchall()
 
         if not rows:
@@ -265,19 +320,6 @@ def seal_segment(
             }
 
         events = [_row_to_event(r) for r in rows]
-
-        # Skip events already covered by an existing segment.  This keeps
-        # successive seals from producing overlapping ranges.  Note: this is
-        # best-effort when chain order and global_seq order diverge; see
-        # docs/retention.md for the operational trade-off.
-        max_seg_row = conn.execute(
-            SQL("SELECT COALESCE(MAX(last_global_seq), 0) AS m FROM event_segments")
-        ).fetchone()
-        max_last_global_seq = max_seg_row["m"] if max_seg_row else 0
-        events = [
-            e for e in events
-            if e.global_seq is not None and e.global_seq > max_last_global_seq
-        ]
 
         if not events:
             return {
@@ -321,6 +363,11 @@ def seal_segment(
                 "Tail event in segment missing canonical_envelope or signature",
             )
 
+        work_item_ids = sorted(set(
+            e.work_item_id for e in events if e.entity_kind != "segment"
+        ))
+        event_ids = [e.event_id for e in events]
+
         segment_id = uuid.uuid4()
         seal_event_id = uuid.uuid4()
         now = datetime.now(UTC)
@@ -339,6 +386,7 @@ def seal_segment(
                 first_event_prev_hash.hex() if first_event_prev_hash else None
             ),
             "archive_path": archive_path,
+            "work_item_ids": [str(wi) for wi in work_item_ids],
         }
 
         key_entry = key_set.active_key()
@@ -381,6 +429,7 @@ def seal_segment(
                 "seal_signature": seal_signature.hex(),
                 "dry_run": True,
                 "archive_path": archive_path,
+                "work_item_ids": [str(wi) for wi in work_item_ids],
             }
 
         conn.execute(
@@ -389,8 +438,9 @@ def seal_segment(
                 "(segment_id, first_global_seq, last_global_seq, "
                 "first_event_id, last_event_id, first_event_prev_hash, "
                 "head_hash, event_count, min_timestamp, max_timestamp, "
-                "seal_signature, seal_event_id, archive_path, archived, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s)"
+                "seal_signature, seal_event_id, archive_path, archived, created_at, "
+                "work_item_ids, event_ids) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s)"
             ),
             [
                 segment_id,
@@ -407,6 +457,8 @@ def seal_segment(
                 seal_event_id,
                 archive_path,
                 now,
+                work_item_ids,
+                event_ids,
             ],
         )
 
@@ -478,6 +530,7 @@ def seal_segment(
             "seal_signature": seal_signature.hex(),
             "dry_run": False,
             "archive_path": archive_path,
+            "work_item_ids": [str(wi) for wi in work_item_ids],
         }
 
 
@@ -492,7 +545,8 @@ def verify_segment(
                 "SELECT segment_id, first_global_seq, last_global_seq, "
                 "first_event_id, last_event_id, first_event_prev_hash, "
                 "head_hash, event_count, min_timestamp, max_timestamp, "
-                "seal_signature, seal_event_id, archive_path, archived, created_at "
+                "seal_signature, seal_event_id, archive_path, archived, created_at, "
+                "work_item_ids, event_ids "
                 "FROM event_segments WHERE segment_id = %s"
             ),
             [segment_id],
@@ -506,14 +560,25 @@ def verify_segment(
 
         table_name = "events_archive" if seg_row["archived"] else "events"
 
-        rows = conn.execute(
-            SQL(
-                f"SELECT {_EVENT_FIELDS} FROM {table_name} "
-                "WHERE global_seq >= %s AND global_seq <= %s "
-                "ORDER BY global_seq"
-            ),
-            [seg_row["first_global_seq"], seg_row["last_global_seq"]],
-        ).fetchall()
+        stored_event_ids = seg_row["event_ids"]
+        if stored_event_ids:
+            rows = conn.execute(
+                SQL(
+                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    "WHERE event_id = ANY(%s) "
+                    "ORDER BY global_seq"
+                ),
+                [stored_event_ids],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                SQL(
+                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    "WHERE global_seq >= %s AND global_seq <= %s "
+                    "ORDER BY global_seq"
+                ),
+                [seg_row["first_global_seq"], seg_row["last_global_seq"]],
+            ).fetchall()
 
         events = [_row_to_event(r) for r in rows]
 
@@ -578,7 +643,8 @@ def list_segments(
                     "SELECT segment_id, first_global_seq, last_global_seq, "
                     "first_event_id, last_event_id, first_event_prev_hash, "
                     "head_hash, event_count, min_timestamp, max_timestamp, "
-                    "seal_signature, seal_event_id, archive_path, archived, created_at "
+                    "seal_signature, seal_event_id, archive_path, archived, created_at, "
+                    "work_item_ids "
                     "FROM event_segments WHERE archived = %s "
                     "ORDER BY first_global_seq LIMIT %s"
                 ),
@@ -590,7 +656,8 @@ def list_segments(
                     "SELECT segment_id, first_global_seq, last_global_seq, "
                     "first_event_id, last_event_id, first_event_prev_hash, "
                     "head_hash, event_count, min_timestamp, max_timestamp, "
-                    "seal_signature, seal_event_id, archive_path, archived, created_at "
+                    "seal_signature, seal_event_id, archive_path, archived, created_at, "
+                    "work_item_ids "
                     "FROM event_segments ORDER BY first_global_seq LIMIT %s"
                 ),
                 [limit],
@@ -616,5 +683,9 @@ def list_segments(
                 "archive_path": r["archive_path"],
                 "archived": r["archived"],
                 "created_at": r["created_at"].isoformat(),
+                "work_item_ids": (
+                    [str(wi) for wi in r["work_item_ids"]]
+                    if r["work_item_ids"] else []
+                ),
             })
         return result

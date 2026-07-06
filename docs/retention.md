@@ -95,35 +95,87 @@ sub.archive.archive_events(before_timestamp, *, dry_run=False) -> int  # existin
 
 ## Current Implemented Scope
 
-- **Sealing**: events are verified, a segment record is created, and a signed
-  `segment_sealed` event is appended. Events remain in the live `events` table.
-- **Verification**: re-reads events from the live or archive table and
-  re-checks chain integrity and head hash.
+- **Sealing**: events from **terminal work-items only** are verified, a
+  segment record is created, and a signed `segment_sealed` event is appended.
+  Events remain in the live `events` table. Non-terminal work-items' events are
+  never sealed — this is the retention guardrail (WI-2.1): never archive an
+  event a live work-item references.
+- **Cross-segment chain bridging**: per-work-item chains that span seal
+  boundaries are accepted — the first in-slice event for an entity may have a
+  non-null `prev_event_hash` that references an event in a prior segment
+  (cross-segment bridge). The intra-segment chain is still verified.
+- **Non-contiguous global chains**: with terminal-only sealing, the selected
+  events may not form a single contiguous global chain (events from
+  non-terminal work-items create gaps). `_verify_global_chain` accepts bridge
+  points: events whose `prev_global_event_hash` does not match any event within
+  the segment are treated as chain-fragment starts linking from outside.
+- **Verification**: re-reads events by stored `event_ids` (not global_seq
+  range) and re-checks chain integrity and head hash. This avoids
+  false-positive failures from overlapping ranges when segments are
+  non-contiguous.
 - **Replay bridging**: `_verify_global_hash_chain` uses segment records to
   bridge across archived ranges, preventing false orphan warnings.
-- **Listing**: `list_segments` supports filtering by `archived` status.
+- **Listing**: `list_segments` supports filtering by `archived` status and
+  includes `work_item_ids`.
 
 ### Not Yet Implemented
 
-- **Physical archival**: moving events from `events` to `events_archive` and
-  setting `archived = TRUE` on the segment. The existing `archive_events`
-  function moves events but does not yet integrate with segment records.
+- **Physical archival (WI-1.2)**: moving events from `events` to
+  `events_archive` and setting `archived = TRUE` on the segment. The existing
+  `archive_events` function moves events but does not yet integrate with
+  segment records. Offline archive bundle export and `regista verify --archive`
+  are not implemented.
+- **Retention policy (WI-2.1 compliance-minimum)**: the terminal-only
+  guardrail prevents sealing live work-items' events, but a per-project
+  compliance-retention minimum window (e.g., "keep hot: last N days") is not
+  yet configurable. The current guardrail is work-item-state-based, not
+  time-window-based.
 - **Segment deletion**: removing a segment and its archived events after a
   retention TTL.
 - **Sidecar routes**: HTTP endpoints for seal/verify/list_segments.
 - **InMemoryRegista**: segment operations are Postgres-only; the in-memory
   backend does not implement sealing.
+- **Replay bridging across non-contiguous segments**: the replay bridge logic
+  uses `first_event_prev_hash` and `head_hash` to jump across archived ranges.
+  With terminal-only sealing, segments may be non-contiguous (global_seq
+  ranges can overlap), so the bridge may not resolve correctly when physical
+  archival is implemented. This is a known limitation to address before
+  enabling archival.
 
-### Known Limitation: Timestamp-Based Selection Under Concurrency
+### Known Limitation: Terminal-Only Sealing and Non-Contiguous Ranges
 
-Segment sealing selects events by `before_timestamp` and skips events already
-covered by existing segments (using `MAX(last_global_seq)` as a high-water
-mark). Under high concurrency, the `global_seq` sequence (`CACHE 100`) can
-allocate numbers out of actual append order, so `global_seq` order may diverge
-from the true chain-link order established by `prev_global_event_hash`. This
-means a segment could theoretically include an event whose chain predecessor
-falls outside the segment range, causing `verify_segment` to report a chain
-break. In practice this is rare — the `event_chain_head` row lock serializes
-appends, and the `CACHE 100` window is small relative to typical batch sizes.
-Operators should avoid sealing very small segments under sustained concurrent
-load.
+Segment sealing selects events from **terminal work-items only** — work-items
+whose `current_state` is a declared terminal state in their pinned workflow
+version. This implements the retention guardrail (never seal an event a live
+work-item references) and prevents the spanning-entity bug where a work-item's
+history is split across seal boundaries.
+
+Because non-terminal work-items' events are excluded, the selected events may
+not form a single contiguous global chain. The segment's
+`first_global_seq` … `last_global_seq` range is the min/max of included events,
+but events from non-terminal work-items (or events from other segments' work-
+items) may fall within this range. To handle this:
+
+- `_verify_global_chain` accepts **bridge points**: events whose
+  `prev_global_event_hash` does not match any event within the segment are
+  treated as chain-fragment starts that link from outside the segment.
+- `_verify_work_item_chains` accepts **cross-segment bridges**: the first
+  in-slice event for an entity may have a non-null `prev_event_hash` that
+  references an event in a prior segment. The intra-segment chain is still
+  verified for subsequent events.
+- `verify_segment` reads events by stored `event_ids` (not global_seq range)
+  to avoid including events from other segments or non-terminal work-items.
+
+Deduplication (preventing re-sealing of already-sealed work-items) uses the
+`work_item_ids` column on `event_segments`: a work-item already listed in any
+segment's `work_item_ids` is excluded from future seals.
+
+**Important:** sealing a terminal work-item finalizes its event stream. Events
+appended after sealing (e.g., claim lifecycle, hooks, links) will not be
+included in any future segment. Operators should ensure all post-terminal
+activity is complete before sealing. Seal events themselves
+(`entity_kind = 'segment'`) are never included in segments — they remain in
+the hot log as the audit trail for archival itself.
+
+Concurrent seal calls are serialized via `LOCK TABLE event_segments IN
+EXCLUSIVE MODE` at the start of each `seal_segment` transaction.

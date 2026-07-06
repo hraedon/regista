@@ -211,3 +211,153 @@ class TestSealSegment:
         report = sub.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
+
+    def test_live_work_item_not_sealed(self, sub):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "live-wi",
+            custom_fields={"title": "live-wi"},
+        )
+        sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        before = datetime.now(UTC) + timedelta(days=365)
+        result = sub.archive.seal(before_timestamp=before)
+
+        if result.get("work_item_ids"):
+            assert str(wi.work_item_id) not in result["work_item_ids"]
+
+    def test_seal_after_work_item_becomes_terminal(self, sub):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "becomes-terminal",
+            custom_fields={"title": "becomes-terminal"},
+        )
+        sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        before1 = datetime.now(UTC) + timedelta(days=365)
+        result1 = sub.archive.seal(before_timestamp=before1)
+        if result1.get("work_item_ids"):
+            assert str(wi.work_item_id) not in result1["work_item_ids"]
+
+        sub.transition(
+            wi.work_item_id, "submit_review", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "approve", "reviewer-1",
+            actor_metadata={"role": "reviewer"},
+        )
+
+        before2 = datetime.now(UTC) + timedelta(days=365)
+        result2 = sub.archive.seal(before_timestamp=before2)
+
+        assert result2["event_count"] > 0
+        assert str(wi.work_item_id) in result2["work_item_ids"]
+
+    def test_multi_seal_interleaved_live_and_terminal(self, sub):
+        wi_a, _ = sub.create_work_item(
+            "test_workflow", "feature", "interleave-a",
+            custom_fields={"title": "interleave-a"},
+        )
+        _drive_to_terminal(sub, wi_a)
+
+        wi_b, _ = sub.create_work_item(
+            "test_workflow", "feature", "interleave-b",
+            custom_fields={"title": "interleave-b"},
+        )
+        sub.transition(wi_b.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        cutoff1 = datetime.now(UTC) + timedelta(seconds=1)
+        result1 = sub.archive.seal(before_timestamp=cutoff1)
+        assert result1["event_count"] > 0
+        assert str(wi_a.work_item_id) in result1["work_item_ids"]
+        assert str(wi_b.work_item_id) not in result1["work_item_ids"]
+
+        sub.transition(
+            wi_b.work_item_id, "submit_review", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi_b.work_item_id, "approve", "reviewer-1",
+            actor_metadata={"role": "reviewer"},
+        )
+
+        cutoff2 = datetime.now(UTC) + timedelta(days=365)
+        result2 = sub.archive.seal(before_timestamp=cutoff2)
+        assert result2["event_count"] > 0
+        assert str(wi_b.work_item_id) in result2["work_item_ids"]
+
+        segment_id = uuid.UUID(result2["segment_id"])
+        verify_result = sub.archive.verify(segment_id)
+        assert verify_result["verified"] is True
+        assert verify_result["global_chain_ok"] is True
+        assert verify_result["work_item_chain_ok"] is True
+        assert verify_result["head_hash_matches"] is True
+
+    def test_spanning_entity_no_bug(self, sub):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "spanning-repro",
+            custom_fields={"title": "spanning-repro"},
+        )
+        sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+
+        cutoff1 = datetime.now(UTC) + timedelta(seconds=1)
+        result1 = sub.archive.seal(before_timestamp=cutoff1)
+        if result1.get("work_item_ids"):
+            assert str(wi.work_item_id) not in result1["work_item_ids"]
+
+        sub.transition(
+            wi.work_item_id, "submit_review", "agent-1",
+            actor_metadata={"role": "agent"},
+        )
+        sub.transition(
+            wi.work_item_id, "approve", "reviewer-1",
+            actor_metadata={"role": "reviewer"},
+        )
+
+        cutoff2 = datetime.now(UTC) + timedelta(days=365)
+        result2 = sub.archive.seal(before_timestamp=cutoff2)
+
+        assert result2["event_count"] > 0
+        assert str(wi.work_item_id) in result2["work_item_ids"]
+
+        segment_id = uuid.UUID(result2["segment_id"])
+        verify_result = sub.archive.verify(segment_id)
+        assert verify_result["verified"] is True
+
+    def test_list_segments_includes_work_item_ids(self, sub):
+        segments = sub.archive.list_segments()
+        assert len(segments) >= 1
+        for seg in segments:
+            assert "work_item_ids" in seg
+            assert isinstance(seg["work_item_ids"], list)
+
+    def test_dry_run_includes_work_item_ids(self, sub):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "dryrun-wi",
+            custom_fields={"title": "dryrun-wi"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        before = datetime.now(UTC) + timedelta(days=365)
+        result = sub.archive.seal(before_timestamp=before, dry_run=True)
+
+        assert result["dry_run"] is True
+        assert "work_item_ids" in result
+        assert str(wi.work_item_id) in result["work_item_ids"]
+
+    def test_no_new_segment_when_all_sealed(self, sub):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "quiesce-test",
+            custom_fields={"title": "quiesce-test"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        before = datetime.now(UTC) + timedelta(days=365)
+        result1 = sub.archive.seal(before_timestamp=before)
+        assert result1["event_count"] > 0
+
+        seg_before = _count_segments(sub)
+
+        result2 = sub.archive.seal(before_timestamp=before)
+        assert result2["event_count"] == 0
+        assert result2["segment_id"] is None
+        assert _count_segments(sub) == seg_before

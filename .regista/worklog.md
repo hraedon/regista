@@ -4,6 +4,36 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-05 — Session 87: Plan 028 segment sealing + Plan 027 AssuranceOps facade
+
+**Focus:** Implement Plan 028 (event-log retention & segment sealing) and add the AssuranceOps facade (Plan 027 follow-up). Adversarial review by kimi subagent found critical bugs; this session fixed them, added CLI verify/list subcommands, InMemory archive stub, and committed.
+
+**Context:** Prior session (glm subagent) implemented Plan 028 (seal_segment, verify_segment, list_segments, replay bridging) and AssuranceOps facade. Kimi adversarial review found 7 issues (3 critical). Prior agent partially fixed them but left a regression: `_verify_global_hash_chain` rewrite dropped `current = genesis_events[0]` initialization, causing all 1583 tests to fail with false-positive orphan warnings.
+
+**Delivered:**
+- **Critical fix — `_verify_global_hash_chain` regression (_replay.py:148):** The rewritten function never initialized `current` to `genesis_events[0]` when genesis events existed (the normal case). The while loop immediately hit `if current is None: break`, marking all events as orphans. Fixed by adding `current: dict | None = genesis_events[0] if genesis_events else None`.
+- **Lint fixes:** Two E501 line-too-long errors in `_archive_segments.py` (lines 277, 517) wrapped.
+- **CLI archive verify/list subcommands (_cli.py):** `regista archive verify <segment_id> [--json]` and `regista archive list [--archived true|false] [--limit N] [--json]`. Follows the existing `archive seal` pattern.
+- **InMemoryRegista.archive stub (_in_memory.py):** Raises `NotImplementedError("Segment sealing is not supported on the InMemory backend")` for API parity.
+- **docs/retention.md:** Added CLI verify/list examples and "Known Limitation: Timestamp-Based Selection Under Concurrency" section documenting the global_seq vs chain-link order divergence issue.
+- **CHANGELOG.md:** Updated CLI entry to mention `seal/verify/list`.
+- **Plan 028 status:** Proposed → Implemented.
+
+**Key files:**
+- `src/regista/_archive_segments.py` — seal_segment, verify_segment, list_segments, _verify_global_chain
+- `src/regista/_replay.py` — _verify_global_hash_chain with segment bridging (lines 65-244)
+- `src/regista/_ops.py` — ArchiveOps.seal/verify/list_segments, AssuranceOps facade
+- `src/regista/_cli.py` — archive seal/verify/list subcommands (lines 586-680, 1276-1287)
+- `migrations/039_event_segments.sql` — event_segments table
+- `src/regista/_errors.py` — SEGMENT_NOT_FOUND error code
+- `src/regista/sidecar/errors.py` — SEGMENT_NOT_FOUND → 404
+
+**Test results:** 1583 passed, 7 skipped, 10 deselected. ruff clean. mypy --strict clean (84 source files).
+
+**Commit:** `c6b05f3` feat: Plan 028 segment sealing + Plan 027 AssuranceOps facade
+
+---
+
 ## 2026-07-05 — Session 86: Plan 027 review assurance + Windows DPAPI + test import fix
 
 **Focus:** Implement Plan 027 (review assurance: gate honesty under a single model), add the missing Windows DPAPI secret provider (Plan 025 WI-1.2 gap), fix the fragile `from tests.conftest import` pattern, and update plan headers.

@@ -1,6 +1,6 @@
 # Plan 028 — Event-log retention & archival without breaking the chain
 
-**Status:** Implemented 2026-07-05
+**Status:** Phase 1 (WI-1.1 seal) + replay bridge landed; WI-1.2/2.1 deferred. Terminal-only sealing guardrail (Finding 2) implemented 2026-07-06. Known limitation: replay bridging across non-contiguous segments not yet validated (physical archival not implemented).
 **Author:** Claude (Fable 5), from the 2026-07-02 suite-gaps review
 **Strategic role:** The converged store's event log is append-only and grows
 forever; agent-notes adds pgvector embeddings on top. For a year that is fine; for
