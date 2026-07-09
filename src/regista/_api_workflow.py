@@ -315,8 +315,8 @@ class WorkflowApiMixin(_RegistaBase):
             payload: Optional JSONB payload.
             event_id: UUIDv4 idempotency key.
             expected_event_seq: Optimistic-concurrency check.
-            entity_kind: Entity kind (``"work_item"`` only; other kinds
-                blocked until entity generalization is complete).
+            entity_kind: Entity kind (``"work_item"``, ``"note"``,
+                ``"spec"``, ``"principal"``, ``"session"``, ``"segment"``).
             hash_alg: Hash algorithm for signing (default ``"sha-256"``).
 
         Returns:
