@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,vendor-check,sidecar,ed25519,timestamping]"
+          pip install -e ".[dev,vendor-check,sidecar,ed25519,timestamping,encryption]"
 
       # Denylist is never committed — it comes from the REGISTA_FORBIDDEN_IDENTIFIERS
       # repository secret (gpo-lens pattern). No-op until the secret is set.
