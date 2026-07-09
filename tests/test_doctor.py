@@ -81,3 +81,82 @@ class TestRunDoctor:
             assert schema_check.status == "ok"
         finally:
             drop_project_schema(DSN, project)
+
+
+class TestCustodyConsistency:
+    def _key_file(self, tmp_path, entries):
+        import json
+
+        path = tmp_path / "keys.json"
+        path.write_text(json.dumps({"keys": entries}))
+        return str(path)
+
+    def _custody_check(self, report):
+        return next(c for c in report.checks if c.name == "custody:consistency")
+
+    def test_no_key_path_skips(self):
+        report = run_doctor(dsn=None, key_path=None)
+        check = self._custody_check(report)
+        assert check.status == "skip"
+
+    def test_missing_key_file_skips(self, tmp_path):
+        report = run_doctor(dsn=None, key_path=str(tmp_path / "nope.json"))
+        check = self._custody_check(report)
+        assert check.status == "skip"
+
+    def test_file_ref_matches_file_backend_ok(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "k1", "principal_id": "alice",
+             "secret_ref": "file:/somewhere/key.bin", "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend="file")
+        check = self._custody_check(report)
+        assert check.status == "ok"
+
+    def test_file_ref_on_vault_backend_warns(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "k1", "principal_id": "alice",
+             "secret_ref": "file:/somewhere/key.bin", "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend="vault")
+        check = self._custody_check(report)
+        assert check.status == "warn"
+        assert "alice" in check.detail
+        assert "expected vault" in check.detail
+
+    def test_vault_ref_matches_vault_backend_ok(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "k1", "principal_id": "alice",
+             "secret_ref": "vault:secret/regista/principals/alice/private_key",
+             "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend="vault")
+        check = self._custody_check(report)
+        assert check.status == "ok"
+
+    def test_operator_backend_warns_on_any_custodied_key(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "k1", "principal_id": "alice",
+             "secret_ref": "file:/somewhere/key.bin", "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend="operator")
+        check = self._custody_check(report)
+        assert check.status == "warn"
+        assert "operator" in check.detail
+
+    def test_no_principal_entries_ok(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "bootstrap", "secret": "dGVzdA==", "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend="vault")
+        check = self._custody_check(report)
+        assert check.status == "ok"
+
+    def test_defaults_to_file_backend(self, tmp_path):
+        path = self._key_file(tmp_path, [
+            {"key_id": "k1", "principal_id": "alice",
+             "secret_ref": "file:/k.bin", "status": "active"},
+        ])
+        report = run_doctor(dsn=None, key_path=path, secret_backend=None)
+        check = self._custody_check(report)
+        assert check.status == "ok"

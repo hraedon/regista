@@ -42,6 +42,7 @@ class PrincipalProvisionResult:
     private_key_stored: bool
     public_key_registered: bool
     already_existed: bool = False
+    secret_backend: str = "file"
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +55,7 @@ class PrincipalProvisionResult:
             "private_key_stored": self.private_key_stored,
             "public_key_registered": self.public_key_registered,
             "already_existed": self.already_existed,
+            "secret_backend": self.secret_backend,
             "error": self.error,
         }
 
@@ -229,20 +231,6 @@ def _provision_one(
     )
 
 
-def _generate_ed25519_keypair() -> tuple[bytes, bytes]:
-    try:
-        import nacl.signing
-    except ImportError as e:
-        raise RegistaError(
-            ErrorCode.KEY_LOAD_ERROR,
-            "Ed25519 key generation requires PyNaCl: pip install regista[ed25519]",
-        ) from e
-    signing_key = nacl.signing.SigningKey.generate()
-    private_key = bytes(signing_key)
-    public_key = bytes(signing_key.verify_key)
-    return private_key, public_key
-
-
 def _validate_principal_id(principal_id: str) -> str:
     import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", principal_id):
@@ -266,6 +254,7 @@ def provision_principal(
     *,
     hmac_key_path: str | None = None,
     private_key_dir: str | None = None,
+    secret_backend: str | None = None,
     dry_run: bool = False,
     require_ssl: bool = False,
 ) -> PrincipalProvisionResult:
@@ -285,6 +274,9 @@ def provision_principal(
             "hmac_key_path is required (set via --key-path or REGISTA_KEY_PATH)",
         )
 
+    from ._custody import resolve_backend
+    resolved_backend = resolve_backend(secret_backend)
+
     if dry_run:
         return PrincipalProvisionResult(
             principal_id=principal_id,
@@ -294,9 +286,11 @@ def provision_principal(
             scheme="ed25519",
             private_key_stored=False,
             public_key_registered=False,
+            secret_backend=resolved_backend,
         )
 
     from ._connection import ConnectionManager
+    from ._custody import store_private_key
     from ._principal_keys import get_active_key, register_principal_key
 
     mgr = ConnectionManager(dsn, project, require_ssl=require_ssl)
@@ -315,38 +309,48 @@ def provision_principal(
                 private_key_stored=False,
                 public_key_registered=False,
                 already_existed=True,
+                secret_backend=resolved_backend,
             )
         except RegistaError:
             pass
 
-        private_key, public_key = _generate_ed25519_keypair()
-
-        key_dir = (
-            Path(private_key_dir) if private_key_dir
-            else Path(hmac_key_path).parent / "principals"
+        key_dir = _resolve_key_dir(
+            private_key_dir, hmac_key_path, resolved_backend,
         )
-        key_dir.mkdir(parents=True, exist_ok=True)
-        import os as _os
 
-        priv_key_path = key_dir / f"{principal_id}_ed25519.key"
-        fd = _os.open(
-            str(priv_key_path),
-            _os.O_CREAT | _os.O_WRONLY | _os.O_TRUNC, 0o600,
+        custody = store_private_key(
+            backend=resolved_backend,
+            principal_id=principal_id,
+            project=project,
+            private_key_dir=key_dir,
         )
+
         try:
-            _os.write(fd, private_key)
-        finally:
-            _os.close(fd)
+            entry = register_principal_key(
+                mgr,
+                principal_id,
+                custody.public_key,
+                "ed25519",
+                registered_by="provision-principal",
+            )
+        except Exception:
+            log.error(
+                "provision.principal_orphaned_secret",
+                principal_id=principal_id,
+                project=project,
+                secret_ref=custody.secret_ref,
+                backend=custody.backend,
+            )
+            raise
 
-        entry = register_principal_key(
-            mgr,
+        _update_key_file(
+            hmac_key_path,
             principal_id,
-            public_key,
-            "ed25519",
-            registered_by="provision-principal",
+            entry.key_id,
+            custody.public_key,
+            custody.secret_ref,
+            encoding=custody.encoding,
         )
-
-        _update_key_file(hmac_key_path, principal_id, entry.key_id, public_key, str(priv_key_path))
 
         log.info(
             "provision.principal_completed",
@@ -354,6 +358,7 @@ def provision_principal(
             project=project,
             key_id=entry.key_id,
             fingerprint=entry.fingerprint,
+            secret_backend=custody.backend,
         )
         return PrincipalProvisionResult(
             principal_id=principal_id,
@@ -363,9 +368,35 @@ def provision_principal(
             scheme=entry.scheme,
             private_key_stored=True,
             public_key_registered=True,
+            secret_backend=custody.backend,
         )
     finally:
         mgr.close()
+
+
+def _resolve_key_dir(
+    private_key_dir: str | None,
+    hmac_key_path: str,
+    backend: str,
+) -> str | None:
+    if private_key_dir:
+        return private_key_dir
+    if backend != "file":
+        return None
+    from ._secrets import _detect_prefix
+
+    prefix, stripped = _detect_prefix(hmac_key_path)
+    if prefix == "file":
+        base = stripped
+    else:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"private_key_dir is required for the 'file' backend when "
+            f"hmac_key_path is a non-file secret reference "
+            f"(prefix {prefix!r}); cannot derive a directory from "
+            f"{hmac_key_path!r}.",
+        )
+    return str(Path(base).parent / "principals")
 
 
 def _update_key_file(
@@ -373,46 +404,78 @@ def _update_key_file(
     principal_id: str,
     key_id: str,
     public_key: bytes,
-    private_key_path: str,
+    secret_ref: str,
+    *,
+    encoding: str | None = None,
 ) -> None:
     import base64
     import os as _os
 
     path = Path(key_file_path)
-    if not path.is_file():
-        data: dict[str, Any] = {"keys": []}
-    else:
-        try:
-            data = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+    from ._secrets import _ensure_secure_dir
+
+    _ensure_secure_dir(path.parent)
+
+    lock_fd = _os.open(str(path), _os.O_RDWR | _os.O_CREAT, 0o600)
+    try:
+        _flock(lock_fd)
+        if not path.is_file() or path.stat().st_size == 0:
+            data: dict[str, Any] = {"keys": []}
+        else:
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                data = {"keys": []}
+
+        if not isinstance(data, dict) or "keys" not in data:
             data = {"keys": []}
 
-    if not isinstance(data, dict) or "keys" not in data:
-        data = {"keys": []}
+        keys: list[dict[str, Any]] = data.get("keys", [])
+        existing = [
+            k for k in keys
+            if k.get("principal_id") == principal_id and k.get("key_id") == key_id
+        ]
+        if existing:
+            return
 
-    keys: list[dict[str, Any]] = data.get("keys", [])
-    existing = [
-        k for k in keys
-        if k.get("principal_id") == principal_id and k.get("key_id") == key_id
-    ]
-    if existing:
+        for k in keys:
+            if k.get("principal_id") == principal_id and k.get("status") == "active":
+                k["status"] = "deprecated"
+
+        entry: dict[str, Any] = {
+            "key_id": key_id,
+            "scheme": "ed25519",
+            "principal_id": principal_id,
+            "secret_ref": secret_ref,
+            "public_key": base64.b64encode(public_key).decode("ascii"),
+            "role": "actor",
+            "status": "active",
+        }
+        if encoding is not None:
+            entry["encoding"] = encoding
+        keys.append(entry)
+        data["keys"] = keys
+
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        from ._secrets import _open_exclusive
+
+        fd, tmp_path = _open_exclusive(tmp_path)
+        try:
+            payload = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+            remaining = memoryview(payload)
+            while remaining:
+                n = _os.write(fd, remaining)
+                remaining = remaining[n:]
+        finally:
+            _os.close(fd)
+        _os.replace(str(tmp_path), str(path))
+    finally:
+        _os.close(lock_fd)
+
+
+def _flock(fd: int) -> None:
+    try:
+        import fcntl
+    except ImportError:
         return
-
-    for k in keys:
-        if k.get("principal_id") == principal_id and k.get("status") == "active":
-            k["status"] = "deprecated"
-
-    keys.append({
-        "key_id": key_id,
-        "scheme": "ed25519",
-        "principal_id": principal_id,
-        "secret_ref": f"file:{private_key_path}",
-        "public_key": base64.b64encode(public_key).decode("ascii"),
-        "role": "actor",
-        "status": "active",
-    })
-    data["keys"] = keys
-
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True))
-    _os.replace(str(tmp_path), str(path))
+    fcntl.flock(fd, fcntl.LOCK_EX)

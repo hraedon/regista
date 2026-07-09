@@ -1,6 +1,7 @@
 # Plan 029 — Backend-aware principal key custody
 
-**Status:** Proposed 2026-07-06, from a post-1.0 cross-repo review (Claude, Opus 4.8).
+**Status:** Implemented 2026-07-07 (Phases 1–3; Phase 4 WI-4.1 is hand-back to dossier).
+**Proposed:** 2026-07-06, from a post-1.0 cross-repo review (Claude, Opus 4.8).
 **Author:** Claude (Opus 4.8)
 **Strategic role:** Closes the one load-bearing gap the "1.0" overnight push left
 open. Plan 026 promises, as its central provenance guarantee, that a principal's

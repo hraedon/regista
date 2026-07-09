@@ -13,6 +13,7 @@ CANONICAL_VARS = frozenset({
     "REGISTA_KEY_PATH",
     "REGISTA_REQUIRE_SSL",
     "REGISTA_PROJECT",
+    "REGISTA_SECRET_BACKEND",
 })
 
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -20,6 +21,7 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "REGISTA_KEY_PATH": ("REGISTA_HMAC_KEY_PATH",),
     "REGISTA_REQUIRE_SSL": (),
     "REGISTA_PROJECT": (),
+    "REGISTA_SECRET_BACKEND": (),
 }
 
 
@@ -63,6 +65,7 @@ class SuiteConfig:
     key_path: str | None = None
     require_ssl: bool = False
     project: str | None = None
+    secret_backend: str | None = None
     source: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,6 +74,7 @@ class SuiteConfig:
             "key_path": self.key_path,
             "require_ssl": self.require_ssl,
             "project": self.project,
+            "secret_backend": self.secret_backend,
             "source": dict(self.source),
         }
 
@@ -126,6 +130,7 @@ def resolve(
     dsn = _resolve("REGISTA_DSN")
     key_path = _resolve("REGISTA_KEY_PATH")
     project = _resolve("REGISTA_PROJECT")
+    secret_backend = _resolve("REGISTA_SECRET_BACKEND")
 
     require_ssl_raw = _resolve("REGISTA_REQUIRE_SSL")
     require_ssl = False
@@ -137,6 +142,7 @@ def resolve(
         key_path=key_path,
         require_ssl=require_ssl,
         project=project,
+        secret_backend=secret_backend,
         source=sources,
     )
 

@@ -4,6 +4,37 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-07-07 — Session 88: Plan 029 backend-aware principal key custody
+
+**Focus:** Implement Plan 029 (backend-aware private-key custody). Make `provision_principal`/`enroll_principal` write the Ed25519 private key to the configured secret backend instead of unconditionally to a plaintext local file. Two rounds of adversarial review (kimi + nemotron); findings fixed.
+
+**Context:** Plan 026 promised per-principal non-repudiation with "private key lives only in the configured secret backend, humans never handle raw key material." The implementation delivered this for `file:` only — `provision_principal` hardcoded `_os.write(fd, private_key)` to a `.key` file and recorded `file:<path>` regardless of `REGISTA_SECRET_BACKEND`. On a Vault/Azure pilot deployment, the private key silently landed in plaintext on local disk. This plan closes that gap.
+
+**Delivered:**
+- **WI-1.1/1.2 — Secret write protocol (`src/regista/_secrets.py`):** Added `store(ref, data) -> str` to the `SecretProvider` protocol and every provider. `file:` writes `0o600` atomic (temp+rename, `O_EXCL`+`O_NOFOLLOW` anti-symlink, partial-write loop, `0o700` parent dir); `windows:` DPAPI-protects (no plaintext on disk); `vault:` KV v2 `create_or_update` (base64-encodes raw key); `azure:` `set_secret` (base64-encodes). `env:`/`literal:` raise `SECRET_WRITE_UNSUPPORTED`. Module-level `store()` + `supports_write()`. New error codes: `SECRET_WRITE_UNSUPPORTED`, `SECRET_WRITE_EXTERNAL`. WI-1.2 decision documented in `docs/suite-config.md` §3: self-custody backends write via `store()`; `operator` backend is the operator-writes seam — `enroll_principal` does NOT generate a keypair, raises `SECRET_WRITE_EXTERNAL` with the ref the operator must populate + guidance to use `principal register`. Deviation from plan's literal wording ("store raises it carrying the public key") documented: operator-custody means operator-generates (if regista generated but couldn't store, the private key would have nowhere safe to go).
+- **WI-2.1/2.2 — Custody helper + backend selection (`src/regista/_custody.py`, `_provision.py`, `_config.py`, `_api_meta.py`):** `_custody.store_private_key()` extracts the keypair-generate → backend-write → ref-record sequence; `provision_principal`/`enroll_principal` delegate to it (no hardcoded `file:`). `build_ref` constructs backend-specific refs (file/windows/vault/azure + custom-registered-provider fallback). Backend selected via `REGISTA_SECRET_BACKEND` (added to `SuiteConfig`) or `--secret-backend`; `private_key_dir` meaningful only for `file`. `_resolve_key_dir` handles `hmac_key_path` being a secret ref (strips `file:` prefix; raises `INVALID_ARGUMENT` for `env:`/`literal:` refs requiring explicit `private_key_dir`). Key-file entries record `encoding: base64` for vault/azure; `_keys.py` applies `encoding` to `secret_ref` results (backward compatible: absent = raw).
+- **WI-3.1/3.2 — Tests + doctor (`tests/test_custody.py`, `_doctor.py`):** 35 new tests incl. the gap-catching test (non-file backend writes NO `.key` file to disk), env/literal `SECRET_WRITE_UNSUPPORTED`, custom-provider custody, `_resolve_key_dir` secret-ref cases, azure truncation hash. `regista doctor` gains `custody:consistency` check (warns when a principal's `secret_ref` scheme ≠ configured backend); `run_doctor` restructured to always run custody check (even with `dsn=None`); resolves secret-ref `key_path` via `_resolve_key_file_path`.
+- **Hardening from adversarial review:**
+  - `FileProvider.store` + `_update_key_file` temp: `O_EXCL`+`O_NOFOLLOW` anti-symlink, randomized retry on `FileExistsError`, `0o600` perms, `0o700` parent dir (chmod on creation only).
+  - `_update_key_file` gains `fcntl.flock` advisory lock (prevents concurrent-enrollment double-active-entry race).
+  - `register_principal_key` failure now logs `provision.principal_orphaned_secret` (secret_ref + backend) before re-raising (orphan observability).
+  - `_resolve_key_dir` raises for `literal:`/`env:` key paths (was: silently derived `./principals`).
+  - `fake_vault` test fixture saves/restores the previous vault provider (no global side-effect if hvac installed).
+  - Azure name sanitizer appends 16-char sha256 suffix when truncation would exceed 127 chars (collision avoidance).
+  - Vault ref path now includes `{project}` segment (multi-project isolation); `operator_ref_template` matches.
+
+**Key files:** `src/regista/_secrets.py` (store protocol), `src/regista/_custody.py` (NEW — custody helper), `src/regista/_provision.py` (refactored provision_principal + _update_key_file), `src/regista/_config.py` (secret_backend), `src/regista/_doctor.py` (custody:consistency), `src/regista/_keys.py` (encoding on secret_ref), `src/regista/_api_meta.py` (enroll_principal secret_backend), `src/regista/_cli.py` (--secret-backend), `docs/suite-config.md` (WI-1.2 decision), `tests/test_custody.py` (NEW — 35 tests).
+
+**Test results:** 1638 passed, 8 skipped (Windows-only), 10 deselected (slow). ruff clean. mypy --strict clean (85 source files).
+
+**Adversarial review:** Round 1 (kimi): 6 HIGH + 8 MEDIUM + 4 LOW. Fixed all real findings (symlink/permissions, env/literal error code, operator ref consistency, secret-ref key path, file lock, temp perms, orphan logging, fixture teardown, azure collision). Round 2 (nemotron): 2 real findings fixed (`_resolve_key_dir` literal prefix, parent-dir chmod); 3 CRITICAL/HIGH were false positives (misread tuple-unpacking of `_open_exclusive` return; deadlock concern invalid since flock acquired after DB transaction commits).
+
+**Known limitations (pre-existing, out of scope):** TOCTOU between `get_active_key` check and `register_principal_key` (orphaned private key in backend on concurrent enrollment); crash between DB commit and key-file write leaves key file stale (enroll self-heal covers the event, not the key file); `drop_project_schema` leaks `public.projects` catalog rows (filed as observation, not a breadcrumb — agent-notes regista schema behind on migrations 39/40).
+
+**Plan 029 status:** Proposed → Implemented (Phases 1–3; Phase 4 WI-4.1 is hand-back to dossier, requires a live non-file backend).
+
+---
+
 ## 2026-07-05 — Session 87: Plan 028 segment sealing + Plan 027 AssuranceOps facade
 
 **Focus:** Implement Plan 028 (event-log retention & segment sealing) and add the AssuranceOps facade (Plan 027 follow-up). Adversarial review by kimi subagent found critical bugs; this session fixed them, added CLI verify/list subcommands, InMemory archive stub, and committed.

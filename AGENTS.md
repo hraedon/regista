@@ -75,6 +75,7 @@ src/regista/
   _version_info.py     # Version surface: library/schema/workflow/envelope versions (Plan 025)
   _doctor.py           # Health check JSON contract: `regista doctor --json` (Plan 025)
   _principal_keys.py   # Principal→public-key registry: register/rotate/revoke (Plan 026)
+  _custody.py          # Backend-aware private-key custody helper (Plan 029)
   _provision.py        # Schema + service-role + principal-key provisioning (Plan 025 WI-2.1)
   _vendor/             # Vendored dependencies
     __init__.py
@@ -150,7 +151,7 @@ sub.replay(continue_on_revoked=True)  # skip revoked-key events with warnings
 sub.replay(verify_principal_binding=True)  # verify event signatures against principal_keys registry (Plan 026 WI-2.2)
 sub.sign_spec(spec_yaml, spec_md_hash, spec_schema_version, actor_id, ...)  # sign spec.yaml as founding artifact (Plan 025 WI-4.3)
 sub.read_spec_events(spec_id=None, limit=100)  # read spec-entity events (Plan 025 WI-4.3)
-sub.enroll_principal(principal_id, *, actor_id="system", private_key_dir=None)  # issue+register Ed25519 keypair, emit signed enrollment event (Plan 026 WI-3.3)
+sub.enroll_principal(principal_id, *, actor_id="system", private_key_dir=None, secret_backend=None)  # issue+register Ed25519 keypair, emit signed enrollment event (Plan 026 WI-3.3); backend-aware custody (Plan 029)
 sub.read_principal_enrollment_events(principal_id=None, limit=100)  # read principal enrollment events (Plan 026 WI-3.3)
 sub.close()
 
@@ -234,7 +235,7 @@ sub.principals.verify_binding(principal_id, actor_id)  # actor_id must match pri
 # Provisioning (Plan 025 WI-2.1)
 from regista._provision import provision, provision_principal
 provision(dsn, ["project1", "project2"], dry_run=False)  # create schemas + service roles
-provision_principal(dsn, project, "alice", hmac_key_path=key_path)  # issue+register Ed25519 keypair
+provision_principal(dsn, project, "alice", hmac_key_path=key_path)  # issue+register Ed25519 keypair, emit signed enrollment event (Plan 026 WI-3.3); backend-aware custody via secret_backend (Plan 029)
 
 # Signer binding verification (Plan 026 WI-1.2)
 sub.verify_event_principal_binding(event)  # -> dict: verified, principal_id, key_id, error
@@ -320,6 +321,11 @@ Plan 025 additions (Suite cohesion spine):
 
 Plan 026 additions (Per-actor Ed25519 non-repudiation):
 - **Plan 026 WI-1.1 (Principal→public-key registry):** `_principal_keys.py` with register/rotate/revoke/list/get_active/verify_binding. Migration `038_principal_keys.sql` creates `principal_keys` table with `UNIQUE` partial index enforcing one active key per principal. `PrincipalKeyOps` facade (`sub.principals.register/list/get_active/rotate/revoke/verify_binding`). CLI: `regista principal list/register/revoke`. Row-level locking (`SELECT FOR UPDATE`) prevents concurrent-registration race. Rotation is atomic (single transaction). Error codes: `PRINCIPAL_KEY_NOT_FOUND`, `PRINCIPAL_KEY_ALREADY_EXISTS`, `ACTOR_SIGNER_MISMATCH`, `UNREGISTERED_SIGNER`.
+
+Plan 029 additions (Backend-aware principal key custody):
+- **Plan 029 WI-1.1/1.2 (Secret write protocol):** `SecretProvider` protocol gains `store(ref, data) -> str` (the write companion to `resolve`). `file` writes `0o600` atomic (temp+rename); `windows` DPAPI-protects (no plaintext on disk); `vault` KV v2 `create_or_update` (base64-encodes raw key); `azure` `set_secret` (base64-encodes). `env`/`literal` raise `SECRET_WRITE_UNSUPPORTED` (read-only by nature). New error codes: `SECRET_WRITE_UNSUPPORTED`, `SECRET_WRITE_EXTERNAL`. WI-1.2 decision (documented in `docs/suite-config.md` §3): self-custody backends write via `store()`; the `operator` backend is the operator-writes seam — `enroll_principal` does **not** generate a keypair, it raises `SECRET_WRITE_EXTERNAL` carrying the ref the operator must populate + guidance to use `principal register`. No silent fallback to `file:` ever.
+- **Plan 029 WI-2.1/2.2 (Custody helper + backend selection):** `_custody.py` with `store_private_key()` — extracts the keypair-generate → backend-write → ref-record sequence; `provision_principal`/`enroll_principal` delegate to it (no hardcoded `file:` path). Backend selected via `REGISTA_SECRET_BACKEND` (added to `SuiteConfig`) or `--secret-backend`; `private_key_dir` is meaningful only for `file`. Key-file entries record `encoding: base64` for vault/azure; `_keys.py` applies `encoding` to `secret_ref` results (backward compatible: absent = raw).
+- **Plan 029 WI-3.1/3.2 (Tests + doctor):** 29 new tests in `test_custody.py` incl. the gap-catching test (non-file backend writes **no** `.key` file to disk). `regista doctor` gains `custody:consistency` check that warns when a principal's recorded `secret_ref` scheme ≠ configured backend (e.g. a `file:` ref on a Vault deployment). CLI `provision-principal`/`principal enroll` accept `--secret-backend`. Sidecar error map: `SECRET_WRITE_UNSUPPORTED`→400, `SECRET_WRITE_EXTERNAL`→409.
 
 ## Conventions
 

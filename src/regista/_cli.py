@@ -893,7 +893,13 @@ def cmd_doctor(args):
     project = args.project or cfg.project
     require_ssl = cfg.require_ssl
 
-    report = run_doctor(dsn, project=project, require_ssl=require_ssl)
+    report = run_doctor(
+        dsn,
+        project=project,
+        require_ssl=require_ssl,
+        key_path=cfg.key_path,
+        secret_backend=cfg.secret_backend,
+    )
     if args.json:
         _dump_json(report)
     else:
@@ -937,6 +943,7 @@ def cmd_config_show(args):
         print(f"key_path:    {cfg.key_path or '(not set)'}")
         print(f"require_ssl: {cfg.require_ssl}")
         print(f"project:     {cfg.project or '(not set)'}")
+        print(f"secret_backend: {cfg.secret_backend or 'file (default)'}")
         if cfg.source:
             print()
             print("Sources:")
@@ -1055,6 +1062,7 @@ def cmd_principal_enroll(args):
         result = sub.enroll_principal(
             args.principal,
             private_key_dir=args.private_key_dir,
+            secret_backend=args.secret_backend,
         )
         if args.json:
             _dump_json(result)
@@ -1066,6 +1074,7 @@ def cmd_principal_enroll(args):
             print(f"  key_id:      {result['key_id']}")
             print(f"  fingerprint: {result['fingerprint']}")
             print(f"  scheme:      {result['scheme']}")
+            print(f"  backend:     {result['secret_backend']}")
     except RegistaError as e:
         _handle_error(e)
     finally:
@@ -1154,6 +1163,7 @@ def cmd_provision_principal(args):
         args.principal,
         hmac_key_path=key_path,
         private_key_dir=args.private_key_dir,
+        secret_backend=args.secret_backend or cfg.secret_backend,
         dry_run=args.dry_run,
     )
     if args.json:
@@ -1498,6 +1508,11 @@ def main(argv=None):
     pr_enroll = pr_sub.add_parser("enroll", help="Issue and register a per-principal Ed25519 key")
     pr_enroll.add_argument("--principal", required=True, help="Principal ID")
     pr_enroll.add_argument("--private-key-dir", help="Directory for private key files")
+    pr_enroll.add_argument(
+        "--secret-backend",
+        help="Secret backend for key custody: file/windows/vault/azure/operator "
+        "(or REGISTA_SECRET_BACKEND)",
+    )
     pr_enroll.set_defaults(func=cmd_principal_enroll)
     pr_revoke = pr_sub.add_parser("revoke", help="Revoke a principal key")
     pr_revoke.add_argument("--principal", required=True, help="Principal ID")
@@ -1522,6 +1537,11 @@ def main(argv=None):
     prov_princ_parser.add_argument("--principal", required=True, help="Principal ID")
     prov_princ_parser.add_argument("--project", help="Project slug (or REGISTA_PROJECT)")
     prov_princ_parser.add_argument("--private-key-dir", help="Directory for private key files")
+    prov_princ_parser.add_argument(
+        "--secret-backend",
+        help="Secret backend for key custody: file/windows/vault/azure/operator "
+        "(or REGISTA_SECRET_BACKEND)",
+    )
     prov_princ_parser.add_argument(
         "--dry-run", action="store_true", help="Print plan without writing",
     )

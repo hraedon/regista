@@ -314,6 +314,7 @@ class MetaApiMixin(_RegistaBase):
         actor_kind: str = "system",
         actor_metadata: dict | None = None,
         private_key_dir: str | None = None,
+        secret_backend: str | None = None,
     ) -> dict:
         """Provision and register an Ed25519 keypair for a principal.
 
@@ -326,6 +327,15 @@ class MetaApiMixin(_RegistaBase):
         WI-3.3); a normal re-enroll of an already-recorded principal is a
         no-op that emits no duplicate event.
 
+        Custody is backend-aware (Plan 029): the private key is written to
+        the configured secret backend (``file``, ``windows``, ``vault``,
+        ``azure``), never silently to local disk unless the backend is
+        ``file``. With ``secret_backend="operator"`` (or
+        ``REGISTA_SECRET_BACKEND=operator``), enrollment fails loudly with
+        ``SECRET_WRITE_EXTERNAL`` — the operator must generate and custody
+        the key out-of-band and register the public key via
+        ``principal register``.
+
         Args:
             principal_id: Identifier for the principal.
             actor_id: Actor performing the enrollment (default ``"system"``).
@@ -333,12 +343,17 @@ class MetaApiMixin(_RegistaBase):
             actor_metadata: Optional JSONB metadata.
             private_key_dir: Optional directory for the private key file.
                 Defaults to a ``principals`` subdirectory next to the key file.
+                Meaningful only for the ``file`` backend.
+            secret_backend: Override the secret backend for custody
+                (``file``/``windows``/``vault``/``azure``/``operator``).
+                Defaults to ``REGISTA_SECRET_BACKEND`` or ``file``.
 
         Returns:
             Dict from :class:`regista._provision.PrincipalProvisionResult`.
 
         Raises:
-            RegistaError: If ``principal_id`` is invalid or key custody fails.
+            RegistaError: If ``principal_id`` is invalid, key custody fails,
+                or the backend is ``operator`` (``SECRET_WRITE_EXTERNAL``).
         """
         from ._observability import OpTimer
         from ._principal_keys import principal_entity_id
@@ -353,6 +368,7 @@ class MetaApiMixin(_RegistaBase):
             principal_id,
             hmac_key_path=self._hmac_key_path,
             private_key_dir=private_key_dir,
+            secret_backend=secret_backend,
         )
 
         existing = self.read_principal_enrollment_events(

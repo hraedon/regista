@@ -92,6 +92,48 @@ $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
 
 Run `regista secrets --list-providers` to see which backends are installed.
 
+### Secret write (custody) — Plan 029
+
+`regista.secrets.store(ref, data)` is the write companion to `resolve`. It is
+used by `provision-principal` / `enroll_principal` to custody a freshly
+generated Ed25519 private key. Each provider's write behavior:
+
+| Backend | `store()` | Notes |
+|---------|-----------|-------|
+| `file` | writes `0o600`, atomic (temp + rename); returns `file:<path>` | Default. `private_key_dir` selects the directory. |
+| `windows` | DPAPI-protects; returns `windows:<blob>` (the blob IS the ref) | No plaintext on disk. Win32 only. |
+| `vault` | KV v2 `create_or_update`; base64-encodes the raw key; returns `vault:<ref>` | Requires `hvac` + a token with write scope. Key-file entry records `encoding: base64`. |
+| `azure` | `set_secret`; base64-encodes; returns `azure:<name>` | Requires the Azure SDK + a credential with write scope. `encoding: base64`. |
+| `env` / `literal` | raises `SECRET_WRITE_UNSUPPORTED` | Read-only by nature — cannot custody a generated secret. |
+| `operator` | raises `SECRET_WRITE_EXTERNAL` | Operator-writes seam (see below). |
+
+#### WI-1.2 decision: write-vs-operator-writes
+
+The configured backend is the source of truth for where a new private key
+lands. Custody never silently falls back to `file:`.
+
+- **Self-custody** (`file`/`windows`/`vault`/`azure`): `enroll_principal`
+  generates the keypair, writes the private key via `store()`, and records the
+  returned ref. The private key is never written to local disk unless the
+  backend is `file`. It is never returned to the caller.
+- **Operator-custody** (`REGISTA_SECRET_BACKEND=operator`): regista is
+  intentionally read-only against the backend. `enroll_principal` does **not**
+  generate a keypair — it raises `SECRET_WRITE_EXTERNAL` carrying the ref the
+  operator must populate and guidance to use `regista principal register` with
+  an operator-generated public key. The operator generates and populates the
+  secret out-of-band; regista never holds the private key.
+
+  Rationale: if regista generated the keypair but could not write it to the
+  backend, the private key would have nowhere to go (it cannot be returned to
+  the caller, and writing it to disk would defeat the purpose). So
+  operator-custody means the operator generates the keypair out-of-band and
+  registers only the public key. This is a deliberate, documented exception to
+  the "humans never handle raw key material" guarantee — it applies only when
+  the deployment's backend is not write-accessible by regista.
+
+Select the backend via `REGISTA_SECRET_BACKEND` (or `--secret-backend` on the
+CLI). `private_key_dir` is meaningful only for the `file` backend.
+
 ## 4. Doctor JSON Contract
 
 `regista doctor --json` emits the canonical health shape:

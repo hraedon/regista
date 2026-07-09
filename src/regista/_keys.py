@@ -149,6 +149,11 @@ class KeySet:
                         f"Failed to resolve secret_ref for key {key_id!r}: "
                         f"{type(e).__name__}: {e}",
                     ) from e
+                encoding = entry.get("encoding")
+                if encoding == "base64":
+                    import base64 as _b64
+
+                    secret = _b64.b64decode(secret)
                 key_sources[key_id] = f"secret_ref:{entry['secret_ref'].split(':', 1)[0]}"
             else:
                 secret = entry["secret"]

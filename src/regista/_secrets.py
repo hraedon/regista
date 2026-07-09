@@ -3,10 +3,31 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ._errors import ErrorCode, RegistaError
+
+
+def _open_exclusive(path: Path) -> tuple[int, Path]:
+    flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        return os.open(str(path), flags, 0o600), path
+    except FileExistsError:
+        suffix = f".{uuid.uuid4().hex[:8]}.tmp"
+        alt = path.with_name(path.name + suffix)
+        return os.open(str(alt), flags, 0o600), alt
+
+
+def _ensure_secure_dir(path: Path) -> None:
+    if path.exists():
+        return
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
 
 
 @runtime_checkable
@@ -14,6 +35,8 @@ class SecretProvider(Protocol):
     name: str
 
     def resolve(self, ref: str) -> bytes: ...
+
+    def store(self, ref: str, data: bytes) -> str: ...
 
 
 class FileProvider:
@@ -28,6 +51,21 @@ class FileProvider:
             )
         return path.read_bytes()
 
+    def store(self, ref: str, data: bytes) -> str:
+        path = Path(ref)
+        _ensure_secure_dir(path.parent)
+        tmp = path.with_name(path.name + ".tmp")
+        fd, tmp = _open_exclusive(tmp)
+        try:
+            remaining = memoryview(data)
+            while remaining:
+                n = os.write(fd, remaining)
+                remaining = remaining[n:]
+        finally:
+            os.close(fd)
+        os.replace(str(tmp), str(path))
+        return f"file:{path}"
+
 
 class EnvProvider:
     name: str = "env"
@@ -41,12 +79,27 @@ class EnvProvider:
             )
         return val.encode("utf-8")
 
+    def store(self, ref: str, data: bytes) -> str:
+        raise RegistaError(
+            ErrorCode.SECRET_WRITE_UNSUPPORTED,
+            f"env: cannot custody a generated secret into a read-only "
+            f"environment variable {ref!r}; use a writable backend "
+            f"(file/windows/vault/azure)",
+        )
+
 
 class LiteralProvider:
     name: str = "literal"
 
     def resolve(self, ref: str) -> bytes:
         return ref.encode("utf-8")
+
+    def store(self, ref: str, data: bytes) -> str:
+        raise RegistaError(
+            ErrorCode.SECRET_WRITE_UNSUPPORTED,
+            "literal: cannot custody a generated secret into a literal value; "
+            "use a writable backend (file/windows/vault/azure)",
+        )
 
 
 _PROVIDERS: dict[str, SecretProvider] = {}
@@ -117,6 +170,33 @@ def resolve_str(ref: str) -> str:
         ) from e
 
 
+def store(ref: str, data: bytes) -> str:
+    if not ref:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "Empty secret reference",
+        )
+    provider_name, value = _detect_prefix(ref)
+    provider = _PROVIDERS.get(provider_name)
+    if provider is None:
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"Unknown secret provider: {provider_name!r}. "
+            f"Available: {available_providers()}",
+        )
+    return provider.store(value, data)
+
+
+def supports_write(name: str) -> bool:
+    provider = _PROVIDERS.get(name)
+    if provider is None:
+        return False
+    try:
+        return provider.store is not None
+    except AttributeError:
+        return False
+
+
 def try_register_vault() -> None:
     try:
         import hvac  # type: ignore[import-untyped]
@@ -175,6 +255,27 @@ def try_register_vault() -> None:
                 return val
             return str(val).encode("utf-8")
 
+        def store(self, ref: str, data: bytes) -> str:
+            import base64
+
+            client = self._get_client()
+            parts = ref.split("/")
+            if len(parts) < 4:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"vault: ref must be mount/path/key, got {ref!r}",
+                )
+            mount = parts[0]
+            key_name = parts[-1]
+            path = "/".join(parts[1:-1])
+            encoded = base64.b64encode(data).decode("ascii")
+            client.secrets.kv.v2.create_or_update_secret(
+                path=path,
+                mount_point=mount,
+                secret={key_name: encoded},
+            )
+            return f"vault:{ref}"
+
     register_provider(VaultProvider())
 
 
@@ -210,6 +311,14 @@ def try_register_azure() -> None:
             secret = client.get_secret(ref)
             return secret.value.encode("utf-8")
 
+        def store(self, ref: str, data: bytes) -> str:
+            import base64
+
+            client = self._get_client()
+            encoded = base64.b64encode(data).decode("ascii")
+            client.set_secret(ref, encoded)
+            return f"azure:{ref}"
+
     register_provider(AzureProvider())
 
 
@@ -239,6 +348,10 @@ def try_register_windows() -> None:
                 return _dpapi_unprotect_ctypes(encrypted)
             except RegistaError:
                 return _dpapi_unprotect_dotnet(encrypted)
+
+        def store(self, ref: str, data: bytes) -> str:
+            blob = protect_windows_secret(data)
+            return f"windows:{blob}"
 
     register_provider(WindowsProvider())
 
