@@ -76,6 +76,7 @@ src/regista/
   _doctor.py           # Health check JSON contract: `regista doctor --json` (Plan 025)
   _principal_keys.py   # Principal→public-key registry: register/rotate/revoke (Plan 026)
   _custody.py          # Backend-aware private-key custody helper (Plan 029)
+  _encryption.py       # Payload encryption-at-rest primitive: field-level AES-256-GCM (Plan 030)
   _provision.py        # Schema + service-role + principal-key provisioning (Plan 025 WI-2.1)
   _vendor/             # Vendored dependencies
     __init__.py
@@ -224,6 +225,15 @@ regista doctor --json   # CLI: health check
 regista config           # CLI: show resolved config
 regista secrets --list-providers  # CLI: list secret backends
 
+# Payload encryption-at-rest (Plan 030)
+from regista._encryption import encrypt_fields, decrypt_fields, verify_encrypted_integrity
+from regista._encryption import is_encrypted_payload, is_encrypted_field
+from regista._encryption import get_encryption_scheme, available_encryption_schemes
+encrypted = encrypt_fields(payload, ["content"], key_ref="file:/path/to/enc_key", key_id="enc-001")
+decrypted = decrypt_fields(encrypted, key_ref="file:/path/to/enc_key")
+results = verify_encrypted_integrity(encrypted, key_ref="file:/path/to/enc_key")  # with key
+results = verify_encrypted_integrity(encrypted, key_source=None)  # without key (warns)
+
 # Principal key registry (Plan 026)
 sub.principals.register(principal_id, public_key, scheme="ed25519", *, key_id=None, registered_by="system")
 sub.principals.list(principal_id=None, *, status=None)
@@ -326,6 +336,11 @@ Plan 029 additions (Backend-aware principal key custody):
 - **Plan 029 WI-1.1/1.2 (Secret write protocol):** `SecretProvider` protocol gains `store(ref, data) -> str` (the write companion to `resolve`). `file` writes `0o600` atomic (temp+rename); `windows` DPAPI-protects (no plaintext on disk); `vault` KV v2 `create_or_update` (base64-encodes raw key); `azure` `set_secret` (base64-encodes). `env`/`literal` raise `SECRET_WRITE_UNSUPPORTED` (read-only by nature). New error codes: `SECRET_WRITE_UNSUPPORTED`, `SECRET_WRITE_EXTERNAL`. WI-1.2 decision (documented in `docs/suite-config.md` §3): self-custody backends write via `store()`; the `operator` backend is the operator-writes seam — `enroll_principal` does **not** generate a keypair, it raises `SECRET_WRITE_EXTERNAL` carrying the ref the operator must populate + guidance to use `principal register`. No silent fallback to `file:` ever.
 - **Plan 029 WI-2.1/2.2 (Custody helper + backend selection):** `_custody.py` with `store_private_key()` — extracts the keypair-generate → backend-write → ref-record sequence; `provision_principal`/`enroll_principal` delegate to it (no hardcoded `file:` path). Backend selected via `REGISTA_SECRET_BACKEND` (added to `SuiteConfig`) or `--secret-backend`; `private_key_dir` is meaningful only for `file`. Key-file entries record `encoding: base64` for vault/azure; `_keys.py` applies `encoding` to `secret_ref` results (backward compatible: absent = raw).
 - **Plan 029 WI-3.1/3.2 (Tests + doctor):** 29 new tests in `test_custody.py` incl. the gap-catching test (non-file backend writes **no** `.key` file to disk). `regista doctor` gains `custody:consistency` check that warns when a principal's recorded `secret_ref` scheme ≠ configured backend (e.g. a `file:` ref on a Vault deployment). CLI `provision-principal`/`principal enroll` accept `--secret-backend`. Sidecar error map: `SECRET_WRITE_UNSUPPORTED`→400, `SECRET_WRITE_EXTERNAL`→409.
+
+Plan 030 additions (Payload encryption-at-rest primitive):
+- **Plan 030 WI-1 (Field-level encryption primitive):** `_encryption.py` with `EncryptionScheme` protocol (mirrors `SigningScheme`), `AES256GCMScheme` (`scheme_id="aes-256-gcm"`, via `[encryption]` extra / `cryptography` lib), and a registry (`register_encryption_scheme`/`get_encryption_scheme`/`available_encryption_schemes`). `encrypt_fields(payload, field_paths, key_ref, key_id, scheme_id)` replaces designated top-level fields with `{encrypted:true, alg, key_id, nonce, ciphertext, digest}` — the `digest` (SHA-256 of plaintext) is stored *outside* the ciphertext sub-tree so it's visible and authenticated by the signature without decryption. `decrypt_fields(payload, key_source)` inverts. Key material resolves via `regista.secrets.resolve` (Plan 025/029 custody path). `key_source` is either a `str` secret-ref (same key for all fields) or a `Callable[[str], bytes]` resolver (maps `key_id` → key bytes for multi-key payloads). New error codes: `ENCRYPTION_SCHEME_NOT_FOUND`, `DECRYPTION_FAILED`, `ENCRYPTION_KEY_NOT_RESOLVED`. `assert_never()` in `status_label()` dispatch.
+- **Plan 030 WI-2 (Schema/versioning):** Encrypted fields carry `alg` (encryption `scheme_id`) and `key_id` so a reader knows which scheme/key to use. Backward-compatible: `is_encrypted_field()` returns `False` for unencrypted values; `decrypt_fields` passes them through unchanged. `VersionInfo` gains `available_encryption_schemes`. `regista.versions()` / `regista version --json` report both signing and encryption scheme sets. No migration needed — encryption is applied at the field level within the existing JSONB `payload` column; no schema change.
+- **Plan 030 WI-3 (Verifier integration):** `verify_encrypted_integrity(payload, key_source)` returns per-field `FieldVerificationResult` with `status` ∈ `{"verified","not_decrypted","digest_mismatch","decryption_error"}`. With key: decrypts + checks `sha256(decrypted) == stored_digest`. Without key (`key_source=None`): reports `"not_decrypted"` (warning, not failure — the digest is authenticated by the signature but plaintext is not verifiable). `status_label()` maps status to human-readable string via exhaustive `Literal` dispatch with `assert_never()`. `strip_encrypted_fields()` returns a payload with ciphertext/nonce removed (for redacted display).
 
 ## Conventions
 

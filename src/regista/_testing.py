@@ -5,6 +5,13 @@ from contextlib import contextmanager
 
 import psycopg
 
+from ._encryption import available_encryption_schemes as available_encryption_schemes
+from ._encryption import decrypt_fields as decrypt_fields
+from ._encryption import encrypt_fields as encrypt_fields
+from ._encryption import get_encryption_scheme as get_encryption_scheme
+from ._encryption import is_encrypted_field as is_encrypted_field
+from ._encryption import is_encrypted_payload as is_encrypted_payload
+from ._encryption import verify_encrypted_integrity as verify_encrypted_integrity
 from ._hooks import poll_and_process_hooks as poll_and_process_hooks
 from ._keys import KeySet as KeySet
 from ._observability import Metrics as Metrics
@@ -17,13 +24,20 @@ from ._signing_scheme import get_scheme as get_scheme
 __all__ = [
     "KeySet",
     "Metrics",
+    "available_encryption_schemes",
     "available_schemes",
+    "decrypt_fields",
     "drop_project_schema",
+    "encrypt_fields",
+    "get_encryption_scheme",
     "get_scheme",
+    "is_encrypted_field",
+    "is_encrypted_payload",
     "poll_and_process_hooks",
     "raw_transaction",
     "replay_fn",
     "sign_event",
+    "verify_encrypted_integrity",
     "verify_event",
 ]
 

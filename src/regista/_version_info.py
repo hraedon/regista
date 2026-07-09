@@ -32,6 +32,7 @@ class VersionInfo:
     envelope_version: int
     canonical_workflow_hash: str = ""
     available_signing_schemes: tuple[str, ...] = field(default_factory=tuple)
+    available_encryption_schemes: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,10 +43,12 @@ class VersionInfo:
             "envelope_version": self.envelope_version,
             "canonical_workflow_hash": self.canonical_workflow_hash,
             "available_signing_schemes": list(self.available_signing_schemes),
+            "available_encryption_schemes": list(self.available_encryption_schemes),
         }
 
 
 def versions() -> VersionInfo:
+    from ._encryption import available_encryption_schemes
     from ._signing_scheme import available_schemes
 
     wf_version, wf_hash = _canonical_workflow_info()
@@ -56,4 +59,5 @@ def versions() -> VersionInfo:
         envelope_version=ENVELOPE_VERSION,
         canonical_workflow_hash=wf_hash,
         available_signing_schemes=tuple(available_schemes()),
+        available_encryption_schemes=tuple(available_encryption_schemes()),
     )
