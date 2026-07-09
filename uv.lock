@@ -1269,6 +1269,9 @@ dev = [
 ed25519 = [
     { name = "pynacl" },
 ]
+encryption = [
+    { name = "cryptography" },
+]
 sidecar = [
     { name = "fastapi" },
     { name = "httpx" },
@@ -1290,6 +1293,7 @@ requires-dist = [
     { name = "asn1crypto", marker = "extra == 'timestamping'", specifier = ">=1.5" },
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.16" },
     { name = "azure-keyvault-secrets", marker = "extra == 'azure'", specifier = ">=4.8" },
+    { name = "cryptography", marker = "extra == 'encryption'", specifier = ">=42.0" },
     { name = "fastapi", marker = "extra == 'sidecar'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'sidecar'", specifier = ">=0.27" },
     { name = "hvac", marker = "extra == 'vault'", specifier = ">=2.0" },
@@ -1313,7 +1317,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'sidecar'", specifier = ">=0.30" },
 ]
-provides-extras = ["dev", "sidecar", "ed25519", "vendor-check", "timestamping", "vault", "azure"]
+provides-extras = ["dev", "sidecar", "ed25519", "encryption", "vendor-check", "timestamping", "vault", "azure", "windows"]
 
 [[package]]
 name = "requests"
