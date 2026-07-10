@@ -15,6 +15,7 @@ dependencies = [
     "structlog>=24.1",
     "prometheus-client>=0.20",
     "python-dateutil>=2.9",
+    "pynacl>=1.5",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,9 @@ vendor-check = [
 ]
 timestamping = [
     "asn1crypto>=1.5",
+]
+anchoring = [
+    "opentimestamps>=0.4",
 ]
 vault = [
     "hvac>=2.0",
@@ -116,6 +120,7 @@ module = [
     "regista._api_meta",
     "regista._api_workflow",
     "regista._archive",
+    "regista._anchoring",
     "regista._in_mem_base",
     "regista._in_mem_claim",
     "regista._in_mem_hook",

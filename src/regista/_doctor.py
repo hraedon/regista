@@ -38,9 +38,14 @@ class DoctorReport:
     checks: list[DoctorCheck]
 
     def to_dict(self) -> dict[str, Any]:
+        has_fail = any(c.status == "fail" for c in self.checks)
+        has_warn = any(c.status == "warn" for c in self.checks)
+        ok = self.reachable and not has_fail
         return {
             "component": self.component,
             "version": self.version,
+            "ok": ok,
+            "degraded": ok and has_warn,
             "reachable": self.reachable,
             "schema_version": self.schema_version,
             "projects": list(self.projects),
