@@ -174,6 +174,9 @@ class TestAC26JsonbDriftSurvival:
             hash_alg=transition_evt.hash_alg,
             prev_event_hash=transition_evt.prev_event_hash,
             prev_global_event_hash=transition_evt.prev_global_event_hash,
+            global_seq=transition_evt.global_seq,
+            actor_kind=transition_evt.actor_kind,
+            actor_metadata=transition_evt.actor_metadata,
         )
 
 

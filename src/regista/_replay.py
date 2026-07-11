@@ -782,6 +782,7 @@ def _replay_work_item(
                     if evt.get("prev_global_event_hash")
                     else None
                 ),
+                global_seq=evt.get("global_seq"),
                 actor_kind=evt.get("actor_kind"),
                 actor_metadata=evt.get("actor_metadata"),
             ):
