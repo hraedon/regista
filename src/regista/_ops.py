@@ -1012,6 +1012,26 @@ class ArchiveOps:
 
         return _impl(self._mgr, archived=archived, limit=limit)
 
+    def verify_archive_chain(self) -> dict:
+        from ._archive_segments import verify_archive_chain as _impl
+
+        return _impl(self._mgr, self._keys)
+
+    def export_bundle(
+        self, output_path: str, *, since_seq: int | None = None,
+    ) -> dict:
+        from ._bundle import export_audit_bundle as _impl
+
+        return _impl(
+            self._mgr, self._project, output_path, since_seq=since_seq,
+        )
+
+    @staticmethod
+    def verify_bundle_offline(bundle_path: str) -> dict:
+        from ._bundle import verify_audit_bundle_offline as _impl
+
+        return _impl(bundle_path).to_dict()
+
 
 class WebhookOps:
     def __init__(self, mgr: ConnectionManager, project: str) -> None:

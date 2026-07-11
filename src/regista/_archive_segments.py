@@ -689,3 +689,87 @@ def list_segments(
                 ),
             })
         return result
+
+
+def verify_archive_chain(
+    mgr: ConnectionManager,
+    key_set: KeySet | None = None,
+) -> dict:
+    with mgr.transaction() as conn:
+        rows = conn.execute(
+            SQL(
+                "SELECT segment_id, first_global_seq, last_global_seq, "
+                "first_event_id, last_event_id, first_event_prev_hash, "
+                "head_hash, event_count, min_timestamp, max_timestamp, "
+                "seal_signature, seal_event_id, archive_path, archived, created_at, "
+                "work_item_ids, event_ids "
+                "FROM event_segments ORDER BY first_global_seq"
+            ),
+        ).fetchall()
+
+        if not rows:
+            return {
+                "verified": True,
+                "segment_count": 0,
+                "chain_breaks": [],
+                "segment_results": [],
+            }
+
+        segment_results: list[dict] = []
+        chain_breaks: list[dict] = []
+
+        for r in rows:
+            seg_id = r["segment_id"]
+            seg_result = verify_segment(mgr, seg_id, key_set)
+            segment_results.append(seg_result)
+            if not seg_result["verified"]:
+                chain_breaks.append({
+                    "segment_id": str(seg_id),
+                    "type": "segment_verification_failed",
+                    "detail": (
+                        f"global_chain_ok={seg_result['global_chain_ok']}, "
+                        f"work_item_chain_ok={seg_result['work_item_chain_ok']}, "
+                        f"head_hash_matches={seg_result['head_hash_matches']}, "
+                        f"seal_event_verified={seg_result['seal_event_verified']}"
+                    ),
+                })
+
+        for i in range(1, len(rows)):
+            prev_seg = rows[i - 1]
+            curr_seg = rows[i]
+
+            prev_head = prev_seg["head_hash"]
+            curr_first_prev = curr_seg["first_event_prev_hash"]
+
+            if prev_head is None:
+                continue
+            if curr_first_prev is None:
+                chain_breaks.append({
+                    "segment_id": str(curr_seg["segment_id"]),
+                    "type": "missing_first_event_prev_hash",
+                    "detail": (
+                        f"segment {curr_seg['segment_id']} has no "
+                        f"first_event_prev_hash but is not the first segment"
+                    ),
+                })
+                continue
+
+            if not _hmac.compare_digest(bytes(prev_head), bytes(curr_first_prev)):
+                chain_breaks.append({
+                    "segment_id": str(curr_seg["segment_id"]),
+                    "type": "chain_link_mismatch",
+                    "detail": (
+                        f"head_hash of segment {prev_seg['segment_id']} "
+                        f"does not match first_event_prev_hash of "
+                        f"segment {curr_seg['segment_id']}"
+                    ),
+                })
+
+        verified = len(chain_breaks) == 0 and all(s["verified"] for s in segment_results)
+
+        return {
+            "verified": verified,
+            "segment_count": len(rows),
+            "chain_breaks": chain_breaks,
+            "segment_results": segment_results,
+        }

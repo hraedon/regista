@@ -724,7 +724,7 @@ def cmd_archive_verify(args):
         if args.json:
             _dump_json(result)
         else:
-            status = "OK" if result.get("valid") else "FAILED"
+            status = "OK" if result.get("verified") else "FAILED"
             print(f"Segment {args.segment_id}: {status}")
             if result.get("event_count") is not None:
                 print(f"  events:          {result['event_count']}")
@@ -779,6 +779,80 @@ def cmd_archive_list(args):
         _handle_error(e)
     finally:
         sub.close()
+
+
+def cmd_archive_verify_chain(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        result = sub.verify_archive_chain()
+        if getattr(args, "json", False):
+            _dump_json(result)
+        else:
+            if result["verified"]:
+                print(f"Archive chain OK — {result['segment_count']} segment(s) verified.")
+            else:
+                print(f"Archive chain FAILED — {len(result['chain_breaks'])} break(s):")
+                for brk in result["chain_breaks"]:
+                    print(f"  {brk['type']} in segment {brk['segment_id']}: {brk['detail']}")
+                sys.exit(1)
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_bundle_export(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        result = sub.export_audit_bundle(
+            args.output, since_seq=args.since_seq,
+        )
+        if getattr(args, "json", False):
+            _dump_json(result)
+        else:
+            print(f"Bundle exported to {result['output_path']}")
+            print(f"  events:           {result['event_count']}")
+            print(f"  anchor_receipts:  {result['anchor_receipt_count']}")
+            print(f"  segments:         {result['segment_count']}")
+            print(f"  bundle_hash:      {result['bundle_hash']}")
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_bundle_verify(args):
+    try:
+        result = Regista.verify_audit_bundle_offline(args.bundle_path)
+        if getattr(args, "json", False):
+            _dump_json(result)
+        else:
+            if result["verified"]:
+                print(
+                    f"Bundle verified — {result['event_count']} event(s), "
+                    f"{result['anchor_receipt_count']} anchor receipt(s), "
+                    f"{result['segment_count']} segment(s)."
+                )
+            else:
+                print("Bundle verification FAILED:")
+                if not result["bundle_hash_ok"]:
+                    print(f"  bundle_hash: {result['bundle_hash_error']}")
+                if not result["global_chain_ok"]:
+                    print(f"  global_chain: {result['global_chain_error']}")
+                if not result["work_item_chain_ok"]:
+                    print(f"  work_item_chain: {result['work_item_chain_error']}")
+                if not result["segment_chain_ok"]:
+                    print(f"  segment_chain: {result['segment_chain_error']}")
+                for av in result.get("anchor_verifications", []):
+                    if not av["verified"]:
+                        print(f"  anchor {av['receipt_id']}: {av['error']}")
+                for err in result.get("errors", []):
+                    print(f"  {err}")
+                sys.exit(1)
+    except RegistaError as e:
+        _handle_error(e)
 
 
 def cmd_workflow_compose(args):
@@ -1423,6 +1497,26 @@ def main(argv=None):
     arch_list.add_argument("--limit", type=int, default=100)
     arch_list.add_argument("--json", action="store_true", help="JSON output")
     arch_list.set_defaults(func=cmd_archive_list)
+
+    arch_vchain = arch_sub.add_parser(
+        "verify-chain", help="Verify chain integrity across all segments",
+    )
+    arch_vchain.add_argument("--json", action="store_true", help="JSON output")
+    arch_vchain.set_defaults(func=cmd_archive_verify_chain)
+
+    # bundle
+    bnd = subs.add_parser("bundle", help="Audit bundle export and verification")
+    bnd_sub = bnd.add_subparsers(dest="subcommand")
+    bnd_export = bnd_sub.add_parser("export", help="Export an audit bundle")
+    bnd_export.add_argument("--output", required=True, help="Output file path")
+    bnd_export.add_argument("--since-seq", type=int, default=None, help="Export after this seq")
+    bnd_export.add_argument("--json", action="store_true", help="JSON output")
+    bnd_export.set_defaults(func=cmd_bundle_export)
+
+    bnd_verify = bnd_sub.add_parser("verify", help="Verify an audit bundle offline")
+    bnd_verify.add_argument("bundle_path", help="Path to bundle JSON file")
+    bnd_verify.add_argument("--json", action="store_true", help="JSON output")
+    bnd_verify.set_defaults(func=cmd_bundle_verify)
 
     # replay
     rep = subs.add_parser("replay", help="Run replay drift check")

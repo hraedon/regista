@@ -186,5 +186,6 @@ module = [
     "regista._doctor",
     "regista._principal_keys",
     "regista._archive_segments",
+    "regista._bundle",
 ]
 ignore_errors = true

@@ -529,3 +529,34 @@ class Regista(
     def verify_anchor_receipt(self, receipt_id: uuid.UUID) -> str:
         """Re-verify a stored anchor receipt against its merkle root."""
         return self.anchoring.verify(receipt_id)
+
+    def export_audit_bundle(
+        self, output_path: str, *, since_seq: int | None = None,
+    ) -> dict:
+        """Export events, anchor receipts, and segments as a self-contained JSON bundle.
+
+        The bundle can be verified offline by a third-party auditor without
+        production database access or private keys (Plan 019 WI-3/WI-4,
+        Plan 028 WI-1.2).
+        """
+        return self.archive.export_bundle(output_path, since_seq=since_seq)
+
+    @staticmethod
+    def verify_audit_bundle_offline(bundle_path: str) -> dict:
+        """Verify an exported audit bundle without a database connection.
+
+        Recomputes content anchors from the bundle's events, verifies chain
+        integrity, and checks anchor receipt merkle roots against recomputed
+        values. Returns a detailed verification report.
+        """
+        from ._bundle import verify_audit_bundle_offline
+
+        return verify_audit_bundle_offline(bundle_path).to_dict()
+
+    def verify_archive_chain(self) -> dict:
+        """Verify chain integrity across all sealed archive segments.
+
+        Confirms each segment's internal chain, seal signature, and that
+        segment N's head_hash chains to segment N+1's first_event_prev_hash.
+        """
+        return self.archive.verify_archive_chain()
