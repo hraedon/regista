@@ -495,6 +495,105 @@ def cmd_timestamp_verify(args):
         sub.close()
 
 
+def _build_anchor_provider(args):
+    provider_name = args.provider
+    config = {}
+    if args.provider_config:
+        try:
+            config = json.loads(args.provider_config)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON for --provider-config: {e}", file=sys.stderr)
+            sys.exit(1)
+    if provider_name == "file":
+        from regista._anchoring import FileAnchorProvider
+
+        path = config.get("path", config.get("directory", "anchors"))
+        return FileAnchorProvider(directory=path)
+    elif provider_name == "rfc3161":
+        from regista._anchoring import RFC3161AnchorProvider
+        from regista._timestamping import TSAConfig
+
+        tsa_url = config.get("tsa_url")
+        if not tsa_url:
+            print("rfc3161 provider requires 'tsa_url' in --provider-config", file=sys.stderr)
+            sys.exit(2)
+        tsa_cert_path = config.get("tsa_cert_path")
+        return RFC3161AnchorProvider(TSAConfig(tsa_url=tsa_url, tsa_cert_path=tsa_cert_path))
+    elif provider_name == "opentimestamps":
+        from regista._anchoring import OpenTimestampsProvider
+
+        calendar_urls = config.get("calendar_urls")
+        return OpenTimestampsProvider(calendar_urls=calendar_urls)
+    else:
+        print(f"Unknown provider: {provider_name!r}", file=sys.stderr)
+        sys.exit(2)
+
+
+def cmd_anchor_submit(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        provider = _build_anchor_provider(args)
+        sub.anchoring.set_provider(provider)
+        receipt = sub.trigger_anchoring(batch_size=args.batch_size)
+        if receipt is None:
+            print("No new events to anchor")
+        else:
+            print(
+                f"Anchored {str(receipt.receipt_id)[:8]}... "
+                f"provider={receipt.provider} status={receipt.status}"
+            )
+            if args.json:
+                _dump_json(receipt)
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_anchor_status(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        receipts = sub.list_anchor_receipts(
+            status=args.status, provider=args.provider, limit=args.limit,
+        )
+        if args.json:
+            _dump_json(receipts)
+        else:
+            for r in receipts:
+                print(
+                    f"{str(r.receipt_id)[:8]}...  {r.provider:16s}  "
+                    f"{r.status:10s}  root={r.merkle_root.hex()[:16]}...  "
+                    f"seq={r.target_global_seq}"
+                )
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
+def cmd_anchor_verify(args):
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        receipt_id = uuid.UUID(args.id)
+    except ValueError:
+        print(f"Invalid receipt ID: {args.id!r}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        provider = _build_anchor_provider(args)
+        sub.anchoring.set_provider(provider)
+        status = sub.verify_anchor_receipt(receipt_id)
+        print(f"status={status}")
+        if status == "failed":
+            sys.exit(1)
+    except RegistaError as e:
+        _handle_error(e)
+    finally:
+        sub.close()
+
+
 def cmd_witness_list(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -1392,6 +1491,39 @@ def main(argv=None):
     ts_verify = ts_sub.add_parser("verify", help="Verify a timestamp batch")
     ts_verify.add_argument("id", help="Batch UUID")
     ts_verify.set_defaults(func=cmd_timestamp_verify)
+
+    # anchor
+    an = subs.add_parser("anchor", help="Transparency-log anchoring commands")
+    an_sub = an.add_subparsers(dest="subcommand")
+    an_submit = an_sub.add_parser("submit", help="Trigger one anchoring cycle")
+    an_submit.add_argument(
+        "--provider", default="file",
+        choices=["file", "rfc3161", "opentimestamps"],
+        help="Anchor provider (default: file)",
+    )
+    an_submit.add_argument(
+        "--provider-config", default=None,
+        help='Provider config JSON (e.g. {"path": "/var/lib/regista/anchors"})',
+    )
+    an_submit.add_argument("--batch-size", type=int, default=10000)
+    an_submit.set_defaults(func=cmd_anchor_submit)
+    an_status = an_sub.add_parser("status", help="List anchor receipts")
+    an_status.add_argument("--provider", help="Filter by provider name")
+    an_status.add_argument("--status", help="Filter by status")
+    an_status.add_argument("--limit", type=int, default=100)
+    an_status.set_defaults(func=cmd_anchor_status)
+    an_verify = an_sub.add_parser("verify", help="Verify an anchor receipt")
+    an_verify.add_argument("id", help="Receipt UUID")
+    an_verify.add_argument(
+        "--provider", default="file",
+        choices=["file", "rfc3161", "opentimestamps"],
+        help="Anchor provider (default: file)",
+    )
+    an_verify.add_argument(
+        "--provider-config", default=None,
+        help="Provider config JSON",
+    )
+    an_verify.set_defaults(func=cmd_anchor_verify)
 
     # witness
     wt = subs.add_parser("witness", help="Witness commands")

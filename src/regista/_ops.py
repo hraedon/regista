@@ -621,6 +621,102 @@ class TimestampOps:
             )
 
 
+class AnchorOps:
+    def __init__(
+        self,
+        mgr: ConnectionManager,
+        metrics: Metrics,
+        project: str,
+    ) -> None:
+        self._mgr = mgr
+        self._metrics = metrics
+        self._project = project
+        self._anchor_provider: Any = None
+
+    def set_provider(self, provider: Any) -> None:
+        self._anchor_provider = provider
+
+    @property
+    def provider(self) -> Any:
+        return self._anchor_provider
+
+    def trigger(self, *, batch_size: int = 10_000) -> Any | None:
+        if self._anchor_provider is None:
+            raise RegistaError(
+                ErrorCode.ANCHOR_PROVIDER_UNAVAILABLE,
+                "No anchor provider configured",
+            )
+        from ._anchoring import trigger_anchoring
+
+        receipt = trigger_anchoring(
+            self._mgr,
+            self._anchor_provider,
+            batch_size=batch_size,
+            project_name=self._project,
+        )
+        if receipt is not None:
+            self._metrics.inc("anchor_submissions", self._project)
+        return receipt
+
+    def upgrade_pending(self, *, max_iterations: int = 100) -> int:
+        if self._anchor_provider is None:
+            return 0
+        from ._anchoring import retry_failed_anchors, upgrade_pending_anchors
+
+        with self._mgr.transaction() as conn:
+            count = upgrade_pending_anchors(
+                conn, self._anchor_provider, max_iterations=max_iterations,
+            )
+        count += retry_failed_anchors(
+            self._mgr, self._anchor_provider, max_iterations=max_iterations,
+        )
+        if count > 0:
+            self._metrics.inc("anchor_upgrades", self._project, amount=count)
+        return count
+
+    def list_receipts(
+        self,
+        status: str | None = None,
+        provider: str | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        from ._anchoring import list_anchor_receipts
+
+        with self._mgr.transaction() as conn:
+            return list_anchor_receipts(conn, status=status, provider=provider, limit=limit)
+
+    def get_receipt(self, receipt_id: uuid.UUID) -> Any:
+        from ._anchoring import get_anchor_receipt
+
+        with self._mgr.transaction() as conn:
+            receipt = get_anchor_receipt(conn, receipt_id)
+        if receipt is None:
+            raise RegistaError(
+                ErrorCode.ANCHOR_RECEIPT_NOT_FOUND,
+                f"Anchor receipt {receipt_id} not found",
+            )
+        return receipt
+
+    def verify(self, receipt_id: uuid.UUID) -> str:
+        if self._anchor_provider is None:
+            raise RegistaError(
+                ErrorCode.ANCHOR_PROVIDER_UNAVAILABLE,
+                "No anchor provider configured",
+            )
+        from ._anchoring import AnchorStatus, get_anchor_receipt, verify_content_anchor
+
+        with self._mgr.transaction() as conn:
+            receipt = get_anchor_receipt(conn, receipt_id)
+            if receipt is None:
+                raise RegistaError(
+                    ErrorCode.ANCHOR_RECEIPT_NOT_FOUND,
+                    f"Anchor receipt {receipt_id} not found",
+                )
+            if not verify_content_anchor(conn, receipt):
+                return AnchorStatus.FAILED
+        return self._anchor_provider.verify(receipt.merkle_root, receipt)
+
+
 class HookOps:
     def __init__(
         self,

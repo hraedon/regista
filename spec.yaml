@@ -74,6 +74,7 @@ scope:
     - "Scheduling beyond not_before timestamp"
     - "Retry / SLA / automation engines layered above coordination"
     - "Workflow file composition across files (implemented as FR-29)"
+    - "Transparency-log anchoring of the event log (implemented as FR-30)"
     - "Notification / paging / email"
     - "Human-facing UI"
     - "Removal of registered workflow versions (registry is append-only)"
@@ -128,7 +129,8 @@ mvp:
       fr_ids:
         - "FR-28"
         - "FR-29"
-      rationale: "Recurring work-item generation and workflow file composition."
+        - "FR-30"
+      rationale: "Recurring work-item generation, workflow file composition, transparency-log anchoring."
     - phase: 5
       label: "Future"
       fr_ids: []
@@ -192,6 +194,9 @@ open_questions:
   - question: "Workflow file composition (!include / cross-file merge)"
     category: "resolved"
     owner: "Implemented as FR-29 (Plan 004). extends: field with deep-merge, keyed list merge, __append/__remove modifiers."
+  - question: "Transparency-log anchoring (operator-forgery defense)"
+    category: "resolved"
+    owner: "Implemented as FR-30 (Plan 019). Content-committing anchor (sha256 of chain head hash + binding fields) to OpenTimestamps (Bitcoin), RFC 3161 TSA, or operator-controlled file. Receipt state machine with advisory-lock concurrency safety. See spec §17.9.2 for the trust-model implications and residual risks (BC-300 OTS verify semantics)."
   - question: "Regista library version → Postgres major version compatibility matrix"
     category: "needs_research"
     owner: "Implementing agent (resolved during build)"

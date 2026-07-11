@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 
 import structlog
@@ -23,6 +24,7 @@ from ._keys import KeySet
 from ._migrations import run_migrations
 from ._observability import Metrics
 from ._ops import (
+    AnchorOps,
     ArchiveOps,
     AssuranceOps,
     ClaimOps,
@@ -406,6 +408,13 @@ class Regista(
         return self._timestamping_ops
 
     @property
+    def anchoring(self) -> AnchorOps:
+        self._require_open()
+        if not hasattr(self, "_anchoring_ops"):
+            self._anchoring_ops = AnchorOps(self._mgr, self._metrics, self._project)
+        return self._anchoring_ops
+
+    @property
     def witnesses(self) -> WitnessOps:
         self._require_open()
         if not hasattr(self, "_witness_ops"):
@@ -491,3 +500,32 @@ class Regista(
 
         with psycopg.connect(dsn, row_factory=dict_row) as conn:
             return list_catalog_projects(conn)
+
+    def trigger_anchoring(self, *, batch_size: int = 10_000):
+        """Submit a Merkle root of pending events to the configured anchor provider.
+
+        Requires ``start_maintenance(anchor_provider=...)`` or
+        ``regista.anchoring.set_provider(...)`` to have been called first.
+        """
+        return self.anchoring.trigger(batch_size=batch_size)
+
+    def upgrade_pending_anchors(self, *, max_iterations: int = 100) -> int:
+        """Poll the anchor provider for upgrades of pending receipts."""
+        return self.anchoring.upgrade_pending(max_iterations=max_iterations)
+
+    def list_anchor_receipts(
+        self,
+        status: str | None = None,
+        provider: str | None = None,
+        limit: int = 100,
+    ) -> list:
+        """List anchor receipts, optionally filtered."""
+        return self.anchoring.list_receipts(status=status, provider=provider, limit=limit)
+
+    def get_anchor_receipt(self, receipt_id: uuid.UUID):
+        """Retrieve a single anchor receipt by ID."""
+        return self.anchoring.get_receipt(receipt_id)
+
+    def verify_anchor_receipt(self, receipt_id: uuid.UUID) -> str:
+        """Re-verify a stored anchor receipt against its merkle root."""
+        return self.anchoring.verify(receipt_id)

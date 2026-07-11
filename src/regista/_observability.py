@@ -159,6 +159,18 @@ class Metrics:
                 "regista_timestamping_errors_total",
                 "Errors during maintenance timestamping cycle",
             ),
+            "anchor_submissions": (
+                "regista_anchor_submissions_total",
+                "Anchor receipts submitted to a provider",
+            ),
+            "anchor_upgrades": (
+                "regista_anchor_upgrades_total",
+                "Anchor receipts upgraded to confirmed",
+            ),
+            "anchor_errors": (
+                "regista_anchor_errors_total",
+                "Errors during maintenance anchoring cycle",
+            ),
             "witness_receipts_delivered": (
                 "regista_witness_receipts_delivered_total",
                 "Witness receipts delivered",

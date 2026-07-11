@@ -1,6 +1,6 @@
 # Plan 019 — Transparency-Log Anchoring (operator-forgery defense)
 
-**Status:** proposed 2026-05-28
+**Status:** implemented 2026-07-11 (F-1/F-3 remediation per holistic suite review)
 **Author:** Opus 4.8 (portfolio review)
 **Closes:** BC-196 remedy #4 (the residual gap AC 1–3 explicitly do *not* solve)
 and BC-196 AC-5 (positioning-doc accuracy) + stretch (transparency-log design note).

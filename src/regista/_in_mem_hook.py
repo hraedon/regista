@@ -217,6 +217,9 @@ class InMemHookMixin(_InMemoryBase):
         timestamp_interval: float = 3600.0,
         tsa_config=None,
         witness_interval: float = 30.0,
+        anchor_provider=None,
+        anchor_interval: float = 3600.0,
+        anchor_upgrade_interval: float = 600.0,
     ) -> None:
         pass
 
