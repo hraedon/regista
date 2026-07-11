@@ -302,6 +302,8 @@ def in_memory_replay(
                             hash_alg=evt.hash_alg,
                             prev_event_hash=evt.prev_event_hash,
                             prev_global_event_hash=evt.prev_global_event_hash,
+                            actor_kind=evt.actor_kind,
+                            actor_metadata=evt.actor_metadata,
                         ):
                             raise RegistaError(
                                 ErrorCode.REPLAY_HALTED,

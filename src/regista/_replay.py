@@ -782,6 +782,8 @@ def _replay_work_item(
                     if evt.get("prev_global_event_hash")
                     else None
                 ),
+                actor_kind=evt.get("actor_kind"),
+                actor_metadata=evt.get("actor_metadata"),
             ):
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "

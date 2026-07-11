@@ -242,6 +242,8 @@ def append_event(
         prev_global_event_hash=prev_global_event_hash,
         entity_kind=entity_kind,
         hash_alg="sha-256",
+        actor_kind=actor_kind,
+        actor_metadata=am,
     )
 
     event_seq = next_seq
@@ -435,6 +437,8 @@ def append_transition_event(
         prev_global_event_hash=prev_global_event_hash,
         entity_kind="work_item",
         hash_alg="sha-256",
+        actor_kind=actor_kind,
+        actor_metadata=am,
     )
 
     event_seq = next_seq

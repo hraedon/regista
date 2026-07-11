@@ -103,6 +103,8 @@ def _verify_seal_event(
         prev_global_event_hash=evt.prev_global_event_hash,
         entity_kind=evt.entity_kind,
         hash_alg=evt.hash_alg,
+        actor_kind=evt.actor_kind,
+        actor_metadata=evt.actor_metadata,
     )
 
 
@@ -411,6 +413,8 @@ def seal_segment(
             prev_global_event_hash=prev_global_event_hash,
             entity_kind="segment",
             hash_alg="sha-256",
+            actor_kind="system",
+            actor_metadata=None,
         )
 
         if dry_run:

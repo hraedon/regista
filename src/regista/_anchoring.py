@@ -21,7 +21,7 @@ log = structlog.get_logger()
 
 _DEFAULT_OTS_CALENDAR = "https://bitcoin.calendar.catallaxy.com/"
 _BATCH_SIZE_DEFAULT = 10_000
-_DEFAULT_ENVELOPE_VERSION = 4
+_DEFAULT_ENVELOPE_VERSION = 5
 _DEFAULT_HASH_ALGORITHM = "sha-256"
 
 _RAW = hashlib.sha256(b"regista_anchoring").digest()

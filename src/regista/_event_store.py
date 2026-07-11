@@ -123,6 +123,8 @@ def append_event(
             prev_global_event_hash=prev_global_event_hash,
             entity_kind=entity_kind,
             hash_alg=hash_alg,
+            actor_kind=actor_kind,
+            actor_metadata=am,
         )
         _scheme_id = scheme.scheme_id
     else:
