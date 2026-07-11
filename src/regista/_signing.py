@@ -374,6 +374,35 @@ def verify_event(
         if stored_ver >= 3:
             candidate_envelopes.append((stored_envelope, stored_ver))
 
+        # Build v5 candidate when actor_kind is provided — needed when the
+        # stored envelope is missing (old events) or for tamper detection
+        # cross-check. When the stored envelope IS available, it's tried
+        # first and the tamper check handles consistency (WI-208).
+        if actor_kind is not None:
+            candidate_envelopes.append((
+                build_signing_envelope_v5(
+                    event_id=event_id,
+                    entity_kind=entity_kind,
+                    entity_id=work_item_id,
+                    actor_id=actor_id,
+                    actor_kind=actor_kind,
+                    actor_metadata=actor_metadata,
+                    key_id=key_id,
+                    event_seq=event_seq,
+                    workflow_name=workflow_name,
+                    workflow_version=workflow_version,
+                    timestamp=timestamp,
+                    hash_alg=hash_alg,
+                    transition=transition,
+                    payload=payload,
+                    on_behalf_of=on_behalf_of,
+                    prev_event_hash=prev_event_hash,
+                    global_seq=global_seq,
+                    prev_global_event_hash=prev_global_event_hash,
+                ),
+                5,
+            ))
+
         candidate_envelopes.append((
             build_signing_envelope_v4(
                 event_id=event_id,
