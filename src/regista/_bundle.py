@@ -14,12 +14,16 @@ from ._anchoring import AnchorReceipt, compute_content_anchor
 from ._archive_segments import _verify_global_chain, _verify_work_item_chains
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
-from ._signing_scheme import resolve_hash_function
+from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
 
 log = structlog.get_logger()
 
-_BUNDLE_FORMAT_VERSION = 1
+# v2 adds the principal public-key registry to the bundle so event signatures
+# on asymmetric schemes are verified offline (signer binding). v1 bundles are
+# still accepted; their signature check is reported as skipped.
+_BUNDLE_FORMAT_VERSION = 2
+_SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,9 @@ class BundleVerificationReport:
     segment_chain_error: str | None = None
     bundle_hash_ok: bool = True
     bundle_hash_error: str | None = None
+    signatures_verified: int = 0
+    signatures_unverifiable: int = 0
+    signature_check: str = "enforced"
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -54,6 +61,9 @@ class BundleVerificationReport:
             "segment_chain_error": self.segment_chain_error,
             "bundle_hash_ok": self.bundle_hash_ok,
             "bundle_hash_error": self.bundle_hash_error,
+            "signatures_verified": self.signatures_verified,
+            "signatures_unverifiable": self.signatures_unverifiable,
+            "signature_check": self.signature_check,
             "errors": self.errors,
         }
 
@@ -90,23 +100,34 @@ def export_audit_bundle(
 
         events = [_row_to_event_dict(r) for r in rows]
 
-        anchor_receipts: list[dict] = []
-        try:
-            from ._anchoring import list_anchor_receipts
-
-            receipts = list_anchor_receipts(conn, limit=10_000)
-            anchor_receipts = [r.to_dict() for r in receipts]
-        except Exception as exc:
-            log.warning("bundle.anchor_receipts_failed", error=str(exc))
+        # Optional sections come from tables that may predate their migration
+        # (older stores). ONLY a missing table is tolerated — and it is
+        # recorded in the manifest so the auditor sees the bundle's scope.
+        # Any other failure aborts the export: an audit bundle that silently
+        # omits anchor receipts or public keys would still "verify" while
+        # proving less than the auditor believes (fail closed).
+        anchor_receipts, receipts_available = _read_optional_section(
+            conn,
+            "anchor_receipts",
+            lambda c: _list_receipts_dicts(c),
+        )
+        public_keys, registry_available = _read_optional_section(
+            conn,
+            "principal_keys",
+            lambda c: _list_principal_key_dicts(c),
+        )
 
         segments: list[dict] = []
+        segments_available = True
         try:
             from ._archive_segments import list_segments
 
-            seg_list = list_segments(mgr, limit=10_000)
-            segments = seg_list
+            segments = list_segments(mgr, limit=10_000)
         except Exception as exc:
-            log.warning("bundle.segments_failed", error=str(exc))
+            if not _is_undefined_table(exc):
+                raise
+            segments_available = False
+            log.warning("bundle.segments_table_absent", error=str(exc))
 
         exported_at = datetime.now(UTC)
         manifest = {
@@ -115,6 +136,10 @@ def export_audit_bundle(
             "event_count": len(events),
             "anchor_receipt_count": len(anchor_receipts),
             "segment_count": len(segments),
+            "public_key_count": len(public_keys),
+            "anchor_receipts_available": receipts_available,
+            "segments_available": segments_available,
+            "principal_key_registry": "present" if registry_available else "absent",
             "format_version": _BUNDLE_FORMAT_VERSION,
             "since_seq": since_seq,
         }
@@ -124,6 +149,7 @@ def export_audit_bundle(
             "events": events,
             "anchor_receipts": anchor_receipts,
             "segments": segments,
+            "public_keys": public_keys,
         }
 
         bundle_bytes = _canonical_bundle_bytes(bundle)
@@ -144,6 +170,7 @@ def export_audit_bundle(
             event_count=len(events),
             anchor_receipt_count=len(anchor_receipts),
             segment_count=len(segments),
+            public_key_count=len(public_keys),
             output_path=str(output),
         )
 
@@ -152,8 +179,52 @@ def export_audit_bundle(
             "event_count": len(events),
             "anchor_receipt_count": len(anchor_receipts),
             "segment_count": len(segments),
+            "public_key_count": len(public_keys),
             "bundle_hash": manifest["bundle_hash"],
         }
+
+
+def _is_undefined_table(exc: Exception) -> bool:
+    try:
+        from psycopg import errors as pg_errors
+    except ImportError:
+        return False
+    return isinstance(exc, pg_errors.UndefinedTable)
+
+
+def _read_optional_section(
+    conn, table_name: str, reader
+) -> tuple[list[dict], bool]:
+    """Read an optional bundle section under a savepoint.
+
+    Returns ``(rows, available)``. A missing table (store predates the
+    migration) yields ``([], False)``; any other error propagates. The
+    savepoint keeps an UndefinedTable from aborting the outer transaction.
+    """
+    conn.execute("SAVEPOINT bundle_section")
+    try:
+        rows = reader(conn)
+    except Exception as exc:
+        conn.execute("ROLLBACK TO SAVEPOINT bundle_section")
+        if not _is_undefined_table(exc):
+            raise
+        log.warning("bundle.section_table_absent", table=table_name)
+        return [], False
+    else:
+        conn.execute("RELEASE SAVEPOINT bundle_section")
+        return rows, True
+
+
+def _list_receipts_dicts(conn) -> list[dict]:
+    from ._anchoring import list_anchor_receipts
+
+    return [r.to_dict() for r in list_anchor_receipts(conn, limit=10_000)]
+
+
+def _list_principal_key_dicts(conn) -> list[dict]:
+    from ._principal_keys import list_principal_keys_for_conn
+
+    return [k.to_dict() for k in list_principal_keys_for_conn(conn)]
 
 
 def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationReport:
@@ -197,10 +268,10 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         errors.append(bundle_hash_error or "")
 
     fmt_version = manifest.get("format_version")
-    if fmt_version != _BUNDLE_FORMAT_VERSION:
+    if fmt_version not in _SUPPORTED_FORMAT_VERSIONS:
         errors.append(
             f"Unsupported bundle format_version: {fmt_version}, "
-            f"expected {_BUNDLE_FORMAT_VERSION}"
+            f"supported: {sorted(_SUPPORTED_FORMAT_VERSIONS)}"
         )
 
     events: list[Event] = []
@@ -242,6 +313,18 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         if not seg_chain_ok:
             errors.append(f"Segment chain error: {seg_chain_error}")
 
+    if fmt_version == 1 and "public_keys" not in bundle:
+        # v1 bundles carry no key registry; skipping is reported, not hidden.
+        signature_check = "skipped_v1_bundle"
+        sigs_verified = 0
+        sigs_unverifiable = 0
+    else:
+        signature_check = "enforced"
+        sigs_verified, sigs_unverifiable, sig_errors = _verify_event_signatures(
+            events, bundle.get("public_keys", [])
+        )
+        errors.extend(sig_errors)
+
     verified = (
         bundle_hash_ok
         and ok_global
@@ -265,8 +348,137 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         segment_chain_error=seg_chain_error,
         bundle_hash_ok=bundle_hash_ok,
         bundle_hash_error=bundle_hash_error,
+        signatures_verified=sigs_verified,
+        signatures_unverifiable=sigs_unverifiable,
+        signature_check=signature_check,
         errors=errors,
     )
+
+
+def _verify_event_signatures(
+    events: list[Event], public_keys_data: list[dict]
+) -> tuple[int, int, list[str]]:
+    """Verify event signatures offline against the bundled key registry.
+
+    Asymmetric-scheme events (e.g. ed25519) are verified against the
+    principal public-key registry exported in the bundle, including the
+    principal↔signer binding (key.principal_id must equal event.actor_id,
+    mirroring ``verify_principal_binding``) and the key's validity window.
+
+    Symmetric-scheme events (hmac-*) are counted as unverifiable: verifying
+    an HMAC requires the secret, which is deliberately never exported. An
+    unknown scheme fails closed.
+
+    Returns ``(verified_count, unverifiable_count, errors)``.
+    """
+    keys_by_id: dict[str, dict] = {}
+    errors: list[str] = []
+
+    for kd in public_keys_data:
+        try:
+            entry = {
+                "key_id": kd["key_id"],
+                "principal_id": kd["principal_id"],
+                "scheme": kd["scheme"],
+                "public_key": bytes.fromhex(kd["public_key"]),
+                "status": kd.get("status", "active"),
+                "valid_from": (
+                    datetime.fromisoformat(kd["valid_from"])
+                    if kd.get("valid_from")
+                    else None
+                ),
+                "valid_to": (
+                    datetime.fromisoformat(kd["valid_to"])
+                    if kd.get("valid_to")
+                    else None
+                ),
+                "revoked_at": (
+                    datetime.fromisoformat(kd["revoked_at"])
+                    if kd.get("revoked_at")
+                    else None
+                ),
+            }
+        except (KeyError, ValueError, TypeError) as exc:
+            errors.append(f"Malformed public-key entry in bundle: {exc}")
+            continue
+        keys_by_id[entry["key_id"]] = entry
+
+    verified_count = 0
+    unverifiable_count = 0
+
+    for evt in events:
+        label = f"event {evt.event_id} (global_seq={evt.global_seq})"
+
+        try:
+            scheme = get_scheme(evt.scheme_id)
+        except RegistaError:
+            errors.append(
+                f"Unknown signing scheme {evt.scheme_id!r} at {label} (fail closed)"
+            )
+            continue
+
+        if not getattr(scheme, "is_asymmetric", False):
+            unverifiable_count += 1
+            continue
+
+        if evt.canonical_envelope is None or evt.signature is None:
+            errors.append(f"Missing canonical_envelope or signature at {label}")
+            continue
+
+        key = keys_by_id.get(evt.key_id)
+        if key is None:
+            errors.append(
+                f"No public key for key_id {evt.key_id!r} in bundle registry at {label}"
+            )
+            continue
+
+        if key["scheme"] != evt.scheme_id:
+            errors.append(
+                f"Key scheme mismatch at {label}: key {evt.key_id!r} is "
+                f"{key['scheme']!r}, event claims {evt.scheme_id!r}"
+            )
+            continue
+
+        if key["principal_id"] != evt.actor_id:
+            errors.append(
+                f"Actor-signer mismatch at {label}: actor_id={evt.actor_id!r} "
+                f"but key {evt.key_id!r} is bound to {key['principal_id']!r}"
+            )
+            continue
+
+        try:
+            if key["valid_from"] is not None and evt.timestamp < key["valid_from"]:
+                errors.append(
+                    f"Event signed before key validity at {label}: "
+                    f"timestamp={evt.timestamp.isoformat()}, "
+                    f"valid_from={key['valid_from'].isoformat()}"
+                )
+                continue
+            boundary = key["revoked_at"] or key["valid_to"]
+            if boundary is not None and evt.timestamp > boundary:
+                errors.append(
+                    f"Event signed after key revocation/expiry at {label}: "
+                    f"timestamp={evt.timestamp.isoformat()}, "
+                    f"boundary={boundary.isoformat()}"
+                )
+                continue
+        except TypeError as exc:
+            errors.append(f"Key validity comparison failed at {label}: {exc}")
+            continue
+
+        if not scheme.verify(
+            bytes(evt.canonical_envelope),
+            bytes(evt.signature),
+            bytes(evt.payload_canonical_hash),
+            key["public_key"],
+            hash_alg=evt.hash_alg or "sha-256",
+        ):
+            errors.append(f"Signature verification failed at {label}")
+            continue
+
+        verified_count += 1
+
+    return verified_count, unverifiable_count, errors
 
 
 def _verify_anchor_offline(
@@ -531,4 +743,8 @@ def _canonical_bundle_bytes(bundle: dict) -> bytes:
         "anchor_receipts": bundle.get("anchor_receipts", []),
         "segments": bundle.get("segments", []),
     }
+    # v1 bundles have no public_keys section; including the key only when
+    # present keeps v1 hashes recomputable by a v2 verifier.
+    if "public_keys" in bundle:
+        canonical["public_keys"] = bundle.get("public_keys", [])
     return json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")

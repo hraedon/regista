@@ -816,6 +816,7 @@ def cmd_bundle_export(args):
             print(f"  events:           {result['event_count']}")
             print(f"  anchor_receipts:  {result['anchor_receipt_count']}")
             print(f"  segments:         {result['segment_count']}")
+            print(f"  public_keys:      {result['public_key_count']}")
             print(f"  bundle_hash:      {result['bundle_hash']}")
     except RegistaError as e:
         _handle_error(e)
@@ -833,7 +834,11 @@ def cmd_bundle_verify(args):
                 print(
                     f"Bundle verified — {result['event_count']} event(s), "
                     f"{result['anchor_receipt_count']} anchor receipt(s), "
-                    f"{result['segment_count']} segment(s)."
+                    f"{result['segment_count']} segment(s), "
+                    f"{result['signatures_verified']} signature(s) verified, "
+                    f"{result['signatures_unverifiable']} unverifiable "
+                    f"(symmetric scheme) "
+                    f"[signature_check={result['signature_check']}]."
                 )
             else:
                 print("Bundle verification FAILED:")

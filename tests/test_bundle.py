@@ -81,7 +81,9 @@ class TestExportAuditBundle:
         assert "segments" in bundle
         assert bundle["manifest"]["project"] == project
         assert bundle["manifest"]["event_count"] == result["event_count"]
-        assert bundle["manifest"]["format_version"] == 1
+        assert bundle["manifest"]["format_version"] == 2
+        assert "public_keys" in bundle
+        assert bundle["manifest"]["principal_key_registry"] == "present"
 
     def test_export_with_since_seq(self, sub, project, tmp_path):
         wi1, _ = sub.create_work_item(
@@ -317,3 +319,250 @@ class TestVerifyArchiveChain:
             assert len(result["chain_breaks"]) > 0
         else:
             pass
+
+
+class TestOfflineSignatureVerification:
+    """Bundle v2 offline signer-binding verification (Plan 008 WI-1.1 close-out).
+
+    v1 bundles verified chain hashes and anchor roots but never event
+    signatures — a bundle with consistent hashes and forged signatures
+    passed. v2 exports the principal public-key registry and verifies
+    asymmetric-scheme signatures offline, including the principal↔signer
+    binding and key validity window. Symmetric (HMAC) events are counted
+    as unverifiable, never silently passed.
+    """
+
+    @pytest.fixture
+    def ed25519_setup(self, tmp_path):
+        import base64
+
+        import nacl.signing
+
+        from regista._principal_keys import register_principal_key
+        from regista._testing import drop_project_schema as _drop
+
+        project = f"bundle_sig_{uuid.uuid4().hex[:8]}"
+        principal_id = f"bundle_principal_{uuid.uuid4().hex[:8]}"
+
+        sk = nacl.signing.SigningKey.generate()
+        seed, vk = bytes(sk), bytes(sk.verify_key)
+        priv_path = tmp_path / f"{principal_id}_priv.key"
+        priv_path.write_bytes(seed)
+        priv_path.chmod(0o600)
+        key_file = tmp_path / "sig_keys.json"
+        key_file.write_text(json.dumps({"keys": [
+            {
+                "key_id": "bootstrap-hmac",
+                "secret": "dGVzdA==",
+                "encoding": "base64",
+                "status": "active",
+            },
+            {
+                "key_id": f"ed25519-{principal_id}",
+                "scheme": "ed25519",
+                "principal_id": principal_id,
+                "secret_ref": f"file:{priv_path}",
+                "public_key": base64.b64encode(vk).decode("ascii"),
+                "role": "actor",
+                "status": "active",
+            },
+        ]}))
+
+        sub = Regista.create_project(DSN, project, str(key_file))
+        try:
+            with open(WORKFLOW_PATH) as f:
+                sub.register_workflow(f.read())
+            register_principal_key(
+                sub._mgr, principal_id, vk, "ed25519",
+                key_id=f"ed25519-{principal_id}",
+            )
+            yield sub, principal_id
+        finally:
+            sub.close()
+            _drop(DSN, project)
+
+    @staticmethod
+    def _rehash(bundle: dict) -> None:
+        """Recompute bundle_hash the way a tampering adversary would."""
+        from regista._bundle import _canonical_bundle_bytes
+
+        bundle["manifest"]["bundle_hash"] = (
+            "sha256:" + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
+        )
+
+    def _export_mixed_bundle(self, sub, principal_id, tmp_path) -> Path:
+        """HMAC events first, then an ed25519-signed event LAST in the chain."""
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "hmac-actor",
+            custom_fields={"title": "hmac-signed"},
+        )
+        _drive_to_terminal(sub, wi)
+        sub.create_work_item(
+            "test_workflow", "feature", principal_id,
+            custom_fields={"title": "ed25519-signed"},
+        )
+        output = tmp_path / "sig_bundle.json"
+        sub.export_audit_bundle(str(output))
+        return output
+
+    def test_export_includes_registered_public_key(
+        self, ed25519_setup, tmp_path
+    ):
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        bundle = json.loads(output.read_text())
+        assert bundle["manifest"]["principal_key_registry"] == "present"
+        keys = {k["key_id"]: k for k in bundle["public_keys"]}
+        entry = keys[f"ed25519-{principal_id}"]
+        assert entry["principal_id"] == principal_id
+        assert entry["scheme"] == "ed25519"
+        assert entry["public_key"]
+
+    def test_clean_mixed_bundle_verifies_signatures(
+        self, ed25519_setup, tmp_path
+    ):
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified
+        assert report.signature_check == "enforced"
+        assert report.signatures_verified >= 1
+        assert report.signatures_unverifiable >= 1
+        assert (
+            report.signatures_verified + report.signatures_unverifiable
+            == report.event_count
+        )
+
+    def test_forged_signature_caught_only_by_signature_check(
+        self, ed25519_setup, tmp_path
+    ):
+        """The last event's signature constrains no chain link — before v2,
+        forging it (and rehashing the bundle) passed offline verification."""
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        bundle = json.loads(output.read_text())
+        last = bundle["events"][-1]
+        assert last["scheme_id"] == "ed25519"
+        last["signature"] = "ff" * (len(last["signature"]) // 2)
+        self._rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        # The chain checks cannot see this tampering — only the signature
+        # check catches it. This is the added value of bundle v2.
+        assert report.bundle_hash_ok
+        assert report.global_chain_ok
+        assert any("Signature verification failed" in e for e in report.errors)
+
+    def test_hmac_only_bundle_counts_all_unverifiable(self, sub, tmp_path):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "hmac-only",
+            custom_fields={"title": "hmac-only"},
+        )
+        _drive_to_terminal(sub, wi)
+        output = tmp_path / "hmac_bundle.json"
+        sub.export_audit_bundle(str(output))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified
+        assert report.signature_check == "enforced"
+        assert report.signatures_verified == 0
+        assert report.signatures_unverifiable == report.event_count
+
+    def test_v1_bundle_signature_check_skipped(self, tmp_path):
+        from regista._bundle import _canonical_bundle_bytes
+
+        bundle = {
+            "manifest": {
+                "project": "v1-compat",
+                "exported_at": datetime.now(UTC).isoformat(),
+                "event_count": 0,
+                "anchor_receipt_count": 0,
+                "segment_count": 0,
+                "format_version": 1,
+                "bundle_hash": "",
+            },
+            "events": [],
+            "anchor_receipts": [],
+            "segments": [],
+        }
+        bundle_bytes = _canonical_bundle_bytes(bundle)
+        bundle["manifest"]["bundle_hash"] = (
+            f"sha256:{hashlib.sha256(bundle_bytes).hexdigest()}"
+        )
+        output = tmp_path / "v1_bundle.json"
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified
+        assert report.signature_check == "skipped_v1_bundle"
+
+    def test_missing_public_key_fails_closed(self, ed25519_setup, tmp_path):
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        bundle = json.loads(output.read_text())
+        bundle["public_keys"] = []
+        self._rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any("No public key for key_id" in e for e in report.errors)
+
+    def test_binding_mismatch_fails_closed(self, ed25519_setup, tmp_path):
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        bundle = json.loads(output.read_text())
+        for k in bundle["public_keys"]:
+            if k["key_id"] == f"ed25519-{principal_id}":
+                k["principal_id"] = "someone-else"
+        self._rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any("Actor-signer mismatch" in e for e in report.errors)
+
+    def test_unknown_scheme_fails_closed(self, ed25519_setup, tmp_path):
+        sub, principal_id = ed25519_setup
+        output = self._export_mixed_bundle(sub, principal_id, tmp_path)
+
+        bundle = json.loads(output.read_text())
+        bundle["events"][-1]["scheme_id"] = "mystery-scheme"
+        self._rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any("Unknown signing scheme" in e for e in report.errors)
+
+    def test_registry_absent_is_recorded_and_fails_closed(
+        self, ed25519_setup, tmp_path
+    ):
+        """Dropping principal_keys exercises the savepoint path: export
+        still succeeds, records the registry as absent, and offline
+        verification of asymmetric events fails closed (no silent pass)."""
+        sub, principal_id = ed25519_setup
+        sub.create_work_item(
+            "test_workflow", "feature", principal_id,
+            custom_fields={"title": "ed25519-signed"},
+        )
+        with raw_transaction(sub) as conn:
+            conn.execute("DROP TABLE principal_keys")
+
+        output = tmp_path / "no_registry.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert bundle["manifest"]["principal_key_registry"] == "absent"
+        assert bundle["public_keys"] == []
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any("No public key for key_id" in e for e in report.errors)
