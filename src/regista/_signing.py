@@ -365,38 +365,14 @@ def verify_event(
     if has_chain_fields or stored_ver >= 3:
         candidate_envelopes: list[tuple[bytes, int]] = []
 
-        # For v5 stored envelopes, do NOT try the stored envelope directly.
-        # Instead, build the candidate from the provided actor_kind/actor_metadata
-        # so that tampering with those fields in the database row is detected:
-        # if the provided values differ from what was signed, the rebuilt
-        # envelope won't match the signature. (WI-208)
-        if stored_ver >= 3 and stored_ver < 5:
+        # Try the stored envelope first (it's the canonical truth for
+        # signature verification). For v5, we additionally check that
+        # the provided actor_kind/actor_metadata match the stored envelope's
+        # values AFTER signature verification succeeds — this detects
+        # tampering with those fields in the database row (WI-208)
+        # without requiring every caller to pass all envelope fields.
+        if stored_ver >= 3:
             candidate_envelopes.append((stored_envelope, stored_ver))
-
-        if actor_kind is not None or stored_ver == 5:
-            candidate_envelopes.append((
-                build_signing_envelope_v5(
-                    event_id=event_id,
-                    entity_kind=entity_kind,
-                    entity_id=work_item_id,
-                    actor_id=actor_id,
-                    actor_kind=actor_kind if actor_kind is not None else "agent",
-                    actor_metadata=actor_metadata,
-                    key_id=key_id,
-                    event_seq=event_seq,
-                    workflow_name=workflow_name,
-                    workflow_version=workflow_version,
-                    timestamp=timestamp,
-                    hash_alg=hash_alg,
-                    transition=transition,
-                    payload=payload,
-                    on_behalf_of=on_behalf_of,
-                    prev_event_hash=prev_event_hash,
-                    global_seq=global_seq,
-                    prev_global_event_hash=prev_global_event_hash,
-                ),
-                5,
-            ))
 
         candidate_envelopes.append((
             build_signing_envelope_v4(
@@ -459,6 +435,25 @@ def verify_event(
                 envelope, signature, canonical_hash, scheme, key,
                 hash_alg=candidate_hash_alg,
             ):
+                # WI-208: For v5 envelopes, verify that the provided
+                # actor_kind/actor_metadata match the values in the stored
+                # envelope. This detects database tampering: if someone
+                # changes actor_kind in the events table, the signature
+                # still matches the stored envelope (which is unchanged),
+                # but the provided value won't match the signed value.
+                if stored_ver == 5 and actor_kind is not None:
+                    import json as _json
+
+                    try:
+                        env_obj = _json.loads(stored_envelope)
+                        env_actor_kind = env_obj.get("actor_kind")
+                        env_actor_metadata = env_obj.get("actor_metadata")
+                    except (ValueError, TypeError):
+                        return False
+                    if actor_kind != env_actor_kind:
+                        return False
+                    if actor_metadata != env_actor_metadata:
+                        return False
                 return True
 
         return False

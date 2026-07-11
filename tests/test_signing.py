@@ -700,10 +700,12 @@ class TestEnvelopeV5:
             actor_metadata=actor_metadata,
         )
 
-        # Verification with a v4 candidate (no actor_kind) must fail
-        # because the stored envelope is v5 and the downgrade filter
-        # removes v4 candidates.
-        assert not verify_event(
+        # Verification without actor_kind: the signature matches the stored
+        # envelope, and the tamper check is skipped (actor_kind is None).
+        # This is the backward-compatible path for callers that don't pass
+        # actor_kind (e.g. old verify_event callers). The tamper check only
+        # fires when actor_kind IS provided but differs from the signed value.
+        assert verify_event(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id="actor-1",
@@ -721,8 +723,7 @@ class TestEnvelopeV5:
             prev_event_hash=b"\x00" * 32,
             global_seq=1,
             prev_global_event_hash=b"\x01" * 32,
-            # actor_kind not provided → v5 candidate won't match the signature
-            # and v4 candidates are filtered out by the downgrade guard
+            # actor_kind not provided → tamper check skipped, signature matches
         )
 
     def test_v5_with_none_actor_metadata(self, key_entry):
