@@ -592,7 +592,6 @@ def verify_event_with_public_key(event, public_key: bytes) -> bool:
         scheme=scheme,
         prev_event_hash=event.prev_event_hash,
         prev_global_event_hash=event.prev_global_event_hash,
-        global_seq=event.global_seq,
         entity_kind=event.entity_kind,
         hash_alg=event.hash_alg,
         actor_kind=event.actor_kind,
@@ -867,7 +866,6 @@ def verify_event_dict_principal_binding(
                     if evt.get("prev_global_event_hash")
                     else None
                 ),
-                global_seq=evt.get("global_seq"),
                 actor_kind=evt.get("actor_kind"),
                 actor_metadata=evt.get("actor_metadata"),
             )
