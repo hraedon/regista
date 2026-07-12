@@ -99,6 +99,31 @@ from ._workflow import parse_file as parse_file
 from ._workflow import parse_workflow_yaml as parse_workflow_yaml
 from ._workflow import validate_yaml as validate_yaml
 from ._workflow_compose import compose_workflow as compose_workflow
+from .principal_lifecycle import Approval as Approval
+from .principal_lifecycle import ChallengeStorageScope as ChallengeStorageScope
+from .principal_lifecycle import CustodyMode as CustodyMode
+from .principal_lifecycle import EffectiveReceipt as EffectiveReceipt
+from .principal_lifecycle import EffectiveReceiptStatus as EffectiveReceiptStatus
+from .principal_lifecycle import EnrollmentRequest as EnrollmentRequest
+from .principal_lifecycle import LifecycleContractError as LifecycleContractError
+from .principal_lifecycle import LifecycleDigest as LifecycleDigest
+from .principal_lifecycle import LifecycleErrorCode as LifecycleErrorCode
+from .principal_lifecycle import LifecycleOperation as LifecycleOperation
+from .principal_lifecycle import LifecycleOperationType as LifecycleOperationType
+from .principal_lifecycle import LifecycleState as LifecycleState
+from .principal_lifecycle import PossessionChallenge as PossessionChallenge
+from .principal_lifecycle import PossessionProof as PossessionProof
+from .principal_lifecycle import PrincipalDescriptor as PrincipalDescriptor
+from .principal_lifecycle import PrincipalKind as PrincipalKind
+from .principal_lifecycle import PrincipalLifecycle as PrincipalLifecycle
+from .principal_lifecycle import ProofFormat as ProofFormat
+from .principal_lifecycle import ReconciliationReport as ReconciliationReport
+from .principal_lifecycle import ReconciliationStatus as ReconciliationStatus
+from .principal_lifecycle import RegistryReceipt as RegistryReceipt
+from .principal_lifecycle import RegistryReceiptStatus as RegistryReceiptStatus
+from .principal_lifecycle import RevocationRequest as RevocationRequest
+from .principal_lifecycle import RotationRequest as RotationRequest
+from .principal_lifecycle import canonical_lifecycle_digest as canonical_lifecycle_digest
 
 config = _config
 secrets = _secrets
@@ -443,6 +468,23 @@ class Regista(
                 self._mgr, self._keys, self._metrics, self._project,
             )
         return self._principal_ops
+
+    @property
+    def principal_lifecycle(self) -> PrincipalLifecycle:
+        """Return the public principal lifecycle facade.
+
+        When connected to a database the facade persists operations, challenges,
+        approvals, and receipts and can atomically commit registry changes.
+        """
+        self._require_open()
+        if not hasattr(self, "_principal_lifecycle_ops"):
+            self._principal_lifecycle_ops = PrincipalLifecycle(
+                self._project,
+                mgr=self._mgr,
+                keys=self._keys,
+                metrics=self._metrics,
+            )
+        return self._principal_lifecycle_ops
 
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import create_receipts as _create_receipts

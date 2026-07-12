@@ -65,6 +65,26 @@ def register_principal_key(
     key_id: str | None = None,
     registered_by: str = "system",
 ) -> PrincipalKeyEntry:
+    with mgr.transaction() as conn:
+        return register_principal_key_conn(
+            conn,
+            principal_id,
+            public_key,
+            scheme,
+            key_id=key_id,
+            registered_by=registered_by,
+        )
+
+
+def register_principal_key_conn(
+    conn: psycopg.Connection,
+    principal_id: str,
+    public_key: bytes,
+    scheme: str,
+    *,
+    key_id: str | None = None,
+    registered_by: str = "system",
+) -> PrincipalKeyEntry:
     if not principal_id:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -81,57 +101,56 @@ def register_principal_key(
 
     fingerprint = _compute_fingerprint(public_key, scheme)
 
-    with mgr.transaction() as conn:
-        conn.execute(
-            "SELECT key_id FROM principal_keys "
-            "WHERE principal_id = %s FOR UPDATE",
-            [principal_id],
+    conn.execute(
+        "SELECT key_id FROM principal_keys "
+        "WHERE principal_id = %s FOR UPDATE",
+        [principal_id],
+    )
+
+    existing = conn.execute(
+        "SELECT * FROM principal_keys "
+        "WHERE principal_id = %s AND key_id = %s",
+        [principal_id, key_id],
+    ).fetchall()
+
+    if existing:
+        row = existing[0]
+        if row["status"] == "active":
+            return _row_to_entry(row)
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEY_ALREADY_EXISTS,
+            f"Key {key_id} already exists for principal "
+            f"{principal_id} with status {row['status']}",
         )
 
-        existing = conn.execute(
-            "SELECT * FROM principal_keys "
-            "WHERE principal_id = %s AND key_id = %s",
-            [principal_id, key_id],
-        ).fetchall()
+    existing_active = conn.execute(
+        "SELECT key_id FROM principal_keys "
+        "WHERE principal_id = %s AND status = 'active'",
+        [principal_id],
+    ).fetchall()
 
-        if existing:
-            row = existing[0]
-            if row["status"] == "active":
-                return _row_to_entry(row)
-            raise RegistaError(
-                ErrorCode.PRINCIPAL_KEY_ALREADY_EXISTS,
-                f"Key {key_id} already exists for principal "
-                f"{principal_id} with status {row['status']}",
-            )
-
-        existing_active = conn.execute(
-            "SELECT key_id FROM principal_keys "
-            "WHERE principal_id = %s AND status = 'active'",
-            [principal_id],
-        ).fetchall()
-
-        for r in existing_active:
-            conn.execute(
-                "UPDATE principal_keys SET status = 'superseded' "
-                "WHERE principal_id = %s AND key_id = %s",
-                [principal_id, r["key_id"]],
-            )
-
+    for r in existing_active:
         conn.execute(
-            """
-            INSERT INTO principal_keys
-                (principal_id, key_id, scheme, public_key, fingerprint,
-                 status, registered_by)
-            VALUES (%s, %s, %s, %s, %s, 'active', %s)
-            """,
-            [principal_id, key_id, scheme, public_key, fingerprint, registered_by],
+            "UPDATE principal_keys SET status = 'superseded' "
+            "WHERE principal_id = %s AND key_id = %s",
+            [principal_id, r["key_id"]],
         )
 
-        row = conn.execute(
-            "SELECT * FROM principal_keys "
-            "WHERE principal_id = %s AND key_id = %s",
-            [principal_id, key_id],
-        ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO principal_keys
+            (principal_id, key_id, scheme, public_key, fingerprint,
+             status, registered_by)
+        VALUES (%s, %s, %s, %s, %s, 'active', %s)
+        """,
+        [principal_id, key_id, scheme, public_key, fingerprint, registered_by],
+    )
+
+    row = conn.execute(
+        "SELECT * FROM principal_keys "
+        "WHERE principal_id = %s AND key_id = %s",
+        [principal_id, key_id],
+    ).fetchone()
 
     return _row_to_entry(row)
 
@@ -238,6 +257,21 @@ def rotate_principal_key(
     *,
     registered_by: str = "system",
 ) -> PrincipalKeyEntry:
+    with mgr.transaction() as conn:
+        return rotate_principal_key_conn(
+            conn, principal_id, new_public_key, scheme,
+            registered_by=registered_by,
+        )
+
+
+def rotate_principal_key_conn(
+    conn: psycopg.Connection,
+    principal_id: str,
+    new_public_key: bytes,
+    scheme: str,
+    *,
+    registered_by: str = "system",
+) -> PrincipalKeyEntry:
     if not principal_id:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -252,36 +286,35 @@ def rotate_principal_key(
     new_key_id = _generate_key_id()
     fingerprint = _compute_fingerprint(new_public_key, scheme)
 
-    with mgr.transaction() as conn:
-        conn.execute(
-            "SELECT key_id FROM principal_keys "
-            "WHERE principal_id = %s FOR UPDATE",
-            [principal_id],
-        )
+    conn.execute(
+        "SELECT key_id FROM principal_keys "
+        "WHERE principal_id = %s FOR UPDATE",
+        [principal_id],
+    )
 
-        now = datetime.now(UTC)
-        conn.execute(
-            "UPDATE principal_keys SET status = 'superseded', "
-            "valid_to = %s WHERE principal_id = %s AND status = 'active'",
-            [now, principal_id],
-        )
+    now = datetime.now(UTC)
+    conn.execute(
+        "UPDATE principal_keys SET status = 'superseded', "
+        "valid_to = %s WHERE principal_id = %s AND status = 'active'",
+        [now, principal_id],
+    )
 
-        conn.execute(
-            """
-            INSERT INTO principal_keys
-                (principal_id, key_id, scheme, public_key, fingerprint,
-                 status, registered_by)
-            VALUES (%s, %s, %s, %s, %s, 'active', %s)
-            """,
-            [principal_id, new_key_id, scheme, new_public_key,
-             fingerprint, registered_by],
-        )
+    conn.execute(
+        """
+        INSERT INTO principal_keys
+            (principal_id, key_id, scheme, public_key, fingerprint,
+             status, registered_by)
+        VALUES (%s, %s, %s, %s, %s, 'active', %s)
+        """,
+        [principal_id, new_key_id, scheme, new_public_key,
+         fingerprint, registered_by],
+    )
 
-        row = conn.execute(
-            "SELECT * FROM principal_keys "
-            "WHERE principal_id = %s AND key_id = %s",
-            [principal_id, new_key_id],
-        ).fetchone()
+    row = conn.execute(
+        "SELECT * FROM principal_keys "
+        "WHERE principal_id = %s AND key_id = %s",
+        [principal_id, new_key_id],
+    ).fetchone()
 
     return _row_to_entry(row)
 
@@ -294,34 +327,46 @@ def revoke_principal_key(
     reason: str = "unspecified",
 ) -> PrincipalKeyEntry:
     with mgr.transaction() as conn:
-        existing = conn.execute(
-            "SELECT * FROM principal_keys WHERE principal_id = %s AND key_id = %s",
-            [principal_id, key_id],
-        ).fetchall()
-
-        if not existing:
-            raise RegistaError(
-                ErrorCode.PRINCIPAL_KEY_NOT_FOUND,
-                f"Principal key not found: {principal_id}/{key_id}",
-            )
-
-        row = existing[0]
-        if row["status"] == "revoked":
-            return _row_to_entry(row)
-
-        now = datetime.now(UTC)
-        conn.execute(
-            "UPDATE principal_keys SET status = 'revoked', "
-            "revoked_at = %s, revoked_reason = %s "
-            "WHERE principal_id = %s AND key_id = %s",
-            [now, reason, principal_id, key_id],
+        return revoke_principal_key_conn(
+            conn, principal_id, key_id, reason=reason,
         )
 
-        row = conn.execute(
-            "SELECT * FROM principal_keys "
-            "WHERE principal_id = %s AND key_id = %s",
-            [principal_id, key_id],
-        ).fetchone()
+
+def revoke_principal_key_conn(
+    conn: psycopg.Connection,
+    principal_id: str,
+    key_id: str,
+    *,
+    reason: str = "unspecified",
+) -> PrincipalKeyEntry:
+    existing = conn.execute(
+        "SELECT * FROM principal_keys WHERE principal_id = %s AND key_id = %s",
+        [principal_id, key_id],
+    ).fetchall()
+
+    if not existing:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEY_NOT_FOUND,
+            f"Principal key not found: {principal_id}/{key_id}",
+        )
+
+    row = existing[0]
+    if row["status"] == "revoked":
+        return _row_to_entry(row)
+
+    now = datetime.now(UTC)
+    conn.execute(
+        "UPDATE principal_keys SET status = 'revoked', "
+        "revoked_at = %s, revoked_reason = %s "
+        "WHERE principal_id = %s AND key_id = %s",
+        [now, reason, principal_id, key_id],
+    )
+
+    row = conn.execute(
+        "SELECT * FROM principal_keys "
+        "WHERE principal_id = %s AND key_id = %s",
+        [principal_id, key_id],
+    ).fetchone()
 
     return _row_to_entry(row)
 
