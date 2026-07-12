@@ -78,11 +78,13 @@ def enqueue_hooks(
             [
                 event_id,
                 hook_name,
-                psycopg.types.json.Jsonb({
-                    "work_item_id": str(work_item_id),
-                    "transition": transition,
-                    "event_payload": event_payload,
-                }),
+                psycopg.types.json.Jsonb(
+                    {
+                        "work_item_id": str(work_item_id),
+                        "transition": transition,
+                        "event_payload": event_payload,
+                    }
+                ),
                 max_retries,
             ],
         )
@@ -133,14 +135,16 @@ def claim_hooks(
             )
             continue
         valid_ids.append(row["id"])
-        result.append(HookContext(
-            hook_queue_id=row["id"],
-            event_id=row["event_id"],
-            work_item_id=wi_uuid,
-            hook_name=row["hook_name"],
-            transition=payload.get("transition"),
-            payload=payload.get("event_payload"),
-        ))
+        result.append(
+            HookContext(
+                hook_queue_id=row["id"],
+                event_id=row["event_id"],
+                work_item_id=wi_uuid,
+                hook_name=row["hook_name"],
+                transition=payload.get("transition"),
+                payload=payload.get("event_payload"),
+            )
+        )
 
     if not valid_ids:
         return []
@@ -158,7 +162,9 @@ def claim_hooks(
 
 
 def complete_hook(
-    conn: psycopg.Connection, hook_queue_id: int, actor_id: str | None = None,
+    conn: psycopg.Connection,
+    hook_queue_id: int,
+    actor_id: str | None = None,
 ) -> None:
     if actor_id is not None:
         result = conn.execute(
@@ -233,8 +239,7 @@ def fail_hook(
     if row["status"] != "in_progress":
         raise RegistaError(
             ErrorCode.HOOK_NOT_FOUND,
-            f"Hook {hook_queue_id} not found or not in progress "
-            f"(status={row['status']})",
+            f"Hook {hook_queue_id} not found or not in progress (status={row['status']})",
         )
 
     retry_count = row["retry_count"] + 1
@@ -245,7 +250,7 @@ def fail_hook(
         if metrics and project:
             metrics.inc("hooks_dead_lettered", project)
     else:
-        backoff = timedelta(seconds=min(2 ** retry_count, 60))
+        backoff = timedelta(seconds=min(2**retry_count, 60))
         next_retry = datetime.now(UTC) + backoff
         conn.execute(
             SQL(
@@ -361,11 +366,7 @@ def _move_to_dead_letter(
             deleted["event_id"],
             deleted["hook_name"],
             deleted["hook_type"],
-            (
-                psycopg.types.json.Jsonb(deleted["payload"])
-                if deleted["payload"]
-                else None
-            ),
+            (psycopg.types.json.Jsonb(deleted["payload"]) if deleted["payload"] else None),
             deleted["retry_count"],
             deleted.get("max_retries", 3),
             error_message,
@@ -374,10 +375,7 @@ def _move_to_dead_letter(
     )
 
     evt_row = conn.execute(
-        SQL(
-            "SELECT work_item_id, workflow_name, workflow_version "
-            "FROM events WHERE event_id = %s"
-        ),
+        SQL("SELECT work_item_id, workflow_name, workflow_version FROM events WHERE event_id = %s"),
         [deleted["event_id"]],
     ).fetchone()
 
@@ -425,12 +423,14 @@ def _move_to_dead_letter(
         workflow_name=workflow_name,
         workflow_version=workflow_version,
         transition="hook_dead_lettered",
-        payload=Jsonb({
-            "hook_name": deleted["hook_name"],
-            "hook_queue_id": deleted["id"],
-            "error_message": error_message,
-            "original_event_missing": evt_row is None,
-        }),
+        payload=Jsonb(
+            {
+                "hook_name": deleted["hook_name"],
+                "hook_queue_id": deleted["id"],
+                "error_message": error_message,
+                "original_event_missing": evt_row is None,
+            }
+        ),
         event_id=uuid.uuid4(),
     )
 
@@ -500,6 +500,7 @@ class HookConsumer:
         self._thread: threading.Thread | None = None
         self._channel = f"regista_hooks_{schema}"
         self._processing = False
+        self._connected = False
         # Test seams: tunable so unit tests can exercise the connect-exhaustion
         # path without sleeping through real backoff.
         self._max_reconnect_attempts = 10
@@ -519,11 +520,17 @@ class HookConsumer:
             self._thread.join(timeout=5)
             self._thread = None
         self._processing = False
+        self._connected = False
         log.info("hooks.consumer_stopped", project=self._project)
 
     @property
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive() and self._processing
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and self._processing
+            and self._connected
+        )
 
     def _connect(self):
         from psycopg.rows import dict_row
@@ -533,9 +540,7 @@ class HookConsumer:
             row_factory=dict_row,
             autocommit=True,
         )
-        conn.execute(
-            SQL("SET search_path TO {}").format(Identifier(self._schema))
-        )
+        conn.execute(SQL("SET search_path TO {}").format(Identifier(self._schema)))
         conn.execute(SQL("SET synchronous_commit = on"))
         conn.execute(SQL("LISTEN {}").format(Identifier(self._channel)))
         return conn
@@ -550,6 +555,7 @@ class HookConsumer:
         while conn is None and not self._stop.is_set():
             try:
                 conn = self._connect()
+                self._connected = True
             except Exception as e:
                 reconnect_attempts += 1
                 if reconnect_attempts >= max_reconnect_attempts:
@@ -559,6 +565,7 @@ class HookConsumer:
                         error=str(e),
                     )
                     self._processing = False
+                    self._connected = False
                     return
                 backoff = min(
                     reconnect_backoff_base * (2 ** (reconnect_attempts - 1)),
@@ -581,19 +588,13 @@ class HookConsumer:
 
         try:
             while not self._stop.is_set():
-                try:
-                    for _notify in conn.notifies(timeout=self._poll_interval):
-                        if self._stop.is_set():
-                            break
-                except psycopg.OperationalError as e:
-                    if self._stop.is_set():
-                        break
+                if conn is None:
                     reconnect_attempts += 1
                     if reconnect_attempts >= max_reconnect_attempts:
                         log.error(
                             "hooks.reconnect_exhausted",
                             attempts=reconnect_attempts,
-                            error=str(e),
+                            error="connection is None",
                         )
                         break
                     backoff = min(
@@ -604,20 +605,33 @@ class HookConsumer:
                         "hooks.connection_lost",
                         attempt=reconnect_attempts,
                         backoff=backoff,
-                        error=str(e),
                     )
-                    try:
-                        conn.close()
-                    except Exception:
-                        log.warning("hooks.connection_close_error", exc_info=True)
                     time.sleep(backoff)
                     try:
                         conn = self._connect()
+                        self._connected = True
                         successful_attempt = reconnect_attempts
                         reconnect_attempts = 0
                         log.info("hooks.reconnected", attempt=successful_attempt)
                     except Exception as ce:
                         log.error("hooks.reconnect_failed", error=str(ce))
+                        self._connected = False
+                        conn = None
+                    continue
+
+                try:
+                    for _notify in conn.notifies(timeout=self._poll_interval):
+                        if self._stop.is_set():
+                            break
+                except psycopg.OperationalError:
+                    if self._stop.is_set():
+                        break
+                    self._connected = False
+                    try:
+                        conn.close()
+                    except Exception:
+                        log.warning("hooks.connection_close_error", exc_info=True)
+                    conn = None
                     continue
 
                 if self._stop.is_set():
@@ -635,12 +649,16 @@ class HookConsumer:
                             self._project,
                         )
                 except psycopg.OperationalError as e:
+                    self._connected = False
+                    conn = None
                     log.error("hooks.poll_connection_error", error=str(e))
                 except Exception as e:
                     log.error("hooks.poll_error", error=str(e))
         finally:
             self._processing = False
-            try:
-                conn.close()
-            except Exception:
-                log.warning("hooks.connection_close_error", exc_info=True)
+            self._connected = False
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    log.warning("hooks.connection_close_error", exc_info=True)

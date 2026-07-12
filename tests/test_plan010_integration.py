@@ -161,3 +161,17 @@ class TestInMemoryRegistaOnBehalfOf:
         )
         report = imsub.replay()
         assert report.replayed_ok == 1
+
+    def test_append_event_rejects_nan_in_on_behalf_of(self, imsub: InMemoryRegista) -> None:
+        imsub.register_workflow(_WF)
+        wi, _evt = imsub.create_work_item(
+            "test_workflow", "feature", "actor_a",
+            custom_fields={"title": "test"},
+            actor_metadata={"role": "agent"},
+        )
+        with pytest.raises(RegistaError) as exc:
+            imsub.append_event(
+                wi.work_item_id, "actor_a",
+                on_behalf_of={"score": float("nan")},
+            )
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT

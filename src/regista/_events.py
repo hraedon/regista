@@ -12,6 +12,7 @@ from ._contract import (
     check_expected_seq,
     check_key_role_policy,
     validate_entity_kind,
+    validate_json_safe_value,
 )
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
@@ -202,6 +203,8 @@ def append_event(
 
     am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
+    if on_behalf_of is not None:
+        validate_json_safe_value(on_behalf_of, "on_behalf_of")
 
     now = datetime.now(UTC)
 
@@ -397,6 +400,8 @@ def append_transition_event(
     check_expected_seq(next_seq, expected_event_seq)
 
     am = actor_metadata.value if actor_metadata is not None else None
+    if on_behalf_of is not None:
+        validate_json_safe_value(on_behalf_of, "on_behalf_of")
 
     now = datetime.now(UTC)
 

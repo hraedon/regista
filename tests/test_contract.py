@@ -458,7 +458,12 @@ class TestResolveClaimAcquire:
 
 class TestResolveHeartbeat:
     def test_valid_heartbeat(self):
-        claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 1}
+        claim = {
+            "actor_id": "a1",
+            "acquired_at": NOW,
+            "expires_at": NOW + timedelta(seconds=300),
+            "attempt_number": 1,
+        }
         r = resolve_heartbeat(claim, "a1", 300, None, uuid.uuid4(), NOW)
         assert r.attempt_number == 1
         assert r.new_expires_at == NOW + timedelta(seconds=300)
@@ -469,7 +474,12 @@ class TestResolveHeartbeat:
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
     def test_wrong_actor_raises(self):
-        claim = {"actor_id": "a2", "acquired_at": NOW, "attempt_number": 1}
+        claim = {
+            "actor_id": "a2",
+            "acquired_at": NOW,
+            "expires_at": NOW + timedelta(minutes=5),
+            "attempt_number": 1,
+        }
         with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 300, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
@@ -496,21 +506,42 @@ class TestResolveHeartbeat:
         assert r.attempt_number == 1
 
     def test_stale_attempt_number_raises(self):
-        claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 2}
+        claim = {
+            "actor_id": "a1",
+            "acquired_at": NOW,
+            "expires_at": NOW + timedelta(minutes=5),
+            "attempt_number": 2,
+        }
         with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 300, 1, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
     def test_matching_attempt_number_passes(self):
-        claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 2}
+        claim = {
+            "actor_id": "a1",
+            "acquired_at": NOW,
+            "expires_at": NOW + timedelta(minutes=5),
+            "attempt_number": 2,
+        }
         r = resolve_heartbeat(claim, "a1", 300, 2, uuid.uuid4(), NOW)
         assert r.attempt_number == 2
 
     def test_invalid_ttl_raises(self):
-        claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 1}
+        claim = {
+            "actor_id": "a1",
+            "acquired_at": NOW,
+            "expires_at": NOW + timedelta(minutes=5),
+            "attempt_number": 1,
+        }
         with pytest.raises(RegistaError) as exc_info:
             resolve_heartbeat(claim, "a1", 0, None, uuid.uuid4(), NOW)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_null_expires_at_raises(self):
+        claim = {"actor_id": "a1", "acquired_at": NOW, "attempt_number": 1}
+        with pytest.raises(RegistaError) as exc_info:
+            resolve_heartbeat(claim, "a1", 300, None, uuid.uuid4(), NOW)
+        assert exc_info.value.code == ErrorCode.CLAIM_LOST
 
 
 class TestValidateRelease:
@@ -609,6 +640,26 @@ class TestValidateJsonSafeValue:
     def test_tuple_raises(self):
         with pytest.raises(RegistaError) as exc_info:
             validate_json_safe_value((1, 2), "test")
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_nan_rejected(self):
+        with pytest.raises(RegistaError) as exc_info:
+            validate_json_safe_value(float("nan"), "test")
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_inf_rejected(self):
+        with pytest.raises(RegistaError) as exc_info:
+            validate_json_safe_value(float("inf"), "test")
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_neg_inf_rejected(self):
+        with pytest.raises(RegistaError) as exc_info:
+            validate_json_safe_value(float("-inf"), "test")
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    def test_nan_in_dict_rejected(self):
+        with pytest.raises(RegistaError) as exc_info:
+            validate_json_safe_value({"v": float("nan")}, "test")
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
 

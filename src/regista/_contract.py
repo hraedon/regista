@@ -429,10 +429,16 @@ def resolve_heartbeat(
             f"No claim found for work item {work_item_id}",
         )
 
-    if claim_state.get("expires_at") is not None and claim_state["expires_at"] < now:
+    expires_at = claim_state.get("expires_at")
+    if expires_at is None:
         raise RegistaError(
             ErrorCode.CLAIM_LOST,
-            f"Claim on {work_item_id} expired at {claim_state['expires_at']}",
+            f"Claim on {work_item_id} has no expiry (invalid state)",
+        )
+    if expires_at < now:
+        raise RegistaError(
+            ErrorCode.CLAIM_LOST,
+            f"Claim on {work_item_id} expired at {expires_at}",
         )
 
     if claim_state["actor_id"] != actor_id:

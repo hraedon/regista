@@ -111,9 +111,7 @@ class TestBC227ProcessingFlagReset:
             t.join(timeout=3)
             assert not t.is_alive(), "_run did not exit"
 
-        assert (
-            not consumer._processing
-        ), "_processing should be False after connect exhaustion"
+        assert not consumer._processing, "_processing should be False after connect exhaustion"
 
     def test_processing_false_after_stop_during_connect_loop(self):
         consumer = self._make_consumer()
@@ -125,9 +123,107 @@ class TestBC227ProcessingFlagReset:
             t.start()
             t.join(timeout=3)
 
-        assert (
-            not consumer._processing
-        ), "_processing should be False when stopped during connect loop"
+        assert not consumer._processing, (
+            "_processing should be False when stopped during connect loop"
+        )
+
+
+class TestWI203ConnectedFlag:
+    """WI-203: is_running must return False when the connection is lost or
+    exhausted, even if _processing is still True."""
+
+    def _make_consumer(self):
+        from regista._hooks import HookConsumer
+        from regista._keys import KeySet
+
+        key_set = MagicMock(spec=KeySet)
+        return HookConsumer(
+            dsn="postgresql://localhost/fake",
+            schema="public",
+            project="test",
+            handlers={},
+            key_set=key_set,
+            metrics=None,
+            poll_interval=0.1,
+        )
+
+    def test_is_running_false_after_connect_exhaustion(self):
+        consumer = self._make_consumer()
+        consumer._max_reconnect_attempts = 1
+        consumer._reconnect_backoff_base = 0.0
+
+        with patch.object(consumer, "_connect", side_effect=ConnectionError("refused")):
+            t = threading.Thread(target=consumer._run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), "_run did not exit"
+
+        assert not consumer._connected
+        assert not consumer.is_running
+
+    def test_is_running_false_during_connection_loss(self):
+        consumer = self._make_consumer()
+        consumer._max_reconnect_attempts = 2
+        consumer._reconnect_backoff_base = 0.0
+
+        import psycopg
+
+        real_conn = MagicMock()
+        real_conn.notifies.side_effect = psycopg.OperationalError("connection lost")
+        real_conn.close = MagicMock()
+        real_conn.transaction = MagicMock()
+
+        call_count = [0]
+
+        def fake_connect():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                consumer._connected = True
+                return real_conn
+            raise ConnectionError("reconnect refused")
+
+        with patch.object(consumer, "_connect", side_effect=fake_connect):
+            t = threading.Thread(target=consumer._run, daemon=True)
+            t.start()
+            t.join(timeout=5)
+            assert not t.is_alive(), "_run did not exit"
+
+        assert not consumer._connected
+        assert not consumer.is_running
+
+    def test_is_running_false_during_reconnect_attempt(self):
+        consumer = self._make_consumer()
+        consumer._max_reconnect_attempts = 3
+        consumer._reconnect_backoff_base = 0.0
+
+        import psycopg
+
+        real_conn = MagicMock()
+        real_conn.notifies.side_effect = psycopg.OperationalError("connection lost")
+        real_conn.close = MagicMock()
+        real_conn.transaction = MagicMock()
+
+        connect_calls = [0]
+        barrier = threading.Event()
+
+        def fake_connect():
+            connect_calls[0] += 1
+            if connect_calls[0] == 1:
+                consumer._connected = True
+                return real_conn
+            barrier.set()
+            raise ConnectionError("reconnect in progress")
+
+        with patch.object(consumer, "_connect", side_effect=fake_connect):
+            t = threading.Thread(target=consumer._run, daemon=True)
+            t.start()
+            barrier.wait(timeout=5)
+
+            assert not consumer._connected
+            assert not consumer.is_running
+
+            consumer._stop.set()
+            t.join(timeout=5)
 
 
 class TestHookConsumerDelivery:

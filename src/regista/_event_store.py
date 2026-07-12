@@ -13,6 +13,7 @@ from ._contract import (
     check_idempotency,
     check_key_role_policy,
     validate_entity_kind,
+    validate_json_safe_value,
 )
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
@@ -84,6 +85,8 @@ def append_event(
 
     am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
+    if on_behalf_of is not None:
+        validate_json_safe_value(on_behalf_of, "on_behalf_of")
 
     now = datetime.now(UTC)
 

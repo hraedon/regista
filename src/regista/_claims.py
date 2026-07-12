@@ -12,6 +12,7 @@ from ._contract import (
     resolve_claim_acquire,
     resolve_heartbeat,
     should_escalate,
+    validate_mutation_params,
     validate_release,
 )
 from ._errors import ErrorCode, RegistaError
@@ -39,6 +40,13 @@ def acquire_claim(
     actor_kind: str = "agent",
 ) -> tuple[Claim, bool, bool]:
     from ._events import append_event, lock_work_item
+
+    validate_mutation_params(
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        event_id=event_id,
+        ttl_seconds=ttl_seconds,
+    )
 
     wi = lock_work_item(conn, work_item_id)
     if wi is None:
@@ -72,19 +80,20 @@ def acquire_claim(
             [result.expires_at, work_item_id],
         )
         conn.execute(
-            SQL(
-                "UPDATE work_items_current SET claim_expires_at = %s "
-                "WHERE work_item_id = %s"
-            ),
+            SQL("UPDATE work_items_current SET claim_expires_at = %s WHERE work_item_id = %s"),
             [result.expires_at, work_item_id],
         )
-        return Claim(
-            work_item_id=work_item_id,
-            actor_id=actor_id,
-            acquired_at=result.acquired_at,
-            expires_at=result.expires_at,
-            attempt_number=result.attempt_number,
-        ), False, False
+        return (
+            Claim(
+                work_item_id=work_item_id,
+                actor_id=actor_id,
+                acquired_at=result.acquired_at,
+                expires_at=result.expires_at,
+                attempt_number=result.attempt_number,
+            ),
+            False,
+            False,
+        )
 
     conn.execute(
         SQL(
@@ -145,10 +154,7 @@ def _check_escalation(
     from ._events import append_event
 
     wf_row = conn.execute(
-        SQL(
-            "SELECT definition FROM workflow_registry "
-            "WHERE workflow_name = %s AND version = %s"
-        ),
+        SQL("SELECT definition FROM workflow_registry WHERE workflow_name = %s AND version = %s"),
         [wi["workflow_name"], wi["workflow_version"]],
     ).fetchone()
     if wf_row is None:
@@ -197,6 +203,8 @@ def heartbeat_claim(
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
+    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
+
     wi = lock_work_item(conn, work_item_id)
     if wi is None:
         raise RegistaError(
@@ -221,10 +229,7 @@ def heartbeat_claim(
 
     threshold = compute_coalesce_threshold(ttl_seconds, coalesce_threshold)
     last_emitted = claim_row["last_heartbeat_emitted_at"] if claim_row else None
-    should_emit = (
-        last_emitted is None
-        or (now - last_emitted).total_seconds() >= threshold
-    )
+    should_emit = last_emitted is None or (now - last_emitted).total_seconds() >= threshold
 
     if should_emit and wi is not None and key_set is not None:
         append_event(
@@ -237,11 +242,13 @@ def heartbeat_claim(
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],
             transition="claim_heartbeat",
-            payload=Jsonb({
-                "actor_id": actor_id,
-                "expires_at": result.new_expires_at.isoformat(),
-                "coalesce_threshold": threshold,
-            }),
+            payload=Jsonb(
+                {
+                    "actor_id": actor_id,
+                    "expires_at": result.new_expires_at.isoformat(),
+                    "coalesce_threshold": threshold,
+                }
+            ),
             event_id=uuid.uuid4(),
             _prelocked_wi=wi,
         )
@@ -281,6 +288,8 @@ def release_claim(
     actor_kind: str = "agent",
 ) -> None:
     from ._events import append_event, lock_work_item
+
+    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, event_id=event_id)
 
     wi = lock_work_item(conn, work_item_id)
     if wi is None:
@@ -374,10 +383,12 @@ def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:
                 workflow_name=wi["workflow_name"],
                 workflow_version=wi["workflow_version"],
                 transition="claim_expired",
-                payload=Jsonb({
-                    "actor_id": prior_actor_id,
-                    "expired_at": now.isoformat(),
-                }),
+                payload=Jsonb(
+                    {
+                        "actor_id": prior_actor_id,
+                        "expired_at": now.isoformat(),
+                    }
+                ),
                 event_id=uuid.uuid4(),
                 _prelocked_wi=wi,
             )
