@@ -525,12 +525,7 @@ class HookConsumer:
 
     @property
     def is_running(self) -> bool:
-        return (
-            self._thread is not None
-            and self._thread.is_alive()
-            and self._processing
-            and self._connected
-        )
+        return self._thread is not None and self._thread.is_alive() and self._processing
 
     def _connect(self):
         from psycopg.rows import dict_row

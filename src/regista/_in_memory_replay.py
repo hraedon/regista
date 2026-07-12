@@ -384,11 +384,13 @@ def in_memory_replay(
                                 f"Transition {evt.transition!r} exists but not valid "
                                 f"from state {derived_state!r}",
                             )
-                        raise RegistaError(
-                            ErrorCode.REPLAY_HALTED,
-                            f"Transition {evt.transition!r} not found in workflow "
-                            f"{wi['workflow_name']!r} v{wi['workflow_version']} "
-                            f"(event {evt.event_id} at seq {evt.event_seq})",
+                        warnings += 1
+                        log.warning(
+                            "replay.unknown_transition",
+                            work_item_id=str(wi_id),
+                            event_id=str(evt.event_id),
+                            event_seq=evt.event_seq,
+                            transition=evt.transition,
                         )
                     if found:
                         p = evt.payload or {}

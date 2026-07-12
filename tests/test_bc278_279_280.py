@@ -31,8 +31,8 @@ class TestBC278HeartbeatCoalescingParity:
         assert len(heartbeat_events) >= 1
 
 
-class TestBC279ReplayHaltsOnUnknownTransitions:
-    def test_postgres_replay_halts_on_unknown_transition(self):
+class TestBC279ReplayWarnsOnUnknownTransitions:
+    def test_postgres_replay_warns_on_unknown_transition(self):
         from regista import Regista
         from regista.testing import drop_project_schema
 
@@ -51,12 +51,12 @@ class TestBC279ReplayHaltsOnUnknownTransitions:
             )
 
             report = sub.replay()
-            assert report.halted >= 1
+            assert report.warnings >= 1
         finally:
             sub.close()
             drop_project_schema(DSN, project)
 
-    def test_in_memory_replay_halts_on_unknown_transition(self):
+    def test_in_memory_replay_warns_on_unknown_transition(self):
         sub = InMemoryRegista(hmac_key_path=KEY_PATH)
         sub.register_workflow_file(WORKFLOW_PATH)
         wi, _ = sub.create_work_item("test_workflow", "feature", "agent-1",
@@ -70,7 +70,7 @@ class TestBC279ReplayHaltsOnUnknownTransitions:
         )
 
         report = sub.replay()
-        assert report.halted >= 1
+        assert report.warnings >= 1
 
 
 class TestBC280HookHandlersCopyOnWrite:
