@@ -12,6 +12,7 @@ MAX_ACTOR_ID_LENGTH = 255
 MAX_ROLE_LENGTH = 255
 MAX_ACTOR_METADATA_BYTES = 65536
 MAX_JSONB_BYTES = 1_048_576
+MAX_CONTENT_HASH_LENGTH = 256
 VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
@@ -605,6 +606,18 @@ def validate_actor_metadata(actor_metadata: dict | None) -> None:
             f"actor_metadata exceeds maximum size of {MAX_ACTOR_METADATA_BYTES} bytes",
             detail={"size": len(serialized.encode("utf-8")), "max": MAX_ACTOR_METADATA_BYTES},
         )
+
+
+def validate_content_hash(content_hash: str | None) -> None:
+    if content_hash is None:
+        return
+    if len(content_hash) > MAX_CONTENT_HASH_LENGTH:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"content_hash exceeds maximum length of {MAX_CONTENT_HASH_LENGTH} characters",
+            detail={"length": len(content_hash), "max": MAX_CONTENT_HASH_LENGTH},
+        )
+    _check_string_safe(content_hash, "content_hash")
 
 
 def validate_mutation_params(

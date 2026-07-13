@@ -4,6 +4,7 @@ import uuid
 
 from ._contract import (
     Jsonb,
+    validate_content_hash,
     validate_cross_project_link_type,
     validate_link_type,
     validate_mutation_params,
@@ -32,6 +33,7 @@ def in_memory_create_link(
     target_entity_kind: str | None = None,
     content_hash: str | None = None,
 ) -> Link:
+    validate_content_hash(content_hash)
     if event_id is None:
         event_id = uuid.uuid4()
     validate_mutation_params(

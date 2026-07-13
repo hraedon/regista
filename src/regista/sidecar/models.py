@@ -134,7 +134,7 @@ class CreateLinkRequest(BaseModel):
     payload: dict | None = None
     target_project: str | None = None
     target_entity_kind: str | None = None
-    content_hash: str | None = None
+    content_hash: str | None = Field(default=None, max_length=256)
 
 
 class RemoveLinkRequest(BaseModel):

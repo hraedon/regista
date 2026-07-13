@@ -22,6 +22,7 @@ from ._assurance import (
 )
 from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
+from ._contract import validate_content_hash as _validate_content_hash
 from ._contract import validate_delegation_chain as _validate_delegation_chain
 from ._contract import validate_mutation_params as _validate_mutation_params
 from ._errors import ErrorCode, RegistaError
@@ -419,7 +420,6 @@ class ClaimOps:
             actor_id=actor_id,
             actor_kind=actor_kind,
             event_id=event_id,
-            ttl_seconds=ttl_seconds,
         )
         from ._claims_api import acquire_claim as _impl
 
@@ -513,6 +513,7 @@ class LinkOps:
             actor_kind=actor_kind,
             event_id=event_id,
         )
+        _validate_content_hash(content_hash)
         from ._links_api import create_link as _impl
 
         return _impl(

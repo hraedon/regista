@@ -85,8 +85,10 @@ class InMemClaimMixin(_InMemoryBase):
         target_entity_kind: str | None = None,
         content_hash: str | None = None,
     ) -> Link:
+        from ._contract import validate_content_hash
         from ._in_memory_links import in_memory_create_link
 
+        validate_content_hash(content_hash)
         return in_memory_create_link(
             self._store, self._work_items, self._workflows, self._links,
             self._key_set, from_work_item_id, to_work_item_id, link_type,

@@ -6,6 +6,7 @@ import psycopg
 from psycopg.sql import SQL
 
 from ._contract import Jsonb
+from ._contract import validate_content_hash as _validate_content_hash
 from ._contract import validate_cross_project_link_type as _validate_xproject_link_type
 from ._contract import validate_link_type as _validate_link_type_contract
 from ._errors import ErrorCode, RegistaError
@@ -83,6 +84,7 @@ def create_link(
     target_entity_kind: str | None = None,
     content_hash: str | None = None,
 ) -> Link:
+    _validate_content_hash(content_hash)
     if event_id is None:
         event_id = uuid.uuid4()
 

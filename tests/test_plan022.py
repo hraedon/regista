@@ -1339,3 +1339,143 @@ class TestLinkDataclassCrossProject:
         assert "target_project" not in d
         assert "target_entity_kind" not in d
         assert "content_hash" not in d
+
+
+class TestContentHashValidation:
+    def test_oversized_content_hash_rejected(self, regista):
+        from regista._errors import RegistaError
+
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "oversized hash"},
+        )
+        target_id = uuid.uuid4()
+        oversized = "x" * 257
+        with pytest.raises(RegistaError, match="content_hash exceeds maximum length"):
+            regista.create_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="other_project",
+                content_hash=oversized,
+            )
+
+    def test_max_length_content_hash_accepted(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "max len hash"},
+        )
+        target_id = uuid.uuid4()
+        max_hash = "x" * 256
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash=max_hash,
+        )
+        assert link.content_hash == max_hash
+
+    def test_null_byte_in_content_hash_rejected(self, regista):
+        from regista._errors import RegistaError
+
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "null byte hash"},
+        )
+        target_id = uuid.uuid4()
+        with pytest.raises(RegistaError, match="disallowed character"):
+            regista.create_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="other_project",
+                content_hash="sha256:\x00abc",
+            )
+
+    def test_none_content_hash_accepted(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "none hash"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash=None,
+        )
+        assert link.content_hash is None
+
+    def test_normal_content_hash_accepted(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "normal hash"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash="sha256:abcdef1234567890",
+        )
+        assert link.content_hash == "sha256:abcdef1234567890"
+
+    def test_in_memory_oversized_content_hash_rejected(self):
+        from regista._errors import RegistaError
+        from regista.testing import InMemoryRegista
+
+        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "in-mem oversized"},
+        )
+        target_id = uuid.uuid4()
+        with pytest.raises(RegistaError, match="content_hash exceeds maximum length"):
+            sub.create_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="other_project",
+                content_hash="x" * 257,
+            )
+
+    def test_empty_string_content_hash_accepted(self, regista):
+        wi, _ = regista.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "empty hash"},
+        )
+        target_id = uuid.uuid4()
+        link = regista.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash="",
+        )
+        assert link.content_hash == ""
+
+    def test_in_memory_max_length_content_hash_accepted(self):
+        from regista.testing import InMemoryRegista
+
+        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "in-mem max len"},
+        )
+        target_id = uuid.uuid4()
+        max_hash = "x" * 256
+        link = sub.create_link(
+            wi.work_item_id, target_id, "blocks", "agent-1",
+            target_project="other_project",
+            content_hash=max_hash,
+        )
+        assert link.content_hash == max_hash
+
+    def test_in_memory_null_byte_content_hash_rejected(self):
+        from regista._errors import RegistaError
+        from regista.testing import InMemoryRegista
+
+        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "in-mem null byte"},
+        )
+        target_id = uuid.uuid4()
+        with pytest.raises(RegistaError, match="disallowed character"):
+            sub.create_link(
+                wi.work_item_id, target_id, "blocks", "agent-1",
+                target_project="other_project",
+                content_hash="sha256:\x00abc",
+            )
