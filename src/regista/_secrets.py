@@ -127,6 +127,51 @@ _KNOWN_PROVIDER_NAMES = frozenset(
 )
 
 
+def known_providers() -> list[str]:
+    """Return every canonical provider name, installed or not.
+
+    Unlike :func:`available_providers`, this does not imply that an optional
+    SDK is installed or that the current platform supports the provider.
+    """
+    return sorted(_KNOWN_PROVIDER_NAMES)
+
+
+def is_provider_available(name: str) -> bool:
+    """Whether ``name`` has an implementation registered in this process."""
+    return name in _PROVIDERS
+
+
+def reference_provider(ref: str, *, require_explicit: bool = False) -> str:
+    """Validate ``ref`` and return its canonical provider name without resolving it.
+
+    ``require_explicit`` is intended for security-sensitive brokers: it refuses
+    bare paths and values, and it refuses unknown schemes instead of inheriting
+    the resolver's backwards-compatible literal fallback.
+    """
+    if not isinstance(ref, str) or not ref:
+        raise RegistaError(ErrorCode.INVALID_ARGUMENT, "Empty secret reference")
+    if require_explicit:
+        if ":" not in ref:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "Secret reference requires an explicit provider prefix",
+            )
+        prefix, _, value = ref.partition(":")
+        if prefix not in _KNOWN_PROVIDER_NAMES:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Unknown secret provider: {prefix!r}",
+            )
+        if not value:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Secret reference for provider {prefix!r} is empty",
+            )
+        return prefix
+    provider, _ = _detect_prefix(ref)
+    return provider
+
+
 def _detect_prefix(ref: str) -> tuple[str, str]:
     if ":" not in ref:
         return "file", ref

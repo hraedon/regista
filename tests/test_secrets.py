@@ -4,9 +4,14 @@ import sys
 
 import pytest
 
-from regista._errors import RegistaError
-from regista._secrets import (
+import regista
+import regista.secrets as public_secrets
+from regista.secrets import (
+    RegistaError,
     available_providers,
+    is_provider_available,
+    known_providers,
+    reference_provider,
     resolve,
     resolve_str,
 )
@@ -73,6 +78,12 @@ class TestEmptyRef:
 
 
 class TestAvailableProviders:
+    def test_public_facade_contract(self):
+        assert regista.secrets is public_secrets
+        assert public_secrets.API_VERSION == 1
+        assert callable(public_secrets.resolve)
+        assert callable(public_secrets.reference_provider)
+
     def test_file_env_literal_always_available(self):
         providers = available_providers()
         assert "file" in providers
@@ -85,6 +96,24 @@ class TestAvailableProviders:
             pass
         else:
             assert "vault" not in providers
+
+    def test_public_discovery_distinguishes_known_from_available(self):
+        assert {"file", "env", "literal", "vault", "azure", "windows"} <= set(
+            known_providers()
+        )
+        assert is_provider_available("file")
+        assert is_provider_available("not-a-provider") is False
+
+
+class TestReferenceProvider:
+    def test_explicit_validation_does_not_resolve(self, monkeypatch):
+        monkeypatch.delenv("NEVER_READ_THIS", raising=False)
+        assert reference_provider("env:NEVER_READ_THIS", require_explicit=True) == "env"
+
+    @pytest.mark.parametrize("ref", ["", "bare-value", "typo:anything", "vault:"])
+    def test_strict_validation_rejects_malformed_refs(self, ref):
+        with pytest.raises(RegistaError):
+            reference_provider(ref, require_explicit=True)
 
 
 class TestKnownProviderDetection:

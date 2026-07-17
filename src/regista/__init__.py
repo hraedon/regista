@@ -6,7 +6,7 @@ from collections.abc import Callable
 import structlog
 
 from . import _config as _config
-from . import _secrets as _secrets
+from . import secrets as secrets
 from ._api_async import AsyncApiMixin
 from ._api_claim import ClaimApiMixin
 from ._api_external import ExternalApiMixin
@@ -126,8 +126,6 @@ from .principal_lifecycle import RotationRequest as RotationRequest
 from .principal_lifecycle import canonical_lifecycle_digest as canonical_lifecycle_digest
 
 config = _config
-secrets = _secrets
-
 log = structlog.get_logger()
 
 

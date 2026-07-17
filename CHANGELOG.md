@@ -6,6 +6,11 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- **Public secret resolver contract (0.5.1):** added the stable
+  `regista.secrets` facade (`API_VERSION = 1`) with typed errors, resolution,
+  provider discovery, and strict non-resolving reference validation for
+  provider-neutral consumers.
+
 - **Plan 029 (Backend-aware principal key custody):** `secrets.store(ref, data)` write-side protocol on every `SecretProvider` (`file`/`windows`/`vault`/`azure` writable; `env`/`literal` raise `SECRET_WRITE_UNSUPPORTED`). New `_custody.py` shared helper extracts the keypair-generate → backend-write → ref-record sequence; `provision_principal`/`enroll_principal` no longer hardcode `file:`. Backend selected via `REGISTA_SECRET_BACKEND` (or `--secret-backend`); `private_key_dir` is meaningful only for `file`. Operator-writes seam (`operator` backend) raises `SECRET_WRITE_EXTERNAL` — enrollment fails loud, never silently falls back to disk. Key-file entries record `encoding: base64` for vault/azure (raw bytes base64-encoded on store; `_keys.py` decodes on resolve). `regista doctor` gains a `custody:consistency` check that warns when a principal's recorded `secret_ref` scheme doesn't match the configured backend. CLI `provision-principal`/`principal enroll` accept `--secret-backend`. 29 new tests.
 
 - **Plan 028 (Event-log retention & segment sealing):** `event_segments` table (migration 039) records sealed contiguous ranges of the global event chain. `sub.archive.seal(before_timestamp)` verifies global and per-work-item hash chains, signs a `segment_sealed` event, and stores the segment seal. Replay bridges across sealed ranges via `first_event_prev_hash` / `head_hash`, so older events can be moved out of the hot store without orphan warnings. CLI: `regista archive seal/verify/list`. Added `docs/retention.md`.

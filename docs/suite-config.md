@@ -55,7 +55,7 @@ that provided it, e.g. `"REGISTA_DSN": "env"`, `"REGISTA_KEY_PATH": "user:/home/
 | `literal:` | `literal:plain-text-value` | Return the literal string as bytes |
 | `vault:` | `vault:secret/data/regista/key` | HashiCorp Vault KV v2 (requires `pip install regista[vault]`) |
 | `azure:` | `azure:key-name` | Azure Key Vault (requires `pip install regista[azure]`) |
-| `windows:` | `windows:AQAAANCMnd8BFdERjHoAwE/...` | Windows DPAPI-protected blob (base64). Auto-available on win32; uses `CRYPTPROTECT_LOCAL_MACHINE` scope. Encrypt with `regista._secrets.protect_windows_secret(data)`. |
+| `windows:` | `windows:AQAAANCMnd8BFdERjHoAwE/...` | Windows DPAPI-protected blob (base64). Auto-available on win32; uses `CRYPTPROTECT_LOCAL_MACHINE` scope. Encrypt with `regista.secrets.protect_windows_secret(data)`. |
 
 If no prefix is recognized, the resolver treats the value as a file path.
 
@@ -71,7 +71,7 @@ isn't loaded (e.g. non-interactive SSH sessions).
 To create a DPAPI-protected secret:
 
 ```python
-from regista._secrets import protect_windows_secret
+from regista.secrets import protect_windows_secret
 
 blob = protect_windows_secret(b"my-dsn-password")
 # blob is a base64 string — store it in an env var or config file
@@ -91,6 +91,15 @@ $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
 ### Available providers
 
 Run `regista secrets --list-providers` to see which backends are installed.
+Library consumers should import the stable `regista.secrets` module. Its
+`API_VERSION` is `1`; provider-neutral consumers should check that contract in
+addition to pinning Regista `>=0.5.1,<0.6`. Its
+`known_providers()` and `available_providers()` calls distinguish canonical
+reference names from providers actually installed on this host;
+`reference_provider(ref, require_explicit=True)` validates a reference without
+reading its value. Azure and Windows availability is not a claim of live
+backend conformance: Azure requires its optional SDK and Windows DPAPI is
+registered only on win32.
 
 ### Secret write (custody) — Plan 029
 
@@ -141,7 +150,7 @@ CLI). `private_key_dir` is meaningful only for the `file` backend.
 ```json
 {
   "component": "regista",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "reachable": true,
   "schema_version": 38,
   "projects": [{"name": "my_project"}],
@@ -174,7 +183,7 @@ pin against:
 ```json
 {
   "component": "regista",
-  "library_version": "0.5.0",
+  "library_version": "0.5.1",
   "schema_version": 38,
   "canonical_workflow_version": "1",
   "envelope_version": 4,
