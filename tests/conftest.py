@@ -1,9 +1,115 @@
 from __future__ import annotations
 
+import inspect
+import os
+import socket
 import uuid
+from urllib.parse import urlparse
 
 import pytest
 from _helpers import DSN, KEY_PATH
+
+# ---------------------------------------------------------------------------
+# PostgreSQL reachability — skip DB-dependent tests cleanly when no PG is
+# available, instead of hanging 30s on a pool timeout and erroring.
+#
+# Skip condition (all must hold):
+#   1. REGISTA_TEST_DSN is NOT explicitly set (operator didn't point at a PG),
+#   2. testcontainers is NOT importable (can't spin up an ephemeral PG), AND
+#   3. the default DSN host:port is not reachable.
+# When REGISTA_TEST_DSN *is* set, tests run (and fail normally if that PG is
+# down) — an explicit DSN is an operator's deliberate choice to run DB tests.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
+
+# Source tokens that indicate a test module touches the real Postgres store
+# (as opposed to pure-logic or InMemoryRegista-only tests).
+_DB_TOKENS = ("DSN", "create_project", "psycopg.connect", "regista_instance", "regista_module")
+
+# Session-level cache of the skip decision.
+_pg_skip_reason: str | None = None
+_pg_skip_computed = False
+
+
+def _probe_pg(dsn: str, timeout: float = 2.0) -> bool:
+    """Quick TCP probe of the DSN's host:port — avoids the 30s pool timeout."""
+    try:
+        parsed = urlparse(dsn)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 5432
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _testcontainers_available() -> bool:
+    try:
+        import testcontainers  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _pg_skip_decision() -> str | None:
+    """Return a skip reason if DB-dependent tests should be skipped, else None.
+
+    Computed once per session and cached.
+    """
+    global _pg_skip_reason, _pg_skip_computed
+    if _pg_skip_computed:
+        return _pg_skip_reason
+    _pg_skip_computed = True
+    # Operator explicitly pointed at a PG — don't skip; let tests fail normally
+    # if that PG is unreachable (explicit choice to run DB tests).
+    if os.environ.get("REGISTA_TEST_DSN"):
+        _pg_skip_reason = None
+        return None
+    # testcontainers can spin up an ephemeral PG — don't skip.
+    if _testcontainers_available():
+        _pg_skip_reason = None
+        return None
+    # Default DSN — probe it quickly.
+    if _probe_pg(_DEFAULT_DSN):
+        _pg_skip_reason = None
+        return None
+    _pg_skip_reason = (
+        "PostgreSQL not reachable at the default DSN "
+        f"({_DEFAULT_DSN}) and REGISTA_TEST_DSN is not set; "
+        "install testcontainers or set REGISTA_TEST_DSN to run DB-dependent tests"
+    )
+    return _pg_skip_reason
+
+
+def _module_is_db_dependent(module: object) -> bool:
+    """Heuristic: does this test module's source reference the PG store?
+
+    Detects modules that import/use DSN, call create_project, use
+    psycopg.connect directly, or request the regista_instance/regista_module
+    fixtures. Pure-logic and InMemoryRegista-only modules are left alone.
+    """
+    cached = getattr(module, "_regista_db_dependent", None)
+    if cached is not None:
+        return cached
+    try:
+        source = inspect.getsource(module)  # type: ignore[arg-type]
+    except (OSError, TypeError):
+        source = ""
+    has_db = any(token in source for token in _DB_TOKENS)
+    module._regista_db_dependent = has_db  # type: ignore[attr-defined]
+    return has_db
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip DB-dependent tests when PostgreSQL is not reachable."""
+    reason = _pg_skip_decision()
+    if not reason:
+        return
+    skip_marker = pytest.mark.skip(reason=reason)
+    for item in items:
+        if _module_is_db_dependent(item.module):
+            item.add_marker(skip_marker)
 
 
 @pytest.fixture
