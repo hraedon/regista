@@ -6,10 +6,21 @@ from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 from ._migrations import check_migrations_current
 
-try:
-    REGISTA_VERSION = importlib.metadata.version("regista")
-except importlib.metadata.PackageNotFoundError:
-    REGISTA_VERSION = "0.0.0"
+
+def _installed_version() -> str:
+    # The distribution renamed to regista-hraedon for PyPI (the import name
+    # stays regista); pre-rename installs still carry the old name. A miss on
+    # both names means broken packaging metadata — 0.0.0 then fails workflow
+    # compatibility loudly rather than masquerading as a real version.
+    for dist in ("regista-hraedon", "regista"):
+        try:
+            return importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return "0.0.0"
+
+
+REGISTA_VERSION = _installed_version()
 
 
 def _parse_semver(s: str) -> tuple[int, int, int]:
