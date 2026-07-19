@@ -7,9 +7,12 @@ from ._errors import ErrorCode, RegistaError
 from ._migrations import check_migrations_current
 
 try:
-    REGISTA_VERSION = importlib.metadata.version("regista")
+    REGISTA_VERSION = importlib.metadata.version("regista-hraedon")
 except importlib.metadata.PackageNotFoundError:
-    REGISTA_VERSION = "0.0.0"
+    try:
+        REGISTA_VERSION = importlib.metadata.version("regista")
+    except importlib.metadata.PackageNotFoundError:
+        REGISTA_VERSION = "0.0.0"
 
 
 def _parse_semver(s: str) -> tuple[int, int, int]:
