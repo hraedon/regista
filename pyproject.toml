@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "regista"
+name = "regista-hraedon"
 version = "0.5.1"
 description = "Coordination + state plane for agent pipelines over Postgres"
 requires-python = ">=3.11"
