@@ -4,9 +4,23 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-07-19
+
+### Fixed
+
+- **Version introspection survives the regista-hraedon rename:** `_installed_version()`
+  in `_integrity.py` now tries both `regista-hraedon` and `regista` distribution
+  names when resolving `REGISTA_VERSION` via `importlib.metadata`. Previously,
+  `importlib.metadata.version("regista")` raised `PackageNotFoundError` on installs
+  from the renamed PyPI distribution, breaking workflow compatibility checks.
+  Consumers that pinned `regista-hraedon` from PyPI (e.g. dossier's container image)
+  no longer need a build-time patch to fix the lookup.
+
+## [0.5.1] — 2026-07-19
+
 ### Added
 
-- **Public secret resolver contract (0.5.1):** added the stable
+- **Public secret resolver contract:** added the stable
   `regista.secrets` facade (`API_VERSION = 1`) with typed errors, resolution,
   provider discovery, and strict non-resolving reference validation for
   provider-neutral consumers.
