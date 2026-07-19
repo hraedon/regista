@@ -1290,7 +1290,7 @@ wheels = [
 ]
 
 [[package]]
-name = "regista"
+name = "regista-hraedon"
 version = "0.5.1"
 source = { editable = "." }
 dependencies = [
