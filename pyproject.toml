@@ -28,6 +28,10 @@ dev = [
     "types-PyYAML",
     "types-jsonschema",
     "types-python-dateutil",
+    # CLI contract v1 conformance kit (Plan 018 WI-2), consumed pinned — never
+    # copied — from the public agent-suite repo. Bump the SHA to adopt a newer
+    # kit; a change here is a deliberate contract-revision event.
+    "agent-suite @ git+https://github.com/hraedon/agent-suite.git@1825e6c706488d13e2823dcae9c6c9e8dc5c237c",
 ]
 sidecar = [
     "fastapi>=0.115",
