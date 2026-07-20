@@ -14,16 +14,21 @@ from __future__ import annotations
 import sys
 
 import pytest
-from agent_suite.conformance import (
-    BrokenPipeCase,
-    ErrorCase,
-    SuccessCase,
-    UsageCase,
-    run_broken_pipe_case,
-    run_error_case,
-    run_success_case,
-    run_usage_case,
-)
+
+# The conformance kit is installed by CI as a dedicated pinned step (it is a
+# git+SHA direct reference, which PyPI forbids in package metadata, so it is not
+# a pyproject dependency). Skip cleanly if it is absent — but note CI installs it
+# in a step that fails loudly, so a missing kit in CI never silently skips here.
+conformance = pytest.importorskip("agent_suite.conformance")
+
+BrokenPipeCase = conformance.BrokenPipeCase
+ErrorCase = conformance.ErrorCase
+SuccessCase = conformance.SuccessCase
+UsageCase = conformance.UsageCase
+run_broken_pipe_case = conformance.run_broken_pipe_case
+run_error_case = conformance.run_error_case
+run_success_case = conformance.run_success_case
+run_usage_case = conformance.run_usage_case
 
 # conftest's DB-skip heuristic flags any module whose source contains "DSN" as
 # database-dependent and skips it when no Postgres is reachable. This module
