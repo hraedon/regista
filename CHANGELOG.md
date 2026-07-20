@@ -4,6 +4,34 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-07-20
+
+### Changed
+
+- **Library logging defaults to stderr** unless the embedding application
+  configures structlog (Plan 018 P0). This keeps stdout a clean single-document
+  channel under `--json` for CLI consumers; an app that configures its own
+  logging still wins. Root cause of a downstream consumer's stdout-pollution
+  bug (agent-notes WI-019).
+
+### Fixed
+
+- **CLI errors now emit the contract v1 error envelope** on every error path
+  (`{"ok": false, "error": {"code", "message", "detail", "retryable",
+  "partial"}}` as the single `--json` stdout document; exit 1). No path prints
+  an error and exits 0. (Plan 018 P0)
+- **No uncaught tracebacks on documented error paths** (CLI contract §5): a
+  top-level `RegistaError` boundary in `main()` reports any domain error that
+  escapes a command handler (e.g. a failure while constructing `Regista()`)
+  through the envelope, and `workflow validate` on a missing file reports an
+  `INVALID_ARGUMENT` envelope instead of a `FileNotFoundError` traceback.
+
+### Added
+
+- **CLI contract v1 conformance kit adopted in CI** (`tests/test_cli_conformance.py`),
+  consumed pinned from the agent-suite `agent_suite.conformance` package. CI
+  test matrix moved to Python 3.13/3.14 (the kit requires ≥3.12).
+
 ## [0.5.2] — 2026-07-19
 
 ### Fixed

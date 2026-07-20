@@ -11,7 +11,7 @@ allow-direct-references = true
 
 [project]
 name = "regista-hraedon"
-version = "0.5.2"
+version = "0.5.3"
 description = "Coordination + state plane for agent pipelines over Postgres"
 requires-python = ">=3.11"
 dependencies = [
