@@ -58,8 +58,43 @@ def _dump_json(obj):
     print(json.dumps(data, indent=2, sort_keys=True, default=str))
 
 
-def _handle_error(e: RegistaError):
-    print(f"[{e.code}] {e.message}", file=sys.stderr)
+# Transient failures a caller may reasonably retry (suite CLI contract v1
+# §3); everything else is a caller error until proven otherwise.
+_RETRYABLE_CODES = frozenset({
+    "CLAIM_CONTESTED",
+    "CONCURRENT_MODIFICATION",
+})
+
+
+def _handle_error(e: RegistaError, json_mode: bool = False):
+    """Report a RegistaError per the suite CLI contract v1 and exit 1.
+
+    Under --json the common error envelope is the single stdout document;
+    otherwise the human line goes to stderr. Either way exit is nonzero —
+    no path prints an error and exits 0.
+    """
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": str(e.code),
+                        "message": e.message,
+                        "detail": (
+                            None
+                            if e.detail is None
+                            else json.dumps(e.detail, sort_keys=True, default=str)
+                        ),
+                        "retryable": str(e.code) in _RETRYABLE_CODES,
+                        "partial": None,
+                    },
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"[{e.code}] {e.message}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -112,7 +147,7 @@ def cmd_work_item_show(args):
             for line in lines:
                 print(line)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -159,7 +194,7 @@ def cmd_work_item_list(args):
             if page.has_more:
                 print(f"--cursor={page.cursor}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -185,7 +220,7 @@ def cmd_events_show(args):
                 ts = e.timestamp.isoformat()
                 print(f"seq={e.event_seq:<4} {ts}  {e.transition or '(none)'}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -219,7 +254,7 @@ def cmd_events_tail(args):
                 ts = e.timestamp.isoformat()
                 print(f"{e.work_item_id}  seq={e.event_seq}  {ts}  {e.transition or '(none)'}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -244,7 +279,7 @@ def cmd_replay(args):
         if report.replayed_drift > 0 or report.halted > 0:
             sys.exit(1)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -278,7 +313,7 @@ def cmd_schema_repair_checksums(args):
         else:
             print("No checksum drift detected")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         mgr.close()
 
@@ -295,7 +330,7 @@ def cmd_hooks_dead_letter_list(args):
                 ts = e.dead_lettered_at.isoformat()
                 print(f"{e.id}  {e.hook_name:20s}  {ts}  {e.error_message or ''}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -312,7 +347,7 @@ def cmd_hooks_dead_letter_requeue(args):
         sub.requeue_dead_lettered_hook(entry_id)
         print(f"Requeued dead-letter hook {args.id}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -328,7 +363,7 @@ def cmd_actor_roles_list(args):
             for r in roles:
                 print(f"{r.actor_id:20s} {r.role:20s} {r.created_at.isoformat()}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -349,7 +384,7 @@ def cmd_recurrence_list(args):
                     f"{r.get('next_fire_at', '')}"
                 )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -369,7 +404,7 @@ def cmd_recurrence_due(args):
                     f"next_fire={r.get('next_fire_at', '')}"
                 )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -391,7 +426,7 @@ def cmd_recurrence_fire(args):
             wi_id = str(wi["work_item_id"])[:8] if wi else "(none)"
             print(f"Fired rule {rid} -> work item {wi_id}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -408,7 +443,7 @@ def cmd_recurrence_cancel(args):
         sub.cancel_recurrence_rule(rule_id)
         print(f"Cancelled recurrence rule {args.id}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -435,7 +470,7 @@ def cmd_recurrence_update(args):
         else:
             print(f"Updated rule {args.id}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     except json.JSONDecodeError as e:
         print(f"Invalid JSON in --template: {e}", file=sys.stderr)
         sys.exit(1)
@@ -458,7 +493,7 @@ def cmd_timestamp_status(args):
                     f"root={b.merkle_root.hex()[:16]}..."
                 )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -473,7 +508,7 @@ def cmd_timestamp_trigger(args):
         else:
             print(f"Triggered batch {result.batch_id} with {len(result.event_ids)} events")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -490,7 +525,7 @@ def cmd_timestamp_verify(args):
         ok = sub.timestamping.verify_batch(batch_id)
         print(f"verified={ok}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -546,7 +581,7 @@ def cmd_anchor_submit(args):
             if args.json:
                 _dump_json(receipt)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -568,7 +603,7 @@ def cmd_anchor_status(args):
                     f"seq={r.target_global_seq}"
                 )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -589,7 +624,7 @@ def cmd_anchor_verify(args):
         if status == "failed":
             sys.exit(1)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -608,7 +643,7 @@ def cmd_witness_list(args):
                 f"{w['status']:<8}  failures={w.get('consecutive_failures', 0)}"
             )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -620,7 +655,7 @@ def cmd_witness_deliver(args):
         count = sub.deliver_pending_witness_receipts()
         print(f"Delivered {count} receipt(s).")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -657,7 +692,7 @@ def cmd_witness_receipts(args):
                 f"event={r['event_id'][:8]}...  status={r['status']}"
             )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -677,7 +712,7 @@ def cmd_events_archive(args):
         else:
             print(f"Archived {count} event(s).")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -710,7 +745,7 @@ def cmd_archive_seal(args):
                 if result.get("dry_run"):
                     print("  (dry-run — nothing written)")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -742,7 +777,7 @@ def cmd_archive_verify(args):
                 for w in result["warnings"]:
                     print(f"  warning:         {w}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -776,7 +811,7 @@ def cmd_archive_list(args):
                         f"{'yes' if seg.get('archived') else 'no':>8}"
                     )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -797,7 +832,7 @@ def cmd_archive_verify_chain(args):
                     print(f"  {brk['type']} in segment {brk['segment_id']}: {brk['detail']}")
                 sys.exit(1)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -819,7 +854,7 @@ def cmd_bundle_export(args):
             print(f"  public_keys:      {result['public_key_count']}")
             print(f"  bundle_hash:      {result['bundle_hash']}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -857,7 +892,7 @@ def cmd_bundle_verify(args):
                     print(f"  {err}")
                 sys.exit(1)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
 
 
 def cmd_workflow_compose(args):
@@ -872,7 +907,7 @@ def cmd_workflow_compose(args):
             for source in source_map.get("sources", []):
                 print(f"  included: {source}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -921,7 +956,7 @@ def cmd_work_item_create(args):
         if args.json:
             _dump_json({"work_item": wi, "event": evt})
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -978,7 +1013,7 @@ def cmd_work_item_transition(args):
         if args.json:
             _dump_json(evt)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1007,7 +1042,7 @@ def cmd_webhook_register(args):
         if args.json:
             _dump_json(result)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1026,7 +1061,7 @@ def cmd_webhook_list(args):
                 f"{w['status']}"
             )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1043,7 +1078,7 @@ def cmd_webhook_remove(args):
         sub.unregister_webhook(webhook_id)
         print(f"Removed webhook {args.id[:8]}...")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1150,7 +1185,7 @@ def cmd_secrets_resolve(args):
             except UnicodeDecodeError:
                 print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
 
 
 def cmd_assurance(args):
@@ -1180,7 +1215,7 @@ def cmd_assurance(args):
             authors = rationale.get("author_lineages", [])
             print(f"Author lineages:  {', '.join(authors) if authors else '(none)'}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1200,7 +1235,7 @@ def cmd_principal_list(args):
                     f"{e.status:10s} {e.fingerprint[:16]}..."
                 )
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1228,7 +1263,7 @@ def cmd_principal_register(args):
             print(f"  fingerprint: {entry.fingerprint}")
             print(f"  status:      {entry.status}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1254,7 +1289,7 @@ def cmd_principal_enroll(args):
             print(f"  scheme:      {result['scheme']}")
             print(f"  backend:     {result['secret_backend']}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1277,7 +1312,7 @@ def cmd_principal_revoke(args):
             print(f"  reason:      {entry.revoked_reason}")
             print(f"  revoked_at:  {entry.revoked_at}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1398,7 +1433,7 @@ def cmd_spec_sign(args):
             print(f"  transition:  {evt.transition}")
             print(f"  timestamp:   {evt.timestamp.isoformat()}")
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
@@ -1427,7 +1462,7 @@ def cmd_spec_events(args):
                 print(f"    md_hash:     {payload.get('spec_md_hash', '?')[:16]}...")
                 print()
     except RegistaError as e:
-        _handle_error(e)
+        _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
         sub.close()
 
