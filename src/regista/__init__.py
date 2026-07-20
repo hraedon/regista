@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys as _sys
 import uuid
 from collections.abc import Callable
 
@@ -124,6 +125,18 @@ from .principal_lifecycle import RegistryReceiptStatus as RegistryReceiptStatus
 from .principal_lifecycle import RevocationRequest as RevocationRequest
 from .principal_lifecycle import RotationRequest as RotationRequest
 from .principal_lifecycle import canonical_lifecycle_digest as canonical_lifecycle_digest
+
+# Stream discipline (suite CLI contract v1 §1): unconfigured structlog prints
+# to *stdout*, so any CLI that embeds regista as a library gets its --json
+# stdout contaminated by regista's operational logging. Default the process to
+# stderr logging unless the embedding application has already configured
+# structlog — an explicit structlog.configure() anywhere (before or after this
+# import) still wins, because get_logger() binds configuration lazily.
+if not structlog.is_configured():
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(20),
+        logger_factory=structlog.PrintLoggerFactory(file=_sys.stderr),
+    )
 
 config = _config
 log = structlog.get_logger()
