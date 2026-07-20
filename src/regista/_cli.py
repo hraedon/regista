@@ -10,7 +10,7 @@ from datetime import datetime
 import structlog
 
 from regista import Regista
-from regista._errors import RegistaError
+from regista._errors import ErrorCode, RegistaError
 from regista._workflow import validate_yaml as _validate_yaml
 
 
@@ -107,7 +107,15 @@ def _add_common_args(parser):
 
 def cmd_workflow_validate(args):
     from pathlib import Path
-    result = _validate_yaml(Path(args.file))
+    source = Path(args.file)
+    if not source.is_file():
+        # Contract §5: a missing input is a documented error (envelope +
+        # exit 1), never an uncaught FileNotFoundError traceback.
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"workflow file not found: {args.file}",
+        )
+    result = _validate_yaml(source)
     if args.json:
         _dump_json(result)
     else:
@@ -1843,7 +1851,14 @@ def main(argv=None):
         sys.exit(2)
 
     if hasattr(args, "func"):
-        args.func(args)
+        # Contract §3/§5 boundary: any RegistaError that escapes a command
+        # handler (e.g. raised while constructing Regista(), before the
+        # handler's own try/except) is reported through the common error
+        # envelope and exit 1 — never as an uncaught traceback.
+        try:
+            args.func(args)
+        except RegistaError as e:
+            _handle_error(e, json_mode=getattr(args, "json", False))
     else:
         target = subs.choices.get(args.command)
         if target:
