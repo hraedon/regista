@@ -28,13 +28,13 @@ dev = [
     "types-PyYAML",
     "types-jsonschema",
     "types-python-dateutil",
+    # CLI contract v1 conformance kit (Plan 018 WI-2), a normal pinned version
+    # dependency (Plan 019 B1). Previously a git+SHA direct reference installed
+    # by a separate CI step — which PyPI forbids in uploaded metadata; now a
+    # published wheel, so it lives here like any other dev dep.
+    "agent-suite-conformance==1.0.0",
 ]
 
-# NOTE: the CLI contract v1 conformance kit (agent_suite.conformance, Plan 018
-# WI-2) is intentionally NOT declared here. It is a git+SHA direct reference,
-# which PyPI forbids in uploaded package metadata (even inside an extra). CI
-# installs it as a separate pinned step (see .github/workflows/ci.yml); the
-# conformance test import-skips when it is absent.
 sidecar = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
