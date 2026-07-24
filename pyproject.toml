@@ -32,7 +32,7 @@ dev = [
     # dependency (Plan 019 B1). Previously a git+SHA direct reference installed
     # by a separate CI step — which PyPI forbids in uploaded metadata; now a
     # published wheel, so it lives here like any other dev dep.
-    "agent-suite-conformance==1.0.0",
+    "agent-suite-conformance==1.0.0; python_version >= '3.12'",
 ]
 
 sidecar = [
