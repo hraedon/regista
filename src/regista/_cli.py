@@ -1183,6 +1183,29 @@ def cmd_secrets_resolve(args):
     if not args.ref:
         print("Error: --ref is required (or --list-providers)", file=sys.stderr)
         sys.exit(2)
+    if getattr(args, "delete", False):
+        from regista._secrets import DeleteOutcome
+        from regista._secrets import delete as delete_secret
+
+        try:
+            outcome = delete_secret(args.ref)
+        except RegistaError as e:
+            _handle_error(e, json_mode=getattr(args, "json", False))
+            return
+        if args.json:
+            _dump_json({"ref": args.ref, "outcome": outcome.value})
+        elif outcome is DeleteOutcome.DELETED:
+            print(f"Deleted custodied secret at {args.ref}")
+        elif outcome is DeleteOutcome.ALREADY_ABSENT:
+            print(f"No custodied secret at {args.ref} (already absent)")
+        else:
+            # Saying "deleted" here would tell an operator the key is gone
+            # while every copy of the reference still contains it.
+            print(
+                f"{args.ref} carries the secret in the reference itself; "
+                f"nothing was stored to delete — discard the reference"
+            )
+        return
     try:
         data = resolve_secret(args.ref)
         if args.hex:
@@ -1750,6 +1773,14 @@ def main(argv=None):
     sec_parser.add_argument(
         "--list-providers", action="store_true",
         help="List available secret providers",
+    )
+    sec_parser.add_argument(
+        "--delete", action="store_true",
+        help=(
+            "Delete the custodied secret at --ref instead of resolving it. "
+            "Idempotent. Backends whose reference carries the secret itself "
+            "(windows, literal) report 'inline_ref' — discard the reference"
+        ),
     )
     sec_parser.set_defaults(func=cmd_secrets_resolve)
 

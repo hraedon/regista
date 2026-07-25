@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import uuid
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,6 +31,23 @@ def _ensure_secure_dir(path: Path) -> None:
         pass
 
 
+class DeleteOutcome(Enum):
+    """What actually happened to the custodied material.
+
+    Three states, not a bool, because the backends genuinely differ. For
+    ``file``/``vault``/``azure`` the reference *points at* stored material and
+    deleting it removes something. For ``windows``/``literal`` the reference
+    *contains* the material — a DPAPI blob or the value itself — so there is
+    nothing server-side to remove and discarding the reference is the whole
+    act. Reporting that as ``DELETED`` would tell an operator their key is
+    gone when in fact every copy of the reference still holds it.
+    """
+
+    DELETED = "deleted"
+    ALREADY_ABSENT = "already_absent"
+    INLINE_REF = "inline_ref"
+
+
 @runtime_checkable
 class SecretProvider(Protocol):
     name: str
@@ -37,6 +55,8 @@ class SecretProvider(Protocol):
     def resolve(self, ref: str) -> bytes: ...
 
     def store(self, ref: str, data: bytes) -> str: ...
+
+    def delete(self, ref: str) -> DeleteOutcome: ...
 
 
 class FileProvider:
@@ -66,6 +86,19 @@ class FileProvider:
         os.replace(str(tmp), str(path))
         return f"file:{path}"
 
+    def delete(self, ref: str) -> DeleteOutcome:
+        path = Path(ref)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return DeleteOutcome.ALREADY_ABSENT
+        except OSError as e:
+            raise RegistaError(
+                ErrorCode.KEY_LOAD_ERROR,
+                f"file: could not remove {ref}: {e!s}",
+            ) from e
+        return DeleteOutcome.DELETED
+
 
 class EnvProvider:
     name: str = "env"
@@ -87,6 +120,16 @@ class EnvProvider:
             f"(file/windows/vault/azure)",
         )
 
+    def delete(self, ref: str) -> DeleteOutcome:
+        # Clearing os.environ would only affect this process, leaving the
+        # variable set everywhere it actually matters — a deletion that
+        # reports success and removes nothing.
+        raise RegistaError(
+            ErrorCode.SECRET_WRITE_UNSUPPORTED,
+            f"env: cannot delete environment variable {ref!r} from here; "
+            f"unset it wherever it is defined",
+        )
+
 
 class LiteralProvider:
     name: str = "literal"
@@ -100,6 +143,11 @@ class LiteralProvider:
             "literal: cannot custody a generated secret into a literal value; "
             "use a writable backend (file/windows/vault/azure)",
         )
+
+    def delete(self, ref: str) -> DeleteOutcome:
+        # The value *is* the reference. Nothing is stored anywhere to remove;
+        # the caller discarding the reference is the deletion.
+        return DeleteOutcome.INLINE_REF
 
 
 _PROVIDERS: dict[str, SecretProvider] = {}
@@ -232,6 +280,37 @@ def store(ref: str, data: bytes) -> str:
     return provider.store(value, data)
 
 
+def delete(ref: str) -> DeleteOutcome:
+    """Remove custodied material behind ``ref``.
+
+    Idempotent: an already-absent secret returns ``ALREADY_ABSENT`` rather
+    than raising, so a re-run of an offboarding is safe. Backends whose
+    reference *contains* the secret return ``INLINE_REF`` — see
+    :class:`DeleteOutcome`.
+    """
+    if not ref:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "Empty secret reference",
+        )
+    provider_name, value = _detect_prefix(ref)
+    provider = _PROVIDERS.get(provider_name)
+    if provider is None:
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"Unknown secret provider: {provider_name!r}. "
+            f"Available: {available_providers()}",
+        )
+    deleter = getattr(provider, "delete", None)
+    if deleter is None:
+        # A third-party provider registered before `delete` existed.
+        raise RegistaError(
+            ErrorCode.SECRET_WRITE_UNSUPPORTED,
+            f"{provider_name}: provider does not implement delete",
+        )
+    return deleter(value)
+
+
 def supports_write(name: str) -> bool:
     provider = _PROVIDERS.get(name)
     if provider is None:
@@ -240,6 +319,13 @@ def supports_write(name: str) -> bool:
         return provider.store is not None
     except AttributeError:
         return False
+
+
+def supports_delete(name: str) -> bool:
+    provider = _PROVIDERS.get(name)
+    if provider is None:
+        return False
+    return getattr(provider, "delete", None) is not None
 
 
 def try_register_vault() -> None:
@@ -321,6 +407,41 @@ def try_register_vault() -> None:
             )
             return f"vault:{ref}"
 
+        def delete(self, ref: str) -> DeleteOutcome:
+            client = self._get_client()
+            parts = ref.split("/")
+            if len(parts) < 4:
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"vault: ref must be mount/path/key, got {ref!r}",
+                )
+            mount = parts[0]
+            key_name = parts[-1]
+            path = "/".join(parts[1:-1])
+            try:
+                resp = client.secrets.kv.v2.read_secret_version(
+                    path=path, mount_point=mount
+                )
+            except Exception:
+                return DeleteOutcome.ALREADY_ABSENT
+            data = dict(resp["data"]["data"])
+            if key_name not in data:
+                return DeleteOutcome.ALREADY_ABSENT
+            del data[key_name]
+            if data:
+                # Other keys share this path — rewrite without ours rather
+                # than destroying secrets that are not ours to remove.
+                client.secrets.kv.v2.create_or_update_secret(
+                    path=path, mount_point=mount, secret=data
+                )
+            else:
+                # Destroy every version: a soft delete leaves the material
+                # recoverable, which is not what an offboarding is asking for.
+                client.secrets.kv.v2.delete_metadata_and_all_versions(
+                    path=path, mount_point=mount
+                )
+            return DeleteOutcome.DELETED
+
     register_provider(VaultProvider())
 
 
@@ -364,6 +485,34 @@ def try_register_azure() -> None:
             client.set_secret(ref, encoded)
             return f"azure:{ref}"
 
+        def delete(self, ref: str) -> DeleteOutcome:
+            from azure.core.exceptions import (  # type: ignore[import-untyped]
+                ResourceNotFoundError,
+            )
+
+            client = self._get_client()
+            try:
+                poller = client.begin_delete_secret(ref)
+            except ResourceNotFoundError:
+                return DeleteOutcome.ALREADY_ABSENT
+            # Block until the delete lands; the caller is about to report the
+            # key gone, so returning while it is still in flight would make
+            # that report a guess.
+            poller.wait()
+            try:
+                # On a soft-delete-enabled vault the secret is recoverable
+                # until purged, which is not "gone". Purge when we are allowed
+                # to; report honestly when we are not.
+                client.purge_deleted_secret(ref)
+            except Exception:
+                raise RegistaError(
+                    ErrorCode.SECRET_WRITE_UNSUPPORTED,
+                    f"azure: {ref!r} was deleted but could not be purged — it "
+                    f"stays recoverable until the soft-delete window expires "
+                    f"or an operator with purge rights removes it",
+                ) from None
+            return DeleteOutcome.DELETED
+
     register_provider(AzureProvider())
 
 
@@ -397,6 +546,12 @@ def try_register_windows() -> None:
         def store(self, ref: str, data: bytes) -> str:
             blob = protect_windows_secret(data)
             return f"windows:{blob}"
+
+        def delete(self, ref: str) -> DeleteOutcome:
+            # A `windows:` ref carries the DPAPI blob itself — there is no
+            # credential-store entry behind it. Every copy of the reference is
+            # a copy of the secret, so removing the reference is the deletion.
+            return DeleteOutcome.INLINE_REF
 
     register_provider(WindowsProvider())
 
