@@ -282,9 +282,12 @@ def cmd_replay(args):
                 f"ok={report.replayed_ok}  "
                 f"drift={report.replayed_drift}  "
                 f"halted={report.halted}  "
-                f"warnings={report.warnings}"
+                f"warnings={report.warnings}  "
+                f"principal_binding_failures={report.principal_binding_failures}"
             )
         if report.replayed_drift > 0 or report.halted > 0:
+            sys.exit(1)
+        if args.strict_principal_binding and report.principal_binding_failures > 0:
             sys.exit(1)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
@@ -1596,6 +1599,13 @@ def main(argv=None):
         "--verify-principal-binding",
         action="store_true",
         help="Verify event signatures against the principal_keys registry",
+    )
+    rep.add_argument(
+        "--strict-principal-binding",
+        action="store_true",
+        help="Exit non-zero when --verify-principal-binding reports any "
+        "principal-binding failure (default: report as warnings only, "
+        "backward compatible with HMAC-only deployments)",
     )
     rep.set_defaults(func=cmd_replay)
 

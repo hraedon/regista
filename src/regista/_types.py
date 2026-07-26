@@ -598,6 +598,7 @@ class ReplayReport:
     replayed_drift: int
     halted: int
     warnings: int = 0
+    principal_binding_failures: int = 0
 
     def to_dict(self) -> dict:
         d = {
@@ -608,6 +609,8 @@ class ReplayReport:
         }
         if self.warnings > 0:
             d["warnings"] = self.warnings
+        if self.principal_binding_failures > 0:
+            d["principal_binding_failures"] = self.principal_binding_failures
         return d
 
     @classmethod
@@ -618,6 +621,7 @@ class ReplayReport:
             replayed_drift=data["replayed_drift"],
             halted=data["halted"],
             warnings=data.get("warnings", 0),
+            principal_binding_failures=data.get("principal_binding_failures", 0),
         )
 
 

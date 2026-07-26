@@ -95,3 +95,35 @@ class TestAC29OutOfBandEditDrift:
         report = regista.replay()
         assert report.replayed_drift == 0
         assert report.halted == 0
+
+
+class TestPrincipalBindingFailureReport:
+    def test_report_round_trips_principal_binding_failures(self):
+        from regista._types import ReplayReport
+
+        report = ReplayReport(
+            table_name="t",
+            replayed_ok=1,
+            replayed_drift=0,
+            halted=0,
+            warnings=2,
+            principal_binding_failures=2,
+        )
+        d = report.to_dict()
+        assert d["principal_binding_failures"] == 2
+        assert d["warnings"] == 2
+
+        restored = ReplayReport.from_dict(d)
+        assert restored.principal_binding_failures == 2
+
+    def test_report_omits_zero_principal_binding_failures(self):
+        from regista._types import ReplayReport
+
+        report = ReplayReport(
+            table_name="t",
+            replayed_ok=1,
+            replayed_drift=0,
+            halted=0,
+        )
+        assert "principal_binding_failures" not in report.to_dict()
+        assert report.principal_binding_failures == 0

@@ -469,7 +469,7 @@ class TestOfflineSignatureVerification:
 
         report = verify_audit_bundle_offline(str(output))
         assert report.verified
-        assert report.signature_check == "enforced"
+        assert report.signature_check == "enforced_none_verified"
         assert report.signatures_verified == 0
         assert report.signatures_unverifiable == report.event_count
 

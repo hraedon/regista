@@ -324,6 +324,8 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             events, bundle.get("public_keys", [])
         )
         errors.extend(sig_errors)
+        if sigs_verified == 0 and len(events) > 0:
+            signature_check = "enforced_none_verified"
 
     verified = (
         bundle_hash_ok

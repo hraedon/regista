@@ -339,6 +339,7 @@ def _replay_inner(
     drift_count = 0
     halted_count = 0
     total_warnings = 0
+    total_principal_binding_failures = 0
 
     if scoped:
         all_events = conn.execute(
@@ -427,7 +428,7 @@ def _replay_inner(
             continue
 
         try:
-            replayed_state, wi_warnings = _replay_work_item(
+            replayed_state, wi_warnings, wi_pb_failures = _replay_work_item(
                 conn,
                 wi_id,
                 events,
@@ -436,6 +437,7 @@ def _replay_inner(
                 verify_principal_binding=verify_principal_binding,
             )
             total_warnings += wi_warnings
+            total_principal_binding_failures += wi_pb_failures
         except _ReplayHaltError as e:
             halted_count += 1
             log.error("replay.halted", work_item_id=str(wi_id), error=str(e))
@@ -646,6 +648,7 @@ def _replay_inner(
         replayed_drift=drift_count,
         halted=halted_count,
         warnings=total_warnings,
+        principal_binding_failures=total_principal_binding_failures,
     )
 
 
@@ -689,7 +692,7 @@ def _replay_work_item(
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
-) -> tuple[dict, int]:
+) -> tuple[dict, int, int]:
     state = None
     custom_fields: dict = {}
     needs_review = False
@@ -700,6 +703,7 @@ def _replay_work_item(
     claim_expires_at: datetime | None = None
     claim_coalesce_threshold: float = 0.0
     warnings = 0
+    principal_binding_failures = 0
 
     _principal_key_cache: dict[str, list] = {}
 
@@ -815,6 +819,7 @@ def _replay_work_item(
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)
                 if not pb_result.verified:
                     warnings += 1
+                    principal_binding_failures += 1
                     log.warning(
                         "replay.principal_binding_failed",
                         work_item_id=str(wi_id),
@@ -923,7 +928,7 @@ def _replay_work_item(
         "claimed_by": claimed_by,
         "claim_expires_at": claim_expires_at,
         "claim_coalesce_threshold": claim_coalesce_threshold,
-    }, warnings
+    }, warnings, principal_binding_failures
 
 
 def _states_match(replayed: dict, live: dict) -> bool:
