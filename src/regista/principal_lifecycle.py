@@ -627,6 +627,8 @@ class PrincipalLifecycle:
                 "Possession signature verification failed",
             )
         record.used = True
+        # Challenges are process-local and one-use; marking happens inline in
+        # the same transaction as the state update, not via a separate helper.
         verified = replace(operation, state=LifecycleState.AWAITING_APPROVAL)
         self._operations[operation_id] = verified
         if self._durable:
@@ -715,26 +717,6 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.OPERATION_EXPIRED,
                 f"Operation {operation_id!r} has expired",
             )
-        if operation.state is LifecycleState.COMMITTED:
-            existing_receipt = self._receipts.get(operation_id)
-            if existing_receipt is not None:
-                return existing_receipt
-            raise LifecycleContractError(
-                LifecycleErrorCode.OPERATION_ALREADY_COMMITTED,
-                f"Operation {operation_id!r} is already committed but no cached receipt",
-            )
-        if operation.operation_type is LifecycleOperationType.REVOCATION:
-            if operation.state is not LifecycleState.AWAITING_APPROVAL:
-                raise LifecycleContractError(
-                    LifecycleErrorCode.INVALID_OPERATION_STATE,
-                    f"Operation {operation_id!r} is not awaiting approval for revocation",
-                )
-        else:
-            if operation.state is not LifecycleState.APPROVED:
-                raise LifecycleContractError(
-                    LifecycleErrorCode.INVALID_OPERATION_STATE,
-                    f"Operation {operation_id!r} is not approved",
-                )
         assert self._mgr is not None
         assert self._keys is not None
         transition = self._transition_for(operation.operation_type)
@@ -758,13 +740,14 @@ class PrincipalLifecycle:
             existing_row = cast(
                 dict[str, Any] | None,
                 conn.execute(
-                    "SELECT state, receipt_key_id FROM lifecycle_operations "
+                    "SELECT state, receipt_key_id, committed_at FROM lifecycle_operations "
                     "WHERE operation_id = %s FOR UPDATE",
                     [operation_id],
                 ).fetchone(),
             )
             if existing_row is not None and existing_row["state"] == "committed":
                 key_id = existing_row["receipt_key_id"] or ""
+                recorded_at = existing_row["committed_at"] or self._now()
                 receipt = RegistryReceipt(
                     operation_id=operation_id,
                     operation_digest=operation.digest.value,
@@ -773,10 +756,15 @@ class PrincipalLifecycle:
                     key_id=key_id,
                     fingerprint=operation.fingerprint or "",
                     status=RegistryReceiptStatus.COMMITTED,
-                    recorded_at=self._now(),
+                    recorded_at=recorded_at,
                 )
                 self._receipts[operation_id] = receipt
                 return receipt
+            if operation.state is not LifecycleState.APPROVED:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.INVALID_OPERATION_STATE,
+                    f"Operation {operation_id!r} is not approved",
+                )
             entry = self._commit_key(conn, operation)
             _validate_entity_kind("principal")
             _validate_mutation_params(
@@ -908,19 +896,47 @@ class PrincipalLifecycle:
             principal_kind = PrincipalKind(op_row["principal_kind"])
             policy_version = op_row["policy_version"]
             identity_binding_digest = op_row["identity_binding_digest"]
-        lifecycle_state = LifecycleState.DRAFT
-        required_next_action: str | None = None
-        if op_row is not None:
+        latest_op_type: LifecycleOperationType | None = None
+        if op_row is None:
+            lifecycle_state = LifecycleState.DRAFT
+            required_next_action = "prepare_enrollment" if active_fp is None else None
+        else:
             lifecycle_state = LifecycleState(op_row["state"])
-        if active_fp is None and lifecycle_state is LifecycleState.DRAFT:
-            required_next_action = "prepare_enrollment"
-        elif lifecycle_state is LifecycleState.COMMITTED:
-            required_next_action = "record_effective_receipt"
-        elif lifecycle_state in (
-            LifecycleState.EFFECTIVE,
-            LifecycleState.PARTIALLY_EFFECTIVE,
-        ):
+            latest_op_type = LifecycleOperationType(op_row["operation_type"])
             required_next_action = None
+            if lifecycle_state is LifecycleState.AWAITING_PROOF:
+                required_next_action = "issue_possession_challenge"
+            elif lifecycle_state is LifecycleState.AWAITING_APPROVAL:
+                required_next_action = "record_approval"
+            elif lifecycle_state is LifecycleState.APPROVED:
+                required_next_action = "commit"
+            elif lifecycle_state is LifecycleState.COMMITTED:
+                if latest_op_type is LifecycleOperationType.REVOCATION:
+                    required_next_action = None
+                else:
+                    required_next_action = "record_effective_receipt"
+            elif lifecycle_state is LifecycleState.DRAFT:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.EFFECTIVE:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.PARTIALLY_EFFECTIVE:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.FAILED:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.CANCELLED:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.EXPIRED:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.PREPARED:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.COMMITTING:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.REPAIR_REQUIRED:
+                required_next_action = None
+            elif lifecycle_state is LifecycleState.SUPERSEDED:
+                required_next_action = None
+            else:
+                assert_never(lifecycle_state)
         return PrincipalDescriptor(
             principal_id=principal_id,
             principal_kind=principal_kind,
@@ -1129,6 +1145,65 @@ class PrincipalLifecycle:
                 ],
             )
 
+    def _load_operation_from_db(self, operation_id: str) -> LifecycleOperation:
+        """Rehydrate an operation from durable storage.
+
+        Operations are durable and may be resumed by a fresh ``PrincipalLifecycle``
+        instance.  Challenges are deliberately process-local and one-use, so this
+        method does not rehydrate challenges.
+        """
+        assert self._mgr is not None
+        with self._mgr.transaction() as conn:
+            row = cast(
+                dict[str, Any] | None,
+                conn.execute(
+                    "SELECT * FROM lifecycle_operations "
+                    "WHERE operation_id = %s AND project = %s",
+                    [operation_id, self._project],
+                ).fetchone(),
+            )
+        if row is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.OPERATION_NOT_FOUND,
+                f"Lifecycle operation {operation_id!r} was not prepared",
+            )
+        protected = row["protected_options"]
+        if isinstance(protected, dict):
+            protected_options = tuple(sorted((str(k), str(v)) for k, v in protected.items()))
+        else:
+            protected_options = ()
+        custody_mode = row["custody_mode"]
+        public_key = row["public_key"]
+        operation = LifecycleOperation(
+            operation_id=str(row["operation_id"]),
+            idempotency_key=row["idempotency_key"],
+            operation_type=LifecycleOperationType(row["operation_type"]),
+            state=LifecycleState(row["state"]),
+            project=row["project"],
+            principal_id=row["principal_id"],
+            principal_kind=PrincipalKind(row["principal_kind"]),
+            actor_id=row["actor_id"],
+            reason=row["reason"],
+            requested_authority=row["requested_authority"],
+            policy_version=row["policy_version"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            digest=LifecycleDigest(
+                version=row["digest_version"],
+                algorithm=row["digest_algorithm"],
+                value=row["digest_value"],
+            ),
+            public_key=bytes(public_key) if public_key is not None else None,
+            fingerprint=row["fingerprint"],
+            scheme=row["scheme"],
+            custody_mode=CustodyMode(custody_mode) if custody_mode is not None else None,
+            old_key_id=row["old_key_id"],
+            identity_binding_digest=row["identity_binding_digest"],
+            protected_options=protected_options,
+        )
+        self._operations[operation_id] = operation
+        return operation
+
     def _persist_challenge(self, challenge: PossessionChallenge) -> None:
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
@@ -1152,14 +1227,6 @@ class PrincipalLifecycle:
                     challenge.issued_at,
                     challenge.expires_at,
                 ],
-            )
-
-    def _mark_challenge_used(self, challenge_id: str) -> None:
-        assert self._mgr is not None
-        with self._mgr.transaction() as conn:
-            conn.execute(
-                "UPDATE lifecycle_challenges SET used = true WHERE challenge_id = %s",
-                [challenge_id],
             )
 
     def _update_operation_state(
@@ -1276,13 +1343,21 @@ class PrincipalLifecycle:
         return self._operations[operation_id]
 
     def _operation(self, operation_id: str) -> LifecycleOperation:
+        """Return a prepared operation, rehydrating from the DB when durable.
+
+        Operations rehydrate so a fresh instance can resume a lifecycle across
+        HTTP requests.  Challenges are deliberately process-local and one-use,
+        so they are never rehydrated.
+        """
         operation = self._operations.get(operation_id)
-        if operation is None:
-            raise LifecycleContractError(
-                LifecycleErrorCode.OPERATION_NOT_FOUND,
-                f"Lifecycle operation {operation_id!r} was not prepared",
-            )
-        return operation
+        if operation is not None:
+            return operation
+        if self._durable:
+            return self._load_operation_from_db(operation_id)
+        raise LifecycleContractError(
+            LifecycleErrorCode.OPERATION_NOT_FOUND,
+            f"Lifecycle operation {operation_id!r} was not prepared",
+        )
 
     def _time_window(self, ttl: timedelta) -> tuple[datetime, datetime]:
         if ttl <= timedelta(0):

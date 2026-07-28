@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import nacl.signing
 import pytest
@@ -230,13 +230,63 @@ def regista_instance():
     drop_project_schema(DSN, project)
 
 
-_durable_test = pytest.mark.skipif(
-    True,
-    reason="requires a running PostgreSQL database",
+def _db_operation_state(reg: regista.Regista, operation_id: str) -> str:
+    with reg._mgr.transaction() as conn:
+        row = conn.execute(
+            "SELECT state FROM lifecycle_operations WHERE operation_id = %s",
+            [operation_id],
+        ).fetchone()
+        assert row is not None
+        return cast(str, row["state"])
+
+
+_ALLOWED_TABLES = frozenset(
+    {
+        "lifecycle_approvals",
+        "lifecycle_challenges",
+        "lifecycle_effective_receipts",
+        "lifecycle_operations",
+        "events",
+        "principal_keys",
+    }
 )
 
 
-@_durable_test
+def _db_count(
+    reg: regista.Regista,
+    table: str,
+    where: str | None = None,
+    params: list[Any] | None = None,
+) -> int:
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"unexpected table {table!r}")
+    params = params or []
+    with reg._mgr.transaction() as conn:
+        if where:
+            query = f"SELECT count(*) AS n FROM {table} WHERE {where}"
+        else:
+            query = f"SELECT count(*) AS n FROM {table}"
+        row = conn.execute(query, params).fetchone()
+        assert row is not None
+        return cast(int, row["n"])
+
+
+def _db_key_status(reg: regista.Regista, key_id: str) -> str:
+    with reg._mgr.transaction() as conn:
+        row = conn.execute(
+            "SELECT status FROM principal_keys WHERE key_id = %s",
+            [key_id],
+        ).fetchone()
+        assert row is not None
+        return cast(str, row["status"])
+
+
+def _open_fresh_instance(reg: regista.Regista) -> regista.Regista:
+    from _helpers import DSN, KEY_PATH
+
+    return regista.Regista(DSN, reg.project, KEY_PATH)
+
+
 def test_durable_prepare_persists(
     regista_instance: Any,
     enrollment: EnrollmentRequest,
@@ -249,9 +299,11 @@ def test_durable_prepare_persists(
     assert lifecycle.is_durable
     fetched = lifecycle.get_operation(operation.operation_id)
     assert fetched == operation
+    assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_proof"
+    assert _db_count(regista_instance, "lifecycle_approvals") == 0
+    assert _db_count(regista_instance, "lifecycle_effective_receipts") == 0
 
 
-@_durable_test
 def test_durable_possession_challenge_lifecycle(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -263,9 +315,12 @@ def test_durable_possession_challenge_lifecycle(
         lifecycle, private_key, enrollment, idempotency_key="idem-challenge"
     )
     assert operation.state is LifecycleState.AWAITING_APPROVAL
+    assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+    assert _db_count(
+        regista_instance, "lifecycle_challenges", "used = %s", [True]
+    ) == 1
 
 
-@_durable_test
 def test_durable_approval_recording(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -276,9 +331,15 @@ def test_durable_approval_recording(
         regista_instance, private_key, enrollment, idempotency_key="idem-approval"
     )
     assert operation.state is LifecycleState.APPROVED
+    assert _db_operation_state(regista_instance, operation.operation_id) == "approved"
+    assert _db_count(
+        regista_instance,
+        "lifecycle_approvals",
+        "operation_id = %s",
+        [operation.operation_id],
+    ) == 1
 
 
-@_durable_test
 def test_durable_approval_rejects_digest_mismatch(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -299,7 +360,6 @@ def test_durable_approval_rejects_digest_mismatch(
     assert exc_info.value.code is LifecycleErrorCode.APPROVAL_DIGEST_MISMATCH
 
 
-@_durable_test
 def test_durable_commit_enrollment(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -318,9 +378,18 @@ def test_durable_commit_enrollment(
     assert receipt.fingerprint
     committed = lifecycle.get_operation(operation.operation_id)
     assert committed.state is LifecycleState.COMMITTED
+    assert _db_operation_state(regista_instance, operation.operation_id) == "committed"
+    assert _db_count(
+        regista_instance, "events", "entity_kind = 'principal'", []
+    ) == 1
+    assert _db_count(
+        regista_instance,
+        "principal_keys",
+        "principal_id = %s AND status = 'active'",
+        [enrollment.principal_id],
+    ) == 1
 
 
-@_durable_test
 def test_durable_commit_rotation(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -366,9 +435,16 @@ def test_durable_commit_rotation(
     )
     assert rot_receipt.status is RegistryReceiptStatus.COMMITTED
     assert rot_receipt.key_id != old_key_id
+    assert _db_operation_state(regista_instance, approved.operation_id) == "committed"
+    assert _db_key_status(regista_instance, old_key_id) != "active"
+    assert _db_count(
+        regista_instance,
+        "principal_keys",
+        "principal_id = %s AND status = 'active'",
+        [enrollment.principal_id],
+    ) == 1
 
 
-@_durable_test
 def test_durable_commit_revocation(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -405,9 +481,18 @@ def test_durable_commit_revocation(
         approved.operation_id, expected_digest=approved.digest.value
     )
     assert rev_receipt.status is RegistryReceiptStatus.COMMITTED
+    assert _db_operation_state(regista_instance, approved.operation_id) == "committed"
+    assert _db_key_status(regista_instance, rev_receipt.key_id) == "revoked"
+    assert _db_count(
+        regista_instance,
+        "principal_keys",
+        "principal_id = %s AND status = 'active'",
+        [enrollment.principal_id],
+    ) == 0
+    desc = lifecycle.describe(enrollment.principal_id)
+    assert desc.required_next_action is None
 
 
-@_durable_test
 def test_durable_effective_receipt(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -436,9 +521,10 @@ def test_durable_effective_receipt(
         operation.operation_id, effective
     )
     assert updated.state is LifecycleState.EFFECTIVE
+    assert _db_operation_state(regista_instance, operation.operation_id) == "effective"
+    assert _db_count(regista_instance, "lifecycle_effective_receipts") == 1
 
 
-@_durable_test
 def test_durable_effective_receipt_partial(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -467,9 +553,13 @@ def test_durable_effective_receipt_partial(
         operation.operation_id, effective
     )
     assert updated.state is LifecycleState.PARTIALLY_EFFECTIVE
+    assert (
+        _db_operation_state(regista_instance, operation.operation_id)
+        == "partially_effective"
+    )
+    assert _db_count(regista_instance, "lifecycle_effective_receipts") == 1
 
 
-@_durable_test
 def test_durable_describe(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -488,9 +578,14 @@ def test_durable_describe(
     assert desc.active_key_fingerprint is not None
     assert desc.lifecycle_state is LifecycleState.COMMITTED
     assert desc.required_next_action == "record_effective_receipt"
+    assert _db_count(
+        regista_instance,
+        "principal_keys",
+        "principal_id = %s AND status = 'active'",
+        [enrollment.principal_id],
+    ) == 1
 
 
-@_durable_test
 def test_durable_describe_unknown_principal(
     regista_instance: Any,
 ) -> None:
@@ -500,7 +595,6 @@ def test_durable_describe_unknown_principal(
     assert desc.lifecycle_state is LifecycleState.DRAFT
 
 
-@_durable_test
 def test_durable_reconcile_consistent(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -531,7 +625,6 @@ def test_durable_reconcile_consistent(
     assert len(report.findings) == 0
 
 
-@_durable_test
 def test_durable_reconcile_detects_drift(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -550,7 +643,6 @@ def test_durable_reconcile_detects_drift(
     assert "missing_effective_receipt" in report.findings
 
 
-@_durable_test
 def test_durable_cancel(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -565,9 +657,9 @@ def test_durable_cancel(
         operation.operation_id, expected_digest=operation.digest.value
     )
     assert cancelled.state is LifecycleState.CANCELLED
+    assert _db_operation_state(regista_instance, operation.operation_id) == "cancelled"
 
 
-@_durable_test
 def test_durable_idempotent_commit(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -584,11 +676,19 @@ def test_durable_idempotent_commit(
     receipt2 = lifecycle.commit(
         operation.operation_id, expected_digest=operation.digest.value
     )
-    assert receipt1.key_id == receipt2.key_id
-    assert receipt1.fingerprint == receipt2.fingerprint
+    assert receipt1 == receipt2
+    assert _db_operation_state(regista_instance, operation.operation_id) == "committed"
+    assert _db_count(
+        regista_instance, "events", "entity_kind = 'principal'", []
+    ) == 1
+    assert _db_count(
+        regista_instance,
+        "principal_keys",
+        "principal_id = %s AND status = 'active'",
+        [enrollment.principal_id],
+    ) == 1
 
 
-@_durable_test
 def test_durable_commit_rejects_digest_mismatch(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -602,9 +702,10 @@ def test_durable_commit_rejects_digest_mismatch(
     with pytest.raises(LifecycleContractError) as exc_info:
         lifecycle.commit(operation.operation_id, expected_digest="wrong")
     assert exc_info.value.code is LifecycleErrorCode.OPERATION_DIGEST_MISMATCH
+    assert _db_operation_state(regista_instance, operation.operation_id) == "approved"
+    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
 
 
-@_durable_test
 def test_durable_commit_rejects_expired(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -634,9 +735,10 @@ def test_durable_commit_rejects_expired(
     with pytest.raises(LifecycleContractError) as exc_info:
         lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     assert exc_info.value.code is LifecycleErrorCode.OPERATION_EXPIRED
+    assert _db_operation_state(regista_instance, operation.operation_id) == "approved"
+    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
 
 
-@_durable_test
 def test_durable_commit_rejects_unapproved(
     regista_instance: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
@@ -652,9 +754,13 @@ def test_durable_commit_rejects_unapproved(
             operation.operation_id, expected_digest=operation.digest.value
         )
     assert exc_info.value.code is LifecycleErrorCode.INVALID_OPERATION_STATE
+    assert (
+        _db_operation_state(regista_instance, operation.operation_id)
+        == "awaiting_approval"
+    )
+    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
 
 
-@_durable_test
 def test_durable_idempotent_prepare(
     regista_instance: Any,
     enrollment: EnrollmentRequest,
@@ -667,3 +773,123 @@ def test_durable_idempotent_prepare(
         enrollment, idempotency_key="idem-repeat"
     )
     assert first == second
+    assert _db_count(regista_instance, "lifecycle_operations") == 1
+
+
+def test_durable_commit_revocation_rejects_unapproved(
+    regista_instance: Any,
+    keypair: tuple[nacl.signing.SigningKey, bytes],
+    enrollment: EnrollmentRequest,
+) -> None:
+    private_key, _ = keypair
+    operation = _enroll_and_approve(
+        regista_instance,
+        private_key,
+        enrollment,
+        idempotency_key="idem-revoke-unapproved-base",
+    )
+    lifecycle = regista_instance.principal_lifecycle
+    receipt = lifecycle.commit(
+        operation.operation_id, expected_digest=operation.digest.value
+    )
+    revocation = RevocationRequest(
+        principal_id=enrollment.principal_id,
+        principal_kind=enrollment.principal_kind,
+        actor_id=enrollment.actor_id,
+        key_id=receipt.key_id,
+        reason="Reported compromise",
+        requested_authority="security-admin",
+        policy_version="policy-2026-07",
+    )
+    rev_op = lifecycle.prepare_revocation(
+        revocation, idempotency_key="idem-revoke-unapproved"
+    )
+    with pytest.raises(LifecycleContractError) as exc_info:
+        lifecycle.commit(
+            rev_op.operation_id, expected_digest=rev_op.digest.value
+        )
+    assert exc_info.value.code is LifecycleErrorCode.INVALID_OPERATION_STATE
+    assert _db_operation_state(regista_instance, rev_op.operation_id) == "awaiting_approval"
+    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 1
+
+
+def test_durable_cross_instance_get_operation(
+    regista_instance: Any,
+    enrollment: EnrollmentRequest,
+) -> None:
+    lifecycle_a = regista_instance.principal_lifecycle
+    operation = lifecycle_a.prepare_enrollment(
+        enrollment, idempotency_key="idem-cross-get"
+    )
+    reg_b = _open_fresh_instance(regista_instance)
+    try:
+        lifecycle_b = reg_b.principal_lifecycle
+        op_b = lifecycle_b.get_operation(operation.operation_id)
+        assert op_b == operation
+        assert op_b.state is LifecycleState.AWAITING_PROOF
+    finally:
+        reg_b.close()
+
+
+def test_durable_cross_instance_approval_and_commit(
+    regista_instance: Any,
+    keypair: tuple[nacl.signing.SigningKey, bytes],
+    enrollment: EnrollmentRequest,
+) -> None:
+    private_key, _ = keypair
+    lifecycle_a = regista_instance.principal_lifecycle
+    operation = _full_enrollment_flow(
+        lifecycle_a, private_key, enrollment, idempotency_key="idem-cross-approval"
+    )
+    reg_b = _open_fresh_instance(regista_instance)
+    try:
+        lifecycle_b = reg_b.principal_lifecycle
+        op_b = lifecycle_b.get_operation(operation.operation_id)
+        assert op_b.state is LifecycleState.AWAITING_APPROVAL
+        approval = Approval(
+            approver_id="entra:tenant:approver-789",
+            approver_kind="human",
+            approval_digest=op_b.digest.value,
+        )
+        approved = lifecycle_b.record_approval(operation.operation_id, approval)
+        assert approved.state is LifecycleState.APPROVED
+        receipt = lifecycle_b.commit(
+            operation.operation_id, expected_digest=op_b.digest.value
+        )
+        assert receipt.status is RegistryReceiptStatus.COMMITTED
+        assert _db_operation_state(reg_b, operation.operation_id) == "committed"
+        assert _db_count(
+            reg_b, "events", "entity_kind = 'principal'", []
+        ) == 1
+    finally:
+        reg_b.close()
+
+
+def test_durable_cross_instance_commit_idempotency(
+    regista_instance: Any,
+    keypair: tuple[nacl.signing.SigningKey, bytes],
+    enrollment: EnrollmentRequest,
+) -> None:
+    private_key, _ = keypair
+    operation = _enroll_and_approve(
+        regista_instance,
+        private_key,
+        enrollment,
+        idempotency_key="idem-cross-idempotent",
+    )
+    lifecycle_a = regista_instance.principal_lifecycle
+    receipt_a = lifecycle_a.commit(
+        operation.operation_id, expected_digest=operation.digest.value
+    )
+    reg_b = _open_fresh_instance(regista_instance)
+    try:
+        lifecycle_b = reg_b.principal_lifecycle
+        receipt_b = lifecycle_b.commit(
+            operation.operation_id, expected_digest=operation.digest.value
+        )
+        assert receipt_b == receipt_a
+        assert _db_count(
+            reg_b, "events", "entity_kind = 'principal'", []
+        ) == 1
+    finally:
+        reg_b.close()
