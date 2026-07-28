@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -60,10 +61,12 @@ def _dump_json(obj):
 
 # Transient failures a caller may reasonably retry (suite CLI contract v1
 # §3); everything else is a caller error until proven otherwise.
-_RETRYABLE_CODES = frozenset({
-    "CLAIM_CONTESTED",
-    "CONCURRENT_MODIFICATION",
-})
+_RETRYABLE_CODES = frozenset(
+    {
+        "CLAIM_CONTESTED",
+        "CONCURRENT_MODIFICATION",
+    }
+)
 
 
 def _handle_error(e: RegistaError, json_mode: bool = False):
@@ -107,6 +110,7 @@ def _add_common_args(parser):
 
 def cmd_workflow_validate(args):
     from pathlib import Path
+
     source = Path(args.file)
     if not source.is_file():
         # Contract §5: a missing input is a documented error (envelope +
@@ -410,10 +414,7 @@ def cmd_recurrence_due(args):
         else:
             for r in rules:
                 rid = str(r["rule_id"])[:8]
-                print(
-                    f"{rid}  {r['workflow_name']:20s} "
-                    f"next_fire={r.get('next_fire_at', '')}"
-                )
+                print(f"{rid}  {r['workflow_name']:20s} next_fire={r.get('next_fire_at', '')}")
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -602,7 +603,9 @@ def cmd_anchor_status(args):
     sub = Regista(dsn, project, hmac_key_path)
     try:
         receipts = sub.list_anchor_receipts(
-            status=args.status, provider=args.provider, limit=args.limit,
+            status=args.status,
+            provider=args.provider,
+            limit=args.limit,
         )
         if args.json:
             _dump_json(receipts)
@@ -853,7 +856,8 @@ def cmd_bundle_export(args):
     sub = Regista(dsn, project, hmac_key_path)
     try:
         result = sub.export_audit_bundle(
-            args.output, since_seq=args.since_seq,
+            args.output,
+            since_seq=args.since_seq,
         )
         if getattr(args, "json", False):
             _dump_json(result)
@@ -1067,10 +1071,7 @@ def cmd_webhook_list(args):
             print("No webhooks registered.")
             return
         for w in result:
-            print(
-                f"  {str(w['webhook_id'])[:8]}...  {w['url'][:50]:<50}  "
-                f"{w['status']}"
-            )
+            print(f"  {str(w['webhook_id'])[:8]}...  {w['url'][:50]:<50}  {w['status']}")
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -1096,6 +1097,7 @@ def cmd_webhook_remove(args):
 
 def cmd_version(args):
     from regista._version_info import versions as _versions
+
     info = _versions()
     if args.json:
         _dump_json(info)
@@ -1145,6 +1147,7 @@ def _mask_dsn(dsn: str | None) -> str:
     if not dsn:
         return "(not set)"
     from urllib.parse import urlparse
+
     parsed = urlparse(dsn)
     if parsed.password:
         netloc = f"{parsed.username}:***@{parsed.hostname}"
@@ -1157,6 +1160,7 @@ def _mask_dsn(dsn: str | None) -> str:
 
 def cmd_config_show(args):
     from regista._config import resolve as resolve_config
+
     cfg = resolve_config()
     if args.json:
         safe = cfg.to_dict()
@@ -1178,6 +1182,7 @@ def cmd_config_show(args):
 def cmd_secrets_resolve(args):
     from regista._secrets import available_providers
     from regista._secrets import resolve as resolve_secret
+
     if args.list_providers:
         print("Available providers:")
         for p in available_providers():
@@ -1259,6 +1264,7 @@ def cmd_principal_list(args):
     sub = Regista(dsn, project, hmac_key_path)
     try:
         from regista._principal_keys import list_principal_keys
+
         entries = list_principal_keys(sub._mgr, principal_id=args.principal, status=args.status)
         if args.json:
             _dump_json(entries)
@@ -1277,9 +1283,11 @@ def cmd_principal_list(args):
 def cmd_principal_register(args):
     dsn, project, hmac_key_path = _require_config(args)
     import base64
+
     sub = Regista(dsn, project, hmac_key_path)
     try:
         from regista._principal_keys import register_principal_key
+
         pub_key = base64.b64decode(args.public_key)
         entry = register_principal_key(
             sub._mgr,
@@ -1333,6 +1341,7 @@ def cmd_principal_revoke(args):
     sub = Regista(dsn, project, hmac_key_path)
     try:
         from regista._principal_keys import revoke_principal_key
+
         entry = revoke_principal_key(
             sub._mgr,
             args.principal,
@@ -1429,6 +1438,135 @@ def cmd_provision_principal(args):
             print(f"  fingerprint: {result.fingerprint}")
             print(f"  private key stored: {result.private_key_stored}")
             print(f"  public key registered: {result.public_key_registered}")
+
+
+def cmd_signer_generate(args):
+    from regista.client_signer import ClientSigner
+
+    try:
+        signer = ClientSigner.generate(
+            args.principal,
+            backend=args.secret_backend,
+            project=args.project,
+            private_key_dir=args.private_key_dir,
+        )
+        if args.json:
+            _dump_json(signer.identity)
+        else:
+            print(f"Generated signing key for principal {signer.identity.principal_id}:")
+            print(f"  fingerprint: {signer.identity.fingerprint}")
+            print(f"  scheme:      {signer.identity.scheme}")
+            print(f"  custody:     {signer.identity.custody_mode}")
+            print(f"  secret_ref:  {signer.identity.secret_ref}")
+    except RegistaError as e:
+        _handle_error(e, json_mode=getattr(args, "json", False))
+
+
+def cmd_signer_sign_possession(args):
+    import json as json_mod
+
+    from regista.client_signer import ClientSigner
+    from regista.principal_lifecycle import PossessionChallenge
+
+    try:
+        signer = ClientSigner.load(
+            args.principal,
+            args.secret_ref,
+            custody_mode=args.custody_mode,
+        )
+        challenge_json = args.challenge
+        if challenge_json is None:
+            challenge_json = sys.stdin.read()
+        if not challenge_json or not challenge_json.strip():
+            print("No challenge provided (use --challenge or stdin)", file=sys.stderr)
+            sys.exit(2)
+        challenge_data = json_mod.loads(challenge_json)
+        challenge = PossessionChallenge(
+            challenge_id=challenge_data["challenge_id"],
+            operation_id=challenge_data["operation_id"],
+            operation_digest=challenge_data["operation_digest"],
+            project=challenge_data["project"],
+            principal_id=challenge_data["principal_id"],
+            fingerprint=challenge_data["fingerprint"],
+            scheme=challenge_data["scheme"],
+            verifier_nonce=challenge_data["verifier_nonce"],
+            issued_at=_parse_iso(challenge_data["issued_at"]),
+            expires_at=_parse_iso(challenge_data["expires_at"]),
+        )
+        proof = signer.sign_possession(challenge)
+        if args.json:
+            _dump_json(proof)
+        else:
+            print(f"Signed possession challenge {proof.challenge_id}:")
+            print(f"  operation_id: {proof.operation_id}")
+            print(f"  signature:    {base64.b64encode(proof.signature).decode('ascii')[:32]}...")
+    except (RegistaError, ValueError, KeyError) as e:
+        if isinstance(e, RegistaError):
+            _handle_error(e, json_mode=getattr(args, "json", False))
+        elif isinstance(e, KeyError):
+            print(f"[ERROR] Missing required field in challenge JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_signer_sign_effective(args):
+    import json as json_mod
+
+    from regista.client_signer import ClientSigner
+    from regista.principal_lifecycle import EffectiveChallenge
+
+    try:
+        signer = ClientSigner.load(
+            args.principal,
+            args.secret_ref,
+            custody_mode=args.custody_mode,
+        )
+        challenge_json = args.challenge
+        if challenge_json is None:
+            challenge_json = sys.stdin.read()
+        if not challenge_json or not challenge_json.strip():
+            print("No challenge provided (use --challenge or stdin)", file=sys.stderr)
+            sys.exit(2)
+        challenge_data = json_mod.loads(challenge_json)
+        challenge = EffectiveChallenge(
+            challenge_id=challenge_data["challenge_id"],
+            operation_id=challenge_data["operation_id"],
+            operation_digest=challenge_data["operation_digest"],
+            project=challenge_data["project"],
+            principal_id=challenge_data["principal_id"],
+            fingerprint=challenge_data["fingerprint"],
+            scheme=challenge_data["scheme"],
+            verifier_nonce=challenge_data["verifier_nonce"],
+            issued_at=_parse_iso(challenge_data["issued_at"]),
+            expires_at=_parse_iso(challenge_data["expires_at"]),
+        )
+        receipt = signer.sign_effective(challenge)
+        if args.json:
+            _dump_json(receipt)
+        else:
+            print(f"Effective-use receipt for operation {receipt.operation_id}:")
+            print(f"  status:       {receipt.status.value}")
+            print(f"  fingerprint:  {receipt.fingerprint}")
+            print(f"  client_type:  {receipt.client_type}")
+            print(f"  challenge_id: {receipt.challenge_id}")
+            print(f"  observed_at:  {receipt.observed_at.isoformat()}")
+    except (RegistaError, ValueError, KeyError) as e:
+        if isinstance(e, RegistaError):
+            _handle_error(e, json_mode=getattr(args, "json", False))
+        elif isinstance(e, KeyError):
+            print(f"[ERROR] Missing required field in challenge JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            sys.exit(1)
+
+
+def _parse_iso(value: str) -> datetime:
+    from datetime import datetime as dt
+
+    return dt.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def cmd_spec_sign(args):
@@ -1573,7 +1711,8 @@ def main(argv=None):
     arch_list.set_defaults(func=cmd_archive_list)
 
     arch_vchain = arch_sub.add_parser(
-        "verify-chain", help="Verify chain integrity across all segments",
+        "verify-chain",
+        help="Verify chain integrity across all segments",
     )
     arch_vchain.add_argument("--json", action="store_true", help="JSON output")
     arch_vchain.set_defaults(func=cmd_archive_verify_chain)
@@ -1672,12 +1811,14 @@ def main(argv=None):
     an_sub = an.add_subparsers(dest="subcommand")
     an_submit = an_sub.add_parser("submit", help="Trigger one anchoring cycle")
     an_submit.add_argument(
-        "--provider", default="file",
+        "--provider",
+        default="file",
         choices=["file", "rfc3161", "opentimestamps"],
         help="Anchor provider (default: file)",
     )
     an_submit.add_argument(
-        "--provider-config", default=None,
+        "--provider-config",
+        default=None,
         help='Provider config JSON (e.g. {"path": "/var/lib/regista/anchors"})',
     )
     an_submit.add_argument("--batch-size", type=int, default=10000)
@@ -1690,12 +1831,14 @@ def main(argv=None):
     an_verify = an_sub.add_parser("verify", help="Verify an anchor receipt")
     an_verify.add_argument("id", help="Receipt UUID")
     an_verify.add_argument(
-        "--provider", default="file",
+        "--provider",
+        default="file",
         choices=["file", "rfc3161", "opentimestamps"],
         help="Anchor provider (default: file)",
     )
     an_verify.add_argument(
-        "--provider-config", default=None,
+        "--provider-config",
+        default=None,
         help="Provider config JSON",
     )
     an_verify.set_defaults(func=cmd_anchor_verify)
@@ -1781,11 +1924,13 @@ def main(argv=None):
     )
     sec_parser.add_argument("--hex", action="store_true", help="Output as hex")
     sec_parser.add_argument(
-        "--list-providers", action="store_true",
+        "--list-providers",
+        action="store_true",
         help="List available secret providers",
     )
     sec_parser.add_argument(
-        "--delete", action="store_true",
+        "--delete",
+        action="store_true",
         help=(
             "Delete the custodied secret at --ref instead of resolving it. "
             "Idempotent. Backends whose reference carries the secret itself "
@@ -1796,11 +1941,13 @@ def main(argv=None):
 
     # assurance (Plan 027)
     assurance_parser = subs.add_parser(
-        "assurance", help="Compute review assurance level for a work item",
+        "assurance",
+        help="Compute review assurance level for a work item",
     )
     assurance_parser.add_argument("id", help="Work item UUID")
     assurance_parser.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="Use the strict gate profile (same-lineage review requires human accept)",
     )
     assurance_parser.add_argument("--json", action="store_true", help="JSON output")
@@ -1835,10 +1982,60 @@ def main(argv=None):
     pr_revoke.add_argument("--reason", help="Revocation reason")
     pr_revoke.set_defaults(func=cmd_principal_revoke)
 
+    # signer (Plan 031 §5 — client-side custody/signing helper)
+    sg_parser = subs.add_parser("signer", help="Client-side key custody and signing")
+    sg_sub = sg_parser.add_subparsers(dest="subcommand")
+    sg_gen = sg_sub.add_parser("generate", help="Generate and custody a new Ed25519 keypair")
+    sg_gen.add_argument("--principal", required=True, help="Principal ID")
+    sg_gen.add_argument("--project", help="Project slug (for vault/azure ref naming)")
+    sg_gen.add_argument("--private-key-dir", help="Directory for private key files (file backend)")
+    sg_gen.add_argument(
+        "--secret-backend",
+        help="Secret backend for key custody: file/windows/vault/azure (or REGISTA_SECRET_BACKEND)",
+    )
+    sg_gen.add_argument("--json", action="store_true", help="JSON output")
+    sg_gen.set_defaults(func=cmd_signer_generate)
+    sg_sign_poss = sg_sub.add_parser(
+        "sign-possession",
+        help="Sign a possession challenge (JSON on stdin or --challenge)",
+    )
+    sg_sign_poss.add_argument("--principal", required=True, help="Principal ID")
+    sg_sign_poss.add_argument(
+        "--secret-ref",
+        required=True,
+        help="Secret reference for the private key",
+    )
+    sg_sign_poss.add_argument(
+        "--custody-mode",
+        help="Custody mode label (file/windows_local/remote_organizational)",
+    )
+    sg_sign_poss.add_argument(
+        "--challenge",
+        help="Possession challenge as JSON (or read from stdin)",
+    )
+    sg_sign_poss.add_argument("--json", action="store_true", help="JSON output")
+    sg_sign_poss.set_defaults(func=cmd_signer_sign_possession)
+    sg_sign_eff = sg_sub.add_parser("sign-effective", help="Produce an effective-use receipt")
+    sg_sign_eff.add_argument("--principal", required=True, help="Principal ID")
+    sg_sign_eff.add_argument(
+        "--secret-ref",
+        required=True,
+        help="Secret reference for the private key",
+    )
+    sg_sign_eff.add_argument("--custody-mode", help="Custody mode label")
+    sg_sign_eff.add_argument(
+        "--challenge",
+        help="Effective challenge as JSON (or read from stdin)",
+    )
+    sg_sign_eff.add_argument("--json", action="store_true", help="JSON output")
+    sg_sign_eff.set_defaults(func=cmd_signer_sign_effective)
+
     # provision (Plan 025 WI-2.1)
     prov_parser = subs.add_parser("provision", help="Provision project schemas and service roles")
     prov_parser.add_argument(
-        "--project", action="append", dest="projects",
+        "--project",
+        action="append",
+        dest="projects",
         help="Project slug (can be repeated for multiple projects)",
     )
     prov_parser.add_argument("--dry-run", action="store_true", help="Print plan without writing")
@@ -1847,7 +2044,8 @@ def main(argv=None):
 
     # provision-principal (Plan 025 WI-2.1 + Plan 026)
     prov_princ_parser = subs.add_parser(
-        "provision-principal", help="Issue and register a per-principal Ed25519 key",
+        "provision-principal",
+        help="Issue and register a per-principal Ed25519 key",
     )
     prov_princ_parser.add_argument("--principal", required=True, help="Principal ID")
     prov_princ_parser.add_argument("--project", help="Project slug (or REGISTA_PROJECT)")
@@ -1858,7 +2056,9 @@ def main(argv=None):
         "(or REGISTA_SECRET_BACKEND)",
     )
     prov_princ_parser.add_argument(
-        "--dry-run", action="store_true", help="Print plan without writing",
+        "--dry-run",
+        action="store_true",
+        help="Print plan without writing",
     )
     prov_princ_parser.add_argument("--json", action="store_true", help="JSON output")
     prov_princ_parser.set_defaults(func=cmd_provision_principal)

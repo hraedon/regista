@@ -61,6 +61,7 @@ from ._signing_scheme import asymmetric_scheme_ids, get_scheme
 
 CONTRACT_VERSION: Final[str] = "regista.principal-lifecycle.v1-draft.1"
 POSSESSION_DOMAIN: Final[str] = "regista.principal-possession.v1"
+EFFECTIVE_DOMAIN: Final[str] = "regista.principal-effective.v1"
 
 
 class PrincipalKind(StrEnum):
@@ -304,6 +305,40 @@ class PossessionProof:
 
 
 @dataclass(frozen=True)
+class EffectiveChallenge:
+    """Post-commit challenge proving the client can use the committed key."""
+
+    challenge_id: str
+    operation_id: str
+    operation_digest: str
+    project: str
+    principal_id: str
+    fingerprint: str
+    scheme: str
+    verifier_nonce: str
+    issued_at: datetime
+    expires_at: datetime
+
+    def signing_bytes(self) -> bytes:
+        return canonicalize(self.to_dict())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "domain": EFFECTIVE_DOMAIN,
+            "challenge_id": self.challenge_id,
+            "operation_id": self.operation_id,
+            "operation_digest": self.operation_digest,
+            "project": self.project,
+            "principal_id": self.principal_id,
+            "fingerprint": self.fingerprint,
+            "scheme": self.scheme,
+            "verifier_nonce": self.verifier_nonce,
+            "issued_at": _format_time(self.issued_at),
+            "expires_at": _format_time(self.expires_at),
+        }
+
+
+@dataclass(frozen=True)
 class RegistryReceipt:
     operation_id: str
     operation_digest: str
@@ -339,8 +374,10 @@ class EffectiveReceipt:
     client_version: str
     status: EffectiveReceiptStatus
     observed_at: datetime
+    challenge_id: str | None = None
+    signature: bytes | None = None
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | None]:
         return {
             "contract_version": CONTRACT_VERSION,
             "operation_id": self.operation_id,
@@ -352,6 +389,8 @@ class EffectiveReceipt:
             "client_version": self.client_version,
             "status": self.status.value,
             "observed_at": _format_time(self.observed_at),
+            "challenge_id": self.challenge_id,
+            "signature": _encode(self.signature) if self.signature is not None else None,
         }
 
 
@@ -401,7 +440,7 @@ class ReconciliationReport:
 
 @dataclass
 class _ChallengeRecord:
-    challenge: PossessionChallenge
+    challenge: PossessionChallenge | EffectiveChallenge
     used: bool = False
 
 
@@ -581,9 +620,7 @@ class PrincipalLifecycle:
             self._persist_challenge(challenge)
         return challenge
 
-    def submit_possession(
-        self, operation_id: str, proof: PossessionProof
-    ) -> LifecycleOperation:
+    def submit_possession(self, operation_id: str, proof: PossessionProof) -> LifecycleOperation:
         operation = self._operation(operation_id)
         record = self._challenges.get(proof.challenge_id)
         if record is None:
@@ -648,9 +685,7 @@ class PrincipalLifecycle:
     def get_operation(self, operation_id: str) -> LifecycleOperation:
         return self._operation(operation_id)
 
-    def record_approval(
-        self, operation_id: str, approval: Approval
-    ) -> LifecycleOperation:
+    def record_approval(self, operation_id: str, approval: Approval) -> LifecycleOperation:
         self._require_durable("record_approval")
         operation = self._operation(operation_id)
         if self._now() >= operation.expires_at:
@@ -663,9 +698,7 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.INVALID_OPERATION_STATE,
                 f"Operation {operation_id!r} is not awaiting approval",
             )
-        if not hmac.compare_digest(
-            approval.approval_digest, operation.digest.value
-        ):
+        if not hmac.compare_digest(approval.approval_digest, operation.digest.value):
             raise LifecycleContractError(
                 LifecycleErrorCode.APPROVAL_DIGEST_MISMATCH,
                 "Approval digest does not match the operation digest",
@@ -694,17 +727,14 @@ class PrincipalLifecycle:
                 ],
             )
             conn.execute(
-                "UPDATE lifecycle_operations SET state = 'approved' "
-                "WHERE operation_id = %s",
+                "UPDATE lifecycle_operations SET state = 'approved' WHERE operation_id = %s",
                 [operation_id],
             )
         verified = replace(operation, state=LifecycleState.APPROVED)
         self._operations[operation_id] = verified
         return verified
 
-    def commit(
-        self, operation_id: str, *, expected_digest: str
-    ) -> RegistryReceipt:
+    def commit(self, operation_id: str, *, expected_digest: str) -> RegistryReceipt:
         self._require_durable("commit")
         operation = self._operation(operation_id)
         if not hmac.compare_digest(operation.digest.value, expected_digest):
@@ -812,6 +842,53 @@ class PrincipalLifecycle:
         self._receipts[operation_id] = receipt
         return receipt
 
+    def issue_effective_challenge(
+        self,
+        operation_id: str,
+        *,
+        ttl: timedelta = timedelta(minutes=5),
+    ) -> EffectiveChallenge:
+        """Issue a post-commit challenge for effective-use proof.
+
+        The client signs this challenge with the newly committed key to prove
+        it can actually use the key. Without a valid effective receipt the
+        operation stays ``committed_not_effective``.
+        """
+        operation = self._operation(operation_id)
+        if operation.state is not LifecycleState.COMMITTED:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_OPERATION_STATE,
+                f"Operation {operation_id!r} is not committed",
+            )
+        if (
+            operation.public_key is None
+            or operation.fingerprint is None
+            or operation.scheme is None
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "Committed operation has no public key",
+            )
+        issued_at, expires_at = self._time_window(ttl)
+        if expires_at > operation.expires_at:
+            expires_at = operation.expires_at
+        challenge = EffectiveChallenge(
+            challenge_id=str(uuid.uuid4()),
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=operation.fingerprint,
+            scheme=operation.scheme,
+            verifier_nonce=self._nonce_factory(),
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+        self._challenges[challenge.challenge_id] = _ChallengeRecord(challenge)
+        if self._durable:
+            self._persist_challenge(challenge)
+        return challenge
+
     def record_effective_receipt(
         self, operation_id: str, receipt: EffectiveReceipt
     ) -> LifecycleOperation:
@@ -822,8 +899,88 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.INVALID_OPERATION_STATE,
                 f"Operation {operation_id!r} is not committed",
             )
+        if not hmac.compare_digest(receipt.operation_digest, operation.digest.value):
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                "Receipt operation_digest does not match the operation",
+            )
+        if receipt.principal_id != operation.principal_id:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                "Receipt principal_id does not match the operation",
+            )
+        if receipt.fingerprint != operation.fingerprint:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                "Receipt fingerprint does not match the committed key",
+            )
+        if receipt.project != operation.project:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                "Receipt project does not match the operation",
+            )
+        if receipt.status is EffectiveReceiptStatus.EFFECTIVE:
+            if receipt.challenge_id is None or receipt.signature is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                    "An EFFECTIVE receipt requires a challenge_id and signature",
+                )
+        # A challenge is consumed only when a signed receipt actually verifies
+        # against it. A receipt that carries a challenge_id without a signature
+        # is treated as an unsigned report: it must not burn the challenge —
+        # otherwise a proof-less receipt could DoS the real client's later
+        # effective-use proof (in-memory and durable marks must agree).
+        challenge_consumed = False
+        if receipt.challenge_id is not None and receipt.signature is not None:
+            record = self._challenges.get(receipt.challenge_id)
+            if record is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_NOT_FOUND,
+                    f"Challenge {receipt.challenge_id!r} was not issued",
+                )
+            if record.used:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+                    f"Challenge {receipt.challenge_id!r} has already been used",
+                )
+            challenge = record.challenge
+            if self._now() >= challenge.expires_at:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_EXPIRED,
+                    f"Challenge {receipt.challenge_id!r} has expired",
+                )
+            if not isinstance(challenge, EffectiveChallenge):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                    "Challenge is not an effective-use challenge",
+                )
+            if not hmac.compare_digest(challenge.operation_digest, operation.digest.value):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                    "Challenge does not bind to this operation",
+                )
+            scheme = get_scheme(challenge.scheme)
+            envelope = challenge.signing_bytes()
+            envelope_hash = hashlib.sha256(envelope).digest()
+            if operation.public_key is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.INVALID_REQUEST,
+                    "Committed operation has no public key",
+                )
+            if not scheme.verify(envelope, receipt.signature, envelope_hash, operation.public_key):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.PROOF_VERIFICATION_FAILED,
+                    "Effective-use signature verification failed",
+                )
+            record.used = True
+            challenge_consumed = True
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
+            if challenge_consumed:
+                conn.execute(
+                    "UPDATE lifecycle_challenges SET used = true WHERE challenge_id = %s",
+                    [receipt.challenge_id],
+                )
             conn.execute(
                 """
                 INSERT INTO lifecycle_effective_receipts
@@ -995,9 +1152,7 @@ class PrincipalLifecycle:
             observed_at=self._now(),
         )
 
-    def cancel(
-        self, operation_id: str, *, expected_digest: str
-    ) -> LifecycleOperation:
+    def cancel(self, operation_id: str, *, expected_digest: str) -> LifecycleOperation:
         operation = self._operation(operation_id)
         if not hmac.compare_digest(operation.digest.value, expected_digest):
             raise LifecycleContractError(
@@ -1040,9 +1195,7 @@ class PrincipalLifecycle:
                 f"{method_name} requires a durable backend (ConnectionManager)",
             )
 
-    def _transition_for(
-        self, op_type: LifecycleOperationType
-    ) -> str:
+    def _transition_for(self, op_type: LifecycleOperationType) -> str:
         if op_type is LifecycleOperationType.ENROLLMENT:
             return "principal_enrolled"
         if op_type is LifecycleOperationType.ROTATION:
@@ -1084,9 +1237,7 @@ class PrincipalLifecycle:
             )
         assert_never(operation.operation_type)
 
-    def _persist_operation(
-        self, operation: LifecycleOperation, intent: str
-    ) -> None:
+    def _persist_operation(self, operation: LifecycleOperation, intent: str) -> None:
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
             existing = cast(
@@ -1157,8 +1308,7 @@ class PrincipalLifecycle:
             row = cast(
                 dict[str, Any] | None,
                 conn.execute(
-                    "SELECT * FROM lifecycle_operations "
-                    "WHERE operation_id = %s AND project = %s",
+                    "SELECT * FROM lifecycle_operations WHERE operation_id = %s AND project = %s",
                     [operation_id, self._project],
                 ).fetchone(),
             )
@@ -1204,7 +1354,10 @@ class PrincipalLifecycle:
         self._operations[operation_id] = operation
         return operation
 
-    def _persist_challenge(self, challenge: PossessionChallenge) -> None:
+    def _persist_challenge(
+        self,
+        challenge: PossessionChallenge | EffectiveChallenge,
+    ) -> None:
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
             conn.execute(
@@ -1229,9 +1382,7 @@ class PrincipalLifecycle:
                 ],
             )
 
-    def _update_operation_state(
-        self, operation_id: str, state: LifecycleState
-    ) -> None:
+    def _update_operation_state(self, operation_id: str, state: LifecycleState) -> None:
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
             conn.execute(
@@ -1328,9 +1479,7 @@ class PrincipalLifecycle:
         self._idempotency[operation.idempotency_key] = (intent, operation.operation_id)
         return operation
 
-    def _existing_idempotent(
-        self, idempotency_key: str, intent: str
-    ) -> LifecycleOperation | None:
+    def _existing_idempotent(self, idempotency_key: str, intent: str) -> LifecycleOperation | None:
         existing = self._idempotency.get(idempotency_key)
         if existing is None:
             return None
@@ -1361,9 +1510,7 @@ class PrincipalLifecycle:
 
     def _time_window(self, ttl: timedelta) -> tuple[datetime, datetime]:
         if ttl <= timedelta(0):
-            raise LifecycleContractError(
-                LifecycleErrorCode.INVALID_REQUEST, "ttl must be positive"
-            )
+            raise LifecycleContractError(LifecycleErrorCode.INVALID_REQUEST, "ttl must be positive")
         created_at = self._now()
         return created_at, created_at + ttl
 
@@ -1495,9 +1642,11 @@ def _format_time(value: datetime) -> str:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "EFFECTIVE_DOMAIN",
     "Approval",
     "ChallengeStorageScope",
     "CustodyMode",
+    "EffectiveChallenge",
     "EffectiveReceipt",
     "EffectiveReceiptStatus",
     "EnrollmentRequest",
