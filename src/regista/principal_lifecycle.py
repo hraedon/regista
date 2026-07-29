@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Final, assert_never, cast
+from typing import Any, Final, Protocol, assert_never, cast
 
 import psycopg
 
@@ -62,6 +62,11 @@ from ._signing_scheme import asymmetric_scheme_ids, get_scheme
 CONTRACT_VERSION: Final[str] = "regista.principal-lifecycle.v1-draft.1"
 POSSESSION_DOMAIN: Final[str] = "regista.principal-possession.v1"
 EFFECTIVE_DOMAIN: Final[str] = "regista.principal-effective.v1"
+EFFECTIVE_RECEIPT_DOMAIN: Final[str] = "regista.principal-effective-receipt.v1"
+# Tolerated clock skew between a client's observed_at and the verifier-issued
+# challenge window. Deliberately small (not dossier's 24h): just enough for
+# realistic client/verifier clock drift, not a replay window.
+EFFECTIVE_RECEIPT_CLOCK_SKEW: Final[timedelta] = timedelta(seconds=60)
 
 
 class PrincipalKind(StrEnum):
@@ -102,6 +107,7 @@ class CustodyMode(StrEnum):
 
 class ChallengeStorageScope(StrEnum):
     PROCESS_LOCAL_FOUNDATION = "process_local_foundation"
+    DURABLE_ONE_USE = "durable_one_use"
 
 
 class ProofFormat(StrEnum):
@@ -139,6 +145,9 @@ class LifecycleErrorCode(StrEnum):
     DURABLE_OPERATION_REQUIRED = "durable_operation_required"
     OPERATION_EXPIRED = "operation_expired"
     APPROVAL_DIGEST_MISMATCH = "approval_digest_mismatch"
+    APPROVER_IS_ACTOR = "approver_is_actor"
+    APPROVAL_EVIDENCE_REQUIRED = "approval_evidence_required"
+    RECEIPT_OBSERVED_AT_INVALID = "receipt_observed_at_invalid"
     OPERATION_ALREADY_COMMITTED = "operation_already_committed"
 
 
@@ -201,6 +210,29 @@ class Approval:
     approval_digest: str
     step_up_evidence: str | None = None
     reason: str = ""
+
+
+class ApprovalVerifier(Protocol):
+    """Typed step-up/approval-evidence policy (Plan 031 WI-1.2).
+
+    A consumer supplies an implementation that encodes *who may approve* and
+    *what evidence is sufficient*. Regista calls it from ``record_approval``
+    and fails closed on a ``False`` verdict; it never interprets a free-form
+    ``step_up_evidence`` string itself, and it never performs cryptographic
+    validation on the consumer's behalf.
+
+    When no verifier is registered the historical trust-the-consumer behavior is
+    preserved and the durable verdict is recorded as ``NULL``
+    (``evidence_verified=None``). ``None`` means *unverified*: the approval was
+    accepted on consumer trust only, and is **not** sufficient for release
+    qualification. A ``True``/``False`` verdict is the verifier's explicit
+    judgment. Configuring a verifier is the consumer's responsibility; the
+    default is deliberately the permissive historical mode.
+    """
+
+    def verify_approval(self, operation: LifecycleOperation, approval: Approval) -> bool:
+        """Return ``True`` to accept the approval evidence, ``False`` to reject."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -377,6 +409,33 @@ class EffectiveReceipt:
     challenge_id: str | None = None
     signature: bytes | None = None
 
+    def signing_dict(self, challenge: EffectiveChallenge) -> dict[str, object]:
+        """Canonical envelope the client signs and the verifier checks.
+
+        Binds the full effective challenge plus every mutable receipt field
+        (client_type/version, status, observed_at), so none of them can be
+        altered without invalidating the signature. The signature itself is
+        excluded (it cannot sign itself); the challenge_id is bound via the
+        embedded challenge.
+        """
+        return {
+            "domain": EFFECTIVE_RECEIPT_DOMAIN,
+            "contract_version": CONTRACT_VERSION,
+            "challenge": challenge.to_dict(),
+            "operation_id": self.operation_id,
+            "operation_digest": self.operation_digest,
+            "project": self.project,
+            "principal_id": self.principal_id,
+            "fingerprint": self.fingerprint,
+            "client_type": self.client_type,
+            "client_version": self.client_version,
+            "status": self.status.value,
+            "observed_at": _format_time(self.observed_at),
+        }
+
+    def signing_bytes(self, challenge: EffectiveChallenge) -> bytes:
+        return canonicalize(self.signing_dict(challenge))
+
     def to_dict(self) -> dict[str, str | None]:
         return {
             "contract_version": CONTRACT_VERSION,
@@ -462,12 +521,20 @@ class PrincipalLifecycle:
         metrics: Metrics | None = None,
         clock: Callable[[], datetime] | None = None,
         nonce_factory: Callable[[], str] | None = None,
+        approval_verifier: ApprovalVerifier | None = None,
+        effective_receipt_clock_skew: timedelta | None = None,
     ) -> None:
         _require_text("project", project)
         self._project = project
         self._mgr = mgr
         self._keys = keys
         self._metrics = metrics
+        self._approval_verifier = approval_verifier
+        self._effective_receipt_clock_skew = (
+            EFFECTIVE_RECEIPT_CLOCK_SKEW
+            if effective_receipt_clock_skew is None
+            else effective_receipt_clock_skew
+        )
         self._durable = mgr is not None
         self._clock = clock or (lambda: datetime.now(UTC))
         self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(32))
@@ -478,8 +545,16 @@ class PrincipalLifecycle:
 
     @property
     def challenge_storage_scope(self) -> ChallengeStorageScope:
-        """Identify the verifier's storage scope."""
+        """Identify the verifier's challenge single-use authority.
 
+        Durable instances enforce one-use atomically in the database, so a
+        challenge survives restarts and is shared across instances. Non-durable
+        instances are the process-local foundation: one-use is only guaranteed
+        within the issuing process.
+        """
+
+        if self._durable:
+            return ChallengeStorageScope.DURABLE_ONE_USE
         return ChallengeStorageScope.PROCESS_LOCAL_FOUNDATION
 
     @property
@@ -622,34 +697,21 @@ class PrincipalLifecycle:
 
     def submit_possession(self, operation_id: str, proof: PossessionProof) -> LifecycleOperation:
         operation = self._operation(operation_id)
-        record = self._challenges.get(proof.challenge_id)
-        if record is None:
-            raise LifecycleContractError(
-                LifecycleErrorCode.CHALLENGE_NOT_FOUND,
-                f"Challenge {proof.challenge_id!r} was not issued by this verifier",
-            )
-        if record.used:
-            raise LifecycleContractError(
-                LifecycleErrorCode.CHALLENGE_ALREADY_USED,
-                f"Challenge {proof.challenge_id!r} has already been used",
-            )
-        challenge = record.challenge
-        if self._now() >= challenge.expires_at:
-            raise LifecycleContractError(
-                LifecycleErrorCode.CHALLENGE_EXPIRED,
-                f"Challenge {proof.challenge_id!r} has expired",
-            )
         if (
             proof.format is not ProofFormat.SIGNATURE_V1
             or proof.operation_id != operation_id
-            or challenge.operation_id != operation_id
             or not hmac.compare_digest(proof.operation_digest, operation.digest.value)
-            or not hmac.compare_digest(challenge.operation_digest, operation.digest.value)
         ):
             raise LifecycleContractError(
                 LifecycleErrorCode.PROOF_BINDING_MISMATCH,
                 "Proof does not match the prepared operation and digest",
             )
+        challenge = self._fetch_challenge(
+            proof.challenge_id,
+            expected_kind="possession",
+            expected_operation_digest=operation.digest.value,
+            operation_id=operation_id,
+        )
         if operation.state is not LifecycleState.AWAITING_PROOF or operation.public_key is None:
             raise LifecycleContractError(
                 LifecycleErrorCode.INVALID_OPERATION_STATE,
@@ -663,23 +725,29 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.PROOF_VERIFICATION_FAILED,
                 "Possession signature verification failed",
             )
-        record.used = True
-        # Challenges are process-local and one-use; marking happens inline in
-        # the same transaction as the state update, not via a separate helper.
-        verified = replace(operation, state=LifecycleState.AWAITING_APPROVAL)
-        self._operations[operation_id] = verified
         if self._durable:
+            # Consume + state advance share one transaction so a failure after
+            # the consume rolls the challenge back to used=false; in-memory
+            # state is refreshed only once the commit succeeds.
             assert self._mgr is not None
             with self._mgr.transaction() as conn:
-                conn.execute(
-                    "UPDATE lifecycle_challenges SET used = true WHERE challenge_id = %s",
-                    [proof.challenge_id],
+                consumed = self._consume_challenge_conn(
+                    conn,
+                    proof.challenge_id,
+                    expected_kind="possession",
+                    expected_operation_digest=operation.digest.value,
+                    operation_id=operation_id,
                 )
                 conn.execute(
                     "UPDATE lifecycle_operations SET state = 'awaiting_approval' "
                     "WHERE operation_id = %s",
                     [operation_id],
                 )
+            self._challenges[proof.challenge_id] = _ChallengeRecord(consumed, used=True)
+        else:
+            self._challenges[proof.challenge_id].used = True
+        verified = replace(operation, state=LifecycleState.AWAITING_APPROVAL)
+        self._operations[operation_id] = verified
         return verified
 
     def get_operation(self, operation_id: str) -> LifecycleOperation:
@@ -703,6 +771,20 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.APPROVAL_DIGEST_MISMATCH,
                 "Approval digest does not match the operation digest",
             )
+        if approval.approver_id == operation.actor_id:
+            raise LifecycleContractError(
+                LifecycleErrorCode.APPROVER_IS_ACTOR,
+                f"Approver {approval.approver_id!r} cannot approve an operation "
+                "they requested; separation of duties requires a distinct approver",
+            )
+        evidence_verified: bool | None = None
+        if self._approval_verifier is not None:
+            evidence_verified = self._approval_verifier.verify_approval(operation, approval)
+            if not evidence_verified:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.APPROVAL_EVIDENCE_REQUIRED,
+                    "Approval evidence did not satisfy the configured approval policy",
+                )
         approval_id = str(uuid.uuid4())
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
@@ -711,8 +793,8 @@ class PrincipalLifecycle:
                 INSERT INTO lifecycle_approvals
                     (approval_id, operation_id, operation_digest,
                      approver_id, approver_kind, approval_digest,
-                     step_up_evidence, reason, approved_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     step_up_evidence, reason, approved_at, evidence_verified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     approval_id,
@@ -724,6 +806,7 @@ class PrincipalLifecycle:
                     approval.step_up_evidence,
                     approval.reason,
                     self._now(),
+                    evidence_verified,
                 ],
             )
             conn.execute(
@@ -925,61 +1008,69 @@ class PrincipalLifecycle:
                     LifecycleErrorCode.PROOF_BINDING_MISMATCH,
                     "An EFFECTIVE receipt requires a challenge_id and signature",
                 )
-        # A challenge is consumed only when a signed receipt actually verifies
-        # against it. A receipt that carries a challenge_id without a signature
-        # is treated as an unsigned report: it must not burn the challenge —
-        # otherwise a proof-less receipt could DoS the real client's later
-        # effective-use proof (in-memory and durable marks must agree).
-        challenge_consumed = False
-        if receipt.challenge_id is not None and receipt.signature is not None:
-            record = self._challenges.get(receipt.challenge_id)
-            if record is None:
-                raise LifecycleContractError(
-                    LifecycleErrorCode.CHALLENGE_NOT_FOUND,
-                    f"Challenge {receipt.challenge_id!r} was not issued",
-                )
-            if record.used:
-                raise LifecycleContractError(
-                    LifecycleErrorCode.CHALLENGE_ALREADY_USED,
-                    f"Challenge {receipt.challenge_id!r} has already been used",
-                )
-            challenge = record.challenge
-            if self._now() >= challenge.expires_at:
-                raise LifecycleContractError(
-                    LifecycleErrorCode.CHALLENGE_EXPIRED,
-                    f"Challenge {receipt.challenge_id!r} has expired",
-                )
-            if not isinstance(challenge, EffectiveChallenge):
-                raise LifecycleContractError(
-                    LifecycleErrorCode.PROOF_BINDING_MISMATCH,
-                    "Challenge is not an effective-use challenge",
-                )
-            if not hmac.compare_digest(challenge.operation_digest, operation.digest.value):
-                raise LifecycleContractError(
-                    LifecycleErrorCode.PROOF_BINDING_MISMATCH,
-                    "Challenge does not bind to this operation",
-                )
-            scheme = get_scheme(challenge.scheme)
-            envelope = challenge.signing_bytes()
-            envelope_hash = hashlib.sha256(envelope).digest()
             if operation.public_key is None:
                 raise LifecycleContractError(
                     LifecycleErrorCode.INVALID_REQUEST,
                     "Committed operation has no public key",
                 )
+        # A challenge is consumed only when a signed receipt verifies against it
+        # (verify-before-consume, so a bad signature never burns it). A receipt
+        # carrying a challenge_id without a signature is an unsigned report that
+        # must not burn the challenge, lest it DoS the client's later proof.
+        signed = receipt.challenge_id is not None and receipt.signature is not None
+        if signed:
+            assert receipt.challenge_id is not None
+            assert receipt.signature is not None
+            challenge = self._fetch_challenge(
+                receipt.challenge_id,
+                expected_kind="effective",
+                expected_operation_digest=operation.digest.value,
+                operation_id=operation_id,
+            )
+            assert isinstance(challenge, EffectiveChallenge)
+            self._validate_receipt_chronology(receipt, challenge)
+            scheme = get_scheme(challenge.scheme)
+            envelope = receipt.signing_bytes(challenge)
+            envelope_hash = hashlib.sha256(envelope).digest()
+            assert operation.public_key is not None
             if not scheme.verify(envelope, receipt.signature, envelope_hash, operation.public_key):
                 raise LifecycleContractError(
                     LifecycleErrorCode.PROOF_VERIFICATION_FAILED,
                     "Effective-use signature verification failed",
                 )
-            record.used = True
-            challenge_consumed = True
+        elif receipt.challenge_id is not None:
+            # Unsigned report referencing a challenge: enforce chronology (so a
+            # stale/future/naive report is still rejected) without consuming.
+            report_challenge = self._fetch_challenge(
+                receipt.challenge_id,
+                expected_kind="effective",
+                expected_operation_digest=operation.digest.value,
+                operation_id=operation_id,
+            )
+            assert isinstance(report_challenge, EffectiveChallenge)
+            self._validate_receipt_chronology(receipt, report_challenge)
+        if receipt.status is EffectiveReceiptStatus.EFFECTIVE:
+            new_state = LifecycleState.EFFECTIVE
+        elif receipt.status is EffectiveReceiptStatus.COMMITTED_NOT_EFFECTIVE:
+            new_state = LifecycleState.PARTIALLY_EFFECTIVE
+        elif receipt.status is EffectiveReceiptStatus.REJECTED:
+            new_state = LifecycleState.FAILED
+        else:
+            assert_never(receipt.status)
+        # Consume (when signed), receipt upsert, and state advance share one
+        # transaction, so a failure after the consume rolls the challenge back to
+        # used=false; in-memory state is refreshed only after commit.
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
-            if challenge_consumed:
-                conn.execute(
-                    "UPDATE lifecycle_challenges SET used = true WHERE challenge_id = %s",
-                    [receipt.challenge_id],
+            consumed: PossessionChallenge | EffectiveChallenge | None = None
+            if signed:
+                assert receipt.challenge_id is not None
+                consumed = self._consume_challenge_conn(
+                    conn,
+                    receipt.challenge_id,
+                    expected_kind="effective",
+                    expected_operation_digest=operation.digest.value,
+                    operation_id=operation_id,
                 )
             conn.execute(
                 """
@@ -1003,18 +1094,12 @@ class PrincipalLifecycle:
                     receipt.observed_at,
                 ],
             )
-            if receipt.status is EffectiveReceiptStatus.EFFECTIVE:
-                new_state = LifecycleState.EFFECTIVE
-            elif receipt.status is EffectiveReceiptStatus.COMMITTED_NOT_EFFECTIVE:
-                new_state = LifecycleState.PARTIALLY_EFFECTIVE
-            elif receipt.status is EffectiveReceiptStatus.REJECTED:
-                new_state = LifecycleState.FAILED
-            else:
-                assert_never(receipt.status)
             conn.execute(
                 "UPDATE lifecycle_operations SET state = %s WHERE operation_id = %s",
                 [new_state.value, operation_id],
             )
+        if consumed is not None and receipt.challenge_id is not None:
+            self._challenges[receipt.challenge_id] = _ChallengeRecord(consumed, used=True)
         verified = replace(operation, state=new_state)
         self._operations[operation_id] = verified
         return verified
@@ -1237,26 +1322,20 @@ class PrincipalLifecycle:
             )
         assert_never(operation.operation_type)
 
-    def _persist_operation(self, operation: LifecycleOperation, intent: str) -> None:
+    def _persist_operation(
+        self, operation: LifecycleOperation, intent: str
+    ) -> LifecycleOperation | None:
+        """Persist a prepared operation, race-safe on ``idempotency_key``.
+
+        ``INSERT ... ON CONFLICT DO NOTHING`` lets the unique index arbitrate
+        concurrent prepares, so no raw ``UniqueViolation`` escapes. Returns
+        ``None`` when this call inserted the row; otherwise returns the winning
+        row (same digest, for the caller to adopt) or raises
+        ``OPERATION_DIGEST_MISMATCH`` (key bound to a different digest).
+        """
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
-            existing = cast(
-                dict[str, Any] | None,
-                conn.execute(
-                    "SELECT operation_id, digest_value FROM lifecycle_operations "
-                    "WHERE idempotency_key = %s",
-                    [operation.idempotency_key],
-                ).fetchone(),
-            )
-            if existing is not None:
-                if existing["digest_value"] != operation.digest.value:
-                    raise LifecycleContractError(
-                        LifecycleErrorCode.OPERATION_DIGEST_MISMATCH,
-                        f"Idempotency key {operation.idempotency_key!r} "
-                        "is bound to another request",
-                    )
-                return
-            conn.execute(
+            inserted = conn.execute(
                 """
                 INSERT INTO lifecycle_operations
                     (operation_id, idempotency_key, operation_type, state,
@@ -1268,6 +1347,8 @@ class PrincipalLifecycle:
                      created_at, expires_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING operation_id
                 """,
                 [
                     operation.operation_id,
@@ -1294,29 +1375,26 @@ class PrincipalLifecycle:
                     operation.created_at,
                     operation.expires_at,
                 ],
-            )
-
-    def _load_operation_from_db(self, operation_id: str) -> LifecycleOperation:
-        """Rehydrate an operation from durable storage.
-
-        Operations are durable and may be resumed by a fresh ``PrincipalLifecycle``
-        instance.  Challenges are deliberately process-local and one-use, so this
-        method does not rehydrate challenges.
-        """
-        assert self._mgr is not None
-        with self._mgr.transaction() as conn:
-            row = cast(
+            ).fetchone()
+            if inserted is not None:
+                return None
+            existing = cast(
                 dict[str, Any] | None,
                 conn.execute(
-                    "SELECT * FROM lifecycle_operations WHERE operation_id = %s AND project = %s",
-                    [operation_id, self._project],
+                    "SELECT * FROM lifecycle_operations WHERE idempotency_key = %s",
+                    [operation.idempotency_key],
                 ).fetchone(),
             )
-        if row is None:
-            raise LifecycleContractError(
-                LifecycleErrorCode.OPERATION_NOT_FOUND,
-                f"Lifecycle operation {operation_id!r} was not prepared",
-            )
+            if existing is None or existing["digest_value"] != operation.digest.value:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.OPERATION_DIGEST_MISMATCH,
+                    f"Idempotency key {operation.idempotency_key!r} "
+                    "is bound to another request",
+                )
+            return self._operation_from_row(existing)
+
+    @staticmethod
+    def _operation_from_row(row: dict[str, Any]) -> LifecycleOperation:
         protected = row["protected_options"]
         if isinstance(protected, dict):
             protected_options = tuple(sorted((str(k), str(v)) for k, v in protected.items()))
@@ -1324,7 +1402,7 @@ class PrincipalLifecycle:
             protected_options = ()
         custody_mode = row["custody_mode"]
         public_key = row["public_key"]
-        operation = LifecycleOperation(
+        return LifecycleOperation(
             operation_id=str(row["operation_id"]),
             idempotency_key=row["idempotency_key"],
             operation_type=LifecycleOperationType(row["operation_type"]),
@@ -1351,8 +1429,39 @@ class PrincipalLifecycle:
             identity_binding_digest=row["identity_binding_digest"],
             protected_options=protected_options,
         )
+
+    def _load_operation_from_db(self, operation_id: str) -> LifecycleOperation:
+        """Rehydrate an operation from durable storage.
+
+        Operations are durable and may be resumed by a fresh ``PrincipalLifecycle``
+        instance.  Challenges are deliberately process-local and one-use, so this
+        method does not rehydrate challenges.
+        """
+        assert self._mgr is not None
+        with self._mgr.transaction() as conn:
+            row = cast(
+                dict[str, Any] | None,
+                conn.execute(
+                    "SELECT * FROM lifecycle_operations WHERE operation_id = %s AND project = %s",
+                    [operation_id, self._project],
+                ).fetchone(),
+            )
+        if row is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.OPERATION_NOT_FOUND,
+                f"Lifecycle operation {operation_id!r} was not prepared",
+            )
+        operation = self._operation_from_row(row)
         self._operations[operation_id] = operation
         return operation
+
+    @staticmethod
+    def _challenge_kind(challenge: PossessionChallenge | EffectiveChallenge) -> str:
+        if isinstance(challenge, EffectiveChallenge):
+            return "effective"
+        if isinstance(challenge, PossessionChallenge):
+            return "possession"
+        assert_never(challenge)
 
     def _persist_challenge(
         self,
@@ -1365,8 +1474,8 @@ class PrincipalLifecycle:
                 INSERT INTO lifecycle_challenges
                     (challenge_id, operation_id, operation_digest,
                      project, principal_id, fingerprint, scheme,
-                     verifier_nonce, issued_at, expires_at, used)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
+                     verifier_nonce, issued_at, expires_at, used, kind)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, %s)
                 """,
                 [
                     challenge.challenge_id,
@@ -1379,16 +1488,285 @@ class PrincipalLifecycle:
                     challenge.verifier_nonce,
                     challenge.issued_at,
                     challenge.expires_at,
+                    self._challenge_kind(challenge),
                 ],
             )
 
-    def _update_operation_state(self, operation_id: str, state: LifecycleState) -> None:
+    @staticmethod
+    def _challenge_from_row(row: dict[str, Any]) -> PossessionChallenge | EffectiveChallenge:
+        common = {
+            "challenge_id": str(row["challenge_id"]),
+            "operation_id": str(row["operation_id"]),
+            "operation_digest": row["operation_digest"],
+            "project": row["project"],
+            "principal_id": row["principal_id"],
+            "fingerprint": row["fingerprint"],
+            "scheme": row["scheme"],
+            "verifier_nonce": row["verifier_nonce"],
+            "issued_at": row["issued_at"],
+            "expires_at": row["expires_at"],
+        }
+        if row["kind"] == "effective":
+            return EffectiveChallenge(**common)
+        return PossessionChallenge(**common)
+
+    def _fetch_challenge(
+        self,
+        challenge_id: str,
+        *,
+        expected_kind: str,
+        expected_operation_digest: str,
+        operation_id: str,
+    ) -> PossessionChallenge | EffectiveChallenge:
+        """Validate a challenge without consuming it.
+
+        Non-mutating, so a caller can verify a signature before burning the
+        challenge. Durable mode reads the database authoritatively — a stale
+        local record (the issuer's, after another instance consumed) never
+        masks a committed consumption; non-durable mode uses the local record.
+        """
+        if not self._durable:
+            record = self._challenges.get(challenge_id)
+            if record is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_NOT_FOUND,
+                    f"Challenge {challenge_id!r} was not issued by this verifier",
+                )
+            if record.used:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+                    f"Challenge {challenge_id!r} has already been used",
+                )
+            self._validate_challenge_binding(
+                record.challenge,
+                expected_kind=expected_kind,
+                expected_operation_digest=expected_operation_digest,
+                operation_id=operation_id,
+            )
+            return record.challenge
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
-            conn.execute(
-                "UPDATE lifecycle_operations SET state = %s WHERE operation_id = %s",
-                [state.value, operation_id],
+            row = cast(
+                dict[str, Any] | None,
+                conn.execute(
+                    "SELECT challenge_id, operation_id, operation_digest, project, "
+                    "principal_id, fingerprint, scheme, verifier_nonce, "
+                    "issued_at, expires_at, kind, used "
+                    "FROM lifecycle_challenges WHERE challenge_id = %s",
+                    [challenge_id],
+                ).fetchone(),
             )
+        if row is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_NOT_FOUND,
+                f"Challenge {challenge_id!r} was not issued by this verifier",
+            )
+        if row["used"]:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+                f"Challenge {challenge_id!r} has already been used",
+            )
+        challenge = self._challenge_from_row(row)
+        self._validate_challenge_binding(
+            challenge,
+            expected_kind=expected_kind,
+            expected_operation_digest=expected_operation_digest,
+            operation_id=operation_id,
+        )
+        return challenge
+
+    def _validate_challenge_binding(
+        self,
+        challenge: PossessionChallenge | EffectiveChallenge,
+        *,
+        expected_kind: str,
+        expected_operation_digest: str,
+        operation_id: str,
+    ) -> None:
+        if self._challenge_kind(challenge) != expected_kind:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                f"Challenge {challenge.challenge_id!r} is not a {expected_kind} challenge",
+            )
+        if self._now() >= challenge.expires_at:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_EXPIRED,
+                f"Challenge {challenge.challenge_id!r} has expired",
+            )
+        if challenge.operation_id != operation_id:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                f"Challenge {challenge.challenge_id!r} does not bind to this operation",
+            )
+        if not hmac.compare_digest(challenge.operation_digest, expected_operation_digest):
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                f"Challenge {challenge.challenge_id!r} does not bind to this operation",
+            )
+
+    def _validate_receipt_chronology(
+        self, receipt: EffectiveReceipt, challenge: EffectiveChallenge
+    ) -> None:
+        """Enforce observed_at is timezone-aware and within the challenge window.
+
+        The window is widened by the configured clock skew (a small constant,
+        not an open-ended replay window) to tolerate realistic client/verifier
+        clock drift. Applies to every effective receipt that carries a
+        challenge — signed or an unsigned report — so direct API callers cannot
+        bypass it.
+        """
+        if receipt.observed_at.tzinfo is None or receipt.observed_at.utcoffset() is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID,
+                "Effective receipt observed_at must be timezone-aware",
+            )
+        skew = self._effective_receipt_clock_skew
+        if receipt.observed_at < challenge.issued_at - skew:
+            raise LifecycleContractError(
+                LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID,
+                f"Effective receipt observed_at {receipt.observed_at!r} predates "
+                f"the challenge window (issued_at={challenge.issued_at!r}, skew={skew})",
+            )
+        if receipt.observed_at > challenge.expires_at + skew:
+            raise LifecycleContractError(
+                LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID,
+                f"Effective receipt observed_at {receipt.observed_at!r} is after "
+                f"the challenge window (expires_at={challenge.expires_at!r}, skew={skew})",
+            )
+
+    def _consume_challenge(
+        self,
+        challenge_id: str,
+        *,
+        expected_kind: str,
+        expected_operation_digest: str,
+        operation_id: str,
+    ) -> PossessionChallenge | EffectiveChallenge:
+        """Atomically mark a one-use challenge consumed and return it.
+
+        Durable mode always arbitrates via the atomic ``UPDATE ... WHERE used =
+        false`` gate, even when a local record exists, so a replay landing on
+        the issuer after another instance consumed is still rejected; the local
+        cache is refreshed only after commit. Non-durable mode uses the local
+        record. Callers pairing consumption with a state transition use
+        :meth:`_consume_challenge_conn` inside their own transaction instead.
+        """
+        if not self._durable:
+            record = self._challenges.get(challenge_id)
+            if record is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_NOT_FOUND,
+                    f"Challenge {challenge_id!r} was not issued by this verifier",
+                )
+            if record.used:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+                    f"Challenge {challenge_id!r} has already been used",
+                )
+            self._validate_challenge_binding(
+                record.challenge,
+                expected_kind=expected_kind,
+                expected_operation_digest=expected_operation_digest,
+                operation_id=operation_id,
+            )
+            record.used = True
+            return record.challenge
+        assert self._mgr is not None
+        with self._mgr.transaction() as conn:
+            challenge = self._consume_challenge_conn(
+                conn,
+                challenge_id,
+                expected_kind=expected_kind,
+                expected_operation_digest=expected_operation_digest,
+                operation_id=operation_id,
+            )
+        self._challenges[challenge_id] = _ChallengeRecord(challenge, used=True)
+        return challenge
+
+    def _consume_challenge_conn(
+        self,
+        conn: psycopg.Connection,
+        challenge_id: str,
+        *,
+        expected_kind: str,
+        expected_operation_digest: str,
+        operation_id: str,
+    ) -> PossessionChallenge | EffectiveChallenge:
+        """Atomically consume a challenge within the caller's transaction.
+
+        Pairs with the caller's operation transition so both commit or roll back
+        together. Does not commit and does not touch the local cache (the caller
+        refreshes it after commit). Raises a stable contract error, via a
+        diagnostic re-read, when the atomic update matches no row.
+        """
+        row = cast(
+            dict[str, Any] | None,
+            conn.execute(
+                """
+                UPDATE lifecycle_challenges
+                SET used = true
+                WHERE challenge_id = %s
+                  AND used = false
+                  AND kind = %s
+                  AND operation_id = %s
+                  AND operation_digest = %s
+                RETURNING challenge_id, operation_id, operation_digest, project,
+                          principal_id, fingerprint, scheme, verifier_nonce,
+                          issued_at, expires_at, kind
+                """,
+                [challenge_id, expected_kind, operation_id, expected_operation_digest],
+            ).fetchone(),
+        )
+        if row is not None:
+            challenge = self._challenge_from_row(row)
+            if self._now() >= challenge.expires_at:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.CHALLENGE_EXPIRED,
+                    f"Challenge {challenge_id!r} has expired",
+                )
+            return challenge
+        existing = cast(
+            dict[str, Any] | None,
+            conn.execute(
+                "SELECT used, kind, operation_id, operation_digest, expires_at "
+                "FROM lifecycle_challenges WHERE challenge_id = %s",
+                [challenge_id],
+            ).fetchone(),
+        )
+        if existing is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_NOT_FOUND,
+                f"Challenge {challenge_id!r} was not issued by this verifier",
+            )
+        if existing["used"]:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+                f"Challenge {challenge_id!r} has already been used",
+            )
+        if existing["kind"] != expected_kind:
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                f"Challenge {challenge_id!r} is not a {expected_kind} challenge",
+            )
+        if (
+            str(existing["operation_id"]) != operation_id
+            or not hmac.compare_digest(
+                existing["operation_digest"], expected_operation_digest
+            )
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.PROOF_BINDING_MISMATCH,
+                f"Challenge {challenge_id!r} does not bind to this operation",
+            )
+        if self._now() >= existing["expires_at"]:
+            raise LifecycleContractError(
+                LifecycleErrorCode.CHALLENGE_EXPIRED,
+                f"Challenge {challenge_id!r} has expired",
+            )
+        raise LifecycleContractError(
+            LifecycleErrorCode.CHALLENGE_ALREADY_USED,
+            f"Challenge {challenge_id!r} could not be consumed",
+        )
 
     def _prepare_key_operation(
         self,
@@ -1473,11 +1851,14 @@ class PrincipalLifecycle:
                     f"Operation ID {operation.operation_id!r} is already bound to another digest",
                 )
             return existing
+        canonical = operation
         if self._durable:
-            self._persist_operation(operation, intent)
-        self._operations[operation.operation_id] = operation
-        self._idempotency[operation.idempotency_key] = (intent, operation.operation_id)
-        return operation
+            persisted = self._persist_operation(operation, intent)
+            if persisted is not None:
+                canonical = persisted
+        self._operations[canonical.operation_id] = canonical
+        self._idempotency[canonical.idempotency_key] = (intent, canonical.operation_id)
+        return canonical
 
     def _existing_idempotent(self, idempotency_key: str, intent: str) -> LifecycleOperation | None:
         existing = self._idempotency.get(idempotency_key)
@@ -1643,7 +2024,10 @@ def _format_time(value: datetime) -> str:
 __all__ = [
     "CONTRACT_VERSION",
     "EFFECTIVE_DOMAIN",
+    "EFFECTIVE_RECEIPT_CLOCK_SKEW",
+    "EFFECTIVE_RECEIPT_DOMAIN",
     "Approval",
+    "ApprovalVerifier",
     "ChallengeStorageScope",
     "CustodyMode",
     "EffectiveChallenge",

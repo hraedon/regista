@@ -271,7 +271,7 @@ class TestSignEffective:
         import nacl.signing
 
         verify_key = nacl.signing.VerifyKey(signer.public_key)
-        envelope = challenge.signing_bytes()
+        envelope = receipt.signing_bytes(challenge)
         verify_key.verify(envelope, receipt.signature)
 
     def test_sign_effective_custom_status(self, tmp_path):
@@ -351,6 +351,94 @@ class TestHelpers:
         assert _custody_from_ref("windows:blob") == "windows_local"
         with pytest.raises(ValueError, match="Cannot infer custody mode"):
             _custody_from_ref("unknown:ref")
+
+
+class TestSignerCliMalformedChallenge:
+    """The signer CLI must report malformed challenge input as a clean caller
+    error (SystemExit 1), never an uncaught traceback (suite CLI contract v1).
+    """
+
+    def _secret_ref(self, tmp_path) -> str:
+        signer = ClientSigner.generate(
+            "alice",
+            backend="file",
+            private_key_dir=str(tmp_path),
+        )
+        return signer.identity.secret_ref
+
+    def test_sign_possession_rejects_non_object_json(self, tmp_path, capsys):
+        from regista._cli import main
+
+        secret_ref = self._secret_ref(tmp_path)
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "signer",
+                    "sign-possession",
+                    "--principal",
+                    "alice",
+                    "--secret-ref",
+                    secret_ref,
+                    "--challenge",
+                    "[1, 2, 3]",
+                ]
+            )
+        assert exc_info.value.code == 1
+        assert "must be an object" in capsys.readouterr().err
+
+    def test_sign_effective_rejects_non_object_json(self, tmp_path, capsys):
+        from regista._cli import main
+
+        secret_ref = self._secret_ref(tmp_path)
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "signer",
+                    "sign-effective",
+                    "--principal",
+                    "alice",
+                    "--secret-ref",
+                    secret_ref,
+                    "--challenge",
+                    '"just a string"',
+                ]
+            )
+        assert exc_info.value.code == 1
+        assert "must be an object" in capsys.readouterr().err
+
+    def test_sign_possession_rejects_non_string_timestamp(self, tmp_path, capsys):
+        import json as json_mod
+
+        from regista._cli import main
+
+        secret_ref = self._secret_ref(tmp_path)
+        challenge = {
+            "challenge_id": "c-1",
+            "operation_id": "op-1",
+            "operation_digest": "digest",
+            "project": "proj",
+            "principal_id": "alice",
+            "fingerprint": "ed25519:sha256:abc",
+            "scheme": "ed25519",
+            "verifier_nonce": "nonce",
+            "issued_at": 12345,
+            "expires_at": "2026-07-28T00:00:00Z",
+        }
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "signer",
+                    "sign-possession",
+                    "--principal",
+                    "alice",
+                    "--secret-ref",
+                    secret_ref,
+                    "--challenge",
+                    json_mod.dumps(challenge),
+                ]
+            )
+        assert exc_info.value.code == 1
+        assert "[ERROR]" in capsys.readouterr().err
 
 
 class TestEndToEndWithLifecycle:

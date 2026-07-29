@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final
 
@@ -196,10 +196,10 @@ class ClientSigner:
     ) -> EffectiveReceipt:
         """Sign an effective-use challenge and produce a receipt.
 
-        The client signs the post-commit challenge to prove it can use the
-        newly committed key. The receipt carries the signature so the server
-        can verify it. Without a valid receipt the operation stays
-        ``committed_not_effective``.
+        The signature covers the full receipt envelope (the challenge plus
+        client_type/version, status, and observed_at), not just the challenge,
+        so no receipt field can be tampered with without invalidating it.
+        Without a valid receipt the operation stays ``committed_not_effective``.
 
         Raises ``ValueError`` if the challenge does not match this signer's
         identity.
@@ -219,9 +219,7 @@ class ClientSigner:
                 f"Challenge scheme {challenge.scheme!r} does not "
                 f"match signer scheme {self._identity.scheme!r}"
             )
-        envelope = challenge.signing_bytes()
-        signature = _sign_ed25519(self._private_key, envelope)
-        return EffectiveReceipt(
+        unsigned = EffectiveReceipt(
             operation_id=challenge.operation_id,
             operation_digest=challenge.operation_digest,
             project=challenge.project,
@@ -232,8 +230,11 @@ class ClientSigner:
             status=status,
             observed_at=datetime.now(UTC),
             challenge_id=challenge.challenge_id,
-            signature=signature,
+            signature=None,
         )
+        envelope = unsigned.signing_bytes(challenge)
+        signature = _sign_ed25519(self._private_key, envelope)
+        return replace(unsigned, signature=signature)
 
     def destroy(self) -> None:
         """Drop this process's reference to the private key.

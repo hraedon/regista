@@ -101,6 +101,7 @@ from ._workflow import parse_workflow_yaml as parse_workflow_yaml
 from ._workflow import validate_yaml as validate_yaml
 from ._workflow_compose import compose_workflow as compose_workflow
 from .principal_lifecycle import Approval as Approval
+from .principal_lifecycle import ApprovalVerifier as ApprovalVerifier
 from .principal_lifecycle import ChallengeStorageScope as ChallengeStorageScope
 from .principal_lifecycle import CustodyMode as CustodyMode
 from .principal_lifecycle import EffectiveReceipt as EffectiveReceipt
@@ -170,6 +171,7 @@ class Regista(
         auto_partition: bool = True,
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
+        approval_verifier: ApprovalVerifier | None = None,
     ) -> None:
         """Connect to an existing project.
 
@@ -189,6 +191,13 @@ class Regista(
             strict_asymmetric: Require per-principal asymmetric signing keys.
                 Each actor must have a registered Ed25519 (or future PQC) key
                 bound to their ``principal_id``; HMAC fallback is rejected.
+            approval_verifier: Optional typed step-up/approval-evidence policy
+                for the principal lifecycle facade (Plan 031 WI-1.2). When
+                omitted, approvals are accepted on consumer trust (historical
+                behavior) and recorded as ``evidence_verified=None`` —
+                *unverified* and not sufficient for release qualification.
+                Release qualification requires a configured verifier so missing
+                or insufficient approval evidence fails closed.
 
         Raises:
             RegistaError: If migrations are pending or workflow versions are
@@ -217,6 +226,7 @@ class Regista(
             self._hook_channel = f"regista_hooks_{self._mgr.schema}"
             self._hook_consumer = None
             self._strict_roles = strict_roles
+            self._approval_verifier = approval_verifier
             from ._hooks import HookConsumer
 
             self._hook_consumer = HookConsumer(
@@ -254,6 +264,7 @@ class Regista(
         owner: str | None = None,
         display_name: str | None = None,
         created_by: str | None = None,
+        approval_verifier: ApprovalVerifier | None = None,
     ) -> Regista:
         """Create a new project: schema, migrations, and return a connected handle.
 
@@ -272,6 +283,8 @@ class Regista(
                 leaves the owner unassigned.
             display_name: Optional human-friendly name for the catalog.
             created_by: Who created this project (for the catalog row).
+            approval_verifier: Optional typed approval-evidence policy passed
+                through to the principal lifecycle facade (see ``__init__``).
 
         Returns:
             A connected ``Regista`` instance.
@@ -315,6 +328,7 @@ class Regista(
             auto_partition=auto_partition,
             strict_roles=strict_roles,
             strict_asymmetric=strict_asymmetric,
+            approval_verifier=approval_verifier,
         )
 
     def _run_auto_partition(self) -> None:
@@ -494,6 +508,7 @@ class Regista(
                 mgr=self._mgr,
                 keys=self._keys,
                 metrics=self._metrics,
+                approval_verifier=self._approval_verifier,
             )
         return self._principal_lifecycle_ops
 

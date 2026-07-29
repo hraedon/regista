@@ -1481,6 +1481,9 @@ def cmd_signer_sign_possession(args):
             print("No challenge provided (use --challenge or stdin)", file=sys.stderr)
             sys.exit(2)
         challenge_data = json_mod.loads(challenge_json)
+        if not isinstance(challenge_data, dict):
+            print("[ERROR] Challenge JSON must be an object", file=sys.stderr)
+            sys.exit(1)
         challenge = PossessionChallenge(
             challenge_id=challenge_data["challenge_id"],
             operation_id=challenge_data["operation_id"],
@@ -1530,6 +1533,9 @@ def cmd_signer_sign_effective(args):
             print("No challenge provided (use --challenge or stdin)", file=sys.stderr)
             sys.exit(2)
         challenge_data = json_mod.loads(challenge_json)
+        if not isinstance(challenge_data, dict):
+            print("[ERROR] Challenge JSON must be an object", file=sys.stderr)
+            sys.exit(1)
         challenge = EffectiveChallenge(
             challenge_id=challenge_data["challenge_id"],
             operation_id=challenge_data["operation_id"],
@@ -1563,9 +1569,11 @@ def cmd_signer_sign_effective(args):
             sys.exit(1)
 
 
-def _parse_iso(value: str) -> datetime:
+def _parse_iso(value: object) -> datetime:
     from datetime import datetime as dt
 
+    if not isinstance(value, str):
+        raise ValueError(f"Expected an ISO-8601 timestamp string, got {type(value).__name__}")
     return dt.fromisoformat(value.replace("Z", "+00:00"))
 
 

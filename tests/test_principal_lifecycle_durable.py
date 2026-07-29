@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -9,6 +12,7 @@ import pytest
 import regista
 from regista import (
     Approval,
+    ChallengeStorageScope,
     CustodyMode,
     EffectiveReceipt,
     EffectiveReceiptStatus,
@@ -25,6 +29,7 @@ from regista import (
     RevocationRequest,
     RotationRequest,
 )
+from regista.principal_lifecycle import EffectiveChallenge
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 
@@ -74,6 +79,16 @@ def _proof(
         operation_digest=operation_digest,
         signature=signature,
     )
+
+
+def _sign_receipt(
+    private_key: nacl.signing.SigningKey,
+    receipt: EffectiveReceipt,
+    challenge: EffectiveChallenge,
+) -> EffectiveReceipt:
+    """Sign an effective receipt over its full envelope (challenge + metadata)."""
+    envelope = receipt.signing_bytes(challenge)
+    return replace(receipt, signature=private_key.sign(envelope).signature)
 
 
 def _full_enrollment_flow(
@@ -485,20 +500,22 @@ def test_durable_effective_receipt(
     lifecycle = regista_instance.principal_lifecycle
     receipt = lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     challenge = lifecycle.issue_effective_challenge(operation.operation_id)
-    envelope = challenge.signing_bytes()
-    signature = private_key.sign(envelope).signature
-    effective = EffectiveReceipt(
-        operation_id=operation.operation_id,
-        operation_digest=operation.digest.value,
-        project=operation.project,
-        principal_id=operation.principal_id,
-        fingerprint=receipt.fingerprint,
-        client_type="windows-helper",
-        client_version="1.0",
-        status=EffectiveReceiptStatus.EFFECTIVE,
-        observed_at=NOW,
-        challenge_id=challenge.challenge_id,
-        signature=signature,
+    effective = _sign_receipt(
+        private_key,
+        EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=receipt.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at,
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        ),
+        challenge,
     )
     updated = lifecycle.record_effective_receipt(operation.operation_id, effective)
     assert updated.state is LifecycleState.EFFECTIVE
@@ -566,7 +583,7 @@ def test_durable_unsigned_receipt_does_not_burn_challenge(
         client_type="windows-helper",
         client_version="1.0",
         status=EffectiveReceiptStatus.COMMITTED_NOT_EFFECTIVE,
-        observed_at=NOW,
+        observed_at=challenge.issued_at,
         challenge_id=challenge.challenge_id,
         signature=None,
     )
@@ -584,20 +601,22 @@ def test_durable_unsigned_receipt_does_not_burn_challenge(
 
     # PARTIALLY_EFFECTIVE is terminal for this operation: a later signed
     # receipt is rejected by the state guard, and the challenge stays unburned.
-    envelope = challenge.signing_bytes()
-    signature = private_key.sign(envelope).signature
-    signed = EffectiveReceipt(
-        operation_id=operation.operation_id,
-        operation_digest=operation.digest.value,
-        project=operation.project,
-        principal_id=operation.principal_id,
-        fingerprint=receipt.fingerprint,
-        client_type="windows-helper",
-        client_version="1.0",
-        status=EffectiveReceiptStatus.EFFECTIVE,
-        observed_at=NOW,
-        challenge_id=challenge.challenge_id,
-        signature=signature,
+    signed = _sign_receipt(
+        private_key,
+        EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=receipt.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at,
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        ),
+        challenge,
     )
     with pytest.raises(LifecycleContractError) as excinfo:
         lifecycle.record_effective_receipt(operation.operation_id, signed)
@@ -661,20 +680,22 @@ def test_durable_reconcile_consistent(
     lifecycle = regista_instance.principal_lifecycle
     receipt = lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     challenge = lifecycle.issue_effective_challenge(operation.operation_id)
-    envelope = challenge.signing_bytes()
-    signature = private_key.sign(envelope).signature
-    effective = EffectiveReceipt(
-        operation_id=operation.operation_id,
-        operation_digest=operation.digest.value,
-        project=operation.project,
-        principal_id=operation.principal_id,
-        fingerprint=receipt.fingerprint,
-        client_type="windows-helper",
-        client_version="1.0",
-        status=EffectiveReceiptStatus.EFFECTIVE,
-        observed_at=NOW,
-        challenge_id=challenge.challenge_id,
-        signature=signature,
+    effective = _sign_receipt(
+        private_key,
+        EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=receipt.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at,
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        ),
+        challenge,
     )
     lifecycle.record_effective_receipt(operation.operation_id, effective)
     report = lifecycle.reconcile(enrollment.principal_id)
@@ -918,3 +939,1034 @@ def test_durable_cross_instance_commit_idempotency(
         assert _db_count(reg_b, "events", "entity_kind = 'principal'", []) == 1
     finally:
         reg_b.close()
+
+
+# ---------------------------------------------------------------------------
+# Concurrency + cross-instance durability (Plan 031 hardening)
+# ---------------------------------------------------------------------------
+
+
+def _fresh_lifecycle(reg: regista.Regista) -> PrincipalLifecycle:
+    """A second lifecycle sharing the DB pool but with empty process-local
+    caches — models a separate worker process or a restart."""
+    return PrincipalLifecycle(
+        reg._project,
+        mgr=reg._mgr,
+        keys=reg._keys,
+        metrics=reg._metrics,
+    )
+
+
+class TestDurablePrepareIdempotencyRace:
+    def test_concurrent_prepare_same_digest_collapses_to_one_row(
+        self,
+        regista_instance: Any,
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        # A shared clock and explicit operation_id make both workers compute an
+        # identical digest, so this is a genuine idempotency collision (same
+        # idempotency key + same digest), not two distinct requests.
+        clock = MutableClock()
+        shared_op_id = "11111111-1111-4111-8111-111111111111"
+        barrier = threading.Barrier(2, timeout=10)
+        results: list[Any] = [None, None]
+        errors: list[BaseException | None] = [None, None]
+
+        def worker(idx: int) -> None:
+            lifecycle = PrincipalLifecycle(
+                regista_instance._project,
+                mgr=regista_instance._mgr,
+                keys=regista_instance._keys,
+                metrics=regista_instance._metrics,
+                clock=clock,
+            )
+            try:
+                barrier.wait()
+                results[idx] = lifecycle.prepare_enrollment(
+                    enrollment,
+                    idempotency_key="idem-race-same",
+                    operation_id=shared_op_id,
+                )
+            except BaseException as exc:
+                errors[idx] = exc
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [None, None], f"concurrent prepare raised: {errors}"
+        assert results[0] is not None and results[1] is not None
+        assert results[0].operation_id == results[1].operation_id == shared_op_id
+        assert results[0].digest.value == results[1].digest.value
+        assert _db_count(regista_instance, "lifecycle_operations") == 1
+
+    def test_concurrent_prepare_never_raises_raw_unique_violation(
+        self,
+        regista_instance: Any,
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        # Four workers race on one idempotency key. Their independent clocks and
+        # operation ids yield distinct digests, so exactly one wins and the rest
+        # must fail with the stable contract error -- never a raw UniqueViolation.
+        import psycopg.errors
+
+        barrier = threading.Barrier(4, timeout=10)
+        outcomes: list[Any] = [None] * 4
+
+        def worker(idx: int) -> None:
+            lifecycle = _fresh_lifecycle(regista_instance)
+            try:
+                barrier.wait()
+                outcomes[idx] = lifecycle.prepare_enrollment(
+                    enrollment, idempotency_key="idem-race-uv"
+                )
+            except BaseException as exc:
+                outcomes[idx] = exc
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not any(
+            isinstance(o, psycopg.errors.UniqueViolation) for o in outcomes
+        ), f"a raw UniqueViolation escaped: {outcomes}"
+        mismatches = [
+            o
+            for o in outcomes
+            if isinstance(o, LifecycleContractError)
+            and o.code is LifecycleErrorCode.OPERATION_DIGEST_MISMATCH
+        ]
+        successes = [o for o in outcomes if not isinstance(o, BaseException)]
+        assert len(successes) == 1, f"expected exactly one success: {outcomes}"
+        assert len(mismatches) == 3, f"expected three digest mismatches: {outcomes}"
+        assert _db_count(regista_instance, "lifecycle_operations") == 1
+
+    def test_concurrent_prepare_different_digest_fails_closed(
+        self,
+        regista_instance: Any,
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        other = replace(enrollment, reason="A different, conflicting request")
+        barrier = threading.Barrier(2, timeout=10)
+        outcomes: list[Any] = [None, None]
+
+        def worker(idx: int, request: EnrollmentRequest) -> None:
+            lifecycle = _fresh_lifecycle(regista_instance)
+            try:
+                barrier.wait()
+                outcomes[idx] = lifecycle.prepare_enrollment(
+                    request, idempotency_key="idem-race-diff"
+                )
+            except LifecycleContractError as exc:
+                outcomes[idx] = exc
+
+        threads = [
+            threading.Thread(target=worker, args=(0, enrollment)),
+            threading.Thread(target=worker, args=(1, other)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        mismatches = [
+            o
+            for o in outcomes
+            if isinstance(o, LifecycleContractError)
+            and o.code is LifecycleErrorCode.OPERATION_DIGEST_MISMATCH
+        ]
+        successes = [o for o in outcomes if not isinstance(o, BaseException)]
+        assert len(mismatches) == 1, f"expected exactly one digest mismatch: {outcomes}"
+        assert len(successes) == 1, f"expected exactly one success: {outcomes}"
+        assert _db_count(regista_instance, "lifecycle_operations") == 1
+
+
+class TestDurableCrossInstanceChallenges:
+    def test_cross_instance_possession_submit(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle_a = regista_instance.principal_lifecycle
+        operation = lifecycle_a.prepare_enrollment(
+            enrollment, idempotency_key="idem-xi-poss"
+        )
+        challenge = lifecycle_a.issue_possession_challenge(operation.operation_id)
+
+        lifecycle_b = _fresh_lifecycle(regista_instance)
+        proof = _proof(private_key, operation.digest.value, challenge)
+        verified = lifecycle_b.submit_possession(operation.operation_id, proof)
+        assert verified.state is LifecycleState.AWAITING_APPROVAL
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+    def test_cross_instance_replay_does_not_reprocess(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle_a = regista_instance.principal_lifecycle
+        operation = lifecycle_a.prepare_enrollment(
+            enrollment, idempotency_key="idem-xi-replay"
+        )
+        challenge = lifecycle_a.issue_possession_challenge(operation.operation_id)
+        proof = _proof(private_key, operation.digest.value, challenge)
+
+        lifecycle_b = _fresh_lifecycle(regista_instance)
+        lifecycle_b.submit_possession(operation.operation_id, proof)
+
+        # A second instance replaying the same proof is rejected at the
+        # single-use check (the durable used mark is authoritative), so the
+        # replay neither succeeds nor double-processes.
+        lifecycle_c = _fresh_lifecycle(regista_instance)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle_c.submit_possession(operation.operation_id, proof)
+        assert exc_info.value.code is LifecycleErrorCode.CHALLENGE_ALREADY_USED
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+    def test_cross_instance_challenge_single_use_at_consume_layer(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        # Isolates the durable single-use guarantee from the operation-state
+        # guard: a challenge consumed by one instance cannot be consumed by
+        # another, even though the operation is still awaiting proof.
+        _private_key, _ = keypair
+        lifecycle_a = regista_instance.principal_lifecycle
+        operation = lifecycle_a.prepare_enrollment(
+            enrollment, idempotency_key="idem-xi-consume"
+        )
+        challenge = lifecycle_a.issue_possession_challenge(operation.operation_id)
+
+        lifecycle_b = _fresh_lifecycle(regista_instance)
+        lifecycle_b._consume_challenge(
+            challenge.challenge_id,
+            expected_kind="possession",
+            expected_operation_digest=operation.digest.value,
+            operation_id=operation.operation_id,
+        )
+
+        lifecycle_c = _fresh_lifecycle(regista_instance)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle_c._consume_challenge(
+                challenge.challenge_id,
+                expected_kind="possession",
+                expected_operation_digest=operation.digest.value,
+                operation_id=operation.operation_id,
+            )
+        assert exc_info.value.code is LifecycleErrorCode.CHALLENGE_ALREADY_USED
+
+    def test_concurrent_possession_submit_single_use(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle_a = regista_instance.principal_lifecycle
+        operation = lifecycle_a.prepare_enrollment(
+            enrollment, idempotency_key="idem-xi-concurrent"
+        )
+        challenge = lifecycle_a.issue_possession_challenge(operation.operation_id)
+        proof = _proof(private_key, operation.digest.value, challenge)
+
+        barrier = threading.Barrier(2, timeout=10)
+        outcomes: list[Any] = [None, None]
+
+        def worker(idx: int) -> None:
+            lifecycle = _fresh_lifecycle(regista_instance)
+            try:
+                barrier.wait()
+                outcomes[idx] = lifecycle.submit_possession(operation.operation_id, proof)
+            except LifecycleContractError as exc:
+                outcomes[idx] = exc
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        used_errors = [
+            o
+            for o in outcomes
+            if isinstance(o, LifecycleContractError)
+            and o.code is LifecycleErrorCode.CHALLENGE_ALREADY_USED
+        ]
+        successes = [o for o in outcomes if not isinstance(o, BaseException)]
+        assert len(used_errors) == 1, f"expected exactly one already-used: {outcomes}"
+        assert len(successes) == 1, f"expected exactly one success: {outcomes}"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+    def test_cross_instance_effective_receipt(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        operation = _enroll_and_approve(
+            regista_instance, private_key, enrollment, idempotency_key="idem-xi-eff"
+        )
+        lifecycle_a = regista_instance.principal_lifecycle
+        receipt = lifecycle_a.commit(
+            operation.operation_id, expected_digest=operation.digest.value
+        )
+        challenge = lifecycle_a.issue_effective_challenge(operation.operation_id)
+
+        lifecycle_b = _fresh_lifecycle(regista_instance)
+        effective = _sign_receipt(
+            private_key,
+            EffectiveReceipt(
+                operation_id=operation.operation_id,
+                operation_digest=operation.digest.value,
+                project=operation.project,
+                principal_id=operation.principal_id,
+                fingerprint=receipt.fingerprint,
+                client_type="windows-helper",
+                client_version="1.0",
+                status=EffectiveReceiptStatus.EFFECTIVE,
+                observed_at=challenge.issued_at,
+                challenge_id=challenge.challenge_id,
+                signature=None,
+            ),
+            challenge,
+        )
+        updated = lifecycle_b.record_effective_receipt(operation.operation_id, effective)
+        assert updated.state is LifecycleState.EFFECTIVE
+        assert _db_operation_state(regista_instance, operation.operation_id) == "effective"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+    def test_effective_challenge_kind_cannot_be_consumed_as_possession(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        operation = _enroll_and_approve(
+            regista_instance, private_key, enrollment, idempotency_key="idem-xi-kind"
+        )
+        lifecycle_a = regista_instance.principal_lifecycle
+        lifecycle_a.commit(operation.operation_id, expected_digest=operation.digest.value)
+        challenge = lifecycle_a.issue_effective_challenge(operation.operation_id)
+
+        lifecycle_b = _fresh_lifecycle(regista_instance)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle_b._consume_challenge(
+                challenge.challenge_id,
+                expected_kind="possession",
+                expected_operation_digest=operation.digest.value,
+                operation_id=operation.operation_id,
+            )
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_BINDING_MISMATCH
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 0
+        )
+
+
+class TestApprovalSeparationOfDuties:
+    def test_approver_equal_actor_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle = regista_instance.principal_lifecycle
+        operation = _full_enrollment_flow(
+            lifecycle, private_key, enrollment, idempotency_key="idem-approver-actor"
+        )
+        approval = Approval(
+            approver_id=enrollment.actor_id,
+            approver_kind="human",
+            approval_digest=operation.digest.value,
+        )
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_approval(operation.operation_id, approval)
+        assert exc_info.value.code is LifecycleErrorCode.APPROVER_IS_ACTOR
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+
+    def test_verifier_can_reject_insufficient_evidence(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        class RequireStepUp:
+            def verify_approval(self, operation, approval) -> bool:
+                return approval.step_up_evidence is not None
+
+        private_key, _ = keypair
+        lifecycle = PrincipalLifecycle(
+            regista_instance._project,
+            mgr=regista_instance._mgr,
+            keys=regista_instance._keys,
+            metrics=regista_instance._metrics,
+            approval_verifier=RequireStepUp(),
+        )
+        operation = _full_enrollment_flow(
+            lifecycle, private_key, enrollment, idempotency_key="idem-verifier-reject"
+        )
+        no_evidence = Approval(
+            approver_id="entra:tenant:approver-789",
+            approver_kind="human",
+            approval_digest=operation.digest.value,
+        )
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_approval(operation.operation_id, no_evidence)
+        assert exc_info.value.code is LifecycleErrorCode.APPROVAL_EVIDENCE_REQUIRED
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+
+    def test_verifier_accepts_and_records_evidence_verified(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        class RequireStepUp:
+            def verify_approval(self, operation, approval) -> bool:
+                return approval.step_up_evidence is not None
+
+        private_key, _ = keypair
+        lifecycle = PrincipalLifecycle(
+            regista_instance._project,
+            mgr=regista_instance._mgr,
+            keys=regista_instance._keys,
+            metrics=regista_instance._metrics,
+            approval_verifier=RequireStepUp(),
+        )
+        operation = _full_enrollment_flow(
+            lifecycle, private_key, enrollment, idempotency_key="idem-verifier-accept"
+        )
+        with_evidence = Approval(
+            approver_id="entra:tenant:approver-789",
+            approver_kind="human",
+            approval_digest=operation.digest.value,
+            step_up_evidence="mfa:verified",
+        )
+        approved = lifecycle.record_approval(operation.operation_id, with_evidence)
+        assert approved.state is LifecycleState.APPROVED
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_approvals",
+                "operation_id = %s AND evidence_verified = true",
+                [operation.operation_id],
+            )
+            == 1
+        )
+
+
+# ---------------------------------------------------------------------------
+# Defect regressions: DB-authoritative one-use + atomic consume/transition
+# ---------------------------------------------------------------------------
+
+
+class _FaultAfterConn:
+    """Connection proxy whose ``execute`` raises once, mid-transaction.
+
+    Raising inside the transaction body (not in a wrapper ``__exit__``) is what
+    makes psycopg roll the transaction back. ``skip`` lets the first N
+    statements through (the challenge consume) and fails on a later one (the
+    operation state advance), modelling a crash between them.
+    """
+
+    def __init__(self, conn, error, skip=0):
+        self._conn = conn
+        self._error = error
+        self._skip = skip
+        self._calls = 0
+
+    def execute(self, *args, **kwargs):
+        self._calls += 1
+        if self._calls > self._skip:
+            raise self._error
+        return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _FaultAfterMgr:
+    """ConnectionManager proxy that arms a fault on a chosen transaction.
+
+    ``skip_txns`` lets that many transactions pass untouched (e.g. the
+    operation rehydration and the challenge fetch reads) so the fault lands on
+    the consume-and-transition transaction; ``skip`` then controls which
+    statement within it raises.
+    """
+
+    def __init__(self, real, error, skip=0, skip_txns=0):
+        self._real = real
+        self._error = error
+        self._skip = skip
+        self._skip_txns = skip_txns
+        self.fail_next = False
+
+    @contextmanager
+    def transaction(self):
+        if not self.fail_next:
+            with self._real.transaction() as conn:
+                yield conn
+            return
+        if self._skip_txns > 0:
+            self._skip_txns -= 1
+            with self._real.transaction() as conn:
+                yield conn
+            return
+        self.fail_next = False
+        with self._real.transaction() as conn:
+            yield _FaultAfterConn(conn, self._error, self._skip)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestDurableIssuerStaleCacheReplay:
+    def test_possession_replay_on_issuer_after_remote_consume(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        issuer = regista_instance.principal_lifecycle
+        operation = issuer.prepare_enrollment(enrollment, idempotency_key="idem-stale-poss")
+        challenge = issuer.issue_possession_challenge(operation.operation_id)
+        proof = _proof(private_key, operation.digest.value, challenge)
+
+        consumer = _fresh_lifecycle(regista_instance)
+        consumer.submit_possession(operation.operation_id, proof)
+
+        # The issuer still holds the challenge cached as used=False; durable
+        # mode must consult the database (used=true) and reject the replay.
+        with pytest.raises(LifecycleContractError) as exc_info:
+            issuer.submit_possession(operation.operation_id, proof)
+        assert exc_info.value.code is LifecycleErrorCode.CHALLENGE_ALREADY_USED
+
+    def test_effective_replay_on_issuer_after_remote_consume(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        operation = _enroll_and_approve(
+            regista_instance, private_key, enrollment, idempotency_key="idem-stale-eff"
+        )
+        issuer = regista_instance.principal_lifecycle
+        issuer.commit(operation.operation_id, expected_digest=operation.digest.value)
+        challenge = issuer.issue_effective_challenge(operation.operation_id)
+
+        consumer = _fresh_lifecycle(regista_instance)
+        consumer._consume_challenge(
+            challenge.challenge_id,
+            expected_kind="effective",
+            expected_operation_digest=operation.digest.value,
+            operation_id=operation.operation_id,
+        )
+
+        # Issuer's cache says used=False; the database (used=true) is authority.
+        with pytest.raises(LifecycleContractError) as exc_info:
+            issuer._consume_challenge(
+                challenge.challenge_id,
+                expected_kind="effective",
+                expected_operation_digest=operation.digest.value,
+                operation_id=operation.operation_id,
+            )
+        assert exc_info.value.code is LifecycleErrorCode.CHALLENGE_ALREADY_USED
+
+
+class TestDurableConsumeTransitionAtomicity:
+    def test_possession_crash_after_consume_rolls_back(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle = regista_instance.principal_lifecycle
+        operation = lifecycle.prepare_enrollment(enrollment, idempotency_key="idem-atomic-poss")
+        challenge = lifecycle.issue_possession_challenge(operation.operation_id)
+        proof = _proof(private_key, operation.digest.value, challenge)
+
+        faulty = _FaultAfterMgr(
+            regista_instance._mgr, RuntimeError("crash after consume"), skip=1, skip_txns=1
+        )
+        crashy = PrincipalLifecycle(
+            regista_instance._project,
+            mgr=faulty,
+            keys=regista_instance._keys,
+            metrics=regista_instance._metrics,
+        )
+        # Prime the cache so the fault lands on the consume+transition
+        # transaction (the fetch read is the skipped transaction), not on the
+        # operation rehydration.
+        crashy._operations[operation.operation_id] = operation
+        faulty.fail_next = True
+        with pytest.raises(RuntimeError, match="crash after consume"):
+            crashy.submit_possession(operation.operation_id, proof)
+
+        # The consume rolled back with the transaction: challenge reusable,
+        # operation unchanged.
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 0
+        )
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_proof"
+
+        retry = _fresh_lifecycle(regista_instance)
+        verified = retry.submit_possession(operation.operation_id, proof)
+        assert verified.state is LifecycleState.AWAITING_APPROVAL
+        assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+    def test_effective_crash_after_consume_rolls_back(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        operation = _enroll_and_approve(
+            regista_instance, private_key, enrollment, idempotency_key="idem-atomic-eff"
+        )
+        lifecycle = regista_instance.principal_lifecycle
+        receipt = lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
+        challenge = lifecycle.issue_effective_challenge(operation.operation_id)
+        effective = _sign_receipt(
+            private_key,
+            EffectiveReceipt(
+                operation_id=operation.operation_id,
+                operation_digest=operation.digest.value,
+                project=operation.project,
+                principal_id=operation.principal_id,
+                fingerprint=receipt.fingerprint,
+                client_type="windows-helper",
+                client_version="1.0",
+                status=EffectiveReceiptStatus.EFFECTIVE,
+                observed_at=challenge.issued_at,
+                challenge_id=challenge.challenge_id,
+                signature=None,
+            ),
+            challenge,
+        )
+
+        faulty = _FaultAfterMgr(
+            regista_instance._mgr, RuntimeError("crash after consume"), skip=1, skip_txns=1
+        )
+        crashy = PrincipalLifecycle(
+            regista_instance._project,
+            mgr=faulty,
+            keys=regista_instance._keys,
+            metrics=regista_instance._metrics,
+        )
+        # Prime the cache with the committed operation so the fault lands on the
+        # consume+receipt+transition transaction, not the rehydration/fetch.
+        crashy._operations[operation.operation_id] = lifecycle.get_operation(
+            operation.operation_id
+        )
+        faulty.fail_next = True
+        with pytest.raises(RuntimeError, match="crash after consume"):
+            crashy.record_effective_receipt(operation.operation_id, effective)
+
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 0
+        )
+        assert _db_operation_state(regista_instance, operation.operation_id) == "committed"
+        assert _db_count(regista_instance, "lifecycle_effective_receipts") == 0
+
+        retry = _fresh_lifecycle(regista_instance)
+        updated = retry.record_effective_receipt(operation.operation_id, effective)
+        assert updated.state is LifecycleState.EFFECTIVE
+        assert _db_operation_state(regista_instance, operation.operation_id) == "effective"
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 1
+        )
+
+
+class TestChallengeStorageScope:
+    def test_durable_reports_durable_one_use(self, regista_instance: Any) -> None:
+        assert (
+            regista_instance.principal_lifecycle.challenge_storage_scope
+            is ChallengeStorageScope.DURABLE_ONE_USE
+        )
+
+    def test_non_durable_reports_process_local(self) -> None:
+        lifecycle = PrincipalLifecycle("alpha", clock=MutableClock())
+        assert (
+            lifecycle.challenge_storage_scope
+            is ChallengeStorageScope.PROCESS_LOCAL_FOUNDATION
+        )
+
+
+class TestApprovalVerifierPublicApi:
+    class _AcceptAll:
+        def verify_approval(self, operation, approval) -> bool:
+            return True
+
+    def test_constructor_passes_verifier_to_facade(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        from _helpers import DSN, KEY_PATH
+
+        sub = regista.Regista(
+            DSN,
+            regista_instance.project,
+            KEY_PATH,
+            approval_verifier=self._AcceptAll(),
+        )
+        try:
+            assert sub.principal_lifecycle._approval_verifier is not None
+            private_key, _ = keypair
+            operation = _full_enrollment_flow(
+                sub.principal_lifecycle, private_key, enrollment, idempotency_key="idem-pubapi"
+            )
+            approval = Approval(
+                approver_id="entra:tenant:approver-789",
+                approver_kind="human",
+                approval_digest=operation.digest.value,
+            )
+            approved = sub.principal_lifecycle.record_approval(operation.operation_id, approval)
+            assert approved.state is LifecycleState.APPROVED
+        finally:
+            sub.close()
+
+    def test_create_project_accepts_verifier_param(self) -> None:
+        import inspect
+
+        from regista import Regista
+
+        assert "approval_verifier" in inspect.signature(Regista.create_project).parameters
+        assert "approval_verifier" in inspect.signature(Regista.__init__).parameters
+
+
+# ---------------------------------------------------------------------------
+# Effective-receipt signing envelope: tamper + chronology + cross-protocol
+# ---------------------------------------------------------------------------
+
+
+def _committed_with_effective_challenge(
+    regista_instance: Any,
+    private_key: nacl.signing.SigningKey,
+    enrollment: EnrollmentRequest,
+    idem: str,
+) -> tuple[PrincipalLifecycle, regista.LifecycleOperation, EffectiveChallenge, EffectiveReceipt]:
+    operation = _enroll_and_approve(
+        regista_instance, private_key, enrollment, idempotency_key=idem
+    )
+    lifecycle = regista_instance.principal_lifecycle
+    reg_receipt = lifecycle.commit(
+        operation.operation_id, expected_digest=operation.digest.value
+    )
+    challenge = lifecycle.issue_effective_challenge(operation.operation_id)
+    receipt = _sign_receipt(
+        private_key,
+        EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=reg_receipt.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at,
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        ),
+        challenge,
+    )
+    return lifecycle, operation, challenge, receipt
+
+
+class TestEffectiveReceiptTamper:
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("client_type", "evil-helper"),
+            ("client_version", "9.9.9"),
+            ("operation_id", "00000000-0000-4000-8000-000000000000"),
+        ],
+    )
+    def test_tampered_metadata_field_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+        field: str,
+        value: str,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, receipt = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, f"idem-tamper-{field}"
+        )
+        tampered = replace(receipt, **{field: value})
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, tampered)
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_VERIFICATION_FAILED
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 0
+        )
+
+    def test_tampered_status_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, _challenge, receipt = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-tamper-status"
+        )
+        tampered = replace(receipt, status=EffectiveReceiptStatus.COMMITTED_NOT_EFFECTIVE)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, tampered)
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_VERIFICATION_FAILED
+
+    def test_tampered_observed_at_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, receipt = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-tamper-observed"
+        )
+        # Still inside the challenge window (chronology passes) but the signed
+        # envelope no longer matches.
+        tampered = replace(receipt, observed_at=challenge.issued_at + timedelta(seconds=1))
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, tampered)
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_VERIFICATION_FAILED
+
+    def test_tampered_challenge_field_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, receipt = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-tamper-challenge"
+        )
+        # Re-sign over an altered challenge (different verifier_nonce) but present
+        # the real challenge: the envelope the verifier rebuilds differs.
+        forged_challenge = replace(challenge, verifier_nonce="forged-nonce")
+        forged = _sign_receipt(private_key, replace(receipt, signature=None), forged_challenge)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, forged)
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_VERIFICATION_FAILED
+
+    def test_cross_protocol_possession_signature_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        from regista.principal_lifecycle import PossessionChallenge
+
+        private_key, _ = keypair
+        lifecycle, operation, challenge, receipt = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-cross-protocol"
+        )
+        # A signature over a possession-domain envelope (same field values) must
+        # not verify against the effective-receipt domain envelope.
+        possession_envelope = PossessionChallenge(
+            challenge_id=challenge.challenge_id,
+            operation_id=challenge.operation_id,
+            operation_digest=challenge.operation_digest,
+            project=challenge.project,
+            principal_id=challenge.principal_id,
+            fingerprint=challenge.fingerprint,
+            scheme=challenge.scheme,
+            verifier_nonce=challenge.verifier_nonce,
+            issued_at=challenge.issued_at,
+            expires_at=challenge.expires_at,
+        ).signing_bytes()
+        cross = replace(
+            receipt, signature=private_key.sign(possession_envelope).signature
+        )
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, cross)
+        assert exc_info.value.code is LifecycleErrorCode.PROOF_VERIFICATION_FAILED
+
+
+class TestEffectiveReceiptChronology:
+    def test_future_observed_at_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, _ = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-chrono-future"
+        )
+        future = EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=challenge.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.expires_at + timedelta(hours=1),
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        )
+        signed = _sign_receipt(private_key, future, challenge)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, signed)
+        assert exc_info.value.code is LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID
+        assert (
+            _db_count(
+                regista_instance,
+                "lifecycle_challenges",
+                "challenge_id = %s AND used = true",
+                [challenge.challenge_id],
+            )
+            == 0
+        )
+
+    def test_stale_observed_at_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, _ = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-chrono-stale"
+        )
+        stale = EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=challenge.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at - timedelta(hours=1),
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        )
+        signed = _sign_receipt(private_key, stale, challenge)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, signed)
+        assert exc_info.value.code is LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID
+
+    def test_naive_observed_at_rejected(
+        self,
+        regista_instance: Any,
+        keypair: tuple[nacl.signing.SigningKey, bytes],
+        enrollment: EnrollmentRequest,
+    ) -> None:
+        private_key, _ = keypair
+        lifecycle, operation, challenge, _ = _committed_with_effective_challenge(
+            regista_instance, private_key, enrollment, "idem-chrono-naive"
+        )
+        naive = EffectiveReceipt(
+            operation_id=operation.operation_id,
+            operation_digest=operation.digest.value,
+            project=operation.project,
+            principal_id=operation.principal_id,
+            fingerprint=challenge.fingerprint,
+            client_type="windows-helper",
+            client_version="1.0",
+            status=EffectiveReceiptStatus.EFFECTIVE,
+            observed_at=challenge.issued_at.replace(tzinfo=None),
+            challenge_id=challenge.challenge_id,
+            signature=None,
+        )
+        signed = _sign_receipt(private_key, naive, challenge)
+        with pytest.raises(LifecycleContractError) as exc_info:
+            lifecycle.record_effective_receipt(operation.operation_id, signed)
+        assert exc_info.value.code is LifecycleErrorCode.RECEIPT_OBSERVED_AT_INVALID
