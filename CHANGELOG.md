@@ -4,6 +4,66 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-07-29
+
+### Added
+
+- **Durable principal lifecycle (Plan 031):** enrollment, rotation, and
+  revocation operations survive process restarts and cross-instance handoff via
+  Postgres rehydration. Schema 44 adds challenge-kind and approval-evidence
+  fields; durable challenges are database-authoritative, single-use, and
+  consumed atomically with the corresponding operation transition or receipt.
+  `describe()` covers all lifecycle states exhaustively (`assert_never`).
+
+- **Client signer (Plan 031 §5):** `client_signer.py` — out-of-process Ed25519
+  signing helper. Generates keypairs, custodies private keys via the existing
+  secret backends, and signs possession/effective-use challenges without
+  exposing private material. CLI: `regista signer generate /
+  sign-possession / sign-effective`.
+
+- **Signed effective receipts:** the post-commit effective-use signature binds
+  the full challenge, client type/version, status, and observed timestamp.
+  `record_effective_receipt` verifies binding, chronology, expiry, single-use,
+  and Ed25519 before accepting an EFFECTIVE receipt. Invalid or proof-less
+  reports cannot burn a challenge.
+
+- **Approval verification and separation of duties:** `ApprovalVerifier`
+  protocol with `verify_approval(operation, approval)` hook; `record_approval`
+  enforces that the approver is distinct from the requester (separation of
+  duties) and optionally verifies evidence sufficiency.
+
+- **Secrets delete (offboarding):** `secrets.delete(ref)` with tri-state return
+  (`DELETED` / `INLINE_REF` / raises). File/Vault/Azure remove stored material;
+  Windows/literal report inline (nothing stored to remove); env raises. Vault
+  rewrites shared paths rather than destroying unrelated keys; Azure purges
+  after soft-delete. CLI: `regista secrets delete`. Idempotent.
+
+### Changed
+
+- **Replay principal-binding enforcement (opt-in):**
+  `replay --strict-principal-binding` exits non-zero when
+  `principal_binding_failures > 0`. Default behavior unchanged (warnings, not
+  halts) for backward compat with HMAC-only deployments. `ReplayReport` gains
+  `principal_binding_failures` count.
+
+- **Bundle signature honesty:** when the offline verifier enforces signature
+  checks but verifies zero signatures (all HMAC/unverifiable),
+  `signature_check` reports `enforced_none_verified` instead of `enforced`.
+
+### Fixed
+
+- **Durable lifecycle correctness:** operations persisted to Postgres but
+  previously read only from in-memory dict — prepare-on-instance-A +
+  commit-on-instance-B (or after restart) failed with `OPERATION_NOT_FOUND`.
+  Fixed via DB rehydration with exact `compare_digest` match. Revocation gate
+  unified to require `APPROVED` (previously rejected correctly-approved
+  revocations). Cross-instance commit idempotency authoritative via DB
+  `SELECT...FOR UPDATE`.
+
+### Chore
+
+- **Adopted ruff 0.16** (expanded default rule set).
+
 ## [0.5.3] — 2026-07-20
 
 ### Changed
