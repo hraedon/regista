@@ -353,6 +353,19 @@ class Regista(
             self._mgr = None
         log.info("regista.disconnected", project=self._project)
 
+    def __enter__(self) -> Regista:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Release the pool deterministically.
+
+        The pool also closes at interpreter exit via ``ConnectionManager``'s
+        finalizer (WI-218), but ``with`` closes it at a point the caller
+        controls — and stops the maintenance/hook threads, which the exit-path
+        finalizer does not reach.
+        """
+        self.close()
+
     @property
     def project(self) -> str:
         return self._project
