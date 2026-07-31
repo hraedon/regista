@@ -4,6 +4,22 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **Full replay no longer materializes the event log (WI-217):** `replay()`
+  loaded every event row for the project in a single `fetchall()`, so its peak
+  working set scaled with the log — ~2 GiB on the production estate, which the
+  allocator then never returned to the OS (a dossier container measured 102 MiB
+  → 2.09 GiB → 4.07 GiB across two rounds). The retention is not a leaked
+  reference: tracemalloc shows ~0 net retention across successive replays and
+  `malloc_trim(0)` hands the memory straight back, so the fix is to never reach
+  the peak. Events are now streamed one work item at a time through a
+  server-side cursor, and the global hash-chain walk consumes compact link
+  records (event id, `global_seq`, previous link, precomputed head hash) rather
+  than full event rows, so each event's envelope, signature and payload are
+  released with its work item's group. Measured on a 10k-event log: per-replay
+  peak 184.9 → 8.1 MiB, RSS growth over three successive replays 464 → 24 MiB.
+
 ## [0.5.4] — 2026-07-29
 
 ### Added

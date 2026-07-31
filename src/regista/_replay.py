@@ -13,7 +13,7 @@ from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import verify_event, verify_event_dict_principal_binding
-from ._signing_scheme import get_scheme
+from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import ReplayReport
 
 log = structlog.get_logger()
@@ -62,12 +62,66 @@ def _verify_hash_chain(
     return True, ""
 
 
+def _event_head_hash(evt: dict) -> bytes | None:
+    """Return the chain head hash an event contributes, or ``None``.
+
+    Accepts either a pre-computed ``head_hash`` (the compact chain-link
+    records the streaming replay builds — WI-217) or the raw
+    ``canonical_envelope``/``signature`` pair, so the chain walk can be
+    driven either from link records or from full event rows (unit tests
+    construct the latter directly).
+
+    The chain-link digest is SHA-256 unconditionally — NOT the event's own
+    ``hash_alg``.  ``hash_alg`` selects the digest used inside the signing
+    envelope; the append path hard-codes SHA-256 for both chain links
+    (``_event_store`` computes ``prev_event_hash`` and the global chain head
+    that way), so the verifier must too or every link would mismatch on an
+    event signed with a non-default ``hash_alg``.
+    """
+    precomputed = evt.get("head_hash")
+    if precomputed is not None:
+        return precomputed if isinstance(precomputed, bytes) else bytes(precomputed)
+    env = evt.get("canonical_envelope")
+    sig = evt.get("signature")
+    if env is None or sig is None:
+        return None
+    return resolve_hash_function("sha-256")(bytes(env) + bytes(sig)).digest()
+
+
+def _chain_link(evt: dict) -> dict:
+    """Reduce an event row to the fields the global chain walk needs.
+
+    The head hash is computed here so the row's envelope, signature and
+    payload can be released with the rest of its work item's group instead
+    of being pinned until the whole project has been replayed (WI-217).
+
+    The walk needs exactly four things per event: its identity (for cycle
+    and reachability bookkeeping), its ``global_seq`` (warning detail and
+    the timestamp-coverage cross-check), the link it claims to chain from,
+    and the link its successor must claim.  Everything else in the row —
+    envelope, payload, signature, actor metadata — is per-work-item state
+    that the group loop has already consumed by the time this returns.
+    """
+    prev = evt.get("prev_global_event_hash")
+    return {
+        "event_id": evt["event_id"],
+        "global_seq": evt.get("global_seq"),
+        "prev_global_event_hash": bytes(prev) if prev is not None else None,
+        "head_hash": _event_head_hash(evt),
+    }
+
+
 def _verify_global_hash_chain(
     events: list[dict],
     segments: list[dict] | None = None,
 ) -> tuple[int, dict | None]:
     """Verify the global event hash chain by walking ``prev_global_event_hash``
     links (BC-300 / Plan 024).
+
+    Each entry in *events* must carry ``event_id``, ``global_seq``,
+    ``prev_global_event_hash`` and enough material to derive its own head
+    hash — either a pre-computed ``head_hash`` or the
+    ``canonical_envelope``/``signature`` pair (see ``_event_head_hash``).
 
     The chain is walked from genesis (NULL ``prev_global_event_hash``) by
     following hash links, NOT by sorting on ``global_seq``.  The
@@ -91,12 +145,8 @@ def _verify_global_hash_chain(
     """
     from collections import defaultdict
 
-    from ._signing_scheme import resolve_hash_function
-
     if not events:
         return 0, None
-
-    hash_fn = resolve_hash_function("sha-256")
 
     seg_by_prev: dict[str, dict] = {}
     if segments:
@@ -194,12 +244,10 @@ def _verify_global_hash_chain(
         visited_events.add(eid)
         last_event = current
 
-        env = current.get("canonical_envelope")
-        sig = current.get("signature")
-        if env is None or sig is None:
+        head_hash = _event_head_hash(current)
+        if head_hash is None:
             break
 
-        head_hash = hash_fn(bytes(env) + bytes(sig)).digest()
         successors = link_map.get(head_hash.hex(), [])
 
         if not successors:
@@ -257,6 +305,21 @@ _EVENT_FIELDS = (
     "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
     "prev_global_event_hash"
 )
+
+# Rows pulled per FETCH from the server-side event cursor (WI-217).
+#
+# A client-side cursor is not an option here: libpq buffers the whole result
+# set before psycopg sees row one, so `SELECT ... FROM events` costs the
+# entire log in C heap no matter how the rows are consumed.  `cursor.stream()`
+# is also out — it forbids other traffic on the connection, and the group loop
+# has to write report rows as it goes.  That leaves a named (server-side)
+# cursor, whose FETCH size this bounds.
+#
+# The resulting replay working set is: one fetch block, plus the widest single
+# work item's history, plus one compact chain link per event (~0.5 KiB, see
+# _chain_link).  100 matches psycopg's own ServerCursor default; the extra
+# round trips are cheap next to per-event signature verification.
+_EVENT_STREAM_SIZE = 100
 
 
 def replay(
@@ -334,6 +397,10 @@ def _replay_inner(
         ).fetchall()
 
     wi_ids = {row["work_item_id"] for row in wi_rows}
+    # Only membership is needed from here on, and the stream below holds the
+    # connection for the rest of the call — don't keep the row list alive
+    # alongside it (WI-217).
+    del wi_rows
 
     ok_count = 0
     drift_count = 0
@@ -341,91 +408,68 @@ def _replay_inner(
     total_warnings = 0
     total_principal_binding_failures = 0
 
-    if scoped:
-        all_events = conn.execute(
-            SQL(f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"),
-            [work_item_id],
-        ).fetchall()
-    else:
-        all_events = conn.execute(
-            SQL(f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq"),
-        ).fetchall()
+    # WI-217: the event log is streamed one work item at a time through a
+    # server-side cursor, so the replay working set is bounded by the widest
+    # single work-item history plus a fetch block, not by the size of the
+    # project's whole event log.  The only per-event state that outlives a
+    # group is the compact chain link below, which carries a pre-computed
+    # head hash instead of the envelope, signature and payload.
+    chain_links: list[dict] = []
+    scoped_event_count = 0
 
-    events_by_wi: dict = {}
-    for evt in all_events:
-        wid = evt["work_item_id"]
-        events_by_wi.setdefault(wid, []).append(evt)
+    def _handle_orphan_group(orphan_id, orphan_evts: list[dict]) -> None:
+        nonlocal halted_count, total_warnings
 
-    if not scoped:
-        orphan_events = set(events_by_wi.keys()) - wi_ids
-        for orphan_id in orphan_events:
-            orphan_evts = events_by_wi[orphan_id]
-            is_non_work_item = any(
-                e.get("entity_kind", "work_item") != "work_item"
-                for e in orphan_evts
+        is_non_work_item = any(
+            e.get("entity_kind", "work_item") != "work_item"
+            for e in orphan_evts
+        )
+        if is_non_work_item:
+            total_warnings += 1
+            log.info(
+                "replay.non_work_item_entity",
+                entity_id=str(orphan_id),
+                event_count=len(orphan_evts),
             )
-            if is_non_work_item:
-                total_warnings += 1
-                log.info(
-                    "replay.non_work_item_entity",
-                    entity_id=str(orphan_id),
-                    event_count=len(orphan_evts),
-                )
-                continue
-            is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
-            if not is_created:
-                halted_count += 1
-                log.error(
-                    "replay.orphan_events",
-                    work_item_id=str(orphan_id),
-                    event_count=len(orphan_evts),
-                )
-                conn.execute(
-                    SQL(
-                        "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                        "VALUES (%s, %s, %s, %s)"
-                    ).format(Identifier(report_table)),
-                    [
-                        orphan_id,
-                        "halted",
-                        "Orphaned events with no work_item and no created event",
-                        0,
-                    ],
-                )
-            else:
-                total_warnings += 1
-                log.warning(
-                    "replay.orphan_work_item",
-                    work_item_id=str(orphan_id),
-                    event_count=len(orphan_evts),
-                )
+            return
+        is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
+        if not is_created:
+            halted_count += 1
+            log.error(
+                "replay.orphan_events",
+                work_item_id=str(orphan_id),
+                event_count=len(orphan_evts),
+            )
+            conn.execute(
+                SQL(
+                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
+                    "VALUES (%s, %s, %s, %s)"
+                ).format(Identifier(report_table)),
+                [
+                    orphan_id,
+                    "halted",
+                    "Orphaned events with no work_item and no created event",
+                    0,
+                ],
+            )
+        else:
+            total_warnings += 1
+            log.warning(
+                "replay.orphan_work_item",
+                work_item_id=str(orphan_id),
+                event_count=len(orphan_evts),
+            )
 
-    if scoped and work_item_id not in wi_ids:
-        orphan_evts = events_by_wi.get(work_item_id, [])
-        halted_count += 1
-        log.error(
-            "replay.projection_row_missing",
-            work_item_id=str(work_item_id),
-            event_count=len(orphan_evts),
-        )
-        conn.execute(
-            SQL(
-                "INSERT INTO {} (work_item_id, category, detail, warnings) VALUES (%s, %s, %s, %s)"
-            ).format(Identifier(report_table)),
-            [
-                work_item_id,
-                "halted",
-                "events exist but projection row missing from work_items_current",
-                0,
-            ],
-        )
+    def _process_group(wi_id, events: list[dict]) -> None:
+        nonlocal ok_count, drift_count, halted_count
+        nonlocal total_warnings, total_principal_binding_failures
 
-    for row in wi_rows:
-        wi_id = row["work_item_id"]
-        events = events_by_wi.get(wi_id, [])
-
-        if not events:
-            continue
+        if wi_id not in wi_ids:
+            # Scoped replay reports the missing projection row once, after
+            # the stream is drained, so there is nothing to do here.
+            if not scoped:
+                _handle_orphan_group(wi_id, events)
+            return
 
         try:
             replayed_state, wi_warnings, wi_pb_failures = _replay_work_item(
@@ -448,7 +492,7 @@ def _replay_inner(
                 ).format(Identifier(report_table)),
                 [wi_id, "halted", str(e), 0],
             )
-            continue
+            return
         except Exception as e:
             halted_count += 1
             log.error(
@@ -464,7 +508,7 @@ def _replay_inner(
                 ).format(Identifier(report_table)),
                 [wi_id, "halted", f"unexpected: {e}", 0],
             )
-            continue
+            return
 
         live_row = conn.execute(
             SQL(
@@ -529,6 +573,57 @@ def _replay_inner(
             ],
         )
 
+    if scoped:
+        events_query = SQL(
+            f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"
+        )
+        events_params: list | None = [work_item_id]
+    else:
+        events_query = SQL(f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq")
+        events_params = None
+
+    with conn.cursor(name=f"replay_events_{uuid.uuid4().hex[:8]}") as event_stream:
+        event_stream.itersize = _EVENT_STREAM_SIZE
+        event_stream.execute(events_query, events_params)
+
+        group: list[dict] = []
+        group_wi_id = None
+        for evt in event_stream:
+            if scoped:
+                scoped_event_count += 1
+            else:
+                chain_links.append(_chain_link(evt))
+            wid = evt["work_item_id"]
+            if group and wid != group_wi_id:
+                _process_group(group_wi_id, group)
+                group = []
+            group_wi_id = wid
+            group.append(evt)
+        if group:
+            _process_group(group_wi_id, group)
+        # Drop the last group before the global-chain phase, which only needs
+        # the compact links.
+        group = []
+
+    if scoped and work_item_id not in wi_ids:
+        halted_count += 1
+        log.error(
+            "replay.projection_row_missing",
+            work_item_id=str(work_item_id),
+            event_count=scoped_event_count,
+        )
+        conn.execute(
+            SQL(
+                "INSERT INTO {} (work_item_id, category, detail, warnings) VALUES (%s, %s, %s, %s)"
+            ).format(Identifier(report_table)),
+            [
+                work_item_id,
+                "halted",
+                "events exist but projection row missing from work_items_current",
+                0,
+            ],
+        )
+
     if not scoped:
         segment_rows: list[dict] = []
         try:
@@ -542,19 +637,13 @@ def _replay_inner(
             pass
 
         chain_warnings, chain_tail = _verify_global_hash_chain(
-            all_events, segments=segment_rows if segment_rows else None,
+            chain_links, segments=segment_rows if segment_rows else None,
         )
         total_warnings += chain_warnings
 
         if chain_tail is not None:
-            last_env = chain_tail.get("canonical_envelope")
-            last_sig = chain_tail.get("signature")
-            if last_env is not None and last_sig is not None:
-                from ._signing_scheme import resolve_hash_function
-
-                computed_head = resolve_hash_function("sha-256")(
-                    bytes(last_env) + bytes(last_sig)
-                ).digest()
+            computed_head = _event_head_hash(chain_tail)
+            if computed_head is not None:
                 head_row = conn.execute(
                     SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
                 ).fetchone()
@@ -581,7 +670,7 @@ def _replay_inner(
         ).fetchall()
 
         event_ids_by_global_seq: dict[int, uuid.UUID] = {
-            evt["global_seq"]: evt["event_id"] for evt in all_events
+            link["global_seq"]: link["event_id"] for link in chain_links
         }
 
         _verify_cfg = TSAConfig(tsa_url="")
@@ -627,8 +716,8 @@ def _replay_inner(
                     last_seq=last_seq,
                 )
         uncovered = []
-        for evt in all_events:
-            seq = evt["global_seq"]
+        for link in chain_links:
+            seq = link["global_seq"]
             if seq not in covered:
                 uncovered.append(seq)
         if uncovered:
@@ -642,6 +731,14 @@ def _replay_inner(
     if scoped:
         log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
+    # NOTE (WI-217): nothing needs to be explicitly released here.  The
+    # measured symptom — a container that grows ~2 GiB per replay and never
+    # shrinks — is not a retained Python reference (tracemalloc shows ~0
+    # net retention across successive replays, before and after this fix).
+    # It is the allocator keeping a heap that replay's *peak* forced it to
+    # grow: malloc_trim(0) after the fact returns it.  The fix is therefore
+    # to never reach that peak, which the streaming above does; dropping
+    # references at the end of this function would accomplish nothing.
     return ReplayReport(
         table_name=replay_table,
         replayed_ok=ok_count,

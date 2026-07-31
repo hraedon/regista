@@ -250,6 +250,80 @@ class TestPlan024VerifierHashWalk:
         warnings, _ = _verify_global_hash_chain(events)
         assert warnings >= 1, f"Expected fork warning, got {warnings}"
 
+    def test_compact_links_verify_identically_to_full_rows(self):
+        """WI-217: the streaming replay walks compact links, not event rows.
+
+        `_replay_inner` no longer holds the event log while it walks the global
+        chain — it reduces each row to a `_chain_link` (event_id, global_seq,
+        prev link, precomputed head hash) and releases the envelope, signature
+        and payload with the work item's group. That is only sound if the walk
+        reaches the same verdict from links as from rows, so pin it on the
+        tamper shapes the walk exists to catch.
+
+        Order-independence is asserted at the same time: the walk follows hash
+        links, so reversing the input must not change the verdict. That is what
+        makes it immune to `global_seq` reordering.
+        """
+        from regista._replay import _chain_link, _verify_global_hash_chain
+
+        def mk(eid, prev, env, sig):
+            return {
+                "event_id": eid,
+                "global_seq": 0,
+                "prev_global_event_hash": prev,
+                "canonical_envelope": env,
+                "signature": sig,
+            }
+
+        def head(env, sig):
+            return hashlib.sha256(env + sig).digest()
+
+        e1 = mk("e1", None, b"env-A", b"sig-A")
+        e2 = mk("e2", head(b"env-A", b"sig-A"), b"env-B", b"sig-B")
+        e3 = mk("e3", head(b"env-B", b"sig-B"), b"env-C", b"sig-C")
+
+        cases = {
+            "intact": [e1, e2, e3],
+            # e3 reuses e1's envelope/signature, so head(e3) == head(e1) and e2
+            # becomes its own successor's successor.
+            "cycle": [e1, e2, mk("e3", head(b"env-B", b"sig-B"), b"env-A", b"sig-A")],
+            # Two events claim the same predecessor.
+            "fork": [e1, e2, mk("e2b", head(b"env-A", b"sig-A"), b"env-D", b"sig-D")],
+            # A forged prev link detaches e2 (and e3 behind it) from the chain.
+            "forged_prev_link": [e1, mk("e2", b"\xde\xad\xbe\xef" * 8, b"env-B", b"sig-B"), e3],
+            # The middle event is gone: the walk stops at e1 and e3 is orphaned.
+            "missing_event": [e1, e3],
+            # No genesis at all.
+            "no_genesis": [e2, e3],
+        }
+
+        for name, rows in cases.items():
+            from_rows, tail_rows = _verify_global_hash_chain(rows)
+            links = [_chain_link(r) for r in rows]
+            from_links, tail_links = _verify_global_hash_chain(links)
+
+            assert from_links == from_rows, (
+                f"{name}: compact links reported {from_links} warnings, "
+                f"full rows reported {from_rows}"
+            )
+            assert (tail_links or {}).get("event_id") == (tail_rows or {}).get("event_id"), (
+                f"{name}: chain tail differs between links and rows"
+            )
+
+            reversed_links, _ = _verify_global_hash_chain(list(reversed(links)))
+            assert reversed_links == from_links, (
+                f"{name}: verdict changed when the input order was reversed "
+                f"({reversed_links} vs {from_links}) — the walk is order-sensitive"
+            )
+
+        # Sanity: the tamper cases must actually be detected, or the equivalence
+        # above would be vacuous.
+        assert _verify_global_hash_chain(cases["intact"])[0] == 0
+        for name in ("cycle", "fork", "forged_prev_link", "missing_event", "no_genesis"):
+            assert _verify_global_hash_chain([_chain_link(r) for r in cases[name]])[0] >= 1, (
+                f"{name} not detected when walking compact links"
+            )
+
     def test_in_memory_replay_walks_chain(self):
         sub = InMemoryRegista(project="test_p024_im", hmac_key_path=KEY_PATH)
         sub.register_workflow_file(WORKFLOW_PATH)
