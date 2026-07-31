@@ -335,33 +335,15 @@ def supports_delete(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Vault
+# Vault — AppRole (production) or static token (dev). WI-228.
 #
-# Two auth methods, and which one is in use is never implicit (WI-228).
-#
-#   AppRole  — production. RoleID + SecretID, the SecretID normally read from a
-#              *file* because that is where response-wrapped delivery lands it
-#              (agent-suite docs/secrets-vault.md §5). No VAULT_TOKEN needs to
-#              exist anywhere in the process environment, which is what §6
-#              requires of a production host.
-#   token    — dev only. A static VAULT_TOKEN, kept so `vault server -dev`
-#              walkthroughs still work.
-#
-# Three properties the qualification found missing and that this module now
-# guarantees:
-#
-#   1. The resolver reports which method it used (:func:`vault_auth_status`,
-#      `regista secrets --auth-status`, `regista doctor`'s `custody:vault_auth`
-#      row, and a `vault_authenticated` log line). A host cannot silently sit
-#      on the weaker method.
-#   2. AppRole material that is configured but unusable fails closed with an
-#      actionable message. It never falls back to VAULT_TOKEN — a silent
-#      downgrade to the dev method is exactly the posture confusion this is
-#      meant to prevent.
-#   3. A login yields a *lease*. Long-running processes (dossier, agent-waked)
-#      re-authenticate before the lease expires, and again if a 403 turns out to
-#      be a dead token rather than a policy denial, so they do not wedge an hour
-#      after start.
+# Three invariants a change here must preserve; see docs/suite-config.md
+# "Vault authentication" for the operator-facing contract:
+#   1. The method in use is always reportable (vault_auth_status).
+#   2. AppRole material that is present but unusable fails closed — it never
+#      falls back to VAULT_TOKEN.
+#   3. A login yields a lease, so a long-running process re-authenticates
+#      instead of wedging when it expires.
 # ---------------------------------------------------------------------------
 
 # Re-authenticate this many seconds before the lease actually runs out, so an
