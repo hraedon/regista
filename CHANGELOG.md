@@ -51,7 +51,9 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   silently pick up `$VAULT_TOKEN` *and* `~/.vault-token`. A stray `~/.vault-token`
   can no longer make an unconfigured host appear to work, and "this host carries
   no ambient token" is now structural rather than a property of statement
-  ordering.
+  ordering. (acb guards its privileged admin plane the same way; its runtime
+  `cred_vault` path does not yet, which is reported upstream rather than worked
+  around here.)
 
   Three properties the qualification found missing:
 

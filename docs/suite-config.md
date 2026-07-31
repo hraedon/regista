@@ -166,6 +166,14 @@ client is therefore constructed with `token=""`, so it is born holding nothing
 and only the explicit auth path gives it a credential. A stray `~/.vault-token`
 cannot make an unconfigured host appear to work.
 
+acb applies the same guard on its privileged admin plane
+(`onboard.py`); its runtime credential path (`cred_vault.py`) still constructs
+`hvac.Client(url=addr, token=env.get("VAULT_TOKEN"))`, which is `None` when the
+variable is unset. That is benign when AppRole material is complete (the login
+overwrites the token) but not when it is partial: `cred_vault._authenticate`
+falls through to `if client.token` and would accept an ambient credential nobody
+configured. Reported upstream rather than worked around here.
+
 #### Policy capabilities
 
 For **reading** refs, the role's policy needs `read` on both the data and
