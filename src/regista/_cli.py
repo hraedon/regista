@@ -30,7 +30,16 @@ def _configure_structlog_stderr():
 def _resolve_config(args):
     dsn = args.dsn or os.environ.get("REGISTA_DSN")
     project = args.project or os.environ.get("REGISTA_PROJECT")
-    hmac_key_path = args.hmac_key_path or os.environ.get("REGISTA_HMAC_KEY_PATH")
+    # REGISTA_KEY_PATH is the canonical name (_config.CANONICAL_VARS);
+    # REGISTA_HMAC_KEY_PATH is its legacy alias. Reading only the alias here is
+    # why `principal enroll`, `replay` and `principal list` ignored the variable
+    # every runbook and suite.env actually sets, while `doctor` — which goes
+    # through _config.resolve — honoured it (WI-229c, WI-225).
+    hmac_key_path = (
+        args.hmac_key_path
+        or os.environ.get("REGISTA_KEY_PATH")
+        or os.environ.get("REGISTA_HMAC_KEY_PATH")
+    )
     return dsn, project, hmac_key_path
 
 
@@ -69,35 +78,53 @@ _RETRYABLE_CODES = frozenset(
 )
 
 
+def _error_envelope(e: RegistaError) -> dict:
+    return {
+        "ok": False,
+        "error": {
+            "code": str(e.code),
+            "message": e.message,
+            "detail": (
+                None
+                if e.detail is None
+                else json.dumps(e.detail, sort_keys=True, default=str)
+            ),
+            "retryable": str(e.code) in _RETRYABLE_CODES,
+            "partial": None,
+        },
+    }
+
+
 def _handle_error(e: RegistaError, json_mode: bool = False):
     """Report a RegistaError per the suite CLI contract v1 and exit 1.
 
-    Under --json the common error envelope is the single stdout document;
-    otherwise the human line goes to stderr. Either way exit is nonzero —
-    no path prints an error and exits 0.
+    Under --json the common error envelope is the single stdout document
+    (contract §3 — consumers get one parse path for both outcomes), *and* a
+    one-line human diagnostic goes to stderr. The envelope stays on stdout
+    because that is where the contract puts it; the stderr line exists because a
+    downstream stderr-only parser otherwise sees nothing at all on a refusal
+    (WI-229). Contract §1 permits diagnostics on stderr in either mode.
+
+    Either way exit is nonzero — no path prints an error and exits 0.
     """
     if json_mode:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": str(e.code),
-                        "message": e.message,
-                        "detail": (
-                            None
-                            if e.detail is None
-                            else json.dumps(e.detail, sort_keys=True, default=str)
-                        ),
-                        "retryable": str(e.code) in _RETRYABLE_CODES,
-                        "partial": None,
-                    },
-                },
-                indent=2,
-            )
-        )
-    else:
-        print(f"[{e.code}] {e.message}", file=sys.stderr)
+        print(json.dumps(_error_envelope(e), indent=2))
+    print(f"[{e.code}] {e.message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _fail_json(payload, *, json_mode: bool, diagnostic: str):
+    """Emit a verb's own failure document and exit 1 (contract §2).
+
+    For verbs whose failure is reported inside their *own* result shape (a
+    ``provision`` record with an ``error``, a ``verify`` report with
+    ``verified: false``) rather than as an error envelope. The machine-readable
+    channel keeps carrying the machine-readable answer; the exit code stops
+    saying the opposite of the body.
+    """
+    if json_mode:
+        _dump_json(payload)
+    print(diagnostic, file=sys.stderr)
     sys.exit(1)
 
 
@@ -797,6 +824,16 @@ def cmd_archive_verify(args):
             if result.get("warnings"):
                 for w in result["warnings"]:
                     print(f"  warning:         {w}")
+        # Contract §2: this one exited 0 in *both* formats while printing
+        # `Segment ...: FAILED` and its errors — a report of an error on exit 0.
+        # `bundle verify` already treats a failed verification as exit 1; a
+        # segment verification is the same claim about a smaller range.
+        if not result.get("verified"):
+            print(
+                f"error: segment {args.segment_id} did not verify",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -851,7 +888,16 @@ def cmd_archive_verify_chain(args):
                 print(f"Archive chain FAILED — {len(result['chain_breaks'])} break(s):")
                 for brk in result["chain_breaks"]:
                     print(f"  {brk['type']} in segment {brk['segment_id']}: {brk['detail']}")
-                sys.exit(1)
+        # Contract §2, same shape as `provision`: a broken chain is a failure in
+        # both output formats. The exit was previously reachable only from the
+        # human branch.
+        if not result["verified"]:
+            print(
+                f"error: archive chain verification failed with "
+                f"{len(result['chain_breaks'])} break(s)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -912,7 +958,13 @@ def cmd_bundle_verify(args):
                         print(f"  anchor {av['receipt_id']}: {av['error']}")
                 for err in result.get("errors", []):
                     print(f"  {err}")
-                sys.exit(1)
+        # Contract §2: a bundle that does not verify is a failure whatever the
+        # output format. Only the human branch used to exit 1, so an auditor
+        # scripting `bundle verify --json` got exit 0 on a bundle whose body said
+        # every signature failed.
+        if not result["verified"]:
+            print("error: bundle verification failed", file=sys.stderr)
+            sys.exit(1)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
 
@@ -1186,17 +1238,86 @@ def cmd_config_show(args):
                 print(f"  {var}: {src}")
 
 
+def _secret_backend_error(e: BaseException) -> RegistaError:
+    """Map a backend SDK exception onto the error envelope (contract §4).
+
+    Resolving a ref is a documented error path, so a backend failure must arrive
+    as an envelope and exit 1 — never as a raw traceback. Before this,
+    ``hvac.exceptions.Forbidden`` escaped as one, and a 403 is precisely what a
+    scoped AppRole policy produces when a ref reaches outside it, so this path
+    gets busier once AppRole is in use (WI-229b, WI-226).
+
+    Only the exception *type* is reported, never its text: a backend message must
+    not be able to carry secret material into the envelope (contract §3).
+    """
+    return RegistaError(
+        ErrorCode.SECRET_RESOLVE_FAILED,
+        f"secret backend failed while handling the reference "
+        f"({type(e).__name__}). This is the backend refusing or failing, not a "
+        f"malformed ref; check the credential's policy and the backend's "
+        f"reachability.",
+    )
+
+
+def _print_vault_auth_status(status):
+    print(f"vault provider available: {status.get('provider_available')}")
+    print(f"VAULT_ADDR set:           {status.get('vault_addr_set')}")
+    print(f"configured auth method:   {status.get('configured_method') or '(none)'}")
+    if status.get("configured_method") == "approle":
+        print(f"  role_id from:           {status.get('role_id_source')}")
+        print(f"  secret_id from:         {status.get('secret_id_source')}")
+        print(f"  approle mount:          auth/{status.get('approle_mount')}")
+    if status.get("token_source"):
+        print(f"  token from:             {status.get('token_source')}")
+    print(f"active auth method:       {status.get('active_method') or '(not yet used)'}")
+    print(f"lease (seconds):          {status.get('lease_duration_seconds')}")
+    print(f"expires in (seconds):     {status.get('expires_in_seconds')}")
+    print(f"can re-authenticate:      {status.get('reauthenticatable')}")
+    print(f"logins this process:      {status.get('logins')}")
+    if status.get("configured_error"):
+        print(f"problem:                  {status['configured_error']}")
+    if status.get("probe_error"):
+        print(f"probe:                    FAILED — {status['probe_error']}")
+
+
 def cmd_secrets_resolve(args):
     from regista._secrets import available_providers
     from regista._secrets import resolve as resolve_secret
 
+    json_mode = getattr(args, "json", False)
+    if getattr(args, "auth_status", False):
+        from regista._secrets import vault_auth_status
+
+        probe = getattr(args, "probe", False)
+        status = vault_auth_status(probe=probe)
+        if json_mode:
+            _dump_json(status)
+        else:
+            _print_vault_auth_status(status)
+        # Contract §2: a probe that could not authenticate is an operational
+        # failure and must not exit 0. A report without --probe describes
+        # configuration honestly and exits 0 even when that configuration is
+        # unusable — the body is what says so.
+        if probe and status.get("probe_ok") is False:
+            print(
+                f"error: vault authentication probe failed: {status.get('probe_error')}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
     if args.list_providers:
-        print("Available providers:")
-        for p in available_providers():
-            print(f"  {p}")
+        if json_mode:
+            _dump_json({"providers": available_providers()})
+        else:
+            print("Available providers:")
+            for p in available_providers():
+                print(f"  {p}")
         return
     if not args.ref:
-        print("Error: --ref is required (or --list-providers)", file=sys.stderr)
+        print(
+            "Error: --ref is required (or --list-providers / --auth-status)",
+            file=sys.stderr,
+        )
         sys.exit(2)
     if getattr(args, "delete", False):
         from regista._secrets import DeleteOutcome
@@ -1205,7 +1326,10 @@ def cmd_secrets_resolve(args):
         try:
             outcome = delete_secret(args.ref)
         except RegistaError as e:
-            _handle_error(e, json_mode=getattr(args, "json", False))
+            _handle_error(e, json_mode=json_mode)
+            return
+        except Exception as e:
+            _handle_error(_secret_backend_error(e), json_mode=json_mode)
             return
         if args.json:
             _dump_json({"ref": args.ref, "outcome": outcome.value})
@@ -1223,15 +1347,22 @@ def cmd_secrets_resolve(args):
         return
     try:
         data = resolve_secret(args.ref)
-        if args.hex:
-            print(data.hex())
-        else:
-            try:
-                print(data.decode("utf-8"))
-            except UnicodeDecodeError:
-                print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
     except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
+        _handle_error(e, json_mode=json_mode)
+        return
+    except Exception as e:
+        # WI-229b: this used to catch RegistaError only, so a backend refusal
+        # (hvac.exceptions.Forbidden on a 403) left the process as a traceback
+        # with no envelope for the caller to parse.
+        _handle_error(_secret_backend_error(e), json_mode=json_mode)
+        return
+    if args.hex:
+        print(data.hex())
+    else:
+        try:
+            print(data.decode("utf-8"))
+        except UnicodeDecodeError:
+            print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
 
 
 def cmd_assurance(args):
@@ -1401,8 +1532,21 @@ def cmd_provision(args):
                 else:
                     actions.append("service role exists")
                 print(f"[OK] {r.project}: {', '.join(actions)}")
-        if any(r.error for r in results):
-            sys.exit(1)
+    # Contract §2: the exit code is decided by the *results*, not by the output
+    # format. This used to sit inside the `else`, so `provision --json` exited 0
+    # while its body said the service role was never created — which is how
+    # `agent-suite bootstrap` reported OK over a provision that did nothing
+    # (agent-suite WI-040). Partial success picks a side: any failed project
+    # fails the verb.
+    failed = [r for r in results if r.error]
+    if failed:
+        names = ", ".join(r.project for r in failed)
+        print(
+            f"error: provision failed for {len(failed)} of {len(results)} "
+            f"project(s): {names}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def cmd_provision_principal(args):
@@ -1430,6 +1574,14 @@ def cmd_provision_principal(args):
         dry_run=args.dry_run,
         reuse_existing_key=args.reuse_existing_key,
     )
+    if result.error:
+        # Same contract §2 fix as `provision`: the failure was only ever acted on
+        # in the human branch, so `--json` reported the error and exited 0.
+        _fail_json(
+            result,
+            json_mode=args.json,
+            diagnostic=f"error: provision-principal failed: {result.error}",
+        )
     if args.json:
         _dump_json(result)
     else:
@@ -1437,9 +1589,6 @@ def cmd_provision_principal(args):
             print(f"Principal {result.principal_id} already has an active key:")
             print(f"  key_id:      {result.key_id}")
             print(f"  fingerprint: {result.fingerprint}")
-        elif result.error:
-            print(f"[FAIL] {result.error}")
-            sys.exit(1)
         else:
             print(f"Provisioned principal {result.principal_id}:")
             print(f"  key_id:      {result.key_id}")
@@ -1950,6 +2099,24 @@ def main(argv=None):
         "--list-providers",
         action="store_true",
         help="List available secret providers",
+    )
+    sec_parser.add_argument(
+        "--auth-status",
+        action="store_true",
+        help=(
+            "Report which Vault auth method this process uses (approle or the "
+            "dev-only static token), where each credential came from, and the "
+            "current token lease. Never prints credential values"
+        ),
+    )
+    sec_parser.add_argument(
+        "--probe",
+        action="store_true",
+        help=(
+            "With --auth-status, actually authenticate so the report "
+            "distinguishes 'AppRole is declared' from 'AppRole works'. "
+            "Exits 1 if authentication fails"
+        ),
     )
     sec_parser.add_argument(
         "--delete",

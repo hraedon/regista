@@ -53,11 +53,182 @@ that provided it, e.g. `"REGISTA_DSN": "env"`, `"REGISTA_KEY_PATH": "user:/home/
 | `file:` (default) | `file:/path/to/key.json` or `/path/to/key.json` | Read file contents as bytes |
 | `env:` | `env:MY_SECRET_VAR` | Read environment variable as UTF-8 bytes |
 | `literal:` | `literal:plain-text-value` | Return the literal string as bytes |
-| `vault:` | `vault:secret/data/regista/key` | HashiCorp Vault KV v2 (requires `pip install regista[vault]`) |
+| `vault:` | `vault:kv/agent-suite/hosts/HOSTNAME/regista/hmac_key` | HashiCorp Vault KV v2 (requires `pip install regista[vault]`) |
 | `azure:` | `azure:key-name` | Azure Key Vault (requires `pip install regista[azure]`) |
 | `windows:` | `windows:AQAAANCMnd8BFdERjHoAwE/...` | Windows DPAPI-protected blob (base64). Auto-available on win32; uses `CRYPTPROTECT_LOCAL_MACHINE` scope. Encrypt with `regista.secrets.protect_windows_secret(data)`. |
 
 If no prefix is recognized, the resolver treats the value as a file path.
+
+### Vault ref shape — three traps
+
+The `vault:` ref is `<mount>/<path…>/<field>`, and **the field is the last path
+segment**. Three shapes that look right and are not:
+
+1. **`#field` does not exist.** `vault:kv/a/b/regista#hmac_key` does not fail —
+   it parses to mount `kv`, path `a/b`, and a field literally named
+   `regista#hmac_key`, i.e. a *different, neighbouring* secret. A permissive
+   policy will happily read it. Use `vault:kv/a/b/regista/hmac_key`.
+2. **There is no default mount.** A ref needs at least four segments; the mount
+   is whatever your Vault actually has (`kv`, not necessarily `secret`).
+3. **`vault:` refs resolve only where `hvac` is importable.** A provider is
+   registered per *process*, so `vault` appearing in `regista secrets
+   --list-providers` says nothing about whether another component can resolve its
+   own refs. Install the extra for each component and check each one.
+
+Also note `REGISTA_KEY_PATH` is a path to a `keys.json` **file**, not a
+resolvable ref. Backend refs belong *inside* that file as per-key `secret_ref` +
+`encoding` entries.
+
+### Vault authentication — AppRole and token
+
+The resolver authenticates in exactly one of two ways, and always reports which.
+
+| Method | Declared by | Use |
+|--------|-------------|-----|
+| **AppRole** | `VAULT_ROLE_ID` (or `VAULT_ROLE_ID_FILE`) **and** `VAULT_SECRET_ID_FILE` (or `VAULT_SECRET_ID`) | Production. Needs **no `VAULT_TOKEN`** anywhere in the environment. |
+| **token** | `VAULT_TOKEN` | Dev only (`vault server -dev`). |
+
+| Variable | Meaning |
+|----------|---------|
+| `VAULT_ADDR` | Vault endpoint. Required for either method. |
+| `VAULT_ROLE_ID` | AppRole RoleID, inline. |
+| `VAULT_ROLE_ID_FILE` | File holding the RoleID. Takes precedence over the inline form. |
+| `VAULT_SECRET_ID_FILE` | File holding the SecretID. **Preferred** — it is where response-wrapped delivery lands, and it keeps the SecretID out of `/proc/<pid>/environ`. |
+| `VAULT_SECRET_ID` | SecretID inline. Discouraged; readable from the process environment. |
+| `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when `VAULT_SECRET_ID_FILE` holds a **response-wrapping token** rather than the SecretID itself. The host unwraps it for itself on first login. |
+| `VAULT_APPROLE_MOUNT_POINT` | AppRole auth mount. Default `approle`. |
+| `VAULT_ENV_FILE` | An env-style **plane file** to read `VAULT_*` from (see interop below). Process environment wins over it. |
+| `VAULT_TOKEN` | Static token, dev only. |
+
+**Any** AppRole variable being set means AppRole is what you asked for. From that
+point `VAULT_TOKEN` is not consulted, and material that is present but unusable
+is a hard error naming what to fix. Falling back to the dev method would turn a
+broken production posture into a working dev one without saying so — which is
+precisely the confusion this refuses to allow.
+
+#### Declaring it on a host
+
+In `/etc/agent-suite/suite.env` (delivered to units via `EnvironmentFile=`, so
+systemd-launched services get it too — a wrapper script that injects a token
+does not reach them):
+
+```env
+VAULT_ADDR=https://vault.example:8200
+VAULT_ROLE_ID_FILE=/etc/agent-suite/vault-role-id
+VAULT_SECRET_ID_FILE=/etc/agent-suite/vault-secret-id
+VAULT_SECRET_ID_RESPONSE_WRAPPED=1
+# and deliberately no VAULT_TOKEN
+```
+
+Both files should be `0400`/`0600` and owned by the service user.
+
+#### One credential file across components — the acb plane file
+
+acb *provisions* AppRoles and writes a mode-0600, env-style **plane file**
+carrying `VAULT_ADDR`, `VAULT_ROLE_ID` and `VAULT_SECRET_ID`, minting a separate
+SecretID per harness so each is independently revocable. Those are the same
+variable names this resolver reads, so there is **one format**, not two:
+
+```bash
+# point regista at the file acb provisioned
+VAULT_ENV_FILE=/home/svc/.config/acb/vault.env
+```
+
+Only `VAULT*` keys are read from it, so the file may equally be a shared
+`suite.env`. `export KEY=value`, quotes and `#` comments are accepted. The
+process environment overrides the file — matching acb's own merge — so an
+explicit variable still wins, and `regista secrets --auth-status` reports
+`plane:VAULT_ROLE_ID` rather than `env:` for values that came from the file, so
+provenance points at the right place.
+
+Equivalently, systemd can source the same file with `EnvironmentFile=`; both
+routes end at the same variables.
+
+Two points where regista and acb deliberately differ, both intentional:
+
+- **regista fails closed on partial AppRole material; acb falls through to
+  `VAULT_TOKEN`.** acb checks `if role_id and secret_id`, so a host with only a
+  RoleID quietly authenticates as whatever token is around. regista treats any
+  AppRole variable as a declaration of intent and refuses. The strict reading is
+  the one to converge on — a silent downgrade to the dev method is the failure
+  this whole feature exists to prevent.
+- **`VAULT_SECRET_ID_FILE` is not replaced by the plane file.** A plane file holds
+  a plain SecretID; response-wrapped delivery lands a *single-use wrapping token*
+  that the host must unwrap itself. The two coexist: a plane file can supply
+  `VAULT_ADDR`/`VAULT_ROLE_ID` while `VAULT_SECRET_ID_FILE` +
+  `VAULT_SECRET_ID_RESPONSE_WRAPPED=1` supplies the SecretID.
+
+#### No ambient credentials
+
+`hvac.Client(url=...)` defaults to `token=None`, which makes hvac call
+`get_token_from_env()` — picking up `$VAULT_TOKEN` **and** `~/.vault-token`. The
+client is therefore constructed with `token=""`, so it is born holding nothing
+and only the explicit auth path gives it a credential. A stray `~/.vault-token`
+cannot make an unconfigured host appear to work.
+
+acb applies the same guard on its privileged admin plane
+(`onboard.py`); its runtime credential path (`cred_vault.py`) still constructs
+`hvac.Client(url=addr, token=env.get("VAULT_TOKEN"))`, which is `None` when the
+variable is unset. That is benign when AppRole material is complete (the login
+overwrites the token) but not when it is partial: `cred_vault._authenticate`
+falls through to `if client.token` and would accept an ambient credential nobody
+configured. Reported upstream rather than worked around here.
+
+#### Policy capabilities
+
+For **reading** refs, the role's policy needs `read` on both the data and
+metadata paths:
+
+```hcl
+path "kv/data/agent-suite/hosts/HOSTNAME/*"     { capabilities = ["read"] }
+path "kv/metadata/agent-suite/hosts/HOSTNAME/*" { capabilities = ["read"] }
+```
+
+For **custody writes** (`REGISTA_SECRET_BACKEND=vault`, i.e. `enroll_principal` /
+`provision-principal` storing a generated key) grant `["create", "update"]`, not
+`create` alone: Vault denies a `create`-only credential with `Forbidden` before it
+evaluates the check-and-set condition, so a least-privilege policy that omits
+`update` fails with a permission error rather than a legible conflict.
+
+#### Response-wrapped SecretID delivery
+
+Only a short-lived, single-use wrapping token crosses onto the host:
+
+```bash
+# on the provisioning host, with a token allowed to issue SecretIDs
+vault write -f -wrap-ttl=300s auth/approle/role/<role>/secret-id
+# ship the printed wrap_info.token to the target as VAULT_SECRET_ID_FILE
+```
+
+The unwrapped SecretID is held in memory for the process lifetime, because the
+wrapping token is one-shot and a later re-login would otherwise have nothing to
+authenticate with.
+
+#### Token lifecycle
+
+An AppRole login yields a **lease**. A long-running process (dossier,
+`agent-waked`) re-authenticates before that lease expires, and again if a 403
+turns out to be a dead token rather than a policy denial — the two are told apart
+by checking whether the token still validates, so a genuine denial is reported at
+once instead of driving a login loop. A static `VAULT_TOKEN` cannot be renewed
+from nothing: its expiry is reported rather than papered over.
+
+When the SecretID itself expires or runs out of uses, re-login fails closed with
+an error naming the re-delivery command.
+
+#### Reporting which method is in use
+
+```bash
+regista secrets --auth-status            # human
+regista --json secrets --auth-status     # machine-readable
+regista secrets --auth-status --probe    # actually authenticate; exit 1 if it fails
+```
+
+The report names *where* each credential came from and the current lease — never
+a credential value, so it is safe to print, log, and paste into a ticket.
+`regista doctor` carries the same fact as `custody:vault_auth`: `ok` for AppRole,
+`warn` for a static token (the dev posture), `fail` for AppRole material that is
+configured but unusable.
 
 ### Windows DPAPI provider
 

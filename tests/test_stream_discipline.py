@@ -71,7 +71,6 @@ def test_handle_error_json_mode_emits_envelope(
         _handle_error(err, json_mode=True)
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
-    assert captured.err == ""
     document = json.loads(captured.out)
     assert document["ok"] is False
     assert document["error"]["code"] == "INVALID_TRANSITION"
@@ -82,6 +81,16 @@ def test_handle_error_json_mode_emits_envelope(
         "to": "done",
     }
     assert document["error"]["partial"] is None
+    # stdout carries *exactly one* JSON document and nothing else — that is the
+    # P0 property this module exists to pin, and it still holds.
+    assert captured.out.count("\n{") == 0
+    # stderr additionally carries a one-line human diagnostic (WI-229). Contract
+    # §1 permits diagnostics on stderr in either mode, and the envelope stays on
+    # stdout where §3 puts it. Before this, a --json refusal wrote to stdout
+    # only, so a downstream stderr parser saw nothing at all and reported "no
+    # detail" over a real error (observed in agent-suite Lane H's
+    # regression-before.txt).
+    assert "[INVALID_TRANSITION] cannot go there" in captured.err
 
 
 def test_handle_error_retryable_codes(capsys: pytest.CaptureFixture) -> None:

@@ -4,7 +4,154 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Vault AppRole login — an AppRole-only host is now possible (WI-228):**
+  `VaultProvider` authenticated with `VAULT_TOKEN` and nothing else, so the
+  posture agent-suite `docs/secrets-vault.md` §6 requires — a production host
+  operating with **no `VAULT_TOKEN` in its environment** — was unreachable. The
+  Linux platform qualification could not achieve it and wrote an undocumented
+  wrapper script (`/usr/local/sbin/with-vault-approle`) that minted a 1h token
+  per invocation, correctly labelling it a compensating control rather than
+  evidence. Because that shim lived outside any generated systemd unit,
+  systemd-launched services never got a token at all — which is why
+  `cairn integrity` executed but exited 1, and dossier's `/healthz` returned 503,
+  on that host.
+
+  The resolver now authenticates by AppRole (`role_id` + `secret_id`) or by a
+  static token, declared through the environment:
+
+  | Variable | Meaning |
+  |---|---|
+  | `VAULT_ROLE_ID` / `VAULT_ROLE_ID_FILE` | AppRole RoleID, inline or from a file |
+  | `VAULT_SECRET_ID_FILE` | File holding the SecretID — **preferred**, and where response-wrapped delivery lands it |
+  | `VAULT_SECRET_ID` | SecretID inline (discouraged: readable from `/proc/<pid>/environ`) |
+  | `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when the file holds a single-use response-**wrapping** token, which the host unwraps for itself (`docs/secrets-vault.md` §5) |
+  | `VAULT_APPROLE_MOUNT_POINT` | AppRole mount, default `approle` |
+  | `VAULT_ENV_FILE` | env-style plane file to read `VAULT_*` from; the process environment overrides it |
+  | `VAULT_TOKEN` | static token, dev only — kept so `vault server -dev` walkthroughs still work |
+
+  **One credential format across components.** acb provisions AppRoles and writes
+  a mode-0600 env-style "plane file" carrying `VAULT_ADDR`, `VAULT_ROLE_ID` and
+  `VAULT_SECRET_ID` (agent-capability-broker PR #20). Those are the same names
+  this resolver reads, and `VAULT_ENV_FILE` points it at that file, so an operator
+  who onboards a capability with acb and then runs a regista-backed component has
+  one credential file rather than two incompatible ones. Precedence matches acb's
+  `_authenticate` (AppRole before token) so the same file cannot authenticate as
+  different identities depending on which component read it. Provenance is
+  reported as `plane:VAULT_ROLE_ID` rather than `env:` for values that came from
+  the file. Two deliberate divergences are documented in `docs/suite-config.md`:
+  regista fails closed on partial AppRole material where acb falls through to
+  `VAULT_TOKEN` (the strict reading is the one to converge on), and
+  `VAULT_SECRET_ID_FILE` is retained because a plane file cannot express a
+  single-use response-wrapping token.
+
+  **No ambient credentials.** The client is constructed with `token=""`, not
+  hvac's default `token=None` — which makes hvac call `get_token_from_env()` and
+  silently pick up `$VAULT_TOKEN` *and* `~/.vault-token`. A stray `~/.vault-token`
+  can no longer make an unconfigured host appear to work, and "this host carries
+  no ambient token" is now structural rather than a property of statement
+  ordering. (acb guards its privileged admin plane the same way; its runtime
+  `cred_vault` path does not yet, which is reported upstream rather than worked
+  around here.)
+
+  Three properties the qualification found missing:
+
+  - **The method is reported, so a host cannot silently sit on the weaker one.**
+    New `regista.secrets.vault_auth_status()`, `regista secrets --auth-status`
+    (`--json`, plus `--probe` to actually authenticate and exit 1 if it fails),
+    a `vault_authenticated` structlog line at login, and a new doctor row
+    `custody:vault_auth` — `ok` for AppRole, `warn` for a static token (the dev
+    posture), `fail` for AppRole material that is present but unusable. The
+    report names where each credential *came from*, never its value, so it is
+    safe to print and log.
+
+  - **A network failure is told apart from a credential refusal.** A
+    `ConnectTimeout` used to be reported as "the SecretID expired or ran out of
+    uses — issue a new one", sending an operator to rotate a credential nothing
+    had been able to present. Found while validating on the qual-linux container,
+    which has no outbound network.
+
+  - **It fails closed.** Any AppRole variable being set means AppRole was asked
+    for; `VAULT_TOKEN` is then never consulted. Half-configured material, a
+    missing/empty/unreadable SecretID file, a spent wrapping token, and a
+    rejected login each raise an actionable error naming the variable or path to
+    fix and the command to re-deliver with. Falling back to the dev method would
+    turn a broken production posture into a working dev one without saying so.
+
+  - **A long-running process no longer wedges when the lease expires.** The
+    client used to be cached for the process lifetime while the token behind it
+    had a lease. It now re-authenticates before the lease runs out, and again if
+    a 403 turns out to be a dead token rather than a policy denial — the two are
+    distinguished by checking whether the token still validates, so a genuine
+    denial is reported immediately instead of driving a login loop, and an
+    expired lease is recovered from instead of being misreported as a
+    permissions problem. A static token cannot be renewed from nothing, so its
+    expiry is reported rather than papered over. Verified against the real Vault
+    with a 60s `token_ttl`: one provider held across the boundary resolved
+    correctly on both sides, re-authenticating once.
+
 ### Fixed
+
+- **`hvac` failures now arrive as the error envelope, not a traceback
+  (WI-229b, WI-226):** `regista secrets --ref` caught only `RegistaError`, so
+  `hvac.exceptions.Forbidden` escaped as a raw traceback with **zero bytes on
+  stdout** — a `--json` consumer had nothing to parse. Every Vault failure is now
+  mapped: 403 to `SECRET_RESOLVE_FAILED` with the policy capabilities to grant,
+  an absent path to `KEY_LOAD_ERROR` restating that the ref's field comes last,
+  and anything else to a typed error. Only the exception's *type* is reported,
+  never its text, so a backend message cannot carry secret material into the
+  envelope (CLI contract §3). This path gets busier once AppRole is in use, not
+  quieter: a 403 is exactly what a scoped policy produces when a ref reaches
+  outside it.
+
+  Also fixed in the same area: `secrets --delete` against Vault answered
+  `except Exception: return ALREADY_ABSENT`, so a **permission denial was
+  reported as a successful deletion** — telling an operator running an
+  offboarding that the key was gone when the read had been refused and nothing
+  was looked at. Only a genuinely absent path is now `already_absent`.
+
+- **`--json` verbs exited 0 while their body reported failure (WI-229a):**
+  `regista provision --json` exited 0 with `{"error": "permission denied to
+  create role", "service_role_created": false}`, so every consumer that trusted
+  the exit code read a failed provision as success — which is how
+  `agent-suite bootstrap` reported `bootstrap: OK` over a provision that never
+  created the service role. In each case the `sys.exit(1)` sat inside the
+  `else:` of an `if args.json:`, making it unreachable in JSON mode. Auditing
+  every `--json` path found the same shape on four verbs, all now fixed:
+  `provision`, `provision-principal`, `bundle verify` and `archive
+  verify-chain`. `archive verify` was worse — it exited 0 in **both** formats
+  while printing `FAILED` and its errors — and now matches its sibling
+  `bundle verify`.
+
+  The machine-readable channel still carries the machine-readable answer: the
+  body stays on stdout, where CLI contract §3 puts it and where
+  `agent_suite.component_result.evaluate_component_result` reads it. A one-line
+  human diagnostic is now *also* written to stderr on every error path, because
+  under `--json` a downstream stderr-only parser previously saw nothing at all.
+  Partial success picks a side: any failed project fails the verb.
+
+  A regression test asserts the structural cause, not just the symptom — it
+  parses each handler's AST and fails if a `sys.exit` is reachable only when
+  `--json` is absent.
+
+- **`REGISTA_KEY_PATH` was ignored by the CLI (WI-229c, WI-225):** `_resolve_config`
+  read only the legacy alias `REGISTA_HMAC_KEY_PATH`, never the canonical
+  `REGISTA_KEY_PATH` that `_config.CANONICAL_VARS`, every runbook and
+  `suite.env` actually use. `principal enroll` therefore dropped the variable an
+  operator had set, while `doctor` — which goes through `_config.resolve` —
+  honoured it. Both names are now read, canonical first, matching
+  `_config.resolve`'s precedence; an explicit `--hmac-key-path` still wins. The
+  helper is shared, so `replay` and `principal list` (filed separately as
+  WI-225) are covered by the same fix.
+
+- **regista's own docs printed an unresolvable `vault:` ref:**
+  `docs/suite-config.md` showed `vault:secret/data/regista/key`, which names a
+  mount this estate does not have and mixes in the raw KV v2 API path. Replaced
+  with a working shape, plus an explicit note on the three ref-shape traps: the
+  `#field` form silently resolves a *different, neighbouring* secret rather than
+  failing, there is no default mount, and `vault:` refs resolve only in a process
+  where `hvac` is importable.
 
 - **Principal binding was reported, not verified (WI-223):** a work item's
   entire chain could be signed by an Ed25519 key that its project never

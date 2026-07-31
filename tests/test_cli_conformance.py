@@ -63,6 +63,17 @@ ERROR_CASES = [
         expect_code="INVALID_ARGUMENT",
         unset_env=_HERMETIC_UNSET,
     ),
+    # A secret backend refusing is a documented error path, and it is the one
+    # WI-229b found emitting a traceback with an empty stdout instead of the
+    # envelope. The `env:` provider is always registered and needs no network, so
+    # this stays hermetic while still running the resolve path through the kit.
+    # `--json` is a root-level flag on this CLI, hence its position.
+    ErrorCase(
+        name="secrets-unresolvable-ref",
+        argv=(*_CLI, "--json", "secrets", "--ref", "env:REGISTA_CONFORMANCE_UNSET_VAR"),
+        expect_code="KEY_LOAD_ERROR",
+        unset_env=(*_HERMETIC_UNSET, "REGISTA_CONFORMANCE_UNSET_VAR"),
+    ),
 ]
 
 USAGE_CASES = [
