@@ -118,6 +118,17 @@ class InMemoryRegista(
     def close(self) -> None:
         pass
 
+    def __enter__(self) -> InMemoryRegista:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Mirror ``Regista``'s context-manager contract (WI-218).
+
+        There is no pool to release, but the conformance suite exercises both
+        backends through the same interface, so the double must accept ``with``.
+        """
+        self.close()
+
     @property
     def project(self) -> str:
         return self._project

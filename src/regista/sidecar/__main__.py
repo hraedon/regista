@@ -73,7 +73,13 @@ def main():
 
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        # The pool would also close via ConnectionManager's exit-path finalizer
+        # (WI-218), but only close() stops the hook consumer and maintenance
+        # threads. Matches the try/finally convention in _cli.py/_provision.py.
+        sub.close()
 
 
 if __name__ == "__main__":

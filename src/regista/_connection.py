@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import weakref
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import TracebackType
 
 import psycopg
 from psycopg.rows import dict_row
@@ -35,6 +37,23 @@ def _configure_session(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
+def _close_pool_quietly(pool: ConnectionPool) -> None:
+    """Close *pool* from the interpreter-exit path, swallowing every error.
+
+    Registered via `weakref.finalize`, whose atexit hook routes a raising
+    callback to ``sys.excepthook`` — printing the very traceback this guard
+    exists to remove. Nothing downstream of process exit can act on a failure
+    to close, so failures are dropped rather than reported.
+
+    Deliberately no logging: structlog may already be torn down at exit, and a
+    log call here would reintroduce stderr noise on a clean run.
+    """
+    try:
+        pool.close()
+    except BaseException:
+        pass
+
+
 class ConnectionManager:
     def __init__(
         self,
@@ -60,6 +79,19 @@ class ConnectionManager:
         if pool_max_lifetime is not None:
             pool_kwargs["max_lifetime"] = pool_max_lifetime
         self._pool = ConnectionPool(dsn, **pool_kwargs)
+        # WI-218: close the pool BEFORE the interpreter's finalization window.
+        # psycopg_pool's ConnectionPool.__del__ joins its live daemon workers,
+        # and on Python 3.14+ Thread.join() raises PythonFinalizationError once
+        # finalization has begun — surfacing an "Exception ignored while calling
+        # deallocator" traceback after the process has already done its work.
+        #
+        # weakref.finalize is the right tool here (rather than the bare
+        # atexit.register that sufficed for agent-notes WI-046, where the pool
+        # was a module global): it holds only a WEAK reference to self, so
+        # registering one per ConnectionManager never keeps an instance alive,
+        # and its atexit hook runs before finalization. close() detaches it, so
+        # an explicitly closed manager has no exit-path work left to do.
+        self._finalizer = weakref.finalize(self, _close_pool_quietly, self._pool)
 
     @property
     def dsn(self) -> str:
@@ -91,7 +123,26 @@ class ConnectionManager:
         self._pool.open()
 
     def close(self) -> None:
+        """Close the connection pool. Idempotent.
+
+        Detaches the exit-path finalizer first so the pool is never closed
+        twice, then closes directly — an explicit close propagates errors to
+        the caller, unlike the deliberately silent exit path.
+        """
+        self._finalizer.detach()
         self._pool.close()
+
+    def __enter__(self) -> ConnectionManager:
+        self.open()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
     @contextmanager
     def connect(self) -> Generator[psycopg.Connection, None, None]:
