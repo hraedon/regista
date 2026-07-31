@@ -315,6 +315,7 @@ class MetaApiMixin(_RegistaBase):
         actor_metadata: dict | None = None,
         private_key_dir: str | None = None,
         secret_backend: str | None = None,
+        reuse_existing_key: bool = False,
     ) -> dict:
         """Provision and register an Ed25519 keypair for a principal.
 
@@ -347,6 +348,12 @@ class MetaApiMixin(_RegistaBase):
             secret_backend: Override the secret backend for custody
                 (``file``/``windows``/``vault``/``azure``/``operator``).
                 Defaults to ``REGISTA_SECRET_BACKEND`` or ``file``.
+            reuse_existing_key: Register the public key already present in the
+                shared signing key file for this principal instead of minting
+                a new keypair. Use this when the same principal must act in a
+                second project that shares the key file — minting a second
+                keypair there would leave the first project signing with a key
+                it never registered (WI-223), so that is refused.
 
         Returns:
             Dict from :class:`regista._provision.PrincipalProvisionResult`.
@@ -369,6 +376,7 @@ class MetaApiMixin(_RegistaBase):
             hmac_key_path=self._hmac_key_path,
             private_key_dir=private_key_dir,
             secret_backend=secret_backend,
+            reuse_existing_key=reuse_existing_key,
         )
 
         existing = self.read_principal_enrollment_events(

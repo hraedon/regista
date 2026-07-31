@@ -821,6 +821,7 @@ def _replay_inner(
         halted=halted_count,
         warnings=total_warnings,
         principal_binding_failures=total_principal_binding_failures,
+        principal_binding_verified=verify_principal_binding,
     )
 
 
@@ -856,6 +857,21 @@ def _parse_not_before(value: str | datetime | None) -> datetime | None:
         return None
 
 
+def _requires_principal_registration(
+    evt: dict, asymmetric_schemes: frozenset[str],
+) -> bool:
+    """Does this event's scheme demand a registered principal key?
+
+    Asymmetric schemes do: the whole point of a per-principal keypair is that
+    the project's ``principal_keys`` names who may sign, and the offline
+    verifier resolves signatures through that registry. Symmetric (HMAC)
+    schemes do not — a shared HMAC key predates per-principal custody, and
+    ``verify_principal_binding`` is documented as backward compatible with
+    those deployments (WI-223).
+    """
+    return (evt.get("scheme_id") or "hmac-sha256") in asymmetric_schemes
+
+
 def _replay_work_item(
     conn: psycopg.Connection,
     wi_id,
@@ -878,6 +894,15 @@ def _replay_work_item(
     principal_binding_failures = 0
 
     _principal_key_cache: dict[str, list] = {}
+    # Resolved once per work item rather than per event: the scheme registry is
+    # mutable (tests register schemes), so this must not be a module constant,
+    # but rebuilding it inside the event loop is needless work.
+    if verify_principal_binding:
+        from ._signing_scheme import asymmetric_scheme_ids
+
+        _asym_schemes = asymmetric_scheme_ids()
+    else:
+        _asym_schemes = frozenset()
 
     prev_evt: dict | None = None
     for evt in events:
@@ -987,7 +1012,16 @@ def _replay_work_item(
                         detail="principal_keys table missing; principal binding skipped",
                     )
             pk_entries = _principal_key_cache[actor_id]
-            if pk_entries:
+            # WI-223: "this actor has no keys registered at all" (skip, the
+            # documented HMAC-only backward compatibility) and "this event was
+            # signed with an asymmetric key this project never registered"
+            # (fail) must not collapse into the same branch. A symmetric
+            # (HMAC) event from an actor with no principal keys is a legacy
+            # deployment; an asymmetric event from such an actor is an
+            # unregistered signer — the chain is not attributable to anyone
+            # this project can name, which is exactly what the offline bundle
+            # verifier rejects.
+            if pk_entries or _requires_principal_registration(evt, _asym_schemes):
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)
                 if not pb_result.verified:
                     warnings += 1

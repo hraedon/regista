@@ -6,6 +6,75 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Fixed
 
+- **Principal binding was reported, not verified (WI-223):** a work item's
+  entire chain could be signed by an Ed25519 key that its project never
+  registered, and four surfaces reported green — `regista replay`
+  (`principal_binding_failures=0`), `cairn integrity` (`[OK]`), `regista doctor`
+  (`custody:consistency`), `agent-suite doctor` (exit 0). Only
+  `regista bundle verify` caught it, rejecting every event with "No public key
+  for key_id ... in bundle registry". Measured on the qual-linux platform
+  qualification host: four `qual-agent` events in `qual_linux.events` signed
+  with `pk_e6c7…`, which is active only in `agent_provenance.principal_keys`,
+  while `qual_linux.principal_keys` names `pk_1a9a…`.
+
+  Four separate defects, all in the direction of a false green:
+
+  - **`principal_binding_failures=0` was printed by runs that never checked.**
+    The binding check was opt-in via `--verify-principal-binding`, but the
+    counter was printed unconditionally, so a plain `regista replay` published
+    an affirmative "the binding was verified, nothing wrong" for a chain it had
+    not examined. The check is now **on by default** in the CLI
+    (`--verify-principal-binding` is a retained no-op,
+    `--no-verify-principal-binding` opts out), and `ReplayReport` gained
+    `principal_binding_verified: bool`. A zero count is only serialized when
+    the check actually ran; when it did not, `principal_binding_failures` is
+    omitted from the JSON entirely and the text output says
+    `principal_binding=not-verified`. `InMemoryRegista`'s replay has no
+    `principal_keys` registry and so always reports the binding as unverified,
+    matching the no-op warning it already emitted.
+
+  - **Replay collapsed "no keys for this actor" into "key belongs to another
+    project".** `_replay_work_item` skipped the binding check whenever the actor
+    had no rows in `principal_keys` — correct and documented for HMAC-only
+    deployments, but it also silently skipped Ed25519 events whose signer this
+    project never registered at all (reachable by provisioning a principal in
+    project B and then writing to project A with the same key file). The two
+    are now distinct: an event using a **symmetric** scheme whose actor has no
+    registered keys is still skipped (HMAC-only backward compatibility is
+    unchanged and tested); an event using an **asymmetric** scheme whose actor
+    has no registered keys is an unregistered signer and fails.
+
+  - **`provision-principal` silently created the collision.** `keys.json` is
+    shared across projects while `principal_keys` is per-project, so
+    provisioning the same principal in a second project minted a second keypair,
+    appended it to the same file, and demoted the first to `deprecated` — after
+    which the signer, which selects by `principal_id` with no project scoping,
+    signed the *first* project's events with a key only the second project had
+    registered. It now refuses, and `--reuse-existing-key` registers the
+    existing public key in the additional project instead (no new keypair, no
+    key-file mutation) as the supported way for one principal to act in several
+    projects. The signer's selection rule is now a single pure function,
+    `regista._keys.select_signing_key_id`, so callers that reason about which
+    key will sign cannot drift from `KeySet`.
+
+  - **`regista doctor` never checked registration at all.**
+    `custody:consistency` only compares `secret_ref` custody prefixes against
+    the configured backend; its old detail line ("N principal key(s) match
+    backend file") read as a statement about the registry and is now explicit
+    that it is not. The real claim lives in a new `custody:registration` check:
+    for every principal a project has registered keys for, the key the signer
+    would select from the key file must be active in that project's
+    `principal_keys`. It fails on the qual-linux state, which also turns
+    `agent-suite doctor` red, since that folds each component's top-level `ok`.
+
+  `cairn integrity` is **not** fixed by this change: it calls `replay()` through
+  the Python API (whose default stays opt-in for compatibility) and derives its
+  verdict from `replayed_drift`/`halted` only, ignoring
+  `principal_binding_failures`. Filed as agent-provenance WI-036. A related
+  reporting inaccuracy in agent-suite's `verify_restore` (which now catches the
+  condition via `warnings` but attributes it to "possible chain-link tampering")
+  is filed as agent-suite WI-051.
+
 - **Full replay no longer materializes the event log (WI-217):** `replay()`
   loaded every event row for the project in a single `fetchall()`, so its peak
   working set scaled with the log — ~2 GiB on the production estate, which the

@@ -599,9 +599,14 @@ class ReplayReport:
     halted: int
     warnings: int = 0
     principal_binding_failures: int = 0
+    #: Whether the principal-binding check actually ran. WI-223: a zero
+    #: ``principal_binding_failures`` is only an affirmative claim when this is
+    #: True. When the check did not run, ``0`` means "not checked" — surfaces
+    #: must not render it as a pass.
+    principal_binding_verified: bool = False
 
     def to_dict(self) -> dict:
-        d = {
+        d: dict = {
             "table_name": self.table_name,
             "replayed_ok": self.replayed_ok,
             "replayed_drift": self.replayed_drift,
@@ -609,7 +614,10 @@ class ReplayReport:
         }
         if self.warnings > 0:
             d["warnings"] = self.warnings
-        if self.principal_binding_failures > 0:
+        d["principal_binding_verified"] = self.principal_binding_verified
+        if self.principal_binding_verified:
+            d["principal_binding_failures"] = self.principal_binding_failures
+        elif self.principal_binding_failures > 0:
             d["principal_binding_failures"] = self.principal_binding_failures
         return d
 
@@ -622,6 +630,7 @@ class ReplayReport:
             halted=data["halted"],
             warnings=data.get("warnings", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
+            principal_binding_verified=data.get("principal_binding_verified", False),
         )
 
 

@@ -463,4 +463,8 @@ def in_memory_replay(
         replayed_drift=drift,
         halted=halted,
         warnings=warnings,
+        # Deliberately False even when verify_principal_binding was requested:
+        # the InMemory backend has no principal_keys registry, so the check did
+        # not run. WI-223 — never claim a binding was verified when it wasn't.
+        principal_binding_verified=False,
     )
