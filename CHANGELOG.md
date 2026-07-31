@@ -4,6 +4,47 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **Full replay no longer materializes the event log (WI-217):** `replay()`
+  loaded every event row for the project in a single `fetchall()`, so its peak
+  working set scaled with the log — ~2 GiB on the production estate, which the
+  allocator then never returned to the OS (a dossier container measured 102 MiB
+  → 2.09 GiB → 4.07 GiB across two rounds). The retention is not a leaked
+  reference: tracemalloc shows ~0 net retention across successive replays and
+  `malloc_trim(0)` hands the memory straight back, so the fix is to never reach
+  the peak. Events are now streamed one entity at a time through a server-side
+  cursor, and the global hash-chain walk consumes compact link records (event
+  id, `global_seq`, previous link, precomputed head hash) rather than full event
+  rows, so each event's envelope, signature and payload are released with its
+  entity's group. Measured on a 10k-event log: per-replay peak 184.9 → 8.1 MiB,
+  RSS growth over three successive replays 464 → 24 MiB.
+
+  The streamed scan is ordered on `(entity_kind, entity_id, event_seq)` — the
+  columns of `idx_events_entity` — and that is load bearing rather than
+  cosmetic. `DECLARE CURSOR` over a plan containing a Sort makes Postgres
+  materialize the whole sorted result before yielding row one and hold it in
+  `pgsql_tmp` for the cursor's entire lifetime, which streaming extends from
+  the duration of a `fetchall()` drain to the duration of the whole replay.
+  Measured on a 6000-row / 8.3 MiB events table: ordering on `work_item_id`
+  (for which migration 031 dropped the index) plans as `Sort → Seq Scan` and
+  parks 6.1 MiB of `pgsql_tmp` after a single FETCH; the index ordering plans
+  as `Index Scan` and uses none. Deployments with `temp_file_limit` set are
+  therefore unaffected. Two costs remain and are bounded rather than removed:
+  the fetch block is 100 **rows**, so its byte cost rises with payload width,
+  and the compact chain index is ~55–105 MiB at 227k events depending on
+  accounting (see `_EVENT_STREAM_SIZE`).
+
+  `regista.testing.replay_fn` previously required the caller's connection to be
+  inside a transaction, because a named cursor cannot be declared in autocommit
+  mode; it now opens one itself when handed an autocommit connection.
+
+  Scope: this covers the Postgres backend. `InMemoryRegista`'s replay has its
+  own chain walk (`_verify_global_hash_chain_in_memory`) which is unchanged and
+  is not equivalent — it has no orphan-reachability check, no multiple-genesis
+  warning and no segment bridging — so the tamper-detection equivalence
+  asserted here is a property of the Postgres path only.
+
 ## [0.5.4] — 2026-07-29
 
 ### Added
