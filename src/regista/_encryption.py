@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -120,6 +121,87 @@ def _validate_key_length(key: bytes) -> None:
         )
 
 
+_KEY_LENGTH = 32
+
+#: The accepted key-material encodings, in the order they are tried. Named in
+#: every load error so an operator learns what to provision, not just what
+#: failed.
+_KEY_ENCODING_CONTRACT = (
+    f"exactly {_KEY_LENGTH} raw bytes, or ASCII text encoding "
+    f"{_KEY_LENGTH} bytes as base64/base64url (43-44 chars) or hex (64 chars)"
+)
+
+
+def _try_base64_key(text: str) -> bytes | None:
+    padded = text + "=" * (-len(text) % 4)
+    for altchars in (None, b"-_"):
+        try:
+            decoded = base64.b64decode(
+                padded.encode("ascii"), altchars=altchars, validate=True
+            )
+        except (ValueError, binascii.Error):
+            continue
+        if len(decoded) == _KEY_LENGTH:
+            return decoded
+    return None
+
+
+def _try_hex_key(text: str) -> bytes | None:
+    if len(text) != _KEY_LENGTH * 2:
+        return None
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        return None
+
+
+def decode_key_material(raw: bytes, *, source: str = "") -> bytes:
+    """Decode resolved secret material into a usable encryption key (WI-231).
+
+    Secret backends store text: a KV field, an env var, a literal. A 256-bit
+    key therefore usually arrives *encoded* — and before this contract existed
+    nothing decoded it, so the only keys that worked were strings whose UTF-8
+    bytes happened to number 32, capping a printable key well below 256 bits.
+
+    The contract, in precedence order:
+
+    1. Exactly 32 bytes are the key itself (raw binary, e.g. a ``file:`` ref
+       written by ``os.urandom``). This always wins: raw AES keys are
+       indistinguishable from random, so no text interpretation is attempted.
+    2. Anything else must be ASCII text (surrounding whitespace ignored, so a
+       key file with a trailing newline is fine) that decodes to exactly 32
+       bytes as base64 or base64url (padding optional) or as 64 hex chars.
+       base64 is the codebase's own binary-in-text idiom — the vault/azure
+       ``store()`` paths already write it.
+    3. Everything else fails **here, at load time**, naming the accepted
+       encodings — not at first use with a bare byte count that reads like
+       the operator generated the wrong key.
+
+    The interpretations cannot collide: 64 base64 chars decode to 48 bytes,
+    never 32, so a 64-char hex key is never mis-read as base64.
+    """
+    where = f" from {source!r}" if source else ""
+    if len(raw) == _KEY_LENGTH:
+        return raw
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"Encryption key material{where} is {len(raw)} bytes of non-ASCII "
+            f"data; expected {_KEY_ENCODING_CONTRACT}",
+        ) from None
+    decoded = _try_base64_key(text) or _try_hex_key(text)
+    if decoded is not None:
+        return decoded
+    raise RegistaError(
+        ErrorCode.KEY_LOAD_ERROR,
+        f"Encryption key material{where} is {len(text)} chars of text that "
+        f"does not decode to a {_KEY_LENGTH}-byte key; expected "
+        f"{_KEY_ENCODING_CONTRACT}",
+    )
+
+
 def _serialize_value(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -161,7 +243,7 @@ def encrypt_fields(
 ) -> dict[str, Any]:
     from ._secrets import resolve as _resolve_secret
 
-    key = _resolve_secret(key_ref)
+    key = decode_key_material(_resolve_secret(key_ref), source=key_ref)
     scheme = get_encryption_scheme(scheme_id)
     result = dict(payload)
     for path in field_paths:
@@ -192,8 +274,12 @@ def decrypt_fields(
         if isinstance(key_source, str):
             from ._secrets import resolve as _resolve_secret
 
-            return _resolve_secret(key_source)
-        return key_source(key_id)
+            return decode_key_material(
+                _resolve_secret(key_source), source=key_source
+            )
+        return decode_key_material(
+            key_source(key_id), source=f"key resolver (key_id={key_id!r})"
+        )
 
     result = dict(payload)
     for k, v in result.items():
