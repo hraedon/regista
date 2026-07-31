@@ -373,6 +373,42 @@ _VAULT_APPROLE_DEFAULT_MOUNT = "approle"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
+def _is_connectivity_error(e: BaseException) -> bool:
+    """Whether ``e`` means "could not reach Vault" rather than "Vault said no".
+
+    Checked by exception-class *name* across the cause chain rather than by
+    importing ``requests``/``urllib3``: hvac's HTTP stack is not part of
+    regista's dependency contract, and the distinction matters more than the
+    coupling would be worth. A refusal needs a new SecretID; a timeout needs a
+    network fix and rotating the credential would be wasted work.
+    """
+    names = {
+        "ConnectTimeout",
+        "ConnectTimeoutError",
+        "ConnectionError",
+        "ConnectionRefusedError",
+        "ReadTimeout",
+        "ReadTimeoutError",
+        "Timeout",
+        "TimeoutError",
+        "NewConnectionError",
+        "MaxRetryError",
+        "SSLError",
+        "ProxyError",
+        "NameResolutionError",
+        "socket.gaierror",
+        "gaierror",
+    }
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in names:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _split_vault_ref(ref: str) -> tuple[str, str, str]:
     """``kv/agent-suite/hosts/h/regista/hmac_key`` -> (mount, path, field).
 
@@ -471,6 +507,95 @@ def _vault_file_value(path: str, *, var: str) -> str:
     return value
 
 
+def _parse_vault_env_text(text: str) -> dict[str, str]:
+    """Parse an env-style plane file, keeping only ``VAULT*`` keys.
+
+    Same shape acb's ``cred_vault._parse_env_text`` accepts, so one file serves
+    both: ``KEY=value`` lines, optional ``export`` prefix, surrounding quotes
+    stripped, ``#`` comments. Filtering to ``VAULT*`` is what makes it safe to
+    point this at a shared ``suite.env`` — ``REGISTA_*`` and friends are ignored.
+    """
+    out: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        val = val.strip()
+        if val and val[0] in ('"', "'"):
+            quote = val[0]
+            end = val.find(quote, 1)
+            val = val[1:end] if end != -1 else val.strip("\"'")
+        elif " #" in val or "\t#" in val:
+            val = val.split(" #", 1)[0].split("\t#", 1)[0].rstrip()
+        if key.startswith("VAULT"):
+            out[key] = val
+    return out
+
+
+class _VaultEnv(dict):
+    """Merged Vault configuration that remembers what came from the plane file.
+
+    Provenance is the whole point of the auth report, so a value read out of a
+    plane file must not be labelled ``env:``.
+    """
+
+    def __init__(self, data: dict[str, str], plane_keys: frozenset[str]) -> None:
+        super().__init__(data)
+        self.plane_keys = plane_keys
+
+
+def _vault_env(env: dict[str, str] | Any) -> dict[str, str] | Any:
+    """Merge a plane file named by ``VAULT_ENV_FILE`` under the process environment.
+
+    Interop with acb (agent-capability-broker PR #20): acb *provisions* AppRoles
+    and writes a mode-0600 env-style "plane file" carrying ``VAULT_ADDR``,
+    ``VAULT_ROLE_ID`` and ``VAULT_SECRET_ID``. Those are the same variable names
+    this resolver reads, so pointing ``VAULT_ENV_FILE`` at that file makes one
+    credential file serve both components instead of each inventing its own.
+
+    The process environment wins over the file, matching acb's own merge, so an
+    explicit variable still overrides a provisioned plane. A named-but-missing
+    file is an error rather than a silent fall-through to whatever ambient
+    credentials exist — an operator who named a plane file meant to use it.
+    """
+    path = env.get("VAULT_ENV_FILE")
+    if not path:
+        return env
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8-sig")
+    except FileNotFoundError as e:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"vault: VAULT_ENV_FILE names {path!r}, which does not exist. This is "
+            f"the mode-0600 plane file holding VAULT_ADDR/VAULT_ROLE_ID/"
+            f"VAULT_SECRET_ID (acb writes one when it provisions an AppRole); "
+            f"create it or unset VAULT_ENV_FILE.",
+        ) from e
+    except OSError as e:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"vault: cannot read VAULT_ENV_FILE {path!r}: "
+            f"{e.strerror or type(e).__name__}. It should be mode 0600 and owned "
+            f"by the service user.",
+        ) from e
+    except UnicodeDecodeError as e:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"vault: VAULT_ENV_FILE {path!r} is not valid UTF-8 text.",
+        ) from e
+    from_file = _parse_vault_env_text(text)
+    overrides = {k: v for k, v in env.items() if k.startswith("VAULT") and v}
+    merged = dict(from_file)
+    merged.update(overrides)
+    plane_keys = frozenset(k for k in from_file if k not in overrides)
+    return _VaultEnv(merged, plane_keys)
+
+
 def _vault_auth_shape(env: dict[str, str] | Any) -> _VaultAuthShape:
     """Classify the declared auth method without reading credential material.
 
@@ -486,10 +611,17 @@ def _vault_auth_shape(env: dict[str, str] | Any) -> _VaultAuthShape:
     wrapped = str(env.get("VAULT_SECRET_ID_RESPONSE_WRAPPED") or "").strip().lower() in _TRUTHY
     token = env.get("VAULT_TOKEN") or None
 
+    # Which variables were supplied by a VAULT_ENV_FILE plane file rather than by
+    # the process environment, so the report attributes each one correctly.
+    plane_keys: frozenset[str] = getattr(env, "plane_keys", frozenset())
+
+    def _src(var: str) -> str:
+        return f"plane:{var}" if var in plane_keys else f"env:{var}"
+
     declared_approle = any((role_id_env, role_id_file, secret_id_env, secret_id_file))
     if not declared_approle:
         if token:
-            return _VaultAuthShape(method="token", token_source="env:VAULT_TOKEN")
+            return _VaultAuthShape(method="token", token_source=_src("VAULT_TOKEN"))
         return _VaultAuthShape(
             method=None,
             error=(
@@ -506,13 +638,13 @@ def _vault_auth_shape(env: dict[str, str] | Any) -> _VaultAuthShape:
     if role_id_file:
         role_source = "file:VAULT_ROLE_ID_FILE"
     elif role_id_env:
-        role_source = "env:VAULT_ROLE_ID"
+        role_source = _src("VAULT_ROLE_ID")
     else:
         role_source = None
     if secret_id_file:
         secret_source = "file:VAULT_SECRET_ID_FILE"
     elif secret_id_env:
-        secret_source = "env:VAULT_SECRET_ID"
+        secret_source = _src("VAULT_SECRET_ID")
     else:
         secret_source = None
     if wrapped and secret_source == "file:VAULT_SECRET_ID_FILE":
@@ -620,7 +752,9 @@ class VaultProvider:
     # -- environment / hvac -------------------------------------------------
 
     def _env(self) -> Any:
-        return os.environ if self._environ is None else self._environ
+        """The effective Vault configuration: process environment over plane file."""
+        base = os.environ if self._environ is None else self._environ
+        return _vault_env(base)
 
     def _hvac(self) -> Any:
         import hvac  # type: ignore[import-untyped]
@@ -630,7 +764,15 @@ class VaultProvider:
     def _new_client(self, url: str) -> Any:
         if self._client_factory is not None:
             return self._client_factory(url)
-        return self._hvac().Client(url=url)
+        # token="" and NOT the default token=None. With None, hvac calls
+        # get_token_from_env(), which picks up $VAULT_TOKEN *and* ~/.vault-token
+        # — so a client built for an AppRole login would be born holding an
+        # ambient credential. Nothing here reads before the explicit auth path
+        # assigns a token, so this is defence in depth rather than a live bug,
+        # but "this host carries no ambient token" should be structural and
+        # testable, not a property of statement ordering. (acb hit the same trap;
+        # agent-capability-broker PR #20.)
+        return self._hvac().Client(url=url, token="")
 
     # -- auth ---------------------------------------------------------------
 
@@ -728,11 +870,33 @@ class VaultProvider:
                     mount_point=shape.approle_mount,
                 )
             except Exception as e:
+                # Reaching Vault and being refused by Vault need different
+                # remedies, and blaming the SecretID for a network timeout sends
+                # an operator to rotate a credential that was never read.
+                if _is_connectivity_error(e):
+                    raise RegistaError(
+                        ErrorCode.KEY_LOAD_ERROR,
+                        f"vault: could not reach {url} to log in "
+                        f"({type(e).__name__}). The AppRole credentials were not "
+                        f"rejected — nothing was able to ask. Check network "
+                        f"reachability, DNS and TLS trust from this host, then "
+                        f"retry; the credentials do not need rotating.",
+                        detail={
+                            "auth": shape.to_dict(),
+                            "exception_type": type(e).__name__,
+                            "vault_addr": url,
+                            "credentials_rejected": False,
+                            "remediation": (
+                                f"verify this host can reach {url} "
+                                f"(curl -sS {url}/v1/sys/health)"
+                            ),
+                        },
+                    ) from e
                 raise RegistaError(
                     ErrorCode.KEY_LOAD_ERROR,
-                    f"vault: AppRole login failed at auth/{shape.approle_mount} "
+                    f"vault: AppRole login was refused at auth/{shape.approle_mount} "
                     f"({type(e).__name__}). RoleID came from {shape.role_id_source} "
-                    f"and the SecretID from {shape.secret_id_source}. A rejected "
+                    f"and the SecretID from {shape.secret_id_source}. A refused "
                     f"login almost always means the SecretID expired or ran out of "
                     f"uses — issue a new one and re-deliver it; or the RoleID does "
                     f"not match a role at that mount (set "
@@ -740,6 +904,7 @@ class VaultProvider:
                     detail={
                         "auth": shape.to_dict(),
                         "exception_type": type(e).__name__,
+                        "credentials_rejected": True,
                         "remediation": (
                             f"vault write -f -wrap-ttl=300 "
                             f"auth/{shape.approle_mount}/role/<role>/secret-id, then "
@@ -1060,10 +1225,17 @@ class VaultProvider:
         populated once a login has actually happened; ``probe=True`` forces one
         so a caller can distinguish "declared AppRole" from "AppRole works".
         """
-        shape = _vault_auth_shape(self._env())
+        # A diagnostic command must report a broken plane file, not raise on it.
+        try:
+            env = self._env()
+        except RegistaError as e:
+            env = {}
+            shape = _VaultAuthShape(method=None, error=e.message)
+        else:
+            shape = _vault_auth_shape(env)
         status: dict[str, Any] = {
             "provider_available": True,
-            "vault_addr_set": bool(self._env().get("VAULT_ADDR")),
+            "vault_addr_set": bool(env.get("VAULT_ADDR")),
         }
         status.update(shape.to_dict())
         if probe:

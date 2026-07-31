@@ -28,7 +28,30 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   | `VAULT_SECRET_ID` | SecretID inline (discouraged: readable from `/proc/<pid>/environ`) |
   | `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when the file holds a single-use response-**wrapping** token, which the host unwraps for itself (`docs/secrets-vault.md` §5) |
   | `VAULT_APPROLE_MOUNT_POINT` | AppRole mount, default `approle` |
+  | `VAULT_ENV_FILE` | env-style plane file to read `VAULT_*` from; the process environment overrides it |
   | `VAULT_TOKEN` | static token, dev only — kept so `vault server -dev` walkthroughs still work |
+
+  **One credential format across components.** acb provisions AppRoles and writes
+  a mode-0600 env-style "plane file" carrying `VAULT_ADDR`, `VAULT_ROLE_ID` and
+  `VAULT_SECRET_ID` (agent-capability-broker PR #20). Those are the same names
+  this resolver reads, and `VAULT_ENV_FILE` points it at that file, so an operator
+  who onboards a capability with acb and then runs a regista-backed component has
+  one credential file rather than two incompatible ones. Precedence matches acb's
+  `_authenticate` (AppRole before token) so the same file cannot authenticate as
+  different identities depending on which component read it. Provenance is
+  reported as `plane:VAULT_ROLE_ID` rather than `env:` for values that came from
+  the file. Two deliberate divergences are documented in `docs/suite-config.md`:
+  regista fails closed on partial AppRole material where acb falls through to
+  `VAULT_TOKEN` (the strict reading is the one to converge on), and
+  `VAULT_SECRET_ID_FILE` is retained because a plane file cannot express a
+  single-use response-wrapping token.
+
+  **No ambient credentials.** The client is constructed with `token=""`, not
+  hvac's default `token=None` — which makes hvac call `get_token_from_env()` and
+  silently pick up `$VAULT_TOKEN` *and* `~/.vault-token`. A stray `~/.vault-token`
+  can no longer make an unconfigured host appear to work, and "this host carries
+  no ambient token" is now structural rather than a property of statement
+  ordering.
 
   Three properties the qualification found missing:
 
@@ -40,6 +63,12 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     posture), `fail` for AppRole material that is present but unusable. The
     report names where each credential *came from*, never its value, so it is
     safe to print and log.
+
+  - **A network failure is told apart from a credential refusal.** A
+    `ConnectTimeout` used to be reported as "the SecretID expired or ran out of
+    uses — issue a new one", sending an operator to rotate a credential nothing
+    had been able to present. Found while validating on the qual-linux container,
+    which has no outbound network.
 
   - **It fails closed.** Any AppRole variable being set means AppRole was asked
     for; `VAULT_TOKEN` is then never consulted. Half-configured material, a

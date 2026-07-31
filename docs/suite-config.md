@@ -97,6 +97,7 @@ The resolver authenticates in exactly one of two ways, and always reports which.
 | `VAULT_SECRET_ID` | SecretID inline. Discouraged; readable from the process environment. |
 | `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when `VAULT_SECRET_ID_FILE` holds a **response-wrapping token** rather than the SecretID itself. The host unwraps it for itself on first login. |
 | `VAULT_APPROLE_MOUNT_POINT` | AppRole auth mount. Default `approle`. |
+| `VAULT_ENV_FILE` | An env-style **plane file** to read `VAULT_*` from (see interop below). Process environment wins over it. |
 | `VAULT_TOKEN` | Static token, dev only. |
 
 **Any** AppRole variable being set means AppRole is what you asked for. From that
@@ -120,6 +121,66 @@ VAULT_SECRET_ID_RESPONSE_WRAPPED=1
 ```
 
 Both files should be `0400`/`0600` and owned by the service user.
+
+#### One credential file across components — the acb plane file
+
+acb *provisions* AppRoles and writes a mode-0600, env-style **plane file**
+carrying `VAULT_ADDR`, `VAULT_ROLE_ID` and `VAULT_SECRET_ID`, minting a separate
+SecretID per harness so each is independently revocable. Those are the same
+variable names this resolver reads, so there is **one format**, not two:
+
+```bash
+# point regista at the file acb provisioned
+VAULT_ENV_FILE=/home/svc/.config/acb/vault.env
+```
+
+Only `VAULT*` keys are read from it, so the file may equally be a shared
+`suite.env`. `export KEY=value`, quotes and `#` comments are accepted. The
+process environment overrides the file — matching acb's own merge — so an
+explicit variable still wins, and `regista secrets --auth-status` reports
+`plane:VAULT_ROLE_ID` rather than `env:` for values that came from the file, so
+provenance points at the right place.
+
+Equivalently, systemd can source the same file with `EnvironmentFile=`; both
+routes end at the same variables.
+
+Two points where regista and acb deliberately differ, both intentional:
+
+- **regista fails closed on partial AppRole material; acb falls through to
+  `VAULT_TOKEN`.** acb checks `if role_id and secret_id`, so a host with only a
+  RoleID quietly authenticates as whatever token is around. regista treats any
+  AppRole variable as a declaration of intent and refuses. The strict reading is
+  the one to converge on — a silent downgrade to the dev method is the failure
+  this whole feature exists to prevent.
+- **`VAULT_SECRET_ID_FILE` is not replaced by the plane file.** A plane file holds
+  a plain SecretID; response-wrapped delivery lands a *single-use wrapping token*
+  that the host must unwrap itself. The two coexist: a plane file can supply
+  `VAULT_ADDR`/`VAULT_ROLE_ID` while `VAULT_SECRET_ID_FILE` +
+  `VAULT_SECRET_ID_RESPONSE_WRAPPED=1` supplies the SecretID.
+
+#### No ambient credentials
+
+`hvac.Client(url=...)` defaults to `token=None`, which makes hvac call
+`get_token_from_env()` — picking up `$VAULT_TOKEN` **and** `~/.vault-token`. The
+client is therefore constructed with `token=""`, so it is born holding nothing
+and only the explicit auth path gives it a credential. A stray `~/.vault-token`
+cannot make an unconfigured host appear to work.
+
+#### Policy capabilities
+
+For **reading** refs, the role's policy needs `read` on both the data and
+metadata paths:
+
+```hcl
+path "kv/data/agent-suite/hosts/HOSTNAME/*"     { capabilities = ["read"] }
+path "kv/metadata/agent-suite/hosts/HOSTNAME/*" { capabilities = ["read"] }
+```
+
+For **custody writes** (`REGISTA_SECRET_BACKEND=vault`, i.e. `enroll_principal` /
+`provision-principal` storing a generated key) grant `["create", "update"]`, not
+`create` alone: Vault denies a `create`-only credential with `Forbidden` before it
+evaluates the check-and-set condition, so a least-privilege policy that omits
+`update` fails with a permission error rather than a legible conflict.
 
 #### Response-wrapped SecretID delivery
 

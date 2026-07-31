@@ -418,7 +418,7 @@ class TestAuthMethodReporting:
         status = provider2.auth_status(probe=True)
         assert status["configured_method"] == "approle"
         assert status["probe_ok"] is False
-        assert "AppRole login failed" in status["probe_error"]
+        assert "AppRole login was refused" in status["probe_error"]
 
     def test_lease_is_reported(self, make_provider, tmp_path):
         provider = make_provider(_approle_env(tmp_path))
@@ -521,7 +521,7 @@ class TestFailClosed:
         provider = make_provider(_approle_env(tmp_path, VAULT_ROLE_ID="wrong-role"))
         with pytest.raises(RegistaError) as exc:
             provider.resolve(_REF)
-        assert "AppRole login failed" in exc.value.message
+        assert "AppRole login was refused" in exc.value.message
         assert "re-deliver" in exc.value.message
         assert exc.value.detail is not None
         assert "remediation" in exc.value.detail
@@ -560,6 +560,52 @@ class TestFailClosed:
         with pytest.raises(RegistaError) as exc:
             provider.resolve(_REF)
         assert "single-use" in exc.value.message
+
+    def test_unreachable_vault_does_not_blame_the_credentials(
+        self, monkeypatch, tmp_path, clients
+    ):
+        """A network failure must not send an operator to rotate a SecretID.
+
+        Found while validating on the qual-linux container, which has no outbound
+        network: a `ConnectTimeout` was reported as "the SecretID expired or ran
+        out of uses — issue a new one", which is wasted and misleading work when
+        nothing was ever able to ask Vault.
+        """
+        from regista._secrets import VaultProvider
+
+        # The detection is by class *name* (hvac's HTTP stack is not a regista
+        # dependency), so the double must carry requests' name exactly.
+        class _ConnectTimeoutError(Exception):
+            pass
+
+        _ConnectTimeoutError.__name__ = "ConnectTimeout"
+
+        class _Unreachable:
+            def __init__(self, url):
+                self.token = None
+                self.auth = self
+                self.approle = self
+
+            def login(self, **kwargs):
+                raise _ConnectTimeoutError("timed out")
+
+        env = _approle_env(tmp_path)
+        provider = VaultProvider(client_factory=_Unreachable, environ=env)
+        fake_hvac = type("H", (), {"exceptions": _FakeExceptions})
+        monkeypatch.setattr(provider, "_hvac", lambda: fake_hvac)
+        with pytest.raises(RegistaError) as exc:
+            provider.resolve(_REF)
+        assert "could not reach" in exc.value.message
+        assert "do not need rotating" in exc.value.message
+        assert exc.value.detail["credentials_rejected"] is False
+
+    def test_a_real_refusal_still_points_at_the_secret_id(self, make_provider, tmp_path):
+        """The other side of that split must keep its original remedy."""
+        provider = make_provider(_approle_env(tmp_path, VAULT_ROLE_ID="wrong-role"))
+        with pytest.raises(RegistaError) as exc:
+            provider.resolve(_REF)
+        assert "refused" in exc.value.message
+        assert exc.value.detail["credentials_rejected"] is True
 
     def test_no_vault_addr_still_reported_first(self, make_provider):
         provider = make_provider({"VAULT_ROLE_ID": "role-abc"})
@@ -651,7 +697,7 @@ class TestTokenLifecycle:
         server.valid_secret_ids.clear()
         with pytest.raises(RegistaError) as exc:
             provider.resolve(_REF)
-        assert "AppRole login failed" in exc.value.message
+        assert "AppRole login was refused" in exc.value.message
 
     def test_a_lease_less_token_is_not_re_authenticated_pointlessly(self, make_provider):
         """A root/never-expiring token has no deadline, so nothing to pre-empt."""
@@ -781,6 +827,199 @@ class TestErrorMapping:
 # ---------------------------------------------------------------------------
 # Shape classification, independent of any client
 # ---------------------------------------------------------------------------
+
+
+class TestNoAmbientCredential:
+    """The client must never be born holding a credential nobody named.
+
+    `hvac.Client(url=...)` defaults to `token=None`, which makes hvac call
+    `get_token_from_env()` — and that picks up `$VAULT_TOKEN` **and**
+    `~/.vault-token`. On a host that is supposed to be AppRole-only, the client
+    would start out holding an ambient credential. Nothing reads before the
+    explicit auth path assigns a token, so this is defence in depth rather than a
+    live bug, but "no ambient token" should be structural and testable rather
+    than a property of statement ordering. acb hit the same trap
+    (agent-capability-broker PR #20).
+    """
+
+    def test_client_is_constructed_with_an_empty_token(self, monkeypatch):
+        import hvac
+
+        from regista._secrets import VaultProvider
+
+        seen = {}
+
+        class _Recording:
+            def __init__(self, url, token=None, **kwargs):
+                seen["token"] = token
+
+        monkeypatch.setattr(hvac, "Client", _Recording)
+        provider = VaultProvider(environ={"VAULT_ADDR": _ADDR})
+        provider._new_client(_ADDR)
+        assert seen["token"] == "", (
+            "token=None lets hvac read $VAULT_TOKEN and ~/.vault-token"
+        )
+
+    def test_hvac_really_does_pick_up_ambient_credentials(self, monkeypatch, tmp_path):
+        """Pin the upstream behaviour this guards against, so it is not folklore.
+
+        If a future hvac stops doing this the guard becomes redundant rather than
+        wrong, and this test says so out loud.
+        """
+        import hvac
+
+        monkeypatch.setenv("VAULT_TOKEN", "ambient-from-env")
+        assert hvac.Client(url=_ADDR).token == "ambient-from-env"
+        assert hvac.Client(url=_ADDR, token="").token == ""
+        monkeypatch.delenv("VAULT_TOKEN")
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".vault-token").write_text("ambient-from-dotfile\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr("pathlib.Path.home", lambda: home)
+        assert hvac.Client(url=_ADDR, token="").token == ""
+
+    def test_a_dotfile_token_does_not_make_a_bare_host_resolve(self, tmp_path, monkeypatch):
+        """No VAULT_* configured at all must stay fail-closed.
+
+        Otherwise a stray ~/.vault-token would make an unconfigured host appear
+        to work, which is the silent-posture problem in its purest form.
+        """
+        from regista._secrets import VaultProvider
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".vault-token").write_text("ambient-from-dotfile\n")
+        monkeypatch.setattr("pathlib.Path.home", lambda: home)
+        provider = VaultProvider(environ={"VAULT_ADDR": _ADDR})
+        with pytest.raises(RegistaError) as exc:
+            provider.resolve(_REF)
+        assert "no credentials configured" in exc.value.message
+
+
+class TestAcbPlaneFileInterop:
+    """One credential-file format across components.
+
+    acb provisions AppRoles and writes a mode-0600 env-style "plane file" with
+    `VAULT_ADDR`, `VAULT_ROLE_ID` and `VAULT_SECRET_ID`
+    (agent-capability-broker PR #20). Those are the same variable names this
+    resolver reads, so `VAULT_ENV_FILE` pointed at that file makes one file serve
+    both instead of each component inventing its own.
+    """
+
+    def _plane_file(self, tmp_path, body):
+        p = tmp_path / "vault.env"
+        p.write_text(body)
+        p.chmod(0o600)
+        return p
+
+    def test_resolves_from_an_acb_written_plane_file(self, make_provider, tmp_path):
+        plane = self._plane_file(
+            tmp_path,
+            f"VAULT_ADDR={_ADDR}\nVAULT_ROLE_ID=role-abc\nVAULT_SECRET_ID=secret-xyz\n",
+        )
+        provider = make_provider({"VAULT_ENV_FILE": str(plane)})
+        assert provider.resolve(_REF) == _SECRET.encode()
+        status = provider.auth_status()
+        assert status["active_method"] == "approle"
+        # Provenance must say "plane", not "env" — attributing a plane-file value
+        # to the process environment sends an operator to the wrong place.
+        assert status["role_id_source"] == "plane:VAULT_ROLE_ID"
+        assert status["secret_id_source"] == "plane:VAULT_SECRET_ID"
+
+    def test_export_prefix_quotes_and_comments_are_tolerated(self, make_provider, tmp_path):
+        plane = self._plane_file(
+            tmp_path,
+            "# provisioned by acb\n"
+            f'export VAULT_ADDR="{_ADDR}"\n'
+            "export VAULT_ROLE_ID='role-abc'   # the harness role\n"
+            "VAULT_SECRET_ID=secret-xyz\n",
+        )
+        provider = make_provider({"VAULT_ENV_FILE": str(plane)})
+        assert provider.resolve(_REF) == _SECRET.encode()
+
+    def test_non_vault_keys_are_ignored(self, make_provider, tmp_path):
+        """So the file may also be a shared suite.env without side effects."""
+        plane = self._plane_file(
+            tmp_path,
+            f"REGISTA_DSN=postgresql://nope\nVAULT_ADDR={_ADDR}\n"
+            "VAULT_ROLE_ID=role-abc\nVAULT_SECRET_ID=secret-xyz\n",
+        )
+        provider = make_provider({"VAULT_ENV_FILE": str(plane)})
+        assert provider.resolve(_REF) == _SECRET.encode()
+
+    def test_process_environment_wins_over_the_plane_file(self, make_provider, tmp_path):
+        """Matches acb's own merge, so an explicit override still overrides."""
+        plane = self._plane_file(
+            tmp_path,
+            f"VAULT_ADDR={_ADDR}\nVAULT_ROLE_ID=stale-role\nVAULT_SECRET_ID=secret-xyz\n",
+        )
+        provider = make_provider(
+            {"VAULT_ENV_FILE": str(plane), "VAULT_ROLE_ID": "role-abc"}
+        )
+        assert provider.resolve(_REF) == _SECRET.encode()
+        status = provider.auth_status()
+        assert status["role_id_source"] == "env:VAULT_ROLE_ID"
+        assert status["secret_id_source"] == "plane:VAULT_SECRET_ID"
+
+    def test_a_named_but_missing_plane_file_fails_closed(self, make_provider, tmp_path):
+        """An operator who named a plane file meant to use it."""
+        provider = make_provider({"VAULT_ENV_FILE": str(tmp_path / "absent.env")})
+        with pytest.raises(RegistaError) as exc:
+            provider.resolve(_REF)
+        assert "does not exist" in exc.value.message
+        assert "VAULT_ENV_FILE" in exc.value.message
+
+    def test_auth_status_reports_a_broken_plane_file_instead_of_raising(
+        self, make_provider, tmp_path
+    ):
+        provider = make_provider({"VAULT_ENV_FILE": str(tmp_path / "absent.env")})
+        status = provider.auth_status()
+        assert status["configured_method"] is None
+        assert "VAULT_ENV_FILE" in status["configured_error"]
+
+    def test_response_wrapped_delivery_still_available_alongside(
+        self, make_provider, tmp_path
+    ):
+        """The plane file cannot express a one-shot wrapping token.
+
+        acb writes a plain SecretID; agent-suite's §5 delivery lands a single-use
+        wrapping token in a file of its own. Both shapes must keep working, which
+        is why `VAULT_SECRET_ID_FILE` is not replaced by the plane file.
+        """
+        wrap = tmp_path / "wrap-token"
+        wrap.write_text("wrap-token-1\n")
+        plane = self._plane_file(tmp_path, f"VAULT_ADDR={_ADDR}\nVAULT_ROLE_ID=role-abc\n")
+
+        def seed(srv):
+            srv.wrapped["wrap-token-1"] = "secret-xyz"
+
+        provider = make_provider(
+            {
+                "VAULT_ENV_FILE": str(plane),
+                "VAULT_SECRET_ID_FILE": str(wrap),
+                "VAULT_SECRET_ID_RESPONSE_WRAPPED": "1",
+            },
+            on_new=seed,
+        )
+        assert provider.resolve(_REF) == _SECRET.encode()
+
+    def test_acb_and_regista_agree_that_approle_beats_a_token(
+        self, make_provider, tmp_path
+    ):
+        """Precedence must match acb's `_authenticate` order (AppRole before token).
+
+        Divergence here would mean the same plane file authenticates as different
+        identities depending on which component read it.
+        """
+        plane = self._plane_file(
+            tmp_path,
+            f"VAULT_ADDR={_ADDR}\nVAULT_ROLE_ID=role-abc\n"
+            "VAULT_SECRET_ID=secret-xyz\nVAULT_TOKEN=dev-token\n",
+        )
+        provider = make_provider({"VAULT_ENV_FILE": str(plane)})
+        provider.resolve(_REF)
+        assert provider.auth_status()["active_method"] == "approle"
 
 
 class TestAuthShape:
