@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hmac as _hmac
 import uuid
 from datetime import datetime
@@ -315,11 +316,48 @@ _EVENT_FIELDS = (
 # has to write report rows as it goes.  That leaves a named (server-side)
 # cursor, whose FETCH size this bounds.
 #
-# The resulting replay working set is: one fetch block, plus the widest single
-# work item's history, plus one compact chain link per event (~0.5 KiB, see
-# _chain_link).  100 matches psycopg's own ServerCursor default; the extra
-# round trips are cheap next to per-event signature verification.
+# 100 matches psycopg's own ServerCursor default; the extra round trips are
+# cheap next to per-event signature verification.  Note this bounds the block
+# in ROWS, not bytes — on a project with very large event payloads the block's
+# byte cost rises with the payload width.
+#
+# Client-side working set: one fetch block, plus the widest single entity's
+# history, plus one compact chain link per event.
+#
+# The chain index is the term that still grows with the log, so it is worth
+# being precise about, and the answer depends on what you charge to it.  A link
+# allocates 258 B of fresh memory (measured: tracemalloc delta while building
+# the index over 6000 real rows) — the dict plus the two 32-byte digests.  It
+# also pins the row's `event_id` UUID and `global_seq` int, which would
+# otherwise be freed with the row, taking the footprint to ~360 B by
+# `sys.getsizeof`, or ~470 B if the four (interned, shared) key strings are
+# charged per link as well.  At 227k events that is ~55-105 MiB depending on
+# the accounting — the dominant term on a large log, and the reason this is a
+# bound rather than an elimination.
 _EVENT_STREAM_SIZE = 100
+
+# Ordering for the streamed event scan (WI-217).
+#
+# This MUST stay on the columns of `idx_events_entity` / the
+# `UNIQUE (entity_kind, entity_id, event_seq)` constraint, and it is load
+# bearing for memory, not just for speed.  `DECLARE CURSOR` over a plan
+# containing a Sort makes Postgres materialize the whole sorted result before
+# it will yield row one, and hold it for the cursor's entire lifetime — which
+# is now the whole replay rather than the few seconds a `fetchall()` took.
+# Measured on a 6000-row / 8.3 MiB events table: ordering by
+# `work_item_id, event_seq` plans as `Sort -> Seq Scan` and parks 6.1 MiB in
+# `pgsql_tmp` after fetching a single row (a few hundred MB at production
+# scale, which a deployment with `temp_file_limit` set would abort on);
+# ordering by the index columns plans as `Index Scan using idx_events_entity`
+# and uses zero temp space.  There is no index on `work_item_id` to order by —
+# migration 031 dropped `UNIQUE (work_item_id, event_seq)` when it made
+# `(entity_kind, entity_id, event_seq)` the event stream's identity and
+# demoted `work_item_id` to a read-compat column.
+#
+# The trade is random heap access instead of a sequential scan.  That is the
+# right side of the trade here: replay verifies a signature per event, so it is
+# CPU bound, and the plan is fast-start rather than blocking on a full sort.
+_EVENT_STREAM_ORDER = "ORDER BY entity_kind, entity_id, event_seq"
 
 
 def replay(
@@ -408,12 +446,14 @@ def _replay_inner(
     total_warnings = 0
     total_principal_binding_failures = 0
 
-    # WI-217: the event log is streamed one work item at a time through a
+    # WI-217: the event log is streamed one entity at a time through a
     # server-side cursor, so the replay working set is bounded by the widest
-    # single work-item history plus a fetch block, not by the size of the
+    # single entity's history plus a fetch block, not by the size of the
     # project's whole event log.  The only per-event state that outlives a
     # group is the compact chain link below, which carries a pre-computed
-    # head hash instead of the envelope, signature and payload.
+    # head hash instead of the envelope, signature and payload.  See
+    # _EVENT_STREAM_SIZE / _EVENT_STREAM_ORDER for the full cost, including
+    # the server side — the ordering is load bearing for both.
     chain_links: list[dict] = []
     scoped_event_count = 0
 
@@ -460,11 +500,17 @@ def _replay_inner(
                 event_count=len(orphan_evts),
             )
 
-    def _process_group(wi_id, events: list[dict]) -> None:
+    def _process_group(entity_kind, wi_id, events: list[dict]) -> None:
         nonlocal ok_count, drift_count, halted_count
         nonlocal total_warnings, total_principal_binding_failures
 
-        if wi_id not in wi_ids:
+        # Only work-item entities have a projection row to rebuild.  Other
+        # entity kinds (spec, principal) keep their own `event_seq` space —
+        # `allocate_seq` keys on (entity_kind, entity_id) — so feeding them to
+        # `_replay_work_item` would clobber `last_event_seq` with a foreign
+        # sequence.  They take the orphan path, which reports them as
+        # `replay.non_work_item_entity`, exactly as before.
+        if entity_kind != "work_item" or wi_id not in wi_ids:
             # Scoped replay reports the missing projection row once, after
             # the stream is drained, so there is nothing to do here.
             if not scoped:
@@ -574,33 +620,62 @@ def _replay_inner(
         )
 
     if scoped:
+        # A scoped replay's Sort is bounded by the one entity's history, which
+        # the working set already accounts for, so it does not need the index
+        # ordering.  It is left on `work_item_id` so the reported
+        # `event_count` keeps counting exactly the rows the old query saw.
         events_query = SQL(
             f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"
         )
         events_params: list | None = [work_item_id]
     else:
-        events_query = SQL(f"SELECT {_EVENT_FIELDS} FROM events ORDER BY work_item_id, event_seq")
+        events_query = SQL(f"SELECT {_EVENT_FIELDS} FROM events {_EVENT_STREAM_ORDER}")
         events_params = None
 
-    with conn.cursor(name=f"replay_events_{uuid.uuid4().hex[:8]}") as event_stream:
+    # psycopg's named cursors are DECLARE ... WITHOUT HOLD, so the stream is
+    # only valid inside a transaction and only until the next commit:
+    #   * `_api_workflow.replay` runs this under
+    #     `transaction_repeatable_read()`, so the usual path is covered, but
+    #     `replay` is also re-exported as `regista.testing.replay_fn` and takes
+    #     a caller-supplied connection.  An autocommit connection has no
+    #     transaction block for DECLARE, so open one explicitly rather than
+    #     failing with psycopg's bare `NoActiveSqlTransaction`.
+    #   * Do NOT add a `conn.commit()` inside the group loop.  It would close
+    #     this cursor (`InvalidCursorName`) after the first fetch block, which
+    #     means it would pass every test — no fixture has more than 100 events
+    #     — and fail only on real logs.  `_process_group` already writes two
+    #     tables on this connection, so batching those writes is a natural next
+    #     step; batch them without committing, or re-declare the cursor.
+    txn = conn.transaction() if conn.autocommit else contextlib.nullcontext()
+
+    with txn, conn.cursor(name=f"replay_events_{uuid.uuid4().hex[:8]}") as event_stream:
         event_stream.itersize = _EVENT_STREAM_SIZE
         event_stream.execute(events_query, events_params)
 
         group: list[dict] = []
+        group_key = None
         group_wi_id = None
         for evt in event_stream:
             if scoped:
                 scoped_event_count += 1
             else:
                 chain_links.append(_chain_link(evt))
-            wid = evt["work_item_id"]
-            if group and wid != group_wi_id:
-                _process_group(group_wi_id, group)
+            # Group on the ordering key — that is what guarantees a group is
+            # contiguous in the stream.  The work item id is carried alongside
+            # for reporting; `entity_id` and `work_item_id` are the same value
+            # for every event the append path can produce (migration 031
+            # backfilled it and the `events_set_entity_id` trigger maintains
+            # it), so these groups are the ones the previous
+            # `ORDER BY work_item_id` produced.
+            key = (evt["entity_kind"], evt["entity_id"])
+            if group and key != group_key:
+                _process_group(group_key[0], group_wi_id, group)
                 group = []
-            group_wi_id = wid
+            group_key = key
+            group_wi_id = evt["work_item_id"]
             group.append(evt)
         if group:
-            _process_group(group_wi_id, group)
+            _process_group(group_key[0], group_wi_id, group)
         # Drop the last group before the global-chain phase, which only needs
         # the compact links.
         group = []

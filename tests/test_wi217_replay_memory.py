@@ -32,6 +32,19 @@ post-fix one.
 tracemalloc peaks are used rather than RSS on purpose: they count Python
 allocations directly, so they are reproducible to within ~0.01 MiB run to run,
 where RSS depends on glibc arena behaviour and is not a stable gate.
+
+What these tests do NOT cover is the *server* side of the same bound. A
+`DECLARE CURSOR` over a plan containing a Sort makes Postgres materialize the
+whole sorted result and hold it in `pgsql_tmp` for the cursor's lifetime, so a
+streaming client can be paid for out of server temp space instead. That is why
+`_EVENT_STREAM_ORDER` is pinned to the columns of `idx_events_entity`; the
+guard for it is a plan assertion, not a memory measurement, and lives in
+`test_wi217_stream_plan_has_no_sort` below.
+
+This module runs ~23s, which makes it the slowest test in the default gate,
+and it is deliberately NOT marked `slow`: `addopts = -m 'not slow'` means a
+marked test never runs in CI, and a memory guard that never runs is no guard.
+`test_doctor` at ~17s is the existing unmarked precedent.
 """
 
 from __future__ import annotations
@@ -105,7 +118,7 @@ def _create_items(sub, count, start):
 
 @pytest.fixture(scope="module")
 def seeded():
-    """A project seeded to ITEMS_SMALL, which the test then grows to ITEMS_BIG.
+    """A project seeded to ITEMS_SMALL, which tests grow to ITEMS_BIG.
 
     Growing one project in place (rather than seeding two) keeps the schema,
     connection pool, prepared statements and key set identical between the two
@@ -125,13 +138,24 @@ def seeded():
     try:
         sub.register_workflow_file(WORKFLOW_PATH)
         rng = random.Random(217)
-        items = _create_items(sub, ITEMS_SMALL, 0)
-        _append_events(sub, items, rng)
-        yield sub, rng
+        _append_events(sub, _create_items(sub, ITEMS_SMALL, 0), rng)
+        state = {"sub": sub, "project": project, "rng": rng, "items": ITEMS_SMALL}
+        yield state
     finally:
         sub.close()
         drop_project_schema(DSN, project)
         structlog.configure(**saved_log_config)
+
+
+def _grow_to_big(state):
+    """Grow the seeded project to ITEMS_BIG. Idempotent, so tests may order freely."""
+    if state["items"] >= ITEMS_BIG:
+        return
+    extra = ITEMS_BIG - state["items"]
+    _append_events(
+        state["sub"], _create_items(state["sub"], extra, state["items"]), state["rng"]
+    )
+    state["items"] = ITEMS_BIG
 
 
 def _replay_peaks(sub, rounds, expected_items):
@@ -169,11 +193,14 @@ def _replay_peaks(sub, rounds, expected_items):
 
 class TestWI217ReplayMemory:
     def test_replay_peak_does_not_track_log_size(self, seeded):
-        sub, rng = seeded
+        sub = seeded["sub"]
+
+        if seeded["items"] != ITEMS_SMALL:
+            pytest.skip("log already grown by another test; small measurement unavailable")
 
         small_peaks, _ = _replay_peaks(sub, ROUNDS, ITEMS_SMALL)
 
-        _append_events(sub, _create_items(sub, ITEMS_BIG - ITEMS_SMALL, ITEMS_SMALL), rng)
+        _grow_to_big(seeded)
         big_peaks, retained = _replay_peaks(sub, ROUNDS, ITEMS_BIG)
 
         small_peak = max(small_peaks)
@@ -213,4 +240,50 @@ class TestWI217ReplayMemory:
             f"{ROUNDS} replays retained {retained / 1048576:.2f} MiB of live Python "
             f"objects (budget {MAX_RETAINED_BYTES / 1048576:.2f} MiB); replay is holding "
             "onto its working set (WI-217)"
+        )
+
+    def test_stream_plan_has_no_sort(self, seeded):
+        """The streamed scan must plan as an ordered index scan, not a Sort.
+
+        This is the server half of the bound, and it is not visible to any
+        client-side memory measurement. `DECLARE CURSOR` over a plan containing
+        a Sort makes Postgres materialize the whole sorted result before it
+        yields row one and hold it in `pgsql_tmp` until the cursor closes — for
+        the entire replay, where `fetchall()` only held it for the drain. So a
+        change to `_EVENT_STREAM_ORDER` that drops off the index columns would
+        move the peak from the client to the server's temp volume, which is a
+        worse failure (a deployment with `temp_file_limit` set aborts) and one
+        that no assertion on tracemalloc could catch.
+
+        Measured on a 6000-row / 8.3 MiB events table: ordering by
+        `work_item_id, event_seq` plans as `Sort -> Seq Scan` and parks 6.1 MiB
+        of `pgsql_tmp` after a single FETCH; the index ordering uses none.
+
+        The log has to be grown first — on a table of a few pages the planner
+        rightly prefers a sequential scan and a trivial in-memory sort, so the
+        assertion is only meaningful once an index scan is the cheaper plan.
+        """
+        from regista._replay import _EVENT_FIELDS, _EVENT_STREAM_ORDER
+
+        _grow_to_big(seeded)
+        sub, project = seeded["sub"], seeded["project"]
+
+        with sub._mgr.connect() as conn:
+            conn.execute(f"SET search_path = {project}, public")
+            conn.execute("ANALYZE events")
+            rows = conn.execute(
+                f"EXPLAIN (COSTS OFF) DECLARE _wi217 CURSOR FOR "
+                f"SELECT {_EVENT_FIELDS} FROM events {_EVENT_STREAM_ORDER}"
+            ).fetchall()
+            conn.rollback()
+        plan = "\n".join(r["QUERY PLAN"] for r in rows)
+
+        assert "Sort" not in plan, (
+            "the streamed event scan plans with a Sort, so DECLARE CURSOR will "
+            "materialize the whole sorted log server-side and hold it in "
+            f"pgsql_tmp for the entire replay (WI-217). Plan:\n{plan}"
+        )
+        assert "Index Scan" in plan, (
+            "the streamed event scan is not using an ordered index scan; "
+            f"_EVENT_STREAM_ORDER must stay on indexed columns. Plan:\n{plan}"
         )
