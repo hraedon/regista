@@ -247,6 +247,116 @@ def _validate_principal_id(principal_id: str) -> str:
     return principal_id
 
 
+def _asymmetric_schemes() -> frozenset[str]:
+    from ._signing_scheme import asymmetric_scheme_ids
+
+    return asymmetric_scheme_ids()
+
+
+def _key_file_entries_for(
+    key_file_path: str, principal_id: str,
+) -> list[dict[str, Any]]:
+    """Principal entries already present in the shared key file, in file order."""
+    path = Path(key_file_path)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    keys = data.get("keys", [])
+    if not isinstance(keys, list):
+        return []
+    return [
+        k for k in keys
+        if isinstance(k, dict) and k.get("principal_id") == principal_id
+    ]
+
+
+def _guard_shared_key_file(
+    key_file_path: str,
+    principal_id: str,
+    project: str,
+) -> None:
+    """Refuse to mint a second keypair into a key file that already has one.
+
+    WI-223. ``keys.json`` is shared across projects but ``principal_keys`` is
+    per-project. Minting a second keypair for the same principal appended it to
+    the same file and demoted the first to ``deprecated``, so the signer — which
+    selects by ``principal_id`` with no project scoping — started signing *the
+    first project's* events with a key only the second project had registered.
+    The whole chain became unattributable, and every routine surface stayed
+    green because only the offline bundle verifier resolves signatures through
+    the project's registry.
+
+    So: if the key file already carries a signable Ed25519 entry for this
+    principal, stop and make the operator choose deliberately.
+    """
+    existing = [
+        k for k in _key_file_entries_for(key_file_path, principal_id)
+        if k.get("scheme") in _asymmetric_schemes()
+        and k.get("status") in ("active", "deprecated")
+    ]
+    if not existing:
+        return
+    key_ids = ", ".join(str(k.get("key_id")) for k in existing)
+    # The wording matters, not just the error code: agent-suite's onboard and
+    # bootstrap steps classify a failed `provision-principal` by scanning
+    # stderr, and treat "already"/"exists" as *success* (already provisioned).
+    # They check for "refuse"/"clobber" first, so the message must lead with
+    # "Refusing to" or this hard stop would be reported as a green step.
+    raise RegistaError(
+        ErrorCode.PRINCIPAL_KEY_ALREADY_EXISTS,
+        f"Refusing to mint a second keypair: principal {principal_id!r} already "
+        f"has a key in the signing key file {key_file_path} ({key_ids}), but no "
+        f"active key in project {project!r}. Minting one here would append it to "
+        f"the same file and demote the first, so the signer would clobber the "
+        f"other project's identity — it would sign that project's events with a "
+        f"key the project never registered, an unattributable chain that only "
+        f"`regista bundle verify` rejects. Either re-run with "
+        f"reuse_existing_key=True (--reuse-existing-key) to register the "
+        f"existing public key in {project!r}, or give this project its own key "
+        f"file (--hmac-key-path / REGISTA_HMAC_KEY_PATH).",
+    )
+
+
+def _reuse_key_file_entry(
+    key_file_path: str,
+    principal_id: str,
+    project: str,
+) -> tuple[str, bytes]:
+    """Return ``(key_id, public_key)`` of the key the signer would pick.
+
+    Uses the signer's own selection rule so the key registered in the new
+    project is exactly the one that will sign there (WI-223).
+    """
+    import base64
+
+    from ._keys import select_signing_key_id
+
+    entries = [
+        k for k in _key_file_entries_for(key_file_path, principal_id)
+        if k.get("scheme") in _asymmetric_schemes() and k.get("public_key")
+    ]
+    chosen = select_signing_key_id(
+        [
+            (str(k.get("key_id")), str(k.get("scheme")), str(k.get("status", "active")))
+            for k in entries
+        ]
+    )
+    if chosen is None:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEY_NOT_FOUND,
+            f"reuse_existing_key: no active asymmetric key for principal "
+            f"{principal_id!r} with a public_key in {key_file_path}; "
+            f"nothing to register in project {project!r}",
+        )
+    entry = next(k for k in entries if k.get("key_id") == chosen)
+    return chosen, base64.b64decode(str(entry["public_key"]))
+
+
 def provision_principal(
     dsn: str,
     project: str,
@@ -257,6 +367,7 @@ def provision_principal(
     secret_backend: str | None = None,
     dry_run: bool = False,
     require_ssl: bool = False,
+    reuse_existing_key: bool = False,
 ) -> PrincipalProvisionResult:
     if not principal_id:
         raise RegistaError(
@@ -313,6 +424,41 @@ def provision_principal(
             )
         except RegistaError:
             pass
+
+        # This project has no active key for the principal. Before minting one,
+        # make sure doing so would not corrupt another project that shares this
+        # key file (WI-223).
+        if reuse_existing_key:
+            reuse_key_id, reuse_public_key = _reuse_key_file_entry(
+                hmac_key_path, principal_id, project,
+            )
+            entry = register_principal_key(
+                mgr,
+                principal_id,
+                reuse_public_key,
+                "ed25519",
+                key_id=reuse_key_id,
+                registered_by="provision-principal(reuse)",
+            )
+            log.info(
+                "provision.principal_key_reused",
+                principal_id=principal_id,
+                project=project,
+                key_id=entry.key_id,
+                fingerprint=entry.fingerprint,
+            )
+            return PrincipalProvisionResult(
+                principal_id=principal_id,
+                project=project,
+                key_id=entry.key_id,
+                fingerprint=entry.fingerprint,
+                scheme=entry.scheme,
+                private_key_stored=False,
+                public_key_registered=True,
+                secret_backend=resolved_backend,
+            )
+
+        _guard_shared_key_file(hmac_key_path, principal_id, project)
 
         key_dir = _resolve_key_dir(
             private_key_dir, hmac_key_path, resolved_backend,

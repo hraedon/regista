@@ -275,19 +275,26 @@ def cmd_replay(args):
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
+        # WI-223: the binding check is on by default. Printing
+        # principal_binding_failures=0 for a run that never looked is an
+        # affirmative claim the chain was attributable when nothing checked.
         report = sub.replay(
             continue_on_revoked=args.continue_on_revoked,
-            verify_principal_binding=args.verify_principal_binding,
+            verify_principal_binding=not args.no_verify_principal_binding,
         )
         if args.json:
             _dump_json(report)
         else:
+            if report.principal_binding_verified:
+                binding = f"principal_binding_failures={report.principal_binding_failures}"
+            else:
+                binding = "principal_binding=not-verified"
             print(
                 f"ok={report.replayed_ok}  "
                 f"drift={report.replayed_drift}  "
                 f"halted={report.halted}  "
                 f"warnings={report.warnings}  "
-                f"principal_binding_failures={report.principal_binding_failures}"
+                f"{binding}"
             )
         if report.replayed_drift > 0 or report.halted > 0:
             sys.exit(1)
@@ -1421,6 +1428,7 @@ def cmd_provision_principal(args):
         private_key_dir=args.private_key_dir,
         secret_backend=args.secret_backend or cfg.secret_backend,
         dry_run=args.dry_run,
+        reuse_existing_key=args.reuse_existing_key,
     )
     if args.json:
         _dump_json(result)
@@ -1745,7 +1753,14 @@ def main(argv=None):
     rep.add_argument(
         "--verify-principal-binding",
         action="store_true",
-        help="Verify event signatures against the principal_keys registry",
+        help="Deprecated no-op: the principal_keys binding check is on by "
+        "default (WI-223). Kept so existing invocations keep working.",
+    )
+    rep.add_argument(
+        "--no-verify-principal-binding",
+        action="store_true",
+        help="Skip the principal_keys binding check. The report then says "
+        "principal_binding=not-verified rather than claiming zero failures.",
     )
     rep.add_argument(
         "--strict-principal-binding",
@@ -2067,6 +2082,15 @@ def main(argv=None):
         "--dry-run",
         action="store_true",
         help="Print plan without writing",
+    )
+    prov_princ_parser.add_argument(
+        "--reuse-existing-key",
+        action="store_true",
+        help="Register the public key already in the signing key file for this "
+        "principal instead of minting a new keypair. Required when the same "
+        "principal acts in a second project that shares the key file — minting "
+        "a second keypair would leave the first project's chain signed by a key "
+        "it never registered (WI-223).",
     )
     prov_princ_parser.add_argument("--json", action="store_true", help="JSON output")
     prov_princ_parser.set_defaults(func=cmd_provision_principal)

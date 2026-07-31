@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,33 @@ def _asymmetric_schemes() -> frozenset[str]:
     from ._signing_scheme import asymmetric_scheme_ids
 
     return asymmetric_scheme_ids()
+
+
+def select_signing_key_id(
+    candidates: Sequence[tuple[str, str, str]],
+) -> str | None:
+    """Pure form of the signer's per-principal key selection rule.
+
+    ``candidates`` is a sequence of ``(key_id, scheme, status)`` triples for a
+    single principal, **in key-file order**. Returns the ``key_id`` the signer
+    would pick, or ``None`` when no active key is available.
+
+    This exists so that surfaces which reason about the signer's choice
+    without loading secrets (``regista doctor``'s custody checks) cannot drift
+    from :meth:`KeySet._latest_active_key_for`, which delegates here. WI-223:
+    that divergence is how a project's chain came to be signed by a key the
+    project never registered while every health surface stayed green.
+    """
+    active = [c for c in candidates if c[2] == "active"]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0][0]
+    asym = _asymmetric_schemes()
+    asym_active = [c for c in active if c[1] in asym]
+    if asym_active:
+        return asym_active[-1][0]
+    return active[-1][0]
 
 
 class KeySet:
@@ -285,13 +313,12 @@ class KeySet:
         candidates = self.active_keys_for(principal_id)
         if not candidates:
             return None
-        if len(candidates) == 1:
-            return candidates[0]
-        asym = _asymmetric_schemes()
-        asym_candidates = [c for c in candidates if c.scheme in asym]
-        if asym_candidates:
-            return asym_candidates[-1]
-        return candidates[-1]
+        chosen = select_signing_key_id(
+            [(c.key_id, c.scheme, c.status) for c in candidates]
+        )
+        if chosen is None:
+            return None
+        return next(c for c in candidates if c.key_id == chosen)
 
     def _enforce_strict_asymmetric(self, entry: KeyEntry, actor_id: str) -> None:
         asym = _asymmetric_schemes()
