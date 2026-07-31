@@ -62,6 +62,66 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Fixed
 
+- **`hvac` failures now arrive as the error envelope, not a traceback
+  (WI-229b, WI-226):** `regista secrets --ref` caught only `RegistaError`, so
+  `hvac.exceptions.Forbidden` escaped as a raw traceback with **zero bytes on
+  stdout** — a `--json` consumer had nothing to parse. Every Vault failure is now
+  mapped: 403 to `SECRET_RESOLVE_FAILED` with the policy capabilities to grant,
+  an absent path to `KEY_LOAD_ERROR` restating that the ref's field comes last,
+  and anything else to a typed error. Only the exception's *type* is reported,
+  never its text, so a backend message cannot carry secret material into the
+  envelope (CLI contract §3). This path gets busier once AppRole is in use, not
+  quieter: a 403 is exactly what a scoped policy produces when a ref reaches
+  outside it.
+
+  Also fixed in the same area: `secrets --delete` against Vault answered
+  `except Exception: return ALREADY_ABSENT`, so a **permission denial was
+  reported as a successful deletion** — telling an operator running an
+  offboarding that the key was gone when the read had been refused and nothing
+  was looked at. Only a genuinely absent path is now `already_absent`.
+
+- **`--json` verbs exited 0 while their body reported failure (WI-229a):**
+  `regista provision --json` exited 0 with `{"error": "permission denied to
+  create role", "service_role_created": false}`, so every consumer that trusted
+  the exit code read a failed provision as success — which is how
+  `agent-suite bootstrap` reported `bootstrap: OK` over a provision that never
+  created the service role. In each case the `sys.exit(1)` sat inside the
+  `else:` of an `if args.json:`, making it unreachable in JSON mode. Auditing
+  every `--json` path found the same shape on four verbs, all now fixed:
+  `provision`, `provision-principal`, `bundle verify` and `archive
+  verify-chain`. `archive verify` was worse — it exited 0 in **both** formats
+  while printing `FAILED` and its errors — and now matches its sibling
+  `bundle verify`.
+
+  The machine-readable channel still carries the machine-readable answer: the
+  body stays on stdout, where CLI contract §3 puts it and where
+  `agent_suite.component_result.evaluate_component_result` reads it. A one-line
+  human diagnostic is now *also* written to stderr on every error path, because
+  under `--json` a downstream stderr-only parser previously saw nothing at all.
+  Partial success picks a side: any failed project fails the verb.
+
+  A regression test asserts the structural cause, not just the symptom — it
+  parses each handler's AST and fails if a `sys.exit` is reachable only when
+  `--json` is absent.
+
+- **`REGISTA_KEY_PATH` was ignored by the CLI (WI-229c, WI-225):** `_resolve_config`
+  read only the legacy alias `REGISTA_HMAC_KEY_PATH`, never the canonical
+  `REGISTA_KEY_PATH` that `_config.CANONICAL_VARS`, every runbook and
+  `suite.env` actually use. `principal enroll` therefore dropped the variable an
+  operator had set, while `doctor` — which goes through `_config.resolve` —
+  honoured it. Both names are now read, canonical first, matching
+  `_config.resolve`'s precedence; an explicit `--hmac-key-path` still wins. The
+  helper is shared, so `replay` and `principal list` (filed separately as
+  WI-225) are covered by the same fix.
+
+- **regista's own docs printed an unresolvable `vault:` ref:**
+  `docs/suite-config.md` showed `vault:secret/data/regista/key`, which names a
+  mount this estate does not have and mixes in the raw KV v2 API path. Replaced
+  with a working shape, plus an explicit note on the three ref-shape traps: the
+  `#field` form silently resolves a *different, neighbouring* secret rather than
+  failing, there is no default mount, and `vault:` refs resolve only in a process
+  where `hvac` is importable.
+
 - **Principal binding was reported, not verified (WI-223):** a work item's
   entire chain could be signed by an Ed25519 key that its project never
   registered, and four surfaces reported green — `regista replay`
