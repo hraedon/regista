@@ -25,6 +25,7 @@ rather than about any backend being up.
 from __future__ import annotations
 
 import json
+import sys
 from typing import ClassVar
 
 import pytest
@@ -564,59 +565,96 @@ class TestJsonExitCodeAudit:
     reintroducing the shape has to argue with a test.
     """
 
-    # Verbs whose failure is carried inside their own result document rather
-    # than as an error envelope, with the field that says so.
+    # Verbs whose failure is carried inside their own result document rather than
+    # as an error envelope, mapped to the CLI handler that implements each. This
+    # is the audit's subject list: the scan below is driven from it, so the list
+    # and what actually gets checked cannot drift apart.
     SELF_REPORTING_FAILURE_VERBS: ClassVar[dict[str, str]] = {
-        "provision": "error",
-        "provision-principal": "error",
-        "bundle verify": "verified",
-        "archive verify": "verified",
-        "archive verify-chain": "verified",
+        "provision": "cmd_provision",
+        "provision-principal": "cmd_provision_principal",
+        "bundle verify": "cmd_bundle_verify",
+        "archive verify": "cmd_archive_verify",
+        "archive verify-chain": "cmd_archive_verify_chain",
     }
 
-    def test_each_audited_verb_decides_its_exit_outside_the_format_branch(self):
-        """Guard against the structural cause, not just the symptom.
+    @staticmethod
+    def _scan(handler):
+        """Return (offending exits, number of format branches seen) for a handler.
 
-        Every instance of this bug was a ``sys.exit(1)`` nested inside the
-        ``else:`` of an ``if args.json:`` — so the exit was unreachable in JSON
-        mode. Assert no ``sys.exit`` remains inside such a branch in the handlers
-        that report failure in their own body.
+        An "offending exit" is a ``sys.exit`` reachable only when ``--json`` is
+        absent — i.e. nested in the ``else:`` of an ``if args.json:``. That was the
+        structural cause of every instance of this bug.
         """
         import ast
         import inspect
 
+        tree = ast.parse(inspect.getsource(handler).lstrip())
+        offenders: list[str] = []
+        branches = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test_src = ast.unparse(node.test)
+            if "json" not in test_src:
+                continue
+            branches += 1
+            for inner in node.orelse:
+                for sub in ast.walk(inner):
+                    if (
+                        isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "exit"
+                    ):
+                        offenders.append(f"sys.exit inside `else` of `{test_src}`")
+        return offenders, branches
+
+    @pytest.mark.parametrize(
+        ("verb", "handler_name"), sorted(SELF_REPORTING_FAILURE_VERBS.items())
+    )
+    def test_exit_is_decided_outside_the_format_branch(self, verb, handler_name):
         import regista._cli as cli
 
-        handlers = {
-            "cmd_provision",
-            "cmd_provision_principal",
-            "cmd_bundle_verify",
-            "cmd_archive_verify",
-            "cmd_archive_verify_chain",
-        }
-        offenders = []
-        for name in sorted(handlers):
-            fn = getattr(cli, name)
-            tree = ast.parse(inspect.getsource(fn).lstrip())
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.If):
-                    continue
-                test_src = ast.unparse(node.test)
-                if "json" not in test_src or not node.orelse:
-                    continue
-                for inner in node.orelse:
-                    for sub in ast.walk(inner):
-                        if (
-                            isinstance(sub, ast.Call)
-                            and isinstance(sub.func, ast.Attribute)
-                            and sub.func.attr == "exit"
-                        ):
-                            offenders.append(f"{name}: sys.exit inside `else` of `{test_src}`")
+        handler = getattr(cli, handler_name)
+        offenders, branches = self._scan(handler)
+        # Without this, "no offenders" would also be the answer for a handler the
+        # scan failed to understand — cli-contract.md §7's "a gate that skips
+        # enforces nothing", one level down. Each of these verbs really does
+        # branch on the output format, so seeing zero branches means the scan
+        # stopped working, not that the code got better.
+        assert branches > 0, (
+            f"{handler_name}: found no `if ...json...` branch to audit — the scan "
+            f"is no longer measuring anything for {verb!r}"
+        )
         assert offenders == [], (
-            "an exit code reachable only when --json is absent means the JSON "
-            "channel reports failure and exits 0: " + "; ".join(offenders)
+            f"{verb}: an exit code reachable only when --json is absent means the "
+            f"JSON channel reports failure and exits 0 — " + "; ".join(offenders)
         )
 
-    def test_the_audit_list_is_not_empty(self):
-        """cli-contract.md §7: a gate that covers nothing enforces nothing."""
+    def test_the_scan_detects_the_shape_it_claims_to(self):
+        """Deny-case: the scan must fail the original buggy code.
+
+        Otherwise the check above passes for the wrong reason and would have
+        passed on the code that shipped the bug.
+        """
+
+        def buggy(args, results):
+            if args.json:
+                print(results)
+            else:
+                print(results)
+                if results:
+                    sys.exit(1)
+
+        offenders, branches = self._scan(buggy)
+        assert branches == 1
+        assert offenders, "the scan does not detect the shape it exists to detect"
+
+    def test_the_audit_list_covers_every_such_handler(self):
+        """Every audited handler must exist, so a rename cannot silently drop one."""
+        import regista._cli as cli
+
+        missing = [
+            h for h in self.SELF_REPORTING_FAILURE_VERBS.values() if not hasattr(cli, h)
+        ]
+        assert missing == [], f"audited handlers no longer exist: {missing}"
         assert len(self.SELF_REPORTING_FAILURE_VERBS) >= 5
