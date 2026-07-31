@@ -1186,17 +1186,62 @@ def cmd_config_show(args):
                 print(f"  {var}: {src}")
 
 
+def _print_vault_auth_status(status):
+    print(f"vault provider available: {status.get('provider_available')}")
+    print(f"VAULT_ADDR set:           {status.get('vault_addr_set')}")
+    print(f"configured auth method:   {status.get('configured_method') or '(none)'}")
+    if status.get("configured_method") == "approle":
+        print(f"  role_id from:           {status.get('role_id_source')}")
+        print(f"  secret_id from:         {status.get('secret_id_source')}")
+        print(f"  approle mount:          auth/{status.get('approle_mount')}")
+    if status.get("token_source"):
+        print(f"  token from:             {status.get('token_source')}")
+    print(f"active auth method:       {status.get('active_method') or '(not yet used)'}")
+    print(f"lease (seconds):          {status.get('lease_duration_seconds')}")
+    print(f"expires in (seconds):     {status.get('expires_in_seconds')}")
+    print(f"can re-authenticate:      {status.get('reauthenticatable')}")
+    print(f"logins this process:      {status.get('logins')}")
+    if status.get("configured_error"):
+        print(f"problem:                  {status['configured_error']}")
+    if status.get("probe_error"):
+        print(f"probe:                    FAILED — {status['probe_error']}")
+
+
 def cmd_secrets_resolve(args):
     from regista._secrets import available_providers
     from regista._secrets import resolve as resolve_secret
 
+    json_mode = getattr(args, "json", False)
+    if getattr(args, "auth_status", False):
+        from regista._secrets import vault_auth_status
+
+        probe = getattr(args, "probe", False)
+        status = vault_auth_status(probe=probe)
+        if json_mode:
+            _dump_json(status)
+        else:
+            _print_vault_auth_status(status)
+        # Contract §2: a probe that could not authenticate is an operational
+        # failure and must not exit 0. A report without --probe describes
+        # configuration honestly and exits 0 even when that configuration is
+        # unusable — the body is what says so.
+        if probe and status.get("probe_ok") is False:
+            print(
+                f"error: vault authentication probe failed: {status.get('probe_error')}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
     if args.list_providers:
         print("Available providers:")
         for p in available_providers():
             print(f"  {p}")
         return
     if not args.ref:
-        print("Error: --ref is required (or --list-providers)", file=sys.stderr)
+        print(
+            "Error: --ref is required (or --list-providers / --auth-status)",
+            file=sys.stderr,
+        )
         sys.exit(2)
     if getattr(args, "delete", False):
         from regista._secrets import DeleteOutcome
@@ -1950,6 +1995,24 @@ def main(argv=None):
         "--list-providers",
         action="store_true",
         help="List available secret providers",
+    )
+    sec_parser.add_argument(
+        "--auth-status",
+        action="store_true",
+        help=(
+            "Report which Vault auth method this process uses (approle or the "
+            "dev-only static token), where each credential came from, and the "
+            "current token lease. Never prints credential values"
+        ),
+    )
+    sec_parser.add_argument(
+        "--probe",
+        action="store_true",
+        help=(
+            "With --auth-status, actually authenticate so the report "
+            "distinguishes 'AppRole is declared' from 'AppRole works'. "
+            "Exits 1 if authentication fails"
+        ),
     )
     sec_parser.add_argument(
         "--delete",

@@ -157,6 +157,75 @@ def _resolve_key_file_path(key_path: str) -> str | None:
         return None
 
 
+def _check_vault_auth(secret_backend: str | None) -> DoctorCheck:
+    """Report which Vault auth method this host is on (WI-228).
+
+    The Linux qualification could not run AppRole-only and had to inject a token
+    per invocation from a wrapper script. Nothing in any health surface said so,
+    which is what made a compensating control look like a working posture. This
+    row states the method, so a host sitting on the dev method is visible rather
+    than merely undocumented.
+
+    Graded, not merely reported: AppRole is ``ok``, a static token is ``warn``
+    (dev posture — docs/secrets-vault.md §6 wants no VAULT_TOKEN in a production
+    environment), and AppRole material that is present but unusable is ``fail``,
+    because that host resolves nothing.
+    """
+    from ._secrets import vault_auth_status
+
+    status = vault_auth_status()
+    if not status.get("provider_available"):
+        if (secret_backend or "").lower() == "vault":
+            return DoctorCheck(
+                name="custody:vault_auth",
+                status="fail",
+                detail=(
+                    "secret_backend is 'vault' but the vault provider is not "
+                    "registered in this process — 'hvac' is not importable here. "
+                    "Each component resolves vault: refs in its own environment; "
+                    "install the vault extra for this one."
+                ),
+            )
+        return DoctorCheck(
+            name="custody:vault_auth",
+            status="skip",
+            detail="vault provider not registered in this process ('hvac' absent)",
+        )
+    if not status.get("vault_addr_set") and (secret_backend or "").lower() != "vault":
+        return DoctorCheck(
+            name="custody:vault_auth",
+            status="skip",
+            detail="No Vault configured (VAULT_ADDR unset)",
+        )
+    method = status.get("configured_method")
+    if method is None:
+        return DoctorCheck(
+            name="custody:vault_auth",
+            status="fail",
+            detail=str(status.get("configured_error") or "vault: no usable credentials"),
+        )
+    if method == "approle":
+        return DoctorCheck(
+            name="custody:vault_auth",
+            status="ok",
+            detail=(
+                f"vault auth: AppRole at auth/{status.get('approle_mount')} — "
+                f"role_id from {status.get('role_id_source')}, secret_id from "
+                f"{status.get('secret_id_source')}. No VAULT_TOKEN required."
+            ),
+        )
+    return DoctorCheck(
+        name="custody:vault_auth",
+        status="warn",
+        detail=(
+            f"vault auth: static token ({status.get('token_source')}) — the "
+            f"dev-only method. A production host operates AppRole-only with no "
+            f"VAULT_TOKEN in its environment: set VAULT_ROLE_ID and "
+            f"VAULT_SECRET_ID_FILE (agent-suite docs/secrets-vault.md §6)."
+        ),
+    )
+
+
 def _check_custody_consistency(
     key_path: str | None,
     secret_backend: str | None,
@@ -456,6 +525,8 @@ def run_doctor(
         status="ok",
         detail=f"Available: {', '.join(ver.available_signing_schemes)}",
     ))
+
+    checks.append(_check_vault_auth(secret_backend))
 
     checks.append(_check_custody_consistency(key_path, secret_backend))
 

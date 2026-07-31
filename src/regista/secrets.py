@@ -25,6 +25,7 @@ from ._secrets import store as store
 from ._secrets import supports_delete as supports_delete
 from ._secrets import supports_write as supports_write
 from ._secrets import unregister_provider as unregister_provider
+from ._secrets import vault_auth_status as vault_auth_status
 
 API_VERSION = 1
 
@@ -47,4 +48,5 @@ __all__ = [
     "supports_delete",
     "supports_write",
     "unregister_provider",
+    "vault_auth_status",
 ]

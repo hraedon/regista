@@ -4,6 +4,62 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Vault AppRole login — an AppRole-only host is now possible (WI-228):**
+  `VaultProvider` authenticated with `VAULT_TOKEN` and nothing else, so the
+  posture agent-suite `docs/secrets-vault.md` §6 requires — a production host
+  operating with **no `VAULT_TOKEN` in its environment** — was unreachable. The
+  Linux platform qualification could not achieve it and wrote an undocumented
+  wrapper script (`/usr/local/sbin/with-vault-approle`) that minted a 1h token
+  per invocation, correctly labelling it a compensating control rather than
+  evidence. Because that shim lived outside any generated systemd unit,
+  systemd-launched services never got a token at all — which is why
+  `cairn integrity` executed but exited 1, and dossier's `/healthz` returned 503,
+  on that host.
+
+  The resolver now authenticates by AppRole (`role_id` + `secret_id`) or by a
+  static token, declared through the environment:
+
+  | Variable | Meaning |
+  |---|---|
+  | `VAULT_ROLE_ID` / `VAULT_ROLE_ID_FILE` | AppRole RoleID, inline or from a file |
+  | `VAULT_SECRET_ID_FILE` | File holding the SecretID — **preferred**, and where response-wrapped delivery lands it |
+  | `VAULT_SECRET_ID` | SecretID inline (discouraged: readable from `/proc/<pid>/environ`) |
+  | `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when the file holds a single-use response-**wrapping** token, which the host unwraps for itself (`docs/secrets-vault.md` §5) |
+  | `VAULT_APPROLE_MOUNT_POINT` | AppRole mount, default `approle` |
+  | `VAULT_TOKEN` | static token, dev only — kept so `vault server -dev` walkthroughs still work |
+
+  Three properties the qualification found missing:
+
+  - **The method is reported, so a host cannot silently sit on the weaker one.**
+    New `regista.secrets.vault_auth_status()`, `regista secrets --auth-status`
+    (`--json`, plus `--probe` to actually authenticate and exit 1 if it fails),
+    a `vault_authenticated` structlog line at login, and a new doctor row
+    `custody:vault_auth` — `ok` for AppRole, `warn` for a static token (the dev
+    posture), `fail` for AppRole material that is present but unusable. The
+    report names where each credential *came from*, never its value, so it is
+    safe to print and log.
+
+  - **It fails closed.** Any AppRole variable being set means AppRole was asked
+    for; `VAULT_TOKEN` is then never consulted. Half-configured material, a
+    missing/empty/unreadable SecretID file, a spent wrapping token, and a
+    rejected login each raise an actionable error naming the variable or path to
+    fix and the command to re-deliver with. Falling back to the dev method would
+    turn a broken production posture into a working dev one without saying so.
+
+  - **A long-running process no longer wedges when the lease expires.** The
+    client used to be cached for the process lifetime while the token behind it
+    had a lease. It now re-authenticates before the lease runs out, and again if
+    a 403 turns out to be a dead token rather than a policy denial — the two are
+    distinguished by checking whether the token still validates, so a genuine
+    denial is reported immediately instead of driving a login loop, and an
+    expired lease is recovered from instead of being misreported as a
+    permissions problem. A static token cannot be renewed from nothing, so its
+    expiry is reported rather than papered over. Verified against the real Vault
+    with a 60s `token_ttl`: one provider held across the boundary resolved
+    correctly on both sides, re-authenticating once.
+
 ### Fixed
 
 - **Principal binding was reported, not verified (WI-223):** a work item's
