@@ -60,6 +60,18 @@ class TestActorMetadataDataclass:
         restored = ActorMetadata.from_dict(d)
         assert restored.prompt_template_hash is None
 
+    def test_model_lineage_roundtrip(self):
+        am = ActorMetadata(role="agent", model="gpt-5", model_lineage="gpt-sol")
+        d = am.to_dict()
+        assert d["model_lineage"] == "gpt-sol"
+        assert ActorMetadata.from_dict(d) == am
+
+    def test_model_lineage_absent_from_dict_when_unset(self):
+        am = ActorMetadata(role="agent")
+        d = am.to_dict()
+        assert "model_lineage" not in d
+        assert ActorMetadata.from_dict(d).model_lineage is None
+
 
 def _make_event(actor_metadata):
     return Event(
