@@ -12,6 +12,7 @@ from ._errors import ErrorCode as ErrorCode
 from ._errors import RegistaError as RegistaError
 from ._secrets import DeleteOutcome as DeleteOutcome
 from ._secrets import SecretProvider as SecretProvider
+from ._secrets import StoreNewOutcome as StoreNewOutcome
 from ._secrets import available_providers as available_providers
 from ._secrets import delete as delete
 from ._secrets import is_provider_available as is_provider_available
@@ -22,6 +23,7 @@ from ._secrets import register_provider as register_provider
 from ._secrets import resolve as resolve
 from ._secrets import resolve_str as resolve_str
 from ._secrets import store as store
+from ._secrets import store_new as store_new
 from ._secrets import supports_delete as supports_delete
 from ._secrets import supports_write as supports_write
 from ._secrets import unregister_provider as unregister_provider
@@ -35,6 +37,7 @@ __all__ = [
     "ErrorCode",
     "RegistaError",
     "SecretProvider",
+    "StoreNewOutcome",
     "available_providers",
     "delete",
     "is_provider_available",
@@ -45,6 +48,7 @@ __all__ = [
     "resolve",
     "resolve_str",
     "store",
+    "store_new",
     "supports_delete",
     "supports_write",
     "unregister_provider",

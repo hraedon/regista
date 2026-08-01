@@ -37,6 +37,31 @@ def _ensure_secure_dir(path: Path) -> None:
         pass
 
 
+def _stored_fingerprint(data: bytes) -> str:
+    """sha256 digest of a stored byte representation (WI-237).
+
+    Fingerprints are always taken over the *stored* bytes — for backends that
+    transform on write (vault base64-encodes), both sides of a comparison must
+    have been through the same encoding, so equality is like-for-like.
+    """
+    import hashlib
+
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+class StoreNewOutcome(Enum):
+    """What a create-only (migration-grade) write actually did.
+
+    ``ALREADY_PRESENT`` is deliberately distinct from ``CREATED``: an
+    idempotent re-run that found byte-identical material already custodied is
+    reported as such, never as a fresh write — and a destination holding
+    *different* material is not an outcome at all; it raises.
+    """
+
+    CREATED = "created"
+    ALREADY_PRESENT = "already_present"
+
+
 class DeleteOutcome(Enum):
     """What actually happened to the custodied material.
 
@@ -91,6 +116,59 @@ class FileProvider:
             os.close(fd)
         os.replace(str(tmp), str(path))
         return f"file:{path}"
+
+    def store_new(self, ref: str, data: bytes) -> StoreNewOutcome:
+        """Create-only variant of :meth:`store` (WI-237).
+
+        The destination itself is opened with ``O_EXCL`` — no tmp+rename,
+        because :meth:`store`'s ``os.replace`` is exactly what makes it
+        clobber. (:func:`_open_exclusive` does not compose here: on collision
+        it falls back to a *different* name, which is liveness for a tmp file
+        but would be a silent miss for the destination.)
+        """
+        path = Path(ref)
+        _ensure_secure_dir(path.parent)
+        flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(str(path), flags, 0o600)
+        except FileExistsError:
+            return self._store_new_present(path, data)
+        try:
+            remaining = memoryview(data)
+            while remaining:
+                n = os.write(fd, remaining)
+                remaining = remaining[n:]
+        finally:
+            os.close(fd)
+        landed = path.read_bytes()
+        if _stored_fingerprint(landed) != _stored_fingerprint(data):
+            raise RegistaError(
+                ErrorCode.SECRET_RESOLVE_FAILED,
+                f"file: read-back of {ref} does not match what was written "
+                f"(fingerprint mismatch) — refusing to report the write as "
+                f"landed",
+            )
+        return StoreNewOutcome.CREATED
+
+    def _store_new_present(self, path: Path, data: bytes) -> StoreNewOutcome:
+        """Answer for a destination that already exists: match or refuse."""
+        try:
+            existing = path.read_bytes()
+        except OSError as e:
+            raise RegistaError(
+                ErrorCode.SECRET_RESOLVE_FAILED,
+                f"file: {path} already exists but cannot be read to compare "
+                f"({type(e).__name__}) — refusing to overwrite",
+            ) from e
+        if _stored_fingerprint(existing) == _stored_fingerprint(data):
+            return StoreNewOutcome.ALREADY_PRESENT
+        raise RegistaError(
+            ErrorCode.SECRET_ALREADY_EXISTS,
+            f"file: {path} already exists and does not match the material "
+            f"being written — refusing to overwrite on a create-only "
+            f"(migration) write. If the existing value is stale, remove it "
+            f"explicitly and re-run.",
+        )
 
     def delete(self, ref: str) -> DeleteOutcome:
         path = Path(ref)
@@ -284,6 +362,48 @@ def store(ref: str, data: bytes) -> str:
             f"Available: {available_providers()}",
         )
     return provider.store(value, data)
+
+
+def store_new(ref: str, data: bytes) -> StoreNewOutcome:
+    """Create-only custody write, for migration-grade paths (WI-237).
+
+    Unlike :func:`store` — which is an unconditional upsert — a destination
+    that already exists REFUSES (``SECRET_ALREADY_EXISTS``) instead of being
+    clobbered, unless the material already there is byte-identical to ``data``,
+    in which case ``ALREADY_PRESENT`` is returned so an idempotent re-run of a
+    migration is safe and reported honestly. Every create is read back and its
+    fingerprint (sha256 of the stored bytes) compared before ``CREATED`` is
+    reported. Providers without create-only semantics raise
+    ``SECRET_WRITE_UNSUPPORTED``.
+    """
+    if not ref:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "Empty secret reference",
+        )
+    provider_name, value = _detect_prefix(ref)
+    provider = _PROVIDERS.get(provider_name)
+    if provider is None:
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"Unknown secret provider: {provider_name!r}. "
+            f"Available: {available_providers()}",
+        )
+    creator = getattr(provider, "store_new", None)
+    if creator is None:
+        raise RegistaError(
+            ErrorCode.SECRET_WRITE_UNSUPPORTED,
+            f"{provider_name}: provider does not support create-only writes; "
+            f"use a backend that does (file/vault)",
+        )
+    outcome = creator(value, data)
+    if not isinstance(outcome, StoreNewOutcome):  # pragma: no cover - 3rd party
+        raise RegistaError(
+            ErrorCode.SECRET_RESOLVE_FAILED,
+            f"{provider_name}: store_new returned {type(outcome).__name__}, "
+            f"not a StoreNewOutcome",
+        )
+    return outcome
 
 
 def delete(ref: str) -> DeleteOutcome:
@@ -1160,6 +1280,76 @@ class VaultProvider:
             ),
         )
         return f"vault:{ref}"
+
+    def store_new(self, ref: str, data: bytes) -> StoreNewOutcome:
+        """Create-only variant of :meth:`store` (WI-237).
+
+        KV-v2 ``cas=0`` makes Vault itself refuse the create when any version
+        already exists at the path, so the pre-read/write race is closed
+        server-side; the pre-read exists to give the idempotent-re-run answer
+        without burning a CAS failure. The value round-trips through the same
+        base64 encoding :meth:`store` uses, so the read-back fingerprint
+        comparison is like-for-like with what any earlier ``store``/
+        ``store_new`` of the same material produced.
+        """
+        import base64
+
+        mount, path, key_name = _split_vault_ref(ref)
+        encoded = base64.b64encode(data).decode("ascii")
+        existing = self._read_secret(mount, path, absent_ok=True)
+        if existing is not None:
+            return self._store_new_present(mount, path, key_name, existing, encoded)
+        try:
+            self._call(
+                "create",
+                mount,
+                path,
+                lambda c: c.secrets.kv.v2.create_or_update_secret(
+                    path=path, mount_point=mount, secret={key_name: encoded}, cas=0
+                ),
+            )
+        except RegistaError:
+            # cas=0 refused: something landed between the pre-read and the
+            # create. Answer like any other pre-existing path — matching
+            # material is ALREADY_PRESENT, anything else refuses.
+            raced = self._read_secret(mount, path, absent_ok=True)
+            if raced is None:
+                raise
+            return self._store_new_present(mount, path, key_name, raced, encoded)
+        landed = self._read_secret(mount, path) or {}
+        landed_val = landed.get(key_name)
+        if not isinstance(landed_val, str) or _stored_fingerprint(
+            landed_val.encode("utf-8")
+        ) != _stored_fingerprint(encoded.encode("utf-8")):
+            raise RegistaError(
+                ErrorCode.SECRET_RESOLVE_FAILED,
+                f"vault: read-back of {mount}/{path} does not match what was "
+                f"written (fingerprint mismatch) — refusing to report the "
+                f"write as landed",
+            )
+        return StoreNewOutcome.CREATED
+
+    def _store_new_present(
+        self,
+        mount: str,
+        path: str,
+        key_name: str,
+        existing: dict[str, Any],
+        encoded: str,
+    ) -> StoreNewOutcome:
+        """Answer for a path that already exists: match or refuse."""
+        current = existing.get(key_name)
+        if isinstance(current, str) and _stored_fingerprint(
+            current.encode("utf-8")
+        ) == _stored_fingerprint(encoded.encode("utf-8")):
+            return StoreNewOutcome.ALREADY_PRESENT
+        raise RegistaError(
+            ErrorCode.SECRET_ALREADY_EXISTS,
+            f"vault: {mount}/{path} already exists and field {key_name!r} "
+            f"does not match the material being written — refusing to "
+            f"overwrite on a create-only (migration) write. If the existing "
+            f"value is stale, delete it explicitly and re-run.",
+        )
 
     def delete(self, ref: str) -> DeleteOutcome:
         mount, path, key_name = _split_vault_ref(ref)
