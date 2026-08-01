@@ -39,6 +39,7 @@ def in_memory_create_link(
     validate_mutation_params(
         actor_id=actor_id,
         actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         event_id=event_id,
     )
 
@@ -161,6 +162,7 @@ def in_memory_remove_link(
     validate_mutation_params(
         actor_id=actor_id,
         actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         event_id=event_id,
     )
 

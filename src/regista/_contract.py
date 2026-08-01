@@ -624,6 +624,7 @@ def validate_mutation_params(
     *,
     actor_id: str | None = None,
     actor_kind: str | None = None,
+    actor_metadata: dict | None = None,
     event_id: uuid.UUID | None = None,
     not_before: datetime | None = None,
     ttl_seconds: int | None = None,
@@ -639,6 +640,8 @@ def validate_mutation_params(
         validate_actor_id(actor_id)
     if actor_kind is not None:
         validate_actor_kind(actor_kind)
+    if actor_metadata is not None:
+        validate_actor_metadata(actor_metadata)
     if event_id is not None:
         validate_event_id(event_id)
     if not_before is not None:

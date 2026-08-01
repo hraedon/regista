@@ -41,6 +41,7 @@ def in_memory_append_event(
     validate_mutation_params(
         actor_id=actor_id,
         actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         event_id=event_id,
     )
 

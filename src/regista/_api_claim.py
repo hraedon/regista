@@ -181,6 +181,7 @@ class ClaimApiMixin(_RegistaBase):
         _validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
         )
         return self.links.create(
@@ -223,6 +224,7 @@ class ClaimApiMixin(_RegistaBase):
         _validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
         )
         self.links.remove(
