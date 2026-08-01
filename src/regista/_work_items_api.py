@@ -30,6 +30,7 @@ def create_work_item(
         _validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
             not_before=not_before,
         )

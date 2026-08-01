@@ -186,6 +186,7 @@ class WorkItemOps:
         results = []
         with self._mgr.transaction() as conn:
             for item in items:
+                _validate_mutation_params(actor_metadata=item.get("actor_metadata"))
                 wi, evt = _create(
                     conn,
                     workflow_name=item["workflow_name"],
@@ -264,6 +265,7 @@ class WorkItemOps:
                 event_id = uuid.uuid4()
             _validate_mutation_params(
                 actor_kind=actor_kind,
+                actor_metadata=actor_metadata,
                 event_id=event_id,
                 not_before=not_before,
             )
@@ -517,6 +519,7 @@ class LinkOps:
         _validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
         )
         _validate_content_hash(content_hash)
@@ -547,6 +550,7 @@ class LinkOps:
         _validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
         )
         from ._links_api import remove_link as _impl

@@ -47,6 +47,7 @@ def acquire_claim(
         actor_kind=actor_kind,
         event_id=event_id,
         ttl_seconds=ttl_seconds,
+        actor_metadata=actor_metadata,
     )
 
     wi = lock_work_item(conn, work_item_id)
@@ -205,7 +206,12 @@ def heartbeat_claim(
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
-    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
+    validate_mutation_params(
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        ttl_seconds=ttl_seconds,
+        actor_metadata=actor_metadata,
+    )
 
     wi = lock_work_item(conn, work_item_id)
     if wi is None:
@@ -292,7 +298,12 @@ def release_claim(
 ) -> None:
     from ._events import append_event, lock_work_item
 
-    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, event_id=event_id)
+    validate_mutation_params(
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        event_id=event_id,
+        actor_metadata=actor_metadata,
+    )
 
     wi = lock_work_item(conn, work_item_id)
     if wi is None:

@@ -55,6 +55,7 @@ def in_memory_create_work_item(
         validate_mutation_params(
             actor_id=actor_id,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
             event_id=event_id,
             not_before=not_before,
         )
@@ -221,6 +222,7 @@ def in_memory_update_not_before(
     validate_mutation_params(
         actor_id=actor_id,
         actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         event_id=event_id,
         not_before=not_before,
     )

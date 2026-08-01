@@ -49,6 +49,7 @@ def in_memory_transition(
     validate_mutation_params(
         actor_id=actor_id,
         actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         event_id=event_id,
     )
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
