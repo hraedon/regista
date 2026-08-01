@@ -38,6 +38,7 @@ def acquire_claim(
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ) -> tuple[Claim, bool, bool]:
     from ._events import append_event, lock_work_item
 
@@ -122,7 +123,7 @@ def acquire_claim(
             work_item_id=work_item_id,
             actor_id=actor_id,
             actor_kind=actor_kind,
-            actor_metadata=None,
+            actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
             key_set=key_set,
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],
@@ -200,6 +201,7 @@ def heartbeat_claim(
     key_set: KeySet | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
@@ -237,7 +239,7 @@ def heartbeat_claim(
             work_item_id=work_item_id,
             actor_id=actor_id,
             actor_kind=actor_kind,
-            actor_metadata=None,
+            actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
             key_set=key_set,
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],
@@ -286,6 +288,7 @@ def release_claim(
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ) -> None:
     from ._events import append_event, lock_work_item
 
@@ -322,7 +325,7 @@ def release_claim(
         work_item_id=work_item_id,
         actor_id=actor_id,
         actor_kind=actor_kind,
-        actor_metadata=None,
+        actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
         key_set=key_set,
         workflow_name=wi["workflow_name"],
         workflow_version=wi["workflow_version"],

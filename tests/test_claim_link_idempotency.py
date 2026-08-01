@@ -161,3 +161,58 @@ class TestLinkIdempotency:
 
         events_after_second = regista.read_events(work_item_id=wi1.work_item_id)
         assert len(events_after_second) == first_count
+
+
+class TestClaimActorMetadataWI224:
+    """WI-224 (Postgres path): claim ops record the caller's actor_metadata
+    on the events they emit, so ``model_lineage`` reaches the adversarial
+    gate; omitting it keeps the pre-fix event shape (``None``)."""
+
+    def test_claim_events_record_actor_metadata(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "claim lineage"},
+        )
+        lineage = {"model_lineage": "opus-5"}
+
+        regista.acquire_claim(
+            work_item_id=wi.work_item_id,
+            actor_id="agent-1",
+            ttl_seconds=60,
+            actor_metadata=dict(lineage),
+        )
+        regista.heartbeat_claim(
+            work_item_id=wi.work_item_id,
+            actor_id="agent-1",
+            ttl_seconds=60,
+            actor_metadata=dict(lineage),
+        )
+        regista.release_claim(
+            work_item_id=wi.work_item_id,
+            actor_id="agent-1",
+            actor_metadata=dict(lineage),
+        )
+
+        events = regista.read_events(work_item_id=wi.work_item_id, limit=100)
+        by_transition = {e.transition: e for e in events}
+        assert by_transition["claim_acquired"].actor_metadata == lineage
+        assert by_transition["claim_heartbeat"].actor_metadata == lineage
+        assert by_transition["claim_released"].actor_metadata == lineage
+
+    def test_claim_without_metadata_records_none(self, regista):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "claim no lineage"},
+        )
+        regista.acquire_claim(
+            work_item_id=wi.work_item_id,
+            actor_id="agent-1",
+            ttl_seconds=60,
+        )
+        events = regista.read_events(work_item_id=wi.work_item_id, limit=100)
+        by_transition = {e.transition: e for e in events}
+        assert by_transition["claim_acquired"].actor_metadata is None
