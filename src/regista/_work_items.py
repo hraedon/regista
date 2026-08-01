@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any, cast
 
 import psycopg
+import psycopg.types.json
 from psycopg.sql import SQL
 
+from ._connection import DictConn
 from ._contract import Jsonb
 from ._errors import ErrorCode, RegistaError
 from ._events import append_event, check_idempotency
@@ -21,7 +24,7 @@ _WORK_ITEM_FIELDS = (
 )
 
 
-def _row_to_work_item(row: dict) -> WorkItem:
+def _row_to_work_item(row: dict[str, Any]) -> WorkItem:
     return WorkItem(
         work_item_id=row["work_item_id"],
         workflow_name=row["workflow_name"],
@@ -41,10 +44,10 @@ def _row_to_work_item(row: dict) -> WorkItem:
 
 
 def _load_workflow_definition(
-    conn: psycopg.Connection,
+    conn: DictConn,
     workflow_name: str,
     workflow_version: int | None = None,
-) -> tuple[dict, int]:
+) -> tuple[dict[str, Any], int]:
     if workflow_version is not None:
         row = conn.execute(
             SQL(
@@ -71,14 +74,14 @@ def _load_workflow_definition(
 
 
 def create_work_item(
-    conn: psycopg.Connection,
+    conn: DictConn,
     workflow_name: str,
     work_item_type: str,
     actor_id: str,
     actor_kind: str,
     actor_metadata: Jsonb | None,
     key_set: KeySet,
-    custom_fields: dict | None = None,
+    custom_fields: dict[str, Any] | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
     key_id: str | None = None,
@@ -162,10 +165,10 @@ def create_work_item(
         [work_item_id],
     ).fetchone()
 
-    return _row_to_work_item(wi_row), event
+    return _row_to_work_item(cast(dict[str, Any], wi_row)), event
 
 
-def _rebuild_wf(data: dict) -> WorkflowDefinition:
+def _rebuild_wf(data: dict[str, Any]) -> WorkflowDefinition:
     from ._types import (
         CustomFieldDef,
         LinkTypeDef,
@@ -231,7 +234,7 @@ def _rebuild_wf(data: dict) -> WorkflowDefinition:
 
 
 def get_work_item(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
 ) -> WorkItem | None:
     row = conn.execute(
@@ -244,7 +247,7 @@ def get_work_item(
 
 
 def query_work_items(
-    conn: psycopg.Connection,
+    conn: DictConn,
     *,
     workflow_name: str | None = None,
     workflow_version: int | None = None,
@@ -260,10 +263,10 @@ def query_work_items(
 ) -> QueryPage[WorkItem]:
     page_size = min(max(1, page_size), 1000)
     conditions = []
-    params: list = []
+    params: list[Any] = []
     idx = 0
 
-    def _ph(value):
+    def _ph(value: Any) -> str:
         nonlocal idx
         idx += 1
         params.append(value)

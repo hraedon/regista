@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
 
 import psycopg
 
+from ._connection import DictConn
 from ._encryption import available_encryption_schemes as available_encryption_schemes
 from ._encryption import decrypt_fields as decrypt_fields
 from ._encryption import encrypt_fields as encrypt_fields
@@ -43,7 +45,7 @@ __all__ = [
 
 
 @contextmanager
-def raw_transaction(regista) -> Generator[psycopg.Connection, None, None]:
+def raw_transaction(regista: Any) -> Generator[DictConn, None, None]:
     with regista._mgr.transaction() as conn:
         yield conn
 

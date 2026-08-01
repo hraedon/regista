@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import yaml
 from fastapi import HTTPException, Request
@@ -17,7 +18,7 @@ class AuthenticatedActor:
     allowed_roles: tuple[str, ...]
     allowed_workflows: tuple[str, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.allowed_roles, tuple):
             object.__setattr__(self, "allowed_roles", tuple(self.allowed_roles))
         if self.allowed_workflows is not None and not isinstance(
@@ -37,7 +38,7 @@ def get_actor(request: Request) -> AuthenticatedActor:
     actor = getattr(request.state, "actor", None)
     if actor is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    return actor
+    return cast(AuthenticatedActor, actor)
 
 
 ADMIN_ROLE = "admin"

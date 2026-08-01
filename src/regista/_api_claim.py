@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._api_base import _RegistaBase
 from ._contract import validate_mutation_params as _validate_mutation_params
@@ -144,10 +145,10 @@ class ClaimApiMixin(_RegistaBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         target_project: str | None = None,
         target_entity_kind: str | None = None,
         content_hash: str | None = None,
@@ -200,7 +201,7 @@ class ClaimApiMixin(_RegistaBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
         target_project: str | None = None,

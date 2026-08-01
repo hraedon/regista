@@ -9,6 +9,7 @@ import psycopg
 import structlog
 from psycopg.sql import SQL, Identifier
 
+from ._connection import DictConn
 from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
@@ -20,7 +21,7 @@ from ._types import ReplayReport
 log = structlog.get_logger()
 
 
-def drop_old_replay_tables(conn: psycopg.Connection, schema: str) -> None:
+def drop_old_replay_tables(conn: DictConn, schema: str) -> None:
     """Drop stale replay tables from previous runs."""
     old_tables = conn.execute(
         SQL(
@@ -34,7 +35,7 @@ def drop_old_replay_tables(conn: psycopg.Connection, schema: str) -> None:
         conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(tbl["tablename"])))
 
 
-def _drop_replay_tables(conn: psycopg.Connection, *table_names: str) -> None:
+def _drop_replay_tables(conn: DictConn, *table_names: str) -> None:
     for name in table_names:
         conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(name)))
 
@@ -373,7 +374,7 @@ _EVENT_STREAM_ORDER = "ORDER BY entity_kind, entity_id, event_seq"
 
 
 def replay(
-    conn: psycopg.Connection,
+    conn: DictConn,
     schema: str,
     project: str,
     key_set: KeySet,
@@ -422,7 +423,7 @@ def replay(
 
 
 def _replay_inner(
-    conn: psycopg.Connection,
+    conn: DictConn,
     schema: str,
     project: str,
     key_set: KeySet,
@@ -893,7 +894,7 @@ def _requires_principal_registration(
 
 
 def _replay_work_item(
-    conn: psycopg.Connection,
+    conn: DictConn,
     wi_id,
     events: list[dict],
     key_set: KeySet,

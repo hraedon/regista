@@ -3,12 +3,15 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import psycopg
 import structlog
 from psycopg.sql import SQL, Identifier, Literal
 
+from ._connection import DictConn
 from ._contract import Jsonb
 from ._errors import ErrorCode, RegistaError
 from ._events import append_event
@@ -21,7 +24,7 @@ log = structlog.get_logger()
 
 def run_validator(
     validator_name: str,
-    handler,
+    handler: Callable[..., Any],
     ctx: ValidatorContext,
     timeout: float = 5.0,
     metrics: Metrics | None = None,
@@ -58,12 +61,12 @@ def run_validator(
 
 
 def enqueue_hooks(
-    conn: psycopg.Connection,
+    conn: DictConn,
     event_id: uuid.UUID,
     work_item_id: uuid.UUID,
     hook_names: list[str],
     transition: str | None,
-    event_payload: dict | None,
+    event_payload: dict[str, Any] | None,
     channel: str,
     max_retries: int = 3,
 ) -> None:
@@ -98,7 +101,7 @@ def enqueue_hooks(
 
 
 def claim_hooks(
-    conn: psycopg.Connection,
+    conn: DictConn,
     max_batch: int = 10,
     lease_seconds: int = 60,
     actor_id: str | None = None,
@@ -162,7 +165,7 @@ def claim_hooks(
 
 
 def complete_hook(
-    conn: psycopg.Connection,
+    conn: DictConn,
     hook_queue_id: int,
     actor_id: str | None = None,
 ) -> None:
@@ -207,7 +210,7 @@ def complete_hook(
 
 
 def fail_hook(
-    conn: psycopg.Connection,
+    conn: DictConn,
     hook_queue_id: int,
     error: str,
     key_set: KeySet,
@@ -265,7 +268,7 @@ def fail_hook(
     log.warning("hooks.handler_failed", hook_queue_id=hook_queue_id, error=error)
 
 
-def sweep_expired_hook_leases(conn: psycopg.Connection) -> int:
+def sweep_expired_hook_leases(conn: DictConn) -> int:
     result = conn.execute(
         SQL(
             "UPDATE hook_queue SET status = 'pending', "
@@ -277,8 +280,8 @@ def sweep_expired_hook_leases(conn: psycopg.Connection) -> int:
 
 
 def poll_and_process_hooks(
-    conn: psycopg.Connection,
-    handlers: dict,
+    conn: DictConn,
+    handlers: dict[str, Any],
     key_set: KeySet,
     metrics: Metrics | None,
     project: str,
@@ -337,8 +340,8 @@ def poll_and_process_hooks(
 
 
 def _move_to_dead_letter(
-    conn: psycopg.Connection,
-    hook_row: dict,
+    conn: DictConn,
+    hook_row: dict[str, Any],
     error_message: str,
     key_set: KeySet,
 ) -> None:
@@ -436,7 +439,7 @@ def _move_to_dead_letter(
 
 
 def requeue_dead_lettered_hook(
-    conn: psycopg.Connection,
+    conn: DictConn,
     dead_letter_id: int,
     channel: str,
     key_set: KeySet,
@@ -484,7 +487,7 @@ class HookConsumer:
         dsn: str,
         schema: str,
         project: str,
-        handlers: dict,
+        handlers: dict[str, Any],
         key_set: KeySet,
         metrics: Metrics | None,
         poll_interval: float = 30.0,
@@ -527,14 +530,14 @@ class HookConsumer:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive() and self._processing
 
-    def _connect(self):
+    def _connect(self) -> DictConn:
         from psycopg.rows import dict_row
 
-        conn = psycopg.connect(
+        conn = cast(DictConn, psycopg.connect(
             self._dsn,
             row_factory=dict_row,
             autocommit=True,
-        )
+        ))
         conn.execute(SQL("SET search_path TO {}").format(Identifier(self._schema)))
         conn.execute(SQL("SET synchronous_commit = on"))
         conn.execute(SQL("LISTEN {}").format(Identifier(self._channel)))

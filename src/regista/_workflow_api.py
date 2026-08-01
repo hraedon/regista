@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import psycopg.types.json
 from psycopg.sql import SQL
 
+from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 from ._observability import Metrics, OpTimer
-from ._types import WorkflowVersion
+from ._types import WorkflowDefinition, WorkflowVersion
 from ._workflow import parse_and_validate
 
 
 def register_workflow(
-    mgr,
+    mgr: ConnectionManager,
     metrics: Metrics,
     project: str,
     yaml_content: str,
@@ -58,19 +60,22 @@ def register_workflow(
                     registered_at=existing["registered_at"],
                 )
 
-            row = conn.execute(
-                SQL(
-                    "INSERT INTO workflow_registry "
-                    "(workflow_name, version, regista_version, definition, content_hash) "
-                    "VALUES (%s, %s, %s, %s, %s) "
-                    "RETURNING registered_at"
-                ),
-                [
-                    wf.name, wf.version, wf.regista_version,
-                    psycopg.types.json.Jsonb(wf.to_dict()),
-                    content_hash,
-                ],
-            ).fetchone()
+            row = cast(
+                dict[str, Any],
+                conn.execute(
+                    SQL(
+                        "INSERT INTO workflow_registry "
+                        "(workflow_name, version, regista_version, definition, content_hash) "
+                        "VALUES (%s, %s, %s, %s, %s) "
+                        "RETURNING registered_at"
+                    ),
+                    [
+                        wf.name, wf.version, wf.regista_version,
+                        psycopg.types.json.Jsonb(wf.to_dict()),
+                        content_hash,
+                    ],
+                ).fetchone(),
+            )
 
         metrics.inc("workflows_registered", project)
         timer.log("ok", detail=wf.name)
@@ -86,11 +91,11 @@ def register_workflow(
 
 
 def register_workflow_file(
-    mgr,
+    mgr: ConnectionManager,
     metrics: Metrics,
     project: str,
-    parse_workflow_yaml,
-    yaml_dump,
+    parse_workflow_yaml: Any,
+    yaml_dump: Any,
     path: str | Path,
 ) -> WorkflowVersion:
     from ._workflow_compose import resolve_includes
@@ -107,11 +112,11 @@ def register_workflow_file(
 
 
 def get_workflow(
-    mgr,
+    mgr: ConnectionManager,
     project: str,
     workflow_name: str,
     version: int,
-):
+) -> WorkflowDefinition:
     from ._types import WorkflowDefinition
 
     timer = OpTimer(project, "get_workflow")

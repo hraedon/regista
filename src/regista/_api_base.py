@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Callable
+    from typing import Any
 
     from ._connection import ConnectionManager
     from ._hooks import HookConsumer
@@ -39,8 +41,8 @@ class _RegistaBase:
         _keys: KeySet
         _metrics: Metrics
         _project: str
-        _validators: dict[str, Callable]
-        _hook_handlers: dict[str, Callable]
+        _validators: dict[str, Callable[..., Any]]
+        _hook_handlers: dict[str, Callable[..., Any]]
         _hook_channel: str
         _hook_consumer: HookConsumer | None
         _maintenance_thread: object | None
@@ -52,7 +54,9 @@ class _RegistaBase:
 
         def start_hook_consumer(self) -> None: ...
 
-        def read_events(self, *, work_item_id=None, **kwargs) -> list[Event]: ...
+        def read_events(
+            self, *, work_item_id: uuid.UUID | None = None, **kwargs: Any
+        ) -> list[Event]: ...
 
         @property
         def workflows(self) -> WorkflowOps: ...

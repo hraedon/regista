@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ._connection import DictConn
 from ._version_info import SCHEMA_VERSION, versions
 
 _check_status_values = frozenset({"ok", "warn", "fail", "skip"})
@@ -224,33 +225,36 @@ def _check_anchoring_stale_receipts(
         connect_kwargs: dict[str, Any] = {}
         if require_ssl:
             connect_kwargs["sslmode"] = "require"
-        with psycopg.connect(
+        with cast(DictConn, psycopg.connect(
             dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
-        ) as conn:
+        )) as conn:
             conn.execute(SQL("SET search_path TO {}").format(Identifier(project)))
             present = conn.execute(
                 "SELECT to_regclass('anchor_receipts') IS NOT NULL AS present"
-            ).fetchone()["present"]
+            ).fetchone()["present"]  # type: ignore[index]
             if not present:
                 return DoctorCheck(
                     name=name,
                     status="skip",
                     detail="anchor_receipts table absent (anchoring migration not applied)",
                 )
-            row = conn.execute(
-                "SELECT count(*) AS n, min(submitted_at) AS oldest "
-                "FROM anchor_receipts "
-                "WHERE status IN ('pending', 'retryable') "
-                "AND submitted_at < now() - make_interval(secs => %s)",
-                [stale_after_seconds],
-            ).fetchone()
+            row = cast(
+                dict[str, Any],
+                conn.execute(
+                    "SELECT count(*) AS n, min(submitted_at) AS oldest "
+                    "FROM anchor_receipts "
+                    "WHERE status IN ('pending', 'retryable') "
+                    "AND submitted_at < now() - make_interval(secs => %s)",
+                    [stale_after_seconds],
+                ).fetchone(),
+            )
             stale_count = row["n"]
             oldest = row["oldest"]
             watermark = conn.execute(
                 "SELECT COALESCE(MAX(target_global_seq), 0) AS max_seq "
                 "FROM anchor_receipts "
                 "WHERE status IN ('pending', 'committed', 'confirmed', 'retryable')"
-            ).fetchone()["max_seq"]
+            ).fetchone()["max_seq"]  # type: ignore[index]
     except Exception as e:
         return DoctorCheck(
             name=name,
@@ -304,15 +308,15 @@ def _check_witness_key_enrollment(
         connect_kwargs: dict[str, Any] = {}
         if require_ssl:
             connect_kwargs["sslmode"] = "require"
-        with psycopg.connect(
+        with cast(DictConn, psycopg.connect(
             dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
-        ) as conn:
+        )) as conn:
             conn.execute(
                 SQL("SET search_path TO {}").format(Identifier(project))
             )
             present = conn.execute(
                 "SELECT to_regclass('witness_registrations') IS NOT NULL AS present"
-            ).fetchone()["present"]
+            ).fetchone()["present"]  # type: ignore[index]
             if not present:
                 return DoctorCheck(
                     name=name,
@@ -321,7 +325,7 @@ def _check_witness_key_enrollment(
                 )
             pk_present = conn.execute(
                 "SELECT to_regclass('principal_keys') IS NOT NULL AS present"
-            ).fetchone()["present"]
+            ).fetchone()["present"]  # type: ignore[index]
             if not pk_present:
                 return DoctorCheck(
                     name=name,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.resources
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -87,7 +88,7 @@ def run_migrations(mgr: ConnectionManager) -> list[int]:
             lock_conn.execute("SELECT pg_advisory_unlock(%s)", [MIGRATION_LOCK_ID])
 
 
-def _run_migrations_locked(mgr: ConnectionManager, lock_conn) -> list[int]:
+def _run_migrations_locked(mgr: ConnectionManager, lock_conn: Any) -> list[int]:
     from ._errors import ErrorCode, RegistaError
 
     all_migrations = discover_migrations()

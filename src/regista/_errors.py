@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Any
 
 
 class ErrorCode(StrEnum):
@@ -77,7 +78,7 @@ class ErrorCode(StrEnum):
 
 
 class RegistaError(Exception):
-    def __init__(self, code: ErrorCode, message: str, detail: dict | None = None) -> None:
+    def __init__(self, code: ErrorCode, message: str, detail: dict[str, Any] | None = None) -> None:
         self.code = code
         self.message = message
         self.detail = detail

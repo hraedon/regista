@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 import structlog
 from psycopg.sql import SQL
@@ -58,12 +59,15 @@ def archive_events(
             [before_timestamp],
         )
 
-        count = conn.execute(
-            SQL(
-                "SELECT count(*) AS c FROM events "
-                "WHERE work_item_id IN (SELECT work_item_id FROM _archive_candidates)"
-            )
-        ).fetchone()["c"]
+        count = cast(
+            int,
+            conn.execute(
+                SQL(
+                    "SELECT count(*) AS c FROM events "
+                    "WHERE work_item_id IN (SELECT work_item_id FROM _archive_candidates)"
+                )
+            ).fetchone()["c"],  # type: ignore[index]
+        )
 
         if dry_run or count == 0:
             return count

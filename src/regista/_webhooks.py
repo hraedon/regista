@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._connection import ConnectionManager
 
@@ -16,7 +17,7 @@ def register_webhook(
     max_failures: int = 10,
     sign_secret: bytes | None = None,
     project: str = "",
-) -> dict:
+) -> dict[str, Any]:
     from ._witness import register_witness
 
     event_filter = {}
@@ -44,7 +45,7 @@ def register_webhook(
 def list_webhooks(
     mgr: ConnectionManager,
     status: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     from ._witness import list_witnesses
 
     rows = list_witnesses(mgr, status=status, mode="push")

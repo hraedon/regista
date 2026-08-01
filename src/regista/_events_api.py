@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
+from ._connection import ConnectionManager
 from ._contract import (
     Jsonb as _Jsonb,
 )
@@ -32,20 +34,20 @@ from ._types import Event
 
 
 def append_event(
-    mgr,
-    keys,
+    mgr: ConnectionManager,
+    keys: Any,
     metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     transition: str | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
     key_id: str | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
@@ -127,7 +129,7 @@ def append_event(
 
 
 def read_events(
-    mgr,
+    mgr: ConnectionManager,
     *,
     work_item_id: uuid.UUID | None = None,
     actor_id: str | None = None,
@@ -154,7 +156,7 @@ def read_events(
 
 
 def read_events_since(
-    mgr,
+    mgr: ConnectionManager,
     work_item_id: uuid.UUID,
     after_seq: int,
     *,

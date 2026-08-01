@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import jsonschema
 
@@ -21,7 +22,7 @@ _MODEL_LINEAGE_ENV_VARS = (
 )
 
 
-def resolve_model_lineage(environ: dict | None = None) -> str | None:
+def resolve_model_lineage(environ: dict[str, Any] | None = None) -> str | None:
     """Resolve the current agent's model lineage from the runtime environment.
 
     Probes ``REGISTA_MODEL_LINEAGE`` (canonical), then ``AGENT_MODEL_LINEAGE``,
@@ -38,11 +39,11 @@ def resolve_model_lineage(environ: dict | None = None) -> str | None:
 
 
 def stamp_model_lineage(
-    actor_metadata: dict | None,
+    actor_metadata: dict[str, Any] | None,
     actor_kind: str,
     *,
-    environ: dict | None = None,
-) -> dict | None:
+    environ: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Return *actor_metadata* with ``model_lineage`` stamped for agent actors.
 
     Pure (returns a new dict; never mutates the input). Non-agent actors are
@@ -64,7 +65,7 @@ def stamp_model_lineage(
 
 def validate_actor_metadata(
     event: Event,
-    expected_schema: dict | None = None,
+    expected_schema: dict[str, Any] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     metadata = event.actor_metadata

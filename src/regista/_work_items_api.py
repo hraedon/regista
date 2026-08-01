@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
+from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
 from ._contract import validate_mutation_params as _validate_mutation_params
 from ._errors import RegistaError
@@ -11,17 +13,17 @@ from ._types import Event, QueryPage, WorkItem
 
 
 def create_work_item(
-    mgr,
-    keys,
+    mgr: ConnectionManager,
+    keys: Any,
     metrics: Metrics,
     project: str,
     workflow_name: str,
     work_item_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
-    custom_fields: dict | None = None,
+    custom_fields: dict[str, Any] | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
     key_id: str | None = None,
@@ -62,7 +64,7 @@ def create_work_item(
 
 
 def query_work_items(
-    mgr,
+    mgr: ConnectionManager,
     *,
     workflow_name: str | None = None,
     workflow_version: int | None = None,
@@ -96,7 +98,7 @@ def query_work_items(
 
 
 def get_work_item(
-    mgr,
+    mgr: ConnectionManager,
     work_item_id: uuid.UUID,
 ) -> WorkItem | None:
     from ._work_items import get_work_item as _get
