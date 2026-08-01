@@ -1106,6 +1106,7 @@ class TestDoctorAndCli:
     @pytest.fixture(autouse=True)
     def _clean(self, monkeypatch):
         for var in (
+            "VAULT_ENV_FILE",
             "VAULT_ADDR",
             "VAULT_TOKEN",
             "VAULT_ROLE_ID",
@@ -1113,6 +1114,7 @@ class TestDoctorAndCli:
             "VAULT_SECRET_ID",
             "VAULT_SECRET_ID_FILE",
             "VAULT_SECRET_ID_RESPONSE_WRAPPED",
+            "VAULT_APPROLE_MOUNT_POINT",
             "REGISTA_SECRET_BACKEND",
         ):
             monkeypatch.delenv(var, raising=False)
