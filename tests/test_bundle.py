@@ -135,6 +135,43 @@ class TestExportAuditBundle:
         assert "target_global_seq" in receipt
 
 
+class TestRejectArchiveOutputName:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "bundle.tar.gz",
+            "bundle.tgz",
+            "bundle.tar",
+            "bundle.zip",
+            "bundle.json.gz",
+            "bundle.tar.bz2",
+            "bundle.tar.xz",
+            "BUNDLE.TGZ",
+        ],
+    )
+    def test_helper_rejects_archive_names(self, name):
+        from regista._bundle import _reject_archive_output_name
+        from regista._errors import ErrorCode, RegistaError
+
+        with pytest.raises(RegistaError) as exc_info:
+            _reject_archive_output_name(name)
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    @pytest.mark.parametrize("name", ["bundle.json", "bundle", "bundle.ndjson", "a.json.bak"])
+    def test_helper_accepts_non_archive_names(self, name):
+        from regista._bundle import _reject_archive_output_name
+
+        _reject_archive_output_name(name)
+
+    def test_export_rejects_tar_gz(self, sub, tmp_path):
+        from regista._errors import ErrorCode, RegistaError
+
+        with pytest.raises(RegistaError) as exc_info:
+            sub.export_audit_bundle(str(tmp_path / "bundle.tar.gz"))
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+        assert not (tmp_path / "bundle.tar.gz").exists()
+
+
 class TestVerifyAuditBundleOffline:
     def test_verify_clean_bundle_passes(self, sub, project, tmp_path):
         wi, _ = sub.create_work_item(

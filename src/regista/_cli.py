@@ -1941,7 +1941,9 @@ def main(argv=None):
     bnd = subs.add_parser("bundle", help="Audit bundle export and verification")
     bnd_sub = bnd.add_subparsers(dest="subcommand")
     bnd_export = bnd_sub.add_parser("export", help="Export an audit bundle")
-    bnd_export.add_argument("--output", required=True, help="Output file path")
+    bnd_export.add_argument(
+        "--output", required=True, help="Output JSON file path (bundle is canonical JSON)"
+    )
     bnd_export.add_argument("--since-seq", type=int, default=None, help="Export after this seq")
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)

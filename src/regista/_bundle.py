@@ -25,6 +25,39 @@ log = structlog.get_logger()
 _BUNDLE_FORMAT_VERSION = 2
 _SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
 
+# Output names that imply a compressed/archive container. An audit bundle is a
+# canonical JSON document; writing plain JSON under one of these names hands an
+# auditor a file that `tar -xzf` / `unzip` rejects as corrupt (WI-210).
+_ARCHIVE_OUTPUT_SUFFIXES = (
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tar.zst",
+    ".tgz",
+    ".tbz2",
+    ".txz",
+    ".tar",
+    ".zip",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".zst",
+    ".7z",
+    ".rar",
+)
+
+
+def _reject_archive_output_name(output_path: str | Path) -> None:
+    name = Path(output_path).name.lower()
+    for suffix in _ARCHIVE_OUTPUT_SUFFIXES:
+        if name.endswith(suffix):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Output name {Path(output_path).name!r} implies a compressed "
+                f"archive ({suffix}), but an audit bundle is a canonical JSON "
+                f"document; use a .json name (e.g. 'bundle.json').",
+            )
+
 
 @dataclass(frozen=True)
 class BundleVerificationReport:
@@ -75,6 +108,7 @@ def export_audit_bundle(
     *,
     since_seq: int | None = None,
 ) -> dict:
+    _reject_archive_output_name(output_path)
     with mgr.transaction() as conn:
         if since_seq is not None:
             rows = conn.execute(
