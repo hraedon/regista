@@ -1365,6 +1365,61 @@ def cmd_secrets_resolve(args):
             print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
 
 
+def cmd_keys_fingerprint(args):
+    """Print each signing key's id, source and EFFECTIVE-bytes fingerprint.
+
+    This is the operator-facing before/after equality primitive for key
+    custody changes (WI-236): run it before a migration and again after; if a
+    key_id's ``fingerprint`` field is unchanged, its effective signing key is
+    byte-for-byte identical. ``--json`` output is stable and parseable
+    (``{"key_path": ..., "keys": [{"key_id", "source", "scheme", "status",
+    "principal_id", "encoding", "fingerprint"}, ...]}``) precisely so that
+    comparison can be scripted.
+
+    The fingerprint digests the EFFECTIVE key bytes — a key stored without
+    ``encoding`` is used textually even when it looks base64, and the
+    fingerprint reflects that. The key path resolves the same way doctor's
+    does (WI-225): ``--hmac-key-path``, then ``REGISTA_KEY_PATH`` (legacy
+    alias and suite.env included) via ``regista._config.resolve``. Never
+    prints key material — source kinds and digests only.
+    """
+    from regista._config import resolve as resolve_config
+    from regista._doctor import _resolve_key_file_path
+    from regista._keys import KeySet
+
+    key_path = args.hmac_key_path or resolve_config().key_path
+    if not key_path:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "No key path configured: pass --hmac-key-path or set "
+            "REGISTA_KEY_PATH (env or suite.env).",
+        )
+    fs_path = _resolve_key_file_path(key_path)
+    if fs_path is None:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"Cannot resolve key path {key_path!r} to a filesystem path",
+        )
+    rows = KeySet(fs_path).describe_keys()
+    if args.key_id:
+        rows = [r for r in rows if r["key_id"] == args.key_id]
+        if not rows:
+            raise RegistaError(
+                ErrorCode.UNKNOWN_KEY_ID,
+                f"Unknown key_id: {args.key_id!r}",
+            )
+    if args.json:
+        _dump_json({"key_path": fs_path, "keys": rows})
+    else:
+        for r in rows:
+            print(f"{r['key_id']}")
+            print(f"  source:       {r['source']}")
+            print(f"  scheme:       {r['scheme']}")
+            print(f"  status:       {r['status']}")
+            print(f"  encoding:     {r['encoding'] or '(none — textual bytes)'}")
+            print(f"  fingerprint:  {r['fingerprint']}")
+
+
 def cmd_assurance(args):
     dsn, project, hmac_key_path = _require_config(args)
     try:
@@ -2128,6 +2183,20 @@ def main(argv=None):
         ),
     )
     sec_parser.set_defaults(func=cmd_secrets_resolve)
+
+    # keys (WI-236 — operator fingerprint surface over the signing keyset)
+    keys_parser = subs.add_parser("keys", help="Signing keyset commands")
+    keys_sub = keys_parser.add_subparsers(dest="subcommand")
+    keys_fp = keys_sub.add_parser(
+        "fingerprint",
+        help="Print each key's id, material source (inline/env/secret_ref), "
+        "declared encoding and the fingerprint of its EFFECTIVE key bytes — "
+        "never the material. Stable --json output supports scripted "
+        "before/after equality checks around custody changes",
+    )
+    keys_fp.add_argument("key_id", nargs="?", help="Only this key id")
+    keys_fp.add_argument("--json", action="store_true", help="JSON output")
+    keys_fp.set_defaults(func=cmd_keys_fingerprint)
 
     # assurance (Plan 027)
     assurance_parser = subs.add_parser(

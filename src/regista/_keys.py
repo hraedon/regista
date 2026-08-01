@@ -15,6 +15,37 @@ from ._errors import ErrorCode, RegistaError
 
 log = structlog.get_logger()
 
+#: The signing-key transport encodings a KeySet entry may declare (WI-236).
+#: ``base64`` is the only transform; ``utf8`` is the explicit spelling of the
+#: default (the value's textual bytes are the key). This set is deliberately
+#: closed — an unrecognized value fails at load rather than falling through to
+#: textual bytes, because a fall-through silently derives a *different* signing
+#: key than the entry declared.
+SUPPORTED_KEY_ENCODINGS: tuple[str, ...] = ("base64", "utf8")
+
+
+def _validated_encoding(key_id: str, entry: dict[str, object]) -> str | None:
+    """Return the entry's declared ``encoding``, refusing unknown values.
+
+    ``None`` (absent) means the effective key is the textual bytes as-is —
+    even when the value happens to *look* base64. That is the effective-key
+    trap WI-236 exists to make visible: decoding such a key on migration would
+    silently change the signing key, so nothing here ever guesses.
+    """
+    encoding = entry.get("encoding")
+    if encoding is None:
+        return None
+    if isinstance(encoding, str) and encoding in SUPPORTED_KEY_ENCODINGS:
+        return encoding
+    raise RegistaError(
+        ErrorCode.KEY_LOAD_ERROR,
+        f"Key {key_id!r} declares unknown encoding {encoding!r}; supported "
+        f"encodings: {', '.join(repr(e) for e in SUPPORTED_KEY_ENCODINGS)} "
+        f"(omit 'encoding' to use the textual bytes as-is). Refusing to fall "
+        f"through to textual bytes — that would silently derive a different "
+        f"signing key than the entry declared.",
+    )
+
 
 @dataclass(frozen=True)
 class KeyEntry:
@@ -94,6 +125,8 @@ class KeySet:
         self._env_prefix = env_prefix
         self._strict_asymmetric = strict_asymmetric
         self._keys: dict[str, KeyEntry] = {}
+        self._key_sources: dict[str, str] = {}
+        self._key_encodings: dict[str, str | None] = {}
         self._active_key_id: str | None = None
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
@@ -131,6 +164,7 @@ class KeySet:
         new_keys: dict[str, KeyEntry] = {}
         new_active: str | None = None
         key_sources: dict[str, str] = {}
+        key_encodings: dict[str, str | None] = {}
         seen_env_vars: dict[str, str] = {}
         for entry in data["keys"]:
             key_id = entry["key_id"]
@@ -160,10 +194,17 @@ class KeySet:
                     f"env var {env_var}; rename one to avoid ambiguity",
                 )
             seen_env_vars[env_var] = key_id
+            # Validated for every entry — an unknown encoding is a broken key
+            # file even when an env override means it would not be applied on
+            # this host (WI-236: fail loudly at load, never fall through).
+            encoding = _validated_encoding(key_id, entry)
             env_val = os.environ.get(env_var)
             if env_val is not None:
                 secret = env_val.encode("utf-8")
                 key_sources[key_id] = "env"
+                # An env override is used textually; the declared encoding is
+                # not applied to it (pre-existing behavior, preserved).
+                key_encodings[key_id] = None
             elif "secret_ref" in entry:
                 from ._secrets import resolve as _resolve_secret
 
@@ -177,15 +218,14 @@ class KeySet:
                         f"Failed to resolve secret_ref for key {key_id!r}: "
                         f"{type(e).__name__}: {e}",
                     ) from e
-                encoding = entry.get("encoding")
                 if encoding == "base64":
                     import base64 as _b64
 
                     secret = _b64.b64decode(secret)
                 key_sources[key_id] = f"secret_ref:{entry['secret_ref'].split(':', 1)[0]}"
+                key_encodings[key_id] = encoding
             else:
                 secret = entry["secret"]
-                encoding = entry.get("encoding", "utf8")
                 if encoding == "base64":
                     import base64
 
@@ -193,6 +233,7 @@ class KeySet:
                 elif isinstance(secret, str):
                     secret = secret.encode("utf-8")
                 key_sources[key_id] = "file"
+                key_encodings[key_id] = encoding
 
             public_key = entry.get("public_key")
             if isinstance(public_key, str):
@@ -235,6 +276,8 @@ class KeySet:
 
         with self._lock:
             self._keys = new_keys
+            self._key_sources = key_sources
+            self._key_encodings = key_encodings
             self._active_key_id = new_active
             self._last_mtime = mtime
             self._last_check = time.monotonic()
@@ -410,6 +453,52 @@ class KeySet:
                 "principal_id": entry.principal_id,
                 "status": entry.status,
                 "revoked_at": entry.revoked_at,
+            })
+        return out
+
+    def describe_keys(self) -> list[dict[str, object]]:
+        """Secret-free description of every loaded key, for operator surfaces.
+
+        Each row carries the key_id; where its material came from (``inline``
+        — the value in the key file itself — ``env``, or
+        ``secret_ref:<provider>``); the transport encoding that was applied to
+        derive the effective bytes (``None`` means the textual bytes were used
+        as-is, *even when the value looks base64* — the WI-236 effective-key
+        trap); and the fingerprint of the EFFECTIVE key bytes via
+        :meth:`KeyEntry.fingerprint`. Key material never appears here, so the
+        result is safe to print and log.
+
+        The fingerprint is the before/after equality primitive for custody
+        changes: identical fingerprints for a key_id prove the effective key is
+        byte-for-byte unchanged. This method only *describes* loading — it must
+        never influence how an entry's effective key is derived.
+        """
+        self._maybe_reload()
+        with self._lock:
+            entries = list(self._keys.values())
+            sources = dict(self._key_sources)
+            encodings = dict(self._key_encodings)
+        out: list[dict[str, object]] = []
+        for entry in entries:
+            source = sources.get(entry.key_id, "inline")
+            # The loader's log label for an inline value is "file", which an
+            # operator reads as "a separate key file" — call it what it is.
+            if source == "file":
+                source = "inline"
+            try:
+                fingerprint: str | None = entry.fingerprint()
+            except RegistaError:
+                # An asymmetric entry without a public_key has no reportable
+                # fingerprint; say so rather than failing the whole listing.
+                fingerprint = None
+            out.append({
+                "key_id": entry.key_id,
+                "source": source,
+                "scheme": entry.scheme,
+                "status": entry.status,
+                "principal_id": entry.principal_id,
+                "encoding": encodings.get(entry.key_id),
+                "fingerprint": fingerprint,
             })
         return out
 
