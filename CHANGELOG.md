@@ -4,6 +4,8 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-08-01
+
 ### Added
 
 - **Vault AppRole login — an AppRole-only host is now possible (WI-228):**
@@ -221,6 +223,50 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   reporting inaccuracy in agent-suite's `verify_restore` (which now catches the
   condition via `warnings` but attributes it to "possible chain-link tampering")
   is filed as agent-suite WI-051.
+
+- **Encryption key material now decodes per an explicit contract (WI-231):**
+  a 256-bit key stored in a text backend (Vault KV field, env var, literal)
+  necessarily arrives encoded, and nothing decoded it — the only working keys
+  were strings whose UTF-8 bytes happened to number 32, and a
+  correctly-provisioned 43-char base64url key was rejected at first use with a
+  bare byte count. `decode_key_material()` applies the contract at load time:
+  exactly 32 raw bytes are the key itself; otherwise ASCII text decoding to 32
+  bytes as base64/base64url (padding optional, whitespace tolerated) or 64 hex
+  chars; anything else raises `KEY_LOAD_ERROR` naming the accepted encodings
+  and the ref it came from. The interpretations cannot collide (64 base64
+  chars decode to 48 bytes, never 32). Applies to `encrypt_fields` and both
+  `decrypt_fields` key sources, so the vault/azure `store()` paths — which
+  already base64-encode on write — finally round-trip.
+
+- **`claim_acquired` events now carry the claimer's declared lineage
+  (WI-224):** the claim ops hard-coded `actor_metadata=None`, so an agent's
+  claim set `agent_author_undeclared` permanently and the cross-lineage
+  adversarial gate rejected every reviewer on any ever-claimed item.
+  `acquire_claim`/`heartbeat_claim`/`release_claim` accept optional
+  `actor_metadata` using the authoring ops' idiom, on both backends and the
+  sidecar. Claim transitions still count the claimer as having worked the
+  item (separation of duties is preserved), and chains recorded without the
+  field verify exactly as before.
+
+- **The documented 64 KB `actor_metadata` cap is now enforced (WI-234):**
+  `validate_actor_metadata` existed with zero call sites, so the effective
+  limit was the generic 1 MiB JSONB bound while spec.md promised 64 KB.
+  `validate_mutation_params` now applies it at every metadata-accepting write
+  path, including the claim ops. New writes only; recorded events are
+  unaffected.
+
+- **`ConnectionPool` is closed before interpreter finalization (WI-218):**
+  nothing registered the pool's close for process teardown, and on Python
+  3.14+ `ConnectionPool.__del__`'s thread join raises
+  `PythonFinalizationError` once finalization has begun — every short-lived
+  CLI invocation printed a traceback on exit. A `weakref.finalize` hook now
+  closes the pool in the atexit phase and detaches on explicit `close()`.
+
+- **The WI-228 doctor/CLI tests are hermetic against a configured host
+  (WI-232):** the test fixtures cleared most Vault plane variables but missed
+  `VAULT_ENV_FILE` and `VAULT_APPROLE_MOUNT_POINT`, so the suite failed on
+  any host set up per `docs/secrets-instantiation.md` — the doctor under test
+  read the host's real AppRole material instead of the fixture's intent.
 
 - **Full replay no longer materializes the event log (WI-217):** `replay()`
   loaded every event row for the project in a single `fetchall()`, so its peak
