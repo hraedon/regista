@@ -106,6 +106,7 @@ class AcquireClaimRequest(BaseModel):
     ttl_seconds: int = 300
     event_id: str | None = None
     actor_kind: str = "agent"
+    actor_metadata: dict | None = None
 
 
 class HeartbeatClaimRequest(BaseModel):
@@ -114,6 +115,7 @@ class HeartbeatClaimRequest(BaseModel):
     ttl_seconds: int = 300
     expected_attempt_number: int | None = None
     coalesce_threshold: float | None = None
+    actor_metadata: dict | None = None
 
 
 class ReleaseClaimRequest(BaseModel):
@@ -121,6 +123,7 @@ class ReleaseClaimRequest(BaseModel):
     work_item_id: str
     event_id: str | None = None
     actor_kind: str = "agent"
+    actor_metadata: dict | None = None
 
 
 class CreateLinkRequest(BaseModel):

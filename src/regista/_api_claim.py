@@ -20,6 +20,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         """Acquire a durable claim (lease) on a work item.
 
@@ -32,6 +33,9 @@ class ClaimApiMixin(_RegistaBase):
             ttl_seconds: Lease duration in seconds (default 300).
             event_id: UUIDv4 idempotency key.
             actor_kind: Kind of actor (default "agent").
+            actor_metadata: Optional JSONB metadata recorded on the emitted
+                ``claim_acquired``/``claim_stolen`` event (e.g.
+                ``model_lineage``, read by the ``adversarial_review`` gate).
 
         Returns:
             The ``Claim``.
@@ -49,6 +53,7 @@ class ClaimApiMixin(_RegistaBase):
         return self.claims.acquire(
             work_item_id, actor_id, ttl_seconds,
             event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def heartbeat_claim(
@@ -60,6 +65,7 @@ class ClaimApiMixin(_RegistaBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         """Renew a claim's TTL. Rejects if claim is held by a different actor.
 
@@ -71,6 +77,8 @@ class ClaimApiMixin(_RegistaBase):
             coalesce_threshold: Minimum seconds between emitted ``claim_heartbeat``
                 events. ``None`` (default) uses ``max(60, ttl_seconds/2)``.
             actor_kind: Kind of actor (default "agent").
+            actor_metadata: Optional JSONB metadata recorded on the emitted
+                ``claim_heartbeat`` event (e.g. ``model_lineage``).
 
         Returns:
             The renewed ``Claim``.
@@ -85,6 +93,7 @@ class ClaimApiMixin(_RegistaBase):
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def release_claim(
@@ -94,6 +103,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> None:
         """Release a claim held by the given actor.
 
@@ -102,6 +112,8 @@ class ClaimApiMixin(_RegistaBase):
             actor_id: Must match the current claim holder.
             event_id: UUIDv4 idempotency key.
             actor_kind: Kind of actor (default "agent").
+            actor_metadata: Optional JSONB metadata recorded on the emitted
+                ``claim_released`` event (e.g. ``model_lineage``).
 
         Raises:
             RegistaError: ``CLAIM_LOST``, ``CLAIM_NOT_FOUND``.
@@ -114,6 +126,7 @@ class ClaimApiMixin(_RegistaBase):
         self.claims.release(
             work_item_id, actor_id,
             event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def sweep_expired_claims(self) -> int:

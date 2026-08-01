@@ -415,6 +415,7 @@ class ClaimOps:
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -427,6 +428,7 @@ class ClaimOps:
             self._mgr, self._keys, self._metrics, self._project,
             work_item_id, actor_id, ttl_seconds,
             event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def heartbeat(
@@ -438,6 +440,7 @@ class ClaimOps:
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         _validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
         from ._claims_api import heartbeat_claim as _impl
@@ -448,6 +451,7 @@ class ClaimOps:
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def release(
@@ -457,6 +461,7 @@ class ClaimOps:
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> None:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -469,6 +474,7 @@ class ClaimOps:
             self._mgr, self._keys, self._metrics, self._project,
             work_item_id, actor_id,
             event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def sweep_expired(self) -> int:

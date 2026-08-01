@@ -17,6 +17,7 @@ def acquire_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ):
     from ._claims import acquire_claim as _acquire
 
@@ -25,7 +26,7 @@ def acquire_claim(
         with mgr.transaction() as conn:
             claim, escalated, stolen = _acquire(
                 conn, work_item_id, actor_id, ttl_seconds,
-                keys, event_id, actor_kind,
+                keys, event_id, actor_kind, actor_metadata,
             )
         metrics.inc("claims_acquired", project)
         if stolen:
@@ -53,6 +54,7 @@ def heartbeat_claim(
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ):
     from ._claims import heartbeat_claim as _heartbeat
 
@@ -65,6 +67,7 @@ def heartbeat_claim(
                 key_set=keys,
                 coalesce_threshold=coalesce_threshold,
                 actor_kind=actor_kind,
+                actor_metadata=actor_metadata,
             )
         timer.log("ok", work_item_id=str(work_item_id))
         return claim
@@ -83,13 +86,14 @@ def release_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
+    actor_metadata: dict | None = None,
 ):
     from ._claims import release_claim as _release
 
     timer = OpTimer(project, "release_claim")
     try:
         with mgr.transaction() as conn:
-            _release(conn, work_item_id, actor_id, keys, event_id, actor_kind)
+            _release(conn, work_item_id, actor_id, keys, event_id, actor_kind, actor_metadata)
         metrics.inc("claims_released", project)
         timer.log("ok", work_item_id=str(work_item_id))
     except RegistaError:

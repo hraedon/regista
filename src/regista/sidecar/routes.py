@@ -221,6 +221,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
             ttl_seconds=body.ttl_seconds,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             actor_kind=actor.actor_kind,
+            actor_metadata=body.actor_metadata,
         )
         return _serialize(result)
 
@@ -234,6 +235,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
             expected_attempt_number=body.expected_attempt_number,
             coalesce_threshold=body.coalesce_threshold,
             actor_kind=actor.actor_kind,
+            actor_metadata=body.actor_metadata,
         )
         return _serialize(result)
 
@@ -245,6 +247,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
             actor_id=actor.actor_id,
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             actor_kind=actor.actor_kind,
+            actor_metadata=body.actor_metadata,
         )
         return {"status": "ok"}
 

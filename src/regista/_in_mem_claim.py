@@ -19,6 +19,7 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_acquire_claim
 
@@ -26,6 +27,7 @@ class InMemClaimMixin(_InMemoryBase):
             self._store, self._work_items, self._claims, self._workflows,
             self._key_set, work_item_id, actor_id, ttl_seconds,
             event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def heartbeat_claim(
@@ -37,6 +39,7 @@ class InMemClaimMixin(_InMemoryBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_heartbeat_claim
 
@@ -46,6 +49,7 @@ class InMemClaimMixin(_InMemoryBase):
             expected_attempt_number=expected_attempt_number,
             coalesce_threshold=coalesce_threshold,
             actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def release_claim(
@@ -55,12 +59,14 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
+        actor_metadata: dict | None = None,
     ) -> None:
         from ._in_memory_claims import in_memory_release_claim
 
         in_memory_release_claim(
             self._store, self._work_items, self._claims, self._key_set,
             work_item_id, actor_id, event_id=event_id, actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
         )
 
     def sweep_expired_claims(self) -> int:
