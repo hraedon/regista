@@ -36,6 +36,7 @@ def in_memory_acquire_claim(
         actor_kind=actor_kind,
         event_id=event_id,
         ttl_seconds=ttl_seconds,
+        actor_metadata=actor_metadata,
     )
 
     wi = work_items.get(work_item_id)
@@ -104,7 +105,12 @@ def in_memory_heartbeat_claim(
     actor_kind: str = "agent",
     actor_metadata: dict | None = None,
 ) -> Claim:
-    validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
+    validate_mutation_params(
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        ttl_seconds=ttl_seconds,
+        actor_metadata=actor_metadata,
+    )
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
 
@@ -175,6 +181,7 @@ def in_memory_release_claim(
         actor_id=actor_id,
         actor_kind=actor_kind,
         event_id=event_id,
+        actor_metadata=actor_metadata,
     )
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)

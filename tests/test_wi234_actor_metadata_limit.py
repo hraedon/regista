@@ -190,3 +190,40 @@ class TestLimitEnforcedAtMutationEntryPoints:
             actor_kind="agent",
             actor_metadata={"model_lineage": "opus-5"},
         )
+
+
+class TestClaimPathHonoursTheLimit:
+    """The claim ops gained actor_metadata in WI-224; whichever of the two
+    changes landed second had to connect them (both PRs' merge note), or
+    claim metadata would be the one write path exempt from the 64 KB cap."""
+
+    def _item(self, sub):
+        wi, _ = sub.create_work_item(
+            workflow_name="wi234_limit",
+            work_item_type="issue",
+            actor_id="agent-1",
+        )
+        return wi
+
+    def test_oversized_claim_metadata_rejected(self):
+        sub = _sub()
+        wi = self._item(sub)
+        with pytest.raises(RegistaError) as exc_info:
+            sub.acquire_claim(
+                wi.work_item_id,
+                actor_id="agent-2",
+                actor_kind="agent",
+                actor_metadata=_metadata_of_size(100 * 1024),
+            )
+        _assert_rejected(exc_info)
+
+    def test_claim_metadata_under_limit_accepted(self):
+        sub = _sub()
+        wi = self._item(sub)
+        claim = sub.acquire_claim(
+            wi.work_item_id,
+            actor_id="agent-2",
+            actor_kind="agent",
+            actor_metadata={"model_lineage": "opus-5"},
+        )
+        assert claim is not None
