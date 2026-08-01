@@ -603,3 +603,41 @@ class TestOfflineSignatureVerification:
         report = verify_audit_bundle_offline(str(output))
         assert not report.verified
         assert any("No public key for key_id" in e for e in report.errors)
+
+
+class TestOfflineAnchorHashAgility:
+    """WI-207: offline bundle anchor verification must handle non-SHA-256
+    events. ``_verify_anchor_offline`` recomputes ``payload_canonical_hash``
+    with the event's own ``hash_alg`` (``resolve_hash_function``); the rest of
+    the suite only creates sha-256 events, so pin the hash-agility path
+    end-to-end through export + offline verification."""
+
+    def test_offline_anchor_verifies_with_sha384_events(self, sub, project, tmp_path):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "anchor-hash-agility",
+            custom_fields={"title": "anchor-hash-agility"},
+        )
+        for i in range(2):
+            sub.append_event(
+                wi.work_item_id, "agent-1",
+                hash_alg="sha-384",
+                transition=f"hash_agility_{i}",
+                payload={"alg": "sha-384", "i": i},
+            )
+
+        sub.anchoring.set_provider(FileAnchorProvider(directory=str(tmp_path / "anchors")))
+        receipt = sub.trigger_anchoring(batch_size=100)
+        assert receipt is not None
+
+        output = tmp_path / "sha384_anchor.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert bundle["anchor_receipts"], "expected an anchor receipt in the bundle"
+        hash_algs = {e["hash_alg"] for e in bundle["events"]}
+        assert "sha-384" in hash_algs, "test must exercise a non-SHA-256 event"
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified, f"offline verification failed: {report.errors}"
+        assert report.anchor_receipt_count > 0
+        assert all(av["verified"] for av in report.anchor_verifications)
