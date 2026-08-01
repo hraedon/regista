@@ -34,6 +34,7 @@ def _evt(
     actor_metadata: dict | None = None,
     on_behalf_of: dict | None = None,
     payload: dict | None = None,
+    scheme_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         transition=transition,
@@ -42,6 +43,7 @@ def _evt(
         actor_metadata=actor_metadata,
         on_behalf_of=on_behalf_of,
         payload=payload,
+        scheme_id=scheme_id,
     )
 
 
@@ -386,6 +388,54 @@ class TestGateRationale:
             gate_rationale(events, "unknown_profile")
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
         assert "unknown_profile" in exc.value.message
+
+
+class TestLineageVerification:
+    """WI-215: gate_rationale surfaces whether the deciding review event's
+    lineage is cryptographically bound (per-actor asymmetric signature) or
+    merely asserted (HMAC/v4). The signal is informational and never changes a
+    gate decision."""
+
+    def _events_with_pass_scheme(self, scheme_id):
+        return [
+            *_author_events("glm"),
+            _evt(
+                "adversarial_pass", "r1",
+                actor_metadata={"model_lineage": "kimi"},
+                payload=REVIEW_NOTE,
+                scheme_id=scheme_id,
+            ),
+            *_accept_events("a1", "agent"),
+        ]
+
+    def test_asserted_for_hmac_deciding_pass(self):
+        r = gate_rationale(self._events_with_pass_scheme("hmac-sha256"), GateProfile.RELAXED)
+        assert r["lineage_verification"] == "asserted"
+
+    def test_asserted_when_deciding_pass_has_no_scheme(self):
+        r = gate_rationale(self._events_with_pass_scheme(None), GateProfile.RELAXED)
+        assert r["lineage_verification"] == "asserted"
+
+    def test_verified_for_ed25519_deciding_pass(self):
+        r = gate_rationale(self._events_with_pass_scheme("ed25519"), GateProfile.RELAXED)
+        assert r["lineage_verification"] == "verified"
+
+    def test_unknown_scheme_is_asserted(self):
+        r = gate_rationale(self._events_with_pass_scheme("mystery-scheme"), GateProfile.RELAXED)
+        assert r["lineage_verification"] == "asserted"
+
+    def test_none_without_adversarial_pass(self):
+        r = gate_rationale(_author_events("glm"), GateProfile.RELAXED)
+        assert r["lineage_verification"] is None
+
+    def test_signal_does_not_change_gate_decision(self):
+        hmac_r = gate_rationale(self._events_with_pass_scheme("hmac-sha256"), GateProfile.STRICT)
+        ed_r = gate_rationale(self._events_with_pass_scheme("ed25519"), GateProfile.STRICT)
+        # Same cross-lineage review; only the lineage_verification differs.
+        assert hmac_r["reason"] == ed_r["reason"] == "cross_lineage_review"
+        assert gate_permits_done(hmac_r) == gate_permits_done(ed_r) is True
+        assert hmac_r["lineage_verification"] == "asserted"
+        assert ed_r["lineage_verification"] == "verified"
 
 
 class TestStrictGateProfile:
