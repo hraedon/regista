@@ -99,6 +99,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         custom_fields: dict | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
+        key_id: str | None = None,
         skip_event_id_version_check: bool = False,
     ) -> tuple[WorkItem, Event]:
         from ._in_memory_work_items import in_memory_create_work_item
@@ -111,6 +112,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
+            key_id=key_id,
             skip_event_id_version_check=skip_event_id_version_check,
         )
 
@@ -125,6 +127,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         custom_fields: dict | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
+        key_id: str | None = None,
     ) -> tuple[WorkItem, Event]:
         wi, evt = self._create_work_item(
             workflow_name,
@@ -135,6 +138,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
+            key_id=key_id,
         )
         self._try_create_witness_receipts(evt)
         return wi, evt

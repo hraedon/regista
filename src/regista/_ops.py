@@ -162,6 +162,7 @@ class WorkItemOps:
         custom_fields: dict | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
+        key_id: str | None = None,
     ) -> tuple[WorkItem, Event]:
         from ._work_items_api import create_work_item as _impl
 
@@ -172,6 +173,7 @@ class WorkItemOps:
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
+            key_id=key_id,
         )
 
     def create_batch(
@@ -201,6 +203,7 @@ class WorkItemOps:
                     custom_fields=item.get("custom_fields"),
                     not_before=item.get("not_before"),
                     event_id=item.get("event_id"),
+                    key_id=item.get("key_id"),
                 )
                 results.append((wi, evt))
         return results

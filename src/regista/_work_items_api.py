@@ -24,6 +24,7 @@ def create_work_item(
     custom_fields: dict | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
+    key_id: str | None = None,
 ) -> tuple[WorkItem, Event]:
     timer = OpTimer(project, "create_work_item")
     try:
@@ -48,6 +49,7 @@ def create_work_item(
                 custom_fields=custom_fields,
                 not_before=not_before,
                 event_id=event_id,
+                key_id=key_id,
             )
 
         metrics.inc("work_items_created", project)

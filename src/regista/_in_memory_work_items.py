@@ -47,6 +47,7 @@ def in_memory_create_work_item(
     custom_fields: dict | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
+    key_id: str | None = None,
     skip_event_id_version_check: bool = False,
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
@@ -129,6 +130,7 @@ def in_memory_create_work_item(
             }),
             event_id=event_id,
             key_set=key_set,
+            _key_id=key_id,
         )
     except RegistaError:
         del work_items[work_item_id]

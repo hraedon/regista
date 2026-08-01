@@ -78,6 +78,7 @@ class WorkflowApiMixin(_RegistaBase):
         custom_fields: dict | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
+        key_id: str | None = None,
     ) -> tuple[WorkItem, Event]:
         """Create a new work item in the given workflow.
 
@@ -90,6 +91,8 @@ class WorkflowApiMixin(_RegistaBase):
             custom_fields: Initial field values validated against the type schema.
             not_before: Gate timestamp; claims before this time are rejected.
             event_id: Optional UUIDv4 for idempotency.
+            key_id: Pin the signing key for the ``created`` event that opens the
+                chain; defaults to the key set's resolution for ``actor_id``.
 
         Returns:
             Tuple of ``(WorkItem, Event)``.
@@ -105,6 +108,7 @@ class WorkflowApiMixin(_RegistaBase):
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
+            key_id=key_id,
         )
         self._try_create_witness_receipts(evt)
         return wi, evt

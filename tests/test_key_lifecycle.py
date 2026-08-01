@@ -234,4 +234,79 @@ def regista():
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
-    drop_project_schema(DSN, project)
+
+
+class TestCreateWorkItemKeyId:
+    """WI-227: create_work_item must accept key_id to pin the signing key on the
+    event that opens a chain, mirroring append_event/transition."""
+
+    @pytest.fixture
+    def multi_key_sub(self, tmp_path):
+        from regista import Regista
+
+        kf = _write_key_file(tmp_path / "keys.json", [
+            {"key_id": "k1", "secret": SECRET, "status": "active"},
+            {"key_id": "k2", "secret": SECRET, "status": "active"},
+        ])
+        project = f"test_wi227_{uuid.uuid4().hex[:8]}"
+        sub = Regista.create_project(DSN, project, str(kf))
+        sub.register_workflow_file(WORKFLOW_PATH)
+        yield sub
+        sub.close()
+        drop_project_schema(DSN, project)
+
+    def test_create_pins_key_id(self, multi_key_sub):
+        _wi, evt = multi_key_sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "pin-k2"},
+            key_id="k2",
+        )
+        assert evt.key_id == "k2"
+
+    def test_create_defaults_to_active_key(self, multi_key_sub):
+        _wi, evt = multi_key_sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "default-key"},
+        )
+        assert evt.key_id == "k1"
+
+    def test_create_rejects_unknown_key_id(self, multi_key_sub):
+        with pytest.raises(RegistaError) as exc_info:
+            multi_key_sub.create_work_item(
+                workflow_name="test_workflow",
+                work_item_type="feature",
+                actor_id="agent-1",
+                custom_fields={"title": "bad-key"},
+                key_id="nonexistent",
+            )
+        assert exc_info.value.code == ErrorCode.UNKNOWN_KEY_ID
+
+    def test_facade_create_pins_key_id(self, multi_key_sub):
+        _wi, evt = multi_key_sub.work_items.create(
+            "test_workflow", "feature", "agent-1",
+            custom_fields={"title": "facade-pin"},
+            key_id="k2",
+        )
+        assert evt.key_id == "k2"
+
+    def test_in_memory_create_pins_key_id(self, tmp_path):
+        from regista.testing import InMemoryRegista
+
+        kf = _write_key_file(tmp_path / "im_keys.json", [
+            {"key_id": "k1", "secret": SECRET, "status": "active"},
+            {"key_id": "k2", "secret": SECRET, "status": "active"},
+        ])
+        sub = InMemoryRegista(project="wi227_im", hmac_key_path=str(kf))
+        sub.register_workflow_file(WORKFLOW_PATH)
+        _wi, evt = sub.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id="agent-1",
+            custom_fields={"title": "im-pin"},
+            key_id="k2",
+        )
+        assert evt.key_id == "k2"

@@ -81,6 +81,7 @@ def create_work_item(
     custom_fields: dict | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
+    key_id: str | None = None,
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -153,6 +154,7 @@ def create_work_item(
             "not_before": not_before.isoformat() if not_before else None,
         }),
         event_id=event_id,
+        _key_id=key_id,
     )
 
     wi_row = conn.execute(
