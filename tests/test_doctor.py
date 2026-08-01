@@ -83,6 +83,80 @@ class TestRunDoctor:
             drop_project_schema(DSN, project)
 
 
+class TestRoleAttributes:
+    """WI-230: doctor reports the connecting role's rolcreaterole so bootstrap
+    can verify the CREATEROLE prerequisite before provisioning."""
+
+    def _role_check(self, report):
+        return next(c for c in report.checks if c.name == "role:createrole")
+
+    def test_reachable_reports_role_createrole(self):
+        # Call the check directly rather than run_doctor: the shared test DB
+        # carries thousands of leaked project schemas, so run_doctor's
+        # per-project schema loop is impractically slow here. The check itself
+        # is a single short connection.
+        from _helpers import DSN
+
+        from regista._doctor import _check_role_attributes
+
+        check = _check_role_attributes(DSN, require_ssl=False)
+        # The test role is a superuser, so the prerequisite is satisfied.
+        assert check.name == "role:createrole"
+        assert check.status == "ok"
+        assert "regista_test" in check.detail
+
+    def test_no_dsn_omits_role_check(self):
+        report = run_doctor(dsn=None)
+        assert not any(c.name == "role:createrole" for c in report.checks)
+
+    def test_unreachable_omits_role_check(self):
+        report = run_doctor("postgresql://nobody:nobody@127.0.0.1:1/nonexistent")
+        assert report.reachable is False
+        assert not any(c.name == "role:createrole" for c in report.checks)
+
+    @staticmethod
+    def _patch_role_row(monkeypatch, row):
+        # Drive the real _check_role_attributes without a second login role:
+        # the test role is a superuser, so a non-superuser row is synthesized.
+        import psycopg
+
+        import regista._doctor as doctor_mod
+
+        class _FakeCursor:
+            def fetchone(self):
+                return row
+
+        class _FakeConn:
+            def execute(self, *args, **kwargs):
+                return _FakeCursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **k: _FakeConn())
+        return doctor_mod
+
+    def test_warns_when_role_lacks_createrole(self, monkeypatch):
+        doctor_mod = self._patch_role_row(
+            monkeypatch, ("svc_regista", False, False)
+        )
+        check = doctor_mod._check_role_attributes("postgresql://x", require_ssl=False)
+        assert check.status == "warn"
+        assert "rolcreaterole=false" in check.detail
+        assert "svc_regista" in check.detail
+
+    def test_ok_when_role_has_createrole(self, monkeypatch):
+        doctor_mod = self._patch_role_row(
+            monkeypatch, ("svc_regista", False, True)
+        )
+        check = doctor_mod._check_role_attributes("postgresql://x", require_ssl=False)
+        assert check.status == "ok"
+        assert "rolcreaterole=true" in check.detail
+
+
 class TestCustodyConsistency:
     def _key_file(self, tmp_path, entries):
         import json

@@ -73,6 +73,54 @@ def _check_db_reachable(dsn: str, require_ssl: bool) -> tuple[bool, str]:
         return False, _sanitize_error(e)
 
 
+def _check_role_attributes(dsn: str, require_ssl: bool) -> DoctorCheck:
+    # Reports the connecting (session) role's rolcreaterole so the suite
+    # bootstrap can verify the documented CREATEROLE prerequisite before it
+    # provisions per-project service roles (WI-230).
+    try:
+        import psycopg
+
+        connect_kwargs: dict[str, Any] = {}
+        if require_ssl:
+            connect_kwargs["sslmode"] = "require"
+        with psycopg.connect(dsn, connect_timeout=5, **connect_kwargs) as conn:
+            row = conn.execute(
+                "SELECT rolname, rolsuper, rolcreaterole "
+                "FROM pg_roles WHERE rolname = session_user"
+            ).fetchone()
+    except Exception as e:
+        return DoctorCheck(
+            name="role:createrole",
+            status="warn",
+            detail=f"Could not read session role attributes: {_sanitize_error(e)}",
+        )
+
+    if row is None:
+        return DoctorCheck(
+            name="role:createrole",
+            status="warn",
+            detail="Session role not found in pg_roles",
+        )
+
+    rolname, rolsuper, rolcreaterole = row[0], row[1], row[2]
+    if rolsuper or rolcreaterole:
+        reason = "superuser" if rolsuper else "rolcreaterole=true"
+        return DoctorCheck(
+            name="role:createrole",
+            status="ok",
+            detail=f"session role {rolname!r}: {reason} (can create roles)",
+        )
+    return DoctorCheck(
+        name="role:createrole",
+        status="warn",
+        detail=(
+            f"session role {rolname!r}: rolcreaterole=false; "
+            "'regista provision' creates per-project service roles and "
+            "requires CREATEROLE or superuser"
+        ),
+    )
+
+
 def _list_projects(dsn: str, require_ssl: bool) -> list[dict[str, Any]]:
     try:
         import psycopg
@@ -501,6 +549,7 @@ def run_doctor(
 
         if reachable:
             projects_list = _list_projects(dsn, require_ssl)
+            checks.append(_check_role_attributes(dsn, require_ssl))
 
             if project:
                 checks.append(_check_schema_version(dsn, project, require_ssl))
