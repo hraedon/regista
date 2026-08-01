@@ -632,12 +632,20 @@ def _replay_inner(
         )
 
     if scoped:
-        # A scoped replay's Sort is bounded by the one entity's history, which
-        # the working set already accounts for, so it does not need the index
-        # ordering.  It is left on `work_item_id` so the reported
-        # `event_count` keeps counting exactly the rows the old query saw.
+        # Filter on the entity identity columns, not the demoted `work_item_id`
+        # read-compat column (WI-220).  There is no index on `work_item_id`
+        # (migration 031 dropped `UNIQUE (work_item_id, event_seq)`), so
+        # `WHERE work_item_id = %s ORDER BY event_seq` plans as a full
+        # `Sort -> Seq Scan` no matter how few rows the work item has.
+        # `idx_events_entity (entity_kind, entity_id, event_seq)` turns it into
+        # an Index Scan whose key order already satisfies `ORDER BY event_seq`,
+        # so there is no Sort at all.  For a work item `entity_id` equals
+        # `work_item_id` (migration 031 backfill + the `events_set_entity_id`
+        # trigger), so this matches exactly the rows the old predicate saw and
+        # the reported `event_count` is unchanged.
         events_query = SQL(
-            f"SELECT {_EVENT_FIELDS} FROM events WHERE work_item_id = %s ORDER BY event_seq"
+            f"SELECT {_EVENT_FIELDS} FROM events "
+            "WHERE entity_kind = 'work_item' AND entity_id = %s ORDER BY event_seq"
         )
         events_params: list | None = [work_item_id]
     else:
