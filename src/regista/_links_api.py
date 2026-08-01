@@ -1,31 +1,34 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
+from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
 from ._errors import RegistaError
-from ._observability import OpTimer
+from ._keys import KeySet
+from ._observability import Metrics, OpTimer
 from ._types import Link
 
 
 def create_link(
-    mgr,
-    keys,
-    metrics,
+    mgr: ConnectionManager,
+    keys: KeySet,
+    metrics: Metrics,
     project: str,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     event_id: uuid.UUID | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
     target_project: str | None = None,
     target_entity_kind: str | None = None,
     content_hash: str | None = None,
-):
+) -> Link:
     from ._links import create_link as _create
 
     timer = OpTimer(project, "create_link")
@@ -55,20 +58,20 @@ def create_link(
 
 
 def remove_link(
-    mgr,
-    keys,
-    metrics,
+    mgr: ConnectionManager,
+    keys: KeySet,
+    metrics: Metrics,
     project: str,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     event_id: uuid.UUID | None = None,
     target_project: str | None = None,
-):
+) -> None:
     from ._links import remove_link as _remove
 
     timer = OpTimer(project, "remove_link")
@@ -94,7 +97,7 @@ def remove_link(
 
 
 def list_links(
-    mgr,
+    mgr: ConnectionManager,
     work_item_id: uuid.UUID,
 ) -> list[Link]:
     """Return all live (non-removed) links from *work_item_id*."""

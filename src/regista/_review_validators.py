@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from typing import Any
 
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
 
 
-def _event_lineage(event) -> str | None:
+def _event_lineage(event: Any) -> str | None:
     meta = getattr(event, "actor_metadata", None)
     if isinstance(meta, dict):
         lineage = meta.get("model_lineage")
@@ -15,7 +16,7 @@ def _event_lineage(event) -> str | None:
     return None
 
 
-def derive_authors(prior_events: Iterable) -> tuple[set[str], set[str], set[str], bool]:
+def derive_authors(prior_events: Iterable[Any]) -> tuple[set[str], set[str], set[str], bool]:
     author_ids: set[str] = set()
     author_kinds: set[str] = set()
     author_lineages: set[str] = set()
@@ -45,13 +46,13 @@ def derive_authors(prior_events: Iterable) -> tuple[set[str], set[str], set[str]
 
 
 class ReviewRejected(ValueError):  # noqa: N818
-    def __init__(self, reason: str, detail: dict | None = None) -> None:
+    def __init__(self, reason: str, detail: dict[str, Any] | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.detail = detail or {}
 
 
-def _check_separation_of_duties(ctx, author_ids: set[str], gate: str) -> None:
+def _check_separation_of_duties(ctx: Any, author_ids: set[str], gate: str) -> None:
     if ctx.actor_id in author_ids:
         raise ReviewRejected(
             f"{gate}: the reviewer must differ from every actor who "
@@ -73,7 +74,7 @@ def _check_separation_of_duties(ctx, author_ids: set[str], gate: str) -> None:
             )
 
 
-def _require_review_note(ctx, gate: str) -> None:
+def _require_review_note(ctx: Any, gate: str) -> None:
     note = (getattr(ctx, "payload", None) or {}).get("review_note")
     if not note or not str(note).strip():
         raise ReviewRejected(
@@ -82,7 +83,7 @@ def _require_review_note(ctx, gate: str) -> None:
         )
 
 
-def _adversarial_pass_identities(prior_events) -> set[str]:
+def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
     identities: set[str] = set()
     for event in prior_events:
         if getattr(event, "transition", None) != "adversarial_pass":
@@ -98,7 +99,7 @@ def _adversarial_pass_identities(prior_events) -> set[str]:
     return identities
 
 
-def adversarial_review(ctx) -> None:
+def adversarial_review(ctx: Any) -> None:
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events
     )
@@ -132,7 +133,7 @@ def adversarial_review(ctx) -> None:
             )
 
 
-def _last_adversarial_pass_lineage(prior_events) -> str | None:
+def _last_adversarial_pass_lineage(prior_events: Iterable[Any]) -> str | None:
     last_pass = None
     for event in prior_events:
         if getattr(event, "transition", None) == "adversarial_pass":
@@ -143,7 +144,7 @@ def _last_adversarial_pass_lineage(prior_events) -> str | None:
 
 
 def human_gate(
-    ctx,
+    ctx: Any,
     *,
     require_human: bool = False,
     require_human_on_same_lineage: bool = False,
@@ -198,7 +199,7 @@ def human_gate(
             )
 
 
-def _human_gate_builtin(ctx) -> None:
+def _human_gate_builtin(ctx: Any) -> None:
     params = getattr(ctx, "validator_params", None) or {}
     raw = params.get("require_human", False)
     if not isinstance(raw, bool):
@@ -221,7 +222,7 @@ def _human_gate_builtin(ctx) -> None:
     )
 
 
-BUILTIN_REVIEW_VALIDATORS: dict[str, Callable] = {
+BUILTIN_REVIEW_VALIDATORS: dict[str, Callable[..., Any]] = {
     "adversarial_review": adversarial_review,
     "human_gate": _human_gate_builtin,
 }

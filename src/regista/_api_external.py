@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -19,7 +20,7 @@ class ExternalApiMixin(_RegistaBase):
         self,
         url: str,
         headers: dict[str, str] | None = None,
-        event_filter: dict | None = None,
+        event_filter: dict[str, Any] | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
         *,
@@ -56,7 +57,7 @@ class ExternalApiMixin(_RegistaBase):
         self,
         witness_id: uuid.UUID,
         new_public_key: bytes,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Rotate an Ed25519 witness's pinned public key.
 
         Updates the witness registration's ``public_key`` and rotates the
@@ -69,7 +70,7 @@ class ExternalApiMixin(_RegistaBase):
         """
         return self.witnesses.rotate_key(witness_id, new_public_key)
 
-    def enrolled_witness_key(self, witness_id: uuid.UUID) -> dict | None:
+    def enrolled_witness_key(self, witness_id: uuid.UUID) -> dict[str, Any] | None:
         """Return the active anchored principal-key entry for a witness.
 
         Looks up the ``witness:<witness_id>`` principal in the anchored
@@ -94,7 +95,7 @@ class ExternalApiMixin(_RegistaBase):
         """Reactivate a paused/failed witness. Resets consecutive_failures."""
         self.witnesses.reactivate(witness_id)
 
-    def list_witnesses(self, status: str | None = None) -> list[dict]:
+    def list_witnesses(self, status: str | None = None) -> list[dict[str, Any]]:
         """List witness registrations, optionally filtered by status."""
         return self.witnesses.list(status=status)
 
@@ -104,7 +105,7 @@ class ExternalApiMixin(_RegistaBase):
         witness_id: uuid.UUID | None = None,
         status: str | None = None,
         limit: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Query witness receipts. At least one filter is recommended."""
         return self.witnesses.receipts(
             event_id=event_id, witness_id=witness_id,
@@ -129,7 +130,7 @@ class ExternalApiMixin(_RegistaBase):
         workflows: list[str] | None = None,
         max_failures: int = 10,
         sign_secret: bytes | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Register a webhook for push-model event delivery.
 
         Args:
@@ -155,7 +156,7 @@ class ExternalApiMixin(_RegistaBase):
             max_failures=max_failures, sign_secret=sign_secret,
         )
 
-    def list_webhooks(self, status: str | None = None) -> list[dict]:
+    def list_webhooks(self, status: str | None = None) -> list[dict[str, Any]]:
         """List registered webhooks.
 
         Args:
