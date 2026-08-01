@@ -79,6 +79,17 @@ def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | Non
 
     warnings = 0
 
+    # Order-stable genesis selection (WI-219): the canonical chain start is the
+    # lowest global_seq, tie-broken on event_id, so the verdict does not depend
+    # on the arbitrary order of the input list.
+    genesis_events.sort(
+        key=lambda e: (
+            e.global_seq is None,
+            e.global_seq or 0,
+            str(e.event_id),
+        )
+    )
+
     if len(genesis_events) > 1:
         for g in genesis_events[1:]:
             warnings += 1

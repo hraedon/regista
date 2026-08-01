@@ -362,22 +362,19 @@ class TestPlan024VerifierHashWalk:
                 f"{name}: chain tail global_seq differs between links and rows"
             )
 
-            # Order-independence, but only for chains with a single root. With
-            # two NULL prev links the walk starts from `genesis_events[0]`, so
-            # which root it picks — and therefore the warning set — depends on
-            # row order. That is pre-existing behaviour of the walk itself, not
-            # of the compact form, and it is unreachable through the append
-            # path: the genesis sentinel plus the `event_chain_head` row lock
-            # admit exactly one NULL prev link (see
-            # `test_concurrent_genesis_single_root`).
-            if sum(1 for r in rows if r["prev_global_event_hash"] is None) <= 1:
-                reversed_links, _ = _verify_global_hash_chain(
-                    list(reversed(links)), segments=segments
-                )
-                assert reversed_links == from_links, (
-                    f"{name}: verdict changed when the input order was reversed "
-                    f"({reversed_links} vs {from_links}) — the walk is order-sensitive"
-                )
+            # Order-independence for every case, multiple roots included (WI-219).
+            # The walk follows hash links, so reversing the input must not change
+            # the verdict. When several events carry a NULL prev link the walk
+            # starts from the lowest-global_seq genesis (tie-broken on event_id),
+            # so the chosen root — and therefore the warning set — is stable
+            # regardless of row order.
+            reversed_links, _ = _verify_global_hash_chain(
+                list(reversed(links)), segments=segments
+            )
+            assert reversed_links == from_links, (
+                f"{name}: verdict changed when the input order was reversed "
+                f"({reversed_links} vs {from_links}) — the walk is order-sensitive"
+            )
 
             # The links must carry global_seq through faithfully — the walk
             # itself only logs it, so a scrambled value would pass every
@@ -397,6 +394,52 @@ class TestPlan024VerifierHashWalk:
                 assert from_links == 0, f"{name} should be clean, got {from_links} warnings"
             else:
                 assert from_links >= 1, f"{name} not detected when walking compact links"
+
+    def test_multiple_genesis_verdict_is_order_stable(self):
+        # WI-219: with two NULL prev links the canonical root must be chosen by
+        # global_seq (tie-broken on event_id), not by input order. Two disjoint
+        # chains g1->s1 (seqs 1,3) and g2->s2 (seqs 2,4): the walk must always
+        # start from g1 (lowest genesis seq), reach tail s1, and report the same
+        # warning count under every input permutation.
+        from regista._replay import _verify_global_hash_chain
+
+        def head(env, sig):
+            return hashlib.sha256(env + sig).digest()
+
+        head_g1 = head(b"env-g1", b"sig-g1")
+        head_g2 = head(b"env-g2", b"sig-g2")
+
+        def mk(eid, seq, prev, env, sig):
+            return {
+                "event_id": eid,
+                "global_seq": seq,
+                "prev_global_event_hash": prev,
+                "canonical_envelope": env,
+                "signature": sig,
+            }
+
+        g1 = mk("g1", 1, None, b"env-g1", b"sig-g1")
+        s1 = mk("s1", 3, head_g1, b"env-s1", b"sig-s1")
+        g2 = mk("g2", 2, None, b"env-g2", b"sig-g2")
+        s2 = mk("s2", 4, head_g2, b"env-s2", b"sig-s2")
+
+        events = [g1, s1, g2, s2]
+
+        reference_warnings, reference_tail = _verify_global_hash_chain(list(events))
+        assert reference_tail is not None
+        assert reference_tail["event_id"] == "s1", (
+            "lowest-global_seq genesis (g1) must be the canonical root"
+        )
+
+        for perm in itertools.permutations(events):
+            warnings, tail = _verify_global_hash_chain(list(perm))
+            assert warnings == reference_warnings, (
+                f"warning count changed under permutation {[e['event_id'] for e in perm]}: "
+                f"{warnings} vs {reference_warnings}"
+            )
+            assert (tail or {}).get("event_id") == "s1", (
+                f"chain tail changed under permutation {[e['event_id'] for e in perm]}"
+            )
 
     def test_in_memory_replay_walks_chain(self):
         sub = InMemoryRegista(project="test_p024_im", hmac_key_path=KEY_PATH)

@@ -167,6 +167,18 @@ def _verify_global_hash_chain(
 
     warnings = 0
 
+    # Multiple genesis events (NULL prev_global_event_hash) mean a fork or
+    # corruption. Which one is the canonical chain start must not depend on the
+    # arbitrary order of the input list (WI-219): pick the lowest global_seq,
+    # breaking any remaining tie on event_id so the verdict is total and stable.
+    genesis_events.sort(
+        key=lambda e: (
+            e.get("global_seq") is None,
+            e.get("global_seq") or 0,
+            str(e["event_id"]),
+        )
+    )
+
     if len(genesis_events) > 1:
         for g in genesis_events[1:]:
             warnings += 1
