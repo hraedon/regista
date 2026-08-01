@@ -251,7 +251,7 @@ def append_event(
 
     event_seq = next_seq
     try:
-        conn.execute(
+        inserted = conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                 "event_seq, actor_id, actor_kind, "
@@ -260,7 +260,8 @@ def append_event(
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING global_seq"
             ),
             [
                 event_id,
@@ -287,6 +288,7 @@ def append_event(
                 prev_global_event_hash,
             ],
         )
+        assigned_global_seq = inserted.fetchone()["global_seq"]
     except psycopg.errors.UniqueViolation as exc:
         constraint = exc.diag.constraint_name or ""
         if constraint == "events_entity_event_seq_key":
@@ -333,6 +335,7 @@ def append_event(
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,
+        global_seq=assigned_global_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=am,
@@ -451,7 +454,7 @@ def append_transition_event(
     workflow_version = wi_row["workflow_version"]
 
     try:
-        conn.execute(
+        inserted = conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                 "event_seq, actor_id, actor_kind, "
@@ -460,7 +463,8 @@ def append_transition_event(
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING global_seq"
             ),
             [
                 event_id,
@@ -487,6 +491,7 @@ def append_transition_event(
                 prev_global_event_hash,
             ],
         )
+        assigned_global_seq = inserted.fetchone()["global_seq"]
     except psycopg.errors.UniqueViolation as exc:
         constraint = exc.diag.constraint_name or ""
         if constraint == "events_entity_event_seq_key":
@@ -556,6 +561,7 @@ def append_transition_event(
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,
+        global_seq=assigned_global_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=am,

@@ -205,3 +205,34 @@ def test_bc300_in_memory_replay_detects_global_chain_tamper():
 
     report = sub.replay()
     assert report.warnings >= 1, "InMemory replay must warn on corrupted global chain"
+
+
+def test_append_returns_db_assigned_global_seq(regista):
+    # Cross-repo WI-010: PostgresEventStore.append must return the event with
+    # the DB-assigned global_seq (allocated by the column's sequence DEFAULT),
+    # matching InMemoryEventStore.append. Before the fix the Postgres store
+    # returned the in-memory object whose global_seq was still None.
+    wi, created = regista.create_work_item(
+        workflow_name="test_workflow", work_item_type="feature",
+        actor_id="agent-1", custom_fields={"title": "wi010"},
+    )
+    assert created.global_seq is not None
+    assert created.global_seq > 0
+
+    appended = regista.append_event(
+        work_item_id=wi.work_item_id, actor_id="agent-1", transition="wi010_note"
+    )
+    assert appended.global_seq is not None
+    assert appended.global_seq > created.global_seq
+
+    with regista._mgr.transaction() as conn:
+        rows = conn.execute(
+            SQL(
+                "SELECT event_id, global_seq FROM events "
+                "WHERE event_id IN (%s, %s)"
+            ),
+            [created.event_id, appended.event_id],
+        ).fetchall()
+    persisted = {r["event_id"]: r["global_seq"] for r in rows}
+    assert persisted[created.event_id] == created.global_seq
+    assert persisted[appended.event_id] == appended.global_seq

@@ -380,7 +380,7 @@ class PostgresEventStore:
         pl = event.payload
 
         try:
-            self._conn.execute(
+            inserted = self._conn.execute(
                 SQL(
                     "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                     "event_seq, actor_id, actor_kind, "
@@ -389,7 +389,8 @@ class PostgresEventStore:
                     "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                     "prev_global_event_hash) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "RETURNING global_seq"
                 ),
                 [
                     event.event_id,
@@ -418,6 +419,7 @@ class PostgresEventStore:
                     event.prev_global_event_hash,
                 ],
             )
+            assigned_global_seq = inserted.fetchone()["global_seq"]
         except psycopg.errors.UniqueViolation as exc:
             constraint = exc.diag.constraint_name or ""
             if constraint == "events_entity_event_seq_key":
@@ -462,7 +464,13 @@ class PostgresEventStore:
                 [event.event_seq, event.timestamp, event.event_seq + 1, event.work_item_id],
             )
 
-        return event
+        # Return the event with the DB-assigned global_seq (cross-repo WI-010):
+        # global_seq is allocated by the column's sequence DEFAULT, so the
+        # in-memory event object never carries it. Read it back via RETURNING so
+        # the Postgres store matches InMemoryEventStore.append, which returns the
+        # assigned seq. prev_global_event_hash is already set on the event by the
+        # caller (lock_global_chain_head) before this insert.
+        return dataclasses.replace(event, global_seq=assigned_global_seq)
 
     def read(
         self,
