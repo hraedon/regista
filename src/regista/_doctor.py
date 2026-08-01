@@ -278,6 +278,99 @@ def _check_anchoring_stale_receipts(
     )
 
 
+def _check_witness_key_enrollment(
+    dsn: str,
+    project: str,
+    require_ssl: bool,
+) -> DoctorCheck:
+    from ._connection import validate_project_name
+    from ._witness import witness_principal_id
+
+    name = f"witness:key_enrollment:{project}"
+    try:
+        validate_project_name(project)
+    except ValueError as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=f"Invalid project name: {e}",
+        )
+
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from psycopg.sql import SQL, Identifier
+
+        connect_kwargs: dict[str, Any] = {}
+        if require_ssl:
+            connect_kwargs["sslmode"] = "require"
+        with psycopg.connect(
+            dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
+        ) as conn:
+            conn.execute(
+                SQL("SET search_path TO {}").format(Identifier(project))
+            )
+            present = conn.execute(
+                "SELECT to_regclass('witness_registrations') IS NOT NULL AS present"
+            ).fetchone()["present"]
+            if not present:
+                return DoctorCheck(
+                    name=name,
+                    status="skip",
+                    detail="witness_registrations table absent",
+                )
+            pk_present = conn.execute(
+                "SELECT to_regclass('principal_keys') IS NOT NULL AS present"
+            ).fetchone()["present"]
+            if not pk_present:
+                return DoctorCheck(
+                    name=name,
+                    status="skip",
+                    detail="principal_keys table absent",
+                )
+            witnesses = conn.execute(
+                "SELECT witness_id, public_key FROM witness_registrations "
+                "WHERE key_scheme = 'ed25519' AND public_key IS NOT NULL"
+            ).fetchall()
+            if not witnesses:
+                return DoctorCheck(
+                    name=name,
+                    status="ok",
+                    detail="no Ed25519 witnesses to enroll",
+                )
+            gaps: list[str] = []
+            for w in witnesses:
+                row = conn.execute(
+                    "SELECT public_key FROM principal_keys "
+                    "WHERE principal_id = %s AND status = 'active'",
+                    [witness_principal_id(w["witness_id"])],
+                ).fetchone()
+                if row is None or bytes(row["public_key"]) != bytes(w["public_key"]):
+                    gaps.append(str(w["witness_id"]))
+    except Exception as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=_sanitize_error(e),
+        )
+
+    if gaps:
+        return DoctorCheck(
+            name=name,
+            status="warn",
+            detail=(
+                f"{len(gaps)} Ed25519 witness key(s) not enrolled (or pinned "
+                f"key differs) in the anchored principal-keys registry: "
+                f"{', '.join(gaps[:8])}"
+            ),
+        )
+    return DoctorCheck(
+        name=name,
+        status="ok",
+        detail=f"{len(witnesses)} Ed25519 witness key(s) enrolled",
+    )
+
+
 def _resolve_key_file_path(key_path: str) -> str | None:
     from ._errors import RegistaError
     from ._secrets import _detect_prefix, resolve_str
@@ -650,6 +743,9 @@ def run_doctor(
                 checks.append(
                     _check_anchoring_stale_receipts(dsn, project, require_ssl, stale_after)
                 )
+                checks.append(
+                    _check_witness_key_enrollment(dsn, project, require_ssl)
+                )
             elif not projects_list:
                 checks.append(DoctorCheck(
                     name="projects",
@@ -663,6 +759,9 @@ def run_doctor(
                         _check_anchoring_stale_receipts(
                             dsn, p["name"], require_ssl, stale_after
                         )
+                    )
+                    checks.append(
+                        _check_witness_key_enrollment(dsn, p["name"], require_ssl)
                     )
 
     checks.append(DoctorCheck(

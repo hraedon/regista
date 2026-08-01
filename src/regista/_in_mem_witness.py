@@ -11,6 +11,7 @@ import structlog
 from ._errors import ErrorCode, RegistaError
 from ._in_mem_base import _InMemoryBase
 from ._types import Event
+from ._witness import witness_principal_id as _witness_principal_id
 
 log = structlog.get_logger()
 
@@ -85,6 +86,15 @@ class InMemWitnessMixin(_InMemoryBase):
             "created_at": datetime.now(UTC),
             "updated_at": datetime.now(UTC),
         }
+        if key_scheme == "ed25519" and public_key is not None:
+            self._enrolled_witness_keys[witness_id] = {
+                "principal_id": _witness_principal_id(witness_id),
+                "key_id": f"pk_{uuid.uuid4().hex[:16]}",
+                "public_key": public_key,
+                "scheme": "ed25519",
+                "fingerprint": f"ed25519:sha256:{hashlib.sha256(public_key).hexdigest()}",
+                "status": "active",
+            }
         return witness_id
 
     def unregister_witness(self, witness_id: uuid.UUID) -> None:
@@ -98,6 +108,63 @@ class InMemWitnessMixin(_InMemoryBase):
             r for r in self._witness_receipts
             if r["witness_id"] != witness_id
         ]
+        enrolled = self._enrolled_witness_keys.pop(witness_id, None)
+        if enrolled is not None:
+            enrolled["status"] = "revoked"
+            enrolled["revoked_reason"] = "witness unregistered"
+            self._enrolled_witness_keys[witness_id] = enrolled
+
+    def rotate_witness_key(
+        self,
+        witness_id: uuid.UUID,
+        new_public_key: bytes,
+    ) -> dict:
+        if len(new_public_key) != 32:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "ed25519 new_public_key must be exactly 32 bytes, "
+                f"got {len(new_public_key)}",
+            )
+        w = self._witnesses.get(witness_id)
+        if w is None:
+            raise RegistaError(
+                ErrorCode.WITNESS_NOT_FOUND,
+                f"witness {witness_id} not found",
+            )
+        if w["key_scheme"] != "ed25519":
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "witness key rotation requires key_scheme='ed25519' "
+                f"(witness is {w['key_scheme']!r})",
+            )
+        w["public_key"] = new_public_key
+        w["updated_at"] = datetime.now(UTC)
+        prev = self._enrolled_witness_keys.get(witness_id)
+        if prev is not None and prev["status"] == "active":
+            prev["status"] = "superseded"
+        new_key_id = f"pk_{uuid.uuid4().hex[:16]}"
+        entry = {
+            "principal_id": _witness_principal_id(witness_id),
+            "key_id": new_key_id,
+            "public_key": new_public_key,
+            "scheme": "ed25519",
+            "status": "active",
+            "fingerprint": f"ed25519:sha256:{hashlib.sha256(new_public_key).hexdigest()}",
+        }
+        self._enrolled_witness_keys[witness_id] = entry
+        log.info(
+            "witness.key_rotated",
+            project=self._project,
+            witness_id=str(witness_id),
+            key_id=new_key_id,
+        )
+        return dict(entry)
+
+    def enrolled_witness_key(self, witness_id: uuid.UUID) -> dict | None:
+        enrolled = self._enrolled_witness_keys.get(witness_id)
+        if enrolled is None or enrolled["status"] != "active":
+            return None
+        return dict(enrolled)
 
     def pause_witness(self, witness_id: uuid.UUID) -> None:
         if witness_id not in self._witnesses:
@@ -422,6 +489,16 @@ class _InMemoryWitnessOps:
             mode=mode, sign_secret=sign_secret,
             public_key=public_key, key_scheme=key_scheme,
         )
+
+    def rotate_key(
+        self,
+        witness_id: uuid.UUID,
+        new_public_key: bytes,
+    ) -> dict:
+        return self._sub.rotate_witness_key(witness_id, new_public_key)
+
+    def enrolled_key(self, witness_id: uuid.UUID) -> dict | None:
+        return self._sub.enrolled_witness_key(witness_id)
 
     def unregister(self, witness_id: uuid.UUID) -> None:
         self._sub.unregister_witness(witness_id)

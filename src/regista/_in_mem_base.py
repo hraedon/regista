@@ -39,6 +39,7 @@ class _InMemoryBase:
         _witnesses: dict[object, dict]
         _witness_receipts: list[dict]
         _witness_delivery_lock: threading.Lock
+        _enrolled_witness_keys: dict[object, dict]
 
         def _try_create_witness_receipts(self, event: Event) -> None: ...
 

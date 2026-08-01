@@ -46,6 +46,9 @@ from ._witness import (
     deliver_pending_receipts as _deliver_pending_receipts,
 )
 from ._witness import (
+    enrolled_witness_key as _enrolled_witness_key,
+)
+from ._witness import (
     event_matches_filter as _event_matches_filter,
 )
 from ._witness import (
@@ -62,6 +65,9 @@ from ._witness import (
 )
 from ._witness import (
     register_witness as _register_witness,
+)
+from ._witness import (
+    rotate_witness_key as _rotate_witness_key,
 )
 from ._witness import (
     unregister_witness as _unregister_witness,
@@ -944,6 +950,18 @@ class WitnessOps:
             max_failures, max_retries, mode=mode, sign_secret=sign_secret,
             public_key=public_key, key_scheme=key_scheme,
         )
+
+    def rotate_key(
+        self,
+        witness_id: uuid.UUID,
+        new_public_key: bytes,
+    ) -> dict:
+        return _rotate_witness_key(
+            self._mgr, self._project, witness_id, new_public_key,
+        )
+
+    def enrolled_key(self, witness_id: uuid.UUID) -> dict | None:
+        return _enrolled_witness_key(self._mgr, witness_id)
 
     def unregister(self, witness_id: uuid.UUID) -> None:
         _unregister_witness(self._mgr, self._project, witness_id)

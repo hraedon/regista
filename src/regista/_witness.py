@@ -13,6 +13,12 @@ from ._errors import ErrorCode, RegistaError
 
 log = structlog.get_logger()
 
+_WITNESS_PRINCIPAL_PREFIX = "witness:"
+
+
+def witness_principal_id(witness_id: uuid.UUID | str) -> str:
+    return f"{_WITNESS_PRINCIPAL_PREFIX}{witness_id}"
+
 
 def _validate_url(url: str) -> None:
     if not url or not url.startswith(("http://", "https://")):
@@ -144,12 +150,23 @@ def register_witness(
                 key_scheme,
             ],
         )
+        if key_scheme == "ed25519" and public_key is not None:
+            from ._principal_keys import register_principal_key_conn
+
+            register_principal_key_conn(
+                conn,
+                witness_principal_id(witness_id),
+                public_key,
+                "ed25519",
+                registered_by="witness-enrollment",
+            )
     log.info(
         "witness.registered",
         project=project,
         witness_id=str(witness_id),
         url=url,
         mode=mode,
+        key_enrolled=key_scheme == "ed25519",
     )
     return witness_id
 
@@ -173,7 +190,102 @@ def unregister_witness(
                 ErrorCode.WITNESS_NOT_FOUND,
                 f"witness {witness_id} not found",
             )
+        active_rows = conn.execute(
+            SQL(
+                "SELECT key_id FROM principal_keys "
+                "WHERE principal_id = %s AND status = 'active'"
+            ),
+            [witness_principal_id(witness_id)],
+        ).fetchall()
+        if active_rows:
+            from ._principal_keys import revoke_principal_key_conn
+
+            for row in active_rows:
+                revoke_principal_key_conn(
+                    conn,
+                    witness_principal_id(witness_id),
+                    row["key_id"],
+                    reason="witness unregistered",
+                )
     log.info("witness.unregistered", project=project, witness_id=str(witness_id))
+
+
+def rotate_witness_key(
+    mgr: ConnectionManager,
+    project: str,
+    witness_id: uuid.UUID,
+    new_public_key: bytes,
+) -> dict:
+    if len(new_public_key) != 32:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "ed25519 new_public_key must be exactly 32 bytes, "
+            f"got {len(new_public_key)}",
+        )
+    principal_id = witness_principal_id(witness_id)
+    with mgr.transaction() as conn:
+        row = conn.execute(
+            SQL(
+                "SELECT key_scheme FROM witness_registrations "
+                "WHERE witness_id = %s FOR UPDATE"
+            ),
+            [witness_id],
+        ).fetchone()
+        if row is None:
+            raise RegistaError(
+                ErrorCode.WITNESS_NOT_FOUND,
+                f"witness {witness_id} not found",
+            )
+        if row["key_scheme"] != "ed25519":
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "witness key rotation requires key_scheme='ed25519' "
+                f"(witness is {row['key_scheme']!r})",
+            )
+        conn.execute(
+            SQL(
+                "UPDATE witness_registrations "
+                "SET public_key = %s, updated_at = now() "
+                "WHERE witness_id = %s"
+            ),
+            [new_public_key, witness_id],
+        )
+        from ._principal_keys import rotate_principal_key_conn
+
+        entry = rotate_principal_key_conn(
+            conn,
+            principal_id,
+            new_public_key,
+            "ed25519",
+            registered_by="witness-enrollment",
+        )
+    log.info(
+        "witness.key_rotated",
+        project=project,
+        witness_id=str(witness_id),
+        key_id=entry.key_id,
+    )
+    return entry.to_dict()
+
+
+def enrolled_witness_key(
+    mgr: ConnectionManager,
+    witness_id: uuid.UUID,
+) -> dict | None:
+    principal_id = witness_principal_id(witness_id)
+    with mgr.transaction() as conn:
+        rows = conn.execute(
+            SQL(
+                "SELECT * FROM principal_keys "
+                "WHERE principal_id = %s AND status = 'active'"
+            ),
+            [principal_id],
+        ).fetchall()
+    if not rows:
+        return None
+    from ._principal_keys import _row_to_entry
+
+    return _row_to_entry(rows[0]).to_dict()
 
 
 def pause_witness(

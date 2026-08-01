@@ -82,6 +82,7 @@ class InMemoryRegista(
         self._witnesses: dict = {}
         self._witness_receipts: list[dict] = []
         self._witness_delivery_lock = threading.Lock()
+        self._enrolled_witness_keys: dict = {}
 
     @classmethod
     def create_project(
