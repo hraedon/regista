@@ -31,6 +31,20 @@ if _ANCHORING_LOCK_ID >= 2**63:
 
 
 class AnchorStatus:
+    """Anchor receipt lifecycle states.
+
+    Bundled providers only ever emit ``PENDING`` (calendar-based providers such
+    as OpenTimestamps, before the calendar is upgraded) and ``CONFIRMED``
+    (final, or immediate for file/RFC 3161 providers); ``FAILED``/``RETRYABLE``
+    record delivery problems.
+
+    ``COMMITTED`` is RESERVED for external/third-party providers that distinguish
+    a "committed to the log" intermediate state from a final ``CONFIRMED`` one.
+    No bundled provider returns it; it is kept in the status vocabulary (and the
+    ``_STATUS_RANK`` / ``latest_confirmed_seq`` watermark set) so such a provider
+    can be added without a schema change. Do not repurpose it (WI-206).
+    """
+
     PENDING = "pending"
     COMMITTED = "committed"
     CONFIRMED = "confirmed"
