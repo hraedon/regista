@@ -49,10 +49,10 @@ class SigningScheme(Protocol):
     ) -> bool: ...
 
 
-_registry: dict[str, type] = {}
+_registry: dict[str, type[SigningScheme]] = {}
 
 
-def register_scheme(cls: type) -> type:
+def register_scheme(cls: type[SigningScheme]) -> type[SigningScheme]:
     existing = _registry.get(cls.scheme_id)
     if existing is not None and existing is not cls:
         import structlog
@@ -104,7 +104,7 @@ class HMACSHA256Scheme:
         self, envelope: bytes, key_material: bytes, hash_alg: str = "sha-256"
     ) -> tuple[bytes, bytes]:
         hash_fn = resolve_hash_function(hash_alg)
-        sig = _hmac.new(key_material, envelope, hash_fn).digest()
+        sig = _hmac.new(key_material, envelope, hash_fn).digest()  # type: ignore[arg-type]
         h = hash_fn(envelope).digest()
         return (sig, h)
 
@@ -117,7 +117,7 @@ class HMACSHA256Scheme:
         hash_alg: str = "sha-256",
     ) -> bool:
         hash_fn = resolve_hash_function(hash_alg)
-        expected = _hmac.new(key_material, envelope, hash_fn).digest()
+        expected = _hmac.new(key_material, envelope, hash_fn).digest()  # type: ignore[arg-type]
         return _hmac.compare_digest(expected, signature) and _hmac.compare_digest(
             hash_fn(envelope).digest(), envelope_hash
         )

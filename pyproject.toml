@@ -150,7 +150,6 @@ module = [
     "regista._replay",
     "regista._secrets",
     "regista._signing",
-    "regista._signing_scheme",
     "regista._timestamping",
     "regista._types",
     "regista._workflow",
