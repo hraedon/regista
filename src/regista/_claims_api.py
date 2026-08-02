@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
@@ -20,7 +21,7 @@ def acquire_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     from ._claims import acquire_claim as _acquire
 
@@ -57,7 +58,7 @@ def heartbeat_claim(
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     from ._claims import heartbeat_claim as _heartbeat
 
@@ -89,7 +90,7 @@ def release_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     from ._claims import release_claim as _release
 

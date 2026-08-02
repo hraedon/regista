@@ -20,7 +20,7 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_acquire_claim
 
@@ -40,7 +40,7 @@ class InMemClaimMixin(_InMemoryBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_heartbeat_claim
 
@@ -60,7 +60,7 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> None:
         from ._in_memory_claims import in_memory_release_claim
 

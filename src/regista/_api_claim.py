@@ -21,7 +21,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         """Acquire a durable claim (lease) on a work item.
 
@@ -66,7 +66,7 @@ class ClaimApiMixin(_RegistaBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         """Renew a claim's TTL. Rejects if claim is held by a different actor.
 
@@ -104,7 +104,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Release a claim held by the given actor.
 

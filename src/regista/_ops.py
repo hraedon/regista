@@ -428,7 +428,7 @@ class ClaimOps:
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -453,7 +453,7 @@ class ClaimOps:
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         _validate_mutation_params(actor_id=actor_id, actor_kind=actor_kind, ttl_seconds=ttl_seconds)
         from ._claims_api import heartbeat_claim as _impl
@@ -474,7 +474,7 @@ class ClaimOps:
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> None:
         _validate_mutation_params(
             actor_id=actor_id,

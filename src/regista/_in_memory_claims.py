@@ -32,7 +32,7 @@ def in_memory_acquire_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     validate_mutation_params(
         actor_id=actor_id,
@@ -107,7 +107,7 @@ def in_memory_heartbeat_claim(
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     validate_mutation_params(
         actor_id=actor_id,
@@ -181,7 +181,7 @@ def in_memory_release_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     validate_mutation_params(
         actor_id=actor_id,
@@ -276,7 +276,7 @@ def _in_memory_append_claim_event(
     *,
     actor_id: str = "system",
     actor_kind: str = "system",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     _store_append(
         store,

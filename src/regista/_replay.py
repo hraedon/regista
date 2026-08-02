@@ -883,7 +883,7 @@ def _parse_not_before(value: str | datetime | None) -> datetime | None:
 
 
 def _requires_principal_registration(
-    evt: dict, asymmetric_schemes: frozenset[str],
+    evt: dict[str, Any], asymmetric_schemes: frozenset[str],
 ) -> bool:
     """Does this event's scheme demand a registered principal key?
 

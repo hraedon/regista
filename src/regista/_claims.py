@@ -39,7 +39,7 @@ def acquire_claim(
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> tuple[Claim, bool, bool]:
     from ._events import append_event, lock_work_item
 
@@ -203,7 +203,7 @@ def heartbeat_claim(
     key_set: KeySet | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
@@ -295,7 +295,7 @@ def release_claim(
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     from ._events import append_event, lock_work_item
 

@@ -404,7 +404,6 @@ def store_new(ref: str, data: bytes) -> StoreNewOutcome:
             f"not a StoreNewOutcome",
         )
     return outcome
-    return cast("str", store_new_fn(value, data))
 
 
 def delete(ref: str) -> DeleteOutcome:
@@ -639,7 +638,7 @@ def _parse_vault_env_text(text: str) -> dict[str, str]:
     return out
 
 
-class _VaultEnv(dict):
+class _VaultEnv(dict[str, str]):
     """Merged Vault configuration that remembers what came from the plane file.
 
     Provenance is the whole point of the auth report, so a value read out of a
@@ -860,7 +859,7 @@ class VaultProvider:
         return _vault_env(base)
 
     def _hvac(self) -> Any:
-        import hvac  # type: ignore[import-untyped]
+        import hvac
 
         return hvac
 

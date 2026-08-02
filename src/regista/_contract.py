@@ -626,7 +626,7 @@ def validate_mutation_params(
     *,
     actor_id: str | None = None,
     actor_kind: str | None = None,
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     event_id: uuid.UUID | None = None,
     not_before: datetime | None = None,
     ttl_seconds: int | None = None,

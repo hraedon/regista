@@ -81,7 +81,7 @@ _RETRYABLE_CODES = frozenset(
 )
 
 
-def _error_envelope(e: RegistaError) -> dict:
+def _error_envelope(e: RegistaError) -> dict[str, Any]:
     return {
         "ok": False,
         "error": {
@@ -116,7 +116,7 @@ def _handle_error(e: RegistaError, json_mode: bool = False) -> NoReturn:
     sys.exit(1)
 
 
-def _fail_json(payload, *, json_mode: bool, diagnostic: str):
+def _fail_json(payload: Any, *, json_mode: bool, diagnostic: str) -> NoReturn:
     """Emit a verb's own failure document and exit 1 (contract §2).
 
     For verbs whose failure is reported inside their *own* result shape (a
@@ -1263,7 +1263,7 @@ def _secret_backend_error(e: BaseException) -> RegistaError:
     )
 
 
-def _print_vault_auth_status(status):
+def _print_vault_auth_status(status: dict[str, Any]) -> None:
     print(f"vault provider available: {status.get('provider_available')}")
     print(f"VAULT_ADDR set:           {status.get('vault_addr_set')}")
     print(f"configured auth method:   {status.get('configured_method') or '(none)'}")
@@ -1369,7 +1369,7 @@ def cmd_secrets_resolve(args: argparse.Namespace) -> None:
             print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
 
 
-def cmd_keys_fingerprint(args):
+def cmd_keys_fingerprint(args: argparse.Namespace) -> None:
     """Print each signing key's id, source and EFFECTIVE-bytes fingerprint.
 
     This is the operator-facing before/after equality primitive for key
