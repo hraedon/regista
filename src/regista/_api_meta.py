@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ._api_base import _RegistaBase
 from ._errors import ErrorCode, RegistaError
@@ -110,7 +110,7 @@ class MetaApiMixin(_RegistaBase):
         work_item_id: uuid.UUID,
         *,
         profile: GateProfile | str = "relaxed",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Compute the gate rationale for a work item.
 
         Explains why ``done`` was (or would be) permitted under the given
@@ -130,7 +130,7 @@ class MetaApiMixin(_RegistaBase):
     @staticmethod
     def validate_actor_metadata(
         event: Event,
-        expected_schema: dict | None = None,
+        expected_schema: dict[str, Any] | None = None,
     ) -> list[str]:
         """Lint helper: validate actor_metadata against recommended fields.
 
@@ -171,7 +171,7 @@ class MetaApiMixin(_RegistaBase):
         actor_id: str,
         *,
         actor_kind: str = "system",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         spec_id: uuid.UUID | None = None,
         known_spec_schema_versions: frozenset[str] | None = None,
     ) -> Event:
@@ -312,11 +312,11 @@ class MetaApiMixin(_RegistaBase):
         *,
         actor_id: str = "system",
         actor_kind: str = "system",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         private_key_dir: str | None = None,
         secret_backend: str | None = None,
         reuse_existing_key: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Provision and register an Ed25519 keypair for a principal.
 
         Reuses :func:`regista._provision.provision_principal` for key

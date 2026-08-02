@@ -47,6 +47,7 @@ class _RegistaBase:
         _hook_consumer: HookConsumer | None
         _maintenance_thread: object | None
         _strict_roles: bool
+        _hmac_key_path: str
 
         def _require_open(self) -> None: ...
 
@@ -57,6 +58,18 @@ class _RegistaBase:
         def read_events(
             self, *, work_item_id: uuid.UUID | None = None, **kwargs: Any
         ) -> list[Event]: ...
+
+        def append_event(
+            self,
+            work_item_id: uuid.UUID,
+            actor_id: str,
+            actor_kind: str = "agent",
+            actor_metadata: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> Event: ...
+
+        @property
+        def project(self) -> str: ...
 
         @property
         def workflows(self) -> WorkflowOps: ...
