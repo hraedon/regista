@@ -124,9 +124,9 @@ ignore_missing_imports = true
 #     remove when the projects-catalog feature is committed. ---
 [[tool.mypy.overrides]]
 module = [
+    "regista._timestamping",
     "regista._secrets",
     "regista._cli",
-    "regista._timestamping",
     "regista.sidecar.routes",
 ]
 ignore_errors = true
