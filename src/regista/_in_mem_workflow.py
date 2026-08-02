@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -94,9 +95,9 @@ class InMemWorkflowMixin(_InMemoryBase):
         work_item_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
-        custom_fields: dict | None = None,
+        custom_fields: dict[str, Any] | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
@@ -122,9 +123,9 @@ class InMemWorkflowMixin(_InMemoryBase):
         work_item_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
-        custom_fields: dict | None = None,
+        custom_fields: dict[str, Any] | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
@@ -148,14 +149,14 @@ class InMemWorkflowMixin(_InMemoryBase):
         work_item_id: uuid.UUID,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         key_id: str | None = None,
         transition: str | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
     ) -> Event:
@@ -184,14 +185,14 @@ class InMemWorkflowMixin(_InMemoryBase):
         transition_name: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         key_id: str | None = None,
-        payload: dict | None = None,
-        custom_fields: dict | None = None,
+        payload: dict[str, Any] | None = None,
+        custom_fields: dict[str, Any] | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
     ) -> Event:
         from ._in_memory_transition import in_memory_transition
 
@@ -297,10 +298,10 @@ class InMemWorkflowMixin(_InMemoryBase):
         not_before: datetime | None,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
     ) -> Event:
         from ._in_memory_work_items import in_memory_update_not_before
 
@@ -337,13 +338,15 @@ class InMemWorkflowMixin(_InMemoryBase):
             work_item_id=work_item_id,
         )
 
-    def compute_assurance(self, work_item_id: uuid.UUID):
+    def compute_assurance(self, work_item_id: uuid.UUID) -> Any:
         from ._assurance import compute_assurance_level
 
         events = self.read_events(work_item_id=work_item_id, limit=10000)
         return compute_assurance_level(events)
 
-    def gate_rationale(self, work_item_id: uuid.UUID, *, profile: str = "relaxed") -> dict:
+    def gate_rationale(
+        self, work_item_id: uuid.UUID, *, profile: str = "relaxed",
+    ) -> dict[str, Any]:
         from ._assurance import GateProfile
         from ._assurance import gate_rationale as _gate_rationale
 
@@ -352,7 +355,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         events = self.read_events(work_item_id=work_item_id, limit=10000)
         return _gate_rationale(events, profile)
 
-    def _resolve_wf_def(self, workflow_name: str) -> tuple[dict, WorkflowDefinition, int]:
+    def _resolve_wf_def(self, workflow_name: str) -> tuple[dict[str, Any], WorkflowDefinition, int]:
         versions = [(k, v) for k, v in self._workflows.items() if k[0] == workflow_name]
         if not versions:
             raise RegistaError(
@@ -365,10 +368,10 @@ class InMemWorkflowMixin(_InMemoryBase):
         return data, wf_def, key[1]
 
     def _append_simple_event(
-        self, wi: dict, event_id: uuid.UUID,
+        self, wi: dict[str, Any], event_id: uuid.UUID,
         actor_id: str, actor_kind: str, actor_metadata: Jsonb | None,
         transition: str, payload: Jsonb | None,
-    ) -> None:
+    ) -> Event:
         from ._event_store import append_event as _store_append
 
         return _store_append(
@@ -393,7 +396,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         actor_id: str,
         *,
         actor_kind: str = "system",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         spec_id: uuid.UUID | None = None,
         known_spec_schema_versions: frozenset[str] | None = None,
     ) -> Event:
@@ -472,9 +475,9 @@ class InMemWorkflowMixin(_InMemoryBase):
         *,
         actor_id: str = "system",
         actor_kind: str = "system",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         private_key_dir: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         raise NotImplementedError(
             "Principal enrollment requires the Postgres backend; "
             "InMemoryRegista has no principal-keys registry"
