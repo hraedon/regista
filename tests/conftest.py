@@ -208,12 +208,19 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     end = _project_schema_names()
     leaked = sorted(end - _SESSION_START_SCHEMAS)
     if leaked:
-        pytest.exit(
+        # session.exitstatus, not pytest.exit(): an Exit raised this late is
+        # caught after the exit status is computed — the message prints but
+        # the process still exits 0, and CI reads codes, not prose (verified
+        # empirically; the fail-open shape this guard exists to prevent).
+        import sys as _sys
+
+        print(
             "WI-243: test suite leaked Postgres schemas — "
             f"{len(leaked)} new project schema(s) survive the session: "
             + ", ".join(leaked[:20])
             + ("…" if len(leaked) > 20 else "")
             + ". Every test that creates a project must drop it "
             "(and drop_project_schema must unregister the catalog row).",
-            returncode=1,
+            file=_sys.stderr,
         )
+        session.exitstatus = 1
