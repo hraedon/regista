@@ -112,21 +112,7 @@ files = ["src/regista"]
 module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*"]
 ignore_missing_imports = true
 
-# --- mypy --strict burndown (WI-233). The connection layer sets
-#     row_factory=dict_row globally (_connection.py), so rows are dict[str, Any]
-#     at runtime; the shared alias `DictConn = psycopg.Connection[dict[str, Any]]`
-#     (in _connection.py) documents that and unlocks most modules. Modules below
-#     still have remaining strict violations (complex generics, untyped
-#     third-party calls, mixin attribute inference) and are burned down one PR
-#     at a time. Delete entries as they are annotated. When this list is empty,
-#     the kernel is fully strict.
-#     NOTE: _projects is a pre-existing uncommitted WIP module; annotate or
-#     remove when the projects-catalog feature is committed. ---
-[[tool.mypy.overrides]]
-module = [
-    "regista._timestamping",
-    "regista._secrets",
-    "regista._cli",
-    "regista.sidecar.routes",
-]
-ignore_errors = true
+# --- WI-233 complete: all source modules are now mypy --strict clean.
+#     The kernel is fully strict. The `DictConn = psycopg.Connection[dict[str, Any]]`
+#     alias (in _connection.py, matching the row_factory=dict_row runtime)
+#     documents the dict-row contract and unlocks most modules. ---

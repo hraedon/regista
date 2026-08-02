@@ -5,6 +5,7 @@ import hashlib
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -62,13 +63,19 @@ def _parse_datetime(val: str | None) -> datetime | None:
         raise HTTPException(status_code=400, detail=f"Invalid datetime: {val!r}")
 
 
-def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | Path | None = None):
+def register_routes(
+    app: Any,
+    regista: Any,
+    tokens: TokenRegistry,
+    *,
+    workflow_dir: str | Path | None = None,
+) -> None:
     router = APIRouter(prefix="/v1")
     limiter = make_limiter()
     _workflow_base = Path(workflow_dir).resolve() if workflow_dir else None
 
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
+    @app.middleware("http")  # type: ignore[untyped-decorator]
+    async def auth_middleware(request: Request, call_next: Any) -> Any:
         if not request.url.path.startswith("/v1"):
             return await call_next(request)
 
@@ -99,19 +106,19 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return await call_next(request)
 
     @router.post("/register_workflow")
-    def register_workflow(body: RegisterWorkflowRequest, request: Request):
+    def register_workflow(body: RegisterWorkflowRequest, request: Request) -> Any:
         get_actor(request)
         result = regista.register_workflow(body.yaml_content)
         return _serialize(result)
 
     @router.get("/workflows/{name}/{version}")
-    def get_workflow(name: str, version: int, request: Request):
+    def get_workflow(name: str, version: int, request: Request) -> Any:
         get_actor(request)
         result = regista.get_workflow(name, version)
         return _serialize(result)
 
     @router.post("/create_work_item")
-    def create_work_item(body: CreateWorkItemRequest, request: Request):
+    def create_work_item(body: CreateWorkItemRequest, request: Request) -> Any:
         actor = get_actor(request)
         wi, evt = regista.create_work_item(
             workflow_name=body.workflow_name,
@@ -126,7 +133,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"work_item": _serialize(wi), "event": _serialize(evt)}
 
     @router.get("/work_items/{work_item_id}")
-    def get_work_item(work_item_id: str, request: Request):
+    def get_work_item(work_item_id: str, request: Request) -> Any:
         get_actor(request)
         result = regista.get_work_item(_parse_uuid(work_item_id))
         if result is None:
@@ -137,7 +144,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/append_event")
-    def append_event(body: AppendEventRequest, request: Request):
+    def append_event(body: AppendEventRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.append_event(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -154,7 +161,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/transition")
-    def transition(body: TransitionRequest, request: Request):
+    def transition(body: TransitionRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.transition(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -171,7 +178,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/read_events")
-    def read_events(body: ReadEventsRequest, request: Request):
+    def read_events(body: ReadEventsRequest, request: Request) -> Any:
         get_actor(request)
         result = regista.read_events(
             work_item_id=_parse_uuid(body.work_item_id) if body.work_item_id else None,
@@ -185,7 +192,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/read_events_since")
-    def read_events_since(body: ReadEventsSinceRequest, request: Request):
+    def read_events_since(body: ReadEventsSinceRequest, request: Request) -> Any:
         get_actor(request)
         result = regista.read_events_since(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -195,7 +202,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/query_work_items")
-    def query_work_items(body: QueryWorkItemsRequest, request: Request):
+    def query_work_items(body: QueryWorkItemsRequest, request: Request) -> Any:
         get_actor(request)
         result = regista.query_work_items(
             workflow_name=body.workflow_name,
@@ -213,7 +220,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/acquire_claim")
-    def acquire_claim(body: AcquireClaimRequest, request: Request):
+    def acquire_claim(body: AcquireClaimRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.acquire_claim(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -226,7 +233,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/heartbeat_claim")
-    def heartbeat_claim(body: HeartbeatClaimRequest, request: Request):
+    def heartbeat_claim(body: HeartbeatClaimRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.heartbeat_claim(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -240,7 +247,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/release_claim")
-    def release_claim(body: ReleaseClaimRequest, request: Request):
+    def release_claim(body: ReleaseClaimRequest, request: Request) -> Any:
         actor = get_actor(request)
         regista.release_claim(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -252,13 +259,13 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"status": "ok"}
 
     @router.post("/sweep_expired_claims")
-    def sweep_expired_claims(request: Request):
+    def sweep_expired_claims(request: Request) -> Any:
         require_admin(request)
         count = regista.sweep_expired_claims()
         return {"swept": count}
 
     @router.post("/create_link")
-    def create_link(body: CreateLinkRequest, request: Request):
+    def create_link(body: CreateLinkRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.create_link(
             from_work_item_id=_parse_uuid(body.from_work_item_id),
@@ -276,7 +283,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/remove_link")
-    def remove_link(body: RemoveLinkRequest, request: Request):
+    def remove_link(body: RemoveLinkRequest, request: Request) -> Any:
         actor = get_actor(request)
         regista.remove_link(
             from_work_item_id=_parse_uuid(body.from_work_item_id),
@@ -291,7 +298,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"status": "ok"}
 
     @router.post("/update_not_before")
-    def update_not_before(body: UpdateNotBeforeRequest, request: Request):
+    def update_not_before(body: UpdateNotBeforeRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.update_not_before(
             work_item_id=_parse_uuid(body.work_item_id),
@@ -304,7 +311,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/replay")
-    def replay(body: ReplayRequest, request: Request):
+    def replay(body: ReplayRequest, request: Request) -> Any:
         require_admin(request)
         result = regista.replay(
             continue_on_revoked=body.continue_on_revoked,
@@ -315,20 +322,20 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.get("/dead_lettered_hooks")
-    def list_dead_lettered_hooks(request: Request, limit: int = 100):
+    def list_dead_lettered_hooks(request: Request, limit: int = 100) -> Any:
         require_admin(request)
         limit = max(1, min(limit, 1000))
         result = regista.list_dead_lettered_hooks(limit=limit)
         return _serialize(result)
 
     @router.post("/requeue_dead_lettered_hook")
-    def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request):
+    def requeue_dead_lettered_hook(body: RequeueDeadLetteredHookRequest, request: Request) -> Any:
         require_admin(request)
         regista.requeue_dead_lettered_hook(body.dead_letter_id)
         return {"status": "ok"}
 
     @router.post("/register_actor_role")
-    def register_actor_role(body: RegisterActorRoleRequest, request: Request):
+    def register_actor_role(body: RegisterActorRoleRequest, request: Request) -> Any:
         actor = get_actor(request)
         if body.role not in actor.allowed_roles:
             raise HTTPException(
@@ -339,7 +346,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"status": "ok"}
 
     @router.post("/unregister_actor_role")
-    def unregister_actor_role(body: UnregisterActorRoleRequest, request: Request):
+    def unregister_actor_role(body: UnregisterActorRoleRequest, request: Request) -> Any:
         actor = get_actor(request)
         if body.role not in actor.allowed_roles:
             raise HTTPException(
@@ -350,14 +357,14 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"status": "ok"}
 
     @router.get("/actor_roles")
-    def list_actor_roles(request: Request):
+    def list_actor_roles(request: Request) -> Any:
         get_actor(request)
         actor_id = request.query_params.get("actor_id")
         result = regista.list_actor_roles(actor_id=actor_id)
         return _serialize(result)
 
     @router.post("/register_recurrence_rule")
-    def register_recurrence_rule(body: RegisterRecurrenceRuleRequest, request: Request):
+    def register_recurrence_rule(body: RegisterRecurrenceRuleRequest, request: Request) -> Any:
         get_actor(request)
         result = regista.register_recurrence_rule(
             workflow_name=body.workflow_name,
@@ -376,26 +383,26 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.get("/recurrence_rules")
-    def list_recurrence_rules(request: Request):
+    def list_recurrence_rules(request: Request) -> Any:
         get_actor(request)
         status = request.query_params.get("status")
         result = regista.list_recurrence_rules(status=status)
         return _serialize(result)
 
     @router.post("/fire_recurrence")
-    def fire_recurrence(body: FireRecurrenceRequest, request: Request):
+    def fire_recurrence(body: FireRecurrenceRequest, request: Request) -> Any:
         require_admin(request)
         rule, wi = regista.fire_recurrence(_parse_uuid(body.rule_id))
         return {"rule": _serialize(rule), "work_item": _serialize(wi)}
 
     @router.post("/cancel_recurrence_rule")
-    def cancel_recurrence_rule(body: CancelRecurrenceRuleRequest, request: Request):
+    def cancel_recurrence_rule(body: CancelRecurrenceRuleRequest, request: Request) -> Any:
         require_admin(request)
         regista.cancel_recurrence_rule(_parse_uuid(body.rule_id))
         return {"status": "ok"}
 
     @router.post("/update_recurrence_rule")
-    def update_recurrence_rule(body: UpdateRecurrenceRuleRequest, request: Request):
+    def update_recurrence_rule(body: UpdateRecurrenceRuleRequest, request: Request) -> Any:
         require_admin(request)
         result = regista.update_recurrence_rule(
             rule_id=_parse_uuid(body.rule_id),
@@ -406,32 +413,32 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/sweep_expired_hook_leases")
-    def sweep_expired_hook_leases(request: Request):
+    def sweep_expired_hook_leases(request: Request) -> Any:
         require_admin(request)
         count = regista.sweep_expired_hook_leases()
         return {"swept": count}
 
     @router.post("/timestamp/trigger")
-    def trigger_timestamp(request: Request):
+    def trigger_timestamp(request: Request) -> Any:
         require_admin(request)
         result = regista.timestamping.trigger()
         return _serialize(result)
 
     @router.get("/timestamp/batches")
-    def list_timestamp_batches(request: Request):
+    def list_timestamp_batches(request: Request) -> Any:
         require_admin(request)
         status = request.query_params.get("status")
         result = regista.timestamping.list_batches(status=status)
         return _serialize(result)
 
     @router.post("/timestamp/batches/{batch_id}/verify")
-    def verify_timestamp_batch(batch_id: str, request: Request):
+    def verify_timestamp_batch(batch_id: str, request: Request) -> Any:
         require_admin(request)
         result = regista.timestamping.verify_batch(_parse_uuid(batch_id))
         return {"verified": result}
 
     @router.post("/witnesses")
-    def register_witness(body: RegisterWitnessRequest, request: Request):
+    def register_witness(body: RegisterWitnessRequest, request: Request) -> Any:
         require_admin(request)
         try:
             pub_key = base64.b64decode(body.public_key) if body.public_key else None
@@ -449,32 +456,32 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"witness_id": str(witness_id)}
 
     @router.delete("/witnesses/{witness_id}")
-    def unregister_witness(witness_id: str, request: Request):
+    def unregister_witness(witness_id: str, request: Request) -> Any:
         require_admin(request)
         regista.unregister_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.post("/witnesses/{witness_id}/pause")
-    def pause_witness(witness_id: str, request: Request):
+    def pause_witness(witness_id: str, request: Request) -> Any:
         require_admin(request)
         regista.pause_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.post("/witnesses/{witness_id}/reactivate")
-    def reactivate_witness(witness_id: str, request: Request):
+    def reactivate_witness(witness_id: str, request: Request) -> Any:
         require_admin(request)
         regista.reactivate_witness(_parse_uuid(witness_id))
         return {"status": "ok"}
 
     @router.get("/witnesses")
-    def list_witnesses(request: Request):
+    def list_witnesses(request: Request) -> Any:
         get_actor(request)
         status = request.query_params.get("status")
         result = regista.list_witnesses(status=status)
         return _serialize(result)
 
     @router.get("/witnesses/receipts")
-    def list_witness_receipts(request: Request):
+    def list_witness_receipts(request: Request) -> Any:
         get_actor(request)
         event_id = request.query_params.get("event_id")
         witness_id = request.query_params.get("witness_id")
@@ -495,20 +502,20 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.post("/witnesses/deliver")
-    def deliver_witness_receipts(request: Request):
+    def deliver_witness_receipts(request: Request) -> Any:
         require_admin(request)
         count = regista.deliver_pending_witness_receipts()
         return {"delivered": count}
 
     @router.post("/archive_events")
-    def archive_events_route(body: ArchiveEventsRequest, request: Request):
+    def archive_events_route(body: ArchiveEventsRequest, request: Request) -> Any:
         require_admin(request)
         ts = _parse_datetime(body.before_timestamp)
         count = regista.archive_events(before_timestamp=ts, dry_run=body.dry_run)
         return {"archived": count, "dry_run": body.dry_run}
 
     @router.post("/create_work_items_batch")
-    def create_work_items_batch(body: CreateWorkItemsBatchRequest, request: Request):
+    def create_work_items_batch(body: CreateWorkItemsBatchRequest, request: Request) -> Any:
         actor = get_actor(request)
         if not body.items:
             raise HTTPException(status_code=400, detail="items list is required")
@@ -525,7 +532,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         }
 
     @router.post("/compose_workflow")
-    def compose_workflow_route(body: ComposeWorkflowRequest, request: Request):
+    def compose_workflow_route(body: ComposeWorkflowRequest, request: Request) -> Any:
         require_admin(request)
         file_path = Path(body.file_path).resolve()
         if _workflow_base is None:
@@ -546,10 +553,10 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
             raise HTTPException(status_code=400, detail="Only .yaml/.yml files are allowed")
         from regista._workflow_compose import compose_workflow as _compose
         composed, source_map = _compose(str(file_path))
-        return {"composed": composed, "source_map": source_map}
+        return {"composed": composed, "source_map": source_map.entries}
 
     @router.post("/webhooks")
-    def register_webhook(body: RegisterWebhookRequest, request: Request):
+    def register_webhook(body: RegisterWebhookRequest, request: Request) -> Any:
         require_admin(request)
         sign_secret = None
         if body.sign_secret:
@@ -570,37 +577,37 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return _serialize(result)
 
     @router.get("/webhooks")
-    def list_webhooks(request: Request):
+    def list_webhooks(request: Request) -> Any:
         get_actor(request)
         status = request.query_params.get("status")
         result = regista.list_webhooks(status=status)
         return _serialize(result)
 
     @router.delete("/webhooks/{webhook_id}")
-    def unregister_webhook(webhook_id: str, request: Request):
+    def unregister_webhook(webhook_id: str, request: Request) -> Any:
         require_admin(request)
         regista.unregister_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 
     @router.post("/webhooks/{webhook_id}/pause")
-    def pause_webhook(webhook_id: str, request: Request):
+    def pause_webhook(webhook_id: str, request: Request) -> Any:
         require_admin(request)
         regista.pause_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 
     @router.post("/webhooks/{webhook_id}/resume")
-    def resume_webhook(webhook_id: str, request: Request):
+    def resume_webhook(webhook_id: str, request: Request) -> Any:
         require_admin(request)
         regista.resume_webhook(_parse_uuid(webhook_id))
         return {"status": "ok"}
 
     @router.get("/keys/public")
-    def export_public_keys(request: Request):
+    def export_public_keys(request: Request) -> Any:
         get_actor(request)
         return _serialize(regista.export_public_keys())
 
     @router.post("/events/verify-signature")
-    def verify_event_signature(req: VerifyEventSignatureRequest, request: Request):
+    def verify_event_signature(req: VerifyEventSignatureRequest, request: Request) -> Any:
         get_actor(request)
         from regista._types import Event as _Event
 
@@ -618,7 +625,7 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         return {"valid": result}
 
     @router.post("/spec/sign")
-    def sign_spec(req: SignSpecRequest, request: Request):
+    def sign_spec(req: SignSpecRequest, request: Request) -> Any:
         actor = get_actor(request)
         spec_id = _parse_uuid(req.spec_id) if req.spec_id else None
         evt = regista.sign_spec(
@@ -637,14 +644,14 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         request: Request,
         spec_id: str | None = None,
         limit: int = 100,
-    ):
+    ) -> Any:
         get_actor(request)
         sid = _parse_uuid(spec_id) if spec_id else None
         events = regista.read_spec_events(spec_id=sid, limit=limit)
         return _serialize(events)
 
     @router.get("/work-items/{work_item_id}/assurance")
-    def get_assurance(work_item_id: str, request: Request):
+    def get_assurance(work_item_id: str, request: Request) -> Any:
         get_actor(request)
         wi_id = _parse_uuid(work_item_id)
         profile = request.query_params.get("profile", "relaxed")
@@ -656,3 +663,4 @@ def register_routes(app, regista, tokens: TokenRegistry, *, workflow_dir: str | 
         }
 
     app.include_router(router)
+

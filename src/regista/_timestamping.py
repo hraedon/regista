@@ -7,6 +7,9 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any, cast
+
+from ._connection import ConnectionManager, DictConn
 
 _SUPPORTED_HASH_ALGOS = {"sha256", "sha384", "sha512"}
 
@@ -19,7 +22,7 @@ def _hash_data(data: bytes, algo: str) -> bytes:
     return hashlib.new(algo, data).digest()
 
 
-def _require_asn1crypto():
+def _require_asn1crypto() -> None:
     try:
         import asn1crypto.cms
         import asn1crypto.tsp  # noqa: F401
@@ -60,7 +63,7 @@ class TimestampBatch:
     status: str  # pending | confirmed | failed
     error_message: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         return {
             "batch_id": str(self.batch_id),
             "event_ids": [str(e) for e in self.event_ids],
@@ -148,7 +151,7 @@ def _build_tsr(data: bytes, config: TSAConfig, nonce: int | None = None) -> byte
             "cert_req": True,
         }
     )
-    return request.dump()
+    return cast("bytes", request.dump())
 
 
 def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
@@ -167,10 +170,10 @@ def submit_to_tsa(data: bytes, config: TSAConfig) -> bytes:
                 ErrorCode.TSA_SUBMISSION_FAILED,
                 f"TSA returned HTTP {resp.status}",
             )
-        return resp.read(1_000_000)
+        return cast("bytes", resp.read(1_000_000))
 
 
-def _parse_tst_info(token: bytes):
+def _parse_tst_info(token: bytes) -> Any:
     # Accepts either a full TimeStampResp (status + timeStampToken) or just the
     # timeStampToken (a CMS ContentInfo). Returns the parsed TSTInfo or raises.
     from asn1crypto import cms, tsp
@@ -197,7 +200,7 @@ def _parse_tst_info(token: bytes):
     return tsp.TSTInfo.load(bytes(content))
 
 
-def _load_trust_anchor(cert_path: str):
+def _load_trust_anchor(cert_path: str) -> Any:
     """Load a trust-anchor certificate from *cert_path* (PEM or DER).
 
     Returns an ``asn1crypto.x509.Certificate``.
@@ -214,7 +217,7 @@ def _load_trust_anchor(cert_path: str):
 
 def verify_tsa_signature(
     token: bytes,
-    trust_anchor,
+    trust_anchor: Any,
 ) -> tuple[bool, str]:
     """Verify the CMS signature on an RFC 3161 TSA token.
 
@@ -261,7 +264,7 @@ def verify_tsa_signature(
         return False, f"TSA signature verification error: {exc}"
 
 
-def _extract_content_info(token: bytes):
+def _extract_content_info(token: bytes) -> Any:
     """Parse a TSA token into a CMS ContentInfo, handling TimeStampResp wrapping."""
     from asn1crypto import cms, tsp
 
@@ -275,7 +278,7 @@ def _extract_content_info(token: bytes):
         return cms.ContentInfo.load(token)
 
 
-def _find_signer_cert(signed_data, signer):
+def _find_signer_cert(signed_data: Any, signer: Any) -> Any:
     """Locate the signer's certificate in the SignedData certificates bag."""
     from asn1crypto import cms
 
@@ -308,7 +311,7 @@ def _find_signer_cert(signed_data, signer):
     return None
 
 
-def _verify_cert_chain(signer_cert, signed_data, trust_anchor) -> tuple[bool, str]:
+def _verify_cert_chain(signer_cert: Any, signed_data: Any, trust_anchor: Any) -> tuple[bool, str]:
     """Verify that *signer_cert* chains to *trust_anchor*.
 
     Supports a direct match (signer == anchor) or a single-intermediate chain.
@@ -344,7 +347,7 @@ def _verify_cert_chain(signer_cert, signed_data, trust_anchor) -> tuple[bool, st
     return False, "Signer certificate does not chain to trust anchor"
 
 
-def _verify_cert_signature(child_cert, parent_cert) -> None:
+def _verify_cert_signature(child_cert: Any, parent_cert: Any) -> None:
     """Verify that *parent_cert* signed *child_cert*.
 
     Uses the ``cryptography`` library for the actual RSA/ECDSA verification.
@@ -353,6 +356,8 @@ def _verify_cert_signature(child_cert, parent_cert) -> None:
     from cryptography import x509 as crypto_x509
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec, padding
+    from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
     parent_crypto = crypto_x509.load_der_x509_certificate(parent_cert.dump())
     child_crypto = crypto_x509.load_der_x509_certificate(child_cert.dump())
@@ -367,23 +372,25 @@ def _verify_cert_signature(child_cert, parent_cert) -> None:
 
     # RSA OIDs: 1.2.840.113549.1.1.11 (sha256RSA), .12 (sha384RSA), .13 (sha512RSA)
     # ECDSA OIDs: 1.2.840.10045.4.3.2 (ecdsa-with-SHA256), .3 (SHA384), .4 (SHA512)
+    rsa_key = cast("RSAPublicKey", parent_pub)
+    ec_key = cast("EllipticCurvePublicKey", parent_pub)
     if sig_oid_str in ("1.2.840.113549.1.1.11",):
-        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA256())
+        rsa_key.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA256())
     elif sig_oid_str in ("1.2.840.113549.1.1.12",):
-        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA384())
+        rsa_key.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA384())
     elif sig_oid_str in ("1.2.840.113549.1.1.13",):
-        parent_pub.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA512())
+        rsa_key.verify(signature, tbs_der, padding.PKCS1v15(), hashes.SHA512())
     elif sig_oid_str in ("1.2.840.10045.4.3.2",):
-        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA256()))
+        ec_key.verify(signature, tbs_der, ec.ECDSA(hashes.SHA256()))
     elif sig_oid_str in ("1.2.840.10045.4.3.3",):
-        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA384()))
+        ec_key.verify(signature, tbs_der, ec.ECDSA(hashes.SHA384()))
     elif sig_oid_str in ("1.2.840.10045.4.3.4",):
-        parent_pub.verify(signature, tbs_der, ec.ECDSA(hashes.SHA512()))
+        ec_key.verify(signature, tbs_der, ec.ECDSA(hashes.SHA512()))
     else:
         raise ValueError(f"Unsupported cert signature OID: {sig_oid_str}")
 
 
-def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
+def _verify_cms_signature(signer: Any, signed_data: Any, signer_cert: Any) -> tuple[bool, str]:
     """Verify the PKCS#7 signature in *signer* against *signer_cert*."""
     sig_algo = signer["signature_algorithm"]
     signature_bytes = bytes(signer["signature"])
@@ -406,13 +413,15 @@ def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
         from cryptography import x509 as crypto_x509
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec, padding
+        from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
         crypto_cert = crypto_x509.load_der_x509_certificate(signer_cert.dump())
         crypto_pub = crypto_cert.public_key()
 
         # Determine hash from OID
         sig_oid = crypto_cert.signature_algorithm_oid.dotted_string
-        hash_map = {
+        hash_map: dict[str, type[hashes.SHA256] | type[hashes.SHA384] | type[hashes.SHA512]] = {
             "1.2.840.113549.1.1.11": hashes.SHA256,
             "1.2.840.113549.1.1.12": hashes.SHA384,
             "1.2.840.113549.1.1.13": hashes.SHA512,
@@ -422,17 +431,20 @@ def _verify_cms_signature(signer, signed_data, signer_cert) -> tuple[bool, str]:
         }
         hash_cls = hash_map.get(sig_oid, hashes.SHA256)()
 
+        rsa_key = cast("RSAPublicKey", crypto_pub)
+        ec_key = cast("EllipticCurvePublicKey", crypto_pub)
+
         if "rsa" in algo_name.lower():
             if "pss" in algo_name.lower():
-                crypto_pub.verify(
+                rsa_key.verify(
                     signature_bytes, data_to_verify,
                     padding.PSS(mgf=padding.MGF1(hash_cls), salt_length=padding.PSS.MAX_LENGTH),
                     hash_cls,
                 )
             else:
-                crypto_pub.verify(signature_bytes, data_to_verify, padding.PKCS1v15(), hash_cls)
+                rsa_key.verify(signature_bytes, data_to_verify, padding.PKCS1v15(), hash_cls)
         elif "ecdsa" in algo_name.lower() or "ec" in algo_name.lower():
-            crypto_pub.verify(signature_bytes, data_to_verify, ec.ECDSA(hash_cls))
+            ec_key.verify(signature_bytes, data_to_verify, ec.ECDSA(hash_cls))
         else:
             return False, f"Unsupported signature algorithm: {algo_name}"
 
@@ -490,7 +502,7 @@ def verify_tsa_token_full(
         return False, "Verification failed with exception"
 
 
-def trigger_timestamping(mgr, config: TSAConfig) -> TimestampBatch | None:
+def trigger_timestamping(mgr: ConnectionManager, config: TSAConfig) -> TimestampBatch | None:
     import structlog
 
     log = structlog.get_logger()
@@ -498,9 +510,12 @@ def trigger_timestamping(mgr, config: TSAConfig) -> TimestampBatch | None:
     with mgr.transaction() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", [_TIMESTAMPING_LOCK_ID])
 
-        batch_row = conn.execute(
-            "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
-        ).fetchone()
+        batch_row = cast(
+            "dict[str, Any]",
+            conn.execute(
+                "SELECT MAX(last_global_seq) AS max_seq FROM tsp_batches WHERE status = 'confirmed'"
+            ).fetchone(),
+        )
         last_confirmed_seq = batch_row["max_seq"] or 0
 
         rows = conn.execute(
@@ -619,7 +634,9 @@ def trigger_timestamping(mgr, config: TSAConfig) -> TimestampBatch | None:
         )
 
 
-def _rehydrate_event_ids(conn, first_global_seq: int, last_global_seq: int) -> list[uuid.UUID]:
+def _rehydrate_event_ids(
+    conn: DictConn, first_global_seq: int, last_global_seq: int
+) -> list[uuid.UUID]:
     if first_global_seq > last_global_seq:
         return []
     rows = conn.execute(
@@ -630,7 +647,7 @@ def _rehydrate_event_ids(conn, first_global_seq: int, last_global_seq: int) -> l
     return [r["event_id"] for r in rows]
 
 
-def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
+def list_batches(conn: DictConn, status: str | None = None) -> list[TimestampBatch]:
     if status:
         rows = conn.execute(
             "SELECT * FROM tsp_batches WHERE status = %s ORDER BY created_at DESC",
@@ -661,7 +678,7 @@ def list_batches(conn, status: str | None = None) -> list[TimestampBatch]:
     return result
 
 
-def sweep_stale_timestamp_batches(mgr, max_age_seconds: int = 300) -> int:
+def sweep_stale_timestamp_batches(mgr: ConnectionManager, max_age_seconds: int = 300) -> int:
     import structlog
 
     if max_age_seconds <= 0:
