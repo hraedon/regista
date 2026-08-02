@@ -814,7 +814,7 @@ def _replace_shape(shape: _VaultAuthShape, *, error: str) -> _VaultAuthShape:
 
 def try_register_vault() -> None:
     try:
-        import hvac  # type: ignore[import-untyped]  # noqa: F401
+        import hvac  # noqa: F401
     except ImportError:
         return
     register_provider(VaultProvider())

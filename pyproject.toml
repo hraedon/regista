@@ -109,7 +109,7 @@ files = ["src/regista"]
 
 # Untyped third-party libs (installed in CI via extras, but ship no stubs).
 [[tool.mypy.overrides]]
-module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*"]
+module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*", "hvac", "hvac.*", "azure.identity", "azure.identity.*", "azure.keyvault", "azure.keyvault.*", "azure.core", "azure.core.*"]
 ignore_missing_imports = true
 
 # --- WI-233 complete: all source modules are now mypy --strict clean.
