@@ -65,6 +65,53 @@ class TestRunDoctor:
         assert report.reachable is True
         assert report.schema_version == SCHEMA_VERSION
 
+    def test_reachable_db_bounds_project_iteration(self, monkeypatch):
+        """Without project= the doctor caps per-project checks (WI-244).
+
+        A shared instance carries thousands of leaked test schemas; a
+        diagnostic path must not do unbounded serial work on them. The cap
+        check names the bound instead of iterating every catalog row.
+        """
+        from _helpers import DSN
+
+        import regista._doctor as doctor_mod
+
+        names = [f"leaked_{i:03d}" for i in range(40)]
+        monkeypatch.setattr(
+            doctor_mod, "_list_projects",
+            lambda *a, **k: [{"name": n} for n in names],
+        )
+
+        report = run_doctor(DSN, max_projects=5)
+        assert report.reachable is True
+        projects_check = next(c for c in report.checks if c.name == "projects")
+        assert projects_check.status == "warn"
+        assert "40 projects" in projects_check.detail
+        assert "checked the first 5" in projects_check.detail
+        schema_checks = [
+            c for c in report.checks if c.name.startswith("schema:leaked_")
+        ]
+        assert len(schema_checks) == 5
+
+    def test_reachable_db_project_iteration_unbounded_when_no_cap(self, monkeypatch):
+        from _helpers import DSN
+
+        import regista._doctor as doctor_mod
+
+        names = [f"leaked_{i:03d}" for i in range(40)]
+        monkeypatch.setattr(
+            doctor_mod, "_list_projects",
+            lambda *a, **k: [{"name": n} for n in names],
+        )
+
+        report = run_doctor(DSN, max_projects=0)
+        assert report.reachable is True
+        assert not any(c.name == "projects" for c in report.checks)
+        schema_checks = [
+            c for c in report.checks if c.name.startswith("schema:leaked_")
+        ]
+        assert len(schema_checks) == 40
+
     def test_with_project_checks_schema(self):
         import uuid
 

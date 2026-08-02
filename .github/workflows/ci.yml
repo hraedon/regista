@@ -61,11 +61,15 @@ jobs:
       - name: Type-check (strict; burndown list in pyproject [tool.mypy])
         run: mypy
 
-      - name: Test
-        run: pytest tests/ -v
-
-      - name: Coverage
-        run: pytest tests/ -v --cov=regista --cov-report=term-missing
+      # WI-245: a single --cov run covers both test + coverage. The suite used
+      # to run twice (plain test, then --cov), doubling CI wall-clock with no
+      # coverage gain. --durations names the slowest tests so a regression in
+      # a hot file shows up in the logs instead of living only in a session
+      # note. pytest-xdist stays deferred (WI-245): --dist=loadscope contends
+      # on the shared Postgres service; per-worker schema isolation is the
+      # prerequisite before parallelising.
+      - name: Test + coverage
+        run: pytest tests/ -v --cov=regista --cov-report=term-missing --durations=10 --durations-min=1.0
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean

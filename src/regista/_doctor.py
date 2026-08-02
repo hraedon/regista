@@ -713,11 +713,28 @@ def run_doctor(
     key_path: str | None = None,
     secret_backend: str | None = None,
     anchoring_stale_after_seconds: int | None = None,
+    max_projects: int = 25,
 ) -> DoctorReport:
+    """Run the regista health checks.
+
+    Args:
+        dsn: Postgres connection string. ``None`` skips the DB checks.
+        project: Target a single project's schema version instead of iterating
+            every project in the ``public.projects`` catalog.
+        require_ssl: Connect with ``sslmode=require``.
+        key_path: Key file path for the custody checks.
+        secret_backend: Configured secret backend (``file``/``vault``/...).
+        max_projects: Upper bound on how many catalog projects are individually
+            checked when ``project`` is not given. A diagnostic path must not
+            do unbounded serial work (Plan 020 lesson #1): when the catalog
+            exceeds this, only the first ``max_projects`` are checked and a
+            ``projects`` warn check names the cap.
+    """
     ver = versions()
     checks: list[DoctorCheck] = []
     reachable = False
     projects_list: list[dict[str, Any]] = []
+    checked_projects: list[str] = []
     stale_after = (
         anchoring_stale_after_seconds
         if anchoring_stale_after_seconds is not None
@@ -743,6 +760,7 @@ def run_doctor(
             checks.append(_check_role_attributes(dsn, require_ssl))
 
             if project:
+                checked_projects = [project]
                 checks.append(_check_schema_version(dsn, project, require_ssl))
                 checks.append(
                     _check_anchoring_stale_receipts(dsn, project, require_ssl, stale_after)
@@ -757,15 +775,28 @@ def run_doctor(
                     detail="No projects registered in public.projects catalog",
                 ))
             else:
-                for p in projects_list:
-                    checks.append(_check_schema_version(dsn, p["name"], require_ssl))
+                names = [p["name"] for p in projects_list]
+                if max_projects > 0 and len(names) > max_projects:
+                    checked_projects = names[:max_projects]
+                    checks.append(DoctorCheck(
+                        name="projects",
+                        status="warn",
+                        detail=(
+                            f"{len(names)} projects registered; checked the "
+                            f"first {max_projects} — pass --project to target one"
+                        ),
+                    ))
+                else:
+                    checked_projects = names
+                for name in checked_projects:
+                    checks.append(_check_schema_version(dsn, name, require_ssl))
                     checks.append(
                         _check_anchoring_stale_receipts(
-                            dsn, p["name"], require_ssl, stale_after
+                            dsn, name, require_ssl, stale_after
                         )
                     )
                     checks.append(
-                        _check_witness_key_enrollment(dsn, p["name"], require_ssl)
+                        _check_witness_key_enrollment(dsn, name, require_ssl)
                     )
 
     checks.append(DoctorCheck(
@@ -785,13 +816,9 @@ def run_doctor(
     checks.append(_check_custody_consistency(key_path, secret_backend))
 
     if reachable:
-        if project:
-            registration_projects = [project]
-        else:
-            registration_projects = [p["name"] for p in projects_list]
         checks.append(
             _check_principal_registration(
-                dsn, registration_projects, key_path, require_ssl,
+                dsn, checked_projects, key_path, require_ssl,
             )
         )
     else:

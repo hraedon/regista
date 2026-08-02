@@ -46,6 +46,9 @@ def pg_project():
     sub.register_workflow(WORKFLOW_YAML)
     yield sub
     sub.close()
+    from regista.testing import drop_project_schema
+
+    drop_project_schema(DSN, project_name)
 
 
 @pytest.fixture
@@ -55,6 +58,9 @@ def pg_project_strict():
     sub.register_workflow(WORKFLOW_YAML)
     yield sub
     sub.close()
+    from regista.testing import drop_project_schema
+
+    drop_project_schema(DSN, project_name)
 
 
 class TestPostgresStrictRoles:
