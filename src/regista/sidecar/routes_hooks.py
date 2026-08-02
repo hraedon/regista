@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .auth import TokenRegistry, get_actor
+from regista._types import HookContext
+
+from .auth import AuthenticatedActor, TokenRegistry, get_actor
 from .models import ClaimHooksRequest, CompleteHookRequest, FailHookRequest, _serialize
 
 
-def _hook_work_item_id(regista, hook_id: int) -> uuid.UUID | None:
+def _hook_work_item_id(regista: Any, hook_id: int) -> uuid.UUID | None:
     if hasattr(regista, "_hook_queue"):
         for entry in regista._hook_queue:
             if entry.get("id") == hook_id:
@@ -27,7 +30,9 @@ def _hook_work_item_id(regista, hook_id: int) -> uuid.UUID | None:
         return uuid.UUID(row["work_item_id"])
 
 
-def _filter_hooks_by_workflow_access(regista, actor, hooks):
+def _filter_hooks_by_workflow_access(
+    regista: Any, actor: AuthenticatedActor, hooks: list[HookContext],
+) -> list[HookContext]:
     if actor.allowed_workflows is None:
         return hooks
     allowed = set(actor.allowed_workflows)
@@ -50,7 +55,7 @@ def _filter_hooks_by_workflow_access(regista, actor, hooks):
     return result
 
 
-def _release_hook(regista, hook_id: int) -> None:
+def _release_hook(regista: Any, hook_id: int) -> None:
     if hasattr(regista, "_hook_queue"):
         for entry in regista._hook_queue:
             if entry.get("id") == hook_id:
@@ -71,7 +76,9 @@ def _release_hook(regista, hook_id: int) -> None:
         )
 
 
-def _authorize_hook_workflow_access(regista, actor, hook_id: int) -> None:
+def _authorize_hook_workflow_access(
+    regista: Any, actor: AuthenticatedActor, hook_id: int,
+) -> None:
     work_item_id = _hook_work_item_id(regista, hook_id)
     if work_item_id is None:
         return
@@ -82,11 +89,11 @@ def _authorize_hook_workflow_access(regista, actor, hook_id: int) -> None:
         raise HTTPException(status_code=403, detail="Workflow access denied")
 
 
-def register_hook_routes(app, regista, tokens: TokenRegistry):
+def register_hook_routes(app: Any, regista: Any, tokens: TokenRegistry) -> None:
     router = APIRouter(prefix="/v1/hooks")
 
     @router.post("/claim")
-    def claim_hooks(body: ClaimHooksRequest, request: Request):
+    def claim_hooks(body: ClaimHooksRequest, request: Request) -> Any:
         actor = get_actor(request)
         result = regista.claim_hooks(
             max_batch=body.max_batch,
@@ -97,14 +104,14 @@ def register_hook_routes(app, regista, tokens: TokenRegistry):
         return _serialize(result)
 
     @router.post("/{hook_id}/complete")
-    def complete_hook(hook_id: int, body: CompleteHookRequest, request: Request):
+    def complete_hook(hook_id: int, body: CompleteHookRequest, request: Request) -> dict[str, str]:
         actor = get_actor(request)
         _authorize_hook_workflow_access(regista, actor, hook_id)
         regista.complete_hook(hook_id, actor_id=actor.actor_id)
         return {"status": "ok"}
 
     @router.post("/{hook_id}/fail")
-    def fail_hook(hook_id: int, body: FailHookRequest, request: Request):
+    def fail_hook(hook_id: int, body: FailHookRequest, request: Request) -> dict[str, str]:
         actor = get_actor(request)
         _authorize_hook_workflow_access(regista, actor, hook_id)
         regista.fail_hook(hook_id, body.error, actor_id=actor.actor_id)
