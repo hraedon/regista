@@ -14,15 +14,17 @@ connection from ``mgr.connect()`` or ``mgr.transaction()``; the schema-qualified
 from __future__ import annotations
 
 from datetime import UTC
+from typing import Any
 
 from psycopg.sql import SQL, Identifier
 
+from ._connection import DictConn
 from ._types import ProjectCatalogEntry
 
 _CATALOG_TABLE = SQL("{}.{}").format(Identifier("public"), Identifier("projects"))
 
 
-def ensure_catalog_table(conn) -> None:
+def ensure_catalog_table(conn: DictConn) -> None:
     """Create ``public.projects`` if it does not exist.
 
     Idempotent — safe to call from every project's migration runner.
@@ -41,7 +43,7 @@ def ensure_catalog_table(conn) -> None:
 
 
 def register_project(
-    conn,
+    conn: DictConn,
     schema_name: str,
     display_name: str | None = None,
     owner_actor_id: str | None = None,
@@ -66,10 +68,11 @@ def register_project(
         ).format(tbl=_CATALOG_TABLE),
         [schema_name, display_name, owner_actor_id, created_by],
     ).fetchone()
+    assert row is not None
     return _row_to_entry(row)
 
 
-def list_catalog_projects(conn) -> list[ProjectCatalogEntry]:
+def list_catalog_projects(conn: DictConn) -> list[ProjectCatalogEntry]:
     """Return all registered projects, ordered by schema_name."""
     ensure_catalog_table(conn)
     rows = conn.execute(
@@ -81,7 +84,7 @@ def list_catalog_projects(conn) -> list[ProjectCatalogEntry]:
     return [_row_to_entry(r) for r in rows]
 
 
-def get_catalog_project(conn, schema_name: str) -> ProjectCatalogEntry | None:
+def get_catalog_project(conn: DictConn, schema_name: str) -> ProjectCatalogEntry | None:
     """Return one project's catalog row, or ``None`` if not registered."""
     ensure_catalog_table(conn)
     row = conn.execute(
@@ -95,7 +98,7 @@ def get_catalog_project(conn, schema_name: str) -> ProjectCatalogEntry | None:
 
 
 def set_catalog_owner(
-    conn,
+    conn: DictConn,
     schema_name: str,
     owner_actor_id: str | None,
     updated_by: str | None = None,
@@ -118,10 +121,11 @@ def set_catalog_owner(
         ).format(tbl=_CATALOG_TABLE),
         [schema_name, owner_actor_id, updated_by],
     ).fetchone()
+    assert row is not None
     return _row_to_entry(row)
 
 
-def _row_to_entry(row) -> ProjectCatalogEntry:
+def _row_to_entry(row: dict[str, Any]) -> ProjectCatalogEntry:
     created_at = row["created_at"]
     if created_at is not None and created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)

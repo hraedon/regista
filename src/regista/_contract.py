@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from ._errors import ErrorCode, RegistaError
 from ._types import Event
@@ -105,12 +105,12 @@ def validate_not_before(not_before: datetime | None, now: datetime) -> None:
 
 
 def resolve_transition(
-    transitions: list[dict],
+    transitions: list[dict[str, Any]],
     current_state: str,
     transition_name: str,
     workflow_name: str,
     workflow_version: int,
-) -> dict:
+) -> dict[str, Any]:
     for t in transitions:
         if t["name"] == transition_name and t["from_state"] == current_state:
             return t
@@ -123,12 +123,12 @@ def resolve_transition(
 
 def check_role_gating(
     allowed_roles: list[str],
-    actor_metadata: dict | None,
+    actor_metadata: dict[str, Any] | None,
     transition_name: str,
 ) -> str | None:
     if not allowed_roles:
         return None
-    role = (actor_metadata or {}).get("role")
+    role: str | None = (actor_metadata or {}).get("role")
     if role not in allowed_roles:
         raise RegistaError(
             ErrorCode.ROLE_NOT_PERMITTED,
@@ -138,7 +138,7 @@ def check_role_gating(
 
 
 def check_privileged_transition(
-    transition_def: dict,
+    transition_def: dict[str, Any],
     actor_kind: str,
     transition_name: str,
 ) -> None:
@@ -156,7 +156,7 @@ def check_actor_role_authorized(
     claimed_role: str,
     *,
     strict: bool = False,
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     if strict:
         if not registered_roles:
@@ -190,7 +190,7 @@ def check_actor_role_authorized(
 
 
 def check_append_blocked(
-    transitions: list[dict],
+    transitions: list[dict[str, Any]],
     transition: str | None,
     workflow_name: str,
 ) -> None:
@@ -210,7 +210,7 @@ def check_idempotency(
     actor_id: str | None,
     transition: str | None,
     work_item_id: uuid.UUID | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> Event | None:
     if existing_event is None:
         return None
@@ -252,7 +252,7 @@ def check_expected_seq(
 
 
 def validate_link_type(
-    link_types: list[dict],
+    link_types: list[dict[str, Any]],
     from_type: str,
     to_type: str,
     link_type: str,
@@ -271,7 +271,7 @@ def validate_link_type(
 
 
 def validate_cross_project_link_type(
-    link_types: list[dict],
+    link_types: list[dict[str, Any]],
     link_type: str,
 ) -> None:
     for lt in link_types:
@@ -319,7 +319,7 @@ class ClaimAcquireResult:
     attempt_number: int
     prior_actor_id: str | None
     event_transition: Literal["claim_acquired", "claim_stolen"] | None
-    event_payload: dict | None
+    event_payload: dict[str, Any] | None
 
 
 def resolve_claim_acquire(
@@ -344,6 +344,8 @@ def resolve_claim_acquire(
 
     if has_active_claim:
         if claim_actor_id == actor_id:
+            assert claim_acquired_at is not None
+            assert claim_attempt_number is not None
             new_expires = now + timedelta(seconds=ttl_seconds)
             return ClaimAcquireResult(
                 action="extend",
@@ -415,7 +417,7 @@ def compute_coalesce_threshold(ttl_seconds: int, override: float | None = None) 
 
 
 def resolve_heartbeat(
-    claim_state: dict | None,
+    claim_state: dict[str, Any] | None,
     actor_id: str,
     ttl_seconds: int,
     expected_attempt_number: int | None,
@@ -467,7 +469,7 @@ def resolve_heartbeat(
 
 
 def validate_release(
-    claim_state: dict | None,
+    claim_state: dict[str, Any] | None,
     actor_id: str,
     work_item_id: uuid.UUID,
 ) -> None:
@@ -515,7 +517,7 @@ def validate_json_safe_value(value: object, label: str) -> None:
 
 @dataclass(frozen=True)
 class Jsonb:
-    value: dict | None
+    value: dict[str, Any] | None
 
     def __post_init__(self) -> None:
         if self.value is not None:
@@ -589,7 +591,7 @@ def validate_role(role: str) -> None:
         )
 
 
-def validate_actor_metadata(actor_metadata: dict | None) -> None:
+def validate_actor_metadata(actor_metadata: dict[str, Any] | None) -> None:
     if actor_metadata is None:
         return
     try:
@@ -662,7 +664,7 @@ def validate_work_item_exists(
 
 
 def validate_delegation_chain(
-    on_behalf_of: dict | None, *, event_timestamp: str | None = None,
+    on_behalf_of: dict[str, Any] | None, *, event_timestamp: str | None = None,
 ) -> None:
     if on_behalf_of is None:
         return
