@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from ._jcs import canonicalize
@@ -13,8 +14,8 @@ def build_signing_envelope(
     work_item_id: UUID,
     actor_id: str,
     transition: str | None,
-    payload: dict | None,
-    on_behalf_of: dict | None = None,
+    payload: dict[str, Any] | None,
+    on_behalf_of: dict[str, Any] | None = None,
 ) -> bytes:
     envelope = {
         "event_id": str(event_id),
@@ -37,8 +38,8 @@ def build_signing_envelope_v2(
     workflow_version: int,
     timestamp: datetime,
     transition: str | None,
-    payload: dict | None,
-    on_behalf_of: dict | None = None,
+    payload: dict[str, Any] | None,
+    on_behalf_of: dict[str, Any] | None = None,
 ) -> bytes:
     envelope = {
         "event_id": str(event_id),
@@ -66,8 +67,8 @@ def build_signing_envelope_v3(
     workflow_version: int,
     timestamp: datetime,
     transition: str | None,
-    payload: dict | None,
-    on_behalf_of: dict | None = None,
+    payload: dict[str, Any] | None,
+    on_behalf_of: dict[str, Any] | None = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
     prev_global_event_hash: bytes | None = None,
@@ -106,8 +107,8 @@ def build_signing_envelope_v4(
     timestamp: datetime,
     hash_alg: str,
     transition: str | None,
-    payload: dict | None,
-    on_behalf_of: dict | None = None,
+    payload: dict[str, Any] | None,
+    on_behalf_of: dict[str, Any] | None = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
     prev_global_event_hash: bytes | None = None,
@@ -142,7 +143,7 @@ def build_signing_envelope_v5(
     entity_id: UUID,
     actor_id: str,
     actor_kind: str,
-    actor_metadata: dict | None,
+    actor_metadata: dict[str, Any] | None,
     key_id: str,
     event_seq: int,
     workflow_name: str,
@@ -150,8 +151,8 @@ def build_signing_envelope_v5(
     timestamp: datetime,
     hash_alg: str,
     transition: str | None,
-    payload: dict | None,
-    on_behalf_of: dict | None = None,
+    payload: dict[str, Any] | None,
+    on_behalf_of: dict[str, Any] | None = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
     prev_global_event_hash: bytes | None = None,
@@ -200,17 +201,17 @@ def sign_event(
     workflow_version: int,
     timestamp: datetime,
     transition: str | None,
-    payload: dict | None,
+    payload: dict[str, Any] | None,
     key: bytes,
-    on_behalf_of: dict | None = None,
-    scheme=None,
+    on_behalf_of: dict[str, Any] | None = None,
+    scheme: Any = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
     prev_global_event_hash: bytes | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
     actor_kind: str | None = None,
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> tuple[bytes, bytes, bytes]:
     from ._signing_scheme import HMACSHA256Scheme
 
@@ -265,11 +266,11 @@ def _verify_once(
     envelope: bytes,
     signature: bytes,
     canonical_hash: bytes,
-    scheme,
+    scheme: Any,
     key: bytes,
     hash_alg: str = "sha-256",
 ) -> bool:
-    return scheme.verify(envelope, signature, canonical_hash, key, hash_alg=hash_alg)
+    return scheme.verify(envelope, signature, canonical_hash, key, hash_alg=hash_alg)  # type: ignore[no-any-return]
 
 
 _V5_FIELDS = frozenset(
@@ -332,20 +333,20 @@ def verify_event(
     workflow_version: int,
     timestamp: datetime,
     transition: str | None,
-    payload: dict | None,
+    payload: dict[str, Any] | None,
     signature: bytes,
     canonical_hash: bytes,
     key: bytes,
     stored_envelope: bytes | None = None,
-    on_behalf_of: dict | None = None,
-    scheme=None,
+    on_behalf_of: dict[str, Any] | None = None,
+    scheme: Any = None,
     prev_event_hash: bytes | None = None,
     global_seq: int | None = None,
     prev_global_event_hash: bytes | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
     actor_kind: str | None = None,
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> bool:
     from ._signing_scheme import HMACSHA256Scheme
 
@@ -372,7 +373,7 @@ def verify_event(
         # tampering with those fields in the database row (WI-208)
         # without requiring every caller to pass all envelope fields.
         if stored_ver >= 3:
-            candidate_envelopes.append((stored_envelope, stored_ver))
+            candidate_envelopes.append((stored_envelope, stored_ver))  # type: ignore[arg-type]
 
         # Build v5 candidate when actor_kind is provided — needed when the
         # stored envelope is missing (old events) or for tamper detection
@@ -474,7 +475,7 @@ def verify_event(
                     import json as _json
 
                     try:
-                        env_obj = _json.loads(stored_envelope)
+                        env_obj = _json.loads(stored_envelope or b"")
                         env_actor_kind = env_obj.get("actor_kind")
                         env_actor_metadata = env_obj.get("actor_metadata")
                     except (ValueError, TypeError):
@@ -507,7 +508,7 @@ def verify_event(
     candidate_envelopes.append((v4_envelope, 4))
 
     if stored_ver == 2:
-        candidate_envelopes.append((stored_envelope, stored_ver))
+        candidate_envelopes.append((stored_envelope, stored_ver))  # type: ignore[arg-type]
 
     v3_envelope = build_signing_envelope_v3(
         event_id=event_id,
@@ -566,7 +567,7 @@ def verify_event(
     return False
 
 
-def verify_event_with_public_key(event, public_key: bytes) -> bool:
+def verify_event_with_public_key(event: Any, public_key: bytes) -> bool:
     from ._signing_scheme import get_scheme
 
     try:
@@ -665,7 +666,7 @@ def _ensure_aware(value: datetime) -> datetime:
 
 
 def _verify_principal_binding_core(
-    entries: list,
+    entries: list[Any],
     actor_id: str,
     scheme_id: str,
     verify_fn: Callable[[bytes], bool],
@@ -792,8 +793,8 @@ def _verify_principal_binding_core(
 
 
 def verify_event_with_principal_binding(
-    event,
-    mgr,
+    event: Any,
+    mgr: Any,
 ) -> PrincipalVerificationResult:
     from ._principal_keys import list_principal_keys
 
@@ -816,8 +817,8 @@ def verify_event_with_principal_binding(
 
 
 def verify_event_dict_principal_binding(
-    evt: dict,
-    entries: list,
+    evt: dict[str, Any],
+    entries: list[Any],
 ) -> PrincipalVerificationResult:
     scheme_id = evt.get("scheme_id") or "hmac-sha256"
     entity_kind = evt.get("entity_kind") or "work_item"

@@ -109,7 +109,7 @@ files = ["src/regista"]
 
 # Untyped third-party libs (installed in CI via extras, but ship no stubs).
 [[tool.mypy.overrides]]
-module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*"]
+module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*"]
 ignore_missing_imports = true
 
 # --- mypy --strict burndown (WI-233). The connection layer sets
@@ -124,16 +124,12 @@ ignore_missing_imports = true
 #     remove when the projects-catalog feature is committed. ---
 [[tool.mypy.overrides]]
 module = [
-    "regista._anchoring",
     "regista._secrets",
     "regista._cli",
     "regista._ops",
-    "regista._recurrence",
     "regista._replay",
-    "regista._signing",
     "regista._timestamping",
     "regista._types",
     "regista.sidecar.routes",
-    "regista",
 ]
 ignore_errors = true

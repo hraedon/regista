@@ -70,7 +70,7 @@ def due_recurrences(mgr: ConnectionManager, now: datetime | None = None) -> list
 
 def fire_recurrence(
     mgr: ConnectionManager, keys: KeySet, metrics: Metrics, project: str, rule_id: uuid.UUID
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     from ._recurrence import fire_recurrence as _fire
 
     with mgr.transaction() as conn:

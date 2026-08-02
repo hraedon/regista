@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg.types.json
 import structlog
@@ -45,7 +46,7 @@ def compute_next_fire(
         else:
             after = start_at.astimezone(tzinfo) - timedelta(seconds=1)
         rule = rrule.rrulestr(schedule_expr, dtstart=start_at.astimezone(tzinfo))
-        next_fire = rule.after(after, inc=False)
+        next_fire = rule.after(after, inc=False)  # type: ignore[assignment]
         if next_fire is None:
             return None
         next_fire_utc = next_fire.astimezone(UTC)
@@ -83,7 +84,7 @@ def _parse_iso8601_duration(expr: str) -> timedelta:
             f"Invalid ISO-8601 duration: {expr!r}",
         )
     groups = m.groupdict()
-    int_groups = {k: int(v) if v else 0
+    int_groups: dict[str, Any] = {k: int(v) if v else 0
                   for k, v in groups.items() if k != "seconds"}
     seconds_val = groups.get("seconds")
     int_groups["seconds"] = float(seconds_val) if seconds_val else 0
@@ -145,7 +146,7 @@ def _find_next_future_slot(
     )
 
 
-def validate_template(template: dict) -> None:
+def validate_template(template: dict[str, Any]) -> None:
     if not isinstance(template, dict):
         raise RegistaError(
             ErrorCode.RECURRENCE_TEMPLATE_INVALID,
@@ -179,12 +180,12 @@ def validate_schedule(schedule_kind: str, schedule_expr: str) -> None:
 
 
 def register_recurrence_rule(
-    conn,
+    conn: Any,
     rule_id: uuid.UUID,
     workflow_name: str,
     workflow_version: int,
     work_item_type: str,
-    template: dict,
+    template: dict[str, Any],
     schedule_kind: str,
     schedule_expr: str,
     timezone: str,
@@ -193,7 +194,7 @@ def register_recurrence_rule(
     count: int | None,
     catchup_policy: str,
     created_by: str,
-) -> dict:
+) -> dict[str, Any]:
     from psycopg.sql import SQL
 
     validate_schedule(schedule_kind, schedule_expr)
@@ -220,13 +221,13 @@ def register_recurrence_rule(
 
 
 def list_recurrence_rules(
-    conn,
+    conn: Any,
     status: str | None = None,
-) -> list[dict]:
-    from psycopg.sql import SQL
+) -> list[dict[str, Any]]:
+    from psycopg.sql import SQL, Composed
 
-    query = SQL("SELECT * FROM recurrence_rules")
-    params = []
+    query: SQL | Composed = SQL("SELECT * FROM recurrence_rules")
+    params: list[Any] = []
     if status is not None:
         query = SQL("SELECT * FROM recurrence_rules WHERE status = %s")
         params = [status]
@@ -235,7 +236,7 @@ def list_recurrence_rules(
     return [dict(r) for r in rows]
 
 
-def due_recurrences(conn, now: datetime | None = None) -> list[dict]:
+def due_recurrences(conn: Any, now: datetime | None = None) -> list[dict[str, Any]]:
     if now is None:
         now = _now()
     rows = conn.execute(
@@ -247,13 +248,13 @@ def due_recurrences(conn, now: datetime | None = None) -> list[dict]:
 
 
 def fire_recurrence(
-    conn,
+    conn: Any,
     rule_id: uuid.UUID,
     scheduler_actor_id: str,
-    key_set,
-    metrics,
+    key_set: Any,
+    metrics: Any,
     project: str,
-) -> tuple[dict, dict]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     from psycopg.sql import SQL
 
     from ._work_items import create_work_item as _create_work_item
@@ -404,10 +405,10 @@ def fire_recurrence(
     )
 
     metrics.inc("recurrence_fires_total", project)
-    return rule, dict(wi.to_dict()) if hasattr(wi, "to_dict") else dict(wi)
+    return rule, dict(wi.to_dict()) if hasattr(wi, "to_dict") else dict(wi)  # type: ignore[call-overload]
 
 
-def cancel_recurrence_rule(conn, rule_id: uuid.UUID) -> None:
+def cancel_recurrence_rule(conn: Any, rule_id: uuid.UUID) -> None:
     row = conn.execute(
         "UPDATE recurrence_rules SET status = 'cancelled', updated_at = now() "
         "WHERE rule_id = %s RETURNING rule_id",
@@ -421,13 +422,13 @@ def cancel_recurrence_rule(conn, rule_id: uuid.UUID) -> None:
 
 
 def update_recurrence_rule(
-    conn,
+    conn: Any,
     rule_id: uuid.UUID,
     *,
     status: str | None = None,
     schedule_expr: str | None = None,
-    template: dict | None = None,
-) -> dict:
+    template: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM recurrence_rules WHERE rule_id = %s", [rule_id]).fetchone()
     if row is None:
         raise RegistaError(
@@ -436,7 +437,7 @@ def update_recurrence_rule(
         )
     rule = dict(row)
     updates = []
-    params = []
+    params: list[Any] = []
     if status is not None:
         updates.append("status = %s")
         params.append(status)
