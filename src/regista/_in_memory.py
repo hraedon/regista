@@ -79,7 +79,7 @@ class InMemoryRegista(
         self._hook_id_counter = 0
         self._dead_letter: dict[int, dict[str, Any]] = {}
         self._hook_consumer_running = False
-        self._recurrence_rules: dict[str, dict[str, Any]] = {}
+        self._recurrence_rules: dict[uuid.UUID, dict[str, Any]] = {}
         self._strict_roles = strict_roles
         self._witness_transport = witness_transport
         self._witnesses: dict[uuid.UUID, dict[str, Any]] = {}

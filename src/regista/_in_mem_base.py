@@ -36,7 +36,7 @@ class _InMemoryBase:
         _hook_id_counter: int
         _dead_letter: dict[int, dict[str, Any]]
         _hook_consumer_running: bool
-        _recurrence_rules: dict[str, dict[str, Any]]
+        _recurrence_rules: dict[uuid.UUID, dict[str, Any]]
         _strict_roles: bool
         _witness_transport: Callable[..., object] | None
         _witnesses: dict[uuid.UUID, dict[str, Any]]

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ._errors import ErrorCode, RegistaError
 from ._recurrence import (
@@ -14,12 +16,12 @@ from ._recurrence import (
 
 
 def in_memory_register_recurrence_rule(
-    workflow_defs: dict,
-    recurrence_rules: dict,
+    workflow_defs: dict[tuple[str, int], Any],
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     workflow_name: str,
     workflow_version: int,
     work_item_type: str,
-    template: dict,
+    template: dict[str, Any],
     schedule_kind: str,
     schedule_expr: str,
     *,
@@ -29,7 +31,7 @@ def in_memory_register_recurrence_rule(
     count: int | None = None,
     catchup_policy: str = "fire_once",
     created_by: str = "system",
-) -> dict:
+) -> dict[str, Any]:
     if start_at is None:
         start_at = datetime.now(UTC)
     wf_key = (workflow_name, workflow_version)
@@ -71,9 +73,9 @@ def in_memory_register_recurrence_rule(
 
 
 def in_memory_list_recurrence_rules(
-    recurrence_rules: dict,
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     status: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     result = []
     for r in recurrence_rules.values():
         if status is None or r["status"] == status:
@@ -82,9 +84,9 @@ def in_memory_list_recurrence_rules(
 
 
 def in_memory_due_recurrences(
-    recurrence_rules: dict,
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     now: datetime | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if now is None:
         now = datetime.now(UTC)
     result = []
@@ -95,10 +97,10 @@ def in_memory_due_recurrences(
 
 
 def in_memory_fire_recurrence(
-    recurrence_rules: dict,
-    create_work_item_fn,
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
+    create_work_item_fn: Callable[..., Any],
     rule_id: uuid.UUID,
-) -> tuple[dict, dict]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     rule = recurrence_rules.get(rule_id)
     if rule is None:
         raise RegistaError(
@@ -201,7 +203,7 @@ def in_memory_fire_recurrence(
 
 
 def in_memory_cancel_recurrence_rule(
-    recurrence_rules: dict,
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     rule_id: uuid.UUID,
 ) -> None:
     rule = recurrence_rules.get(rule_id)
@@ -215,13 +217,13 @@ def in_memory_cancel_recurrence_rule(
 
 
 def in_memory_update_recurrence_rule(
-    recurrence_rules: dict,
+    recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     rule_id: uuid.UUID,
     *,
     status: str | None = None,
     schedule_expr: str | None = None,
-    template: dict | None = None,
-) -> dict:
+    template: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rule = recurrence_rules.get(rule_id)
     if rule is None:
         raise RegistaError(

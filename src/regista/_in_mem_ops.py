@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ._errors import ErrorCode, RegistaError
 from ._in_mem_base import _InMemoryBase
@@ -41,7 +41,7 @@ class InMemOpsMixin(_InMemoryBase):
     @staticmethod
     def validate_actor_metadata(
         event: Event,
-        expected_schema: dict | None = None,
+        expected_schema: dict[str, Any] | None = None,
     ) -> list[str]:
         from ._lint import validate_actor_metadata as _validate
 
@@ -91,7 +91,7 @@ class InMemOpsMixin(_InMemoryBase):
         workflow_name: str,
         workflow_version: int,
         work_item_type: str,
-        template: dict,
+        template: dict[str, Any],
         schedule_kind: str,
         schedule_expr: str,
         *,
@@ -101,7 +101,7 @@ class InMemOpsMixin(_InMemoryBase):
         count: int | None = None,
         catchup_policy: str = "fire_once",
         created_by: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._in_memory_recurrence import in_memory_register_recurrence_rule
 
         return in_memory_register_recurrence_rule(
@@ -113,17 +113,17 @@ class InMemOpsMixin(_InMemoryBase):
             created_by=created_by,
         )
 
-    def list_recurrence_rules(self, status: str | None = None) -> list[dict]:
+    def list_recurrence_rules(self, status: str | None = None) -> list[dict[str, Any]]:
         from ._in_memory_recurrence import in_memory_list_recurrence_rules
 
         return in_memory_list_recurrence_rules(self._recurrence_rules, status)
 
-    def due_recurrences(self, now: datetime | None = None) -> list[dict]:
+    def due_recurrences(self, now: datetime | None = None) -> list[dict[str, Any]]:
         from ._in_memory_recurrence import in_memory_due_recurrences
 
         return in_memory_due_recurrences(self._recurrence_rules, now)
 
-    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict, dict]:
+    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, Any] | None]:
         from ._in_memory_recurrence import in_memory_fire_recurrence
 
         return in_memory_fire_recurrence(
@@ -143,8 +143,8 @@ class InMemOpsMixin(_InMemoryBase):
         *,
         status: str | None = None,
         schedule_expr: str | None = None,
-        template: dict | None = None,
-    ) -> dict:
+        template: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         from ._in_memory_recurrence import in_memory_update_recurrence_rule
 
         return in_memory_update_recurrence_rule(
