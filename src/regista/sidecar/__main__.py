@@ -6,20 +6,20 @@ import sys
 import structlog
 
 
-def _configure_structlog_stderr():
+def _configure_structlog_stderr() -> None:
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(20),
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
     )
 
 
-def main():
+def main() -> None:
     _configure_structlog_stderr()
 
-    dsn = os.environ.get("REGISTA_DSN")
-    project = os.environ.get("REGISTA_PROJECT")
-    hmac_key_path = os.environ.get("REGISTA_HMAC_KEY_PATH")
-    tokens_path = os.environ.get("REGISTA_TOKENS_PATH")
+    dsn = os.environ.get("REGISTA_DSN", "")
+    project = os.environ.get("REGISTA_PROJECT", "")
+    hmac_key_path = os.environ.get("REGISTA_HMAC_KEY_PATH", "")
+    tokens_path = os.environ.get("REGISTA_TOKENS_PATH", "")
     bind = os.environ.get("REGISTA_BIND", "127.0.0.1:8080")
     try:
         pool_min = int(os.environ.get("REGISTA_POOL_MIN", "1"))

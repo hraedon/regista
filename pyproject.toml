@@ -155,8 +155,6 @@ module = [
     "regista._workflow",
     "regista._workflow_compose",
     "regista._witness",
-    "regista.sidecar.app",
-    "regista.sidecar.__main__",
     "regista.sidecar.models",
     "regista.sidecar.routes",
     "regista.sidecar.routes_hooks",
