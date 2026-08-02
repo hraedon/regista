@@ -126,8 +126,6 @@ ignore_missing_imports = true
 module = [
     "regista._anchoring",
     "regista._secrets",
-    "regista._api_async",
-    "regista._api_workflow",
     "regista._cli",
     "regista._ops",
     "regista._recurrence",
@@ -135,8 +133,6 @@ module = [
     "regista._signing",
     "regista._timestamping",
     "regista._types",
-    "regista._workflow",
-    "regista._witness",
     "regista.sidecar.routes",
     "regista",
 ]

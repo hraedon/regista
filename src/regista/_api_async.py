@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -20,7 +21,7 @@ log = structlog.get_logger()
 
 class AsyncApiMixin(_RegistaBase):
 
-    def register_validator(self, name: str, handler: Callable) -> None:
+    def register_validator(self, name: str, handler: Callable[..., Any]) -> None:
         """Register a sync transition validator. Blocks the transaction on failure.
 
         Args:
@@ -35,7 +36,7 @@ class AsyncApiMixin(_RegistaBase):
         """
         self._validators[name] = handler
 
-    def register_hook_handler(self, name: str, handler: Callable) -> None:
+    def register_hook_handler(self, name: str, handler: Callable[..., Any]) -> None:
         """Register an async hook handler dispatched via the hook queue.
 
         Args:
@@ -63,9 +64,9 @@ class AsyncApiMixin(_RegistaBase):
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
         timestamp_interval: float = 3600.0,
-        tsa_config=None,
+        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider=None,
+        anchor_provider: Any = None,
         anchor_interval: float = 3600.0,
         anchor_upgrade_interval: float = 600.0,
     ) -> None:
@@ -328,7 +329,7 @@ class AsyncApiMixin(_RegistaBase):
         workflow_name: str,
         workflow_version: int,
         work_item_type: str,
-        template: dict,
+        template: dict[str, Any],
         schedule_kind: str,
         schedule_expr: str,
         *,
@@ -338,7 +339,7 @@ class AsyncApiMixin(_RegistaBase):
         count: int | None = None,
         catchup_policy: str = "fire_once",
         created_by: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         return self.recurrence.register_rule(
             workflow_name, workflow_version, work_item_type, template,
             schedule_kind, schedule_expr,
@@ -346,13 +347,13 @@ class AsyncApiMixin(_RegistaBase):
             count=count, catchup_policy=catchup_policy, created_by=created_by,
         )
 
-    def list_recurrence_rules(self, status: str | None = None) -> list[dict]:
+    def list_recurrence_rules(self, status: str | None = None) -> list[dict[str, Any]]:
         return self.recurrence.list_rules(status=status)
 
-    def due_recurrences(self, now: datetime | None = None) -> list[dict]:
+    def due_recurrences(self, now: datetime | None = None) -> list[dict[str, Any]]:
         return self.recurrence.due(now=now)
 
-    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict, dict]:
+    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, Any]]:
         return self.recurrence.fire(rule_id)
 
     def cancel_recurrence_rule(self, rule_id: uuid.UUID) -> None:
@@ -364,8 +365,8 @@ class AsyncApiMixin(_RegistaBase):
         *,
         status: str | None = None,
         schedule_expr: str | None = None,
-        template: dict | None = None,
-    ) -> dict:
+        template: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return self.recurrence.update_rule(
             rule_id,
             status=status, schedule_expr=schedule_expr, template=template,

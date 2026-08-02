@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 import structlog
@@ -35,7 +36,7 @@ def _validate_url(url: str) -> None:
         )
 
 
-def _validate_event_filter(event_filter: dict | None) -> dict | None:
+def _validate_event_filter(event_filter: dict[str, Any] | None) -> dict[str, Any] | None:
     if event_filter is None:
         return None
     if not isinstance(event_filter, dict):
@@ -59,7 +60,7 @@ def _validate_event_filter(event_filter: dict | None) -> dict | None:
     return event_filter
 
 
-def event_matches_filter(event_dict: dict, event_filter: dict | None) -> bool:
+def event_matches_filter(event_dict: dict[str, Any], event_filter: dict[str, Any] | None) -> bool:
     if event_filter is None:
         return True
     transitions = event_filter.get("transitions")
@@ -85,7 +86,7 @@ def register_witness(
     project: str,
     url: str,
     headers: dict[str, str] | None = None,
-    event_filter: dict | None = None,
+    event_filter: dict[str, Any] | None = None,
     max_failures: int = 10,
     max_retries: int = 3,
     *,
@@ -140,8 +141,8 @@ def register_witness(
             [
                 witness_id,
                 url,
-                psycopg.types.json.Jsonb(headers) if headers is not None else None,
-                psycopg.types.json.Jsonb(event_filter) if event_filter is not None else None,
+                psycopg.types.json.Jsonb(headers) if headers is not None else None,  # type: ignore[attr-defined]
+                psycopg.types.json.Jsonb(event_filter) if event_filter is not None else None,  # type: ignore[attr-defined]
                 max_failures,
                 max_retries,
                 mode,
@@ -215,7 +216,7 @@ def rotate_witness_key(
     project: str,
     witness_id: uuid.UUID,
     new_public_key: bytes,
-) -> dict:
+) -> dict[str, Any]:
     if len(new_public_key) != 32:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -271,7 +272,7 @@ def rotate_witness_key(
 def enrolled_witness_key(
     mgr: ConnectionManager,
     witness_id: uuid.UUID,
-) -> dict | None:
+) -> dict[str, Any] | None:
     principal_id = witness_principal_id(witness_id)
     with mgr.transaction() as conn:
         rows = conn.execute(
@@ -335,9 +336,9 @@ def list_witnesses(
     mgr: ConnectionManager,
     status: str | None = None,
     mode: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
-    params: list = []
+    params: list[Any] = []
     if status is not None:
         clauses.append("status = %s")
         params.append(status)
@@ -369,7 +370,7 @@ def list_witnesses(
 
 def create_receipts(
     mgr: ConnectionManager,
-    event_dict: dict,
+    event_dict: dict[str, Any],
 ) -> int:
     try:
         with mgr.connect() as conn:
@@ -418,9 +419,9 @@ def list_witness_receipts(
     witness_id: uuid.UUID | None = None,
     status: str | None = None,
     limit: int = 100,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     clauses: list[str] = []
-    params: list = []
+    params: list[Any] = []
     if event_id is not None:
         clauses.append("event_id = %s")
         params.append(event_id)
@@ -459,7 +460,7 @@ def list_witness_receipts(
 
 
 def _apply_receipt_failure(
-    conn,
+    conn: Any,
     *,
     receipt_id: uuid.UUID,
     witness_id: uuid.UUID,
@@ -658,7 +659,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
             status_code = 0
             response_body = None
             error_msg = None
-            conn_h = None
+            conn_h: http.client.HTTPConnection | None = None
             try:
                 if parsed.scheme == "https":
                     conn_h = http.client.HTTPSConnection(host, port, timeout=10)
@@ -675,6 +676,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
 
                     sig = _hmac.new(sign_secret, body.encode(), hashlib.sha256).hexdigest()
                     req_headers["X-Regista-Signature"] = f"sha256={sig}"
+                assert conn_h is not None
                 conn_h.request("POST", path, body=body.encode(), headers=req_headers)
                 resp = conn_h.getresponse()
                 status_code = resp.status
@@ -694,7 +696,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                 witness_sig = None
                 witness_resp_dict = None
                 try:
-                    parsed_resp = json.loads(response_body)
+                    parsed_resp = json.loads(response_body or "")
                     witness_sig = (
                         bytes.fromhex(parsed_resp["witness_signature"])
                         if "witness_signature" in parsed_resp
@@ -702,7 +704,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     )
                     witness_resp_dict = parsed_resp
                 except (json.JSONDecodeError, ValueError, KeyError):
-                    witness_resp_dict = {"raw": response_body[:2000]}
+                    witness_resp_dict = {"raw": (response_body or "")[:2000]}
 
                 requires_witness_signature = witness_key_scheme == "ed25519"
                 if requires_witness_signature:
@@ -736,7 +738,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                             [
                                 now,
                                 witness_sig if witness_sig else None,
-                                psycopg.types.json.Jsonb(witness_resp_dict)
+                                psycopg.types.json.Jsonb(witness_resp_dict)  # type: ignore[attr-defined]
                                 if witness_resp_dict else None,
                                 witness_key_scheme,
                                 now,

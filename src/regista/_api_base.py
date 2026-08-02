@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable
+    from datetime import datetime
     from typing import Any
 
     from ._connection import ConnectionManager
@@ -45,7 +46,7 @@ class _RegistaBase:
         _hook_handlers: dict[str, Callable[..., Any]]
         _hook_channel: str
         _hook_consumer: HookConsumer | None
-        _maintenance_thread: object | None
+        _maintenance_thread: Any
         _strict_roles: bool
         _hmac_key_path: str
 
@@ -55,18 +56,34 @@ class _RegistaBase:
 
         def start_hook_consumer(self) -> None: ...
 
-        def read_events(
-            self, *, work_item_id: uuid.UUID | None = None, **kwargs: Any
-        ) -> list[Event]: ...
-
         def append_event(
             self,
             work_item_id: uuid.UUID,
             actor_id: str,
             actor_kind: str = "agent",
             actor_metadata: dict[str, Any] | None = None,
-            **kwargs: Any,
+            *,
+            key_id: str | None = None,
+            transition: str | None = None,
+            payload: dict[str, Any] | None = None,
+            event_id: uuid.UUID | None = None,
+            expected_event_seq: int | None = None,
+            on_behalf_of: dict[str, Any] | None = None,
+            entity_kind: str = "work_item",
+            hash_alg: str = "sha-256",
         ) -> Event: ...
+
+        def read_events(
+            self,
+            *,
+            work_item_id: uuid.UUID | None = None,
+            actor_id: str | None = None,
+            start: datetime | None = None,
+            end: datetime | None = None,
+            transition: str | None = None,
+            limit: int = 100,
+            before_seq: int | None = None,
+        ) -> list[Event]: ...
 
         @property
         def project(self) -> str: ...
@@ -106,3 +123,6 @@ class _RegistaBase:
 
         @property
         def webhooks(self) -> WebhookOps: ...
+
+        @property
+        def anchoring(self) -> Any: ...
