@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -41,7 +41,7 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/ready")
-    async def ready() -> dict[str, str] | JSONResponse:
+    async def ready() -> Any:
         try:
             mgr = regista._mgr
             if mgr is None:
