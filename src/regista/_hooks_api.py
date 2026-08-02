@@ -23,7 +23,7 @@ def refresh_hook_queue_metrics(mgr: ConnectionManager, metrics: Metrics, project
 
         dead_count = conn.execute(
             SQL("SELECT COUNT(*) FROM hook_dead_letter")
-        ).fetchone()["count"]
+        ).fetchone()["count"]  # type: ignore[index]
 
         for status, count in status_counts.items():
             metrics.set_hook_queue_depth(project, status, count)

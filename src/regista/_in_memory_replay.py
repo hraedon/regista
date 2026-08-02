@@ -3,18 +3,21 @@ from __future__ import annotations
 import hmac as _hmac
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 
 from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
+from ._keys import KeySet
 from ._signing import verify_event as _verify_event
 from ._signing_scheme import get_scheme
-from ._types import ReplayReport
+from ._types import Event, ReplayReport
 
 
-def _try_fromisoformat(value):
+def _try_fromisoformat(value: str | None) -> datetime | None:
     if value is None:
         return None
     try:
@@ -31,8 +34,8 @@ log = structlog.get_logger()
 
 
 def _verify_hash_chain_in_memory(
-    event,
-    prev_event,
+    event: Event,
+    prev_event: Event | None,
 ) -> tuple[bool, str]:
     expected = event.prev_event_hash
     if expected is None:
@@ -53,7 +56,7 @@ def _verify_hash_chain_in_memory(
     return True, ""
 
 
-def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | None]:
+def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event | None]:
     """Walk the global hash chain by following ``prev_global_event_hash`` links
     (BC-300 / Plan 024).
 
@@ -69,8 +72,8 @@ def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | Non
 
     hash_fn = resolve_hash_function("sha-256")
 
-    link_map: dict[str, list] = defaultdict(list)
-    genesis_events: list = []
+    link_map: dict[str, list[Event]] = defaultdict(list)
+    genesis_events: list[Event] = []
     for evt in events:
         if evt.prev_global_event_hash is None:
             genesis_events.append(evt)
@@ -78,6 +81,17 @@ def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | Non
             link_map[bytes(evt.prev_global_event_hash).hex()].append(evt)
 
     warnings = 0
+
+    # Order-stable genesis selection (WI-219): the canonical chain start is the
+    # lowest global_seq, tie-broken on event_id, so the verdict does not depend
+    # on the arbitrary order of the input list.
+    genesis_events.sort(
+        key=lambda e: (
+            e.global_seq is None,
+            e.global_seq or 0,
+            str(e.event_id),
+        )
+    )
 
     if len(genesis_events) > 1:
         for g in genesis_events[1:]:
@@ -100,7 +114,7 @@ def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | Non
         return warnings, None
 
     current = genesis_events[0]
-    visited: set = set()
+    visited: set[uuid.UUID] = set()
 
     while True:
         eid = current.event_id
@@ -152,10 +166,10 @@ def _verify_global_hash_chain_in_memory(events: list) -> tuple[int, object | Non
 
 
 def in_memory_replay(
-    work_items: dict,
-    workflows: dict,
-    store,
-    key_set,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    store: InMemoryEventStore,
+    key_set: KeySet | None,
     *,
     continue_on_revoked: bool = False,
     verify_principal_binding: bool = False,
@@ -218,7 +232,7 @@ def in_memory_replay(
                 event_count=len(store.events.get(work_item_id, [])),
             )
     else:
-        items = work_items.items()
+        items = list(work_items.items())
 
     for wi_id, wi in items:
         evts = store.events.get(wi_id, [])
@@ -226,7 +240,7 @@ def in_memory_replay(
             continue
         try:
             derived_state = None
-            derived_fields: dict = {}
+            derived_fields: dict[str, Any] = {}
             derived_needs_review = False
             derived_not_before = None
             derived_last_seq = 0

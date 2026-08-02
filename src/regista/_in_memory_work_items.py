@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from ._contract import (
     Jsonb,
@@ -10,12 +11,14 @@ from ._contract import (
     validate_work_item_exists,
 )
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
+from ._keys import KeySet
 from ._types import Event, QueryPage, WorkItem
 from ._workflow import validate_field_values
 
 
-def _dict_contains(haystack: dict, needle: dict) -> bool:
+def _dict_contains(haystack: dict[str, Any], needle: dict[str, Any]) -> bool:
     for k, v in needle.items():
         if k not in haystack:
             return False
@@ -33,20 +36,21 @@ def _dict_contains(haystack: dict, needle: dict) -> bool:
 
 
 def in_memory_create_work_item(
-    store,
-    work_items: dict,
-    workflows: dict,
-    workflow_defs: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    workflow_defs: dict[tuple[str, int], Any],
+    key_set: KeySet | None,
     workflow_name: str,
     work_item_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
-    custom_fields: dict | None = None,
+    custom_fields: dict[str, Any] | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
+    key_id: str | None = None,
     skip_event_id_version_check: bool = False,
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
@@ -129,6 +133,7 @@ def in_memory_create_work_item(
             }),
             event_id=event_id,
             key_set=key_set,
+            _key_id=key_id,
         )
     except RegistaError:
         del work_items[work_item_id]
@@ -138,8 +143,8 @@ def in_memory_create_work_item(
 
 
 def in_memory_query_work_items(
-    work_items: dict,
-    links: list,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    links: list[dict[str, Any]],
     *,
     workflow_name: str | None = None,
     workflow_version: int | None = None,
@@ -205,17 +210,17 @@ def in_memory_query_work_items(
 
 
 def in_memory_update_not_before(
-    store,
-    work_items: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     not_before: datetime | None,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     event_id: uuid.UUID | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -229,6 +234,7 @@ def in_memory_update_not_before(
 
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
+    assert wi is not None
 
     evt = _store_append(
         store,
@@ -248,7 +254,7 @@ def in_memory_update_not_before(
     return evt
 
 
-def _wi_to_work_item(wi: dict) -> WorkItem:
+def _wi_to_work_item(wi: dict[str, Any]) -> WorkItem:
     return WorkItem(
         work_item_id=wi["work_item_id"],
         workflow_name=wi["workflow_name"],

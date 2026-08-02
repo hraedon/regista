@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
 
@@ -434,7 +434,7 @@ def delete(ref: str) -> DeleteOutcome:
             ErrorCode.SECRET_WRITE_UNSUPPORTED,
             f"{provider_name}: provider does not implement delete",
         )
-    return deleter(value)
+    return cast("DeleteOutcome", deleter(value))
 
 
 def supports_write(name: str) -> bool:
@@ -638,7 +638,7 @@ def _parse_vault_env_text(text: str) -> dict[str, str]:
     return out
 
 
-class _VaultEnv(dict):
+class _VaultEnv(dict[str, str]):
     """Merged Vault configuration that remembers what came from the plane file.
 
     Provenance is the whole point of the auth report, so a value read out of a
@@ -814,7 +814,7 @@ def _replace_shape(shape: _VaultAuthShape, *, error: str) -> _VaultAuthShape:
 
 def try_register_vault() -> None:
     try:
-        import hvac  # type: ignore[import-untyped]  # noqa: F401
+        import hvac  # noqa: F401
     except ImportError:
         return
     register_provider(VaultProvider())
@@ -859,7 +859,7 @@ class VaultProvider:
         return _vault_env(base)
 
     def _hvac(self) -> Any:
-        import hvac  # type: ignore[import-untyped]
+        import hvac
 
         return hvac
 
@@ -1471,8 +1471,8 @@ def vault_auth_status(*, probe: bool = False) -> dict[str, Any]:
 
 def try_register_azure() -> None:
     try:
-        from azure.identity import DefaultAzureCredential  # type: ignore[import-untyped]
-        from azure.keyvault.secrets import SecretClient  # type: ignore[import-untyped]
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
     except ImportError:
         return
 
@@ -1499,7 +1499,7 @@ def try_register_azure() -> None:
         def resolve(self, ref: str) -> bytes:
             client = self._get_client()
             secret = client.get_secret(ref)
-            return secret.value.encode("utf-8")
+            return cast("bytes", secret.value.encode("utf-8"))
 
         def store(self, ref: str, data: bytes) -> str:
             import base64
@@ -1510,7 +1510,7 @@ def try_register_azure() -> None:
             return f"azure:{ref}"
 
         def delete(self, ref: str) -> DeleteOutcome:
-            from azure.core.exceptions import (  # type: ignore[import-untyped]
+            from azure.core.exceptions import (
                 ResourceNotFoundError,
             )
 
@@ -1602,7 +1602,7 @@ def _win_dpapi_bindings() -> dict[str, Any]:
             ("pbData", ctypes.POINTER(ctypes.c_char)),
         ]
 
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)  # type: ignore[attr-defined]
     crypt32.CryptProtectData.restype = ctypes.wintypes.BOOL
     crypt32.CryptProtectData.argtypes = [
         ctypes.POINTER(_DataBlob),
@@ -1624,7 +1624,7 @@ def _win_dpapi_bindings() -> dict[str, Any]:
         ctypes.POINTER(_DataBlob),
     ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.LocalFree.restype = ctypes.c_void_p
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
 
@@ -1660,7 +1660,7 @@ def _dpapi_unprotect_ctypes(encrypted: bytes) -> bytes:
             f"windows: CryptUnprotectData failed (Win32 error {err})",
         )
     try:
-        return ctypes_mod.string_at(out_blob.pbData, out_blob.cbData)
+        return cast("bytes", ctypes_mod.string_at(out_blob.pbData, out_blob.cbData))
     finally:
         b["kernel32"].LocalFree(out_blob.pbData)
 
@@ -1687,7 +1687,7 @@ def _dpapi_protect_ctypes(data: bytes) -> bytes:
             f"windows: CryptProtectData failed (Win32 error {err})",
         )
     try:
-        return ctypes_mod.string_at(out_blob.pbData, out_blob.cbData)
+        return cast("bytes", ctypes_mod.string_at(out_blob.pbData, out_blob.cbData))
     finally:
         b["kernel32"].LocalFree(out_blob.pbData)
 

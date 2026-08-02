@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import structlog
 
+from ._connection import ConnectionManager
 from ._contract import VALIDATOR_HISTORY_LIMIT
 from ._contract import (
     Jsonb as _Jsonb,
@@ -26,6 +28,7 @@ from ._contract import (
 )
 from ._errors import ErrorCode, RegistaError
 from ._events import append_transition_event as _append_transition_event
+from ._keys import KeySet
 from ._observability import Metrics, OpTimer
 from ._types import Event, ValidatorContext
 
@@ -33,23 +36,23 @@ log = structlog.get_logger()
 
 
 def transition(
-    mgr,
-    keys,
+    mgr: ConnectionManager,
+    keys: KeySet,
     metrics: Metrics,
     project: str,
-    validators: dict,
+    validators: dict[str, Any],
     hook_channel: str,
     work_item_id: uuid.UUID,
     transition_name: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
-    payload: dict | None = None,
-    custom_fields: dict | None = None,
+    payload: dict[str, Any] | None = None,
+    custom_fields: dict[str, Any] | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
     strict_roles: bool = False,
     key_id: str | None = None,
 ) -> Event:
@@ -114,7 +117,7 @@ def transition(
                 role = (actor_metadata or {}).get("role")
                 from ._actor_roles import check_actor_role_authorized
                 check_actor_role_authorized(
-                    conn, actor_id, role,
+                    conn, actor_id, cast(str, role),
                     strict=strict_roles, actor_metadata=actor_metadata,
                 )
 

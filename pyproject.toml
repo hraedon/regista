@@ -109,89 +109,10 @@ files = ["src/regista"]
 
 # Untyped third-party libs (installed in CI via extras, but ship no stubs).
 [[tool.mypy.overrides]]
-module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*"]
+module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*", "hvac", "hvac.*", "azure.identity", "azure.identity.*", "azure.keyvault", "azure.keyvault.*", "azure.core", "azure.core.*"]
 ignore_missing_imports = true
 
-# --- WI-005 burndown: modules not yet strict-clean. Delete entries as they
-#     are annotated. When this list is empty, the kernel is fully strict.
-#     NOTE: _projects is a pre-existing uncommitted WIP module; annotate or
-#     remove when the projects-catalog feature is committed. ---
-[[tool.mypy.overrides]]
-module = [
-    "regista._actor_roles",
-    "regista._api_async",
-    "regista._api_base",
-    "regista._api_claim",
-    "regista._api_external",
-    "regista._api_meta",
-    "regista._api_workflow",
-    "regista._archive",
-    "regista._anchoring",
-    "regista._in_mem_base",
-    "regista._in_mem_claim",
-    "regista._in_mem_hook",
-    "regista._in_mem_ops",
-    "regista._in_mem_witness",
-    "regista._in_mem_workflow",
-    "regista._claims_api",
-    "regista._claims",
-    "regista._cli",
-    "regista._connection",
-    "regista._contract",
-    "regista._errors",
-    "regista._events_api",
-    "regista._events",
-    "regista._event_store",
-    "regista._hooks_api",
-    "regista._hooks",
-    "regista",
-    "regista._in_memory_claims",
-    "regista._in_memory_events",
-    "regista._in_memory_hooks",
-    "regista._in_memory_links",
-    "regista._in_memory",
-    "regista._in_memory_recurrence",
-    "regista._in_memory_replay",
-    "regista._in_memory_transition",
-    "regista._in_memory_work_items",
-    "regista._integrity",
-    "regista._links_api",
-    "regista._links",
-    "regista._lint",
-    "regista._maintenance",
-    "regista._migrations",
-    "regista._ops",
-    "regista._projects",
-    "regista._recurrence_api",
-    "regista._recurrence",
-    "regista._replay",
-    "regista._review_validators",
-    "regista.sidecar.app",
-    "regista.sidecar.auth",
-    "regista.sidecar.__main__",
-    "regista.sidecar.models",
-    "regista.sidecar.routes_hooks",
-    "regista.sidecar.routes",
-    "regista._signing",
-    "regista._signing_scheme",
-    "regista._testing",
-    "regista._timestamping",
-    "regista._transition",
-    "regista._types",
-    "regista._vendor.rfc8785",
-    "regista._webhooks",
-    "regista._witness",
-    "regista._workflow_api",
-    "regista._workflow_compose",
-    "regista._workflow",
-    "regista._work_items_api",
-    "regista._work_items",
-    "regista._config",
-    "regista._secrets",
-    "regista._version_info",
-    "regista._doctor",
-    "regista._principal_keys",
-    "regista._archive_segments",
-    "regista._bundle",
-]
-ignore_errors = true
+# --- WI-233 complete: all source modules are now mypy --strict clean.
+#     The kernel is fully strict. The `DictConn = psycopg.Connection[dict[str, Any]]`
+#     alias (in _connection.py, matching the row_factory=dict_row runtime)
+#     documents the dict-row contract and unlocks most modules. ---

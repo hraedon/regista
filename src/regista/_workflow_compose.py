@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ._errors import ErrorCode, RegistaError
 from ._workflow import parse_workflow_yaml, validate_and_build
@@ -8,7 +9,9 @@ from ._workflow import parse_workflow_yaml, validate_and_build
 MAX_INCLUDE_DEPTH = 8
 
 
-def _deep_merge(parent: dict, child: dict, list_keys: dict[str, str]) -> dict:
+def _deep_merge(
+    parent: dict[str, Any], child: dict[str, Any], list_keys: dict[str, str],
+) -> dict[str, Any]:
     result = dict(parent)
     for key, value in child.items():
         if key.endswith("__append"):
@@ -40,17 +43,19 @@ def _deep_merge(parent: dict, child: dict, list_keys: dict[str, str]) -> dict:
     return result
 
 
-def _merge_lists(parent: list, child: list, key_by: str | None) -> list:
+def _merge_lists(
+    parent: list[dict[str, Any]], child: list[dict[str, Any]], key_by: str | None,
+) -> list[dict[str, Any]]:
     if key_by is None:
         return child
 
     if key_by == "(name, from)":
 
-        def _key(item):
+        def _key(item: dict[str, Any]) -> Any:
             return (item.get("name"), item.get("from"))
     else:
 
-        def _key(item):
+        def _key(item: dict[str, Any]) -> Any:
             return item.get(key_by)
 
     merged = {}
@@ -88,8 +93,8 @@ def _merge_lists(parent: list, child: list, key_by: str | None) -> list:
 
 
 class SourceMap:
-    def __init__(self):
-        self.entries: list[dict] = []
+    def __init__(self) -> None:
+        self.entries: list[dict[str, Any]] = []
 
     def record(self, path: str, source_file: str, source_line: int | None = None) -> None:
         self.entries.append({
@@ -128,9 +133,9 @@ def resolve_includes(
     *,
     compose_root: Path | None = None,
     _seen: frozenset[Path] | None = None,
-    _memo: dict[Path, dict] | None = None,
+    _memo: dict[Path, dict[str, Any]] | None = None,
     _depth: int = 0,
-) -> tuple[dict, SourceMap]:
+) -> tuple[dict[str, Any], SourceMap]:
     if _seen is None:
         _seen = frozenset()
     if _memo is None:
@@ -194,7 +199,7 @@ def resolve_includes(
     return merged, combined_map
 
 
-def compose_workflow(path: str | Path) -> tuple[dict, SourceMap]:
+def compose_workflow(path: str | Path) -> tuple[dict[str, Any], SourceMap]:
     """Resolve extends chain and merge into a single composed dict.
 
     Returns:
@@ -203,7 +208,7 @@ def compose_workflow(path: str | Path) -> tuple[dict, SourceMap]:
     return resolve_includes(path)
 
 
-def parse_file_with_composition(path: str | Path):
+def parse_file_with_composition(path: str | Path) -> Any:
     """Parse workflow file, resolving composition if extends: is present."""
     data, _ = compose_workflow(path)
     return validate_and_build(data, "")

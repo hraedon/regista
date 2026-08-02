@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from ._api_base import _RegistaBase
 from ._contract import validate_delegation_chain as _validate_delegation_chain
@@ -73,11 +74,12 @@ class WorkflowApiMixin(_RegistaBase):
         work_item_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
-        custom_fields: dict | None = None,
+        custom_fields: dict[str, Any] | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
+        key_id: str | None = None,
     ) -> tuple[WorkItem, Event]:
         """Create a new work item in the given workflow.
 
@@ -90,6 +92,8 @@ class WorkflowApiMixin(_RegistaBase):
             custom_fields: Initial field values validated against the type schema.
             not_before: Gate timestamp; claims before this time are rejected.
             event_id: Optional UUIDv4 for idempotency.
+            key_id: Pin the signing key for the ``created`` event that opens the
+                chain; defaults to the key set's resolution for ``actor_id``.
 
         Returns:
             Tuple of ``(WorkItem, Event)``.
@@ -105,13 +109,14 @@ class WorkflowApiMixin(_RegistaBase):
             custom_fields=custom_fields,
             not_before=not_before,
             event_id=event_id,
+            key_id=key_id,
         )
         self._try_create_witness_receipts(evt)
         return wi, evt
 
     def create_work_items_batch(
         self,
-        items: list[dict],
+        items: list[dict[str, Any]],
         actor_id: str,
         actor_kind: str = "agent",
     ) -> list[tuple[WorkItem, Event]]:
@@ -193,10 +198,10 @@ class WorkflowApiMixin(_RegistaBase):
         not_before: datetime | None,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
     ) -> Event:
         """Set or clear the ``not_before`` gate on a work item.
 
@@ -228,13 +233,13 @@ class WorkflowApiMixin(_RegistaBase):
         transition_name: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
-        payload: dict | None = None,
-        custom_fields: dict | None = None,
+        payload: dict[str, Any] | None = None,
+        custom_fields: dict[str, Any] | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
         key_id: str | None = None,
     ) -> Event:
         """Execute a workflow-defined state transition.
@@ -288,14 +293,14 @@ class WorkflowApiMixin(_RegistaBase):
         work_item_id: uuid.UUID,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         key_id: str | None = None,
         transition: str | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
     ) -> Event:

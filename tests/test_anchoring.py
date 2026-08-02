@@ -531,6 +531,68 @@ def _create_event(sub) -> int:
     return wi.work_item_id
 
 
+class TestAnchoringHashAgility:
+    """WI-207: anchoring must verify chains whose events use a non-SHA-256
+    hash_alg. verify_content_anchor recomputes payload_canonical_hash with the
+    event's own hash_alg via resolve_hash_function; the rest of the suite only
+    creates sha-256 events, so pin the agile path here."""
+
+    def test_anchor_verifies_with_sha384_events(self, anchor_regista):
+        sub, _provider = anchor_regista
+        wi = _create_event(sub)  # genesis event is sha-256
+        for i in range(2):
+            sub.append_event(
+                wi, "agent-1",
+                hash_alg="sha-384",
+                transition=f"hash_agility_{i}",
+                payload={"alg": "sha-384", "i": i},
+            )
+
+        # Guard: the chain really does carry non-SHA-256 events, so this test
+        # exercises the hash-agility recompute rather than passing vacuously.
+        with psycopg.connect(DSN, row_factory=dict_row) as conn:
+            conn.execute(f"SET search_path TO {sub._mgr.schema}")
+            algs = {
+                r["hash_alg"]
+                for r in conn.execute("SELECT hash_alg FROM events").fetchall()
+            }
+        assert "sha-384" in algs
+
+        receipt = sub.trigger_anchoring()
+        assert receipt is not None
+        assert receipt.status == AnchorStatus.CONFIRMED
+
+        status = sub.verify_anchor_receipt(receipt.receipt_id)
+        assert status == AnchorStatus.CONFIRMED
+
+    def test_anchor_verify_fails_if_sha384_hash_recomputed_as_sha256(self, anchor_regista):
+        # Negative control for the hash-agility path: if a sha-384 event's
+        # payload_canonical_hash is overwritten with a sha-256 digest of the
+        # same envelope (simulating a verifier that hardcodes sha-256), the
+        # recompute no longer matches and verification must fail.
+        sub, _provider = anchor_regista
+        wi = _create_event(sub)
+        sub.append_event(
+            wi, "agent-1", hash_alg="sha-384",
+            transition="hash_agility_neg", payload={"alg": "sha-384"},
+        )
+        receipt = sub.trigger_anchoring()
+        assert receipt is not None
+
+        with psycopg.connect(DSN, row_factory=dict_row, autocommit=True) as conn:
+            conn.execute(f"SET search_path TO {sub._mgr.schema}")
+            row = conn.execute(
+                "SELECT canonical_envelope FROM events WHERE hash_alg = 'sha-384' LIMIT 1"
+            ).fetchone()
+            wrong_pch = hashlib.sha256(bytes(row["canonical_envelope"])).digest()
+            conn.execute(
+                "UPDATE events SET payload_canonical_hash = %s WHERE hash_alg = 'sha-384'",
+                [wrong_pch],
+            )
+
+        assert sub.verify_anchor_receipt(receipt.receipt_id) == AnchorStatus.FAILED
+
+
 class TestAnchoringIntegration:
     def test_trigger_anchoring_creates_confirmed_receipt(self, anchor_regista):
         sub, _provider = anchor_regista

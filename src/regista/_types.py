@@ -22,12 +22,13 @@ class ActorMetadata:
     channel: str | None = None
     model: str | None = None
     family: str | None = None
+    model_lineage: str | None = None
     gate_name: str | None = None
     attempt_n: int | None = None
     context_hash: str | None = None
     prompt_template_hash: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d: dict[str, object] = {}
         if self.role is not None:
             d["role"] = self.role
@@ -37,6 +38,8 @@ class ActorMetadata:
             d["model"] = self.model
         if self.family is not None:
             d["family"] = self.family
+        if self.model_lineage is not None:
+            d["model_lineage"] = self.model_lineage
         if self.gate_name is not None:
             d["gate_name"] = self.gate_name
         if self.attempt_n is not None:
@@ -48,12 +51,13 @@ class ActorMetadata:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> ActorMetadata:
+    def from_dict(cls, data: dict[str, Any]) -> ActorMetadata:
         return cls(
             role=data.get("role"),
             channel=data.get("channel"),
             model=data.get("model"),
             family=data.get("family"),
+            model_lineage=data.get("model_lineage"),
             gate_name=data.get("gate_name"),
             attempt_n=data.get("attempt_n"),
             context_hash=data.get("context_hash"),
@@ -85,7 +89,7 @@ class DelegationChain:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> DelegationChain:
+    def from_dict(cls, data: dict[str, Any]) -> DelegationChain:
         return cls(
             principal_id=data["principal_id"],
             session_id=data.get("session_id"),
@@ -103,17 +107,17 @@ class Event:
     event_seq: int
     actor_id: str
     actor_kind: str
-    actor_metadata: dict | None
+    actor_metadata: dict[str, Any] | None
     key_id: str
     workflow_name: str
     workflow_version: int
     timestamp: datetime
     transition: str | None
-    payload: dict | None
+    payload: dict[str, Any] | None
     payload_canonical_hash: bytes
     signature: bytes
     canonical_envelope: bytes | None = None
-    on_behalf_of: dict | None = None
+    on_behalf_of: dict[str, Any] | None = None
     scheme_id: str = "hmac-sha256"
     prev_event_hash: bytes | None = None
     global_seq: int | None = None
@@ -130,7 +134,7 @@ class Event:
     def effective_entity_id(self) -> uuid.UUID:
         return self.entity_id if self.entity_id is not None else self.work_item_id
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "event_id": str(self.event_id),
             "work_item_id": str(self.work_item_id),
@@ -164,7 +168,7 @@ class Event:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> Event:
+    def from_dict(cls, data: dict[str, Any]) -> Event:
         return cls(
             event_id=uuid.UUID(data["event_id"]),
             work_item_id=uuid.UUID(data["work_item_id"]),
@@ -215,7 +219,7 @@ class WorkItem:
     workflow_version: int
     work_item_type: str
     current_state: str
-    custom_fields: dict
+    custom_fields: dict[str, Any]
     needs_review: bool
     not_before: datetime | None
     last_event_seq: int
@@ -225,7 +229,7 @@ class WorkItem:
     claim_expires_at: datetime | None
     attempt_number: int = 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "work_item_id": str(self.work_item_id),
             "workflow_name": self.workflow_name,
@@ -248,7 +252,7 @@ class WorkItem:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> WorkItem:
+    def from_dict(cls, data: dict[str, Any]) -> WorkItem:
         return cls(
             work_item_id=uuid.UUID(data["work_item_id"]),
             workflow_name=data["workflow_name"],
@@ -283,7 +287,7 @@ class Claim:
     expires_at: datetime
     attempt_number: int
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "work_item_id": str(self.work_item_id),
             "actor_id": self.actor_id,
@@ -293,7 +297,7 @@ class Claim:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> Claim:
+    def from_dict(cls, data: dict[str, Any]) -> Claim:
         return cls(
             work_item_id=uuid.UUID(data["work_item_id"]),
             actor_id=data["actor_id"],
@@ -310,7 +314,7 @@ class ConnectionInfo:
     database: str | None
     project: str
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "host": self.host,
             "port": self.port,
@@ -319,7 +323,7 @@ class ConnectionInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> ConnectionInfo:
+    def from_dict(cls, data: dict[str, Any]) -> ConnectionInfo:
         return cls(
             host=data.get("host"),
             port=data.get("port"),
@@ -339,7 +343,7 @@ class CustomFieldDef:
     target_work_item_type: str | None = None
     target_work_item_types: list[str] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d: dict[str, object] = {
             "name": self.name,
             "type": self.type,
@@ -355,7 +359,7 @@ class CustomFieldDef:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> CustomFieldDef:
+    def from_dict(cls, data: dict[str, Any]) -> CustomFieldDef:
         return cls(
             name=data["name"],
             type=data["type"],
@@ -373,14 +377,14 @@ class WorkItemTypeDef:
     name: str
     custom_fields: list[CustomFieldDef]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "custom_fields": [f.to_dict() for f in self.custom_fields],
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> WorkItemTypeDef:
+    def from_dict(cls, data: dict[str, Any]) -> WorkItemTypeDef:
         return cls(
             name=data["name"],
             custom_fields=[CustomFieldDef.from_dict(f) for f in data["custom_fields"]],
@@ -396,10 +400,10 @@ class TransitionDef:
     validator: str | None
     hooks: list[str]
     privileged: bool = False
-    validator_params: dict | None = None
+    validator_params: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict:
-        result = {
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "name": self.name,
             "from_state": self.from_state,
             "to_state": self.to_state,
@@ -414,7 +418,7 @@ class TransitionDef:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> TransitionDef:
+    def from_dict(cls, data: dict[str, Any]) -> TransitionDef:
         return cls(
             name=data["name"],
             from_state=data["from_state"],
@@ -433,7 +437,7 @@ class LinkTypeDef:
     source_type: str
     target_type: str
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "source_type": self.source_type,
@@ -441,7 +445,7 @@ class LinkTypeDef:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> LinkTypeDef:
+    def from_dict(cls, data: dict[str, Any]) -> LinkTypeDef:
         return cls(
             name=data["name"],
             source_type=data["source_type"],
@@ -462,10 +466,10 @@ class WorkflowDefinition:
     work_item_types: list[WorkItemTypeDef]
     link_types: list[LinkTypeDef]
     attempt_threshold: int | None
-    hook_defaults: dict | None = None
+    hook_defaults: dict[str, Any] | None = None
     raw_yaml: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
@@ -483,7 +487,7 @@ class WorkflowDefinition:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> WorkflowDefinition:
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowDefinition:
         return cls(
             name=data["name"],
             version=data["version"],
@@ -508,7 +512,7 @@ class WorkflowVersion:
     regista_version: str
     registered_at: datetime
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
@@ -517,7 +521,7 @@ class WorkflowVersion:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> WorkflowVersion:
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowVersion:
         return cls(
             name=data["name"],
             version=data["version"],
@@ -532,13 +536,13 @@ class Link:
     from_work_item_id: uuid.UUID
     to_work_item_id: uuid.UUID
     link_type: str
-    payload: dict | None = None
+    payload: dict[str, Any] | None = None
     target_project: str | None = None
     target_entity_kind: str | None = None
     content_hash: str | None = None
 
-    def to_dict(self) -> dict:
-        d = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "link_id": str(self.link_id),
             "from_work_item_id": str(self.from_work_item_id),
             "to_work_item_id": str(self.to_work_item_id),
@@ -555,7 +559,7 @@ class Link:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> Link:
+    def from_dict(cls, data: dict[str, Any]) -> Link:
         return cls(
             link_id=uuid.UUID(data["link_id"]),
             from_work_item_id=uuid.UUID(data["from_work_item_id"]),
@@ -574,7 +578,7 @@ class QueryPage(Generic[T]):
     cursor: uuid.UUID | None
     has_more: bool
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "items": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
             "cursor": str(self.cursor) if self.cursor else None,
@@ -582,7 +586,9 @@ class QueryPage(Generic[T]):
         }
 
     @classmethod
-    def from_dict(cls, data: dict, item_from_dict: Callable[[dict], T]) -> QueryPage[T]:
+    def from_dict(
+        cls, data: dict[str, Any], item_from_dict: Callable[[dict[str, Any]], T],
+    ) -> QueryPage[T]:
         items = [item_from_dict(item) for item in data["items"]]
         return cls(
             items=items,
@@ -605,8 +611,8 @@ class ReplayReport:
     #: must not render it as a pass.
     principal_binding_verified: bool = False
 
-    def to_dict(self) -> dict:
-        d: dict = {
+    def to_dict(self) -> dict[str, Any]:
+        d = {
             "table_name": self.table_name,
             "replayed_ok": self.replayed_ok,
             "replayed_drift": self.replayed_drift,
@@ -622,7 +628,7 @@ class ReplayReport:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> ReplayReport:
+    def from_dict(cls, data: dict[str, Any]) -> ReplayReport:
         return cls(
             table_name=data["table_name"],
             replayed_ok=data["replayed_ok"],
@@ -640,7 +646,7 @@ class ReplayReportEntry:
     category: str
     detail: str | None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "work_item_id": str(self.work_item_id),
             "category": self.category,
@@ -648,7 +654,7 @@ class ReplayReportEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> ReplayReportEntry:
+    def from_dict(cls, data: dict[str, Any]) -> ReplayReportEntry:
         return cls(
             work_item_id=uuid.UUID(data["work_item_id"]),
             category=data["category"],
@@ -679,16 +685,16 @@ class ValidatorContext:
     current_state: str
     new_state: str
     transition_name: str
-    payload: dict | None
-    custom_fields: dict
+    payload: dict[str, Any] | None
+    custom_fields: dict[str, Any]
     actor_id: str
-    actor_metadata: dict | None
+    actor_metadata: dict[str, Any] | None
     actor_kind: str
     prior_events: tuple[Event, ...]
-    on_behalf_of: dict | None = None
-    validator_params: dict | None = None
+    on_behalf_of: dict[str, Any] | None = None
+    validator_params: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "work_item_id": str(self.work_item_id),
             "workflow_name": self.workflow_name,
@@ -711,7 +717,7 @@ class ValidatorContext:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> ValidatorContext:
+    def from_dict(cls, data: dict[str, Any]) -> ValidatorContext:
         return cls(
             work_item_id=uuid.UUID(data["work_item_id"]),
             workflow_name=data["workflow_name"],
@@ -740,9 +746,9 @@ class HookContext:
     work_item_id: uuid.UUID
     hook_name: str
     transition: str | None
-    payload: dict | None
+    payload: dict[str, Any] | None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "hook_queue_id": self.hook_queue_id,
             "event_id": str(self.event_id),
@@ -753,7 +759,7 @@ class HookContext:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> HookContext:
+    def from_dict(cls, data: dict[str, Any]) -> HookContext:
         return cls(
             hook_queue_id=data["hook_queue_id"],
             event_id=uuid.UUID(data["event_id"]),
@@ -770,7 +776,7 @@ class ActorRole:
     role: str
     created_at: datetime
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "actor_id": self.actor_id,
             "role": self.role,
@@ -778,7 +784,7 @@ class ActorRole:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> ActorRole:
+    def from_dict(cls, data: dict[str, Any]) -> ActorRole:
         return cls(
             actor_id=data["actor_id"],
             role=data["role"],
@@ -791,11 +797,11 @@ class ValidationError:
     path: str
     message: str
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {"path": self.path, "message": self.message}
 
     @classmethod
-    def from_dict(cls, data: dict) -> ValidationError:
+    def from_dict(cls, data: dict[str, Any]) -> ValidationError:
         return cls(path=data["path"], message=data["message"])
 
 
@@ -805,7 +811,7 @@ class ValidationResult:
     errors: list[ValidationError]
     workflow: WorkflowDefinition | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "valid": self.valid,
             "errors": [e.to_dict() for e in self.errors],
@@ -815,7 +821,7 @@ class ValidationResult:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> ValidationResult:
+    def from_dict(cls, data: dict[str, Any]) -> ValidationResult:
         wf = (
             WorkflowDefinition.from_dict(data["workflow"])
             if data.get("workflow")
@@ -834,14 +840,14 @@ class DeadLetterEntry:
     event_id: uuid.UUID
     hook_name: str
     hook_type: str
-    payload: dict | None
+    payload: dict[str, Any] | None
     retry_count: int
     max_retries: int
     error_message: str | None
     dead_lettered_at: datetime
     original_hook_queue_id: int | None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "event_id": str(self.event_id),
@@ -856,7 +862,7 @@ class DeadLetterEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> DeadLetterEntry:
+    def from_dict(cls, data: dict[str, Any]) -> DeadLetterEntry:
         return cls(
             id=data["id"],
             event_id=uuid.UUID(data["event_id"]),
@@ -877,7 +883,7 @@ class RecurrenceRule:
     workflow_name: str
     workflow_version: int
     work_item_type: str
-    template: dict
+    template: dict[str, Any]
     schedule_kind: str
     schedule_expr: str
     timezone: str
@@ -892,7 +898,7 @@ class RecurrenceRule:
     created_at: datetime
     updated_at: datetime
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "rule_id": str(self.rule_id),
             "workflow_name": self.workflow_name,
@@ -915,7 +921,7 @@ class RecurrenceRule:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> RecurrenceRule:
+    def from_dict(cls, data: dict[str, Any]) -> RecurrenceRule:
         return cls(
             rule_id=uuid.UUID(data["rule_id"]),
             workflow_name=data["workflow_name"],
@@ -959,7 +965,7 @@ class ProjectCatalogEntry:
     created_by: str | None = None
     created_at: datetime | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schema_name": self.schema_name,
             "display_name": self.display_name,
@@ -969,7 +975,7 @@ class ProjectCatalogEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> ProjectCatalogEntry:
+    def from_dict(cls, data: dict[str, Any]) -> ProjectCatalogEntry:
         return cls(
             schema_name=data["schema_name"],
             display_name=data.get("display_name"),

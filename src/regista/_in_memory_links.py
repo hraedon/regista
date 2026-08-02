@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._contract import (
     Jsonb,
@@ -10,25 +11,27 @@ from ._contract import (
     validate_mutation_params,
 )
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
+from ._keys import KeySet
 from ._types import Link
 
 
 def in_memory_create_link(
-    store,
-    work_items: dict,
-    workflows: dict,
-    links: list,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    links: list[dict[str, Any]],
+    key_set: KeySet | None,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     event_id: uuid.UUID | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
     target_project: str | None = None,
     target_entity_kind: str | None = None,
     content_hash: str | None = None,
@@ -51,7 +54,7 @@ def in_memory_create_link(
         )
 
     link_id = uuid.uuid4()
-    link_payload = {
+    link_payload: dict[str, Any] = {
         "link_id": str(link_id),
         "from_work_item_id": str(from_work_item_id),
         "to_work_item_id": str(to_work_item_id),
@@ -142,17 +145,17 @@ def in_memory_create_link(
 
 
 def in_memory_remove_link(
-    store,
-    work_items: dict,
-    workflows: dict,
-    links: list,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    links: list[dict[str, Any]],
+    key_set: KeySet | None,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     event_id: uuid.UUID | None = None,
     target_project: str | None = None,

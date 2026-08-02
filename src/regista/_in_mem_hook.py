@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import structlog
 
@@ -14,10 +15,10 @@ log = structlog.get_logger()
 
 class InMemHookMixin(_InMemoryBase):
 
-    def register_validator(self, name: str, handler: Callable) -> None:
+    def register_validator(self, name: str, handler: Callable[..., Any]) -> None:
         self._validators[name] = handler
 
-    def register_hook_handler(self, name: str, handler: Callable) -> None:
+    def register_hook_handler(self, name: str, handler: Callable[..., Any]) -> None:
         self._hook_handlers[name] = handler
 
     def start_hook_consumer(self) -> None:
@@ -28,7 +29,7 @@ class InMemHookMixin(_InMemoryBase):
 
     def _move_to_dead_letter(
         self,
-        entry: dict,
+        entry: dict[str, Any],
         error_message: str,
     ) -> None:
         from ._in_memory_hooks import _in_memory_move_to_dead_letter
@@ -215,9 +216,9 @@ class InMemHookMixin(_InMemoryBase):
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
         timestamp_interval: float = 3600.0,
-        tsa_config=None,
+        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider=None,
+        anchor_provider: Any = None,
         anchor_interval: float = 3600.0,
         anchor_upgrade_interval: float = 600.0,
     ) -> None:

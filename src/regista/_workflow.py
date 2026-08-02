@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 import structlog
@@ -55,7 +57,7 @@ def canonical_workflow_yaml(strict: bool = False) -> str:
     )
 
 
-def _require_unique(items: list, label: str, key_fn=None) -> None:
+def _require_unique(items: list[Any], label: str, key_fn: Callable[..., Any] | None = None) -> None:
     from collections import Counter
 
     keys = [key_fn(i) for i in items] if key_fn else items
@@ -71,13 +73,15 @@ _CLOSED_FIELD_TYPES = frozenset(
 )
 
 
-def _load_json_schema() -> dict:
-    return json.loads(_SCHEMA_PATH.read_text())
+def _load_json_schema() -> dict[str, Any]:
+    schema: dict[str, Any] = json.loads(_SCHEMA_PATH.read_text())
+    return schema
 
 
-def parse_workflow_yaml(raw: str) -> dict:
+def parse_workflow_yaml(raw: str) -> dict[str, Any]:
     try:
-        return yaml.safe_load(raw)
+        data: dict[str, Any] = yaml.safe_load(raw)
+        return data
     except yaml.YAMLError as e:
         mark = getattr(e, "problem_mark", None)
         line_info = f" (line {mark.line + 1})" if mark else ""
@@ -87,7 +91,7 @@ def parse_workflow_yaml(raw: str) -> dict:
         ) from e
 
 
-def validate_json_schema(data: dict) -> None:
+def validate_json_schema(data: dict[str, Any]) -> None:
     schema = _load_json_schema()
     validator = jsonschema.Draft202012Validator(schema)
     errors = list(validator.iter_errors(data))
@@ -100,7 +104,7 @@ def validate_json_schema(data: dict) -> None:
         )
 
 
-def _validate_semantics(data: dict) -> None:
+def _validate_semantics(data: dict[str, Any]) -> None:
     states = {s["name"]: s for s in data.get("states", [])}
     state_names = set(states.keys())
     initial_states = [s["name"] for s in data.get("states", []) if s.get("initial", False)]
@@ -228,7 +232,7 @@ def _validate_semantics(data: dict) -> None:
             )
 
 
-def build_definition(data: dict, raw_yaml: str) -> WorkflowDefinition:
+def build_definition(data: dict[str, Any], raw_yaml: str) -> WorkflowDefinition:
     states_data = data["states"]
     state_names = [s["name"] for s in states_data]
     initial = next(s["name"] for s in states_data if s.get("initial", False))
@@ -294,7 +298,7 @@ def parse_and_validate(raw_yaml: str) -> WorkflowDefinition:
     return build_definition(data, raw_yaml)
 
 
-def validate_and_build(data: dict, raw_yaml: str) -> WorkflowDefinition:
+def validate_and_build(data: dict[str, Any], raw_yaml: str) -> WorkflowDefinition:
     validate_json_schema(data)
     _validate_semantics(data)
     return build_definition(data, raw_yaml)
@@ -310,8 +314,8 @@ def parse_file(path: str | Path) -> WorkflowDefinition:
 def validate_field_values(
     wf: WorkflowDefinition,
     work_item_type: str,
-    values: dict,
-) -> dict:
+    values: dict[str, Any],
+) -> dict[str, Any]:
     wit = next((t for t in wf.work_item_types if t.name == work_item_type), None)
     if wit is None:
         raise RegistaError(
@@ -347,9 +351,9 @@ def validate_field_values(
 
 
 def validate_field_update(
-    wf_def: dict,
+    wf_def: dict[str, Any],
     work_item_type: str,
-    updates: dict,
+    updates: dict[str, Any],
 ) -> None:
     wits = wf_def.get("work_item_types", [])
     wit = next((t for t in wits if t["name"] == work_item_type), None)
@@ -383,10 +387,10 @@ def validate_field_update(
 
 
 def validate_work_item_refs(
-    conn,
-    wf_def: dict,
+    conn: Any,
+    wf_def: dict[str, Any],
     work_item_type: str,
-    values: dict,
+    values: dict[str, Any],
 ) -> None:
     from psycopg.sql import SQL
 
@@ -535,7 +539,7 @@ def compute_content_hash(wf: WorkflowDefinition) -> bytes:
     return hashlib.sha256(canonical_bytes).digest()
 
 
-def compute_content_hash_from_dict(data: dict) -> bytes:
+def compute_content_hash_from_dict(data: dict[str, Any]) -> bytes:
     d = dict(data)
     d.pop("raw_yaml", None)
     canonical_bytes = canonicalize(d)

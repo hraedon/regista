@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._api_base import _RegistaBase
 from ._contract import validate_mutation_params as _validate_mutation_params
@@ -20,7 +21,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         """Acquire a durable claim (lease) on a work item.
 
@@ -65,7 +66,7 @@ class ClaimApiMixin(_RegistaBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         """Renew a claim's TTL. Rejects if claim is held by a different actor.
 
@@ -103,7 +104,7 @@ class ClaimApiMixin(_RegistaBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Release a claim held by the given actor.
 
@@ -144,10 +145,10 @@ class ClaimApiMixin(_RegistaBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         target_project: str | None = None,
         target_entity_kind: str | None = None,
         content_hash: str | None = None,
@@ -200,7 +201,7 @@ class ClaimApiMixin(_RegistaBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
         target_project: str | None = None,

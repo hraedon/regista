@@ -17,11 +17,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Final, Protocol, assert_never, cast
+from typing import Any, Final, Protocol, assert_never
 
 import psycopg
 
-from ._connection import ConnectionManager
+from ._connection import ConnectionManager, DictConn
 from ._contract import (
     Jsonb as _Jsonb,
 )
@@ -850,14 +850,11 @@ class PrincipalLifecycle:
         if operation.old_key_id is not None:
             payload["old_key_id"] = operation.old_key_id
         with self._mgr.transaction() as conn:
-            existing_row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            existing_row = conn.execute(
                     "SELECT state, receipt_key_id, committed_at FROM lifecycle_operations "
                     "WHERE operation_id = %s FOR UPDATE",
                     [operation_id],
-                ).fetchone(),
-            )
+            ).fetchone()
             if existing_row is not None and existing_row["state"] == "committed":
                 key_id = existing_row["receipt_key_id"] or ""
                 recorded_at = existing_row["committed_at"] or self._now()
@@ -1119,15 +1116,12 @@ class PrincipalLifecycle:
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
             keys = _list_principal_keys_for_conn(conn, principal_id, status="active")
-            op_row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            op_row = conn.execute(
                     "SELECT * FROM lifecycle_operations "
                     "WHERE principal_id = %s "
                     "ORDER BY created_at DESC LIMIT 1",
                     [principal_id],
-                ).fetchone(),
-            )
+            ).fetchone()
         active_fp: str | None = None
         principal_kind = PrincipalKind.SERVICE
         policy_version = ""
@@ -1197,23 +1191,17 @@ class PrincipalLifecycle:
         with self._mgr.transaction() as conn:
             keys = _list_principal_keys_for_conn(conn, principal_id)
             active_keys = [k for k in keys if k.status == "active"]
-            op_row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            op_row = conn.execute(
                     "SELECT * FROM lifecycle_operations "
                     "WHERE principal_id = %s AND state = 'committed' "
                     "ORDER BY created_at DESC LIMIT 1",
                     [principal_id],
-                ).fetchone(),
-            )
-            receipt_row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            ).fetchone()
+            receipt_row = conn.execute(
                     "SELECT * FROM lifecycle_effective_receipts "
                     "WHERE principal_id = %s ORDER BY observed_at DESC LIMIT 1",
                     [principal_id],
-                ).fetchone(),
-            )
+            ).fetchone()
         if len(active_keys) > 1:
             findings.append("multiple_active_keys")
         if not active_keys and op_row is not None:
@@ -1290,7 +1278,7 @@ class PrincipalLifecycle:
         assert_never(op_type)
 
     def _commit_key(
-        self, conn: psycopg.Connection, operation: LifecycleOperation
+        self, conn: DictConn, operation: LifecycleOperation
     ) -> PrincipalKeyEntry:
         if operation.operation_type is LifecycleOperationType.ENROLLMENT:
             assert operation.public_key is not None
@@ -1378,13 +1366,10 @@ class PrincipalLifecycle:
             ).fetchone()
             if inserted is not None:
                 return None
-            existing = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            existing = conn.execute(
                     "SELECT * FROM lifecycle_operations WHERE idempotency_key = %s",
                     [operation.idempotency_key],
-                ).fetchone(),
-            )
+            ).fetchone()
             if existing is None or existing["digest_value"] != operation.digest.value:
                 raise LifecycleContractError(
                     LifecycleErrorCode.OPERATION_DIGEST_MISMATCH,
@@ -1439,13 +1424,10 @@ class PrincipalLifecycle:
         """
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
-            row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            row = conn.execute(
                     "SELECT * FROM lifecycle_operations WHERE operation_id = %s AND project = %s",
                     [operation_id, self._project],
-                ).fetchone(),
-            )
+            ).fetchone()
         if row is None:
             raise LifecycleContractError(
                 LifecycleErrorCode.OPERATION_NOT_FOUND,
@@ -1546,16 +1528,13 @@ class PrincipalLifecycle:
             return record.challenge
         assert self._mgr is not None
         with self._mgr.transaction() as conn:
-            row = cast(
-                dict[str, Any] | None,
-                conn.execute(
+            row = conn.execute(
                     "SELECT challenge_id, operation_id, operation_digest, project, "
                     "principal_id, fingerprint, scheme, verifier_nonce, "
                     "issued_at, expires_at, kind, used "
                     "FROM lifecycle_challenges WHERE challenge_id = %s",
                     [challenge_id],
-                ).fetchone(),
-            )
+            ).fetchone()
         if row is None:
             raise LifecycleContractError(
                 LifecycleErrorCode.CHALLENGE_NOT_FOUND,
@@ -1685,7 +1664,7 @@ class PrincipalLifecycle:
 
     def _consume_challenge_conn(
         self,
-        conn: psycopg.Connection,
+        conn: DictConn,
         challenge_id: str,
         *,
         expected_kind: str,
@@ -1699,9 +1678,7 @@ class PrincipalLifecycle:
         refreshes it after commit). Raises a stable contract error, via a
         diagnostic re-read, when the atomic update matches no row.
         """
-        row = cast(
-            dict[str, Any] | None,
-            conn.execute(
+        row =             conn.execute(
                 """
                 UPDATE lifecycle_challenges
                 SET used = true
@@ -1715,8 +1692,7 @@ class PrincipalLifecycle:
                           issued_at, expires_at, kind
                 """,
                 [challenge_id, expected_kind, operation_id, expected_operation_digest],
-            ).fetchone(),
-        )
+        ).fetchone()
         if row is not None:
             challenge = self._challenge_from_row(row)
             if self._now() >= challenge.expires_at:
@@ -1725,14 +1701,11 @@ class PrincipalLifecycle:
                     f"Challenge {challenge_id!r} has expired",
                 )
             return challenge
-        existing = cast(
-            dict[str, Any] | None,
-            conn.execute(
+        existing =             conn.execute(
                 "SELECT used, kind, operation_id, operation_digest, expires_at "
                 "FROM lifecycle_challenges WHERE challenge_id = %s",
                 [challenge_id],
-            ).fetchone(),
-        )
+        ).fetchone()
         if existing is None:
             raise LifecycleContractError(
                 LifecycleErrorCode.CHALLENGE_NOT_FOUND,

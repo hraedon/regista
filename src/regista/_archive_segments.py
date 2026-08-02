@@ -3,12 +3,12 @@ from __future__ import annotations
 import hmac as _hmac
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-import psycopg
 import structlog
 from psycopg.sql import SQL
 
-from ._connection import ConnectionManager
+from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._events import _advance_global_chain_head, _lock_global_chain_head
 from ._keys import KeySet
@@ -35,7 +35,7 @@ def _hash_event(event: Event) -> bytes | None:
     return hash_fn(bytes(event.canonical_envelope) + bytes(event.signature)).digest()
 
 
-def _hash_event_dict(event: dict) -> bytes | None:
+def _hash_event_dict(event: dict[str, Any]) -> bytes | None:
     env = event.get("canonical_envelope")
     sig = event.get("signature")
     if env is None or sig is None:
@@ -45,7 +45,7 @@ def _hash_event_dict(event: dict) -> bytes | None:
 
 
 def _verify_seal_event(
-    conn: psycopg.Connection,
+    conn: DictConn,
     seal_event_id: uuid.UUID | None,
     key_set: KeySet | None,
 ) -> bool:
@@ -242,7 +242,7 @@ def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
     return True, ""
 
 
-def _row_to_event(row: dict) -> Event:
+def _row_to_event(row: dict[str, Any]) -> Event:
     return Event(
         event_id=row["event_id"],
         work_item_id=row["work_item_id"],
@@ -280,7 +280,7 @@ def seal_segment(
     dry_run: bool = False,
     actor_id: str = "system",
     archive_path: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     with mgr.transaction() as conn:
         conn.execute(SQL("LOCK TABLE event_segments IN EXCLUSIVE MODE"))
 
@@ -542,7 +542,7 @@ def verify_segment(
     mgr: ConnectionManager,
     segment_id: uuid.UUID,
     key_set: KeySet | None = None,
-) -> dict:
+) -> dict[str, Any]:
     with mgr.transaction() as conn:
         seg_row = conn.execute(
             SQL(
@@ -639,7 +639,7 @@ def list_segments(
     mgr: ConnectionManager,
     archived: bool | None = None,
     limit: int = 100,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     with mgr.transaction() as conn:
         if archived is not None:
             rows = conn.execute(
@@ -667,7 +667,7 @@ def list_segments(
                 [limit],
             ).fetchall()
 
-        result: list[dict] = []
+        result: list[dict[str, Any]] = []
         for r in rows:
             result.append({
                 "segment_id": str(r["segment_id"]),
@@ -698,7 +698,7 @@ def list_segments(
 def verify_archive_chain(
     mgr: ConnectionManager,
     key_set: KeySet | None = None,
-) -> dict:
+) -> dict[str, Any]:
     with mgr.transaction() as conn:
         rows = conn.execute(
             SQL(
@@ -719,8 +719,8 @@ def verify_archive_chain(
                 "segment_results": [],
             }
 
-        segment_results: list[dict] = []
-        chain_breaks: list[dict] = []
+        segment_results: list[dict[str, Any]] = []
+        chain_breaks: list[dict[str, Any]] = []
 
         for r in rows:
             seg_id = r["segment_id"]

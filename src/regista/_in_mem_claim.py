@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from ._in_mem_base import _InMemoryBase
 from ._types import (
@@ -19,7 +20,7 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_acquire_claim
 
@@ -39,7 +40,7 @@ class InMemClaimMixin(_InMemoryBase):
         expected_attempt_number: int | None = None,
         coalesce_threshold: float | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> Claim:
         from ._in_memory_claims import in_memory_heartbeat_claim
 
@@ -59,7 +60,7 @@ class InMemClaimMixin(_InMemoryBase):
         *,
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
     ) -> None:
         from ._in_memory_claims import in_memory_release_claim
 
@@ -83,10 +84,10 @@ class InMemClaimMixin(_InMemoryBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         target_project: str | None = None,
         target_entity_kind: str | None = None,
         content_hash: str | None = None,
@@ -112,7 +113,7 @@ class InMemClaimMixin(_InMemoryBase):
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
         target_project: str | None = None,
@@ -135,7 +136,7 @@ class InMemClaimMixin(_InMemoryBase):
             self._store.events.get(work_item_id, []),
             key=lambda e: e.event_seq,
         )
-        created: dict[tuple, dict] = {}
+        created: dict[tuple[Any, ...], dict[str, Any]] = {}
         for e in events:
             if e.transition == "link_created":
                 p = e.payload or {}

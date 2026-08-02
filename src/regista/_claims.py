@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-import psycopg
 from psycopg.sql import SQL
 
+from ._connection import DictConn
 from ._contract import (
     Jsonb,
     compute_coalesce_threshold,
@@ -20,7 +21,7 @@ from ._keys import KeySet
 from ._types import Claim
 
 
-def _row_to_claim(row: dict) -> Claim:
+def _row_to_claim(row: dict[str, Any]) -> Claim:
     return Claim(
         work_item_id=row["work_item_id"],
         actor_id=row["actor_id"],
@@ -31,14 +32,14 @@ def _row_to_claim(row: dict) -> Claim:
 
 
 def acquire_claim(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
     ttl_seconds: int,
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> tuple[Claim, bool, bool]:
     from ._events import append_event, lock_work_item
 
@@ -148,8 +149,8 @@ def acquire_claim(
 
 
 def _check_escalation(
-    conn: psycopg.Connection,
-    wi: dict,
+    conn: DictConn,
+    wi: dict[str, Any],
     attempt_number: int,
     key_set: KeySet,
 ) -> bool:
@@ -194,7 +195,7 @@ def _check_escalation(
 
 
 def heartbeat_claim(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
     ttl_seconds: int,
@@ -202,7 +203,7 @@ def heartbeat_claim(
     key_set: KeySet | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> Claim:
     from ._events import append_event, lock_work_item
 
@@ -288,13 +289,13 @@ def heartbeat_claim(
 
 
 def release_claim(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
     key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     from ._events import append_event, lock_work_item
 
@@ -347,7 +348,7 @@ def release_claim(
     )
 
 
-def sweep_expired_claims(conn: psycopg.Connection, key_set: KeySet) -> int:
+def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
     from ._events import append_event, lock_work_item
 
     now = datetime.now(UTC)

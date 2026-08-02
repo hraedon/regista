@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-def _serialize(obj):
+def _serialize(obj: Any) -> Any:
     if obj is None:
         return None
     if hasattr(obj, "to_dict"):
@@ -35,8 +35,8 @@ class CreateWorkItemRequest(BaseModel):
     workflow_name: str
     work_item_type: str
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
-    custom_fields: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
+    custom_fields: dict[str, Any] | None = None
     not_before: str | None = None
     event_id: str | None = None
 
@@ -45,12 +45,12 @@ class AppendEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_item_id: str
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
     transition: str | None = None
-    payload: dict | None = None
+    payload: dict[str, Any] | None = None
     event_id: str | None = None
     expected_event_seq: int | None = None
-    on_behalf_of: dict | None = None
+    on_behalf_of: dict[str, Any] | None = None
     entity_kind: Literal["work_item"] = "work_item"
 
 
@@ -59,12 +59,12 @@ class TransitionRequest(BaseModel):
     work_item_id: str
     transition_name: str
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
-    payload: dict | None = None
-    custom_fields: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
+    payload: dict[str, Any] | None = None
+    custom_fields: dict[str, Any] | None = None
     event_id: str | None = None
     expected_event_seq: int | None = None
-    on_behalf_of: dict | None = None
+    on_behalf_of: dict[str, Any] | None = None
 
 
 class ReadEventsRequest(BaseModel):
@@ -106,7 +106,7 @@ class AcquireClaimRequest(BaseModel):
     ttl_seconds: int = 300
     event_id: str | None = None
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
 
 
 class HeartbeatClaimRequest(BaseModel):
@@ -115,7 +115,7 @@ class HeartbeatClaimRequest(BaseModel):
     ttl_seconds: int = 300
     expected_attempt_number: int | None = None
     coalesce_threshold: float | None = None
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
 
 
 class ReleaseClaimRequest(BaseModel):
@@ -123,7 +123,7 @@ class ReleaseClaimRequest(BaseModel):
     work_item_id: str
     event_id: str | None = None
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
 
 
 class CreateLinkRequest(BaseModel):
@@ -132,9 +132,9 @@ class CreateLinkRequest(BaseModel):
     to_work_item_id: str
     link_type: str
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
     event_id: str | None = None
-    payload: dict | None = None
+    payload: dict[str, Any] | None = None
     target_project: str | None = None
     target_entity_kind: str | None = None
     content_hash: str | None = Field(default=None, max_length=256)
@@ -146,7 +146,7 @@ class RemoveLinkRequest(BaseModel):
     to_work_item_id: str
     link_type: str
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
     event_id: str | None = None
     target_project: str | None = None
 
@@ -156,7 +156,7 @@ class UpdateNotBeforeRequest(BaseModel):
     work_item_id: str
     not_before: str | None = None
     actor_kind: str = "agent"
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
     event_id: str | None = None
 
 
@@ -183,7 +183,7 @@ class RegisterRecurrenceRuleRequest(BaseModel):
     workflow_name: str
     workflow_version: int
     work_item_type: str
-    template: dict
+    template: dict[str, Any]
     schedule_kind: str
     schedule_expr: str
     timezone: str = "UTC"
@@ -213,7 +213,7 @@ class UpdateRecurrenceRuleRequest(BaseModel):
     rule_id: str
     status: str | None = None
     schedule_expr: str | None = None
-    template: dict | None = None
+    template: dict[str, Any] | None = None
 
 
 class TriggerTimestampRequest(BaseModel):
@@ -244,7 +244,7 @@ class RegisterWitnessRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str
     headers: dict[str, str] | None = None
-    event_filter: dict | None = None
+    event_filter: dict[str, Any] | None = None
     max_failures: int = Field(default=10, ge=1)
     max_retries: int = Field(default=3, ge=1)
     public_key: str | None = None
@@ -267,7 +267,7 @@ class ArchiveEventsRequest(BaseModel):
 
 class CreateWorkItemsBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    items: list[dict]
+    items: list[dict[str, Any]]
 
 
 class ComposeWorkflowRequest(BaseModel):
@@ -288,7 +288,7 @@ class RegisterWebhookRequest(BaseModel):
 
 class VerifyEventSignatureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    event: dict
+    event: dict[str, Any]
     public_key: str | None = None
 
 
@@ -297,7 +297,7 @@ class SignSpecRequest(BaseModel):
     spec_yaml: str
     spec_md_hash: str
     spec_schema_version: str
-    actor_metadata: dict | None = None
+    actor_metadata: dict[str, Any] | None = None
     spec_id: str | None = None
 
 

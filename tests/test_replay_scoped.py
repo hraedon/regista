@@ -108,6 +108,28 @@ def test_scoped_replay_skips_global_verification(backend_name):
         assert scoped_report.replayed_drift == 0
 
 
+def test_scoped_replay_event_query_uses_entity_index():
+    # WI-220: the scoped event query must plan as an Index Scan on
+    # idx_events_entity with no Sort node, not the full Sort -> Seq Scan that
+    # `WHERE work_item_id = %s ORDER BY event_seq` produced (there is no index
+    # on work_item_id since migration 031).
+    with backend("postgres") as sub:
+        wid = _create_and_transition(sub)
+        with raw_transaction(sub) as conn:
+            plan_rows = conn.execute(
+                "EXPLAIN (FORMAT TEXT) "
+                "SELECT event_id FROM events "
+                "WHERE entity_kind = 'work_item' AND entity_id = %s "
+                "ORDER BY event_seq",
+                [wid],
+            ).fetchall()
+        plan = "\n".join(r["QUERY PLAN"] for r in plan_rows)
+        assert "Index Scan" in plan, f"expected an index scan, got:\n{plan}"
+        assert "idx_events_entity" in plan, f"expected idx_events_entity, got:\n{plan}"
+        assert "Sort" not in plan, f"expected no sort node, got:\n{plan}"
+        assert "Seq Scan" not in plan, f"expected no seq scan, got:\n{plan}"
+
+
 def test_full_replay_unchanged_when_work_item_id_none():
     with backend("postgres") as sub:
         _create_and_transition(sub)

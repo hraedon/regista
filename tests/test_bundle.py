@@ -135,6 +135,43 @@ class TestExportAuditBundle:
         assert "target_global_seq" in receipt
 
 
+class TestRejectArchiveOutputName:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "bundle.tar.gz",
+            "bundle.tgz",
+            "bundle.tar",
+            "bundle.zip",
+            "bundle.json.gz",
+            "bundle.tar.bz2",
+            "bundle.tar.xz",
+            "BUNDLE.TGZ",
+        ],
+    )
+    def test_helper_rejects_archive_names(self, name):
+        from regista._bundle import _reject_archive_output_name
+        from regista._errors import ErrorCode, RegistaError
+
+        with pytest.raises(RegistaError) as exc_info:
+            _reject_archive_output_name(name)
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+
+    @pytest.mark.parametrize("name", ["bundle.json", "bundle", "bundle.ndjson", "a.json.bak"])
+    def test_helper_accepts_non_archive_names(self, name):
+        from regista._bundle import _reject_archive_output_name
+
+        _reject_archive_output_name(name)
+
+    def test_export_rejects_tar_gz(self, sub, tmp_path):
+        from regista._errors import ErrorCode, RegistaError
+
+        with pytest.raises(RegistaError) as exc_info:
+            sub.export_audit_bundle(str(tmp_path / "bundle.tar.gz"))
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+        assert not (tmp_path / "bundle.tar.gz").exists()
+
+
 class TestVerifyAuditBundleOffline:
     def test_verify_clean_bundle_passes(self, sub, project, tmp_path):
         wi, _ = sub.create_work_item(
@@ -566,3 +603,41 @@ class TestOfflineSignatureVerification:
         report = verify_audit_bundle_offline(str(output))
         assert not report.verified
         assert any("No public key for key_id" in e for e in report.errors)
+
+
+class TestOfflineAnchorHashAgility:
+    """WI-207: offline bundle anchor verification must handle non-SHA-256
+    events. ``_verify_anchor_offline`` recomputes ``payload_canonical_hash``
+    with the event's own ``hash_alg`` (``resolve_hash_function``); the rest of
+    the suite only creates sha-256 events, so pin the hash-agility path
+    end-to-end through export + offline verification."""
+
+    def test_offline_anchor_verifies_with_sha384_events(self, sub, project, tmp_path):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "anchor-hash-agility",
+            custom_fields={"title": "anchor-hash-agility"},
+        )
+        for i in range(2):
+            sub.append_event(
+                wi.work_item_id, "agent-1",
+                hash_alg="sha-384",
+                transition=f"hash_agility_{i}",
+                payload={"alg": "sha-384", "i": i},
+            )
+
+        sub.anchoring.set_provider(FileAnchorProvider(directory=str(tmp_path / "anchors")))
+        receipt = sub.trigger_anchoring(batch_size=100)
+        assert receipt is not None
+
+        output = tmp_path / "sha384_anchor.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert bundle["anchor_receipts"], "expected an anchor receipt in the bundle"
+        hash_algs = {e["hash_alg"] for e in bundle["events"]}
+        assert "sha-384" in hash_algs, "test must exercise a non-SHA-256 event"
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified, f"offline verification failed: {report.errors}"
+        assert report.anchor_receipt_count > 0
+        assert all(av["verified"] for av in report.anchor_verifications)

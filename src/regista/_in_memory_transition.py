@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from ._contract import (
     VALIDATOR_HISTORY_LIMIT,
@@ -14,34 +16,36 @@ from ._contract import (
     validate_mutation_params,
 )
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
 from ._hooks import run_validator
+from ._keys import KeySet
 from ._types import Event, ValidatorContext
 from ._workflow import validate_field_update
 
 
 def in_memory_transition(
-    store,
-    work_items: dict,
-    workflows: dict,
-    actor_roles: set,
-    validators: dict,
-    claims: dict,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    actor_roles: set[tuple[str, str]],
+    validators: dict[str, Callable[..., Any]],
+    claims: dict[uuid.UUID, dict[str, Any]],
     hook_id_counter: int,
-    hook_queue: list,
-    key_set,
+    hook_queue: list[dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     transition_name: str,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     key_id: str | None = None,
-    payload: dict | None = None,
-    custom_fields: dict | None = None,
+    payload: dict[str, Any] | None = None,
+    custom_fields: dict[str, Any] | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
     strict_roles: bool = False,
 ) -> tuple[Event, int]:
     if event_id is None:
@@ -91,7 +95,7 @@ def in_memory_transition(
     if role is not None or strict_roles:
         registered = {r for (aid, r) in actor_roles if aid == actor_id}
         check_actor_role_authorized(
-            registered, actor_id, role,
+            registered, actor_id, role,  # type: ignore[arg-type]
             strict=strict_roles, actor_metadata=actor_metadata,
         )
 
@@ -187,10 +191,10 @@ def in_memory_transition(
 
 
 def _validate_refs_in_memory(
-    work_items: dict,
-    wf_data: dict,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    wf_data: dict[str, Any],
     work_item_type: str,
-    values: dict,
+    values: dict[str, Any],
 ) -> None:
     wits = wf_data.get("work_item_types", [])
     wit = next((t for t in wits if t["name"] == work_item_type), None)

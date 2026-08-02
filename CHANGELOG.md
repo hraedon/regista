@@ -4,6 +4,22 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Witness public keys enrolled in the anchored key registry (WI-238):**
+  An Ed25519 witness's public key is now enrolled into the `principal_keys`
+  registry under the `witness:<witness_id>` principal at registration time
+  (counterpart to cairn BC-016), so downstream verifiers can treat witness
+  keys as a pinned trust root rather than the unverified
+  `witness_registrations.public_key` column. The lifecycle mirrors principal
+  keys: `rotate_witness_key` supersedes + activates atomically;
+  `unregister_witness` revokes (the revoked key stays for history);
+  `enrolled_witness_key(witness_id)` reads the active anchored entry; the key
+  is also reachable via `principals.get_active("witness:<witness_id>")`.
+  `regista doctor` adds a per-project `witness:key_enrollment:<project>`
+  check that warns on an enrollment gap or pinned-key mismatch. The InMemory
+  backend mirrors the same lifecycle.
+
 ## [0.5.5] — 2026-08-01
 
 ### Added

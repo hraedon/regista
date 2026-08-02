@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -31,6 +31,20 @@ if _ANCHORING_LOCK_ID >= 2**63:
 
 
 class AnchorStatus:
+    """Anchor receipt lifecycle states.
+
+    Bundled providers only ever emit ``PENDING`` (calendar-based providers such
+    as OpenTimestamps, before the calendar is upgraded) and ``CONFIRMED``
+    (final, or immediate for file/RFC 3161 providers); ``FAILED``/``RETRYABLE``
+    record delivery problems.
+
+    ``COMMITTED`` is RESERVED for external/third-party providers that distinguish
+    a "committed to the log" intermediate state from a final ``CONFIRMED`` one.
+    No bundled provider returns it; it is kept in the status vocabulary (and the
+    ``_STATUS_RANK`` / ``latest_confirmed_seq`` watermark set) so such a provider
+    can be added without a schema change. Do not repurpose it (WI-206).
+    """
+
     PENDING = "pending"
     COMMITTED = "committed"
     CONFIRMED = "confirmed"
@@ -54,7 +68,7 @@ class AnchorReceipt:
     envelope_version: int | None = None
     hash_algorithm: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "receipt_id": str(self.receipt_id),
             "provider": self.provider,
@@ -72,7 +86,7 @@ class AnchorReceipt:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> AnchorReceipt:
+    def from_dict(cls, d: dict[str, Any]) -> AnchorReceipt:
         receipt_bytes = bytes.fromhex(d["receipt_bytes"]) if d.get("receipt_bytes") else None
         submitted_at = (
             datetime.fromisoformat(d["submitted_at"]) if d.get("submitted_at") else None
@@ -86,7 +100,7 @@ class AnchorReceipt:
             merkle_root=bytes.fromhex(d["merkle_root"]),
             status=d["status"],
             receipt_bytes=receipt_bytes,
-            submitted_at=submitted_at,
+            submitted_at=submitted_at,  # type: ignore[arg-type]
             confirmed_at=confirmed_at,
             target_global_seq=d.get("target_global_seq"),
             failure_count=d.get("failure_count", 0),
@@ -135,7 +149,7 @@ def compute_content_anchor(
     return hashlib.sha256(binding).digest()
 
 
-def verify_content_anchor(conn, receipt: AnchorReceipt) -> bool:
+def verify_content_anchor(conn: Any, receipt: AnchorReceipt) -> bool:
     if receipt.target_global_seq is None:
         return False
     if receipt.project_name is None or receipt.envelope_version is None:
@@ -155,8 +169,8 @@ def verify_content_anchor(conn, receipt: AnchorReceipt) -> bool:
     if not rows:
         return False
 
-    by_prev: dict[str, list[dict]] = {}
-    genesis_events: list[dict] = []
+    by_prev: dict[str, list[dict[str, Any]]] = {}
+    genesis_events: list[dict[str, Any]] = []
     for row in rows:
         prev_hash = row["prev_global_event_hash"]
         if prev_hash is None:
@@ -168,10 +182,10 @@ def verify_content_anchor(conn, receipt: AnchorReceipt) -> bool:
     if not genesis_events:
         return False
 
-    current: dict | None = genesis_events[0]
+    current: dict[str, Any] | None = genesis_events[0]
     chain_head_hash: bytes | None = None
     prev_chain_head_hash: bytes | None = None
-    visited: set = set()
+    visited: set[Any] = set()
     found_target = False
 
     while current is not None:
@@ -338,7 +352,7 @@ class RFC3161AnchorProvider:
         return AnchorStatus.FAILED
 
 
-def _require_ots():
+def _require_ots() -> Any:
     try:
         import opentimestamps
         import opentimestamps.bitcoin
@@ -368,7 +382,7 @@ class OpenTimestampsProvider:
         else:
             self._calendar_urls = list(calendar_urls)
 
-    def _make_calendar(self, ots):
+    def _make_calendar(self, ots: Any) -> Any:
         return ots.calendar.RemoteCalendar(self._calendar_urls[0])
 
     def submit(self, merkle_root: bytes) -> AnchorReceipt:
@@ -423,7 +437,7 @@ class OpenTimestampsProvider:
         return AnchorStatus.FAILED
 
     @staticmethod
-    def _has_attestation(timestamp) -> bool:
+    def _has_attestation(timestamp: Any) -> bool:
         return bool(getattr(timestamp, "ops", None))
 
 
@@ -439,7 +453,7 @@ _STATUS_RANK: dict[str, int] = {
 }
 
 
-def _row_to_receipt(row) -> AnchorReceipt:
+def _row_to_receipt(row: dict[str, Any]) -> AnchorReceipt:
     return AnchorReceipt(
         receipt_id=row["receipt_id"],
         provider=row["provider"],
@@ -461,7 +475,7 @@ def _row_to_receipt(row) -> AnchorReceipt:
     )
 
 
-def create_anchor_receipt(conn, receipt: AnchorReceipt) -> AnchorReceipt:
+def create_anchor_receipt(conn: Any, receipt: AnchorReceipt) -> AnchorReceipt:
     """Insert a receipt, returning the persisted row.
 
     On (provider, merkle_root) conflict the existing row is locked ``FOR UPDATE``
@@ -531,7 +545,7 @@ def create_anchor_receipt(conn, receipt: AnchorReceipt) -> AnchorReceipt:
     return _row_to_receipt(row)
 
 
-def update_anchor_receipt(conn, receipt_id: uuid.UUID, **fields) -> None:
+def update_anchor_receipt(conn: Any, receipt_id: uuid.UUID, **fields: Any) -> None:
     if not fields:
         return
     allowed = {
@@ -554,7 +568,7 @@ def update_anchor_receipt(conn, receipt_id: uuid.UUID, **fields) -> None:
     )
 
 
-def get_anchor_receipt(conn, receipt_id: uuid.UUID) -> AnchorReceipt | None:
+def get_anchor_receipt(conn: Any, receipt_id: uuid.UUID) -> AnchorReceipt | None:
     row = conn.execute(
         "SELECT * FROM anchor_receipts WHERE receipt_id = %s",
         [receipt_id],
@@ -565,14 +579,14 @@ def get_anchor_receipt(conn, receipt_id: uuid.UUID) -> AnchorReceipt | None:
 
 
 def list_anchor_receipts(
-    conn,
+    conn: Any,
     *,
     status: str | None = None,
     provider: str | None = None,
     limit: int = 100,
 ) -> list[AnchorReceipt]:
     clauses: list[str] = []
-    params: list = []
+    params: list[Any] = []
     if status is not None:
         clauses.append("status = %s")
         params.append(status)
@@ -588,7 +602,7 @@ def list_anchor_receipts(
     return [_row_to_receipt(r) for r in rows]
 
 
-def latest_confirmed_seq(conn) -> int:
+def latest_confirmed_seq(conn: Any) -> int:
     row = conn.execute(
         "SELECT MAX(target_global_seq) AS max_seq FROM anchor_receipts "
         "WHERE status IN ('pending', 'committed', 'confirmed', 'retryable')"
@@ -597,7 +611,7 @@ def latest_confirmed_seq(conn) -> int:
 
 
 def trigger_anchoring(
-    mgr,
+    mgr: Any,
     provider: AnchorProvider,
     *,
     batch_size: int = _BATCH_SIZE_DEFAULT,
@@ -721,7 +735,7 @@ def trigger_anchoring(
 
 
 def upgrade_pending_anchors(
-    conn,
+    conn: Any,
     provider: AnchorProvider,
     *,
     max_iterations: int = 100,
@@ -736,7 +750,7 @@ def upgrade_pending_anchors(
         receipt = _row_to_receipt(row)
         updated = provider.upgrade(receipt)
         if updated.status != receipt.status:
-            fields: dict = {"status": updated.status}
+            fields: dict[str, Any] = {"status": updated.status}
             if updated.receipt_bytes != receipt.receipt_bytes:
                 fields["receipt_bytes"] = updated.receipt_bytes
             if updated.confirmed_at != receipt.confirmed_at:
@@ -753,7 +767,7 @@ def upgrade_pending_anchors(
 
 
 def retry_failed_anchors(
-    mgr,
+    mgr: Any,
     provider: AnchorProvider,
     *,
     max_iterations: int = 100,

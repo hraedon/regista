@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ._connection import DictConn
 from ._version_info import SCHEMA_VERSION, versions
 
 _check_status_values = frozenset({"ok", "warn", "fail", "skip"})
@@ -71,6 +72,54 @@ def _check_db_reachable(dsn: str, require_ssl: bool) -> tuple[bool, str]:
             return True, "connected"
     except Exception as e:
         return False, _sanitize_error(e)
+
+
+def _check_role_attributes(dsn: str, require_ssl: bool) -> DoctorCheck:
+    # Reports the connecting (session) role's rolcreaterole so the suite
+    # bootstrap can verify the documented CREATEROLE prerequisite before it
+    # provisions per-project service roles (WI-230).
+    try:
+        import psycopg
+
+        connect_kwargs: dict[str, Any] = {}
+        if require_ssl:
+            connect_kwargs["sslmode"] = "require"
+        with psycopg.connect(dsn, connect_timeout=5, **connect_kwargs) as conn:
+            row = conn.execute(
+                "SELECT rolname, rolsuper, rolcreaterole "
+                "FROM pg_roles WHERE rolname = session_user"
+            ).fetchone()
+    except Exception as e:
+        return DoctorCheck(
+            name="role:createrole",
+            status="warn",
+            detail=f"Could not read session role attributes: {_sanitize_error(e)}",
+        )
+
+    if row is None:
+        return DoctorCheck(
+            name="role:createrole",
+            status="warn",
+            detail="Session role not found in pg_roles",
+        )
+
+    rolname, rolsuper, rolcreaterole = row[0], row[1], row[2]
+    if rolsuper or rolcreaterole:
+        reason = "superuser" if rolsuper else "rolcreaterole=true"
+        return DoctorCheck(
+            name="role:createrole",
+            status="ok",
+            detail=f"session role {rolname!r}: {reason} (can create roles)",
+        )
+    return DoctorCheck(
+        name="role:createrole",
+        status="warn",
+        detail=(
+            f"session role {rolname!r}: rolcreaterole=false; "
+            "'regista provision' creates per-project service roles and "
+            "requires CREATEROLE or superuser"
+        ),
+    )
 
 
 def _list_projects(dsn: str, require_ssl: bool) -> list[dict[str, Any]]:
@@ -140,6 +189,190 @@ def _check_schema_version(dsn: str, project: str, require_ssl: bool) -> DoctorCh
             status="fail",
             detail=_sanitize_error(e),
         )
+
+
+_ANCHORING_STALE_AFTER_SECONDS = 3600
+
+
+def _check_anchoring_stale_receipts(
+    dsn: str,
+    project: str,
+    require_ssl: bool,
+    stale_after_seconds: int,
+) -> DoctorCheck:
+    # WI-206: latest_confirmed_seq treats pending/retryable receipts as the
+    # anchoring watermark, so a receipt stuck in either state (a crash that
+    # left receipt_bytes NULL, or retry_failed_anchors never being scheduled)
+    # silently stops new events from ever being anchored. Surface receipts that
+    # have been stuck longer than the threshold so bootstrap/operators see it.
+    from ._connection import validate_project_name
+
+    name = f"anchoring:{project}"
+    try:
+        validate_project_name(project)
+    except ValueError as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=f"Invalid project name: {e}",
+        )
+
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from psycopg.sql import SQL, Identifier
+
+        connect_kwargs: dict[str, Any] = {}
+        if require_ssl:
+            connect_kwargs["sslmode"] = "require"
+        with cast(DictConn, psycopg.connect(
+            dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
+        )) as conn:
+            conn.execute(SQL("SET search_path TO {}").format(Identifier(project)))
+            present = conn.execute(
+                "SELECT to_regclass('anchor_receipts') IS NOT NULL AS present"
+            ).fetchone()["present"]  # type: ignore[index]
+            if not present:
+                return DoctorCheck(
+                    name=name,
+                    status="skip",
+                    detail="anchor_receipts table absent (anchoring migration not applied)",
+                )
+            row = cast(
+                dict[str, Any],
+                conn.execute(
+                    "SELECT count(*) AS n, min(submitted_at) AS oldest "
+                    "FROM anchor_receipts "
+                    "WHERE status IN ('pending', 'retryable') "
+                    "AND submitted_at < now() - make_interval(secs => %s)",
+                    [stale_after_seconds],
+                ).fetchone(),
+            )
+            stale_count = row["n"]
+            oldest = row["oldest"]
+            watermark = conn.execute(
+                "SELECT COALESCE(MAX(target_global_seq), 0) AS max_seq "
+                "FROM anchor_receipts "
+                "WHERE status IN ('pending', 'committed', 'confirmed', 'retryable')"
+            ).fetchone()["max_seq"]  # type: ignore[index]
+    except Exception as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=_sanitize_error(e),
+        )
+
+    if stale_count == 0:
+        return DoctorCheck(
+            name=name,
+            status="ok",
+            detail=(
+                f"no receipts stuck pending/retryable beyond {stale_after_seconds}s"
+            ),
+        )
+    age_detail = f", oldest submitted_at={oldest.isoformat()}" if oldest is not None else ""
+    return DoctorCheck(
+        name=name,
+        status="warn",
+        detail=(
+            f"{stale_count} receipt(s) stuck pending/retryable beyond "
+            f"{stale_after_seconds}s{age_detail}; the anchoring watermark is held at "
+            f"global_seq={watermark} — retry or re-submit anchoring to unblock it"
+        ),
+    )
+
+
+def _check_witness_key_enrollment(
+    dsn: str,
+    project: str,
+    require_ssl: bool,
+) -> DoctorCheck:
+    from ._connection import validate_project_name
+    from ._witness import witness_principal_id
+
+    name = f"witness:key_enrollment:{project}"
+    try:
+        validate_project_name(project)
+    except ValueError as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=f"Invalid project name: {e}",
+        )
+
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from psycopg.sql import SQL, Identifier
+
+        connect_kwargs: dict[str, Any] = {}
+        if require_ssl:
+            connect_kwargs["sslmode"] = "require"
+        with cast(DictConn, psycopg.connect(
+            dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
+        )) as conn:
+            conn.execute(
+                SQL("SET search_path TO {}").format(Identifier(project))
+            )
+            present = conn.execute(
+                "SELECT to_regclass('witness_registrations') IS NOT NULL AS present"
+            ).fetchone()["present"]  # type: ignore[index]
+            if not present:
+                return DoctorCheck(
+                    name=name,
+                    status="skip",
+                    detail="witness_registrations table absent",
+                )
+            pk_present = conn.execute(
+                "SELECT to_regclass('principal_keys') IS NOT NULL AS present"
+            ).fetchone()["present"]  # type: ignore[index]
+            if not pk_present:
+                return DoctorCheck(
+                    name=name,
+                    status="skip",
+                    detail="principal_keys table absent",
+                )
+            witnesses = conn.execute(
+                "SELECT witness_id, public_key FROM witness_registrations "
+                "WHERE key_scheme = 'ed25519' AND public_key IS NOT NULL"
+            ).fetchall()
+            if not witnesses:
+                return DoctorCheck(
+                    name=name,
+                    status="ok",
+                    detail="no Ed25519 witnesses to enroll",
+                )
+            gaps: list[str] = []
+            for w in witnesses:
+                row = conn.execute(
+                    "SELECT public_key FROM principal_keys "
+                    "WHERE principal_id = %s AND status = 'active'",
+                    [witness_principal_id(w["witness_id"])],
+                ).fetchone()
+                if row is None or bytes(row["public_key"]) != bytes(w["public_key"]):
+                    gaps.append(str(w["witness_id"]))
+    except Exception as e:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=_sanitize_error(e),
+        )
+
+    if gaps:
+        return DoctorCheck(
+            name=name,
+            status="warn",
+            detail=(
+                f"{len(gaps)} Ed25519 witness key(s) not enrolled (or pinned "
+                f"key differs) in the anchored principal-keys registry: "
+                f"{', '.join(gaps[:8])}"
+            ),
+        )
+    return DoctorCheck(
+        name=name,
+        status="ok",
+        detail=f"{len(witnesses)} Ed25519 witness key(s) enrolled",
+    )
 
 
 def _resolve_key_file_path(key_path: str) -> str | None:
@@ -479,11 +712,17 @@ def run_doctor(
     require_ssl: bool = False,
     key_path: str | None = None,
     secret_backend: str | None = None,
+    anchoring_stale_after_seconds: int | None = None,
 ) -> DoctorReport:
     ver = versions()
     checks: list[DoctorCheck] = []
     reachable = False
     projects_list: list[dict[str, Any]] = []
+    stale_after = (
+        anchoring_stale_after_seconds
+        if anchoring_stale_after_seconds is not None
+        else _ANCHORING_STALE_AFTER_SECONDS
+    )
 
     if dsn is None:
         checks.append(DoctorCheck(
@@ -501,9 +740,16 @@ def run_doctor(
 
         if reachable:
             projects_list = _list_projects(dsn, require_ssl)
+            checks.append(_check_role_attributes(dsn, require_ssl))
 
             if project:
                 checks.append(_check_schema_version(dsn, project, require_ssl))
+                checks.append(
+                    _check_anchoring_stale_receipts(dsn, project, require_ssl, stale_after)
+                )
+                checks.append(
+                    _check_witness_key_enrollment(dsn, project, require_ssl)
+                )
             elif not projects_list:
                 checks.append(DoctorCheck(
                     name="projects",
@@ -513,6 +759,14 @@ def run_doctor(
             else:
                 for p in projects_list:
                     checks.append(_check_schema_version(dsn, p["name"], require_ssl))
+                    checks.append(
+                        _check_anchoring_stale_receipts(
+                            dsn, p["name"], require_ssl, stale_after
+                        )
+                    )
+                    checks.append(
+                        _check_witness_key_enrollment(dsn, p["name"], require_ssl)
+                    )
 
     checks.append(DoctorCheck(
         name="version:schema",

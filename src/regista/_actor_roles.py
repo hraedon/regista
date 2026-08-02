@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import psycopg
+from typing import Any
+
 from psycopg.sql import SQL
 
+from ._connection import DictConn
 from ._contract import check_actor_role_authorized as _check_roles
 from ._contract import validate_actor_id, validate_role
 from ._errors import ErrorCode, RegistaError
 
 
 def register_actor_role(
-    conn: psycopg.Connection,
+    conn: DictConn,
     actor_id: str,
     role: str,
 ) -> None:
@@ -25,7 +27,7 @@ def register_actor_role(
 
 
 def unregister_actor_role(
-    conn: psycopg.Connection,
+    conn: DictConn,
     actor_id: str,
     role: str,
 ) -> None:
@@ -43,9 +45,9 @@ def unregister_actor_role(
 
 
 def list_actor_roles(
-    conn: psycopg.Connection,
+    conn: DictConn,
     actor_id: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if actor_id is not None:
         rows = conn.execute(
             SQL(
@@ -65,12 +67,12 @@ def list_actor_roles(
 
 
 def check_actor_role_authorized(
-    conn: psycopg.Connection,
+    conn: DictConn,
     actor_id: str,
     claimed_role: str,
     *,
     strict: bool = False,
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
 ) -> None:
     rows = conn.execute(
         SQL(

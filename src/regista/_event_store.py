@@ -4,8 +4,9 @@ import dataclasses
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
+from ._connection import DictConn
 from ._contract import (
     _RESERVED_TRANSITIONS,
     Jsonb,
@@ -62,7 +63,7 @@ def append_event(
     event_id: uuid.UUID,
     expected_event_seq: int | None = None,
     key_set: KeySet | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
     _key_id: str | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
@@ -180,13 +181,13 @@ class InMemoryEventStore:
     def __init__(self) -> None:
         self.events: dict[uuid.UUID, list[Event]] = {}
         self.event_id_index: dict[uuid.UUID, Event] = {}
-        self._work_items: dict[uuid.UUID, dict] = {}
-        self._entity_seqs: dict[tuple[str, uuid.UUID], dict] = {}
+        self._work_items: dict[uuid.UUID, dict[str, Any]] = {}
+        self._entity_seqs: dict[tuple[str, uuid.UUID], dict[str, Any]] = {}
         self._next_global_seq: int = 1
         self._global_seq_by_event_id: dict[uuid.UUID, int] = {}
         self._global_chain_head: bytes | None = None
 
-    def bind(self, work_items: dict[uuid.UUID, dict]) -> None:
+    def bind(self, work_items: dict[uuid.UUID, dict[str, Any]]) -> None:
         self._work_items = work_items
 
     def lock_global_chain_head(self) -> bytes | None:
@@ -196,11 +197,11 @@ class InMemoryEventStore:
         if entity_kind == "work_item":
             wi = self._work_items.get(work_item_id)
             if wi is not None:
-                return wi["next_event_seq"]
+                return cast(int, wi["next_event_seq"])
         ent_key = (entity_kind, work_item_id)
         ent = self._entity_seqs.get(ent_key)
         if ent is not None:
-            return ent["next_event_seq"]
+            return cast(int, ent["next_event_seq"])
         self._entity_seqs[ent_key] = {
             "next_event_seq": 1,
             "last_event_seq": 0,
@@ -310,10 +311,10 @@ class PostgresEventStore:
         "global_seq, prev_global_event_hash"
     )
 
-    def __init__(self, conn, key_set: KeySet) -> None:
+    def __init__(self, conn: DictConn, key_set: KeySet) -> None:
         self._conn = conn
         self._key_set = key_set
-        self._locked_wis: dict[uuid.UUID, dict | None] = {}
+        self._locked_wis: dict[uuid.UUID, dict[str, Any] | None] = {}
 
     def lock_global_chain_head(self) -> bytes | None:
         from ._events import _lock_global_chain_head
@@ -323,8 +324,8 @@ class PostgresEventStore:
     def prepare(
         self,
         work_item_id: uuid.UUID,
-        prelocked_wi: dict | None = None,
-    ) -> dict | None:
+        prelocked_wi: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         from ._events import lock_work_item
 
         wi = prelocked_wi if prelocked_wi is not None else lock_work_item(self._conn, work_item_id)
@@ -346,7 +347,7 @@ class PostgresEventStore:
                 "FROM events WHERE entity_kind = %s AND entity_id = %s",
                 [entity_kind, work_item_id],
             ).fetchone()
-            return row["next_seq"]
+            return cast(int, row["next_seq"])  # type: ignore[index]
 
         from ._events import lock_work_item
 
@@ -359,7 +360,7 @@ class PostgresEventStore:
                 ErrorCode.WORK_ITEM_NOT_FOUND,
                 f"Work item {work_item_id} not found",
             )
-        return wi["next_event_seq"]
+        return cast(int, wi["next_event_seq"])
 
     def find_by_event_id(self, event_id: uuid.UUID) -> Event | None:
         from psycopg.sql import SQL
@@ -380,7 +381,7 @@ class PostgresEventStore:
         pl = event.payload
 
         try:
-            self._conn.execute(
+            inserted = self._conn.execute(
                 SQL(
                     "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                     "event_seq, actor_id, actor_kind, "
@@ -389,7 +390,8 @@ class PostgresEventStore:
                     "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                     "prev_global_event_hash) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "RETURNING global_seq"
                 ),
                 [
                     event.event_id,
@@ -418,6 +420,7 @@ class PostgresEventStore:
                     event.prev_global_event_hash,
                 ],
             )
+            assigned_global_seq = inserted.fetchone()["global_seq"]  # type: ignore[index]
         except psycopg.errors.UniqueViolation as exc:
             constraint = exc.diag.constraint_name or ""
             if constraint == "events_entity_event_seq_key":
@@ -462,7 +465,13 @@ class PostgresEventStore:
                 [event.event_seq, event.timestamp, event.event_seq + 1, event.work_item_id],
             )
 
-        return event
+        # Return the event with the DB-assigned global_seq (cross-repo WI-010):
+        # global_seq is allocated by the column's sequence DEFAULT, so the
+        # in-memory event object never carries it. Read it back via RETURNING so
+        # the Postgres store matches InMemoryEventStore.append, which returns the
+        # assigned seq. prev_global_event_hash is already set on the event by the
+        # caller (lock_global_chain_head) before this insert.
+        return dataclasses.replace(event, global_seq=assigned_global_seq)
 
     def read(
         self,

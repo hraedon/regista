@@ -4,11 +4,9 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-import psycopg
-
-from ._connection import ConnectionManager
+from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 
 
@@ -77,7 +75,7 @@ def register_principal_key(
 
 
 def register_principal_key_conn(
-    conn: psycopg.Connection,
+    conn: DictConn,
     principal_id: str,
     public_key: bytes,
     scheme: str,
@@ -146,11 +144,11 @@ def register_principal_key_conn(
         [principal_id, key_id, scheme, public_key, fingerprint, registered_by],
     )
 
-    row = conn.execute(
+    row = cast(dict[str, Any], conn.execute(
         "SELECT * FROM principal_keys "
         "WHERE principal_id = %s AND key_id = %s",
         [principal_id, key_id],
-    ).fetchone()
+    ).fetchone())
 
     return _row_to_entry(row)
 
@@ -212,7 +210,7 @@ def list_principal_keys(
 
 
 def list_principal_keys_for_conn(
-    conn: psycopg.Connection,
+    conn: DictConn,
     principal_id: str | None = None,
     *,
     status: str | None = None,
@@ -265,7 +263,7 @@ def rotate_principal_key(
 
 
 def rotate_principal_key_conn(
-    conn: psycopg.Connection,
+    conn: DictConn,
     principal_id: str,
     new_public_key: bytes,
     scheme: str,
@@ -310,11 +308,11 @@ def rotate_principal_key_conn(
          fingerprint, registered_by],
     )
 
-    row = conn.execute(
+    row = cast(dict[str, Any], conn.execute(
         "SELECT * FROM principal_keys "
         "WHERE principal_id = %s AND key_id = %s",
         [principal_id, new_key_id],
-    ).fetchone()
+    ).fetchone())
 
     return _row_to_entry(row)
 
@@ -333,7 +331,7 @@ def revoke_principal_key(
 
 
 def revoke_principal_key_conn(
-    conn: psycopg.Connection,
+    conn: DictConn,
     principal_id: str,
     key_id: str,
     *,
@@ -362,11 +360,11 @@ def revoke_principal_key_conn(
         [now, reason, principal_id, key_id],
     )
 
-    row = conn.execute(
+    row = cast(dict[str, Any], conn.execute(
         "SELECT * FROM principal_keys "
         "WHERE principal_id = %s AND key_id = %s",
         [principal_id, key_id],
-    ).fetchone()
+    ).fetchone())
 
     return _row_to_entry(row)
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-import psycopg
 from psycopg.sql import SQL
 
+from ._connection import DictConn
 from ._contract import Jsonb
 from ._contract import validate_content_hash as _validate_content_hash
 from ._contract import validate_cross_project_link_type as _validate_xproject_link_type
@@ -16,7 +17,7 @@ from ._types import Link
 
 
 def _validate_link_type(
-    conn: psycopg.Connection,
+    conn: DictConn,
     from_type: str,
     to_type: str,
     link_type: str,
@@ -45,7 +46,7 @@ def _validate_link_type(
 
 
 def _validate_cross_project_link_type(
-    conn: psycopg.Connection,
+    conn: DictConn,
     link_type: str,
     workflow_name: str,
     workflow_version: int,
@@ -70,7 +71,7 @@ def _validate_cross_project_link_type(
 
 
 def create_link(
-    conn: psycopg.Connection,
+    conn: DictConn,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
@@ -127,7 +128,7 @@ def create_link(
             )
 
     link_id = uuid.uuid4()
-    link_payload = {
+    link_payload: dict[str, Any] = {
         "link_id": str(link_id),
         "from_work_item_id": str(from_work_item_id),
         "to_work_item_id": str(to_work_item_id),
@@ -153,7 +154,7 @@ def create_link(
         if content_hash is not None:
             link_payload["content_hash"] = content_hash
     else:
-        if from_row["workflow_name"] != to_row["workflow_name"]:
+        if from_row["workflow_name"] != to_row["workflow_name"]:  # type: ignore[index]
             raise RegistaError(
                 ErrorCode.LINK_CROSS_PROJECT,
                 "Cannot link work items from different projects",
@@ -162,7 +163,7 @@ def create_link(
         _validate_link_type(
             conn,
             from_row["work_item_type"],
-            to_row["work_item_type"],
+            to_row["work_item_type"],  # type: ignore[index]
             link_type,
             from_row["workflow_name"],
             from_row["workflow_version"],
@@ -199,7 +200,7 @@ def create_link(
 
 
 def remove_link(
-    conn: psycopg.Connection,
+    conn: DictConn,
     from_work_item_id: uuid.UUID,
     to_work_item_id: uuid.UUID,
     link_type: str,
@@ -302,7 +303,7 @@ def remove_link(
 
 
 def list_links(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
 ) -> list[Link]:
     """Return all live (non-removed) outbound links from *work_item_id*.

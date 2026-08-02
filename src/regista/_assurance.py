@@ -41,6 +41,27 @@ def _event_lineage(event: Any) -> str | None:
     return None
 
 
+def _lineage_verification(event: Any) -> str:
+    # WI-215: the actor_kind / actor_metadata.model_lineage columns ride OUTSIDE
+    # the v4 signed scope, so on an HMAC/v4 event a database-write attacker can
+    # mutate them without invalidating the signature — that lineage is merely
+    # "asserted". A per-actor asymmetric scheme (ed25519) signs the actor binding
+    # to its principal, so the same mutation breaks the signature — that lineage
+    # is "verified". This is the review-assurance.md upgrade path (per-actor
+    # signing flips asserted -> verified). The signal is informational only; it
+    # never changes a gate decision. An absent or unknown scheme fails to the
+    # honest "asserted" label.
+    scheme_id = getattr(event, "scheme_id", None)
+    if not scheme_id:
+        return "asserted"
+    try:
+        from ._signing_scheme import get_scheme
+
+        return "verified" if get_scheme(scheme_id).is_asymmetric else "asserted"
+    except Exception:
+        return "asserted"
+
+
 def _extract_author_lineages(events: Sequence[Any]) -> set[str]:
     author_lineages: set[str] = set()
     for event in events:
@@ -109,6 +130,7 @@ def compute_assurance_level_from_dicts(
                 actor_metadata=e.get("actor_metadata"),
                 on_behalf_of=e.get("on_behalf_of"),
                 payload=e.get("payload"),
+                scheme_id=e.get("scheme_id"),
             )
         )
     return compute_assurance_level(converted)
@@ -150,6 +172,7 @@ def gate_rationale(
             "assurance_level": AssuranceLevel.NONE,
             "reviewer_lineage": None,
             "author_lineages": sorted(author_lineages),
+            "lineage_verification": None,
         }
 
     last_pass = events[last_pass_idx]
@@ -173,6 +196,7 @@ def gate_rationale(
             "assurance_level": level,
             "reviewer_lineage": reviewer_lineage,
             "author_lineages": sorted(author_lineages),
+            "lineage_verification": _lineage_verification(last_pass),
         }
 
     last_accept = accept_events[-1]
@@ -194,6 +218,7 @@ def gate_rationale(
         "assurance_level": level,
         "reviewer_lineage": reviewer_lineage,
         "author_lineages": sorted(author_lineages),
+        "lineage_verification": _lineage_verification(last_pass),
     }
 
 

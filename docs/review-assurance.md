@@ -116,8 +116,25 @@ rationale = gate_rationale(events, GateProfile.STRICT)
 #   "assurance_level": AssuranceLevel.HUMAN_ACCEPTED,
 #   "reviewer_lineage": "glm",
 #   "author_lineages": ["glm"],
+#   "lineage_verification": "verified",
 # }
 ```
+
+`lineage_verification` reports whether the deciding review event's lineage is
+cryptographically bound or merely asserted (WI-215):
+
+- `"verified"` — the deciding `adversarial_pass` is signed with a per-actor
+  asymmetric scheme (ed25519) bound to its principal. Mutating the actor or
+  `model_lineage` columns would invalidate that signature, so the lineage is
+  non-repudiable.
+- `"asserted"` — the deciding event is HMAC/v4-signed (or has no/unknown scheme).
+  `actor_kind` and `actor_metadata.model_lineage` ride outside the v4 signed
+  scope, so a database-write attacker could alter them without breaking the
+  signature. The lineage is taken at face value.
+- `None` — there is no deciding review event (no `adversarial_pass`).
+
+The signal is informational and never changes a gate decision; it lets an auditor
+tell a cryptographically-bound cross-lineage review from an asserted one.
 
 Reasons:
 - `cross_lineage_review` — cross-lineage adversarial pass (sufficient under both profiles)

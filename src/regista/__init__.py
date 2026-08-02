@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys as _sys
 import uuid
 from collections.abc import Callable
+from types import TracebackType
+from typing import Any
 
 import structlog
 
@@ -167,7 +169,7 @@ class Regista(
         pool_max: int = 10,
         pool_max_lifetime: float | None = None,
         require_ssl: bool = False,
-        prometheus_registry=None,
+        prometheus_registry: Any = None,
         auto_partition: bool = True,
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
@@ -221,8 +223,8 @@ class Regista(
             self._project = project
             from ._review_validators import BUILTIN_REVIEW_VALIDATORS
 
-            self._validators: dict[str, Callable] = dict(BUILTIN_REVIEW_VALIDATORS)
-            self._hook_handlers: dict[str, Callable] = {}
+            self._validators: dict[str, Callable[..., Any]] = dict(BUILTIN_REVIEW_VALIDATORS)
+            self._hook_handlers: dict[str, Callable[..., Any]] = {}
             self._hook_channel = f"regista_hooks_{self._mgr.schema}"
             self._hook_consumer = None
             self._strict_roles = strict_roles
@@ -257,7 +259,7 @@ class Regista(
         pool_max: int = 10,
         pool_max_lifetime: float | None = None,
         require_ssl: bool = False,
-        prometheus_registry=None,
+        prometheus_registry: Any = None,
         auto_partition: bool = True,
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
@@ -350,13 +352,18 @@ class Regista(
             self._hook_consumer.stop()
         if self._mgr is not None:
             self._mgr.close()
-            self._mgr = None
+            self._mgr = None  # type: ignore[assignment]
         log.info("regista.disconnected", project=self._project)
 
     def __enter__(self) -> Regista:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Release the pool deterministically.
 
         The pool also closes at interpreter exit via ``ConnectionManager``'s
@@ -393,7 +400,7 @@ class Regista(
         return REGISTA_VERSION
 
     @property
-    def prometheus_registry(self):
+    def prometheus_registry(self) -> Any:
         return self._metrics.registry
 
     @property
@@ -546,7 +553,7 @@ class Regista(
             return True
         if not self._maintenance_thread.is_running:
             return False
-        return self._maintenance_thread.last_cycle_ok
+        return self._maintenance_thread.last_cycle_ok  # type: ignore[no-any-return]
 
     @property
     def pool_healthy(self) -> bool:
@@ -582,7 +589,7 @@ class Regista(
         with psycopg.connect(dsn, row_factory=dict_row) as conn:
             return list_catalog_projects(conn)
 
-    def trigger_anchoring(self, *, batch_size: int = 10_000):
+    def trigger_anchoring(self, *, batch_size: int = 10_000) -> Any:
         """Submit a Merkle root of pending events to the configured anchor provider.
 
         Requires ``start_maintenance(anchor_provider=...)`` or
@@ -599,11 +606,11 @@ class Regista(
         status: str | None = None,
         provider: str | None = None,
         limit: int = 100,
-    ) -> list:
+    ) -> list[dict[str, Any]]:
         """List anchor receipts, optionally filtered."""
         return self.anchoring.list_receipts(status=status, provider=provider, limit=limit)
 
-    def get_anchor_receipt(self, receipt_id: uuid.UUID):
+    def get_anchor_receipt(self, receipt_id: uuid.UUID) -> Any:
         """Retrieve a single anchor receipt by ID."""
         return self.anchoring.get_receipt(receipt_id)
 
@@ -613,7 +620,7 @@ class Regista(
 
     def export_audit_bundle(
         self, output_path: str, *, since_seq: int | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Export events, anchor receipts, and segments as a self-contained JSON bundle.
 
         The bundle can be verified offline by a third-party auditor without
@@ -623,7 +630,7 @@ class Regista(
         return self.archive.export_bundle(output_path, since_seq=since_seq)
 
     @staticmethod
-    def verify_audit_bundle_offline(bundle_path: str) -> dict:
+    def verify_audit_bundle_offline(bundle_path: str) -> dict[str, Any]:
         """Verify an exported audit bundle without a database connection.
 
         Recomputes content anchors from the bundle's events, verifies chain
@@ -634,7 +641,7 @@ class Regista(
 
         return verify_audit_bundle_offline(bundle_path).to_dict()
 
-    def verify_archive_chain(self) -> dict:
+    def verify_archive_chain(self) -> dict[str, Any]:
         """Verify chain integrity across all sealed archive segments.
 
         Confirms each segment's internal chain, seal signature, and that

@@ -46,7 +46,7 @@ class FloatDomainError(CanonicalizationError):
 
 
 def _serialize_str(s: str, sink: IO[bytes]) -> None:
-    def _replace(match: re.Match) -> str:
+    def _replace(match: re.Match[str]) -> str:
         return _ESCAPE_DCT[match.group(0)]
 
     sink.write(b'"')

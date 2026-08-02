@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
+
+from ._connection import ConnectionManager
+from ._keys import KeySet
+from ._observability import Metrics
 
 
 def register_recurrence_rule(
-    mgr,
-    metrics,
-    project,
+    mgr: ConnectionManager,
+    metrics: Metrics,
+    project: str,
     workflow_name: str,
     workflow_version: int,
     work_item_type: str,
-    template: dict,
+    template: dict[str, Any],
     schedule_kind: str,
     schedule_expr: str,
     *,
@@ -21,7 +26,7 @@ def register_recurrence_rule(
     count: int | None = None,
     catchup_policy: str = "fire_once",
     created_by: str = "system",
-):
+) -> dict[str, Any]:
     from ._recurrence import register_recurrence_rule as _register_rr
 
     if start_at is None:
@@ -47,21 +52,25 @@ def register_recurrence_rule(
     return rule
 
 
-def list_recurrence_rules(mgr, status: str | None = None) -> list:
+def list_recurrence_rules(
+    mgr: ConnectionManager, status: str | None = None
+) -> list[dict[str, Any]]:
     from ._recurrence import list_recurrence_rules as _list_rr
 
     with mgr.transaction() as conn:
         return _list_rr(conn, status=status)
 
 
-def due_recurrences(mgr, now: datetime | None = None) -> list:
+def due_recurrences(mgr: ConnectionManager, now: datetime | None = None) -> list[dict[str, Any]]:
     from ._recurrence import due_recurrences as _due
 
     with mgr.transaction() as conn:
         return _due(conn, now=now)
 
 
-def fire_recurrence(mgr, keys, metrics, project, rule_id: uuid.UUID) -> tuple[dict, dict]:
+def fire_recurrence(
+    mgr: ConnectionManager, keys: KeySet, metrics: Metrics, project: str, rule_id: uuid.UUID
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     from ._recurrence import fire_recurrence as _fire
 
     with mgr.transaction() as conn:
@@ -70,7 +79,7 @@ def fire_recurrence(mgr, keys, metrics, project, rule_id: uuid.UUID) -> tuple[di
         )
 
 
-def cancel_recurrence_rule(mgr, rule_id: uuid.UUID) -> None:
+def cancel_recurrence_rule(mgr: ConnectionManager, rule_id: uuid.UUID) -> None:
     from ._recurrence import cancel_recurrence_rule as _cancel
 
     with mgr.transaction() as conn:
@@ -78,13 +87,13 @@ def cancel_recurrence_rule(mgr, rule_id: uuid.UUID) -> None:
 
 
 def update_recurrence_rule(
-    mgr,
+    mgr: ConnectionManager,
     rule_id: uuid.UUID,
     *,
     status: str | None = None,
     schedule_expr: str | None = None,
-    template: dict | None = None,
-) -> dict:
+    template: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from ._recurrence import update_recurrence_rule as _update
 
     with mgr.transaction() as conn:

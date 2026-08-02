@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
+from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
-from ._observability import OpTimer
+from ._keys import KeySet
+from ._observability import Metrics, OpTimer
+from ._types import Claim
 
 
 def acquire_claim(
-    mgr,
-    keys,
-    metrics,
+    mgr: ConnectionManager,
+    keys: KeySet,
+    metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
     actor_id: str,
@@ -17,8 +21,8 @@ def acquire_claim(
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
-):
+    actor_metadata: dict[str, Any] | None = None,
+) -> Claim:
     from ._claims import acquire_claim as _acquire
 
     timer = OpTimer(project, "acquire_claim")
@@ -44,8 +48,8 @@ def acquire_claim(
 
 
 def heartbeat_claim(
-    mgr,
-    keys,
+    mgr: ConnectionManager,
+    keys: KeySet,
     project: str,
     work_item_id: uuid.UUID,
     actor_id: str,
@@ -54,8 +58,8 @@ def heartbeat_claim(
     expected_attempt_number: int | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
-):
+    actor_metadata: dict[str, Any] | None = None,
+) -> Claim:
     from ._claims import heartbeat_claim as _heartbeat
 
     timer = OpTimer(project, "heartbeat_claim")
@@ -77,17 +81,17 @@ def heartbeat_claim(
 
 
 def release_claim(
-    mgr,
-    keys,
-    metrics,
+    mgr: ConnectionManager,
+    keys: KeySet,
+    metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
     actor_id: str,
     *,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
-):
+    actor_metadata: dict[str, Any] | None = None,
+) -> None:
     from ._claims import release_claim as _release
 
     timer = OpTimer(project, "release_claim")
@@ -101,7 +105,9 @@ def release_claim(
         raise
 
 
-def sweep_expired_claims(mgr, keys, metrics, project: str) -> int:
+def sweep_expired_claims(
+    mgr: ConnectionManager, keys: KeySet, metrics: Metrics, project: str
+) -> int:
     from ._claims import sweep_expired_claims as _sweep
 
     with mgr.transaction() as conn:

@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 from datetime import datetime
+from typing import Any, NoReturn
 
 import structlog
 
@@ -16,18 +17,18 @@ from regista._workflow import validate_yaml as _validate_yaml
 
 
 class _StderrLoggerFactory:
-    def __call__(self, *args):
+    def __call__(self, *args: Any) -> Any:
         return structlog.PrintLogger(file=sys.stderr)
 
 
-def _configure_structlog_stderr():
+def _configure_structlog_stderr() -> None:
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(20),
         logger_factory=_StderrLoggerFactory(),
     )
 
 
-def _resolve_config(args):
+def _resolve_config(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
     dsn = args.dsn or os.environ.get("REGISTA_DSN")
     project = args.project or os.environ.get("REGISTA_PROJECT")
     # REGISTA_KEY_PATH is the canonical name (_config.CANONICAL_VARS);
@@ -43,7 +44,7 @@ def _resolve_config(args):
     return dsn, project, hmac_key_path
 
 
-def _require_config(args):
+def _require_config(args: argparse.Namespace) -> tuple[str, str, str | None]:
     dsn, project, hmac_key_path = _resolve_config(args)
     missing = []
     if not dsn:
@@ -53,10 +54,12 @@ def _require_config(args):
     if missing:
         print(f"Missing required config: {', '.join(missing)}", file=sys.stderr)
         sys.exit(2)
+    assert dsn is not None
+    assert project is not None
     return dsn, project, hmac_key_path
 
 
-def _dump_json(obj):
+def _dump_json(obj: Any) -> None:
     if hasattr(obj, "to_dict"):
         data = obj.to_dict()
     elif isinstance(obj, list):
@@ -78,7 +81,7 @@ _RETRYABLE_CODES = frozenset(
 )
 
 
-def _error_envelope(e: RegistaError) -> dict:
+def _error_envelope(e: RegistaError) -> dict[str, Any]:
     return {
         "ok": False,
         "error": {
@@ -95,7 +98,7 @@ def _error_envelope(e: RegistaError) -> dict:
     }
 
 
-def _handle_error(e: RegistaError, json_mode: bool = False):
+def _handle_error(e: RegistaError, json_mode: bool = False) -> NoReturn:
     """Report a RegistaError per the suite CLI contract v1 and exit 1.
 
     Under --json the common error envelope is the single stdout document
@@ -113,7 +116,7 @@ def _handle_error(e: RegistaError, json_mode: bool = False):
     sys.exit(1)
 
 
-def _fail_json(payload, *, json_mode: bool, diagnostic: str):
+def _fail_json(payload: Any, *, json_mode: bool, diagnostic: str) -> NoReturn:
     """Emit a verb's own failure document and exit 1 (contract §2).
 
     For verbs whose failure is reported inside their *own* result shape (a
@@ -128,14 +131,14 @@ def _fail_json(payload, *, json_mode: bool, diagnostic: str):
     sys.exit(1)
 
 
-def _add_common_args(parser):
+def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
     parser.add_argument("--project", help="Project schema name (or REGISTA_PROJECT)")
     parser.add_argument("--hmac-key-path", help="HMAC key file path (or REGISTA_HMAC_KEY_PATH)")
     parser.add_argument("--json", action="store_true", help="JSON output")
 
 
-def cmd_workflow_validate(args):
+def cmd_workflow_validate(args: argparse.Namespace) -> None:
     from pathlib import Path
 
     source = Path(args.file)
@@ -151,6 +154,7 @@ def cmd_workflow_validate(args):
         _dump_json(result)
     else:
         if result.valid:
+            assert result.workflow is not None
             print(f"Valid: {result.workflow.name} v{result.workflow.version}")
         else:
             for err in result.errors:
@@ -159,7 +163,7 @@ def cmd_workflow_validate(args):
         sys.exit(1)
 
 
-def cmd_work_item_show(args):
+def cmd_work_item_show(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -191,7 +195,7 @@ def cmd_work_item_show(args):
         sub.close()
 
 
-def cmd_work_item_list(args):
+def cmd_work_item_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -238,7 +242,7 @@ def cmd_work_item_list(args):
         sub.close()
 
 
-def cmd_events_show(args):
+def cmd_events_show(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -264,7 +268,7 @@ def cmd_events_show(args):
         sub.close()
 
 
-def cmd_events_tail(args):
+def cmd_events_tail(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -298,7 +302,7 @@ def cmd_events_tail(args):
         sub.close()
 
 
-def cmd_replay(args):
+def cmd_replay(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -333,13 +337,13 @@ def cmd_replay(args):
         sub.close()
 
 
-def cmd_schema_init(args):
+def cmd_schema_init(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     Regista.create_project(dsn, project, hmac_key_path or "")
     print(f"Schema initialized for project {project!r}")
 
 
-def cmd_schema_status(args):
+def cmd_schema_status(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -348,7 +352,7 @@ def cmd_schema_status(args):
         sub.close()
 
 
-def cmd_schema_repair_checksums(args):
+def cmd_schema_repair_checksums(args: argparse.Namespace) -> None:
     dsn, project, _ = _require_config(args)
     from regista._connection import ConnectionManager
     from regista._migrations import repair_checksums
@@ -367,7 +371,7 @@ def cmd_schema_repair_checksums(args):
         mgr.close()
 
 
-def cmd_hooks_dead_letter_list(args):
+def cmd_hooks_dead_letter_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -384,7 +388,7 @@ def cmd_hooks_dead_letter_list(args):
         sub.close()
 
 
-def cmd_hooks_dead_letter_requeue(args):
+def cmd_hooks_dead_letter_requeue(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -401,7 +405,7 @@ def cmd_hooks_dead_letter_requeue(args):
         sub.close()
 
 
-def cmd_actor_roles_list(args):
+def cmd_actor_roles_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -417,7 +421,7 @@ def cmd_actor_roles_list(args):
         sub.close()
 
 
-def cmd_recurrence_list(args):
+def cmd_recurrence_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -438,7 +442,7 @@ def cmd_recurrence_list(args):
         sub.close()
 
 
-def cmd_recurrence_due(args):
+def cmd_recurrence_due(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -455,7 +459,7 @@ def cmd_recurrence_due(args):
         sub.close()
 
 
-def cmd_recurrence_fire(args):
+def cmd_recurrence_fire(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -477,7 +481,7 @@ def cmd_recurrence_fire(args):
         sub.close()
 
 
-def cmd_recurrence_cancel(args):
+def cmd_recurrence_cancel(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -494,7 +498,7 @@ def cmd_recurrence_cancel(args):
         sub.close()
 
 
-def cmd_recurrence_update(args):
+def cmd_recurrence_update(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -524,7 +528,7 @@ def cmd_recurrence_update(args):
         sub.close()
 
 
-def cmd_timestamp_status(args):
+def cmd_timestamp_status(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -544,7 +548,7 @@ def cmd_timestamp_status(args):
         sub.close()
 
 
-def cmd_timestamp_trigger(args):
+def cmd_timestamp_trigger(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -559,7 +563,7 @@ def cmd_timestamp_trigger(args):
         sub.close()
 
 
-def cmd_timestamp_verify(args):
+def cmd_timestamp_verify(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -576,9 +580,9 @@ def cmd_timestamp_verify(args):
         sub.close()
 
 
-def _build_anchor_provider(args):
+def _build_anchor_provider(args: argparse.Namespace) -> Any:
     provider_name = args.provider
-    config = {}
+    config: dict[str, Any] = {}
     if args.provider_config:
         try:
             config = json.loads(args.provider_config)
@@ -610,7 +614,7 @@ def _build_anchor_provider(args):
         sys.exit(2)
 
 
-def cmd_anchor_submit(args):
+def cmd_anchor_submit(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -632,11 +636,11 @@ def cmd_anchor_submit(args):
         sub.close()
 
 
-def cmd_anchor_status(args):
+def cmd_anchor_status(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
-        receipts = sub.list_anchor_receipts(
+        receipts: list[Any] = sub.list_anchor_receipts(
             status=args.status,
             provider=args.provider,
             limit=args.limit,
@@ -656,7 +660,7 @@ def cmd_anchor_status(args):
         sub.close()
 
 
-def cmd_anchor_verify(args):
+def cmd_anchor_verify(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -677,7 +681,7 @@ def cmd_anchor_verify(args):
         sub.close()
 
 
-def cmd_witness_list(args):
+def cmd_witness_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -696,7 +700,7 @@ def cmd_witness_list(args):
         sub.close()
 
 
-def cmd_witness_deliver(args):
+def cmd_witness_deliver(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -708,7 +712,7 @@ def cmd_witness_deliver(args):
         sub.close()
 
 
-def cmd_witness_receipts(args):
+def cmd_witness_receipts(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -745,7 +749,7 @@ def cmd_witness_receipts(args):
         sub.close()
 
 
-def cmd_events_archive(args):
+def cmd_events_archive(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -765,7 +769,7 @@ def cmd_events_archive(args):
         sub.close()
 
 
-def cmd_archive_seal(args):
+def cmd_archive_seal(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -798,7 +802,7 @@ def cmd_archive_seal(args):
         sub.close()
 
 
-def cmd_archive_verify(args):
+def cmd_archive_verify(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -840,7 +844,7 @@ def cmd_archive_verify(args):
         sub.close()
 
 
-def cmd_archive_list(args):
+def cmd_archive_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -874,7 +878,7 @@ def cmd_archive_list(args):
         sub.close()
 
 
-def cmd_archive_verify_chain(args):
+def cmd_archive_verify_chain(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -904,7 +908,7 @@ def cmd_archive_verify_chain(args):
         sub.close()
 
 
-def cmd_bundle_export(args):
+def cmd_bundle_export(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -927,7 +931,7 @@ def cmd_bundle_export(args):
         sub.close()
 
 
-def cmd_bundle_verify(args):
+def cmd_bundle_verify(args: argparse.Namespace) -> None:
     try:
         result = Regista.verify_audit_bundle_offline(args.bundle_path)
         if getattr(args, "json", False):
@@ -969,7 +973,7 @@ def cmd_bundle_verify(args):
         _handle_error(e, json_mode=getattr(args, "json", False))
 
 
-def cmd_workflow_compose(args):
+def cmd_workflow_compose(args: argparse.Namespace) -> None:
     from regista._workflow_compose import compose_workflow as _compose
 
     try:
@@ -978,7 +982,7 @@ def cmd_workflow_compose(args):
             _dump_json({"composed": composed, "source_map": source_map})
         else:
             print(f"Composed workflow: {composed.get('name', '?')} v{composed.get('version', '?')}")
-            for source in source_map.get("sources", []):
+            for source in source_map.get("sources", []):  # type: ignore[attr-defined]
                 print(f"  included: {source}")
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
@@ -987,12 +991,12 @@ def cmd_workflow_compose(args):
         sys.exit(1)
 
 
-def _print_help_and_exit(parser, code=2):
+def _print_help_and_exit(parser: argparse.ArgumentParser, code: int = 2) -> NoReturn:
     parser.print_help()
     sys.exit(code)
 
 
-def cmd_work_item_create(args):
+def cmd_work_item_create(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     custom_fields = None
     if args.custom_fields:
@@ -1035,7 +1039,7 @@ def cmd_work_item_create(args):
         sub.close()
 
 
-def cmd_work_item_transition(args):
+def cmd_work_item_transition(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     try:
         work_item_id = uuid.UUID(args.id)
@@ -1092,7 +1096,7 @@ def cmd_work_item_transition(args):
         sub.close()
 
 
-def cmd_webhook_register(args):
+def cmd_webhook_register(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     transitions = args.transitions.split(",") if args.transitions else None
     workflows = args.workflows.split(",") if args.workflows else None
@@ -1121,7 +1125,7 @@ def cmd_webhook_register(args):
         sub.close()
 
 
-def cmd_webhook_list(args):
+def cmd_webhook_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -1137,7 +1141,7 @@ def cmd_webhook_list(args):
         sub.close()
 
 
-def cmd_webhook_remove(args):
+def cmd_webhook_remove(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     try:
         webhook_id = uuid.UUID(args.id)
@@ -1154,7 +1158,7 @@ def cmd_webhook_remove(args):
         sub.close()
 
 
-def cmd_version(args):
+def cmd_version(args: argparse.Namespace) -> None:
     from regista._version_info import versions as _versions
 
     info = _versions()
@@ -1169,7 +1173,7 @@ def cmd_version(args):
         print(f"  signing_schemes:          {', '.join(info.available_signing_schemes)}")
 
 
-def cmd_doctor(args):
+def cmd_doctor(args: argparse.Namespace) -> None:
     from regista._config import resolve as resolve_config
     from regista._doctor import run_doctor
 
@@ -1217,7 +1221,7 @@ def _mask_dsn(dsn: str | None) -> str:
     return dsn
 
 
-def cmd_config_show(args):
+def cmd_config_show(args: argparse.Namespace) -> None:
     from regista._config import resolve as resolve_config
 
     cfg = resolve_config()
@@ -1259,7 +1263,7 @@ def _secret_backend_error(e: BaseException) -> RegistaError:
     )
 
 
-def _print_vault_auth_status(status):
+def _print_vault_auth_status(status: dict[str, Any]) -> None:
     print(f"vault provider available: {status.get('provider_available')}")
     print(f"VAULT_ADDR set:           {status.get('vault_addr_set')}")
     print(f"configured auth method:   {status.get('configured_method') or '(none)'}")
@@ -1280,7 +1284,7 @@ def _print_vault_auth_status(status):
         print(f"probe:                    FAILED — {status['probe_error']}")
 
 
-def cmd_secrets_resolve(args):
+def cmd_secrets_resolve(args: argparse.Namespace) -> None:
     from regista._secrets import available_providers
     from regista._secrets import resolve as resolve_secret
 
@@ -1365,7 +1369,7 @@ def cmd_secrets_resolve(args):
             print(f"(binary, {len(data)} bytes) {data.hex()[:64]}...", file=sys.stderr)
 
 
-def cmd_keys_fingerprint(args):
+def cmd_keys_fingerprint(args: argparse.Namespace) -> None:
     """Print each signing key's id, source and EFFECTIVE-bytes fingerprint.
 
     This is the operator-facing before/after equality primitive for key
@@ -1420,7 +1424,7 @@ def cmd_keys_fingerprint(args):
             print(f"  fingerprint:  {r['fingerprint']}")
 
 
-def cmd_assurance(args):
+def cmd_assurance(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     try:
         work_item_id = uuid.UUID(args.id)
@@ -1452,7 +1456,7 @@ def cmd_assurance(args):
         sub.close()
 
 
-def cmd_principal_list(args):
+def cmd_principal_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -1473,7 +1477,7 @@ def cmd_principal_list(args):
         sub.close()
 
 
-def cmd_principal_register(args):
+def cmd_principal_register(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     import base64
 
@@ -1503,7 +1507,7 @@ def cmd_principal_register(args):
         sub.close()
 
 
-def cmd_principal_enroll(args):
+def cmd_principal_enroll(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -1529,7 +1533,7 @@ def cmd_principal_enroll(args):
         sub.close()
 
 
-def cmd_principal_revoke(args):
+def cmd_principal_revoke(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -1553,7 +1557,7 @@ def cmd_principal_revoke(args):
         sub.close()
 
 
-def cmd_provision(args):
+def cmd_provision(args: argparse.Namespace) -> None:
     from regista._config import resolve as resolve_config
     from regista._provision import provision as _provision
 
@@ -1604,7 +1608,7 @@ def cmd_provision(args):
         sys.exit(1)
 
 
-def cmd_provision_principal(args):
+def cmd_provision_principal(args: argparse.Namespace) -> None:
     from regista._config import resolve as resolve_config
     from regista._provision import provision_principal as _provision_principal
 
@@ -1652,7 +1656,7 @@ def cmd_provision_principal(args):
             print(f"  public key registered: {result.public_key_registered}")
 
 
-def cmd_signer_generate(args):
+def cmd_signer_generate(args: argparse.Namespace) -> None:
     from regista.client_signer import ClientSigner
 
     try:
@@ -1674,7 +1678,7 @@ def cmd_signer_generate(args):
         _handle_error(e, json_mode=getattr(args, "json", False))
 
 
-def cmd_signer_sign_possession(args):
+def cmd_signer_sign_possession(args: argparse.Namespace) -> None:
     import json as json_mod
 
     from regista.client_signer import ClientSigner
@@ -1726,7 +1730,7 @@ def cmd_signer_sign_possession(args):
             sys.exit(1)
 
 
-def cmd_signer_sign_effective(args):
+def cmd_signer_sign_effective(args: argparse.Namespace) -> None:
     import json as json_mod
 
     from regista.client_signer import ClientSigner
@@ -1789,7 +1793,7 @@ def _parse_iso(value: object) -> datetime:
     return dt.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def cmd_spec_sign(args):
+def cmd_spec_sign(args: argparse.Namespace) -> None:
     import hashlib
 
     try:
@@ -1830,7 +1834,7 @@ def cmd_spec_sign(args):
         sub.close()
 
 
-def cmd_spec_events(args):
+def cmd_spec_events(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
@@ -1859,7 +1863,7 @@ def cmd_spec_events(args):
         sub.close()
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     _configure_structlog_stderr()
     parser = argparse.ArgumentParser(prog="regista", description="Regista admin CLI")
     _add_common_args(parser)
@@ -1941,7 +1945,9 @@ def main(argv=None):
     bnd = subs.add_parser("bundle", help="Audit bundle export and verification")
     bnd_sub = bnd.add_subparsers(dest="subcommand")
     bnd_export = bnd_sub.add_parser("export", help="Export an audit bundle")
-    bnd_export.add_argument("--output", required=True, help="Output file path")
+    bnd_export.add_argument(
+        "--output", required=True, help="Output JSON file path (bundle is canonical JSON)"
+    )
     bnd_export.add_argument("--since-seq", type=int, default=None, help="Export after this seq")
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)
@@ -2379,3 +2385,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+

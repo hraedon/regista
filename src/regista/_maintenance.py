@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 import structlog
 
@@ -12,16 +13,16 @@ log = structlog.get_logger()
 class MaintenanceThread:
     def __init__(
         self,
-        regista,
+        regista: Any,
         *,
         sweep_interval: float = 30.0,
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
         timestamp_interval: float = 3600.0,
-        tsa_config=None,
+        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider=None,
+        anchor_provider: Any = None,
         anchor_interval: float = 3600.0,
         anchor_upgrade_interval: float = 600.0,
     ) -> None:

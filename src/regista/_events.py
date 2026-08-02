@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import psycopg
+import psycopg.types.json
 from psycopg.sql import SQL
 
+from ._connection import DictConn
 from ._contract import (
     _RESERVED_TRANSITIONS,
     Jsonb,
@@ -29,7 +32,7 @@ _EVENT_FIELDS = (
 )
 
 
-def _row_to_event(row: dict) -> Event:
+def _row_to_event(row: dict[str, Any]) -> Event:
     return Event(
         event_id=row["event_id"],
         work_item_id=row["work_item_id"],
@@ -59,7 +62,7 @@ def _row_to_event(row: dict) -> Event:
     )
 
 
-def _lock_global_chain_head(conn: psycopg.Connection) -> bytes | None:
+def _lock_global_chain_head(conn: DictConn) -> bytes | None:
     """Serialise global appends and return the hash the next event chains from.
 
     Locks the single ``event_chain_head`` row ``FOR UPDATE`` so concurrent
@@ -81,7 +84,7 @@ def _lock_global_chain_head(conn: psycopg.Connection) -> bytes | None:
 
 
 def _advance_global_chain_head(
-    conn: psycopg.Connection, event_id: uuid.UUID, head_hash: bytes
+    conn: DictConn, event_id: uuid.UUID, head_hash: bytes
 ) -> None:
     """Point the global chain head at the just-appended event."""
     conn.execute(
@@ -97,9 +100,9 @@ def _advance_global_chain_head(
 
 
 def lock_work_item(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
-) -> dict | None:
+) -> dict[str, Any] | None:
     row = conn.execute(
         SQL(
             "SELECT work_item_id, workflow_name, workflow_version, work_item_type, "
@@ -114,12 +117,12 @@ def lock_work_item(
 
 
 def check_idempotency(
-    conn: psycopg.Connection,
+    conn: DictConn,
     event_id: uuid.UUID,
     actor_id: str | None = None,
     transition: str | None = None,
     work_item_id: uuid.UUID | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> Event | None:
     from ._contract import check_idempotency as _contract_check
 
@@ -135,7 +138,7 @@ def check_idempotency(
 
 
 def append_event(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
     actor_kind: str,
@@ -147,8 +150,8 @@ def append_event(
     payload: Jsonb | None,
     event_id: uuid.UUID,
     expected_event_seq: int | None = None,
-    on_behalf_of: dict | None = None,
-    _prelocked_wi: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
+    _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
     entity_kind: str = "work_item",
 ) -> Event:
@@ -181,7 +184,7 @@ def append_event(
         return existing
 
     if entity_kind == "work_item":
-        next_seq = wi_row["next_event_seq"]
+        next_seq = wi_row["next_event_seq"]  # type: ignore[index]
     else:
         entity_bytes = work_item_id.bytes
         key1 = int.from_bytes(entity_bytes[:8], "big", signed=False)
@@ -198,7 +201,7 @@ def append_event(
             ),
             [entity_kind, work_item_id],
         ).fetchone()
-        next_seq = row["next_seq"]
+        next_seq = row["next_seq"]  # type: ignore[index]
     check_expected_seq(next_seq, expected_event_seq)
 
     am = actor_metadata.value if actor_metadata is not None else None
@@ -251,7 +254,7 @@ def append_event(
 
     event_seq = next_seq
     try:
-        conn.execute(
+        inserted = conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                 "event_seq, actor_id, actor_kind, "
@@ -260,7 +263,8 @@ def append_event(
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING global_seq"
             ),
             [
                 event_id,
@@ -287,6 +291,7 @@ def append_event(
                 prev_global_event_hash,
             ],
         )
+        assigned_global_seq = inserted.fetchone()["global_seq"]  # type: ignore[index]
     except psycopg.errors.UniqueViolation as exc:
         constraint = exc.diag.constraint_name or ""
         if constraint == "events_entity_event_seq_key":
@@ -333,6 +338,7 @@ def append_event(
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,
+        global_seq=assigned_global_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=am,
@@ -353,7 +359,7 @@ def append_event(
 
 
 def append_transition_event(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
     actor_kind: str,
@@ -364,10 +370,10 @@ def append_transition_event(
     payload: Jsonb | None,
     event_id: uuid.UUID,
     expected_event_seq: int | None = None,
-    custom_fields_update: dict | None = None,
+    custom_fields_update: dict[str, Any] | None = None,
     release_claim: bool = True,
-    on_behalf_of: dict | None = None,
-    _prelocked_wi: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
+    _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
 ) -> Event:
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
@@ -381,7 +387,7 @@ def append_transition_event(
             f"Work item {work_item_id} not found",
         )
 
-    stored_payload = dict(payload.value) if payload is not None else {}
+    stored_payload = dict(cast(dict[str, Any], payload.value)) if payload is not None else {}
     if custom_fields_update:
         stored_payload["custom_fields_update"] = custom_fields_update
 
@@ -451,7 +457,7 @@ def append_transition_event(
     workflow_version = wi_row["workflow_version"]
 
     try:
-        conn.execute(
+        inserted = conn.execute(
             SQL(
                 "INSERT INTO events (event_id, work_item_id, entity_kind, entity_id, hash_alg, "
                 "event_seq, actor_id, actor_kind, "
@@ -460,7 +466,8 @@ def append_transition_event(
                 "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
                 "prev_global_event_hash) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING global_seq"
             ),
             [
                 event_id,
@@ -487,6 +494,7 @@ def append_transition_event(
                 prev_global_event_hash,
             ],
         )
+        assigned_global_seq = inserted.fetchone()["global_seq"]  # type: ignore[index]
     except psycopg.errors.UniqueViolation as exc:
         constraint = exc.diag.constraint_name or ""
         if constraint == "events_entity_event_seq_key":
@@ -556,6 +564,7 @@ def append_transition_event(
         entity_id=work_item_id,
         hash_alg="sha-256",
         event_seq=event_seq,
+        global_seq=assigned_global_seq,
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=am,
@@ -576,7 +585,7 @@ def append_transition_event(
 
 
 def read_events_by_work_item(
-    conn: psycopg.Connection,
+    conn: DictConn,
     work_item_id: uuid.UUID,
     limit: int = 100,
     before_seq: int | None = None,
@@ -615,7 +624,7 @@ def read_events_by_work_item(
 
 
 def read_events_composite(
-    conn: psycopg.Connection,
+    conn: DictConn,
     *,
     work_item_id: uuid.UUID | None = None,
     actor_id: str | None = None,
@@ -626,7 +635,7 @@ def read_events_composite(
     before_seq: int | None = None,
 ) -> list[Event]:
     clauses: list[str] = []
-    params: list = []
+    params: list[Any] = []
 
     if work_item_id is not None:
         clauses.append("work_item_id = %s")

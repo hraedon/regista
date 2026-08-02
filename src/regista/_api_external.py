@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -19,7 +20,7 @@ class ExternalApiMixin(_RegistaBase):
         self,
         url: str,
         headers: dict[str, str] | None = None,
-        event_filter: dict | None = None,
+        event_filter: dict[str, Any] | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
         *,
@@ -36,7 +37,10 @@ class ExternalApiMixin(_RegistaBase):
             max_retries: Per-receipt retry limit before dead-lettering (default 3).
             public_key: Optional asymmetric public key (Ed25519, raw 32 bytes).
                 When provided with ``key_scheme='ed25519'``, returned witness
-                signatures are verified against this key (BC-297).
+                signatures are verified against this key (BC-297), and the key
+                is enrolled into the anchored principal-keys registry under the
+                ``witness:<witness_id>`` principal so downstream verifiers can
+                treat it as a trust root (WI-238).
             key_scheme: Signing scheme for witness signature verification
                 (``'hmac-sha256'`` default, or ``'ed25519'``).
 
@@ -49,8 +53,38 @@ class ExternalApiMixin(_RegistaBase):
             public_key=public_key, key_scheme=key_scheme,
         )
 
+    def rotate_witness_key(
+        self,
+        witness_id: uuid.UUID,
+        new_public_key: bytes,
+    ) -> dict[str, Any]:
+        """Rotate an Ed25519 witness's pinned public key.
+
+        Updates the witness registration's ``public_key`` and rotates the
+        anchored principal-keys entry for ``witness:<witness_id>`` (the old
+        key is superseded, the new key becomes active) in a single
+        transaction. Requires the witness to use ``key_scheme='ed25519'``.
+
+        Returns:
+            The new active principal-key entry as a dict.
+        """
+        return self.witnesses.rotate_key(witness_id, new_public_key)
+
+    def enrolled_witness_key(self, witness_id: uuid.UUID) -> dict[str, Any] | None:
+        """Return the active anchored principal-key entry for a witness.
+
+        Looks up the ``witness:<witness_id>`` principal in the anchored
+        principal-keys registry (the trust root downstream verifiers
+        consult). Returns ``None`` when the witness has no enrolled key.
+        """
+        return self.witnesses.enrolled_key(witness_id)
+
     def unregister_witness(self, witness_id: uuid.UUID) -> None:
-        """Remove a witness. Pending receipts are abandoned."""
+        """Remove a witness. Pending receipts are abandoned.
+
+        Any anchored principal key enrolled for ``witness:<witness_id>`` is
+        revoked (it remains in the registry for historical verification).
+        """
         self.witnesses.unregister(witness_id)
 
     def pause_witness(self, witness_id: uuid.UUID) -> None:
@@ -61,7 +95,7 @@ class ExternalApiMixin(_RegistaBase):
         """Reactivate a paused/failed witness. Resets consecutive_failures."""
         self.witnesses.reactivate(witness_id)
 
-    def list_witnesses(self, status: str | None = None) -> list[dict]:
+    def list_witnesses(self, status: str | None = None) -> list[dict[str, Any]]:
         """List witness registrations, optionally filtered by status."""
         return self.witnesses.list(status=status)
 
@@ -71,7 +105,7 @@ class ExternalApiMixin(_RegistaBase):
         witness_id: uuid.UUID | None = None,
         status: str | None = None,
         limit: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Query witness receipts. At least one filter is recommended."""
         return self.witnesses.receipts(
             event_id=event_id, witness_id=witness_id,
@@ -96,7 +130,7 @@ class ExternalApiMixin(_RegistaBase):
         workflows: list[str] | None = None,
         max_failures: int = 10,
         sign_secret: bytes | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Register a webhook for push-model event delivery.
 
         Args:
@@ -122,7 +156,7 @@ class ExternalApiMixin(_RegistaBase):
             max_failures=max_failures, sign_secret=sign_secret,
         )
 
-    def list_webhooks(self, status: str | None = None) -> list[dict]:
+    def list_webhooks(self, status: str | None = None) -> list[dict[str, Any]]:
         """List registered webhooks.
 
         Args:

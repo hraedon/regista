@@ -4,15 +4,17 @@ import hashlib
 import hmac as _hmac
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 
 from ._anchoring import AnchorReceipt, compute_content_anchor
 from ._archive_segments import _verify_global_chain, _verify_work_item_chains
-from ._connection import ConnectionManager
+from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
@@ -25,6 +27,39 @@ log = structlog.get_logger()
 _BUNDLE_FORMAT_VERSION = 2
 _SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
 
+# Output names that imply a compressed/archive container. An audit bundle is a
+# canonical JSON document; writing plain JSON under one of these names hands an
+# auditor a file that `tar -xzf` / `unzip` rejects as corrupt (WI-210).
+_ARCHIVE_OUTPUT_SUFFIXES = (
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tar.zst",
+    ".tgz",
+    ".tbz2",
+    ".txz",
+    ".tar",
+    ".zip",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".zst",
+    ".7z",
+    ".rar",
+)
+
+
+def _reject_archive_output_name(output_path: str | Path) -> None:
+    name = Path(output_path).name.lower()
+    for suffix in _ARCHIVE_OUTPUT_SUFFIXES:
+        if name.endswith(suffix):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Output name {Path(output_path).name!r} implies a compressed "
+                f"archive ({suffix}), but an audit bundle is a canonical JSON "
+                f"document; use a .json name (e.g. 'bundle.json').",
+            )
+
 
 @dataclass(frozen=True)
 class BundleVerificationReport:
@@ -36,7 +71,7 @@ class BundleVerificationReport:
     global_chain_error: str | None = None
     work_item_chain_ok: bool = True
     work_item_chain_error: str | None = None
-    anchor_verifications: list[dict] = field(default_factory=list)
+    anchor_verifications: list[dict[str, Any]] = field(default_factory=list)
     segment_chain_ok: bool = True
     segment_chain_error: str | None = None
     bundle_hash_ok: bool = True
@@ -46,7 +81,7 @@ class BundleVerificationReport:
     signature_check: str = "enforced"
     errors: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "verified": self.verified,
             "event_count": self.event_count,
@@ -74,7 +109,8 @@ def export_audit_bundle(
     output_path: str | Path,
     *,
     since_seq: int | None = None,
-) -> dict:
+) -> dict[str, Any]:
+    _reject_archive_output_name(output_path)
     with mgr.transaction() as conn:
         if since_seq is not None:
             rows = conn.execute(
@@ -117,7 +153,7 @@ def export_audit_bundle(
             lambda c: _list_principal_key_dicts(c),
         )
 
-        segments: list[dict] = []
+        segments: list[dict[str, Any]] = []
         segments_available = True
         try:
             from ._archive_segments import list_segments
@@ -144,7 +180,7 @@ def export_audit_bundle(
             "since_seq": since_seq,
         }
 
-        bundle: dict = {
+        bundle: dict[str, Any] = {
             "manifest": manifest,
             "events": events,
             "anchor_receipts": anchor_receipts,
@@ -193,8 +229,8 @@ def _is_undefined_table(exc: Exception) -> bool:
 
 
 def _read_optional_section(
-    conn, table_name: str, reader
-) -> tuple[list[dict], bool]:
+    conn: DictConn, table_name: str, reader: Callable[[DictConn], list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], bool]:
     """Read an optional bundle section under a savepoint.
 
     Returns ``(rows, available)``. A missing table (store predates the
@@ -215,13 +251,13 @@ def _read_optional_section(
         return rows, True
 
 
-def _list_receipts_dicts(conn) -> list[dict]:
+def _list_receipts_dicts(conn: DictConn) -> list[dict[str, Any]]:
     from ._anchoring import list_anchor_receipts
 
     return [r.to_dict() for r in list_anchor_receipts(conn, limit=10_000)]
 
 
-def _list_principal_key_dicts(conn) -> list[dict]:
+def _list_principal_key_dicts(conn: DictConn) -> list[dict[str, Any]]:
     from ._principal_keys import list_principal_keys_for_conn
 
     return [k.to_dict() for k in list_principal_keys_for_conn(conn)]
@@ -256,7 +292,7 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
     segments_data = bundle.get("segments", [])
 
     errors: list[str] = []
-    anchor_verifications: list[dict] = []
+    anchor_verifications: list[dict[str, Any]] = []
 
     stored_hash = manifest.get("bundle_hash", "")
     recomputed_hash = f"sha256:{hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()}"
@@ -358,7 +394,7 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
 
 
 def _verify_event_signatures(
-    events: list[Event], public_keys_data: list[dict]
+    events: list[Event], public_keys_data: list[dict[str, Any]]
 ) -> tuple[int, int, list[str]]:
     """Verify event signatures offline against the bundled key registry.
 
@@ -373,7 +409,7 @@ def _verify_event_signatures(
 
     Returns ``(verified_count, unverifiable_count, errors)``.
     """
-    keys_by_id: dict[str, dict] = {}
+    keys_by_id: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
 
     for kd in public_keys_data:
@@ -485,7 +521,7 @@ def _verify_event_signatures(
 
 def _verify_anchor_offline(
     receipt: AnchorReceipt, events: list[Event]
-) -> dict:
+) -> dict[str, Any]:
     receipt_id = str(receipt.receipt_id)
 
     if receipt.target_global_seq is None:
@@ -648,7 +684,7 @@ def _verify_anchor_offline(
 
 
 def _verify_segment_chain_offline(
-    segments: list[dict], events: list[Event]
+    segments: list[dict[str, Any]], events: list[Event]
 ) -> tuple[bool, str | None]:
     if len(segments) <= 1:
         return True, None
@@ -682,7 +718,7 @@ def _verify_segment_chain_offline(
     return True, None
 
 
-def _row_to_event_dict(row: dict) -> dict:
+def _row_to_event_dict(row: dict[str, Any]) -> dict[str, Any]:
     pch = row["payload_canonical_hash"]
     sig = row["signature"]
     if pch is None or sig is None:
@@ -735,7 +771,7 @@ def _row_to_event_dict(row: dict) -> dict:
     return d
 
 
-def _canonical_bundle_bytes(bundle: dict) -> bytes:
+def _canonical_bundle_bytes(bundle: dict[str, Any]) -> bytes:
     manifest = dict(bundle.get("manifest", {}))
     manifest.pop("bundle_hash", None)
 

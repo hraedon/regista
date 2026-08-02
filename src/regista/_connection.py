@@ -5,6 +5,7 @@ import weakref
 from collections.abc import Generator
 from contextlib import contextmanager
 from types import TracebackType
+from typing import Any, TypeAlias
 
 import psycopg
 from psycopg.rows import dict_row
@@ -17,6 +18,8 @@ _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _RESERVED_SCHEMAS = frozenset(
     {"public", "information_schema", "pg_catalog", "pg_toast"}
 )
+
+DictConn: TypeAlias = psycopg.Connection[dict[str, Any]]
 
 
 def validate_project_name(name: str) -> str:
@@ -32,12 +35,12 @@ def validate_project_name(name: str) -> str:
     return name
 
 
-def _configure_session(conn: psycopg.Connection) -> None:
+def _configure_session(conn: DictConn) -> None:
     conn.execute("SET synchronous_commit = on")
     conn.commit()
 
 
-def _close_pool_quietly(pool: ConnectionPool) -> None:
+def _close_pool_quietly(pool: ConnectionPool[DictConn]) -> None:
     """Close *pool* from the interpreter-exit path, swallowing every error.
 
     Registered via `weakref.finalize`, whose atexit hook routes a raising
@@ -68,8 +71,8 @@ class ConnectionManager:
         self._schema = validate_project_name(project)
         self._project = project
         self._require_ssl = require_ssl
-        kwargs: dict = {"row_factory": dict_row}
-        pool_kwargs: dict = {
+        kwargs: dict[str, Any] = {"row_factory": dict_row}
+        pool_kwargs: dict[str, Any] = {
             "min_size": pool_min,
             "max_size": pool_max,
             "open": False,
@@ -78,7 +81,7 @@ class ConnectionManager:
         }
         if pool_max_lifetime is not None:
             pool_kwargs["max_lifetime"] = pool_max_lifetime
-        self._pool = ConnectionPool(dsn, **pool_kwargs)
+        self._pool: ConnectionPool[DictConn] = ConnectionPool(dsn, **pool_kwargs)
         # WI-218: close the pool BEFORE the interpreter's finalization window.
         # psycopg_pool's ConnectionPool.__del__ joins its live daemon workers,
         # and on Python 3.14+ Thread.join() raises PythonFinalizationError once
@@ -105,7 +108,7 @@ class ConnectionManager:
     def schema(self) -> str:
         return self._schema
 
-    def _verify_ssl(self, conn: psycopg.Connection) -> None:
+    def _verify_ssl(self, conn: DictConn) -> None:
         if not self._require_ssl:
             return
         row = conn.execute(
@@ -145,7 +148,7 @@ class ConnectionManager:
         self.close()
 
     @contextmanager
-    def connect(self) -> Generator[psycopg.Connection, None, None]:
+    def connect(self) -> Generator[DictConn, None, None]:
         """Yield a raw connection with search_path set to the project schema.
 
         Uses session-scoped SET (not SET LOCAL) because there is no enclosing
@@ -162,7 +165,7 @@ class ConnectionManager:
             yield conn
 
     @contextmanager
-    def transaction(self) -> Generator[psycopg.Connection, None, None]:
+    def transaction(self) -> Generator[DictConn, None, None]:
         with self._pool.connection() as conn:
             self._verify_ssl(conn)
             with conn.transaction():
@@ -174,7 +177,7 @@ class ConnectionManager:
                 yield conn
 
     @contextmanager
-    def transaction_repeatable_read(self) -> Generator[psycopg.Connection, None, None]:
+    def transaction_repeatable_read(self) -> Generator[DictConn, None, None]:
         with self._pool.connection() as conn:
             self._verify_ssl(conn)
             conn.rollback()
