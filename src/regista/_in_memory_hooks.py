@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
+from ._keys import KeySet
 from ._types import DeadLetterEntry, HookContext
 
 
 def in_memory_poll_hooks(
-    hook_queue: list,
-    hook_handlers: dict,
-    dead_letter: dict,
-    work_items: dict,
-    store,
-    key_set,
+    hook_queue: list[dict[str, Any]],
+    hook_handlers: dict[str, Callable[[HookContext], Any]],
+    dead_letter: dict[int, dict[str, Any]],
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    store: InMemoryEventStore,
+    key_set: KeySet | None,
 ) -> int:
     now = datetime.now(UTC)
     for entry in hook_queue:
@@ -87,11 +91,11 @@ def in_memory_poll_hooks(
 
 
 def _in_memory_move_to_dead_letter(
-    entry: dict,
-    dead_letter: dict,
-    work_items: dict,
-    store,
-    key_set,
+    entry: dict[str, Any],
+    dead_letter: dict[int, dict[str, Any]],
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    store: InMemoryEventStore,
+    key_set: KeySet | None,
     error_message: str,
 ) -> None:
     entry["status"] = "dead_lettered"
@@ -128,8 +132,8 @@ def _in_memory_move_to_dead_letter(
 
 
 def in_memory_requeue_dead_lettered_hook(
-    dead_letter: dict,
-    hook_queue: list,
+    dead_letter: dict[int, dict[str, Any]],
+    hook_queue: list[dict[str, Any]],
     hook_id_counter: int,
     dead_letter_id: int,
 ) -> int:
@@ -139,7 +143,8 @@ def in_memory_requeue_dead_lettered_hook(
             ErrorCode.HOOK_NOT_FOUND,
             f"Dead letter entry {dead_letter_id} not found",
         )
-    max_id = max(hook_id_counter, entry.get("original_hook_queue_id", 0))
+    orig_id: int = entry.get("original_hook_queue_id", 0)
+    max_id = max(hook_id_counter, orig_id)
     new_counter = max_id + 1
     hook_queue.append({
         "id": entry["original_hook_queue_id"] or new_counter,
@@ -158,7 +163,7 @@ def in_memory_requeue_dead_lettered_hook(
 
 
 def in_memory_list_dead_lettered_hooks(
-    dead_letter: dict, limit: int = 100,
+    dead_letter: dict[int, dict[str, Any]], limit: int = 100,
 ) -> list[DeadLetterEntry]:
     return [
         DeadLetterEntry(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from ._contract import (
     Jsonb,
@@ -12,26 +13,28 @@ from ._contract import (
     validate_read_events_filters,
     validate_work_item_exists,
 )
+from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
+from ._keys import KeySet
 from ._types import Event
 
 
 def in_memory_append_event(
-    store,
-    work_items: dict,
-    workflows: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     actor_id: str,
     actor_kind: str = "agent",
-    actor_metadata: dict | None = None,
+    actor_metadata: dict[str, Any] | None = None,
     *,
     key_id: str | None = None,
     transition: str | None = None,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
-    on_behalf_of: dict | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
@@ -48,6 +51,7 @@ def in_memory_append_event(
     if entity_kind == "work_item":
         wi = work_items.get(work_item_id)
         validate_work_item_exists(wi, work_item_id)
+        assert wi is not None
         wf_name = wi["workflow_name"]
         wf_version = wi["workflow_version"]
     else:
@@ -86,7 +90,7 @@ def in_memory_append_event(
 
 
 def in_memory_read_events(
-    store,
+    store: InMemoryEventStore,
     *,
     work_item_id: uuid.UUID | None = None,
     actor_id: str | None = None,
@@ -109,7 +113,7 @@ def in_memory_read_events(
 
 
 def in_memory_read_events_since(
-    store,
+    store: InMemoryEventStore,
     work_item_id: uuid.UUID,
     after_seq: int,
     *,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -57,32 +60,32 @@ class InMemoryRegista(
         self._key_set: KeySet | None = None
         if hmac_key_path:
             self._key_set = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)
-        self._workflows: dict[tuple[str, int], dict] = {}
-        self._workflow_defs: dict = {}
+        self._workflows: dict[tuple[str, int], dict[str, Any]] = {}
+        self._workflow_defs: dict[str, Any] = {}
         self._workflow_hashes: dict[tuple[str, int], bytes] = {}
-        self._workflow_registered_at: dict[tuple[str, int], object] = {}
-        self._work_items: dict = {}
+        self._workflow_registered_at: dict[tuple[str, int], datetime] = {}
+        self._work_items: dict[uuid.UUID, dict[str, Any]] = {}
         self._store = InMemoryEventStore()
         self._store.bind(self._work_items)
-        self._claims: dict = {}
-        self._links: list[dict] = []
+        self._claims: dict[uuid.UUID, dict[str, Any]] = {}
+        self._links: list[dict[str, Any]] = []
         self._actor_roles: set[tuple[str, str]] = set()
-        self._actor_role_created: dict[tuple[str, str], object] = {}
+        self._actor_role_created: dict[tuple[str, str], datetime] = {}
         from ._review_validators import BUILTIN_REVIEW_VALIDATORS
 
-        self._validators: dict[str, Callable] = dict(BUILTIN_REVIEW_VALIDATORS)
-        self._hook_handlers: dict[str, Callable] = {}
-        self._hook_queue: list[dict] = []
+        self._validators: dict[str, Callable[..., Any]] = dict(BUILTIN_REVIEW_VALIDATORS)
+        self._hook_handlers: dict[str, Callable[..., Any]] = {}
+        self._hook_queue: list[dict[str, Any]] = []
         self._hook_id_counter = 0
-        self._dead_letter: dict[int, dict] = {}
+        self._dead_letter: dict[int, dict[str, Any]] = {}
         self._hook_consumer_running = False
-        self._recurrence_rules: dict = {}
+        self._recurrence_rules: dict[str, dict[str, Any]] = {}
         self._strict_roles = strict_roles
         self._witness_transport = witness_transport
-        self._witnesses: dict = {}
-        self._witness_receipts: list[dict] = []
+        self._witnesses: dict[uuid.UUID, dict[str, Any]] = {}
+        self._witness_receipts: list[dict[str, Any]] = []
         self._witness_delivery_lock = threading.Lock()
-        self._enrolled_witness_keys: dict = {}
+        self._enrolled_witness_keys: dict[str, Any] = {}
 
     @classmethod
     def create_project(

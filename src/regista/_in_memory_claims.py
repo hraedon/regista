@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from ._contract import (
     Jsonb,
@@ -13,16 +14,18 @@ from ._contract import (
     validate_release,
     validate_work_item_exists,
 )
+from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
+from ._keys import KeySet
 from ._types import Claim
 
 
 def in_memory_acquire_claim(
-    store,
-    work_items: dict,
-    claims: dict,
-    workflows: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    claims: dict[uuid.UUID, dict[str, Any]],
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     actor_id: str,
     ttl_seconds: int = 300,
@@ -41,6 +44,7 @@ def in_memory_acquire_claim(
 
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
+    assert wi is not None
 
     now = datetime.now(UTC)
     existing = claims.get(work_item_id)
@@ -69,7 +73,7 @@ def in_memory_acquire_claim(
         eid = event_id or uuid.uuid4()
         _in_memory_append_claim_event(
             store, wi, key_set, eid, result.event_transition,
-            result.event_payload,
+            result.event_payload,  # type: ignore[arg-type]
             actor_id=actor_id,
             actor_kind=actor_kind,
             actor_metadata=actor_metadata,
@@ -92,10 +96,10 @@ def in_memory_acquire_claim(
 
 
 def in_memory_heartbeat_claim(
-    store,
-    work_items: dict,
-    claims: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    claims: dict[uuid.UUID, dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     actor_id: str,
     ttl_seconds: int = 300,
@@ -113,6 +117,7 @@ def in_memory_heartbeat_claim(
     )
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
+    assert wi is not None
 
     now = datetime.now(UTC)
     claim = claims.get(work_item_id)
@@ -127,6 +132,7 @@ def in_memory_heartbeat_claim(
         now=now,
     )
     threshold = compute_coalesce_threshold(ttl_seconds, coalesce_threshold)
+    assert claim is not None
     last_emitted = claim.get("last_heartbeat_emitted_at")
     should_emit = (
         last_emitted is None
@@ -166,10 +172,10 @@ def in_memory_heartbeat_claim(
 
 
 def in_memory_release_claim(
-    store,
-    work_items: dict,
-    claims: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    claims: dict[uuid.UUID, dict[str, Any]],
+    key_set: KeySet | None,
     work_item_id: uuid.UUID,
     actor_id: str,
     *,
@@ -185,6 +191,7 @@ def in_memory_release_claim(
     )
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)
+    assert wi is not None
 
     claim = claims.get(work_item_id)
     validate_release(claim, actor_id, work_item_id)
@@ -202,10 +209,10 @@ def in_memory_release_claim(
 
 
 def in_memory_sweep_expired_claims(
-    store,
-    work_items: dict,
-    claims: dict,
-    key_set,
+    store: InMemoryEventStore,
+    work_items: dict[uuid.UUID, dict[str, Any]],
+    claims: dict[uuid.UUID, dict[str, Any]],
+    key_set: KeySet | None,
 ) -> int:
     now = datetime.now(UTC)
     expired = [
@@ -236,9 +243,9 @@ def in_memory_sweep_expired_claims(
 
 
 def _in_memory_check_escalation(
-    store,
-    workflows: dict,
-    wi: dict,
+    store: InMemoryEventStore,
+    workflows: dict[tuple[str, int], dict[str, Any]],
+    wi: dict[str, Any],
     attempt_number: int,
 ) -> bool:
     wf_data = workflows.get((wi["workflow_name"], wi["workflow_version"]))
@@ -260,12 +267,12 @@ def _in_memory_check_escalation(
 
 
 def _in_memory_append_claim_event(
-    store,
-    wi: dict,
-    key_set,
+    store: InMemoryEventStore,
+    wi: dict[str, Any],
+    key_set: KeySet | None,
     event_id: uuid.UUID,
     transition: str,
-    payload: dict,
+    payload: dict[str, Any],
     *,
     actor_id: str = "system",
     actor_kind: str = "system",
