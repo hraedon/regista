@@ -4,6 +4,7 @@ import contextlib
 import hmac as _hmac
 import uuid
 from datetime import datetime
+from typing import Any
 
 import psycopg
 import structlog
@@ -42,14 +43,14 @@ def _drop_replay_tables(conn: DictConn, *table_names: str) -> None:
 
 # AC-28: event hash chain verification (BC-233)
 def _verify_hash_chain(
-    event: dict,
-    prev_event: dict | None,
+    event: dict[str, Any],
+    prev_event: dict[str, Any] | None,
 ) -> tuple[bool, str]:
     expected = event.get("prev_event_hash")
     if expected is None:
         return True, ""
     if prev_event is None:
-        return False, "prev_event_hash set but no previous event"
+        return False, "prev_event_hash set[Any] but no previous event"
     prev_env = prev_event.get("canonical_envelope")
     prev_sig = prev_event.get("signature")
     if prev_env is None or prev_sig is None:
@@ -64,7 +65,7 @@ def _verify_hash_chain(
     return True, ""
 
 
-def _event_head_hash(evt: dict) -> bytes | None:
+def _event_head_hash(evt: dict[str, Any]) -> bytes | None:
     """Return the chain head hash an event contributes, or ``None``.
 
     Accepts either a pre-computed ``head_hash`` (the compact chain-link
@@ -90,7 +91,7 @@ def _event_head_hash(evt: dict) -> bytes | None:
     return resolve_hash_function("sha-256")(bytes(env) + bytes(sig)).digest()
 
 
-def _chain_link(evt: dict) -> dict:
+def _chain_link(evt: dict[str, Any]) -> dict[str, Any]:
     """Reduce an event row to the fields the global chain walk needs.
 
     The head hash is computed here so the row's envelope, signature and
@@ -114,9 +115,9 @@ def _chain_link(evt: dict) -> dict:
 
 
 def _verify_global_hash_chain(
-    events: list[dict],
-    segments: list[dict] | None = None,
-) -> tuple[int, dict | None]:
+    events: list[dict[str, Any]],
+    segments: list[dict[str, Any]] | None = None,
+) -> tuple[int, dict[str, Any] | None]:
     """Verify the global event hash chain by walking ``prev_global_event_hash``
     links (BC-300 / Plan 024).
 
@@ -143,22 +144,22 @@ def _verify_global_hash_chain(
     ``first_event_prev_hash`` can stand in for an archived genesis event.
 
     Returns ``(warning_count, chain_tail)`` where *chain_tail* is the last
-    live event reached by the walk (or ``None`` if the event list is empty).
+    live event reached by the walk (or ``None`` if the event list[Any] is empty).
     """
     from collections import defaultdict
 
     if not events:
         return 0, None
 
-    seg_by_prev: dict[str, dict] = {}
+    seg_by_prev: dict[str, dict[str, Any]] = {}
     if segments:
         for seg in segments:
             feph = seg.get("first_event_prev_hash")
             key = bytes(feph).hex() if feph is not None else ""
             seg_by_prev[key] = seg
 
-    link_map: dict[str, list[dict]] = defaultdict(list)
-    genesis_events: list[dict] = []
+    link_map: dict[str, list[dict[str, Any]]] = defaultdict(list[Any])
+    genesis_events: list[dict[str, Any]] = []
     for evt in events:
         expected = evt.get("prev_global_event_hash")
         if expected is None:
@@ -170,7 +171,7 @@ def _verify_global_hash_chain(
 
     # Multiple genesis events (NULL prev_global_event_hash) mean a fork or
     # corruption. Which one is the canonical chain start must not depend on the
-    # arbitrary order of the input list (WI-219): pick the lowest global_seq,
+    # arbitrary order of the input list[Any] (WI-219): pick the lowest global_seq,
     # breaking any remaining tie on event_id so the verdict is total and stable.
     genesis_events.sort(
         key=lambda e: (
@@ -207,10 +208,10 @@ def _verify_global_hash_chain(
         current_head_hex = bytes(genesis_seg["head_hash"]).hex()
         start_from_segment = True
 
-    visited_events: set = set()
-    visited_segments: set = set()
-    last_event: dict | None = None
-    current: dict | None = genesis_events[0] if genesis_events else None
+    visited_events: set[Any] = set[Any]()
+    visited_segments: set[Any] = set[Any]()
+    last_event: dict[str, Any] | None = None
+    current: dict[str, Any] | None = genesis_events[0] if genesis_events else None
 
     while True:
         if start_from_segment:
@@ -323,7 +324,7 @@ _EVENT_FIELDS = (
 # Rows pulled per FETCH from the server-side event cursor (WI-217).
 #
 # A client-side cursor is not an option here: libpq buffers the whole result
-# set before psycopg sees row one, so `SELECT ... FROM events` costs the
+# set[Any] before psycopg sees row one, so `SELECT ... FROM events` costs the
 # entire log in C heap no matter how the rows are consumed.  `cursor.stream()`
 # is also out — it forbids other traffic on the connection, and the group loop
 # has to write report rows as it goes.  That leaves a named (server-side)
@@ -334,13 +335,13 @@ _EVENT_FIELDS = (
 # in ROWS, not bytes — on a project with very large event payloads the block's
 # byte cost rises with the payload width.
 #
-# Client-side working set: one fetch block, plus the widest single entity's
+# Client-side working set[Any]: one fetch block, plus the widest single entity's
 # history, plus one compact chain link per event.
 #
 # The chain index is the term that still grows with the log, so it is worth
 # being precise about, and the answer depends on what you charge to it.  A link
 # allocates 258 B of fresh memory (measured: tracemalloc delta while building
-# the index over 6000 real rows) — the dict plus the two 32-byte digests.  It
+# the index over 6000 real rows) — the dict[str, Any] plus the two 32-byte digests.  It
 # also pins the row's `event_id` UUID and `global_seq` int, which would
 # otherwise be freed with the row, taking the footprint to ~360 B by
 # `sys.getsizeof`, or ~470 B if the four (interned, shared) key strings are
@@ -360,7 +361,7 @@ _EVENT_STREAM_SIZE = 100
 # Measured on a 6000-row / 8.3 MiB events table: ordering by
 # `work_item_id, event_seq` plans as `Sort -> Seq Scan` and parks 6.1 MiB in
 # `pgsql_tmp` after fetching a single row (a few hundred MB at production
-# scale, which a deployment with `temp_file_limit` set would abort on);
+# scale, which a deployment with `temp_file_limit` set[Any] would abort on);
 # ordering by the index columns plans as `Index Scan using idx_events_entity`
 # and uses zero temp space.  There is no index on `work_item_id` to order by —
 # migration 031 dropped `UNIQUE (work_item_id, event_seq)` when it made
@@ -449,7 +450,7 @@ def _replay_inner(
 
     wi_ids = {row["work_item_id"] for row in wi_rows}
     # Only membership is needed from here on, and the stream below holds the
-    # connection for the rest of the call — don't keep the row list alive
+    # connection for the rest of the call — don't keep the row list[Any] alive
     # alongside it (WI-217).
     del wi_rows
 
@@ -460,17 +461,17 @@ def _replay_inner(
     total_principal_binding_failures = 0
 
     # WI-217: the event log is streamed one entity at a time through a
-    # server-side cursor, so the replay working set is bounded by the widest
+    # server-side cursor, so the replay working set[Any] is bounded by the widest
     # single entity's history plus a fetch block, not by the size of the
     # project's whole event log.  The only per-event state that outlives a
     # group is the compact chain link below, which carries a pre-computed
     # head hash instead of the envelope, signature and payload.  See
     # _EVENT_STREAM_SIZE / _EVENT_STREAM_ORDER for the full cost, including
     # the server side — the ordering is load bearing for both.
-    chain_links: list[dict] = []
+    chain_links: list[dict[str, Any]] = []
     scoped_event_count = 0
 
-    def _handle_orphan_group(orphan_id, orphan_evts: list[dict]) -> None:
+    def _handle_orphan_group(orphan_id: Any, orphan_evts: list[dict[str, Any]]) -> None:
         nonlocal halted_count, total_warnings
 
         is_non_work_item = any(
@@ -513,7 +514,7 @@ def _replay_inner(
                 event_count=len(orphan_evts),
             )
 
-    def _process_group(entity_kind, wi_id, events: list[dict]) -> None:
+    def _process_group(entity_kind: str, wi_id: Any, events: list[dict[str, Any]]) -> None:
         nonlocal ok_count, drift_count, halted_count
         nonlocal total_warnings, total_principal_binding_failures
 
@@ -579,6 +580,7 @@ def _replay_inner(
             ),
             [wi_id],
         ).fetchone()
+        assert live_row is not None
 
         if _states_match(replayed_state, live_row):
             ok_count += 1
@@ -620,7 +622,7 @@ def _replay_inner(
                 live_row["workflow_version"],
                 live_row["work_item_type"],
                 replayed_state["current_state"],
-                psycopg.types.json.Jsonb(replayed_state["custom_fields"]),
+                psycopg.types.json.Jsonb(replayed_state["custom_fields"]),  # type: ignore[attr-defined]
                 replayed_state["needs_review"],
                 replayed_state["not_before"],
                 replayed_state["last_event_seq"],
@@ -648,7 +650,7 @@ def _replay_inner(
             f"SELECT {_EVENT_FIELDS} FROM events "
             "WHERE entity_kind = 'work_item' AND entity_id = %s ORDER BY event_seq"
         )
-        events_params: list | None = [work_item_id]
+        events_params: list[Any] | None = [work_item_id]
     else:
         events_query = SQL(f"SELECT {_EVENT_FIELDS} FROM events {_EVENT_STREAM_ORDER}")
         events_params = None
@@ -673,7 +675,7 @@ def _replay_inner(
         event_stream.itersize = _EVENT_STREAM_SIZE
         event_stream.execute(events_query, events_params)
 
-        group: list[dict] = []
+        group: list[dict[str, Any]] = []
         group_key = None
         group_wi_id = None
         for evt in event_stream:
@@ -690,12 +692,14 @@ def _replay_inner(
             # `ORDER BY work_item_id` produced.
             key = (evt["entity_kind"], evt["entity_id"])
             if group and key != group_key:
+                assert group_key is not None
                 _process_group(group_key[0], group_wi_id, group)
                 group = []
             group_key = key
             group_wi_id = evt["work_item_id"]
             group.append(evt)
         if group:
+            assert group_key is not None
             _process_group(group_key[0], group_wi_id, group)
         # Drop the last group before the global-chain phase, which only needs
         # the compact links.
@@ -721,7 +725,7 @@ def _replay_inner(
         )
 
     if not scoped:
-        segment_rows: list[dict] = []
+        segment_rows: list[dict[str, Any]] = []
         try:
             segment_rows = conn.execute(
                 SQL(
@@ -770,7 +774,7 @@ def _replay_inner(
         }
 
         _verify_cfg = TSAConfig(tsa_url="")
-        covered: set[int] = set()
+        covered: set[int] = set[Any]()
         for br in batch_rows:
             first_seq = br["first_global_seq"]
             last_seq = br["last_global_seq"]
@@ -895,15 +899,15 @@ def _requires_principal_registration(
 
 def _replay_work_item(
     conn: DictConn,
-    wi_id,
-    events: list[dict],
+    wi_id: Any,
+    events: list[dict[str, Any]],
     key_set: KeySet,
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
-) -> tuple[dict, int, int]:
+) -> tuple[dict[str, Any], int, int]:
     state = None
-    custom_fields: dict = {}
+    custom_fields: dict[str, Any] = {}
     needs_review = False
     not_before: datetime | None = None
     last_seq = 0
@@ -914,7 +918,7 @@ def _replay_work_item(
     warnings = 0
     principal_binding_failures = 0
 
-    _principal_key_cache: dict[str, list] = {}
+    _principal_key_cache: dict[str, list[Any]] = {}
     # Resolved once per work item rather than per event: the scheme registry is
     # mutable (tests register schemes), so this must not be a module constant,
     # but rebuilding it inside the event loop is needless work.
@@ -925,7 +929,7 @@ def _replay_work_item(
     else:
         _asym_schemes = frozenset()
 
-    prev_evt: dict | None = None
+    prev_evt: dict[str, Any] | None = None
     for evt in events:
         transition = evt["transition"]
         last_seq = evt["event_seq"]
@@ -1158,7 +1162,7 @@ def _replay_work_item(
     }, warnings, principal_binding_failures
 
 
-def _states_match(replayed: dict, live: dict) -> bool:
+def _states_match(replayed: dict[str, Any], live: dict[str, Any]) -> bool:
     if replayed["current_state"] != live["current_state"]:
         return False
     if replayed["last_event_seq"] != live["last_event_seq"]:
@@ -1183,7 +1187,7 @@ def _states_match(replayed: dict, live: dict) -> bool:
     return True
 
 
-def _diff_fields(replayed: dict, live: dict) -> list[str]:
+def _diff_fields(replayed: dict[str, Any], live: dict[str, Any]) -> list[str]:
     diffs: list[str] = []
     if replayed["current_state"] != live["current_state"]:
         diffs.append("current_state")

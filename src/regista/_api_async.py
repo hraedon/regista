@@ -353,7 +353,7 @@ class AsyncApiMixin(_RegistaBase):
     def due_recurrences(self, now: datetime | None = None) -> list[dict[str, Any]]:
         return self.recurrence.due(now=now)
 
-    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, Any]]:
+    def fire_recurrence(self, rule_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, Any] | None]:
         return self.recurrence.fire(rule_id)
 
     def cancel_recurrence_rule(self, rule_id: uuid.UUID) -> None:

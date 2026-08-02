@@ -126,10 +126,7 @@ ignore_missing_imports = true
 module = [
     "regista._secrets",
     "regista._cli",
-    "regista._ops",
-    "regista._replay",
     "regista._timestamping",
-    "regista._types",
     "regista.sidecar.routes",
 ]
 ignore_errors = true

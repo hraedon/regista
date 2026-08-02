@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import structlog
 
@@ -72,6 +72,8 @@ from ._witness import (
 from ._witness import (
     unregister_witness as _unregister_witness,
 )
+
+_DictList: TypeAlias = list[dict[str, Any]]
 
 log = structlog.get_logger()
 
@@ -149,7 +151,7 @@ class WorkItemOps:
         keys: KeySet,
         metrics: Metrics,
         project: str,
-        validators: dict[str, Callable],
+        validators: dict[str, Callable[..., Any]],
     ) -> None:
         self._mgr = mgr
         self._keys = keys
@@ -163,9 +165,9 @@ class WorkItemOps:
         work_item_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
-        custom_fields: dict | None = None,
+        custom_fields: dict[str, Any] | None = None,
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
@@ -184,7 +186,7 @@ class WorkItemOps:
 
     def create_batch(
         self,
-        items: list[dict],
+        items: list[dict[str, Any]],
         actor_id: str,
         actor_kind: str = "agent",
     ) -> list[tuple[WorkItem, Event]]:
@@ -257,10 +259,10 @@ class WorkItemOps:
         not_before: datetime | None,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
     ) -> Event:
         from psycopg.sql import SQL
 
@@ -342,14 +344,14 @@ class EventOps:
         work_item_id: uuid.UUID,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         key_id: str | None = None,
         transition: str | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
-        on_behalf_of: dict | None = None,
+        on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
     ) -> Event:
@@ -517,10 +519,10 @@ class LinkOps:
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
         target_project: str | None = None,
         target_entity_kind: str | None = None,
         content_hash: str | None = None,
@@ -551,7 +553,7 @@ class LinkOps:
         link_type: str,
         actor_id: str,
         actor_kind: str = "agent",
-        actor_metadata: dict | None = None,
+        actor_metadata: dict[str, Any] | None = None,
         *,
         event_id: uuid.UUID | None = None,
         target_project: str | None = None,
@@ -734,7 +736,7 @@ class AnchorOps:
                 )
             if not verify_content_anchor(conn, receipt):
                 return AnchorStatus.FAILED
-        return self._anchor_provider.verify(receipt.merkle_root, receipt)
+        return self._anchor_provider.verify(receipt.merkle_root, receipt)  # type: ignore[no-any-return]
 
 
 class HookOps:
@@ -744,10 +746,10 @@ class HookOps:
         keys: KeySet,
         metrics: Metrics,
         project: str,
-        validators: dict[str, Callable],
-        handlers: dict[str, Callable],
+        validators: dict[str, Callable[..., Any]],
+        handlers: dict[str, Callable[..., Any]],
         channel: str,
-        consumer,
+        consumer: Any,
     ) -> None:
         self._mgr = mgr
         self._keys = keys
@@ -758,15 +760,15 @@ class HookOps:
         self._hook_channel = channel
         self._consumer = consumer
 
-    def register_validator(self, name: str, handler: Callable) -> None:
+    def register_validator(self, name: str, handler: Callable[..., Any]) -> None:
         self._validators[name] = handler
 
-    def register_handler(self, name: str, handler: Callable) -> None:
+    def register_handler(self, name: str, handler: Callable[..., Any]) -> None:
         self._handlers[name] = handler
         if self._consumer is not None:
             self._consumer._handlers = self._handlers
 
-    def _sync_handlers(self, handlers: dict, consumer: object | None) -> None:
+    def _sync_handlers(self, handlers: dict[str, Any], consumer: Any) -> None:
         self._handlers = handlers
         if consumer is not None:
             consumer._handlers = handlers
@@ -867,7 +869,7 @@ class RecurrenceOps:
         workflow_name: str,
         workflow_version: int,
         work_item_type: str,
-        template: dict,
+        template: dict[str, Any],
         schedule_kind: str,
         schedule_expr: str,
         *,
@@ -877,7 +879,7 @@ class RecurrenceOps:
         count: int | None = None,
         catchup_policy: str = "fire_once",
         created_by: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._recurrence_api import register_recurrence_rule as _impl
 
         return _impl(
@@ -888,36 +890,36 @@ class RecurrenceOps:
             count=count, catchup_policy=catchup_policy, created_by=created_by,
         )
 
-    def list_rules(self, status: str | None = None) -> list[dict]:
+    def list_rules(self, status: str | None = None) -> list[dict[str, Any]]:
         from ._recurrence_api import list_recurrence_rules as _impl
 
         return _impl(self._mgr, status=status)
 
-    def due(self, now: datetime | None = None) -> list[dict]:
+    def due(self, now: datetime | None = None) -> list[dict[str, Any]]:
         from ._recurrence_api import due_recurrences as _impl
 
         return _impl(self._mgr, now=now)
 
-    def fire(self, rule_id) -> tuple[dict, dict]:
+    def fire(self, rule_id: uuid.UUID) -> tuple[dict[str, Any], dict[str, Any] | None]:
         from ._recurrence_api import fire_recurrence as _impl
 
         result = _impl(self._mgr, self._keys, self._metrics, self._project, rule_id)
         self._metrics.inc("maintenance_recurrences_fired", self._project)
         return result
 
-    def cancel_rule(self, rule_id) -> None:
+    def cancel_rule(self, rule_id: uuid.UUID) -> None:
         from ._recurrence_api import cancel_recurrence_rule as _impl
 
         _impl(self._mgr, rule_id)
 
     def update_rule(
         self,
-        rule_id,
+        rule_id: uuid.UUID,
         *,
         status: str | None = None,
         schedule_expr: str | None = None,
-        template: dict | None = None,
-    ) -> dict:
+        template: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         from ._recurrence_api import update_recurrence_rule as _impl
 
         return _impl(
@@ -936,7 +938,7 @@ class WitnessOps:
         self,
         url: str,
         headers: dict[str, str] | None = None,
-        event_filter: dict | None = None,
+        event_filter: dict[str, Any] | None = None,
         max_failures: int = 10,
         max_retries: int = 3,
         *,
@@ -955,12 +957,12 @@ class WitnessOps:
         self,
         witness_id: uuid.UUID,
         new_public_key: bytes,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return _rotate_witness_key(
             self._mgr, self._project, witness_id, new_public_key,
         )
 
-    def enrolled_key(self, witness_id: uuid.UUID) -> dict | None:
+    def enrolled_key(self, witness_id: uuid.UUID) -> dict[str, Any] | None:
         return _enrolled_witness_key(self._mgr, witness_id)
 
     def unregister(self, witness_id: uuid.UUID) -> None:
@@ -972,7 +974,7 @@ class WitnessOps:
     def reactivate(self, witness_id: uuid.UUID) -> None:
         _reactivate_witness(self._mgr, self._project, witness_id)
 
-    def list(self, status: str | None = None, mode: str | None = None) -> list[dict]:
+    def list(self, status: str | None = None, mode: str | None = None) -> list[dict[str, Any]]:
         return _list_witnesses(self._mgr, status=status, mode=mode)
 
     def receipts(
@@ -981,7 +983,7 @@ class WitnessOps:
         witness_id: uuid.UUID | None = None,
         status: str | None = None,
         limit: int = 100,
-    ) -> list[dict]:
+    ) -> _DictList:
         return _list_witness_receipts(
             self._mgr,
             event_id=event_id, witness_id=witness_id,
@@ -996,11 +998,13 @@ class WitnessOps:
 
         return sweep_stuck_witness_receipts(self._mgr, max_age_seconds)
 
-    def create_receipts_for_event(self, event_dict: dict) -> int:
+    def create_receipts_for_event(self, event_dict: dict[str, Any]) -> int:
         return _create_receipts(self._mgr, event_dict)
 
     @staticmethod
-    def event_matches_filter(event_dict: dict, event_filter: dict | None) -> bool:
+    def event_matches_filter(
+        event_dict: dict[str, Any], event_filter: dict[str, Any] | None,
+    ) -> bool:
         return _event_matches_filter(event_dict, event_filter)
 
 
@@ -1024,7 +1028,7 @@ class ArchiveOps:
         dry_run: bool = False,
         archive_path: str | None = None,
         actor_id: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._archive_segments import seal_segment as _impl
 
         return _impl(
@@ -1032,26 +1036,26 @@ class ArchiveOps:
             dry_run=dry_run, actor_id=actor_id, archive_path=archive_path,
         )
 
-    def verify(self, segment_id: uuid.UUID) -> dict:
+    def verify(self, segment_id: uuid.UUID) -> dict[str, Any]:
         from ._archive_segments import verify_segment as _impl
 
         return _impl(self._mgr, segment_id, self._keys)
 
     def list_segments(
         self, archived: bool | None = None, limit: int = 100,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         from ._archive_segments import list_segments as _impl
 
         return _impl(self._mgr, archived=archived, limit=limit)
 
-    def verify_archive_chain(self) -> dict:
+    def verify_archive_chain(self) -> dict[str, Any]:
         from ._archive_segments import verify_archive_chain as _impl
 
         return _impl(self._mgr, self._keys)
 
     def export_bundle(
         self, output_path: str, *, since_seq: int | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._bundle import export_audit_bundle as _impl
 
         return _impl(
@@ -1059,7 +1063,7 @@ class ArchiveOps:
         )
 
     @staticmethod
-    def verify_bundle_offline(bundle_path: str) -> dict:
+    def verify_bundle_offline(bundle_path: str) -> dict[str, Any]:
         from ._bundle import verify_audit_bundle_offline as _impl
 
         return _impl(bundle_path).to_dict()
@@ -1080,7 +1084,7 @@ class WebhookOps:
         workflows: list[str] | None = None,
         max_failures: int = 10,
         sign_secret: bytes | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._webhooks import register_webhook as _impl
 
         return _impl(
@@ -1090,7 +1094,7 @@ class WebhookOps:
             sign_secret=sign_secret, project=self._project,
         )
 
-    def list(self, status: str | None = None) -> list[dict]:
+    def list(self, status: str | None = None) -> list[dict[str, Any]]:
         from ._webhooks import list_webhooks as _impl
 
         return _impl(self._mgr, status=status)
@@ -1134,7 +1138,7 @@ class PrincipalKeyOps:
         *,
         key_id: str | None = None,
         registered_by: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._principal_keys import register_principal_key as _impl
 
         entry = _impl(
@@ -1149,13 +1153,13 @@ class PrincipalKeyOps:
         principal_id: str | None = None,
         *,
         status: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         from ._principal_keys import list_principal_keys as _impl
 
         entries = _impl(self._mgr, principal_id, status=status)
         return [e.to_dict() for e in entries]
 
-    def get_active(self, principal_id: str) -> dict:
+    def get_active(self, principal_id: str) -> dict[str, Any]:
         from ._principal_keys import get_active_key as _impl
 
         entry = _impl(self._mgr, principal_id)
@@ -1168,7 +1172,7 @@ class PrincipalKeyOps:
         scheme: str = "ed25519",
         *,
         registered_by: str = "system",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._principal_keys import rotate_principal_key as _impl
 
         entry = _impl(
@@ -1184,7 +1188,7 @@ class PrincipalKeyOps:
         key_id: str,
         *,
         reason: str = "unspecified",
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._principal_keys import revoke_principal_key as _impl
 
         entry = _impl(self._mgr, principal_id, key_id, reason=reason)
@@ -1195,7 +1199,7 @@ class PrincipalKeyOps:
         self,
         principal_id: str,
         actor_id: str,
-    ) -> dict:
+    ) -> dict[str, Any]:
         from ._principal_keys import verify_principal_binding as _impl
 
         entry = _impl(self._mgr, principal_id, actor_id)
