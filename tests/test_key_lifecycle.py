@@ -234,6 +234,7 @@ def regista():
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
+    drop_project_schema(DSN, project)
 
 
 class TestCreateWorkItemKeyId:
