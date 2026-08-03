@@ -43,21 +43,29 @@ level = sub.compute_assurance(work_item_id)
 ## Lineage derivation
 
 Lineage is sourced from `actor_metadata.model_lineage` on each signed event.
-The `same_lineage` function compares the reviewer's lineage against the set
-of author lineages:
+The `lineage_relation` function classifies the reviewer's lineage against the
+set of author lineages into one of three states (WI-239 / Plan 023 G-3):
 
 ```python
-from regista import same_lineage
+from regista import lineage_relation, same_lineage
 
-same_lineage({"glm"}, "glm")      # True — same lineage
-same_lineage({"glm"}, "kimi")     # False — cross-lineage
-same_lineage({"glm"}, None)       # False — undeclared = independent
-same_lineage(set(), "glm")        # False — no authors
+lineage_relation({"glm"}, "glm")   # LineageRelation.SAME
+lineage_relation({"glm"}, "kimi")  # LineageRelation.DISTINCT
+lineage_relation({"glm"}, None)    # LineageRelation.UNKNOWN
+lineage_relation(set(), "glm")     # LineageRelation.UNKNOWN
+
+same_lineage({"glm"}, "glm")       # True  — same lineage
+same_lineage({"glm"}, "kimi")      # False — cross-lineage
+same_lineage({"glm"}, None)        # False — but UNKNOWN, NOT "independent"
 ```
 
-**Undeclared lineage is treated as independent**, not same. This is the
-conservative default: we don't assume two actors are the same model just
-because neither declared a lineage.
+**Undeclared lineage is UNKNOWN, never "independent".** The old two-state
+`same_lineage` returned `False` for both a confirmed cross-lineage reviewer
+and an undeclared one, so the human-gate escalation read unknown independence
+as proven independence — the opposite of conservative. For every decision
+that depends on distinctness, an UNKNOWN reviewer lineage must be treated the
+same as SAME: it cannot skip the human oversight the strict gate exists to
+require.
 
 ### Trust caveat (pre-Plan-026)
 

@@ -4,6 +4,46 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-08-03 — Session 90: Land WI-243/244/245 + fix WI-246, WI-239; handoff execution
+
+**Focus:** Execute the 2026-08-02 handoff (§1–§7): land the reviewed WI-243/244/245 work on branch `agent/wi243-245-leak-doctor-ci`, fix WI-246 (create_project deadlock) and WI-239 (lineage fail-open), declare lineage on all tracker transitions, and run repo housekeeping.
+
+**Context:** The handoff (by reviewing agent fable) recorded the WI-243/244/245 implementation as review-passed with one reviewer fix (a9a9d2f: the leak guard must set `session.exitstatus`, not `pytest.exit`). PR #24 (WI-233 strict sweep) was still OPEN at handoff time despite §1 assuming it merged.
+
+**Delivered:**
+
+1. **§4 — lineage on transitions:** appended author-lineage declarations (`--actor-id regista-implementer --model-lineage deepseek`) to WI-243/244/245 and every subsequent transition, unblocking the adversarial_review gate. Standing rule adopted.
+2. **§1/§2 — land WI-243/244/245:** merged PR #24 first (green, mergeable; squash b24aa77). Rebased `agent/wi243-245-leak-doctor-ci` onto new main; resolved the predicted `_doctor.py` conflict (PR #24's `anchoring_stale_after_seconds` + new checks combined with `max_projects`/`checked_projects`). Deleted the `_list_projects` mock from `test_reachable_db_with_no_projects` (PR #24's 3bfdb6f hang workaround — the root fix makes it unnecessary and it hid the guard's signal). Verified the guard both directions on the real branch: deliberate leak → exit 1; clean → exit 0. `uv run --all-extras mypy` clean, ruff clean, full suite 2297 passed/0 failed. Opened **PR #25** (covers WI-243/244/245/246/239), CI green on 3.13+3.14.
+3. **§3 — WI-246 deadlock:** `ensure_catalog_table` now fast-paths via `to_regclass` (no lock when the table exists) and takes `pg_advisory_xact_lock(MIGRATION_LOCK_ID)` only when a CREATE is needed — the same key the migration runner holds, serializing the two catalog-DDL sites (migration 037 + `register_project`). New `tests/test_wi246_concurrent_create.py` (3 concurrency tests, xdist-safe). Proven both directions (reverted fix → concurrent ensure_catalog_table fails; fixed → passes). Also fixed a pre-existing schema leak the WI-243 guard surfaced (`test_key_lifecycle` `regista` fixture never dropped). Committed 8a965c3.
+4. **§5 — WI-239 lineage fail-open:** `same_lineage()` returned False for both confirmed-cross-lineage AND undeclared reviewers, so the human-gate escalation read unknown independence as proven. Added `LineageRelation` (SAME/DISTINCT/UNKNOWN) + `lineage_relation()` (exported); `compute_assurance_level`/`gate_rationale` treat UNKNOWN like SAME (never claim INDEPENDENTLY_REVIEWED); `human_gate` escalates on SAME or UNKNOWN when a pass exists (distinguishes "no pass" from "pass with undeclared lineage"); `gate_rationale` surfaces `lineage_relation`. `same_lineage()` kept as a boolean wrapper for backward compat. Corrected `docs/review-assurance.md`'s "undeclared = independent" framing. Proven both directions: composed-exploit test (undeclared reviewer + same_lineage_acknowledged + agent accept under strict) fails on old human_gate, passes on new. Committed 0eb2c3a.
+5. **§7 — housekeeping:** deleted superseded `agent/RegBL` branch + worktree (squash-merged PR #24) local+remote. Pulled dossier main (−18), acb (agent-capability-broker, −3), agent-provenance (−6), agent-wake (−2), agent-suite main (−3), agent-notes main (−7; discarded a local uv.lock regen in favor of origin's committed lock). agent-notes NotesBL worktree: committed the 50-file ruff-format reflow as a deliberate style pass (82ba29a). §6 (agent-suite PR #13) already merged; SUITE.lock revisions verified current against origin/main for all four components.
+
+**Test results:** full suite 2297 passed / 18 skipped / 10 deselected / 0 failed (with hvac installed locally). ruff clean. `uv run --all-extras mypy` clean (91 files). PR #25 CI green on 3.13 + 3.14.
+
+**Note on the vault tests:** `test_wi228_vault_approle.py` requires the `vault` extra (`hvac`); CI installs it. Local runs without it see 7 ModuleNotFoundError failures.
+
+---
+
+## 2026-08-02 — Session 89: WI-243 schema leak, WI-244 doctor bound, WI-245 CI double run
+
+**Focus:** Fix three tracked work items: (WI-243) the test suite's Postgres schema leak — ~20k `public.projects` catalog rows and ~580 live schemas accumulated in the shared test DB and hung `run_doctor`; (WI-244) `run_doctor` without `project=` iterated every catalog project serially; (WI-245) CI ran the full suite twice (test + coverage).
+
+**Context:** `run_doctor` was hanging on the shared instance: `_list_projects` reads the `public.projects` catalog (20k rows from leaked test projects), and `_check_schema_version` opens a fresh connection per row. A 3bfdb6f-era change mocked `_list_projects` to `[]` in the doctor test, hiding the signal while the leak kept growing. The root leak: `drop_project_schema` dropped the schema but never removed the catalog row, so every test project left a stale catalog entry forever; `test_plan008_ws1.py` fixtures never dropped their schemas at all.
+
+**Delivered:**
+
+1. **WI-243 — root leak fix (`src/regista/_testing.py`):** `drop_project_schema` now also `DELETE FROM public.projects` (schema-qualified, `UndefinedTable`-guarded for direct-`CREATE SCHEMA` tests). A create+drop roundtrip now nets zero catalog rows. Shared test DB cleaned: 19,406 orphaned catalog rows deleted, 581 live test schemas dropped → catalog at 0.
+2. **WI-243 — fixture leak fix (`tests/test_plan008_ws1.py`):** `pg_project`/`pg_project_strict` fixtures now drop their schemas after use (were the only Postgres-creating fixtures that never dropped).
+3. **WI-243 — un-hide the signal (`tests/conftest.py`, `tests/test_wi243_schema_leak.py`):** session-level guard snapshots project schema names (catalog ∪ live schemas) at start and `pytest.exit(1)` at finish if any *new* names survive — a leak is now a loud failure, not a hidden hang. Controller-process-only so it is xdist-safe. New `tests/test_wi243_schema_leak.py` (5 tests) asserts catalog unregister + idempotent drop + roundtrip net-zero. The old `_list_projects` mock was not on this branch, so no revert was needed — but the guard now prevents the leak class it masked.
+4. **WI-244 — bounded doctor (`src/regista/_doctor.py`, `_cli.py`, `docs/suite-config.md`):** `run_doctor` gains `max_projects: int = 25`; without `project=`, only the first `max_projects` catalog entries are individually checked and a `projects` warn check names the cap (Plan 020 lesson #1 — bounded work on a diagnostic path). `_check_principal_registration` receives the same checked subset. CLI `--max-projects` flag; `docs/suite-config.md` §4 documents the bound. `run_doctor(DSN)` on the previously-hung shared instance now completes in <0.5s. Two new tests (`test_doctor.py`).
+5. **WI-245 — CI single run (`.github/workflows/ci.yml`):** merged `Test` + `Coverage` steps into one `pytest tests/ -v --cov=regista --cov-report=term-missing --durations=10 --durations-min=1.0`. `--durations` surfaces the slowest tests in CI logs so test-time findings persist beyond session notes. **pytest-xdist stays deferred** per the WI-245 body: `--dist=loadscope` contends on the shared Postgres (a full-suite parallel run surfaced a pre-existing deadlock in `create_project` — migration 037 + `register_project` both `CREATE TABLE IF NOT EXISTS public.projects` under different lock ordering); per-worker schema isolation is the documented prerequisite.
+
+**Test results:** 2212 passed, 18 skipped, 10 deselected, 0 failed (full suite, with `hvac` installed locally). ruff clean. mypy --strict clean (91 source files). Shared test DB left clean: 0 catalog rows, 0 leaked schemas.
+
+**Note on the vault tests:** `test_wi228_vault_approle.py` fails without the `vault` extra installed (7 `ModuleNotFoundError: No module named 'hvac'` in the local venv); CI installs `.[dev,...,vault]` so they pass there. 81 vault tests verified green locally after installing `hvac`.
+
+---
+
 ## 2026-07-07 — Session 88: Plan 029 backend-aware principal key custody
 
 **Focus:** Implement Plan 029 (backend-aware private-key custody). Make `provision_principal`/`enroll_principal` write the Ed25519 private key to the configured secret backend instead of unconditionally to a plaintext local file. Two rounds of adversarial review (kimi + nemotron); findings fixed.
@@ -86,7 +126,7 @@ Structured log of development sessions and milestones.
   - `protect_windows_secret()` helper for encryption
   - `_detect_prefix` fix: known-but-unregistered providers raise `SECRET_RESOLVE_FAILED` instead of silently falling through to `literal:`
   - Error code changed from `SIGNING_SCHEME_NOT_FOUND` to `SECRET_RESOLVE_FAILED`
-  - Tested on mvmcitest01 (Windows, Python 3.14.5, SSH session): round-trip confirmed
+  - Tested on the Windows lab VM (Python 3.14.5, SSH session): round-trip confirmed
   - 6 Windows tests (skipped on non-Windows)
 - **Test import fix (Opus review feedback):**
   - `tests/_helpers.py`: extracted DSN/KEY_PATH/WORKFLOW_PATH constants
@@ -398,7 +438,7 @@ reported across 14 of 15 production schemas, determine root cause
 
 ### Phase 0a/0b: Manual recompute + chain walk
 - Wrote read-only scripts (`/tmp/opencode/phase0_*.py`) to recompute the
-  global chain outside `_replay` on the production store (`mvmpostgres01`).
+  global chain outside `_replay` on the production store.
 - **Chain walk**: all 11 schemas with events show CHAIN INTACT — 100% of
   events reachable from genesis via `prev_global_event_hash` links, zero
   orphans, zero forks, zero broken links.

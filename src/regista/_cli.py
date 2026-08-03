@@ -1188,6 +1188,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         require_ssl=require_ssl,
         key_path=cfg.key_path,
         secret_backend=cfg.secret_backend,
+        max_projects=args.max_projects,
     )
     if args.json:
         _dump_json(report)
@@ -2142,6 +2143,11 @@ def main(argv: list[str] | None = None) -> None:
     # doctor
     doc_parser = subs.add_parser("doctor", help="Health check")
     doc_parser.add_argument("--json", action="store_true", help="JSON output")
+    doc_parser.add_argument(
+        "--max-projects", type=int, default=25,
+        help="Upper bound on projects checked individually without --project "
+             "(default 25)",
+    )
     doc_parser.set_defaults(func=cmd_doctor)
 
     # config

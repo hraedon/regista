@@ -53,6 +53,12 @@ def raw_transaction(regista: Any) -> Generator[DictConn, None, None]:
 def drop_project_schema(dsn: str, project: str) -> None:
     """Drop the Postgres schema for a project. Public API via ``regista.testing``.
 
+    Also removes the project's row from the ``public.projects`` catalog so the
+    schema drop is a full unregister, not just a ``DROP SCHEMA``. Leaving the
+    catalog row behind let the test suite accumulate one stale entry per test
+    project — tens of thousands in a shared instance — which ``run_doctor``
+    then iterated serially (WI-243/WI-244).
+
     Args:
         dsn: Postgres connection string.
         project: Project (schema) name to drop.
@@ -64,3 +70,12 @@ def drop_project_schema(dsn: str, project: str) -> None:
     validate_project_name(project)
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(Identifier(project)))
+        try:
+            conn.execute(
+                SQL("DELETE FROM {} WHERE schema_name = %s").format(
+                    Identifier("public", "projects")
+                ),
+                [project],
+            )
+        except psycopg.errors.UndefinedTable:
+            pass

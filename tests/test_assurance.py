@@ -9,10 +9,12 @@ import pytest
 from regista._assurance import (
     AssuranceLevel,
     GateProfile,
+    LineageRelation,
     compute_assurance_level,
     compute_assurance_level_from_dicts,
     gate_permits_done,
     gate_rationale,
+    lineage_relation,
     same_lineage,
 )
 from regista._errors import ErrorCode, RegistaError
@@ -24,6 +26,7 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 
 REVIEW_NOTE = {"review_note": "looks good"}
 ACK_NOTE = {"review_note": "same lineage ack", "same_lineage_acknowledged": True}
+HUMAN_GATE_REQUIRED = "review requires a human acceptor under the strict gate profile"
 
 
 def _evt(
@@ -105,6 +108,50 @@ class TestSameLineage:
         assert same_lineage({"glm", "kimi"}, "claude") is False
 
 
+class TestLineageRelation:
+    """WI-239: three-state distinctness — UNKNOWN must never be read as
+    proven independence."""
+
+    def test_same(self):
+        assert lineage_relation({"glm"}, "glm") == LineageRelation.SAME
+
+    def test_distinct(self):
+        assert lineage_relation({"glm"}, "kimi") == LineageRelation.DISTINCT
+
+    def test_undeclared_reviewer_is_unknown(self):
+        assert lineage_relation({"glm"}, None) == LineageRelation.UNKNOWN
+        assert lineage_relation({"glm"}, "") == LineageRelation.UNKNOWN
+
+    def test_no_authors_is_unknown(self):
+        assert lineage_relation(set(), "glm") == LineageRelation.UNKNOWN
+
+    def test_no_authors_and_no_reviewer_is_unknown(self):
+        assert lineage_relation(set(), None) == LineageRelation.UNKNOWN
+
+    def test_same_lineage_boolean_only_true_for_same(self):
+        assert same_lineage({"glm"}, "glm") is True
+        assert same_lineage({"glm"}, "kimi") is False
+        # UNKNOWN is still False in the boolean, but callers that escalate
+        # must use lineage_relation and treat UNKNOWN like SAME.
+        assert same_lineage({"glm"}, None) is False
+
+
+class TestUndeclaredLineageEscalation:
+    """WI-239: the composed exploit path — a reviewer with undeclared lineage
+    passes adversarial_review via same_lineage_acknowledged, and the human
+    gate must still escalate rather than read unknown independence as proven."""
+
+    def test_undeclared_reviewer_never_reaches_independent_level(self):
+        events = _author_events("glm") + _pass_events("r1", None)
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+
+    def test_gate_rationale_undeclared_reviewer_is_not_cross_lineage(self):
+        events = _author_events("glm") + _pass_events("r1", None) + _accept_events("a1", "agent")
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["reason"] != "cross_lineage_review"
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+
 class TestAssuranceLevel:
     def test_same_lineage_agent_accept(self):
         events = _author_events("glm") + _pass_events("r1", "glm") + _accept_events("a1", "agent")
@@ -140,11 +187,14 @@ class TestAssuranceLevel:
     def test_empty_events(self):
         assert compute_assurance_level([]) == AssuranceLevel.NONE
 
-    def test_undeclared_reviewer_lineage_treated_as_cross(self):
+    def test_undeclared_reviewer_lineage_escalates_like_same(self):
+        # WI-239: an undeclared reviewer lineage is UNKNOWN, not independent —
+        # it must not claim INDEPENDENTLY_REVIEWED.
         events = _author_events("glm") + _pass_events("r1", None) + _accept_events("a1", "agent")
-        assert compute_assurance_level(events) == AssuranceLevel.INDEPENDENTLY_REVIEWED
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
 
-    def test_undeclared_author_lineage(self):
+    def test_undeclared_author_lineage_escalates_like_same(self):
+        # WI-239: no author lineages means distinctness cannot be established.
         events = [
             _evt("created", "a1", actor_metadata=None),
             _evt("start", "a1", actor_metadata=None),
@@ -155,7 +205,7 @@ class TestAssuranceLevel:
             ),
             _evt("accept", "a1", actor_kind="agent", payload=REVIEW_NOTE),
         ]
-        assert compute_assurance_level(events) == AssuranceLevel.INDEPENDENTLY_REVIEWED
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
 
     def test_principal_lineage_from_on_behalf_of(self):
         events = [
@@ -461,7 +511,7 @@ class TestStrictGateProfile:
     def test_same_lineage_agent_accept_rejected_under_strict(self):
         prior = _author_events("glm") + _pass_events("r1", "glm")
         ctx = self._ctx(prior, actor_id="a1", actor_kind="agent")
-        with pytest.raises(ReviewRejected, match="same-lineage review requires a human"):
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
             human_gate(ctx, require_human_on_same_lineage=True)
 
     def test_same_lineage_human_accept_passes_under_strict(self):
@@ -489,6 +539,31 @@ class TestStrictGateProfile:
         ctx = self._ctx(prior, actor_id="a1", actor_kind="agent")
         human_gate(ctx, require_human_on_same_lineage=True)
 
+    def test_undeclared_reviewer_lineage_agent_accept_rejected_under_strict(self):
+        """WI-239: an undeclared reviewer lineage is UNKNOWN, and for the
+        human-gate escalation it must behave exactly like SAME — a non-human
+        accepter cannot skip the human on unknown independence."""
+        prior = _author_events("glm") + _pass_events("r1", None)
+        ctx = self._ctx(prior, actor_id="a1", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
+            human_gate(ctx, require_human_on_same_lineage=True)
+
+    def test_undeclared_reviewer_lineage_human_accept_passes_under_strict(self):
+        prior = _author_events("glm") + _pass_events("r1", None)
+        ctx = self._ctx(prior, actor_id="h1", actor_kind="human")
+        human_gate(ctx, require_human_on_same_lineage=True)
+
+    def test_undeclared_author_lineage_agent_accept_rejected_under_strict(self):
+        """No author lineages means distinctness cannot be established."""
+        prior = [
+            _evt("created", "a1", actor_metadata=None),
+            _evt("start", "a1", actor_metadata=None),
+            _evt("adversarial_pass", "r1", actor_metadata=None, payload=REVIEW_NOTE),
+        ]
+        ctx = self._ctx(prior, actor_id="a1", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
+            human_gate(ctx, require_human_on_same_lineage=True)
+
     def test_builtin_reads_param(self):
         from regista._review_validators import _human_gate_builtin
 
@@ -497,7 +572,7 @@ class TestStrictGateProfile:
             prior, actor_id="a1", actor_kind="agent",
             validator_params={"require_human": False, "require_human_on_same_lineage": True},
         )
-        with pytest.raises(ReviewRejected, match="same-lineage review requires a human"):
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
             _human_gate_builtin(ctx)
 
     def test_builtin_rejects_non_bool_param(self):
@@ -816,7 +891,7 @@ class TestComputeAssuranceAPI:
         wi_id = self._setup_to_human_review(
             sub, reviewer_lineage="glm", workflow="canonical_strict",
         )
-        with pytest.raises(Exception, match="same-lineage review requires a human"):
+        with pytest.raises(Exception, match=HUMAN_GATE_REQUIRED):
             sub.transition(
                 wi_id, "accept", "a2",
                 actor_kind="agent",
@@ -843,6 +918,47 @@ class TestComputeAssuranceAPI:
         sub.register_workflow(STRICT_WORKFLOW)
         wi_id = self._setup_to_human_review(
             sub, reviewer_lineage="glm", workflow="canonical_strict",
+        )
+        sub.transition(
+            wi_id, "accept", "h1",
+            actor_kind="human",
+            actor_metadata={"role": "human"},
+            payload=REVIEW_NOTE,
+        )
+        assert sub.compute_assurance(wi_id) == AssuranceLevel.HUMAN_ACCEPTED
+
+    def test_strict_workflow_rejects_undeclared_reviewer_agent_accept(self):
+        """WI-239 composed exploit: an undeclared-lineage reviewer passes
+        adversarial_review via same_lineage_acknowledged, then a non-human
+        accept must STILL be rejected under the strict profile — unknown
+        independence is never a reason to skip the human gate."""
+        sub = InMemoryRegista(project="test_assurance_undeclared_strict", hmac_key_path=KEY_PATH)
+        sub.register_workflow(STRICT_WORKFLOW)
+        wi_id = self._setup_to_review(sub, workflow="canonical_strict")
+        # Reviewer declares NO lineage but acknowledges same-lineage.
+        sub.transition(
+            wi_id, "adversarial_pass", "r1",
+            actor_kind="agent",
+            actor_metadata={"role": "agent"},
+            payload=ACK_NOTE,
+        )
+        with pytest.raises(Exception, match=HUMAN_GATE_REQUIRED):
+            sub.transition(
+                wi_id, "accept", "a2",
+                actor_kind="agent",
+                actor_metadata={"role": "agent"},
+                payload=REVIEW_NOTE,
+            )
+
+    def test_strict_workflow_allows_undeclared_reviewer_human_accept(self):
+        sub = InMemoryRegista(project="test_assurance_undeclared_human", hmac_key_path=KEY_PATH)
+        sub.register_workflow(STRICT_WORKFLOW)
+        wi_id = self._setup_to_review(sub, workflow="canonical_strict")
+        sub.transition(
+            wi_id, "adversarial_pass", "r1",
+            actor_kind="agent",
+            actor_metadata={"role": "agent"},
+            payload=ACK_NOTE,
         )
         sub.transition(
             wi_id, "accept", "h1",

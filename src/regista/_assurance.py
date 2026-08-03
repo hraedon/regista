@@ -19,17 +19,56 @@ class GateProfile(StrEnum):
     STRICT = "strict"
 
 
+class LineageRelation(StrEnum):
+    """Three-state verdict on reviewer↔author lineage distinctness (WI-239).
+
+    The two-state boolean (same vs not-same) conflated two very different
+    outcomes: a confirmed cross-lineage reviewer and an *undeclared* one.
+    ``same_lineage()`` returned ``False`` for both, so the human-gate
+    escalation read unknown independence as proven independence — the
+    opposite of the conservative default the docs claimed. An undeclared
+    reviewer lineage must never satisfy a distinctness requirement.
+    """
+
+    SAME = "same"
+    DISTINCT = "distinct"
+    UNKNOWN = "unknown"
+
+
 _REVIEW_VERDICTS = frozenset(
     {"accept", "request_changes", "adversarial_pass", "reject", "comment"}
 )
 
 
-def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> bool:
+def lineage_relation(
+    author_lineages: set[str], reviewer_lineage: str | None
+) -> LineageRelation:
+    """Classify the reviewer's lineage against the author set (WI-239).
+
+    Returns:
+        ``SAME`` when the reviewer declared a lineage present among the
+        authors; ``DISTINCT`` only when the reviewer declared a lineage that
+        provably does not appear among the authors; ``UNKNOWN`` when the
+        reviewer declared nothing (or there are no author lineages to compare
+        against), so independence cannot be established.
+    """
     if not reviewer_lineage:
-        return False
+        return LineageRelation.UNKNOWN
     if not author_lineages:
-        return False
-    return reviewer_lineage in author_lineages
+        return LineageRelation.UNKNOWN
+    if reviewer_lineage in author_lineages:
+        return LineageRelation.SAME
+    return LineageRelation.DISTINCT
+
+
+def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> bool:
+    """Backward-compatible boolean: True only for a confirmed same-lineage review.
+
+    Kept for callers that predate the three-state distinction (WI-239). The
+    gate paths that decide *escalation* must use :func:`lineage_relation` and
+    treat ``UNKNOWN`` as needing escalation; this boolean cannot express that.
+    """
+    return lineage_relation(author_lineages, reviewer_lineage) == LineageRelation.SAME
 
 
 def _event_lineage(event: Any) -> str | None:
@@ -92,7 +131,11 @@ def compute_assurance_level(events: Sequence[Any]) -> AssuranceLevel:
 
     last_pass = events[last_pass_idx]
     reviewer_lineage = _event_lineage(last_pass)
-    is_same = same_lineage(author_lineages, reviewer_lineage)
+    relation = lineage_relation(author_lineages, reviewer_lineage)
+    # WI-239: an undeclared reviewer lineage is UNKNOWN, not independent. The
+    # assurance level must not claim INDEPENDENTLY_REVIEWED unless distinctness
+    # is actually established, so UNKNOWN escalates exactly as SAME does.
+    is_same = relation != LineageRelation.DISTINCT
 
     accept_events = [
         e for i, e in enumerate(events)
@@ -177,7 +220,9 @@ def gate_rationale(
 
     last_pass = events[last_pass_idx]
     reviewer_lineage = _event_lineage(last_pass)
-    is_same = same_lineage(author_lineages, reviewer_lineage)
+    relation = lineage_relation(author_lineages, reviewer_lineage)
+    # WI-239: UNKNOWN must not be read as proven independence.
+    is_same = relation != LineageRelation.DISTINCT
 
     accept_events = [
         e for i, e in enumerate(events)
@@ -197,6 +242,7 @@ def gate_rationale(
             "reviewer_lineage": reviewer_lineage,
             "author_lineages": sorted(author_lineages),
             "lineage_verification": _lineage_verification(last_pass),
+            "lineage_relation": relation.value,
         }
 
     last_accept = accept_events[-1]
@@ -219,6 +265,7 @@ def gate_rationale(
         "reviewer_lineage": reviewer_lineage,
         "author_lineages": sorted(author_lineages),
         "lineage_verification": _lineage_verification(last_pass),
+        "lineage_relation": relation.value,
     }
 
 

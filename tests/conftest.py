@@ -134,3 +134,93 @@ def regista_module():
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
+
+
+# ---------------------------------------------------------------------------
+# WI-243: the schema-leak guard.
+#
+# The suite used to leak one Postgres schema per test project — schemas were
+# dropped but the `public.projects` catalog row (and occasionally the schema
+# itself) survived. Tens of thousands accumulated in the shared instance and
+# hung `run_doctor`, which iterated the catalog serially. The 3bfdb6f-era
+# "fix" mocked `_list_projects` to [] in the doctor test, hiding the leak
+# while it kept growing.
+#
+# This guard makes a leak loud instead: it snapshots the set of project
+# schema names at session start and fails at session end if any *new* names
+# remain. It runs in the controller process only, so it is xdist-safe (a
+# worker mid-run does not see sibling workers' in-flight schemas).
+# ---------------------------------------------------------------------------
+
+_SESSION_START_SCHEMAS: set[str] | None = None
+
+
+def _project_schema_names() -> set[str]:
+    """Live regista project schemas: union of `public.projects` catalog rows
+    and schemas that look like regista projects (not system schemas)."""
+    import psycopg
+
+    names: set[str] = set()
+    try:
+        with psycopg.connect(DSN, connect_timeout=3, autocommit=True) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT schema_name FROM public.projects"
+                ).fetchall()
+                names.update(r[0] for r in rows)
+            except psycopg.errors.UndefinedTable:
+                pass
+            rows = conn.execute(
+                "SELECT schema_name FROM information_schema.schemata"
+            ).fetchall()
+            for (schema_name,) in rows:
+                if schema_name.startswith("pg_") or schema_name == "public":
+                    continue
+                names.add(schema_name)
+    except Exception:
+        return set()
+    return names
+
+
+def _controller_process(session) -> bool:
+    """True in the controller (single-process or xdist master), False in an
+    xdist worker. Session-level DB checks must run exactly once, in the
+    controller, after all workers have torn down their schemas."""
+    return not hasattr(session.config, "workerinput")
+
+
+def pytest_sessionstart(session) -> None:
+    if not _controller_process(session):
+        return
+    global _SESSION_START_SCHEMAS
+    if not _pg_skip_decision():
+        _SESSION_START_SCHEMAS = _project_schema_names()
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    if not _controller_process(session):
+        return
+    global _SESSION_START_SCHEMAS
+    if _SESSION_START_SCHEMAS is None:
+        return
+    if os.environ.get("REGISTA_TEST_SKIP_LEAK_GUARD"):
+        return
+    end = _project_schema_names()
+    leaked = sorted(end - _SESSION_START_SCHEMAS)
+    if leaked:
+        # session.exitstatus, not pytest.exit(): an Exit raised this late is
+        # caught after the exit status is computed — the message prints but
+        # the process still exits 0, and CI reads codes, not prose (verified
+        # empirically; the fail-open shape this guard exists to prevent).
+        import sys as _sys
+
+        print(
+            "WI-243: test suite leaked Postgres schemas — "
+            f"{len(leaked)} new project schema(s) survive the session: "
+            + ", ".join(leaked[:20])
+            + ("…" if len(leaked) > 20 else "")
+            + ". Every test that creates a project must drop it "
+            "(and drop_project_schema must unregister the catalog row).",
+            file=_sys.stderr,
+        )
+        session.exitstatus = 1

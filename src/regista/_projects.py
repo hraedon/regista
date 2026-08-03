@@ -28,7 +28,25 @@ def ensure_catalog_table(conn: DictConn) -> None:
     """Create ``public.projects`` if it does not exist.
 
     Idempotent — safe to call from every project's migration runner.
+
+    Serialized under the migration advisory lock (WI-246): a project's
+    migration 037 and a concurrent ``register_project`` (which runs outside
+    the migration lock) both issue ``CREATE TABLE IF NOT EXISTS public.projects``.
+    Two sessions doing that concurrently take conflicting catalog locks and
+    can deadlock — in production (two processes onboarding at once), not just
+    in parallel tests. ``pg_advisory_xact_lock`` on the same key as the
+    migration runner serializes the ``CREATE``; the ``to_regclass`` fast path
+    keeps the common already-exists case off the lock entirely.
     """
+    from ._migrations import MIGRATION_LOCK_ID
+
+    row = conn.execute(
+        SQL("SELECT to_regclass('public.projects') IS NOT NULL AS catalog_exists")
+    ).fetchone()
+    exists = bool(row["catalog_exists"]) if row is not None else False
+    if exists:
+        return
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", [MIGRATION_LOCK_ID])
     conn.execute(
         SQL(
             "CREATE TABLE IF NOT EXISTS {tbl} ("

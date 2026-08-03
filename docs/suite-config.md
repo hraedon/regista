@@ -346,6 +346,23 @@ CLI). `private_key_dir` is meaningful only for the `file` backend.
 A `reachable: false` on an unreachable DSN is a clean status, not a traceback.
 Exit code is 1 if any check has status `fail`.
 
+### Project iteration is bounded (WI-244)
+
+Without `--project`, `regista doctor` iterates the `public.projects` catalog
+serially — one connection + schema-version probe per project. A diagnostic
+path must not do unbounded work (Plan 020 lesson #1): when the catalog holds
+more than `--max-projects` (default 25) entries, only the first 25 are checked
+individually and a `projects` warn check names the bound:
+
+```json
+{"name": "projects", "status": "warn",
+ "detail": "19976 projects registered; checked the first 25 — pass --project to target one"}
+```
+
+Raise the cap with `--max-projects N` when a deployment genuinely holds many
+projects, or pass `--project` to target one. A catalog that large usually
+signals leaked project registrations rather than a real deployment.
+
 ## 5. Version Surface
 
 `regista version --json` reports the four interop versions a consumer must
