@@ -161,21 +161,35 @@ def human_gate(
         _check_separation_of_duties(ctx, author_ids, "human_gate")
 
     if require_human_on_same_lineage:
-        from ._assurance import same_lineage
+        from ._assurance import LineageRelation, lineage_relation
 
+        # A pass may be absent (nothing reviewed yet) or present with an
+        # undeclared lineage. Both leave _last_adversarial_pass_lineage at
+        # None, but only the latter is an escalation trigger: with no pass at
+        # all there is no same-lineage review to catch. Distinguish via the
+        # pass's mere existence.
+        pass_exists = _adversarial_pass_identities(ctx.prior_events) != set()
         reviewer_lineage = _last_adversarial_pass_lineage(ctx.prior_events)
         _author_ids, _author_kinds, author_lineages, _undeclared = derive_authors(
             ctx.prior_events
         )
-        if same_lineage(author_lineages, reviewer_lineage) and ctx.actor_kind != "human":
+        # WI-239: an undeclared reviewer lineage is UNKNOWN, not independent.
+        # For the human-gate escalation it must behave exactly like SAME —
+        # unknown independence is never a reason to skip the human.
+        relation = lineage_relation(author_lineages, reviewer_lineage)
+        needs_human = pass_exists and (
+            relation in (LineageRelation.SAME, LineageRelation.UNKNOWN)
+        )
+        if needs_human and ctx.actor_kind != "human":
             raise ReviewRejected(
-                "human_gate: same-lineage review requires a human acceptor "
-                "under the strict gate profile",
+                "human_gate: same-lineage (or undeclared-lineage) review "
+                "requires a human acceptor under the strict gate profile",
                 detail={
                     "actor_id": ctx.actor_id,
                     "actor_kind": ctx.actor_kind,
                     "reviewer_lineage": reviewer_lineage,
                     "author_lineages": sorted(author_lineages),
+                    "lineage_relation": relation.value,
                 },
             )
 
