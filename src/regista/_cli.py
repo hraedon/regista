@@ -915,6 +915,7 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
         result = sub.export_audit_bundle(
             args.output,
             since_seq=args.since_seq,
+            until_seq=args.until_seq,
         )
         if getattr(args, "json", False):
             _dump_json(result)
@@ -922,9 +923,31 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
             print(f"Bundle exported to {result['output_path']}")
             print(f"  events:           {result['event_count']}")
             print(f"  anchor_receipts:  {result['anchor_receipt_count']}")
+            if result["anchor_receipts_excluded"]:
+                print(
+                    f"  receipts_excluded: {result['anchor_receipts_excluded']}"
+                    " (not provable in this chunk; see manifest)"
+                )
             print(f"  segments:         {result['segment_count']}")
             print(f"  public_keys:      {result['public_key_count']}")
             print(f"  bundle_hash:      {result['bundle_hash']}")
+            print(f"  bundle_bytes:     {result['bundle_bytes']}")
+            sv = result["self_verification"]
+            print(
+                f"  self_verified:    {'yes' if sv['verified'] else 'NO'} "
+                f"(signatures {sv['signatures_verified']} verified, "
+                f"{sv['signatures_unverifiable']} unverifiable, "
+                f"check {sv['signature_check']})"
+            )
+            if not sv["verified"]:
+                print(
+                    "  WARNING: the artifact preserves evidence the offline "
+                    "verifier rejects — run `bundle verify` for the full "
+                    "report:",
+                    file=sys.stderr,
+                )
+                for err in sv["errors"]:
+                    print(f"    - {err}", file=sys.stderr)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -1949,7 +1972,16 @@ def main(argv: list[str] | None = None) -> None:
     bnd_export.add_argument(
         "--output", required=True, help="Output JSON file path (bundle is canonical JSON)"
     )
-    bnd_export.add_argument("--since-seq", type=int, default=None, help="Export after this seq")
+    bnd_export.add_argument(
+        "--since-seq", type=int, default=None,
+        help="Export events with global_seq strictly after this (exclusive lower bound)",
+    )
+    bnd_export.add_argument(
+        "--until-seq", type=int, default=None,
+        help="Export events with global_seq up to and including this (inclusive "
+        "upper bound); with --since-seq, chunks a corpus larger than the "
+        "offline verifier's size cap into verifiable pieces",
+    )
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)
 

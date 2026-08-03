@@ -27,6 +27,11 @@ log = structlog.get_logger()
 _BUNDLE_FORMAT_VERSION = 2
 _SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
 
+# One cap, shared by export and verify (WI-240). An export larger than what
+# the offline verifier accepts is unverifiable by the tool that exists to
+# verify it, so export refuses to write past this size rather than exit 0.
+MAX_BUNDLE_BYTES = 512 * 1024 * 1024
+
 # Output names that imply a compressed/archive container. An audit bundle is a
 # canonical JSON document; writing plain JSON under one of these names hands an
 # auditor a file that `tar -xzf` / `unzip` rejects as corrupt (WI-210).
@@ -103,36 +108,86 @@ class BundleVerificationReport:
         }
 
 
+_EVENT_COLUMNS = (
+    "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
+    "event_seq, global_seq, actor_id, actor_kind, "
+    "actor_metadata, key_id, workflow_name, workflow_version, "
+    "timestamp, transition, payload, payload_canonical_hash, signature, "
+    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
+    "prev_global_event_hash"
+)
+
+
+def _slice_receipts_to_verifiable(
+    anchor_receipts: list[dict[str, Any]],
+    *,
+    since_seq: int | None,
+    max_exported_seq: int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep only anchor receipts the exported bundle can actually verify.
+
+    An anchor receipt is verified offline by re-walking the global chain from
+    the **genesis event** to the receipt's ``target_global_seq``
+    (:func:`_verify_anchor_offline`), so a receipt is provable only in a
+    bundle whose events cover that full prefix:
+
+    * A prefix export (``since_seq`` unset or 0) proves receipts with
+      ``target_global_seq <= max_exported_seq``. Receipts targeting beyond
+      the exported range are excluded — shipping them would make the bundle
+      fail verification for events it does not contain.
+    * A mid-chain chunk (``since_seq > 0``) contains no genesis, so it can
+      prove **no** receipt; all are excluded and the exclusion is counted.
+      This is an inherent limit of the full-prefix anchor design (Plan 023
+      retires it at M4); the receipts remain in the store and verifiable in
+      a prefix bundle.
+
+    Receipts with a null ``target_global_seq`` are kept in prefix exports:
+    they are data defects the verifier must report, not quietly drop.
+    Returns ``(kept, excluded_count)``.
+    """
+    if since_seq is not None and since_seq > 0:
+        return [], len(anchor_receipts)
+    if max_exported_seq is None:
+        # No events exported — no prefix to prove anything against.
+        return [], len(anchor_receipts)
+    kept = [
+        r
+        for r in anchor_receipts
+        if r.get("target_global_seq") is None
+        or r["target_global_seq"] <= max_exported_seq
+    ]
+    return kept, len(anchor_receipts) - len(kept)
+
+
 def export_audit_bundle(
     mgr: ConnectionManager,
     project_name: str,
     output_path: str | Path,
     *,
     since_seq: int | None = None,
+    until_seq: int | None = None,
 ) -> dict[str, Any]:
     _reject_archive_output_name(output_path)
+    if until_seq is not None and since_seq is not None and until_seq <= since_seq:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"Empty export range: until_seq ({until_seq}) must be greater "
+            f"than since_seq ({since_seq}).",
+        )
     with mgr.transaction() as conn:
+        clauses: list[str] = []
+        params: list[int] = []
         if since_seq is not None:
-            rows = conn.execute(
-                "SELECT event_id, work_item_id, entity_kind, entity_id, hash_alg, "
-                "event_seq, global_seq, actor_id, actor_kind, "
-                "actor_metadata, key_id, workflow_name, workflow_version, "
-                "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
-                "prev_global_event_hash "
-                "FROM events WHERE global_seq > %s ORDER BY global_seq",
-                [since_seq],
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT event_id, work_item_id, entity_kind, entity_id, hash_alg, "
-                "event_seq, global_seq, actor_id, actor_kind, "
-                "actor_metadata, key_id, workflow_name, workflow_version, "
-                "timestamp, transition, payload, payload_canonical_hash, signature, "
-                "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, "
-                "prev_global_event_hash "
-                "FROM events ORDER BY global_seq"
-            ).fetchall()
+            clauses.append("global_seq > %s")
+            params.append(since_seq)
+        if until_seq is not None:
+            clauses.append("global_seq <= %s")
+            params.append(until_seq)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM events{where} ORDER BY global_seq",
+            params,
+        ).fetchall()
 
         events = [_row_to_event_dict(r) for r in rows]
 
@@ -165,59 +220,118 @@ def export_audit_bundle(
             segments_available = False
             log.warning("bundle.segments_table_absent", error=str(exc))
 
-        exported_at = datetime.now(UTC)
-        manifest = {
-            "project": project_name,
-            "exported_at": exported_at.isoformat(),
-            "event_count": len(events),
-            "anchor_receipt_count": len(anchor_receipts),
-            "segment_count": len(segments),
-            "public_key_count": len(public_keys),
-            "anchor_receipts_available": receipts_available,
-            "segments_available": segments_available,
-            "principal_key_registry": "present" if registry_available else "absent",
-            "format_version": _BUNDLE_FORMAT_VERSION,
-            "since_seq": since_seq,
-        }
+    # File assembly, the size gate and self-verification run outside the
+    # transaction: none of it reads the store, and an 800 MiB serialization
+    # should not hold a connection open (WI-240).
+    seqs = [e["global_seq"] for e in events if e.get("global_seq") is not None]
+    max_exported_seq = max(seqs) if seqs else None
+    min_exported_seq = min(seqs) if seqs else None
+    anchor_receipts, receipts_excluded = _slice_receipts_to_verifiable(
+        anchor_receipts, since_seq=since_seq, max_exported_seq=max_exported_seq
+    )
 
-        bundle: dict[str, Any] = {
-            "manifest": manifest,
-            "events": events,
-            "anchor_receipts": anchor_receipts,
-            "segments": segments,
-            "public_keys": public_keys,
-        }
+    exported_at = datetime.now(UTC)
+    manifest = {
+        "project": project_name,
+        "exported_at": exported_at.isoformat(),
+        "event_count": len(events),
+        "anchor_receipt_count": len(anchor_receipts),
+        "segment_count": len(segments),
+        "public_key_count": len(public_keys),
+        "anchor_receipts_available": receipts_available,
+        "anchor_receipts_excluded": receipts_excluded,
+        "segments_available": segments_available,
+        "principal_key_registry": "present" if registry_available else "absent",
+        "format_version": _BUNDLE_FORMAT_VERSION,
+        "since_seq": since_seq,
+        "until_seq": until_seq,
+    }
 
-        bundle_bytes = _canonical_bundle_bytes(bundle)
-        bundle_hash = hashlib.sha256(bundle_bytes).hexdigest()
-        manifest["bundle_hash"] = f"sha256:{bundle_hash}"
-        bundle["manifest"] = manifest
+    bundle: dict[str, Any] = {
+        "manifest": manifest,
+        "events": events,
+        "anchor_receipts": anchor_receipts,
+        "segments": segments,
+        "public_keys": public_keys,
+    }
 
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str),
-            encoding="utf-8",
+    bundle_bytes = _canonical_bundle_bytes(bundle)
+    bundle_hash = hashlib.sha256(bundle_bytes).hexdigest()
+    manifest["bundle_hash"] = f"sha256:{bundle_hash}"
+    bundle["manifest"] = manifest
+
+    serialized = json.dumps(
+        bundle, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    if len(serialized) > MAX_BUNDLE_BYTES:
+        raise RegistaError(
+            ErrorCode.BUNDLE_UNVERIFIABLE,
+            f"Refusing to write an unverifiable bundle: {len(serialized)} bytes "
+            f"exceeds the offline verifier's {MAX_BUNDLE_BYTES}-byte cap "
+            f"({len(events)} events, global_seq "
+            f"{min_exported_seq}..{max_exported_seq}). Chunk the export with "
+            "--since-seq/--until-seq; nothing was written.",
         )
 
-        log.info(
-            "bundle.exported",
-            project=project_name,
-            event_count=len(events),
-            anchor_receipt_count=len(anchor_receipts),
-            segment_count=len(segments),
-            public_key_count=len(public_keys),
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(serialized)
+
+    # An export is done when the artifact it wrote is verifiable, not when
+    # the write returns (WI-240). Two failure classes are deliberately
+    # distinct: a defect EXPORT introduced (the artifact does not hash-match
+    # what was serialized) fails the export, artifact left for inspection;
+    # a defect of the STORE faithfully preserved (e.g. ed25519 events whose
+    # key registry predates its migration) must not block the only archival
+    # path a degraded store has — it is reported, loudly, in the result and
+    # the log, and `bundle verify` remains the enforcement point.
+    report = verify_audit_bundle_offline(output)
+    if not report.bundle_hash_ok:
+        raise RegistaError(
+            ErrorCode.BUNDLE_UNVERIFIABLE,
+            f"Exported artifact does not match what was serialized "
+            f"(bundle hash mismatch); artifact left at {output} for "
+            f"inspection: {report.bundle_hash_error}",
+        )
+    if not report.verified:
+        log.warning(
+            "bundle.exported_with_verification_errors",
             output_path=str(output),
+            errors=report.errors[:5],
         )
 
-        return {
-            "output_path": str(output),
-            "event_count": len(events),
-            "anchor_receipt_count": len(anchor_receipts),
-            "segment_count": len(segments),
-            "public_key_count": len(public_keys),
-            "bundle_hash": manifest["bundle_hash"],
-        }
+    log.info(
+        "bundle.exported",
+        project=project_name,
+        event_count=len(events),
+        anchor_receipt_count=len(anchor_receipts),
+        anchor_receipts_excluded=receipts_excluded,
+        segment_count=len(segments),
+        public_key_count=len(public_keys),
+        bundle_bytes=len(serialized),
+        self_verified=report.verified,
+        output_path=str(output),
+    )
+
+    return {
+        "output_path": str(output),
+        "event_count": len(events),
+        "anchor_receipt_count": len(anchor_receipts),
+        "anchor_receipts_excluded": receipts_excluded,
+        "segment_count": len(segments),
+        "public_key_count": len(public_keys),
+        "bundle_hash": manifest["bundle_hash"],
+        "bundle_bytes": len(serialized),
+        "since_seq": since_seq,
+        "until_seq": until_seq,
+        "self_verification": {
+            "verified": report.verified,
+            "signatures_verified": report.signatures_verified,
+            "signatures_unverifiable": report.signatures_unverifiable,
+            "signature_check": report.signature_check,
+            "errors": report.errors[:5],
+        },
+    }
 
 
 def _is_undefined_table(exc: Exception) -> bool:
@@ -272,10 +386,10 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         )
 
     raw = path.read_bytes()
-    if len(raw) > 512 * 1024 * 1024:
+    if len(raw) > MAX_BUNDLE_BYTES:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
-            f"Bundle file too large ({len(raw)} bytes, max 512 MB)",
+            f"Bundle file too large ({len(raw)} bytes, max {MAX_BUNDLE_BYTES})",
         )
 
     try:

@@ -10,7 +10,7 @@ import pytest
 
 from regista import Regista
 from regista._anchoring import FileAnchorProvider
-from regista._bundle import verify_audit_bundle_offline
+from regista._bundle import BundleVerificationReport, verify_audit_bundle_offline
 from regista._testing import drop_project_schema, raw_transaction
 
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
@@ -640,4 +640,242 @@ class TestOfflineAnchorHashAgility:
         report = verify_audit_bundle_offline(str(output))
         assert report.verified, f"offline verification failed: {report.errors}"
         assert report.anchor_receipt_count > 0
+        assert all(av["verified"] for av in report.anchor_verifications)
+
+
+class TestExportBounds:
+    """WI-240: bounded, capped, self-verifying export."""
+
+    def _two_item_corpus(self, sub):
+        """Two terminal work items; returns the boundary global_seq between them."""
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "bounds-1",
+            custom_fields={"title": "bounds-1"},
+        )
+        _drive_to_terminal(sub, wi1)
+        with raw_transaction(sub) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(global_seq), 0) AS max_seq FROM events"
+            ).fetchone()
+            boundary = row["max_seq"]
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "bounds-2",
+            custom_fields={"title": "bounds-2"},
+        )
+        _drive_to_terminal(sub, wi2)
+        return boundary
+
+    def test_until_seq_is_an_inclusive_upper_bound(self, sub, project, tmp_path):
+        boundary = self._two_item_corpus(sub)
+        output = tmp_path / "prefix.json"
+        result = sub.export_audit_bundle(str(output), until_seq=boundary)
+
+        assert result["event_count"] > 0
+        assert result["until_seq"] == boundary
+        bundle = json.loads(output.read_text())
+        assert bundle["manifest"]["until_seq"] == boundary
+        seqs = [e["global_seq"] for e in bundle["events"]]
+        assert max(seqs) <= boundary
+
+    def test_since_and_until_form_a_window(self, sub, project, tmp_path):
+        boundary = self._two_item_corpus(sub)
+        with raw_transaction(sub) as conn:
+            row = conn.execute(
+                "SELECT MAX(global_seq) AS max_seq FROM events"
+            ).fetchone()
+            corpus_max = row["max_seq"]
+
+        output = tmp_path / "window.json"
+        result = sub.export_audit_bundle(
+            str(output), since_seq=boundary, until_seq=corpus_max
+        )
+        bundle = json.loads(output.read_text())
+        seqs = [e["global_seq"] for e in bundle["events"]]
+        assert min(seqs) > boundary
+        assert max(seqs) <= corpus_max
+        assert result["event_count"] == len(seqs)
+
+    def test_empty_range_is_rejected(self, sub, tmp_path):
+        from regista._errors import RegistaError
+
+        with pytest.raises(RegistaError, match="Empty export range"):
+            sub.export_audit_bundle(
+                str(tmp_path / "empty.json"), since_seq=10, until_seq=10
+            )
+
+    def test_chunked_exports_both_verify_offline(self, sub, project, tmp_path):
+        """The WI-240 acceptance case: a corpus split into a prefix chunk and a
+        mid-chain chunk, each independently verifiable offline."""
+        boundary = self._two_item_corpus(sub)
+
+        chunk1 = tmp_path / "chunk1.json"
+        chunk2 = tmp_path / "chunk2.json"
+        sub.export_audit_bundle(str(chunk1), until_seq=boundary)
+        sub.export_audit_bundle(str(chunk2), since_seq=boundary)
+
+        for chunk in (chunk1, chunk2):
+            report = verify_audit_bundle_offline(str(chunk))
+            assert report.verified, f"{chunk.name}: {report.errors}"
+
+        c1 = json.loads(chunk1.read_text())
+        c2 = json.loads(chunk2.read_text())
+        assert (
+            len(c1["events"]) + len(c2["events"])
+            == c1["manifest"]["event_count"] + c2["manifest"]["event_count"]
+        )
+        overlap = {e["event_id"] for e in c1["events"]} & {
+            e["event_id"] for e in c2["events"]
+        }
+        assert overlap == set()
+
+    def test_oversized_export_refuses_and_writes_nothing(
+        self, sub, project, tmp_path, monkeypatch
+    ):
+        from regista import _bundle
+        from regista._errors import RegistaError
+
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "oversize",
+            custom_fields={"title": "oversize"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        monkeypatch.setattr(_bundle, "MAX_BUNDLE_BYTES", 512)
+        output = tmp_path / "oversize.json"
+        with pytest.raises(RegistaError, match="Refusing to write") as exc_info:
+            sub.export_audit_bundle(str(output))
+        assert not output.exists(), "a refused export must leave no artifact"
+        assert "nothing was written" in str(exc_info.value)
+
+    def test_export_reports_self_verification(self, sub, project, tmp_path):
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "selfverify",
+            custom_fields={"title": "selfverify"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        result = sub.export_audit_bundle(str(tmp_path / "sv.json"))
+        assert result["self_verification"]["verified"] is True
+        assert result["bundle_bytes"] > 0
+
+    def test_hash_mismatch_on_written_artifact_raises_and_keeps_it(
+        self, sub, project, tmp_path, monkeypatch
+    ):
+        """A defect export itself introduced (the artifact does not hash-match
+        what was serialized) fails the export."""
+        from regista import _bundle
+        from regista._errors import RegistaError
+
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "sv-fail",
+            custom_fields={"title": "sv-fail"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        broken = BundleVerificationReport(
+            verified=False,
+            event_count=0,
+            anchor_receipt_count=0,
+            segment_count=0,
+            global_chain_ok=True,
+            bundle_hash_ok=False,
+            bundle_hash_error="synthetic mismatch",
+            errors=["synthetic mismatch"],
+        )
+        monkeypatch.setattr(
+            _bundle, "verify_audit_bundle_offline", lambda _path: broken
+        )
+        output = tmp_path / "sv-fail.json"
+        with pytest.raises(RegistaError, match="does not match what was serialized"):
+            sub.export_audit_bundle(str(output))
+        assert output.exists(), "the rejected artifact is kept for inspection"
+
+    def test_store_level_defects_are_reported_not_fatal(
+        self, sub, project, tmp_path, monkeypatch
+    ):
+        """A defect of the store faithfully preserved (hash-consistent artifact,
+        failing verification) must not block a degraded store's only archival
+        path — it is reported in the result instead."""
+        from regista import _bundle
+
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "sv-store",
+            custom_fields={"title": "sv-store"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        degraded = BundleVerificationReport(
+            verified=False,
+            event_count=1,
+            anchor_receipt_count=0,
+            segment_count=0,
+            global_chain_ok=True,
+            bundle_hash_ok=True,
+            errors=["No public key for key_id 'x' in bundle registry"],
+        )
+        monkeypatch.setattr(
+            _bundle, "verify_audit_bundle_offline", lambda _path: degraded
+        )
+        result = sub.export_audit_bundle(str(tmp_path / "sv-store.json"))
+        assert result["self_verification"]["verified"] is False
+        assert result["self_verification"]["errors"]
+
+    def test_mid_chain_chunk_excludes_receipts_and_verifies(
+        self, sub, project, tmp_path
+    ):
+        """A mid-chain chunk contains no genesis, so no anchor receipt is
+        provable in it; export excludes them (counted in the manifest) instead
+        of shipping receipts the verifier would fail."""
+        boundary = self._two_item_corpus(sub)
+        sub.anchoring.set_provider(
+            FileAnchorProvider(directory=str(tmp_path / "anchors"))
+        )
+        sub.trigger_anchoring(batch_size=100)
+
+        chunk = tmp_path / "midchain.json"
+        result = sub.export_audit_bundle(str(chunk), since_seq=boundary)
+
+        assert result["anchor_receipt_count"] == 0
+        assert result["anchor_receipts_excluded"] > 0
+        bundle = json.loads(chunk.read_text())
+        assert bundle["anchor_receipts"] == []
+        assert bundle["manifest"]["anchor_receipts_excluded"] > 0
+
+        report = verify_audit_bundle_offline(str(chunk))
+        assert report.verified, f"mid-chain chunk failed: {report.errors}"
+
+    def test_prefix_chunk_keeps_only_receipts_it_can_prove(
+        self, sub, project, tmp_path
+    ):
+        """A receipt targeting a seq beyond the exported prefix cannot be
+        proven by this bundle and is excluded rather than shipped broken."""
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "prefix-1",
+            custom_fields={"title": "prefix-1"},
+        )
+        _drive_to_terminal(sub, wi1)
+        sub.anchoring.set_provider(
+            FileAnchorProvider(directory=str(tmp_path / "anchors"))
+        )
+        sub.trigger_anchoring(batch_size=100)
+        with raw_transaction(sub) as conn:
+            row = conn.execute(
+                "SELECT MAX(global_seq) AS max_seq FROM events"
+            ).fetchone()
+            first_max = row["max_seq"]
+
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "prefix-2",
+            custom_fields={"title": "prefix-2"},
+        )
+        _drive_to_terminal(sub, wi2)
+        sub.trigger_anchoring(batch_size=100)
+
+        prefix = tmp_path / "prefix_receipts.json"
+        result = sub.export_audit_bundle(str(prefix), until_seq=first_max)
+
+        assert result["anchor_receipt_count"] >= 1
+        assert result["anchor_receipts_excluded"] >= 1
+        report = verify_audit_bundle_offline(str(prefix))
+        assert report.verified, f"prefix chunk failed: {report.errors}"
         assert all(av["verified"] for av in report.anchor_verifications)

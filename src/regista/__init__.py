@@ -621,15 +621,25 @@ class Regista(
         return self.anchoring.verify(receipt_id)
 
     def export_audit_bundle(
-        self, output_path: str, *, since_seq: int | None = None,
+        self,
+        output_path: str,
+        *,
+        since_seq: int | None = None,
+        until_seq: int | None = None,
     ) -> dict[str, Any]:
         """Export events, anchor receipts, and segments as a self-contained JSON bundle.
 
         The bundle can be verified offline by a third-party auditor without
         production database access or private keys (Plan 019 WI-3/WI-4,
-        Plan 028 WI-1.2).
+        Plan 028 WI-1.2). ``since_seq``/``until_seq`` bound the exported
+        ``global_seq`` window (exclusive/inclusive) so a corpus larger than
+        the verifier's size cap can be chunked; export refuses to write an
+        artifact the offline verifier would reject, and verifies what it
+        wrote before returning (WI-240).
         """
-        return self.archive.export_bundle(output_path, since_seq=since_seq)
+        return self.archive.export_bundle(
+            output_path, since_seq=since_seq, until_seq=until_seq
+        )
 
     @staticmethod
     def verify_audit_bundle_offline(bundle_path: str) -> dict[str, Any]:
