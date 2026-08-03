@@ -55,12 +55,9 @@ class TestRunDoctor:
         db_check = next(c for c in report.checks if c.name == "db:reachable")
         assert db_check.status == "fail"
 
-    def test_reachable_db_with_no_projects(self, monkeypatch):
+    def test_reachable_db_with_no_projects(self):
         from _helpers import DSN
 
-        import regista._doctor as doctor_mod
-
-        monkeypatch.setattr(doctor_mod, "_list_projects", lambda *a, **k: [])
         report = run_doctor(DSN)
         assert report.reachable is True
         assert report.schema_version == SCHEMA_VERSION
