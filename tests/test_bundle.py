@@ -1054,7 +1054,7 @@ class TestSegmentChainOfflineVerification:
             + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
         )
         Path(output).write_text(
-            json.dumps(bundle, sort_keys=True, default=str)
+            json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str)
         )
 
         report = verify_audit_bundle_offline(str(output))
@@ -1117,13 +1117,15 @@ class TestSegmentChainOfflineVerification:
                 f"{report.errors}"
             )
 
-    def test_windowed_export_drops_unlinked_leading_segment(self, sub, tmp_path):
-        """WI-249 review F2: if a window keeps a segment whose incoming link
-        was cut, the slice drops the leading unlinked segment (counted in
-        segments_excluded) so the chunk still self-verifies. Empirically the
-        overlap-based slice already keeps linked pairs; this asserts the
-        fail-closed accounting holds for a window that isolates a single
-        segment plus trailing events."""
+    def test_windowed_export_window_starting_inside_first_segment_keeps_both_linked(
+        self, sub, tmp_path
+    ):
+        """WI-249 review F2: a window that starts inside segment A and runs
+        past segment B overlaps BOTH segments, so the overlap-based slice
+        keeps both. The inter-segment seal sits between them and is therefore
+        in-window, so the kept pair links and the chunk self-verifies. This
+        is the positive case the misnamed ``..._drops_unlinked_leading``
+        test actually exercised."""
         self._build_two_segment_corpus(sub)
         a, b, _ = self._segment_and_gap_seqs(sub)
 
@@ -1138,8 +1140,123 @@ class TestSegmentChainOfflineVerification:
         assert result["self_verification"]["verified"] is True, (
             result["self_verification"]["errors"]
         )
-        # Both overlapping segments are kept.
+        # Both overlapping segments are kept, none excluded.
         assert result["segment_count"] >= 2
+        assert result["segments_excluded"] == 0
+
+    def test_windowed_export_isolating_segment_b_keeps_it_without_incoming_seal(
+        self, sub, tmp_path
+    ):
+        """WI-249 review F2 (isolating window): a window of
+        ``since_seq = b.first - 1, until_seq = b.last`` overlaps ONLY segment
+        B, so the overlap-based slice keeps exactly one segment record. The
+        inter-segment seal linking A -> B is at global_seq < b.first, hence
+        NOT in-window; segment B's incoming link is therefore unprovable in
+        this chunk. That is correct and verifiable: with a single segment in
+        the bundle the segment-chain walk has no predecessor to link from, so
+        the chunk self-verifies. The leading segment is KEPT (not dropped):
+        dropping it would orphan its events for no verification gain. The
+        manifest reports one kept segment and one excluded (segment A, which
+        does not overlap the window)."""
+        self._build_two_segment_corpus(sub)
+        _, b, seal_seq = self._segment_and_gap_seqs(sub)
+
+        # Sanity: the seal linking A -> B is before b.first, so the isolating
+        # window (which starts at b.first - 1, i.e. includes only
+        # global_seq >= b.first) excludes it.
+        assert seal_seq < b["first_global_seq"]
+
+        since_seq = b["first_global_seq"] - 1
+        until_seq = b["last_global_seq"]
+        output = tmp_path / "win_isolated_b.json"
+        result = sub.export_audit_bundle(
+            str(output), since_seq=since_seq, until_seq=until_seq
+        )
+        assert result["self_verification"]["verified"] is True, (
+            result["self_verification"]["errors"]
+        )
+        # Only segment B overlaps the window; segment A does not.
+        assert result["segment_count"] == 1
+        assert result["segments_excluded"] == 1
+        # Offline re-verification must agree.
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified, report.errors
+
+    def test_windowed_export_sweep_self_verifies(self, sub, tmp_path):
+        """WI-249 review F2 (exhaustive sweep): every ``since_seq``/
+        ``until_seq`` window across a 2-segment corpus must export a bundle
+        that self-verifies. This is the parametrized version of the empirical
+        66-window sweep claimed in the round-1 report — now committed so the
+        property is regression-protected. Each window is also re-verified
+        offline to lock in agreement between the export-time and offline
+        verifiers."""
+        self._build_two_segment_corpus(sub)
+        self._segment_and_gap_seqs(sub)  # ensure the 2-segment corpus exists
+
+        # The full set of event global_seqs in the corpus, plus sentinels
+        # just outside the range so we exercise windows that clip the edges.
+        with raw_transaction(sub) as conn:
+            seq_rows = conn.execute(
+                "SELECT global_seq FROM events ORDER BY global_seq"
+            ).fetchall()
+        seqs = [r["global_seq"] for r in seq_rows]
+        assert len(seqs) >= 4, f"need 4+ events for a meaningful sweep, got {len(seqs)}"
+
+        min_seq, max_seq = seqs[0], seqs[-1]
+        # Candidate boundaries: just below the min, every event seq, and just
+        # above the max. Windows are (since_exclusive, until_inclusive].
+        boundaries = [min_seq - 1, *seqs, max_seq + 1]
+
+        windows: list[tuple[int, int]] = []
+        for i, since in enumerate(boundaries):
+            for until in boundaries[i + 1:]:
+                # Skip degenerate/empty windows (until <= since) and windows
+                # that would select no events (consecutive equal boundaries
+                # already filtered; a window with no events raises inside
+                # export, which is the correct behaviour, not a verification
+                # concern — so we skip windows whose event set is empty).
+                if until <= since:
+                    continue
+                # A window selects events with since < global_seq <= until.
+                # Skip if no event seq falls in (since, until].
+                has_event = any(since < s <= until for s in seqs)
+                if not has_event:
+                    continue
+                windows.append((since, until))
+
+        assert windows, "sweep produced no windows to test"
+        # Keep the sweep bounded: cap at a dense grid if the corpus is large.
+        # For the typical 2-segment corpus (~10-20 events) this is the full
+        # Cartesian set, well under a hundred windows.
+        if len(windows) > 200:
+            step = len(windows) // 200 + 1
+            windows = windows[::step]
+
+        for since_seq, until_seq in windows:
+            output = tmp_path / f"win_sweep_{since_seq}_{until_seq}.json"
+            result = sub.export_audit_bundle(
+                str(output), since_seq=since_seq, until_seq=until_seq
+            )
+            assert result["self_verification"]["verified"] is True, (
+                f"window ({since_seq},{until_seq}] failed self-verification: "
+                f"{result['self_verification']['errors']}"
+            )
+            report = verify_audit_bundle_offline(str(output))
+            assert report.verified, (
+                f"window ({since_seq},{until_seq}] offline failed: "
+                f"{report.errors}"
+            )
+            # Segment accounting must be consistent: kept + excluded == total
+            # segments in the store for this project.
+            with raw_transaction(sub) as conn:
+                seg_total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM event_segments"
+                ).fetchone()["n"]
+            assert result["segment_count"] + result["segments_excluded"] == seg_total, (
+                f"window ({since_seq},{until_seq}] segment accounting mismatch: "
+                f"kept={result['segment_count']} + "
+                f"excluded={result['segments_excluded']} != total={seg_total}"
+            )
 
     def test_tampered_seal_event_removed_fails_segment_chain(self, sub, tmp_path):
         """WI-249 review F4(1): a bundle with the inter-segment SEAL EVENT
@@ -1164,7 +1281,7 @@ class TestSegmentChainOfflineVerification:
             + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
         )
         Path(output).write_text(
-            json.dumps(bundle, sort_keys=True, default=str)
+            json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str)
         )
 
         report = verify_audit_bundle_offline(str(output))
@@ -1196,7 +1313,7 @@ class TestSegmentChainOfflineVerification:
             + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
         )
         Path(output).write_text(
-            json.dumps(bundle, sort_keys=True, default=str)
+            json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str)
         )
 
         report = verify_audit_bundle_offline(str(output))

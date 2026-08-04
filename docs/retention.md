@@ -59,11 +59,16 @@ archived ranges without false-positive orphan warnings.
 
 ### Verification
 
-`verify_segment(segment_id)` re-reads the events in the segment range (from
-`events` or `events_archive` depending on the `archived` flag), re-verifies both
-chain types, recomputes the `head_hash`, and compares it with the stored value.
-The result includes per-check booleans so operators can diagnose which part
-failed.
+`verify_segment(segment_id)` re-reads the events in the segment range from
+**both** `events` and `events_archive` (UNION ALL, ordered by `global_seq`),
+re-verifies both chain types, recomputes the `head_hash`, and compares it with
+the stored value. The union is required because `archive_events` moves
+work-item events to `events_archive` per work-item after a segment is sealed,
+so a segment's events can be split across both tables; the segment's `archived`
+flag is set at seal time and is not updated by archival, so it cannot be relied
+on to pick a single table. The tables share an identical schema and an event_id
+lives in exactly one table, so UNION ALL cannot produce duplicates. The result
+includes per-check booleans so operators can diagnose which part failed.
 
 ## CLI
 

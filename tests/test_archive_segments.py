@@ -461,3 +461,26 @@ class TestSealSegment:
         assert result["segment_count"] >= 2
         assert result["verified"], result["chain_breaks"]
         assert len(result["chain_breaks"]) == 0, result["chain_breaks"]
+
+        # Pin the implicit coupling: verify_archive_chain passes here because
+        # archive_events ALSO archived the segments' own work-item events, so
+        # each segment's events are split across `events` and `events_archive`.
+        # Assert explicitly that a segment whose OWN events are archived still
+        # verifies — the union-read behaviour is what makes this pass, and the
+        # test must not rely on that coupling by accident.
+        with raw_transaction(sub) as conn:
+            seg_rows = conn.execute(
+                "SELECT segment_id FROM event_segments ORDER BY first_global_seq"
+            ).fetchall()
+        assert len(seg_rows) >= 2, f"expected 2+ segments, got {len(seg_rows)}"
+        for seg_row in seg_rows:
+            seg_report = sub.archive.verify(seg_row["segment_id"])
+            assert seg_report["verified"], (
+                f"segment {seg_row['segment_id']} failed per-segment "
+                f"verification after archival: "
+                f"global_chain_ok={seg_report['global_chain_ok']} "
+                f"head_hash_matches={seg_report['head_hash_matches']} "
+                f"seal_event_verified={seg_report['seal_event_verified']} "
+                f"event_count={seg_report['event_count']}/"
+                f"{seg_report['expected_count']}"
+            )
