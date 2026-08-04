@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -8,7 +9,10 @@ import pytest
 from regista import Regista
 from regista._testing import drop_project_schema, raw_transaction
 
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
+DSN = os.environ.get(
+    "REGISTA_TEST_DSN",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
+)
 KEY_PATH = "tests/test_keys.json"
 WORKFLOW_PATH = "tests/test_workflow.yaml"
 
@@ -361,3 +365,122 @@ class TestSealSegment:
         assert result2["event_count"] == 0
         assert result2["segment_id"] is None
         assert _count_segments(sub) == seg_before
+
+    def test_verify_chain_two_segments_links_through_seal(self, sub):
+        """WI-249: verify_archive_chain must link 2+ segments through the
+        inter-segment seal event, not assume strict adjacency."""
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "chain-first-seg",
+            custom_fields={"title": "chain-first-seg"},
+        )
+        _drive_to_terminal(sub, wi1)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(seconds=1)
+        )
+
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "chain-second-seg",
+            custom_fields={"title": "chain-second-seg"},
+        )
+        _drive_to_terminal(sub, wi2)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+
+        result = sub.verify_archive_chain()
+        # The project is shared across the class (module-scoped fixture), so
+        # earlier tests' sealed segments accumulate; assert the property that
+        # matters — the full multi-segment chain verifies through each
+        # inter-segment seal event, with no chain breaks.
+        assert result["segment_count"] >= 2
+        assert result["verified"], result["chain_breaks"]
+        assert len(result["chain_breaks"]) == 0
+
+    def test_verify_chain_gap_events_archived(self, sub):
+        """WI-249 review F1: verify_archive_chain must walk the inter-segment
+        chain through gap events that were archived after sealing.
+
+        A gap between two sealed segments can hold work-item events created
+        between the two seals. Once that work-item reaches terminal and
+        archive_events moves its events to events_archive, the DB-side gap
+        query (reading only `events`) misses them and the chain walk falls
+        short — a false `chain_link_mismatch` on an INTACT store. The gap
+        query must read from BOTH `events` and `events_archive`."""
+        agent = {"role": "agent"}
+        reviewer = {"role": "reviewer"}
+
+        # Segment A: a terminal work-item, sealed.
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-seg-a",
+            custom_fields={"title": "arch-gap-seg-a"},
+        )
+        _drive_to_terminal(sub, wi1)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(seconds=1)
+        )
+
+        # A work-item that stays LIVE while segment B is sealed, so its
+        # events land in the gap between the two segments.
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-live",
+            custom_fields={"title": "arch-gap-live"},
+        )
+        sub.transition(
+            wi2.work_item_id, "start", "agent-1", actor_metadata=agent
+        )
+
+        # Segment B: another terminal work-item, sealed.
+        wi3, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-seg-b",
+            custom_fields={"title": "arch-gap-seg-b"},
+        )
+        _drive_to_terminal(sub, wi3)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+
+        # Now drive the gap work-item to terminal and archive it. Its events
+        # move to events_archive; the inter-segment seal event stays in
+        # events (entity_kind='segment').
+        sub.transition(
+            wi2.work_item_id, "submit_review", "agent-1", actor_metadata=agent
+        )
+        sub.transition(
+            wi2.work_item_id, "approve", "reviewer-1", actor_metadata=reviewer
+        )
+        archived = sub.archive.archive_events(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+        assert archived > 0, "expected the gap work-item's events to be archived"
+
+        # Post-fix: the chain verifies through the archived gap events.
+        # Pre-fix this fails with `chain_link_mismatch` (and the per-segment
+        # verification failed too, since verify_segment also read only
+        # `events`).
+        result = sub.verify_archive_chain()
+        assert result["segment_count"] >= 2
+        assert result["verified"], result["chain_breaks"]
+        assert len(result["chain_breaks"]) == 0, result["chain_breaks"]
+
+        # Pin the implicit coupling: verify_archive_chain passes here because
+        # archive_events ALSO archived the segments' own work-item events, so
+        # each segment's events are split across `events` and `events_archive`.
+        # Assert explicitly that a segment whose OWN events are archived still
+        # verifies — the union-read behaviour is what makes this pass, and the
+        # test must not rely on that coupling by accident.
+        with raw_transaction(sub) as conn:
+            seg_rows = conn.execute(
+                "SELECT segment_id FROM event_segments ORDER BY first_global_seq"
+            ).fetchall()
+        assert len(seg_rows) >= 2, f"expected 2+ segments, got {len(seg_rows)}"
+        for seg_row in seg_rows:
+            seg_report = sub.archive.verify(seg_row["segment_id"])
+            assert seg_report["verified"], (
+                f"segment {seg_row['segment_id']} failed per-segment "
+                f"verification after archival: "
+                f"global_chain_ok={seg_report['global_chain_ok']} "
+                f"head_hash_matches={seg_report['head_hash_matches']} "
+                f"seal_event_verified={seg_report['seal_event_verified']} "
+                f"event_count={seg_report['event_count']}/"
+                f"{seg_report['expected_count']}"
+            )

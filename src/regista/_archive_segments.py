@@ -242,6 +242,62 @@ def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
     return True, ""
 
 
+def _segment_chain_links(
+    prev_head_hash: bytes,
+    curr_first_prev_hash: bytes,
+    intermediate_events: list[Event],
+) -> bool:
+    """Return True if ``curr_first_prev_hash`` is reachable from
+    ``prev_head_hash`` by walking the global chain through the intermediate
+    events.
+
+    Two consecutive segments are NOT adjacent in the global chain: sealing
+    inserts a ``segment_sealed`` event (the seal of the earlier segment)
+    between them, and any other events created between the two seals sit there
+    too. So the linkage check must walk forward from ``prev_head_hash`` (the
+    head hash of the earlier segment's last event) through the intermediate
+    events until it reaches ``curr_first_prev_hash`` (the
+    ``prev_global_event_hash`` of the later segment's first event).
+
+    Direct adjacency (no intermediate events) is the fast path: the hashes
+    match exactly. A tampered ``prev_head_hash`` — no event chains from it —
+    walks nowhere and correctly returns False.
+
+    Precondition: ``True`` means the segments are linked ONLY if
+    ``intermediate_events`` holds the COMPLETE set of events whose
+    ``global_seq`` lies strictly between the two segments. If the caller
+    supplies an incomplete set (e.g. gap events that were archived into
+    ``events_archive`` and therefore omitted), the walk can fall short of
+    ``curr_first_prev_hash`` and correctly return False — but that False is
+    a false failure of an intact store, not a real break. The caller is
+    responsible for supplying every gap event regardless of which table it
+    lives in.
+    """
+    if prev_head_hash == curr_first_prev_hash:
+        return True
+
+    by_prev: dict[str, Event] = {}
+    for evt in intermediate_events:
+        prev = evt.prev_global_event_hash
+        if prev is not None:
+            by_prev[bytes(prev).hex()] = evt
+
+    target = bytes(curr_first_prev_hash).hex()
+    current = by_prev.get(bytes(prev_head_hash).hex())
+    visited: set[uuid.UUID] = set()
+    while current is not None:
+        if current.event_id in visited:
+            return False
+        visited.add(current.event_id)
+        head = _hash_event(current)
+        if head is None:
+            return False
+        if head.hex() == target:
+            return True
+        current = by_prev.get(head.hex())
+    return False
+
+
 def _row_to_event(row: dict[str, Any]) -> Event:
     return Event(
         event_id=row["event_id"],
@@ -562,26 +618,41 @@ def verify_segment(
                 f"Segment {segment_id} not found",
             )
 
-        table_name = "events_archive" if seg_row["archived"] else "events"
-
+        # Read the segment's events from BOTH tables. Archival moves
+        # work-item events to events_archive per work-item, so a segment's
+        # events can be split across the two tables (and the segment's
+        # `archived` flag is set at seal time, not updated by archival, so
+        # it cannot be relied on to pick a single table). The tables share
+        # an identical schema; archive_events moves rows (INSERT+DELETE), so
+        # an event_id lives in exactly one table and UNION ALL cannot
+        # produce duplicates.
         stored_event_ids = seg_row["event_ids"]
         if stored_event_ids:
             rows = conn.execute(
                 SQL(
-                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    f"SELECT {_EVENT_FIELDS} FROM events "
+                    "WHERE event_id = ANY(%s) "
+                    "UNION ALL "
+                    f"SELECT {_EVENT_FIELDS} FROM events_archive "
                     "WHERE event_id = ANY(%s) "
                     "ORDER BY global_seq"
                 ),
-                [stored_event_ids],
+                [stored_event_ids, stored_event_ids],
             ).fetchall()
         else:
             rows = conn.execute(
                 SQL(
-                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    f"SELECT {_EVENT_FIELDS} FROM events "
+                    "WHERE global_seq >= %s AND global_seq <= %s "
+                    "UNION ALL "
+                    f"SELECT {_EVENT_FIELDS} FROM events_archive "
                     "WHERE global_seq >= %s AND global_seq <= %s "
                     "ORDER BY global_seq"
                 ),
-                [seg_row["first_global_seq"], seg_row["last_global_seq"]],
+                [
+                    seg_row["first_global_seq"], seg_row["last_global_seq"],
+                    seg_row["first_global_seq"], seg_row["last_global_seq"],
+                ],
             ).fetchall()
 
         events = [_row_to_event(r) for r in rows]
@@ -758,14 +829,46 @@ def verify_archive_chain(
                 })
                 continue
 
-            if not _hmac.compare_digest(bytes(prev_head), bytes(curr_first_prev)):
+            # Consecutive segments are not adjacent in the global chain: the
+            # seal event of the earlier segment (and any other events created
+            # between the two seals) sits between them. Fetch those
+            # intermediate events and walk the chain through them instead of
+            # comparing the boundary hashes directly (WI-249).
+            prev_last = prev_seg["last_global_seq"]
+            curr_first = curr_seg["first_global_seq"]
+            intermediate: list[Event] = []
+            if prev_last is not None and curr_first is not None:
+                # The gap between two sealed segments can contain work-item
+                # events that were archived after the segments were sealed
+                # (the inter-segment seal event itself stays in `events`
+                # because entity_kind='segment'). Read from BOTH tables so
+                # the chain walk sees the complete gap event set. The tables
+                # share an identical schema and an event_id lives in exactly
+                # one table, so UNION ALL cannot produce duplicates.
+                gap_rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE global_seq > %s AND global_seq < %s "
+                        "UNION ALL "
+                        f"SELECT {_EVENT_FIELDS} FROM events_archive "
+                        "WHERE global_seq > %s AND global_seq < %s "
+                        "ORDER BY global_seq"
+                    ),
+                    [prev_last, curr_first, prev_last, curr_first],
+                ).fetchall()
+                intermediate = [_row_to_event(r) for r in gap_rows]
+
+            if not _segment_chain_links(
+                bytes(prev_head), bytes(curr_first_prev), intermediate
+            ):
                 chain_breaks.append({
                     "segment_id": str(curr_seg["segment_id"]),
                     "type": "chain_link_mismatch",
                     "detail": (
                         f"head_hash of segment {prev_seg['segment_id']} "
-                        f"does not match first_event_prev_hash of "
-                        f"segment {curr_seg['segment_id']}"
+                        f"does not link to first_event_prev_hash of "
+                        f"segment {curr_seg['segment_id']} through the "
+                        f"inter-segment events"
                     ),
                 })
 
