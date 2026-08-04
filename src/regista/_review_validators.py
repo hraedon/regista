@@ -6,6 +6,21 @@ from typing import Any
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
 
+# WI-248: actor ids that authenticate as actor_kind="agent" but are genuine
+# non-model service identities (plumbing, not a model behind them). Their
+# authored events carry no model_lineage by design, so they must be excluded
+# from the agent-author lineage check that drives the agent_author_undeclared
+# gate — otherwise every item they touch forces --same-lineage-acknowledged
+# on every reviewer. The id still lands in author_ids so separation-of-duties
+# (a service may not review its own filing) is preserved.
+#
+# Keep this set minimal and deliberate: every entry must be a genuine non-model
+# service identity. Adding a real model agent here would silently weaken the
+# cross-lineage review invariant, so extend with care and document the reason.
+# Note: actor_kind="system" identities never hit the agent-author branch at all,
+# so they are inherently excluded and need not be listed here.
+_NON_MODEL_SERVICE_ACTORS: frozenset[str] = frozenset({"agent-notes"})
+
 
 def _event_lineage(event: Any) -> str | None:
     meta = getattr(event, "actor_metadata", None)
@@ -25,6 +40,22 @@ def derive_authors(prior_events: Iterable[Any]) -> tuple[set[str], set[str], set
         if getattr(event, "transition", None) in _NON_AUTHOR_TRANSITIONS:
             continue
         author_ids.add(event.actor_id)
+        # WI-248: a genuine non-model service identity is not an agent author.
+        # Record its id (separation-of-duties still applies) but do not count its
+        # kind, do not read a lineage, and do not trip the undeclared-agent gate.
+        if event.actor_id in _NON_MODEL_SERVICE_ACTORS:
+            delegation = getattr(event, "on_behalf_of", None)
+            if isinstance(delegation, dict):
+                principal_id = delegation.get("principal_id")
+                principal_kind = delegation.get("principal_kind")
+                if principal_id:
+                    author_ids.add(principal_id)
+                if principal_kind:
+                    author_kinds.add(principal_kind)
+                principal_lineage = delegation.get("principal_lineage")
+                if principal_lineage:
+                    author_lineages.add(str(principal_lineage))
+            continue
         author_kinds.add(event.actor_kind)
         lineage = _event_lineage(event)
         if lineage:
