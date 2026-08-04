@@ -14,6 +14,12 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.INVALID_TRANSITION: 400,
     ErrorCode.INVALID_FILTER: 400,
     ErrorCode.INVALID_ARGUMENT: 400,
+    # The export would exceed the offline verifier's size cap (WI-240): the
+    # remedy is client-side (chunk the range with since/until), so 400.
+    ErrorCode.BUNDLE_UNVERIFIABLE: 400,
+    # The written artifact failed its own hash — a server-side integrity
+    # failure, not a client error (WI-240 review F6).
+    ErrorCode.BUNDLE_WRITE_CORRUPT: 500,
     ErrorCode.INVALID_ACTOR_KIND: 400,
     ErrorCode.WORK_ITEM_TYPE_NOT_DECLARED: 400,
     ErrorCode.CUSTOM_FIELD_VIOLATION: 400,

@@ -915,16 +915,44 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
         result = sub.export_audit_bundle(
             args.output,
             since_seq=args.since_seq,
+            until_seq=args.until_seq,
         )
+        sv = result["self_verification"]
         if getattr(args, "json", False):
             _dump_json(result)
         else:
             print(f"Bundle exported to {result['output_path']}")
             print(f"  events:           {result['event_count']}")
             print(f"  anchor_receipts:  {result['anchor_receipt_count']}")
+            if result["anchor_receipts_excluded"]:
+                print(
+                    f"  receipts_excluded: {result['anchor_receipts_excluded']}"
+                    " (not provable in this chunk; see manifest)"
+                )
             print(f"  segments:         {result['segment_count']}")
             print(f"  public_keys:      {result['public_key_count']}")
             print(f"  bundle_hash:      {result['bundle_hash']}")
+            print(f"  bundle_bytes:     {result['bundle_bytes']}")
+            print(
+                f"  self_verified:    {'yes' if sv['verified'] else 'NO'} "
+                f"(signatures {sv['signatures_verified']} verified, "
+                f"{sv['signatures_unverifiable']} unverifiable, "
+                f"check {sv['signature_check']})"
+            )
+        if not sv["verified"]:
+            print(
+                "warning: the artifact was written but preserves evidence "
+                "the offline verifier rejects — run `bundle verify` for the "
+                "full report:",
+                file=sys.stderr,
+            )
+            for err in sv["errors"]:
+                print(f"  - {err}", file=sys.stderr)
+            # Exit codes are the API pipelines read (the WI-240 complaint):
+            # 0 must mean "exported AND verifiable". Archiving a degraded
+            # store is still possible, but only by explicit opt-in.
+            if not args.allow_unverified:
+                sys.exit(3)
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -1949,7 +1977,24 @@ def main(argv: list[str] | None = None) -> None:
     bnd_export.add_argument(
         "--output", required=True, help="Output JSON file path (bundle is canonical JSON)"
     )
-    bnd_export.add_argument("--since-seq", type=int, default=None, help="Export after this seq")
+    bnd_export.add_argument(
+        "--since-seq", type=int, default=None,
+        help="Export events with global_seq strictly after this (exclusive lower bound)",
+    )
+    bnd_export.add_argument(
+        "--until-seq", type=int, default=None,
+        help="Export events with global_seq up to and including this (inclusive "
+        "upper bound); with --since-seq, chunks a corpus larger than the "
+        "offline verifier's size cap into verifiable pieces",
+    )
+    bnd_export.add_argument(
+        "--allow-unverified", action="store_true",
+        help="Exit 0 even when the written artifact fails offline "
+        "verification for store-level reasons (e.g. a key registry predating "
+        "its migration). Default: the artifact is written but the command "
+        "exits 3, so pipelines cannot mistake an unverifiable export for a "
+        "verified one",
+    )
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)
 

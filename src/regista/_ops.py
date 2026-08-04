@@ -1054,12 +1054,20 @@ class ArchiveOps:
         return _impl(self._mgr, self._keys)
 
     def export_bundle(
-        self, output_path: str, *, since_seq: int | None = None,
+        self,
+        output_path: str,
+        *,
+        since_seq: int | None = None,
+        until_seq: int | None = None,
     ) -> dict[str, Any]:
         from ._bundle import export_audit_bundle as _impl
 
         return _impl(
-            self._mgr, self._project, output_path, since_seq=since_seq,
+            self._mgr,
+            self._project,
+            output_path,
+            since_seq=since_seq,
+            until_seq=until_seq,
         )
 
     @staticmethod
