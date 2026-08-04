@@ -226,6 +226,89 @@ class TestDeriveAuthorsServiceIdentityExemption:
         _, _, _, undeclared = derive_authors(events)
         assert undeclared is True
 
+    def test_spoofed_service_id_with_lineage_is_not_hidden(self):
+        # F1 (CRITICAL): the exemption must NOT let a forger hide a real
+        # model lineage behind the service id. If an event claims
+        # actor_id="agent-notes" but CARRIES a model_lineage, the lineage must
+        # be surfaced (fall through to the declared-author path), not silently
+        # dropped. Otherwise a model agent could forge the service id to make
+        # itself invisible to the cross-lineage gate.
+        events = [
+            _evt("created", "agent-notes", actor_kind="agent",
+                 actor_metadata={"model_lineage": "lineage-X"}),
+        ]
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert "lineage-X" in lineages
+        assert undeclared is False
+
+    def test_spoofed_service_id_without_lineage_still_exempt(self):
+        # The residual no-lineage case (forged service id, no lineage) is the
+        # same free-form-actor_id false-identity regista already permits for
+        # ANY actor id — the exemption correctly treats it as a non-author.
+        events = [_evt("created", "agent-notes", actor_kind="agent")]
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" not in kinds
+        assert lineages == set()
+        assert undeclared is False
+
+
+class TestServiceIdentityDelegationUndeclared:
+    """F2 (HIGH): on_behalf_of delegation on an exempt service-identity event
+    must not launder an undeclared delegated agent principal into "declared"."""
+
+    def test_undelegated_service_event_not_flagged(self):
+        # Baseline: a plain service event with no delegation is exempt.
+        events = [_evt("created", "agent-notes", actor_kind="agent")]
+        _, _, _, undeclared = derive_authors(events)
+        assert undeclared is False
+
+    def test_delegated_undeclared_agent_principal_is_flagged(self):
+        # A service event acting on behalf of an agent principal that declares
+        # no lineage must trip the undeclared-agent gate — otherwise the
+        # delegation would launder an undeclared author into "declared".
+        events = [
+            _evt("created", "agent-notes", actor_kind="agent",
+                 on_behalf_of={
+                     "principal_id": "delegated-agent",
+                     "principal_kind": "agent",
+                 }),
+        ]
+        ids, kinds, lineages, undeclared = derive_authors(events)
+        assert "delegated-agent" in ids
+        assert "agent" in kinds
+        assert lineages == set()
+        assert undeclared is True
+
+    def test_delegated_declared_agent_principal_not_flagged(self):
+        # A delegated agent principal that DOES declare a lineage is genuinely
+        # declared and must NOT trip the gate.
+        events = [
+            _evt("created", "agent-notes", actor_kind="agent",
+                 on_behalf_of={
+                     "principal_id": "delegated-agent",
+                     "principal_kind": "agent",
+                     "principal_lineage": "lineage-D",
+                 }),
+        ]
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert "lineage-D" in lineages
+        assert undeclared is False
+
+    def test_delegated_human_principal_not_flagged(self):
+        # A delegated human principal is not an agent author at all.
+        events = [
+            _evt("created", "agent-notes", actor_kind="agent",
+                 on_behalf_of={
+                     "principal_id": "human:boss",
+                     "principal_kind": "human",
+                 }),
+        ]
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "human" in kinds
+        assert undeclared is False
+
 
 class TestAdversarialReviewAfterServiceIdentityAndClaim:
     """End-to-end gate behaviour for an item filed by the service identity and
