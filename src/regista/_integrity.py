@@ -37,10 +37,10 @@ def _parse_semver(s: str) -> tuple[int, int, int]:
         ) from e
 
 
-def check_integrity(mgr: ConnectionManager) -> list[str]:
+def check_integrity(mgr: ConnectionManager, *, read_only: bool = False) -> list[str]:
     issues: list[str] = []
 
-    check_migrations_current(mgr)
+    check_migrations_current(mgr, read_only=read_only)
 
     with mgr.transaction() as conn:
         rows = conn.execute(

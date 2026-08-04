@@ -17,7 +17,7 @@ from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import verify_event, verify_event_dict_principal_binding
 from ._signing_scheme import get_scheme, resolve_hash_function
-from ._types import ReplayReport
+from ._types import ReplayReport, ReplayReportEntry
 
 log = structlog.get_logger()
 
@@ -39,6 +39,109 @@ def drop_old_replay_tables(conn: DictConn, schema: str) -> None:
 def _drop_replay_tables(conn: DictConn, *table_names: str) -> None:
     for name in table_names:
         conn.execute(SQL("DROP TABLE IF EXISTS {}").format(Identifier(name)))
+
+
+class _ReplayStore:
+    """Accumulates replay results.
+
+    Two backends:
+
+    * *Writable* (normal mode): results are written to ``CREATE TEMP TABLE``
+      tables in the project schema's session. Temp tables are session-scoped and
+      auto-dropped, so they never leak permanent residue. The replayed
+      projection is returned via :attr:`table_name` for callers that want to
+      query it.
+
+    * *Read-only* (verify path): results are held in memory. This is the only
+      option that works against a read-only connection, because even
+      ``CREATE TEMP TABLE`` is blocked under ``default_transaction_read_only``
+      (creating any table writes to ``pg_class``). Results are returned via
+      :attr:`entries`; :attr`table_name` is ``None``.
+    """
+
+    def __init__(self, conn: DictConn, schema: str, *, read_only: bool) -> None:
+        self._conn = conn
+        self._read_only = read_only
+        self._report_entries: list[ReplayReportEntry] = []
+        self._replay_rows: list[dict[str, Any]] = []
+        tag = uuid.uuid4().hex[:8]
+        self.replay_table = f"work_items_current_replay_{tag}"
+        self.report_table = f"replay_report_{tag}"
+        if read_only:
+            self.table_name: str | None = None
+        else:
+            self.table_name = self.replay_table
+            conn.execute(
+                SQL("CREATE TEMP TABLE {} AS SELECT * FROM work_items_current WHERE 1=0").format(
+                    Identifier(self.replay_table)
+                )
+            )
+            conn.execute(
+                SQL(
+                    "CREATE TEMP TABLE {} ("
+                    "work_item_id UUID PRIMARY KEY, "
+                    "category TEXT NOT NULL, "
+                    "detail TEXT, "
+                    "warnings INTEGER NOT NULL DEFAULT 0)"
+                ).format(Identifier(self.report_table))
+            )
+
+    def add_report_entry(
+        self,
+        work_item_id: uuid.UUID,
+        category: str,
+        detail: str | None,
+        warnings: int,
+    ) -> None:
+        if self._read_only:
+            self._report_entries.append(
+                ReplayReportEntry(work_item_id, category, detail)
+            )
+            return
+        self._conn.execute(
+            SQL(
+                "INSERT INTO {} (work_item_id, category, detail, warnings) "
+                "VALUES (%s, %s, %s, %s)"
+            ).format(Identifier(self.report_table)),
+            [work_item_id, category, detail, warnings],
+        )
+
+    def add_replay_row(self, row: dict[str, Any]) -> None:
+        if self._read_only:
+            self._replay_rows.append(row)
+            return
+        self._conn.execute(
+            SQL(
+                "INSERT INTO {} (work_item_id, workflow_name, workflow_version, "
+                "work_item_type, current_state, custom_fields, needs_review, "
+                "not_before, last_event_seq, last_event_at, next_event_seq, "
+                "claimed_by, claim_expires_at, attempt_number) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            ).format(Identifier(self.replay_table)),
+            [
+                row["work_item_id"],
+                row["workflow_name"],
+                row["workflow_version"],
+                row["work_item_type"],
+                row["current_state"],
+                psycopg.types.json.Jsonb(row["custom_fields"]),  # type: ignore[attr-defined]
+                row["needs_review"],
+                row["not_before"],
+                row["last_event_seq"],
+                None,
+                row["last_event_seq"] + 1,
+                row["claimed_by"],
+                row["claim_expires_at"],
+                row["attempt_number"],
+            ],
+        )
+
+    def drop(self) -> None:
+        if not self._read_only:
+            _drop_replay_tables(self._conn, self.replay_table, self.report_table)
+
+    def report_entries(self) -> tuple[ReplayReportEntry, ...]:
+        return tuple(self._report_entries)
 
 
 # AC-28: event hash chain verification (BC-233)
@@ -383,43 +486,23 @@ def replay(
     verify_timestamps: bool = False,
     verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
+    read_only: bool = False,
 ) -> ReplayReport:
-    import uuid as _uuid
-
-    tag = _uuid.uuid4().hex[:8]
-    replay_table = f"work_items_current_replay_{tag}"
-    report_table = f"replay_report_{tag}"
-
-    conn.execute(
-        SQL("CREATE TABLE {} AS SELECT * FROM work_items_current WHERE 1=0").format(
-            Identifier(replay_table)
-        )
-    )
-    conn.execute(
-        SQL(
-            "CREATE TABLE {} ("
-            "work_item_id UUID PRIMARY KEY, "
-            "category TEXT NOT NULL, "
-            "detail TEXT, "
-            "warnings INTEGER NOT NULL DEFAULT 0)"
-        ).format(Identifier(report_table))
-    )
-
+    store = _ReplayStore(conn, schema, read_only=read_only)
     try:
         return _replay_inner(
             conn,
             schema,
             project,
             key_set,
-            replay_table,
-            report_table,
+            store,
             continue_on_revoked=continue_on_revoked,
             verify_timestamps=verify_timestamps,
             verify_principal_binding=verify_principal_binding,
             work_item_id=work_item_id,
         )
     except Exception:
-        _drop_replay_tables(conn, replay_table, report_table)
+        store.drop()
         raise
 
 
@@ -428,8 +511,7 @@ def _replay_inner(
     schema: str,
     project: str,
     key_set: KeySet,
-    replay_table: str,
-    report_table: str,
+    store: _ReplayStore,
     *,
     continue_on_revoked: bool = False,
     verify_timestamps: bool = False,
@@ -494,17 +576,11 @@ def _replay_inner(
                 work_item_id=str(orphan_id),
                 event_count=len(orphan_evts),
             )
-            conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                    "VALUES (%s, %s, %s, %s)"
-                ).format(Identifier(report_table)),
-                [
-                    orphan_id,
-                    "halted",
-                    "Orphaned events with no work_item and no created event",
-                    0,
-                ],
+            store.add_report_entry(
+                orphan_id,
+                "halted",
+                "Orphaned events with no work_item and no created event",
+                0,
             )
         else:
             total_warnings += 1
@@ -545,13 +621,7 @@ def _replay_inner(
         except _ReplayHaltError as e:
             halted_count += 1
             log.error("replay.halted", work_item_id=str(wi_id), error=str(e))
-            conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                    "VALUES (%s, %s, %s, %s)"
-                ).format(Identifier(report_table)),
-                [wi_id, "halted", str(e), 0],
-            )
+            store.add_report_entry(wi_id, "halted", str(e), 0)
             return
         except Exception as e:
             halted_count += 1
@@ -561,13 +631,7 @@ def _replay_inner(
                 error=str(e),
                 exc_info=True,
             )
-            conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                    "VALUES (%s, %s, %s, %s)"
-                ).format(Identifier(report_table)),
-                [wi_id, "halted", f"unexpected: {e}", 0],
-            )
+            store.add_report_entry(wi_id, "halted", f"unexpected: {e}", 0)
             return
 
         live_row = conn.execute(
@@ -584,12 +648,7 @@ def _replay_inner(
 
         if _states_match(replayed_state, live_row):
             ok_count += 1
-            conn.execute(
-                SQL("INSERT INTO {} (work_item_id, category, warnings) VALUES (%s, %s, %s)").format(
-                    Identifier(report_table)
-                ),
-                [wi_id, "replayed_ok", wi_warnings],
-            )
+            store.add_report_entry(wi_id, "replayed_ok", None, wi_warnings)
         else:
             drift_count += 1
             diff_fields = _diff_fields(replayed_state, live_row)
@@ -600,38 +659,25 @@ def _replay_inner(
                 f"replayed state={replayed_state['current_state']!r} "
                 f"seq={replayed_state['last_event_seq']}"
             )
-            conn.execute(
-                SQL(
-                    "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                    "VALUES (%s, %s, %s, %s)"
-                ).format(Identifier(report_table)),
-                [wi_id, "replayed_drift", detail, wi_warnings],
-            )
+            store.add_report_entry(wi_id, "replayed_drift", detail, wi_warnings)
 
-        conn.execute(
-            SQL(
-                "INSERT INTO {} (work_item_id, workflow_name, workflow_version, "
-                "work_item_type, current_state, custom_fields, needs_review, "
-                "not_before, last_event_seq, last_event_at, next_event_seq, "
-                "claimed_by, claim_expires_at, attempt_number) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-            ).format(Identifier(replay_table)),
-            [
-                wi_id,
-                live_row["workflow_name"],
-                live_row["workflow_version"],
-                live_row["work_item_type"],
-                replayed_state["current_state"],
-                psycopg.types.json.Jsonb(replayed_state["custom_fields"]),  # type: ignore[attr-defined]
-                replayed_state["needs_review"],
-                replayed_state["not_before"],
-                replayed_state["last_event_seq"],
-                None,
-                replayed_state["last_event_seq"] + 1,
-                replayed_state["claimed_by"],
-                replayed_state["claim_expires_at"],
-                replayed_state["attempt_number"],
-            ],
+        store.add_replay_row(
+            {
+                "work_item_id": wi_id,
+                "workflow_name": live_row["workflow_name"],
+                "workflow_version": live_row["workflow_version"],
+                "work_item_type": live_row["work_item_type"],
+                "current_state": replayed_state["current_state"],
+                "custom_fields": replayed_state["custom_fields"],
+                "needs_review": replayed_state["needs_review"],
+                "not_before": replayed_state["not_before"],
+                "last_event_seq": replayed_state["last_event_seq"],
+                "last_event_at": None,
+                "next_event_seq": replayed_state["last_event_seq"] + 1,
+                "claimed_by": replayed_state["claimed_by"],
+                "claim_expires_at": replayed_state["claim_expires_at"],
+                "attempt_number": replayed_state["attempt_number"],
+            }
         )
 
     if scoped:
@@ -707,21 +753,17 @@ def _replay_inner(
 
     if scoped and work_item_id not in wi_ids:
         halted_count += 1
+        assert work_item_id is not None
         log.error(
             "replay.projection_row_missing",
             work_item_id=str(work_item_id),
             event_count=scoped_event_count,
         )
-        conn.execute(
-            SQL(
-                "INSERT INTO {} (work_item_id, category, detail, warnings) VALUES (%s, %s, %s, %s)"
-            ).format(Identifier(report_table)),
-            [
-                work_item_id,
-                "halted",
-                "events exist but projection row missing from work_items_current",
-                0,
-            ],
+        store.add_report_entry(
+            work_item_id,
+            "halted",
+            "events exist but projection row missing from work_items_current",
+            0,
         )
 
     if not scoped:
@@ -840,13 +882,14 @@ def _replay_inner(
     # to never reach that peak, which the streaming above does; dropping
     # references at the end of this function would accomplish nothing.
     return ReplayReport(
-        table_name=replay_table,
+        table_name=store.table_name,
         replayed_ok=ok_count,
         replayed_drift=drift_count,
         halted=halted_count,
         warnings=total_warnings,
         principal_binding_failures=total_principal_binding_failures,
         principal_binding_verified=verify_principal_binding,
+        entries=store.report_entries(),
     )
 
 

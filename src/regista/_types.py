@@ -599,7 +599,9 @@ class QueryPage(Generic[T]):
 
 @dataclass(frozen=True)
 class ReplayReport:
-    table_name: str
+    #: Name of the (temp) table holding the replayed projection, or ``None``
+    #: when the replay ran in read-only mode and held results in memory.
+    table_name: str | None
     replayed_ok: int
     replayed_drift: int
     halted: int
@@ -610,9 +612,13 @@ class ReplayReport:
     #: True. When the check did not run, ``0`` means "not checked" — surfaces
     #: must not render it as a pass.
     principal_binding_verified: bool = False
+    #: Detailed per-work-item results. Populated in read-only mode (where there
+    #: is no table to query); empty in normal mode where ``table_name`` holds
+    #: the same data.
+    entries: tuple[ReplayReportEntry, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        d = {
+        d: dict[str, Any] = {
             "table_name": self.table_name,
             "replayed_ok": self.replayed_ok,
             "replayed_drift": self.replayed_drift,
@@ -625,18 +631,23 @@ class ReplayReport:
             d["principal_binding_failures"] = self.principal_binding_failures
         elif self.principal_binding_failures > 0:
             d["principal_binding_failures"] = self.principal_binding_failures
+        if self.entries:
+            d["entries"] = [e.to_dict() for e in self.entries]
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReplayReport:
         return cls(
-            table_name=data["table_name"],
+            table_name=data.get("table_name"),
             replayed_ok=data["replayed_ok"],
             replayed_drift=data["replayed_drift"],
             halted=data["halted"],
             warnings=data.get("warnings", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
             principal_binding_verified=data.get("principal_binding_verified", False),
+            entries=tuple(
+                ReplayReportEntry.from_dict(e) for e in data.get("entries", [])
+            ),
         )
 
 
