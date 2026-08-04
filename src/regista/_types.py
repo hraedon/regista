@@ -599,7 +599,12 @@ class QueryPage(Generic[T]):
 
 @dataclass(frozen=True)
 class ReplayReport:
-    table_name: str
+    #: Name of the temp table holding the replayed projection, or ``None`` in
+    #: read-only mode. This table exists only for the span of the replay
+    #: transaction and is dropped when :func:`~regista._replay.replay` returns,
+    #: so it is NOT a valid post-return handle. Use ``entries`` for portable
+    #: access to per-item results.
+    table_name: str | None
     replayed_ok: int
     replayed_drift: int
     halted: int
@@ -610,9 +615,13 @@ class ReplayReport:
     #: True. When the check did not run, ``0`` means "not checked" — surfaces
     #: must not render it as a pass.
     principal_binding_verified: bool = False
+    #: Detailed per-work-item results, populated in BOTH modes. This is the
+    #: portable access path for per-item replay outcomes; prefer it over
+    #: querying ``table_name``.
+    entries: tuple[ReplayReportEntry, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        d = {
+        d: dict[str, Any] = {
             "table_name": self.table_name,
             "replayed_ok": self.replayed_ok,
             "replayed_drift": self.replayed_drift,
@@ -625,18 +634,23 @@ class ReplayReport:
             d["principal_binding_failures"] = self.principal_binding_failures
         elif self.principal_binding_failures > 0:
             d["principal_binding_failures"] = self.principal_binding_failures
+        if self.entries:
+            d["entries"] = [e.to_dict() for e in self.entries]
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReplayReport:
         return cls(
-            table_name=data["table_name"],
+            table_name=data.get("table_name"),
             replayed_ok=data["replayed_ok"],
             replayed_drift=data["replayed_drift"],
             halted=data["halted"],
             warnings=data.get("warnings", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
             principal_binding_verified=data.get("principal_binding_verified", False),
+            entries=tuple(
+                ReplayReportEntry.from_dict(e) for e in data.get("entries", [])
+            ),
         )
 
 
@@ -645,12 +659,17 @@ class ReplayReportEntry:
     work_item_id: uuid.UUID
     category: str
     detail: str | None
+    #: Per-work-item warning count for this entry. Mirrors the ``warnings``
+    # column of the (now-temporary) report table so callers reading ``entries``
+    # see the same detail the table once held.
+    warnings: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "work_item_id": str(self.work_item_id),
             "category": self.category,
             "detail": self.detail,
+            "warnings": self.warnings,
         }
 
     @classmethod
@@ -659,6 +678,7 @@ class ReplayReportEntry:
             work_item_id=uuid.UUID(data["work_item_id"]),
             category=data["category"],
             detail=data.get("detail"),
+            warnings=data.get("warnings", 0),
         )
 
 

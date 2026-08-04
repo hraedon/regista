@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from ._connection import ConnectionManager
+from ._errors import ErrorCode, RegistaError
 
 log = structlog.get_logger()
 
@@ -54,19 +55,52 @@ def discover_migrations() -> list[tuple[int, Path]]:
     return result
 
 
-def applied_versions(mgr: ConnectionManager) -> set[int]:
+def applied_versions(mgr: ConnectionManager, *, read_only: bool = False) -> set[int]:
     with mgr.transaction() as conn:
-        conn.execute(
-            "DO $$ BEGIN "
-            "IF EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = '_substrate_migrations') THEN "
-            "ALTER TABLE _substrate_migrations RENAME TO _regista_migrations; "
-            "END IF; END $$"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS _regista_migrations "
-            "(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-        )
+        if read_only:
+            # Read-only connect: never issue DDL. Detect the migrations table
+            # via a read-only catalog probe and fail closed if it is absent.
+            probe = conn.execute(
+                "SELECT "
+                "EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = '_regista_migrations') "
+                "AS has_regista, "
+                "EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = '_substrate_migrations') "
+                "AS has_substrate",
+                [mgr.schema, mgr.schema],
+            ).fetchone()
+            assert probe is not None
+            if not probe["has_regista"]:
+                # If the legacy-named table exists, say so: the schema IS
+                # migrated, just under the old name, and a read-only connection
+                # cannot perform the rename.
+                if probe["has_substrate"]:
+                    raise RegistaError(
+                        ErrorCode.MIGRATION_REQUIRED,
+                        f"Read-only connect: schema {mgr.schema!r} has a "
+                        "_substrate_migrations table (the pre-rename name) but "
+                        "no _regista_migrations table; a read-only connection "
+                        "cannot apply the rename migration.",
+                    )
+                raise RegistaError(
+                    ErrorCode.MIGRATION_REQUIRED,
+                    f"Read-only connect: schema {mgr.schema!r} has no "
+                    "_regista_migrations table; migrations were never applied "
+                    "and a read-only connection cannot create it.",
+                )
+        else:
+            conn.execute(
+                "DO $$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = '_substrate_migrations') THEN "
+                "ALTER TABLE _substrate_migrations RENAME TO _regista_migrations; "
+                "END IF; END $$"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _regista_migrations "
+                "(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
         rows = conn.execute(
             "SELECT version FROM _regista_migrations ORDER BY version"
         ).fetchall()
@@ -267,16 +301,14 @@ def _has_autocommit_directive(sql: str) -> bool:
     return False
 
 
-def check_migrations_current(mgr: ConnectionManager) -> None:
+def check_migrations_current(mgr: ConnectionManager, *, read_only: bool = False) -> None:
     all_migrations = discover_migrations()
     if not all_migrations:
         return
     available = {v for v, _ in all_migrations}
-    applied = applied_versions(mgr)
+    applied = applied_versions(mgr, read_only=read_only)
     missing = available - applied
     if missing:
-        from ._errors import ErrorCode, RegistaError
-
         raise RegistaError(
             ErrorCode.MIGRATION_REQUIRED,
             f"Migrations pending: schema {mgr.schema!r} has applied "

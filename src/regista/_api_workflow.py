@@ -460,9 +460,15 @@ class WorkflowApiMixin(_RegistaBase):
             replay as _replay,
         )
 
-        with self._mgr.connect() as conn:
-            drop_old_replay_tables(conn, self._mgr.schema)
-            conn.commit()
+        read_only = self._read_only
+        if not read_only:
+            # Legacy cleanup of permanent residue from pre-fix runs. Skipped in
+            # read-only mode: DROP is blocked under default_transaction_read_only
+            # and TEMP tables (the new normal-mode backend) never appear in the
+            # project schema's pg_tables anyway.
+            with self._mgr.connect() as conn:
+                drop_old_replay_tables(conn, self._mgr.schema)
+                conn.commit()
 
         timer = OpTimer(self._project, "replay")
         try:
@@ -488,6 +494,7 @@ class WorkflowApiMixin(_RegistaBase):
                     verify_timestamps=verify_timestamps,
                     verify_principal_binding=verify_principal_binding,
                     work_item_id=work_item_id,
+                    read_only=read_only,
                 )
 
             if report.replayed_drift > 0:

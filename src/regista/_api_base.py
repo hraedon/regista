@@ -49,6 +49,7 @@ class _RegistaBase:
         _maintenance_thread: Any
         _strict_roles: bool
         _hmac_key_path: str
+        _read_only: bool
 
         def _require_open(self) -> None: ...
 

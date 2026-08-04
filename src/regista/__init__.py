@@ -176,6 +176,7 @@ class Regista(
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
         approval_verifier: ApprovalVerifier | None = None,
+        read_only: bool = False,
     ) -> None:
         """Connect to an existing project.
 
@@ -202,6 +203,13 @@ class Regista(
                 *unverified* and not sufficient for release qualification.
                 Release qualification requires a configured verifier so missing
                 or insufficient approval evidence fails closed.
+            read_only: Open a verify-path connection intended for use
+                against a read-only session (hot standby / restore). regista
+                will not issue DDL and replay runs in memory; the connect
+                FAILS CLOSED (raises ``MIGRATION_REQUIRED``) if the schema's
+                migrations table is missing. The no-mutates guarantee holds
+                only if the DSN session is actually read-only. ``create_project``
+                always remains a write path and ignores this.
 
         Raises:
             RegistaError: If migrations are pending or workflow versions are
@@ -213,6 +221,7 @@ class Regista(
                 "hmac_key_path is required",
             )
         self._hmac_key_path = hmac_key_path
+        self._read_only = read_only
         self._mgr = ConnectionManager(
             dsn, project, pool_min=pool_min, pool_max=pool_max,
             pool_max_lifetime=pool_max_lifetime, require_ssl=require_ssl,
@@ -242,7 +251,7 @@ class Regista(
                 metrics=self._metrics,
             )
             self._maintenance_thread = None
-            check_integrity(self._mgr)
+            check_integrity(self._mgr, read_only=read_only)
             if auto_partition:
                 self._run_auto_partition()
         except Exception:

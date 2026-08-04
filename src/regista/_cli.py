@@ -304,7 +304,7 @@ def cmd_events_tail(args: argparse.Namespace) -> None:
 
 def cmd_replay(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
+    sub = Regista(dsn, project, hmac_key_path, read_only=args.read_only)
     try:
         # WI-223: the binding check is on by default. Printing
         # principal_binding_failures=0 for a run that never looked is an
@@ -2024,6 +2024,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Exit non-zero when --verify-principal-binding reports any "
         "principal-binding failure (default: report as warnings only, "
         "backward compatible with HMAC-only deployments)",
+    )
+    rep.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Intended for use against a read-only connection (hot standby / "
+        "restore). regista will not issue DDL and replay runs entirely in "
+        "memory, but the no-mutates guarantee holds only if the DSN session "
+        "is actually read-only. The schema's migrations table is probed and "
+        "the command fails closed if it is missing.",
     )
     rep.set_defaults(func=cmd_replay)
 
