@@ -6,6 +6,23 @@ from typing import Any
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
 
+# WI-248: actor ids that authenticate as actor_kind="agent" but are genuine
+# non-model service identities (plumbing, not a model behind them). Their
+# authored events carry no model_lineage by design, so they must be excluded
+# from the agent-author lineage check that drives the agent_author_undeclared
+# gate — otherwise every item they touch forces --same-lineage-acknowledged
+# on every reviewer. The id still lands in author_ids so separation-of-duties
+# (a service may not review its own filing) is preserved.
+#
+# Keep this set minimal and deliberate: every entry must be a genuine non-model
+# service identity. Adding a real model agent here would silently weaken the
+# cross-lineage review invariant, so extend with care and document the reason.
+# Note: actor_kind="system" events are recorded too, but with kind "system"
+# rather than "agent"; since the gate keys off "agent" in author_kinds, a
+# system author never satisfies it and is effectively excluded — so system
+# identities need not be listed here.
+_NON_MODEL_SERVICE_ACTORS: frozenset[str] = frozenset({"agent-notes"})
+
 
 def _event_lineage(event: Any) -> str | None:
     meta = getattr(event, "actor_metadata", None)
@@ -25,8 +42,39 @@ def derive_authors(prior_events: Iterable[Any]) -> tuple[set[str], set[str], set
         if getattr(event, "transition", None) in _NON_AUTHOR_TRANSITIONS:
             continue
         author_ids.add(event.actor_id)
-        author_kinds.add(event.actor_kind)
         lineage = _event_lineage(event)
+        # WI-248: a genuine non-model service identity is not an agent author.
+        # Record its id (separation-of-duties still applies) but, when it carries
+        # no model_lineage, do not count its kind and do not trip the
+        # undeclared-agent gate.
+        #
+        # The exemption is gated on the ABSENCE of a declared lineage: if an
+        # event claims a service id but DOES carry a model_lineage, it falls
+        # through to the declared-author path below so the lineage is surfaced.
+        # This closes the forgery where a model agent claims the service id to
+        # hide a real lineage from the cross-lineage gate. (A no-lineage
+        # forgery is the same free-form-actor_id false-identity regista already
+        # permits for any actor id — documented, not newly introduced here.)
+        is_service_id = event.actor_id in _NON_MODEL_SERVICE_ACTORS
+        if is_service_id and not lineage:
+            delegation = getattr(event, "on_behalf_of", None)
+            if isinstance(delegation, dict):
+                principal_id = delegation.get("principal_id")
+                principal_kind = delegation.get("principal_kind")
+                if principal_id:
+                    author_ids.add(principal_id)
+                if principal_kind:
+                    author_kinds.add(principal_kind)
+                principal_lineage = delegation.get("principal_lineage")
+                if principal_lineage:
+                    author_lineages.add(str(principal_lineage))
+                # F2: a delegated agent principal that declares no lineage is
+                # an undeclared agent author — flag it rather than laundering it
+                # into "declared" via the service exemption.
+                elif principal_kind == "agent":
+                    agent_author_undeclared = True
+            continue
+        author_kinds.add(event.actor_kind)
         if lineage:
             author_lineages.add(lineage)
         elif event.actor_kind == "agent":
