@@ -242,6 +242,52 @@ def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
     return True, ""
 
 
+def _segment_chain_links(
+    prev_head_hash: bytes,
+    curr_first_prev_hash: bytes,
+    intermediate_events: list[Event],
+) -> bool:
+    """Return True if ``curr_first_prev_hash`` is reachable from
+    ``prev_head_hash`` by walking the global chain through the intermediate
+    events.
+
+    Two consecutive segments are NOT adjacent in the global chain: sealing
+    inserts a ``segment_sealed`` event (the seal of the earlier segment)
+    between them, and any other events created between the two seals sit there
+    too. So the linkage check must walk forward from ``prev_head_hash`` (the
+    head hash of the earlier segment's last event) through the intermediate
+    events until it reaches ``curr_first_prev_hash`` (the
+    ``prev_global_event_hash`` of the later segment's first event).
+
+    Direct adjacency (no intermediate events) is the fast path: the hashes
+    match exactly. A tampered ``prev_head_hash`` — no event chains from it —
+    walks nowhere and correctly returns False.
+    """
+    if prev_head_hash == curr_first_prev_hash:
+        return True
+
+    by_prev: dict[str, Event] = {}
+    for evt in intermediate_events:
+        prev = evt.prev_global_event_hash
+        if prev is not None:
+            by_prev[bytes(prev).hex()] = evt
+
+    target = bytes(curr_first_prev_hash).hex()
+    current = by_prev.get(bytes(prev_head_hash).hex())
+    visited: set[uuid.UUID] = set()
+    while current is not None:
+        if current.event_id in visited:
+            return False
+        visited.add(current.event_id)
+        head = _hash_event(current)
+        if head is None:
+            return False
+        if head.hex() == target:
+            return True
+        current = by_prev.get(head.hex())
+    return False
+
+
 def _row_to_event(row: dict[str, Any]) -> Event:
     return Event(
         event_id=row["event_id"],
@@ -758,14 +804,36 @@ def verify_archive_chain(
                 })
                 continue
 
-            if not _hmac.compare_digest(bytes(prev_head), bytes(curr_first_prev)):
+            # Consecutive segments are not adjacent in the global chain: the
+            # seal event of the earlier segment (and any other events created
+            # between the two seals) sits between them. Fetch those
+            # intermediate events and walk the chain through them instead of
+            # comparing the boundary hashes directly (WI-249).
+            prev_last = prev_seg["last_global_seq"]
+            curr_first = curr_seg["first_global_seq"]
+            intermediate: list[Event] = []
+            if prev_last is not None and curr_first is not None:
+                gap_rows = conn.execute(
+                    SQL(
+                        f"SELECT {_EVENT_FIELDS} FROM events "
+                        "WHERE global_seq > %s AND global_seq < %s "
+                        "ORDER BY global_seq"
+                    ),
+                    [prev_last, curr_first],
+                ).fetchall()
+                intermediate = [_row_to_event(r) for r in gap_rows]
+
+            if not _segment_chain_links(
+                bytes(prev_head), bytes(curr_first_prev), intermediate
+            ):
                 chain_breaks.append({
                     "segment_id": str(curr_seg["segment_id"]),
                     "type": "chain_link_mismatch",
                     "detail": (
                         f"head_hash of segment {prev_seg['segment_id']} "
-                        f"does not match first_event_prev_hash of "
-                        f"segment {curr_seg['segment_id']}"
+                        f"does not link to first_event_prev_hash of "
+                        f"segment {curr_seg['segment_id']} through the "
+                        f"inter-segment events"
                     ),
                 })
 

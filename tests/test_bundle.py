@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,10 +11,17 @@ import pytest
 
 from regista import Regista
 from regista._anchoring import FileAnchorProvider
-from regista._bundle import BundleVerificationReport, verify_audit_bundle_offline
+from regista._bundle import (
+    BundleVerificationReport,
+    _canonical_bundle_bytes,
+    verify_audit_bundle_offline,
+)
 from regista._testing import drop_project_schema, raw_transaction
 
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
+DSN = os.environ.get(
+    "REGISTA_TEST_DSN",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
+)
 KEY_PATH = "tests/test_keys.json"
 WORKFLOW_PATH = "tests/test_workflow.yaml"
 
@@ -972,6 +980,88 @@ class TestSegmentAndReceiptWindowing:
         assert len(targets) >= 2
 
 
+class TestSegmentChainOfflineVerification:
+    """WI-249: offline segment-chain verification must link consecutive
+    segments through the inter-segment seal event instead of assuming strict
+    adjacency."""
+
+    def _build_two_segment_corpus(self, sub):
+        """Seal two batches of terminal work items so the store ends up with
+        two sealed segments separated by the first segment's seal event."""
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "wi-first-seg",
+            custom_fields={"title": "wi-first-seg"},
+        )
+        _drive_to_terminal(sub, wi1)
+        # Seal the first batch only (cutoff just in the future so the
+        # not-yet-created second batch is excluded).
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(seconds=1)
+        )
+
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "wi-second-seg",
+            custom_fields={"title": "wi-second-seg"},
+        )
+        _drive_to_terminal(sub, wi2)
+        # Seal everything remaining.
+        result = sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+        return result
+
+    def test_two_segment_bundle_verifies_segment_chain(self, sub, tmp_path):
+        """A 2-segment corpus full-exports and offline-verifies with the
+        segment chain intact (links through the inter-segment seal event)."""
+        self._build_two_segment_corpus(sub)
+
+        segments = sub.archive.list_segments()
+        assert len(segments) >= 2, f"expected 2+ segments, got {len(segments)}"
+
+        output = tmp_path / "two_seg_bundle.json"
+        result = sub.export_audit_bundle(str(output))
+
+        # The export self-verifies; with the bug the segment chain reports
+        # verified=False and export_audit_bundle would have logged a
+        # verification error (and the CLI would exit 3).
+        assert result["self_verification"]["verified"] is True, (
+            result["self_verification"]["errors"]
+        )
+        assert result["segment_count"] >= 2
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified, report.errors
+        assert report.segment_chain_ok, report.segment_chain_error
+
+    def test_tampered_head_hash_fails_segment_chain(self, sub, tmp_path):
+        """A genuinely broken linkage (tampered head_hash) must still fail
+        the segment-chain check — the fix must not pass everything."""
+        self._build_two_segment_corpus(sub)
+
+        output = tmp_path / "tampered_bundle.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        segs = bundle["segments"]
+        assert len(segs) >= 2
+        # Tamper the first segment's head_hash so no exported event chains
+        # from it.
+        segs[0]["head_hash"] = "ff" * 32
+        # Recompute the bundle hash so the bundle-hash check passes and the
+        # segment-chain check is the one that fails.
+        bundle["manifest"]["bundle_hash"] = (
+            "sha256:"
+            + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
+        )
+        Path(output).write_text(
+            json.dumps(bundle, sort_keys=True, default=str)
+        )
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert not report.verified
+
+
 class TestCliExportExitCodes:
     """WI-240 review F2: exit codes are the API pipelines read — 0 must mean
     exported AND verifiable; a store-level verification failure exits 3
@@ -1019,22 +1109,50 @@ class TestCliExportExitCodes:
     def test_allow_unverified_opts_into_exit_0(
         self, sub, project, tmp_path, monkeypatch
     ):
-        from regista import _bundle, _cli
+        # Proves exit code 0 via subprocess — calling _cli.main in-process only
+        # proves no SystemExit was raised (WI-249).
+        import subprocess
+        import sys
 
         wi, _ = sub.create_work_item(
             "test_workflow", "feature", "cli-allow",
             custom_fields={"title": "cli-allow"},
         )
         _drive_to_terminal(sub, wi)
-        self._cli_env(monkeypatch, sub, project)
-        monkeypatch.setattr(
-            _bundle, "verify_audit_bundle_offline",
-            lambda _path: self._degraded_report(),
+
+        # Driver that patches the verifier in its own process and runs the
+        # CLI main; sys.exit propagates the real exit code.
+        driver = tmp_path / "cli_allow_driver.py"
+        driver.write_text(
+            "import sys\n"
+            "from regista import _bundle, _cli\n"
+            "from regista._bundle import BundleVerificationReport\n"
+            "_bundle.verify_audit_bundle_offline = lambda _path: (\n"
+            "    BundleVerificationReport(\n"
+            "        verified=False, event_count=1, anchor_receipt_count=0,\n"
+            "        segment_count=0, global_chain_ok=True, bundle_hash_ok=True,\n"
+            "        errors=[\"No public key for key_id 'x' in bundle registry\"],\n"
+            "    ))\n"
+            "sys.exit(_cli.main([\n"
+            "    'bundle', 'export', '--output', sys.argv[1],\n"
+            "    '--allow-unverified',\n"
+            "]))\n"
         )
 
         output = tmp_path / "cli_allowed.json"
-        rc = _cli.main(
-            ["bundle", "export", "--output", str(output), "--allow-unverified"]
+        result = subprocess.run(
+            [sys.executable, str(driver), str(output)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "REGISTA_DSN": DSN,
+                "REGISTA_PROJECT": project,
+                "REGISTA_HMAC_KEY_PATH": KEY_PATH,
+            },
         )
-        assert rc in (0, None)
+        assert result.returncode == 0, (
+            f"expected exit 0, got {result.returncode}\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert output.exists()

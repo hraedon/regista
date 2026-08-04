@@ -14,7 +14,11 @@ from typing import Any
 import structlog
 
 from ._anchoring import AnchorReceipt, compute_content_anchor
-from ._archive_segments import _verify_global_chain, _verify_work_item_chains
+from ._archive_segments import (
+    _segment_chain_links,
+    _verify_global_chain,
+    _verify_work_item_chains,
+)
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._signing_scheme import get_scheme, resolve_hash_function
@@ -169,12 +173,12 @@ def _slice_segments_to_window(
 
     A chunk that ships segments wholly outside its event range overclaims
     scope (WI-240 review F5). The window is contiguous, so only leading and
-    trailing segments drop and the kept run stays consecutive — the offline
-    inter-segment linkage walk (:func:`_verify_segment_chain_offline`) only
-    compares adjacent kept segments, which the slice preserves. Segments with
-    unknown bounds (unsealed rows carry ``None``) are kept: the slice must
-    never silently discard what it cannot classify. Returns
-    ``(kept, excluded_count)``.
+    trailing segments drop; the slice preserves the order of the kept
+    segments, and the offline inter-segment linkage walk
+    (:func:`_verify_segment_chain_offline`) compares adjacent kept segments
+    in that order. Segments with unknown bounds (unsealed rows carry
+    ``None``) are kept: the slice must never silently discard what it cannot
+    classify. Returns ``(kept, excluded_count)``.
     """
     if min_exported_seq is None or max_exported_seq is None:
         return segments, 0
@@ -348,9 +352,16 @@ def export_audit_bundle(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     # Write-then-rename so a killed process cannot leave a plausible-looking
-    # partial bundle at the destination (review F8).
+    # partial bundle at the destination (review F8). If write_bytes itself
+    # dies mid-write, unlink the .partial temp file — only the partial, never
+    # the real destination (WI-249).
     tmp_output = output.with_name(output.name + ".partial")
-    tmp_output.write_bytes(serialized)
+    try:
+        tmp_output.write_bytes(serialized)
+    except BaseException:
+        if tmp_output.exists():
+            tmp_output.unlink()
+        raise
     os.replace(tmp_output, output)
 
     # An export is done when the artifact it wrote is verifiable, not when
@@ -885,6 +896,13 @@ def _verify_segment_chain_offline(
 
     sorted_segs = sorted(segments, key=lambda s: s.get("first_global_seq", 0))
 
+    # Events indexed by global_seq so the inter-segment gap can be sliced
+    # without re-scanning the whole list for every consecutive pair.
+    events_by_seq = sorted(
+        (e for e in events if e.global_seq is not None),
+        key=lambda e: e.global_seq if e.global_seq is not None else 0,
+    )
+
     for i in range(1, len(sorted_segs)):
         prev_seg = sorted_segs[i - 1]
         curr_seg = sorted_segs[i]
@@ -900,14 +918,44 @@ def _verify_segment_chain_offline(
                 f"first_event_prev_hash but is not the first segment"
             )
 
-        if curr_first_prev_hash != prev_head_hash:
+        # Consecutive segments are not adjacent in the global chain: the seal
+        # event of the earlier segment (and any other events created between
+        # the two seals) sits between them. Walk the chain through those
+        # intermediate events instead of comparing the boundary hashes
+        # directly (WI-249).
+        prev_last = prev_seg.get("last_global_seq")
+        curr_first = curr_seg.get("first_global_seq")
+        if prev_last is not None and curr_first is not None:
+            intermediate = [
+                e for e in events_by_seq
+                if prev_last < e.global_seq < curr_first
+            ]
+        else:
+            intermediate = []
+
+        try:
+            prev_head_bytes = bytes.fromhex(prev_head_hash)
+            curr_first_bytes = bytes.fromhex(curr_first_prev_hash)
+        except ValueError:
             return False, (
                 f"segment chain broken between segment "
                 f"{prev_seg.get('segment_id', '?')} and "
                 f"{curr_seg.get('segment_id', '?')}: "
-                f"head_hash={prev_head_hash}, "
-                f"first_event_prev_hash={curr_first_prev_hash}"
+                f"malformed boundary hash"
             )
+
+        if _segment_chain_links(
+            prev_head_bytes, curr_first_bytes, intermediate
+        ):
+            continue
+
+        return False, (
+            f"segment chain broken between segment "
+            f"{prev_seg.get('segment_id', '?')} and "
+            f"{curr_seg.get('segment_id', '?')}: "
+            f"head_hash={prev_head_hash}, "
+            f"first_event_prev_hash={curr_first_prev_hash}"
+        )
 
     return True, None
 

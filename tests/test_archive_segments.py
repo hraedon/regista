@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -8,7 +9,10 @@ import pytest
 from regista import Regista
 from regista._testing import drop_project_schema, raw_transaction
 
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
+DSN = os.environ.get(
+    "REGISTA_TEST_DSN",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
+)
 KEY_PATH = "tests/test_keys.json"
 WORKFLOW_PATH = "tests/test_workflow.yaml"
 
@@ -361,3 +365,33 @@ class TestSealSegment:
         assert result2["event_count"] == 0
         assert result2["segment_id"] is None
         assert _count_segments(sub) == seg_before
+
+    def test_verify_chain_two_segments_links_through_seal(self, sub):
+        """WI-249: verify_archive_chain must link 2+ segments through the
+        inter-segment seal event, not assume strict adjacency."""
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "chain-first-seg",
+            custom_fields={"title": "chain-first-seg"},
+        )
+        _drive_to_terminal(sub, wi1)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(seconds=1)
+        )
+
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "chain-second-seg",
+            custom_fields={"title": "chain-second-seg"},
+        )
+        _drive_to_terminal(sub, wi2)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+
+        result = sub.verify_archive_chain()
+        # The project is shared across the class (module-scoped fixture), so
+        # earlier tests' sealed segments accumulate; assert the property that
+        # matters — the full multi-segment chain verifies through each
+        # inter-segment seal event, with no chain breaks.
+        assert result["segment_count"] >= 2
+        assert result["verified"], result["chain_breaks"]
+        assert len(result["chain_breaks"]) == 0
