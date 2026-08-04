@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -13,12 +14,30 @@ from regista._errors import ErrorCode, RegistaError
 from regista._replay import replay as _replay_fn
 from regista.testing import drop_project_schema
 
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test_wi242"
+DSN = os.environ.get(
+    "REGISTA_TEST_DSN",
+    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
+)
 KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 WORKFLOW_PATH = str(Path(__file__).parent / "test_workflow.yaml")
 
 # Session-level read-only DSN.
 DSN_RO = DSN + "?options=-c%20default_transaction_read_only%3Don"
+
+
+def _can_run() -> bool:
+    try:
+        conn = psycopg.connect(DSN, connect_timeout=2)
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _can_run(),
+    reason="Postgres not available at regista_test DSN",
+)
 
 
 def _create_project():
