@@ -584,7 +584,12 @@ def list_anchor_receipts(
     status: str | None = None,
     provider: str | None = None,
     limit: int = 100,
+    order: str = "newest",
 ) -> list[AnchorReceipt]:
+    """List receipts. ``order`` is ``"newest"`` (submitted_at DESC, the
+    operator-facing default) or ``"target_seq"`` (target_global_seq ASC,
+    NULLS LAST) — bundle export uses the latter so a limited fetch keeps the
+    receipts a prefix bundle can actually prove (WI-240 review F4)."""
     clauses: list[str] = []
     params: list[Any] = []
     if status is not None:
@@ -594,9 +599,14 @@ def list_anchor_receipts(
         clauses.append("provider = %s")
         params.append(provider)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order_sql = (
+        "target_global_seq ASC NULLS LAST"
+        if order == "target_seq"
+        else "submitted_at DESC"
+    )
     params.append(limit)
     rows = conn.execute(
-        f"SELECT * FROM anchor_receipts {where} ORDER BY submitted_at DESC LIMIT %s",
+        f"SELECT * FROM anchor_receipts {where} ORDER BY {order_sql} LIMIT %s",
         params,
     ).fetchall()
     return [_row_to_receipt(r) for r in rows]

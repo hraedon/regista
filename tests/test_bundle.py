@@ -703,6 +703,44 @@ class TestExportBounds:
                 str(tmp_path / "empty.json"), since_seq=10, until_seq=10
             )
 
+    @pytest.mark.parametrize(
+        ("since_kind", "until_kind"),
+        [
+            ("max", None),  # since == corpus max: nothing after it
+            ("beyond", None),  # since past the end
+            (None, "zero"),  # until 0: nothing at or before it
+            (None, "negative"),  # until negative
+        ],
+    )
+    def test_window_selecting_no_events_is_rejected(
+        self, sub, project, tmp_path, since_kind, until_kind
+    ):
+        """WI-240 review F1: a window that selects zero rows must not write a
+        trivially-'verifiable' bundle and exit 0 — in the chunking workflow a
+        bad boundary would silently lose events."""
+        from regista._errors import RegistaError
+
+        self._two_item_corpus(sub)
+        with raw_transaction(sub) as conn:
+            corpus_max = conn.execute(
+                "SELECT MAX(global_seq) AS m FROM events"
+            ).fetchone()["m"]
+
+        since = {"max": corpus_max, "beyond": corpus_max + 500}.get(since_kind)
+        until = {"zero": 0, "negative": -5}.get(until_kind)
+        output = tmp_path / "void.json"
+        with pytest.raises(RegistaError, match="selected no events"):
+            sub.export_audit_bundle(str(output), since_seq=since, until_seq=until)
+        assert not output.exists()
+
+    def test_export_of_event_free_store_is_rejected(self, sub, project, tmp_path):
+        from regista._errors import RegistaError
+
+        output = tmp_path / "empty_store.json"
+        with pytest.raises(RegistaError, match="store has no events"):
+            sub.export_audit_bundle(str(output))
+        assert not output.exists()
+
     def test_chunked_exports_both_verify_offline(self, sub, project, tmp_path):
         """The WI-240 acceptance case: a corpus split into a prefix chunk and a
         mid-chain chunk, each independently verifiable offline."""
@@ -717,16 +755,20 @@ class TestExportBounds:
             report = verify_audit_bundle_offline(str(chunk))
             assert report.verified, f"{chunk.name}: {report.errors}"
 
+        # Completeness is judged against the STORE, not the chunks' own
+        # manifests (WI-240 review F3): the union of the chunk pair must be
+        # exactly the corpus, disjointly.
+        with raw_transaction(sub) as conn:
+            corpus_ids = {
+                str(r["event_id"])
+                for r in conn.execute("SELECT event_id FROM events").fetchall()
+            }
         c1 = json.loads(chunk1.read_text())
         c2 = json.loads(chunk2.read_text())
-        assert (
-            len(c1["events"]) + len(c2["events"])
-            == c1["manifest"]["event_count"] + c2["manifest"]["event_count"]
-        )
-        overlap = {e["event_id"] for e in c1["events"]} & {
-            e["event_id"] for e in c2["events"]
-        }
-        assert overlap == set()
+        ids1 = {e["event_id"] for e in c1["events"]}
+        ids2 = {e["event_id"] for e in c2["events"]}
+        assert ids1 & ids2 == set()
+        assert ids1 | ids2 == corpus_ids
 
     def test_oversized_export_refuses_and_writes_nothing(
         self, sub, project, tmp_path, monkeypatch
@@ -879,3 +921,120 @@ class TestExportBounds:
         report = verify_audit_bundle_offline(str(prefix))
         assert report.verified, f"prefix chunk failed: {report.errors}"
         assert all(av["verified"] for av in report.anchor_verifications)
+
+
+class TestSegmentAndReceiptWindowing:
+    """WI-240 review F4/F5: bounded fetches and slices must not overclaim."""
+
+    def test_slice_segments_keeps_overlap_drops_outside(self):
+        from regista._bundle import _slice_segments_to_window
+
+        segs = [
+            {"segment_id": "a", "first_global_seq": 1, "last_global_seq": 8},
+            {"segment_id": "b", "first_global_seq": 9, "last_global_seq": 13},
+            {"segment_id": "c", "first_global_seq": 14, "last_global_seq": 20},
+        ]
+        kept, excluded = _slice_segments_to_window(segs, 9, 13)
+        assert [s["segment_id"] for s in kept] == ["b"]
+        assert excluded == 2
+
+        kept, excluded = _slice_segments_to_window(segs, 5, 15)
+        assert [s["segment_id"] for s in kept] == ["a", "b", "c"]
+        assert excluded == 0
+
+    def test_slice_segments_keeps_unbounded_rows(self):
+        from regista._bundle import _slice_segments_to_window
+
+        segs = [{"segment_id": "open", "first_global_seq": None, "last_global_seq": None}]
+        kept, excluded = _slice_segments_to_window(segs, 100, 200)
+        assert kept == segs and excluded == 0
+
+    def test_receipt_listing_orders_oldest_target_first(self, sub, project, tmp_path):
+        """The bundle fetch is bounded, so it must hold the receipts a prefix
+        bundle can prove — the OLDEST targets, not the newest submissions."""
+        from regista._anchoring import list_anchor_receipts
+        from regista._testing import raw_transaction as _raw
+
+        for n in ("recA", "recB"):
+            wi, _ = sub.create_work_item(
+                "test_workflow", "feature", n, custom_fields={"title": n}
+            )
+            _drive_to_terminal(sub, wi)
+            sub.anchoring.set_provider(
+                FileAnchorProvider(directory=str(tmp_path / "anchors"))
+            )
+            sub.trigger_anchoring(batch_size=100)
+
+        with _raw(sub) as conn:
+            receipts = list_anchor_receipts(conn, limit=10, order="target_seq")
+        targets = [r.target_global_seq for r in receipts]
+        assert targets == sorted(targets)
+        assert len(targets) >= 2
+
+
+class TestCliExportExitCodes:
+    """WI-240 review F2: exit codes are the API pipelines read — 0 must mean
+    exported AND verifiable; a store-level verification failure exits 3
+    unless --allow-unverified opts in."""
+
+    def _cli_env(self, monkeypatch, sub, project):
+        monkeypatch.setenv("REGISTA_DSN", DSN)
+        monkeypatch.setenv("REGISTA_PROJECT", project)
+        monkeypatch.setenv("REGISTA_HMAC_KEY_PATH", KEY_PATH)
+
+    def _degraded_report(self):
+        return BundleVerificationReport(
+            verified=False,
+            event_count=1,
+            anchor_receipt_count=0,
+            segment_count=0,
+            global_chain_ok=True,
+            bundle_hash_ok=True,
+            errors=["No public key for key_id 'x' in bundle registry"],
+        )
+
+    def test_unverifiable_store_exits_3_by_default(
+        self, sub, project, tmp_path, monkeypatch, capsys
+    ):
+        from regista import _bundle, _cli
+
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "cli-exit",
+            custom_fields={"title": "cli-exit"},
+        )
+        _drive_to_terminal(sub, wi)
+        self._cli_env(monkeypatch, sub, project)
+        monkeypatch.setattr(
+            _bundle, "verify_audit_bundle_offline",
+            lambda _path: self._degraded_report(),
+        )
+
+        output = tmp_path / "cli_degraded.json"
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main(["bundle", "export", "--output", str(output)])
+        assert exc_info.value.code == 3
+        assert output.exists(), "the artifact is still written"
+        assert "offline verifier rejects" in capsys.readouterr().err
+
+    def test_allow_unverified_opts_into_exit_0(
+        self, sub, project, tmp_path, monkeypatch
+    ):
+        from regista import _bundle, _cli
+
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "cli-allow",
+            custom_fields={"title": "cli-allow"},
+        )
+        _drive_to_terminal(sub, wi)
+        self._cli_env(monkeypatch, sub, project)
+        monkeypatch.setattr(
+            _bundle, "verify_audit_bundle_offline",
+            lambda _path: self._degraded_report(),
+        )
+
+        output = tmp_path / "cli_allowed.json"
+        rc = _cli.main(
+            ["bundle", "export", "--output", str(output), "--allow-unverified"]
+        )
+        assert rc in (0, None)
+        assert output.exists()

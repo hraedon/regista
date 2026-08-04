@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import json
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -159,6 +160,37 @@ def _slice_receipts_to_verifiable(
     return kept, len(anchor_receipts) - len(kept)
 
 
+def _slice_segments_to_window(
+    segments: list[dict[str, Any]],
+    min_exported_seq: int | None,
+    max_exported_seq: int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep segments overlapping the exported ``global_seq`` window.
+
+    A chunk that ships segments wholly outside its event range overclaims
+    scope (WI-240 review F5). The window is contiguous, so only leading and
+    trailing segments drop and the kept run stays consecutive — the offline
+    inter-segment linkage walk (:func:`_verify_segment_chain_offline`) only
+    compares adjacent kept segments, which the slice preserves. Segments with
+    unknown bounds (unsealed rows carry ``None``) are kept: the slice must
+    never silently discard what it cannot classify. Returns
+    ``(kept, excluded_count)``.
+    """
+    if min_exported_seq is None or max_exported_seq is None:
+        return segments, 0
+    kept: list[dict[str, Any]] = []
+    for seg in segments:
+        first = seg.get("first_global_seq")
+        last = seg.get("last_global_seq")
+        if first is None or last is None:
+            kept.append(seg)
+            continue
+        if last < min_exported_seq or first > max_exported_seq:
+            continue
+        kept.append(seg)
+    return kept, len(segments) - len(kept)
+
+
 def export_audit_bundle(
     mgr: ConnectionManager,
     project_name: str,
@@ -191,17 +223,48 @@ def export_audit_bundle(
 
         events = [_row_to_event_dict(r) for r in rows]
 
+        # A window that selects nothing produces a bundle that proves nothing
+        # — and "verifies" trivially. Reporting success for it is the exact
+        # defect class this function exists to fix (WI-240 review F1): in the
+        # chunking workflow a single bad boundary would silently lose events.
+        if not events:
+            detail = (
+                "the store has no events"
+                if since_seq is None and until_seq is None
+                else f"window since_seq={since_seq} until_seq={until_seq} "
+                "selected no events"
+            )
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Refusing to export an empty bundle: {detail}. "
+                "Nothing was written.",
+            )
+
         # Optional sections come from tables that may predate their migration
         # (older stores). ONLY a missing table is tolerated — and it is
         # recorded in the manifest so the auditor sees the bundle's scope.
         # Any other failure aborts the export: an audit bundle that silently
         # omits anchor receipts or public keys would still "verify" while
         # proving less than the auditor believes (fail closed).
-        anchor_receipts, receipts_available = _read_optional_section(
-            conn,
-            "anchor_receipts",
-            lambda c: _list_receipts_dicts(c),
-        )
+        # Receipts are fetched oldest-target-first so the bounded fetch holds
+        # exactly the receipts a prefix bundle can prove, and counted so the
+        # manifest's exclusion accounting is exhaustive (review F4).
+        conn.execute("SAVEPOINT bundle_receipts")
+        try:
+            receipts_total_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM anchor_receipts"
+            ).fetchone()
+            receipts_total = int(receipts_total_row["n"]) if receipts_total_row else 0
+            anchor_receipts = _list_receipts_dicts(conn)
+        except Exception as exc:
+            conn.execute("ROLLBACK TO SAVEPOINT bundle_receipts")
+            if not _is_undefined_table(exc):
+                raise
+            log.warning("bundle.section_table_absent", table="anchor_receipts")
+            anchor_receipts, receipts_total, receipts_available = [], 0, False
+        else:
+            conn.execute("RELEASE SAVEPOINT bundle_receipts")
+            receipts_available = True
         public_keys, registry_available = _read_optional_section(
             conn,
             "principal_keys",
@@ -226,8 +289,15 @@ def export_audit_bundle(
     seqs = [e["global_seq"] for e in events if e.get("global_seq") is not None]
     max_exported_seq = max(seqs) if seqs else None
     min_exported_seq = min(seqs) if seqs else None
-    anchor_receipts, receipts_excluded = _slice_receipts_to_verifiable(
+    anchor_receipts, _ = _slice_receipts_to_verifiable(
         anchor_receipts, since_seq=since_seq, max_exported_seq=max_exported_seq
+    )
+    # Exclusion accounting is against the STORE total, not the bounded fetch,
+    # so the manifest never claims an exhaustive accounting it did not do
+    # (review F4).
+    receipts_excluded = receipts_total - len(anchor_receipts)
+    segments, segments_excluded = _slice_segments_to_window(
+        segments, min_exported_seq, max_exported_seq
     )
 
     exported_at = datetime.now(UTC)
@@ -241,6 +311,7 @@ def export_audit_bundle(
         "anchor_receipts_available": receipts_available,
         "anchor_receipts_excluded": receipts_excluded,
         "segments_available": segments_available,
+        "segments_excluded": segments_excluded,
         "principal_key_registry": "present" if registry_available else "absent",
         "format_version": _BUNDLE_FORMAT_VERSION,
         "since_seq": since_seq,
@@ -257,6 +328,7 @@ def export_audit_bundle(
 
     bundle_bytes = _canonical_bundle_bytes(bundle)
     bundle_hash = hashlib.sha256(bundle_bytes).hexdigest()
+    del bundle_bytes  # ~800 MiB at the motivating scale; don't hold two copies
     manifest["bundle_hash"] = f"sha256:{bundle_hash}"
     bundle["manifest"] = manifest
 
@@ -275,7 +347,11 @@ def export_audit_bundle(
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(serialized)
+    # Write-then-rename so a killed process cannot leave a plausible-looking
+    # partial bundle at the destination (review F8).
+    tmp_output = output.with_name(output.name + ".partial")
+    tmp_output.write_bytes(serialized)
+    os.replace(tmp_output, output)
 
     # An export is done when the artifact it wrote is verifiable, not when
     # the write returns (WI-240). Two failure classes are deliberately
@@ -288,7 +364,7 @@ def export_audit_bundle(
     report = verify_audit_bundle_offline(output)
     if not report.bundle_hash_ok:
         raise RegistaError(
-            ErrorCode.BUNDLE_UNVERIFIABLE,
+            ErrorCode.BUNDLE_WRITE_CORRUPT,
             f"Exported artifact does not match what was serialized "
             f"(bundle hash mismatch); artifact left at {output} for "
             f"inspection: {report.bundle_hash_error}",
@@ -319,6 +395,7 @@ def export_audit_bundle(
         "anchor_receipt_count": len(anchor_receipts),
         "anchor_receipts_excluded": receipts_excluded,
         "segment_count": len(segments),
+        "segments_excluded": segments_excluded,
         "public_key_count": len(public_keys),
         "bundle_hash": manifest["bundle_hash"],
         "bundle_bytes": len(serialized),
@@ -368,7 +445,10 @@ def _read_optional_section(
 def _list_receipts_dicts(conn: DictConn) -> list[dict[str, Any]]:
     from ._anchoring import list_anchor_receipts
 
-    return [r.to_dict() for r in list_anchor_receipts(conn, limit=10_000)]
+    return [
+        r.to_dict()
+        for r in list_anchor_receipts(conn, limit=10_000, order="target_seq")
+    ]
 
 
 def _list_principal_key_dicts(conn: DictConn) -> list[dict[str, Any]]:
