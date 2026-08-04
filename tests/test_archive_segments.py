@@ -395,3 +395,69 @@ class TestSealSegment:
         assert result["segment_count"] >= 2
         assert result["verified"], result["chain_breaks"]
         assert len(result["chain_breaks"]) == 0
+
+    def test_verify_chain_gap_events_archived(self, sub):
+        """WI-249 review F1: verify_archive_chain must walk the inter-segment
+        chain through gap events that were archived after sealing.
+
+        A gap between two sealed segments can hold work-item events created
+        between the two seals. Once that work-item reaches terminal and
+        archive_events moves its events to events_archive, the DB-side gap
+        query (reading only `events`) misses them and the chain walk falls
+        short — a false `chain_link_mismatch` on an INTACT store. The gap
+        query must read from BOTH `events` and `events_archive`."""
+        agent = {"role": "agent"}
+        reviewer = {"role": "reviewer"}
+
+        # Segment A: a terminal work-item, sealed.
+        wi1, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-seg-a",
+            custom_fields={"title": "arch-gap-seg-a"},
+        )
+        _drive_to_terminal(sub, wi1)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(seconds=1)
+        )
+
+        # A work-item that stays LIVE while segment B is sealed, so its
+        # events land in the gap between the two segments.
+        wi2, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-live",
+            custom_fields={"title": "arch-gap-live"},
+        )
+        sub.transition(
+            wi2.work_item_id, "start", "agent-1", actor_metadata=agent
+        )
+
+        # Segment B: another terminal work-item, sealed.
+        wi3, _ = sub.create_work_item(
+            "test_workflow", "feature", "arch-gap-seg-b",
+            custom_fields={"title": "arch-gap-seg-b"},
+        )
+        _drive_to_terminal(sub, wi3)
+        sub.archive.seal(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+
+        # Now drive the gap work-item to terminal and archive it. Its events
+        # move to events_archive; the inter-segment seal event stays in
+        # events (entity_kind='segment').
+        sub.transition(
+            wi2.work_item_id, "submit_review", "agent-1", actor_metadata=agent
+        )
+        sub.transition(
+            wi2.work_item_id, "approve", "reviewer-1", actor_metadata=reviewer
+        )
+        archived = sub.archive.archive_events(
+            before_timestamp=datetime.now(UTC) + timedelta(days=365)
+        )
+        assert archived > 0, "expected the gap work-item's events to be archived"
+
+        # Post-fix: the chain verifies through the archived gap events.
+        # Pre-fix this fails with `chain_link_mismatch` (and the per-segment
+        # verification failed too, since verify_segment also read only
+        # `events`).
+        result = sub.verify_archive_chain()
+        assert result["segment_count"] >= 2
+        assert result["verified"], result["chain_breaks"]
+        assert len(result["chain_breaks"]) == 0, result["chain_breaks"]

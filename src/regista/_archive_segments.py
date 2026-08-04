@@ -262,6 +262,16 @@ def _segment_chain_links(
     Direct adjacency (no intermediate events) is the fast path: the hashes
     match exactly. A tampered ``prev_head_hash`` — no event chains from it —
     walks nowhere and correctly returns False.
+
+    Precondition: ``True`` means the segments are linked ONLY if
+    ``intermediate_events`` holds the COMPLETE set of events whose
+    ``global_seq`` lies strictly between the two segments. If the caller
+    supplies an incomplete set (e.g. gap events that were archived into
+    ``events_archive`` and therefore omitted), the walk can fall short of
+    ``curr_first_prev_hash`` and correctly return False — but that False is
+    a false failure of an intact store, not a real break. The caller is
+    responsible for supplying every gap event regardless of which table it
+    lives in.
     """
     if prev_head_hash == curr_first_prev_hash:
         return True
@@ -608,26 +618,41 @@ def verify_segment(
                 f"Segment {segment_id} not found",
             )
 
-        table_name = "events_archive" if seg_row["archived"] else "events"
-
+        # Read the segment's events from BOTH tables. Archival moves
+        # work-item events to events_archive per work-item, so a segment's
+        # events can be split across the two tables (and the segment's
+        # `archived` flag is set at seal time, not updated by archival, so
+        # it cannot be relied on to pick a single table). The tables share
+        # an identical schema; archive_events moves rows (INSERT+DELETE), so
+        # an event_id lives in exactly one table and UNION ALL cannot
+        # produce duplicates.
         stored_event_ids = seg_row["event_ids"]
         if stored_event_ids:
             rows = conn.execute(
                 SQL(
-                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    f"SELECT {_EVENT_FIELDS} FROM events "
+                    "WHERE event_id = ANY(%s) "
+                    "UNION ALL "
+                    f"SELECT {_EVENT_FIELDS} FROM events_archive "
                     "WHERE event_id = ANY(%s) "
                     "ORDER BY global_seq"
                 ),
-                [stored_event_ids],
+                [stored_event_ids, stored_event_ids],
             ).fetchall()
         else:
             rows = conn.execute(
                 SQL(
-                    f"SELECT {_EVENT_FIELDS} FROM {table_name} "
+                    f"SELECT {_EVENT_FIELDS} FROM events "
+                    "WHERE global_seq >= %s AND global_seq <= %s "
+                    "UNION ALL "
+                    f"SELECT {_EVENT_FIELDS} FROM events_archive "
                     "WHERE global_seq >= %s AND global_seq <= %s "
                     "ORDER BY global_seq"
                 ),
-                [seg_row["first_global_seq"], seg_row["last_global_seq"]],
+                [
+                    seg_row["first_global_seq"], seg_row["last_global_seq"],
+                    seg_row["first_global_seq"], seg_row["last_global_seq"],
+                ],
             ).fetchall()
 
         events = [_row_to_event(r) for r in rows]
@@ -813,13 +838,23 @@ def verify_archive_chain(
             curr_first = curr_seg["first_global_seq"]
             intermediate: list[Event] = []
             if prev_last is not None and curr_first is not None:
+                # The gap between two sealed segments can contain work-item
+                # events that were archived after the segments were sealed
+                # (the inter-segment seal event itself stays in `events`
+                # because entity_kind='segment'). Read from BOTH tables so
+                # the chain walk sees the complete gap event set. The tables
+                # share an identical schema and an event_id lives in exactly
+                # one table, so UNION ALL cannot produce duplicates.
                 gap_rows = conn.execute(
                     SQL(
                         f"SELECT {_EVENT_FIELDS} FROM events "
                         "WHERE global_seq > %s AND global_seq < %s "
+                        "UNION ALL "
+                        f"SELECT {_EVENT_FIELDS} FROM events_archive "
+                        "WHERE global_seq > %s AND global_seq < %s "
                         "ORDER BY global_seq"
                     ),
-                    [prev_last, curr_first],
+                    [prev_last, curr_first, prev_last, curr_first],
                 ).fetchall()
                 intermediate = [_row_to_event(r) for r in gap_rows]
 

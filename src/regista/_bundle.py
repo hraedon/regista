@@ -894,7 +894,17 @@ def _verify_segment_chain_offline(
     if len(segments) <= 1:
         return True, None
 
-    sorted_segs = sorted(segments, key=lambda s: s.get("first_global_seq", 0))
+    # Fail closed on malformed segments: a segment with no first_global_seq
+    # cannot be placed in the chain, and silently sorting it first (the
+    # default 0) would let a corrupt segment masquerade as the chain start.
+    for seg in segments:
+        if seg.get("first_global_seq") is None:
+            return False, (
+                f"segment {seg.get('segment_id', '?')} has no first_global_seq "
+                f"— cannot order it in the segment chain (fail closed)"
+            )
+
+    sorted_segs = sorted(segments, key=lambda s: s["first_global_seq"])
 
     # Events indexed by global_seq so the inter-segment gap can be sliced
     # without re-scanning the whole list for every consecutive pair.

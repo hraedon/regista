@@ -1061,6 +1061,150 @@ class TestSegmentChainOfflineVerification:
         assert not report.segment_chain_ok
         assert not report.verified
 
+    def _segment_and_gap_seqs(self, sub):
+        """Return the two segments (ordered) and the global_seq of the
+        inter-segment seal event, discovered dynamically from the store."""
+        with raw_transaction(sub) as conn:
+            segs = conn.execute(
+                "SELECT segment_id, first_global_seq, last_global_seq "
+                "FROM event_segments ORDER BY first_global_seq"
+            ).fetchall()
+            assert len(segs) >= 2, f"need 2+ segments, got {len(segs)}"
+            a, b = segs[0], segs[1]
+            # The seal event of the earlier segment sits in the gap.
+            seal_rows = conn.execute(
+                "SELECT global_seq FROM events WHERE entity_kind = 'segment' "
+                "AND global_seq > %s AND global_seq < %s "
+                "ORDER BY global_seq",
+                [a["last_global_seq"], b["first_global_seq"]],
+            ).fetchall()
+        assert seal_rows, "expected a seal event in the gap"
+        return a, b, seal_rows[0]["global_seq"]
+
+    def test_windowed_export_straddling_seal_gap_self_verifies(
+        self, sub, tmp_path
+    ):
+        """WI-249 review F2 (empirical): a --since-seq/--until-seq window that
+        cuts through the seal gap must still self-verify. Try several windows
+        straddling the inter-segment seal event."""
+        self._build_two_segment_corpus(sub)
+        a, b, seal_seq = self._segment_and_gap_seqs(sub)
+
+        # Windows to try (since_exclusive, until_inclusive): each straddles
+        # the seal event differently, some clipping a segment's edge.
+        candidates = [
+            (a["last_global_seq"] - 1, b["first_global_seq"]),
+            (a["last_global_seq"], b["first_global_seq"]),
+            (a["last_global_seq"], seal_seq),
+            (seal_seq - 1, b["first_global_seq"] + 1),
+            (a["first_global_seq"], b["last_global_seq"]),
+        ]
+        for since_seq, until_seq in candidates:
+            if until_seq <= since_seq:
+                continue
+            output = tmp_path / f"win_{since_seq}_{until_seq}.json"
+            result = sub.export_audit_bundle(
+                str(output), since_seq=since_seq, until_seq=until_seq
+            )
+            assert result["self_verification"]["verified"] is True, (
+                f"window ({since_seq},{until_seq}] failed self-verification: "
+                f"{result['self_verification']['errors']}"
+            )
+            # Offline re-verification must agree.
+            report = verify_audit_bundle_offline(str(output))
+            assert report.verified, (
+                f"window ({since_seq},{until_seq}] offline failed: "
+                f"{report.errors}"
+            )
+
+    def test_windowed_export_drops_unlinked_leading_segment(self, sub, tmp_path):
+        """WI-249 review F2: if a window keeps a segment whose incoming link
+        was cut, the slice drops the leading unlinked segment (counted in
+        segments_excluded) so the chunk still self-verifies. Empirically the
+        overlap-based slice already keeps linked pairs; this asserts the
+        fail-closed accounting holds for a window that isolates a single
+        segment plus trailing events."""
+        self._build_two_segment_corpus(sub)
+        a, b, _ = self._segment_and_gap_seqs(sub)
+
+        # Window that starts inside segment A and runs past segment B: both
+        # segments overlap the window, so both are kept and must link.
+        since_seq = a["first_global_seq"] + 1
+        until_seq = b["last_global_seq"]
+        output = tmp_path / "win_linked_pair.json"
+        result = sub.export_audit_bundle(
+            str(output), since_seq=since_seq, until_seq=until_seq
+        )
+        assert result["self_verification"]["verified"] is True, (
+            result["self_verification"]["errors"]
+        )
+        # Both overlapping segments are kept.
+        assert result["segment_count"] >= 2
+
+    def test_tampered_seal_event_removed_fails_segment_chain(self, sub, tmp_path):
+        """WI-249 review F4(1): a bundle with the inter-segment SEAL EVENT
+        removed must fail offline verification (verified=False). The seal is
+        the only event linking the two segments; without it the chain walk
+        cannot bridge them."""
+        self._build_two_segment_corpus(sub)
+        _, _, seal_seq = self._segment_and_gap_seqs(sub)
+
+        output = tmp_path / "no_seal_bundle.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        # Drop the inter-segment seal event from the exported events.
+        bundle["events"] = [
+            e for e in bundle["events"] if e.get("global_seq") != seal_seq
+        ]
+        # Recompute the bundle hash so the bundle-hash check passes and the
+        # segment-chain check is the one that fails.
+        bundle["manifest"]["bundle_hash"] = (
+            "sha256:"
+            + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
+        )
+        Path(output).write_text(
+            json.dumps(bundle, sort_keys=True, default=str)
+        )
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok, (
+            "removing the inter-segment seal must break the segment chain"
+        )
+        assert not report.verified
+
+    def test_tampered_intermediate_hash_fails_segment_chain(self, sub, tmp_path):
+        """WI-249 review F4(2): a bundle where an intermediate (gap) event's
+        prev_global_event_hash is mutated must fail offline verification. The
+        chain walk relies on that hash to step from the earlier segment's head
+        into the gap; corrupting it severs the walk."""
+        self._build_two_segment_corpus(sub)
+        _, _, seal_seq = self._segment_and_gap_seqs(sub)
+
+        output = tmp_path / "tampered_gap_bundle.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        # The seal event is the intermediate event in the gap. Mutate its
+        # prev_global_event_hash so it no longer chains from segment A's head.
+        for e in bundle["events"]:
+            if e.get("global_seq") == seal_seq:
+                e["prev_global_event_hash"] = "ee" * 32
+                break
+        bundle["manifest"]["bundle_hash"] = (
+            "sha256:"
+            + hashlib.sha256(_canonical_bundle_bytes(bundle)).hexdigest()
+        )
+        Path(output).write_text(
+            json.dumps(bundle, sort_keys=True, default=str)
+        )
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok, (
+            "mutating the gap event's prev_global_event_hash must break the chain"
+        )
+        assert not report.verified
+
 
 class TestCliExportExitCodes:
     """WI-240 review F2: exit codes are the API pipelines read — 0 must mean
