@@ -599,8 +599,11 @@ class QueryPage(Generic[T]):
 
 @dataclass(frozen=True)
 class ReplayReport:
-    #: Name of the (temp) table holding the replayed projection, or ``None``
-    #: when the replay ran in read-only mode and held results in memory.
+    #: Name of the temp table holding the replayed projection, or ``None`` in
+    #: read-only mode. This table exists only for the span of the replay
+    #: transaction and is dropped when :func:`~regista._replay.replay` returns,
+    #: so it is NOT a valid post-return handle. Use ``entries`` for portable
+    #: access to per-item results.
     table_name: str | None
     replayed_ok: int
     replayed_drift: int
@@ -612,9 +615,9 @@ class ReplayReport:
     #: True. When the check did not run, ``0`` means "not checked" — surfaces
     #: must not render it as a pass.
     principal_binding_verified: bool = False
-    #: Detailed per-work-item results. Populated in read-only mode (where there
-    #: is no table to query); empty in normal mode where ``table_name`` holds
-    #: the same data.
+    #: Detailed per-work-item results, populated in BOTH modes. This is the
+    #: portable access path for per-item replay outcomes; prefer it over
+    #: querying ``table_name``.
     entries: tuple[ReplayReportEntry, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -656,12 +659,17 @@ class ReplayReportEntry:
     work_item_id: uuid.UUID
     category: str
     detail: str | None
+    #: Per-work-item warning count for this entry. Mirrors the ``warnings``
+    # column of the (now-temporary) report table so callers reading ``entries``
+    # see the same detail the table once held.
+    warnings: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "work_item_id": str(self.work_item_id),
             "category": self.category,
             "detail": self.detail,
+            "warnings": self.warnings,
         }
 
     @classmethod
@@ -670,6 +678,7 @@ class ReplayReportEntry:
             work_item_id=uuid.UUID(data["work_item_id"]),
             category=data["category"],
             detail=data.get("detail"),
+            warnings=data.get("warnings", 0),
         )
 
 

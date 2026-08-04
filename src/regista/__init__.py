@@ -203,13 +203,13 @@ class Regista(
                 *unverified* and not sufficient for release qualification.
                 Release qualification requires a configured verifier so missing
                 or insufficient approval evidence fails closed.
-            read_only: Open a verify-path connection. The schema's migrations
-                table is detected with a read-only catalog probe and the
-                connect FAILS CLOSED (raises ``MIGRATION_REQUIRED``) if it is
-                missing, rather than creating it. No DDL is ever issued. Use
-                this to verify against a read-only replica or restore without
-                mutating evidence. ``create_project`` always remains a write
-                path and ignores this.
+            read_only: Open a verify-path connection intended for use
+                against a read-only session (hot standby / restore). regista
+                will not issue DDL and replay runs in memory; the connect
+                FAILS CLOSED (raises ``MIGRATION_REQUIRED``) if the schema's
+                migrations table is missing. The no-mutates guarantee holds
+                only if the DSN session is actually read-only. ``create_project``
+                always remains a write path and ignores this.
 
         Raises:
             RegistaError: If migrations are pending or workflow versions are

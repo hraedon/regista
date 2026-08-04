@@ -42,28 +42,31 @@ def _drop_replay_tables(conn: DictConn, *table_names: str) -> None:
 
 
 class _ReplayStore:
-    """Accumulates replay results.
+    """Accumulates replay results and is the single source of truth for where
+    those results live.
 
-    Two backends:
+    In both modes the portable, post-return access path is
+    :meth:`report_entries` → :attr:`ReplayReport.entries`. The temp tables are
+    an implementation detail of the writable backend and are dropped in a
+    ``finally`` when the replay completes, so they are NOT valid after
+    :func:`replay` returns.
 
-    * *Writable* (normal mode): results are written to ``CREATE TEMP TABLE``
-      tables in the project schema's session. Temp tables are session-scoped and
-      auto-dropped, so they never leak permanent residue. The replayed
-      projection is returned via :attr:`table_name` for callers that want to
-      query it.
+    * *Writable* (normal mode): per-item rows are written to ``CREATE TEMP
+      TABLE`` tables (session-scoped, dropped in ``finally``) AND recorded in
+      memory. :attr:`table_name` holds the projection table name for the span
+      of the replay transaction only.
 
     * *Read-only* (verify path): results are held in memory. This is the only
       option that works against a read-only connection, because even
       ``CREATE TEMP TABLE`` is blocked under ``default_transaction_read_only``
-      (creating any table writes to ``pg_class``). Results are returned via
-      :attr:`entries`; :attr`table_name` is ``None``.
+      (creating any table writes to ``pg_class``). :attr:`table_name` is
+      ``None``.
     """
 
-    def __init__(self, conn: DictConn, schema: str, *, read_only: bool) -> None:
+    def __init__(self, conn: DictConn, *, read_only: bool) -> None:
         self._conn = conn
         self._read_only = read_only
         self._report_entries: list[ReplayReportEntry] = []
-        self._replay_rows: list[dict[str, Any]] = []
         tag = uuid.uuid4().hex[:8]
         self.replay_table = f"work_items_current_replay_{tag}"
         self.report_table = f"replay_report_{tag}"
@@ -93,10 +96,13 @@ class _ReplayStore:
         detail: str | None,
         warnings: int,
     ) -> None:
+        # Always record the per-item result so `entries` is the portable access
+        # path in both modes. In writable mode the same row is also persisted
+        # to the (temporary) report table for the duration of the transaction.
+        self._report_entries.append(
+            ReplayReportEntry(work_item_id, category, detail, warnings)
+        )
         if self._read_only:
-            self._report_entries.append(
-                ReplayReportEntry(work_item_id, category, detail)
-            )
             return
         self._conn.execute(
             SQL(
@@ -107,8 +113,11 @@ class _ReplayStore:
         )
 
     def add_replay_row(self, row: dict[str, Any]) -> None:
+        # The replayed projection is written to the temp table only. It is NOT
+        # retained in memory: a full materialization would unboundedly grow with
+        # the log, and `entries` already carries the per-item report. The
+        # projection is reachable via `table_name` for the transaction's span.
         if self._read_only:
-            self._replay_rows.append(row)
             return
         self._conn.execute(
             SQL(
@@ -488,7 +497,7 @@ def replay(
     work_item_id: uuid.UUID | None = None,
     read_only: bool = False,
 ) -> ReplayReport:
-    store = _ReplayStore(conn, schema, read_only=read_only)
+    store = _ReplayStore(conn, read_only=read_only)
     try:
         return _replay_inner(
             conn,
@@ -501,9 +510,13 @@ def replay(
             verify_principal_binding=verify_principal_binding,
             work_item_id=work_item_id,
         )
-    except Exception:
+    finally:
+        # Drop the temp tables on BOTH success and failure. Without the
+        # success-path drop, a long-lived pooled connection (the verify-loop
+        # daemon use case, pool_max_lifetime=None) accumulates two temp tables
+        # per replay for the process lifetime. After F1 the portable result
+        # access is `entries`, so no caller needs these tables post-return.
         store.drop()
-        raise
 
 
 def _replay_inner(

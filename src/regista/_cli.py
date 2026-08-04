@@ -2028,10 +2028,11 @@ def main(argv: list[str] | None = None) -> None:
     rep.add_argument(
         "--read-only",
         action="store_true",
-        help="Open a read-only verify-path connection: no DDL is issued, the "
-        "schema's migrations table is probed and the command fails closed if "
-        "it is missing, and replay runs against the read-only store without "
-        "mutating evidence. Use against a read-only replica or restore.",
+        help="Intended for use against a read-only connection (hot standby / "
+        "restore). regista will not issue DDL and replay runs entirely in "
+        "memory, but the no-mutates guarantee holds only if the DSN session "
+        "is actually read-only. The schema's migrations table is probed and "
+        "the command fails closed if it is missing.",
     )
     rep.set_defaults(func=cmd_replay)
 

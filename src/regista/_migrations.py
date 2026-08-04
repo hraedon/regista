@@ -60,15 +60,29 @@ def applied_versions(mgr: ConnectionManager, *, read_only: bool = False) -> set[
         if read_only:
             # Read-only connect: never issue DDL. Detect the migrations table
             # via a read-only catalog probe and fail closed if it is absent.
-            row = conn.execute(
-                "SELECT EXISTS("
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_name = '_regista_migrations')"
-                " AS exists",
-                [mgr.schema],
+            probe = conn.execute(
+                "SELECT "
+                "EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = '_regista_migrations') "
+                "AS has_regista, "
+                "EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = '_substrate_migrations') "
+                "AS has_substrate",
+                [mgr.schema, mgr.schema],
             ).fetchone()
-            assert row is not None
-            if not row["exists"]:
+            assert probe is not None
+            if not probe["has_regista"]:
+                # If the legacy-named table exists, say so: the schema IS
+                # migrated, just under the old name, and a read-only connection
+                # cannot perform the rename.
+                if probe["has_substrate"]:
+                    raise RegistaError(
+                        ErrorCode.MIGRATION_REQUIRED,
+                        f"Read-only connect: schema {mgr.schema!r} has a "
+                        "_substrate_migrations table (the pre-rename name) but "
+                        "no _regista_migrations table; a read-only connection "
+                        "cannot apply the rename migration.",
+                    )
                 raise RegistaError(
                     ErrorCode.MIGRATION_REQUIRED,
                     f"Read-only connect: schema {mgr.schema!r} has no "

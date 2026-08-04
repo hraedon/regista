@@ -5,10 +5,12 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
+from regista._replay import replay as _replay_fn
 from regista.testing import drop_project_schema
 
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test_wi242"
@@ -132,5 +134,91 @@ class TestConnectReadOnly:
                     [project],
                 ).fetchone()
             assert row is not None, "_regista_migrations should have been created"
+        finally:
+            drop_project_schema(DSN, project)
+
+
+class TestReplayEntriesPortable:
+    """F1: per-item results must be reachable via `entries` in BOTH modes."""
+
+    def test_normal_mode_populates_entries(self):
+        sub, project = _create_project()
+        try:
+            _setup_work_item(sub)
+            report = sub.replay()
+            # Normal mode: entries is the portable access path and must be
+            # populated (not left empty while only table_name is set).
+            assert len(report.entries) >= 1, "entries empty in normal mode"
+            assert report.table_name is not None
+            categories = {e.category for e in report.entries}
+            assert categories == {"replayed_ok"}, f"surprise categories: {categories}"
+        finally:
+            sub.close()
+            drop_project_schema(DSN, project)
+
+    def test_read_only_mode_populates_entries(self):
+        sub, project = _create_project()
+        try:
+            _setup_work_item(sub)
+            sub.close()
+            sub_ro = Regista(DSN_RO, project, KEY_PATH, read_only=True)
+            try:
+                report = sub_ro.replay()
+                assert report.table_name is None
+                assert len(report.entries) >= 1, "entries empty in read-only mode"
+            finally:
+                sub_ro.close()
+        finally:
+            drop_project_schema(DSN, project)
+
+    def test_entries_round_trip_with_warnings(self):
+        """F4: per-item warnings are carried on each entry in both modes."""
+        sub, project = _create_project()
+        try:
+            _setup_work_item(sub)
+            report = sub.replay()
+            assert len(report.entries) >= 1, "entries must be populated"
+            for e in report.entries:
+                assert hasattr(e, "warnings"), "entry missing warnings field"
+                assert isinstance(e.warnings, int)
+        finally:
+            sub.close()
+            drop_project_schema(DSN, project)
+
+
+class TestReplayTempTablesDropped:
+    """F3: temp tables must be dropped on the success path, not only on error.
+
+    The concern: a verify-loop daemon reuses pooled connections whose session
+    lives for the process lifetime (pool_max_lifetime=None). Without a finally-
+    drop, each replay leaks two temp tables on that session forever.
+    """
+
+    def test_no_temp_table_residue_after_success(self):
+        # Use ONE dedicated connection so we can inspect the same session before
+        # and after. We drive the internal replay function directly with a
+        # KeySet taken from a live Regista handle.
+        sub, project = _create_project()
+        try:
+            _setup_work_item(sub)
+            key_set = sub._keys
+            schema = sub._mgr.schema
+            sub.close()
+
+            with psycopg.connect(DSN, row_factory=dict_row) as conn:
+                # Mirror transaction_repeatable_read(): scope search_path to the
+                # project schema so unqualified table references resolve.
+                conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
+                report = _replay_fn(conn, schema, project, key_set)
+                table_name = report.table_name
+                assert table_name is not None
+                # The temp table must NOT exist on this same session after a
+                # successful replay (finally-drop), proving no residue.
+                row = conn.execute(
+                    "SELECT 1 FROM pg_class WHERE relname = %s", [table_name]
+                ).fetchone()
+                assert row is None, (
+                    f"temp table {table_name} leaked on the session after success"
+                )
         finally:
             drop_project_schema(DSN, project)
