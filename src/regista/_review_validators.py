@@ -63,6 +63,47 @@ def normalized_kind(kind: Any) -> str | None:
     return kind.strip().lower() or None
 
 
+# WI-262: how a delegation's declared principal_kind reads to the gate.
+#
+# ABSENT   — no principal_kind key (or an explicit null). The bare
+#            {"principal_id": ...} separation-of-duties shape: it claims nothing
+#            about the principal, predates any lineage claim, and is left alone.
+# HUMAN    — the one kind that can vouch "this principal is not a model".
+# AGENT    — a model principal; its lineage participates in every comparison.
+# OPAQUE   — declared, but not something this gate can reason about: a kind it
+#            does not recognise, or a blank/non-string value. It CANNOT vouch
+#            that the principal is not a model, so it fails closed exactly like
+#            an undeclared agent. Ingress validation now rejects these
+#            (validate_delegation_chain), but events written before it existed
+#            still carry them and must fail closed rather than crash.
+KIND_ABSENT = "absent"
+KIND_HUMAN = "human"
+KIND_AGENT = "agent"
+KIND_OPAQUE = "opaque"
+
+
+def classify_principal_kind(delegation: Any) -> str:
+    """Classify a delegation's principal_kind into one of the KIND_* verdicts.
+
+    WI-262: the author side used to ask ``principal_kind == "agent"`` and treat
+    everything else as a non-model, so ``principal_kind="ai-agent"`` with no
+    lineage sailed past the undeclared-agent gate and an end-to-end probe
+    reached ``independently_reviewed`` with no acknowledgment. Only "human" is
+    a negative answer; everything else declared is at best unknown.
+    """
+    if not isinstance(delegation, dict):
+        return KIND_ABSENT
+    raw = delegation.get("principal_kind")
+    if raw is None:
+        return KIND_ABSENT
+    kind = normalized_kind(raw)
+    if kind == KIND_HUMAN:
+        return KIND_HUMAN
+    if kind == KIND_AGENT:
+        return KIND_AGENT
+    return KIND_OPAQUE
+
+
 def _event_lineage(event: Any) -> str | None:
     meta = getattr(event, "actor_metadata", None)
     if isinstance(meta, dict):
@@ -84,12 +125,15 @@ def _add_delegated_principal(
 
     The kind is recorded in its canonical spelling so the ``"agent" in
     author_kinds`` test the gate performs cannot be dodged by capitalisation.
-    A kind that is neither "agent" nor "human" is recorded as declared and does
-    not trip the flag: on the author side an unrecognised kind is indistinct
-    from the existing "system" principal case, and treating it as an agent
-    would newly block histories the gate has always allowed. The review side is
-    stricter (see ``review_lineage_relation``) because there an unrecognised
-    kind is being used to *claim* independence.
+
+    WI-262: the author side is now symmetric with the review side — any kind
+    that is not "human" (an unrecognised one, a blank, a non-string) trips the
+    flag when the principal declares no lineage. The earlier rationale for
+    exempting them (that an unrecognised kind was indistinguishable from a
+    "system" principal) was simply wrong: no ``principal_kind`` of "system"
+    exists anywhere in the estate — the ``actor_kind="system"`` note above is a
+    different field — so the exemption bought nothing and cost a fail-open on
+    unvalidated, attacker-controlled metadata.
     """
     delegation = getattr(event, "on_behalf_of", None)
     if not isinstance(delegation, dict):
@@ -97,6 +141,7 @@ def _add_delegated_principal(
     principal_id = delegation.get("principal_id")
     if principal_id:
         author_ids.add(principal_id)
+    kind_class = classify_principal_kind(delegation)
     principal_kind = normalized_kind(delegation.get("principal_kind"))
     if principal_kind:
         author_kinds.add(principal_kind)
@@ -104,7 +149,7 @@ def _add_delegated_principal(
     if principal_lineage:
         author_lineages.add(principal_lineage)
         return False
-    return principal_kind == "agent"
+    return kind_class in (KIND_AGENT, KIND_OPAQUE)
 
 
 def derive_authors(prior_events: Iterable[Any]) -> tuple[set[str], set[str], set[str], bool]:
@@ -223,8 +268,19 @@ def adversarial_review(ctx: Any) -> None:
     _require_review_note(ctx, "adversarial_review")
 
     reviewer_lineage = (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
-    reviewer_is_agent = ctx.actor_kind == "agent"
-    agent_author = "agent" in author_kinds
+    # WI-262: "is there an agent mind behind this review?" is not answered by
+    # the proxy's actor_kind alone. A HUMAN proxy recording a pass on behalf of
+    # an agent principal is an agent review with a human typing it, and the
+    # acknowledgment policy has to follow the mind, not the keyboard.
+    reviewer_kind_class = classify_principal_kind(getattr(ctx, "on_behalf_of", None))
+    reviewer_is_agent = ctx.actor_kind == "agent" or reviewer_kind_class in (
+        KIND_AGENT,
+        KIND_OPAQUE,
+    )
+    # Likewise on the author side: an undeclared agent author IS an agent
+    # author, even when the kind that produced the flag was an opaque one that
+    # never put the literal string "agent" into author_kinds.
+    agent_author = "agent" in author_kinds or agent_author_undeclared
     # WI-258: the reviewer's lineage is no longer read from the proxy actor
     # alone. When this review is recorded on behalf of an agent principal, that
     # principal's lineage must clear the distinctness bar too (and an

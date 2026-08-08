@@ -21,6 +21,7 @@ _STATUS_MAP: dict[str, int] = {
     # failure, not a client error (WI-240 review F6).
     ErrorCode.BUNDLE_WRITE_CORRUPT: 500,
     ErrorCode.INVALID_ACTOR_KIND: 400,
+    ErrorCode.INVALID_PRINCIPAL_KIND: 400,
     ErrorCode.WORK_ITEM_TYPE_NOT_DECLARED: 400,
     ErrorCode.CUSTOM_FIELD_VIOLATION: 400,
     ErrorCode.TRANSITION_VIA_APPEND_BLOCKED: 400,

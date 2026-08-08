@@ -645,6 +645,100 @@ class TestReviewerDelegationLineage:
             adversarial_review(ctx)
         assert exc_info.value.detail["lineage_relation"] == "same"
 
+    def test_human_proxy_for_same_lineage_agent_principal_blocked(self):
+        # WI-262 (Sol R2, non-blocking): enforcement used to check only the
+        # proxy's actor_kind, so a HUMAN typing a pass on behalf of a
+        # same-lineage AGENT principal skipped the acknowledgment. The
+        # acknowledgment policy follows the mind behind the review, not the
+        # keyboard in front of it.
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            actor_metadata=None,
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "glm",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_human_proxy_for_same_lineage_agent_principal_passes_with_ack(self):
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "glm",
+            },
+            payload=ACK_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_human_proxy_for_undeclared_agent_principal_blocked(self):
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_human_proxy_for_opaque_principal_blocked(self):
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "ai-agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_human_proxy_for_distinct_agent_principal_passes(self):
+        # Following the mind must not over-block: a genuinely cross-lineage
+        # delegated review still needs no acknowledgment.
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_human_proxy_for_human_principal_unaffected(self):
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={"principal_id": "human:boss", "principal_kind": "human"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_human_proxy_with_bare_delegation_unaffected(self):
+        # No principal_kind claimed at all: the separation-of-duties shape,
+        # which asserts nothing about a mind behind the review.
+        ctx = _ctx(
+            self._authors(), "human-proxy", actor_kind="human",
+            on_behalf_of={"principal_id": "some-operator"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_undelegated_human_reviewer_unaffected(self):
+        ctx = _ctx(
+            self._authors(), "h1", actor_kind="human", payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
     def test_end_to_end_delegated_same_lineage_review_blocked(self):
         sub = _relaxed_sub()
         try:

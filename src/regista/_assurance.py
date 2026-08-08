@@ -5,7 +5,13 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Any
 
-from ._review_validators import declared_lineage, derive_authors, normalized_kind
+from ._review_validators import (
+    KIND_AGENT,
+    KIND_OPAQUE,
+    classify_principal_kind,
+    declared_lineage,
+    derive_authors,
+)
 
 
 class AssuranceLevel(StrEnum):
@@ -114,11 +120,12 @@ def review_lineage_relation(
       boundary;
     * ``principal_kind`` "human" — the proxy's own relation, unchanged; a human
       principal is not a model lineage at all;
-    * any OTHER declared kind — ``UNKNOWN``. An unrecognised kind cannot
-      establish "this principal is not a model", which is the only reason
-      ignoring it would be safe. Kinds are matched case- and
-      whitespace-insensitively, since ``principal_kind`` (unlike ``actor_kind``)
-      passes no boundary validation and "Agent" means "agent".
+    * any OTHER declared kind (``KIND_OPAQUE``) — ``UNKNOWN``. An unrecognised
+      kind cannot establish "this principal is not a model", which is the only
+      reason ignoring it would be safe. Kinds are matched case- and
+      whitespace-insensitively; ingress validation (WI-262) now rejects the
+      unrecognised ones outright, but events written before it existed still
+      carry them and must fail closed here rather than crash.
 
     A delegation carrying no ``principal_kind`` key at all (or an explicit
     ``None``) is left alone: that is
@@ -126,27 +133,50 @@ def review_lineage_relation(
     duties, and it predates any lineage claim, so blocking it would be an
     unrelated behaviour change rather than a fail-closed fix.
 
+    WI-262: which identities make a lineage *claim* is decided the same way
+    ``derive_authors`` decides it on the author side. A proxy that declares a
+    lineage always claims; a proxy that declares none claims ``UNKNOWN`` only
+    if it is an ``agent`` (a model that failed to declare itself). A HUMAN
+    proxy declaring nothing is not an undeclared model — humans have no model
+    lineage — so it contributes no claim, and a review a human recorded on
+    behalf of a declared cross-lineage agent principal reads ``DISTINCT`` on
+    that principal alone. When nothing claims, the verdict is ``UNKNOWN``,
+    which is what an undelegated human reviewer has always produced.
+
     ``review_event`` is anything event-shaped: a stored event or a validator
     ctx (both expose ``actor_metadata`` and ``on_behalf_of``).
     """
-    relation = lineage_relation(author_lineages, _event_lineage(review_event))
+    claims: list[LineageRelation] = []
+    proxy_lineage = _event_lineage(review_event)
+    if proxy_lineage is not None:
+        claims.append(lineage_relation(author_lineages, proxy_lineage))
+    elif getattr(review_event, "actor_kind", None) == "agent":
+        claims.append(LineageRelation.UNKNOWN)
+
     delegation = getattr(review_event, "on_behalf_of", None)
-    if not isinstance(delegation, dict):
-        return relation
-    raw_kind = delegation.get("principal_kind")
-    if raw_kind is None:
-        return relation
-    principal_kind = normalized_kind(raw_kind)
-    if principal_kind == "human":
-        return relation
-    if principal_kind != "agent":
+    kind_class = classify_principal_kind(delegation)
+    if kind_class == KIND_OPAQUE:
         # Declared but unusable (blank, non-string, or simply a kind this gate
         # does not know): it cannot vouch that the principal is not a model.
-        return _weakest(relation, LineageRelation.UNKNOWN)
-    principal_lineage = declared_lineage(delegation.get("principal_lineage"))
-    if principal_lineage is None:
-        return _weakest(relation, LineageRelation.UNKNOWN)
-    return _weakest(relation, lineage_relation(author_lineages, principal_lineage))
+        claims.append(LineageRelation.UNKNOWN)
+    elif kind_class == KIND_AGENT:
+        principal_lineage = (
+            declared_lineage(delegation.get("principal_lineage"))
+            if isinstance(delegation, dict)
+            else None
+        )
+        claims.append(
+            LineageRelation.UNKNOWN
+            if principal_lineage is None
+            else lineage_relation(author_lineages, principal_lineage)
+        )
+
+    if not claims:
+        return LineageRelation.UNKNOWN
+    relation = claims[0]
+    for claim in claims[1:]:
+        relation = _weakest(relation, claim)
+    return relation
 
 
 def effective_lineage_relation(
