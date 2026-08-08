@@ -289,7 +289,13 @@ class TestVerifyAuditBundleOffline:
             verify_audit_bundle_offline(str(bad))
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
-    def test_verify_empty_bundle_passes(self, tmp_path):
+    def test_verify_empty_bundle_fails_closed(self, tmp_path):
+        """An event-free bundle used to verify=True: the empty global chain is
+        vacuously valid and there is nothing left to fail. The exporter refuses
+        to write one (WI-240), so it is not an artifact this tool produced —
+        it is what is left after someone wipes a bundle and zeroes the counts.
+        Answering "verified" to a document that makes no claim is the worst
+        outcome available, so it is now rejected (PR #32 review N5)."""
         bundle = {
             "manifest": {
                 "project": "empty",
@@ -313,8 +319,10 @@ class TestVerifyAuditBundleOffline:
         output.write_text(json.dumps(bundle, sort_keys=True, default=str))
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified
+        assert report.bundle_hash_ok, "every count agrees; only emptiness fails"
+        assert not report.verified
         assert report.event_count == 0
+        assert any("contains no events" in e for e in report.errors), report.errors
 
 
 class TestVerifyArchiveChain:
@@ -518,32 +526,34 @@ class TestOfflineSignatureVerification:
         assert report.signatures_verified == 0
         assert report.signatures_unverifiable == report.event_count
 
-    def test_v1_bundle_signature_check_skipped(self, tmp_path):
-        from regista._bundle import _canonical_bundle_bytes
+    def test_v1_bundle_signature_check_skipped(self, sub, tmp_path):
+        """A v1 bundle carries no key registry, so its signature check is
+        reported as skipped rather than silently passed.
 
-        bundle = {
-            "manifest": {
-                "project": "v1-compat",
-                "exported_at": datetime.now(UTC).isoformat(),
-                "event_count": 0,
-                "anchor_receipt_count": 0,
-                "segment_count": 0,
-                "format_version": 1,
-                "bundle_hash": "",
-            },
-            "events": [],
-            "anchor_receipts": [],
-            "segments": [],
-        }
-        bundle_bytes = _canonical_bundle_bytes(bundle)
-        bundle["manifest"]["bundle_hash"] = (
-            f"sha256:{hashlib.sha256(bundle_bytes).hexdigest()}"
+        Built by downgrading a real export (drop ``public_keys`` and the v2-only
+        ``public_key_count``, set ``format_version`` to 1, recompute the
+        unkeyed hash) instead of hand-rolling an EMPTY document: an event-free
+        bundle no longer verifies at all (review N5), and an empty one could
+        never have exercised the signature path anyway.
+        """
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "v1-compat",
+            custom_fields={"title": "v1-compat"},
         )
+        _drive_to_terminal(sub, wi)
+
         output = tmp_path / "v1_bundle.json"
-        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert bundle["events"], "the v1 downgrade must keep real events"
+        bundle.pop("public_keys", None)
+        bundle["manifest"].pop("public_key_count", None)
+        bundle["manifest"]["format_version"] = 1
+        _rehash_and_write(bundle, output)
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified
+        assert report.verified, report.errors
         assert report.signature_check == "skipped_v1_bundle"
 
     def test_missing_public_key_fails_closed(self, ed25519_setup, tmp_path):
@@ -1549,6 +1559,150 @@ class TestSegmentRecordAnchoring:
         )
 
 
+class TestDeclaredWindowIntegrity:
+    """PR #32 review B1/N1: the declared window gates the segment checks, so
+    the window itself has to be a claim an export could have made.
+
+    ``export_audit_bundle`` refuses ``until_seq <= since_seq`` and refuses any
+    window that selects no events, and ``global_seq`` is 1-based — so a
+    non-positive ``until_seq``, a negative ``since_seq`` or an inverted pair
+    cannot appear in a bundle this exporter wrote. The first cut of this fix
+    honoured them as real bounds: ``until_seq = 0`` made every segment
+    ``last_global_seq > 0`` and so skipped EVERY check, reopening WI-254 and
+    WI-255 with a one-key manifest edit.
+    """
+
+    @pytest.mark.parametrize(
+        "since_seq,until_seq",
+        [
+            (None, 0),
+            (None, -5),
+            (100, 50),
+            (-1, None),
+        ],
+        ids=["until-zero", "until-negative", "inverted", "since-negative"],
+    )
+    def test_impossible_window_does_not_disable_segment_checks(
+        self, sub, tmp_path, since_seq, until_seq
+    ):
+        """The B1 attack: a FULL export, one manifest key rewritten to an
+        impossible window, the terminal segment doctored, the unkeyed hash
+        recomputed. The window must read as unbounded (so the segment checks
+        run) AND be reported as tamper evidence in its own right."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / f"impossible_win_{since_seq}_{until_seq}.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        bundle["manifest"]["since_seq"] = since_seq
+        bundle["manifest"]["until_seq"] = until_seq
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        segs[-1]["head_hash"] = "ff" * 32
+        segs[-1]["event_count"] = 99999
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.bundle_hash_ok, "the tamperer restored the unkeyed hash"
+        assert not report.segment_chain_ok, (
+            "an impossible window must not switch the segment checks off"
+        )
+        assert any(
+            "Manifest window is not one this exporter could have written" in e
+            for e in report.errors
+        ), report.errors
+        assert not report.verified
+
+    def test_impossible_window_does_not_hide_tail_truncation(self, sub, tmp_path):
+        """The same key edit combined with the WI-255 tamper: delete the
+        terminal segment's tail event, doctor manifest.event_count to agree,
+        and try to buy a skipped segment check with until_seq=0."""
+        _build_two_segment_corpus(sub)
+        _, b, _ = _segment_and_gap_seqs(sub)
+
+        output = tmp_path / "impossible_win_truncated.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        bundle["events"] = [
+            e for e in bundle["events"]
+            if e["global_seq"] != b["last_global_seq"]
+        ]
+        bundle["manifest"]["event_count"] = len(bundle["events"])
+        bundle["manifest"]["until_seq"] = 0
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not any(
+            "Manifest count mismatch" in e for e in report.errors
+        ), "the manifest was doctored to agree"
+        assert not report.segment_chain_ok
+        assert not report.verified
+
+    def test_non_integer_window_reads_as_unbounded(self, sub, tmp_path):
+        """Non-integer nonsense was already handled; pin it so the B1 fix
+        cannot regress it while tightening the integer cases."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "garbled_win.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        bundle["manifest"]["until_seq"] = "nope"
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        segs[-1]["head_hash"] = "ff" * 32
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert not report.verified
+
+    def test_invented_window_must_also_drop_the_events(self, sub, tmp_path):
+        """Review N1. A tamperer who invents a window to disclaim completeness
+        for the terminal segment has to delete the out-of-window events too —
+        editing one manifest key leaves events sitting outside the window the
+        bundle declares."""
+        _build_two_segment_corpus(sub)
+        _, b, _ = _segment_and_gap_seqs(sub)
+
+        output = tmp_path / "invented_win.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        # A window that genuinely cuts segment B — but the events of the full
+        # export are still all here, which no real chunk export could produce.
+        bundle["manifest"]["until_seq"] = b["first_global_seq"]
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        segs[-1]["head_hash"] = "ff" * 32
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert any(
+            "above the declared window" in e for e in report.errors
+        ), report.errors
+        assert not report.verified
+
+    def test_real_windowed_export_satisfies_its_own_window(self, sub, tmp_path):
+        """The extents check must be satisfied by construction on every real
+        chunk — including one whose until_seq runs past the corpus."""
+        _build_two_segment_corpus(sub)
+        a, b, _ = _segment_and_gap_seqs(sub)
+
+        for since_seq, until_seq in [
+            (None, b["first_global_seq"]),
+            (a["first_global_seq"], b["last_global_seq"]),
+            (0, b["last_global_seq"] + 500),
+        ]:
+            output = tmp_path / f"real_win_{since_seq}_{until_seq}.json"
+            sub.export_audit_bundle(
+                str(output), since_seq=since_seq, until_seq=until_seq
+            )
+            report = verify_audit_bundle_offline(str(output))
+            assert report.verified, (
+                f"window ({since_seq},{until_seq}] failed: {report.errors}"
+            )
+
+
 class TestManifestCountAgreement:
     """WI-255: the manifest's declared counts must agree with the sections
     they describe.
@@ -1680,6 +1834,57 @@ class TestManifestCountAgreement:
         report = verify_audit_bundle_offline(str(output))
         assert not report.verified
         assert any("is not an integer" in e for e in report.errors), report.errors
+
+    def test_v2_bundle_missing_a_count_fails_closed(self, sub, tmp_path):
+        """Review N2: format_version 2 is always written with all four counts,
+        so DELETING one is tamper evidence — otherwise dropping the key is a
+        way to opt out of the check."""
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "count-missing",
+            custom_fields={"title": "count-missing"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        output = tmp_path / "count_missing.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert bundle["manifest"]["format_version"] == 2
+        del bundle["manifest"]["event_count"]
+        # Truncate as well, to show what the deletion would have laundered.
+        max_seq = max(e["global_seq"] for e in bundle["events"])
+        bundle["events"] = [
+            e for e in bundle["events"] if e["global_seq"] != max_seq
+        ]
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any(
+            "Manifest count missing" in e for e in report.errors
+        ), report.errors
+
+    def test_v1_bundle_may_omit_the_v2_only_count(self, sub, tmp_path):
+        """The version gate must not punish a genuine v1 bundle, which predates
+        the key registry and carries no public_key_count."""
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "count-v1",
+            custom_fields={"title": "count-v1"},
+        )
+        _drive_to_terminal(sub, wi)
+
+        output = tmp_path / "count_v1.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        bundle.pop("public_keys", None)
+        bundle["manifest"].pop("public_key_count", None)
+        bundle["manifest"]["format_version"] = 1
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified, report.errors
+        assert not any("Manifest count" in e for e in report.errors)
 
     def test_clean_bundle_has_no_count_errors(self, sub, tmp_path):
         """The check must not fire on an untampered bundle — including one

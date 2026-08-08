@@ -177,9 +177,15 @@ def _slice_segments_to_window(
     trailing segments drop; the slice preserves the order of the kept
     segments, and the offline inter-segment linkage walk
     (:func:`_verify_segment_chain_offline`) compares adjacent kept segments
-    in that order. Segments with unknown bounds (unsealed rows carry
-    ``None``) are kept: the slice must never silently discard what it cannot
-    classify. Returns ``(kept, excluded_count)``.
+    in that order. Segments with unknown bounds are kept: the slice must never
+    silently discard what it cannot classify. (Review N6: no such row can come
+    from the store — migration 039 declares ``first_global_seq``,
+    ``last_global_seq``, ``head_hash`` and ``event_count`` NOT NULL with
+    CHECKs for ``event_count > 0`` and ``first_global_seq <= last_global_seq``,
+    and ``seal_segment`` never inserts without events. The branch guards
+    hand-built and tampered bundles only, which
+    ``_verify_segment_chain_offline`` then rejects.) Returns
+    ``(kept, excluded_count)``.
     """
     if min_exported_seq is None or max_exported_seq is None:
         return segments, 0
@@ -481,7 +487,7 @@ _MANIFEST_COUNT_SECTIONS = (
 
 
 def _verify_manifest_counts(
-    manifest: dict[str, Any], bundle: dict[str, Any]
+    manifest: dict[str, Any], bundle: dict[str, Any], fmt_version: Any
 ) -> list[str]:
     """Check every count the manifest declares against the section it describes.
 
@@ -494,14 +500,25 @@ def _verify_manifest_counts(
     unforgeable — it makes it internally inconsistent to remove a record
     without also rewriting the claim about how many records there are.
 
-    Counts absent from the manifest are not invented: v1 bundles carry no
-    ``public_key_count``, and a manifest key that is missing declares nothing.
     A count present but not an integer is a malformed claim and fails closed.
-    Returns a list of error strings (empty when every declared count agrees).
+    An ABSENT count is version-gated (review N2): a v2 manifest is always
+    written with all four counts, so one missing from a v2 bundle is tamper
+    evidence — dropping the key would otherwise be a way to opt out of the
+    check. v1 bundles predate the key registry and carry no
+    ``public_key_count``, so for them a missing count declares nothing and is
+    skipped. Returns a list of error strings (empty when every declared count
+    agrees).
     """
     errors: list[str] = []
     for key, section in _MANIFEST_COUNT_SECTIONS:
         if key not in manifest:
+            if fmt_version == 2:
+                errors.append(
+                    f"Manifest count missing: format_version 2 always declares "
+                    f"{key!r}, so its absence is not a bundle this exporter wrote "
+                    f"(section '{section}' holds "
+                    f"{len(bundle.get(section) or [])} record(s))"
+                )
             continue
         declared = manifest[key]
         actual = len(bundle.get(section) or [])
@@ -566,7 +583,7 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             f"supported: {sorted(_SUPPORTED_FORMAT_VERSIONS)}"
         )
 
-    errors.extend(_verify_manifest_counts(manifest, bundle))
+    errors.extend(_verify_manifest_counts(manifest, bundle, fmt_version))
 
     events: list[Event] = []
     for i, ed in enumerate(events_data):
@@ -576,6 +593,20 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             errors.append(f"Failed to parse event {i}: {exc}")
 
     events.sort(key=lambda e: e.global_seq if e.global_seq is not None else float("inf"))
+
+    # An event-free bundle proves nothing and verifies trivially — the empty
+    # global chain is vacuously valid and there is nothing left to fail. The
+    # exporter refuses to write one for exactly that reason (WI-240), so a
+    # bundle with no events is not an artifact this tool produced: it is what
+    # is left after someone wipes one and zeroes the counts. Reject it rather
+    # than answer "verified" to a document that makes no claim (review N5).
+    if not events_data:
+        errors.append(
+            "Bundle contains no events: export refuses to write an empty "
+            "bundle, so an event-free bundle proves nothing and cannot verify"
+        )
+
+    errors.extend(_verify_declared_window(manifest, events))
 
     ok_global, err_global, _tail = _verify_global_chain(events)
     ok_wi, err_wi = _verify_work_item_chains(events)
@@ -946,6 +977,45 @@ def _verify_anchor_offline(
     }
 
 
+def _as_seq_bound(value: Any) -> int | None:
+    """Return *value* as a seq bound, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _window_is_impossible(since_seq: Any, until_seq: Any) -> str | None:
+    """Describe why a declared export window could not have been produced.
+
+    ``export_audit_bundle`` refuses ``until_seq <= since_seq`` outright and
+    refuses any window that selects no events, and ``global_seq`` is 1-based —
+    so a non-positive ``until_seq``, a negative ``since_seq`` or an inverted
+    pair cannot appear in a bundle this exporter wrote. A manifest carrying
+    one is tamper evidence, and it is the shape a tamperer reaches for,
+    because the window is what gates the segment checks. Returns the reason,
+    or ``None`` when the declared window is a shape an export could produce.
+    """
+    since = _as_seq_bound(since_seq)
+    until = _as_seq_bound(until_seq)
+    if since_seq is not None and since is None:
+        return f"since_seq={since_seq!r} is not an integer"
+    if until_seq is not None and until is None:
+        return f"until_seq={until_seq!r} is not an integer"
+    if until is not None and until <= 0:
+        return (
+            f"until_seq={until} selects no events (global_seq is 1-based); "
+            f"export refuses such a window"
+        )
+    if since is not None and since < 0:
+        return f"since_seq={since} is negative"
+    if since is not None and until is not None and since >= until:
+        return (
+            f"since_seq={since} is not below until_seq={until}; export refuses "
+            f"an empty range"
+        )
+    return None
+
+
 def _exported_window(
     since_seq: Any, until_seq: Any
 ) -> tuple[int | None, int | None]:
@@ -953,22 +1023,66 @@ def _exported_window(
 
     ``since_seq`` is exclusive on the export side (``global_seq > since_seq``)
     and ``until_seq`` inclusive, so the exported window is
-    ``[since_seq + 1, until_seq]``. ``None`` on either side means unbounded —
-    and so does a non-integer, which is the strict direction: an unbounded
-    side subjects MORE segments to the full checks below, so a manifest that
-    garbles its own window cannot buy itself leniency.
+    ``[since_seq + 1, until_seq]``. ``None`` on either side means unbounded.
+
+    Anything that is not a bound an export could have produced ALSO reads as
+    unbounded, which is the strict direction: an unbounded side subjects MORE
+    segments to the full checks, so a manifest cannot buy itself leniency by
+    declaring nonsense. That covers non-integers and — the case the first cut
+    of this fix got wrong (review B1) — integer nonsense: ``until_seq = 0``
+    would otherwise be honoured as a real upper bound, and since every segment
+    has ``last_global_seq > 0`` it skipped EVERY segment check in the bundle,
+    reopening both WI-254 and WI-255 with a one-key manifest edit. Negative
+    and inverted windows did the same. ``_window_is_impossible`` reports these
+    as errors in their own right; this function only has to make sure the
+    segment gate does not act on them.
     """
-    lo = (
-        since_seq + 1
-        if isinstance(since_seq, int) and not isinstance(since_seq, bool)
-        else None
-    )
-    hi = (
-        until_seq
-        if isinstance(until_seq, int) and not isinstance(until_seq, bool)
-        else None
-    )
-    return lo, hi
+    if _window_is_impossible(since_seq, until_seq) is not None:
+        return None, None
+    since = _as_seq_bound(since_seq)
+    return (since + 1 if since is not None else None), _as_seq_bound(until_seq)
+
+
+def _verify_declared_window(
+    manifest: dict[str, Any], events: list[Event]
+) -> list[str]:
+    """Check the manifest's declared window against the events it shipped.
+
+    Two claims are settled here. First, the window must be a shape an export
+    could have produced at all (see ``_window_is_impossible``). Second — the
+    cheap anchor the first cut of this fix left out (review N1) — every event
+    must lie INSIDE the declared window. A real export guarantees this by
+    construction: the event query is filtered by the same bounds. So a
+    tamperer who invents a window to disclaim completeness for a segment (the
+    residual documented on ``_verify_segment_record_offline``) has to delete
+    the out-of-window events too, rather than just editing one manifest key.
+    """
+    since_seq = manifest.get("since_seq")
+    until_seq = manifest.get("until_seq")
+
+    reason = _window_is_impossible(since_seq, until_seq)
+    if reason is not None:
+        return [
+            f"Manifest window is not one this exporter could have written: "
+            f"{reason} (since_seq={since_seq!r}, until_seq={until_seq!r})"
+        ]
+
+    seqs = [e.global_seq for e in events if e.global_seq is not None]
+    if not seqs:
+        return []
+    lo, hi = _exported_window(since_seq, until_seq)
+    errors: list[str] = []
+    if lo is not None and min(seqs) < lo:
+        errors.append(
+            f"Bundle holds an event at global_seq {min(seqs)}, below the "
+            f"declared window (since_seq={since_seq})"
+        )
+    if hi is not None and max(seqs) > hi:
+        errors.append(
+            f"Bundle holds an event at global_seq {max(seqs)}, above the "
+            f"declared window (until_seq={until_seq})"
+        )
+    return errors
 
 
 def _count_segment_events(
