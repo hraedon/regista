@@ -87,11 +87,11 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed
 
-- **Kernel is fully `mypy --strict` (WI-233):** strict typing across the
-  kernel with four deferred modules documented (`_timestamping`, `_secrets`,
-  `_cli`, `sidecar.routes`). Audit-bundle export rejects misleading archive
-  extensions (`.tar.gz`/`.zip` names on canonical JSON, WI-210), and the
-  `multiple_genesis` replay verdict is order-stable (WI-219).
+- **Kernel is fully `mypy --strict` (WI-233):** every source module is
+  strict-clean; the burndown quarantine list is gone. Audit-bundle export
+  rejects misleading archive extensions (`.tar.gz`/`.zip` names on canonical
+  JSON, WI-210), and the `multiple_genesis` replay verdict is order-stable
+  (WI-219).
 
 ## [0.5.5] — 2026-08-01
 
