@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from regista._errors import RegistaError
 from regista._lint import resolve_model_lineage, stamp_model_lineage
 from regista._review_validators import (
     ReviewRejected,
@@ -308,6 +309,285 @@ class TestServiceIdentityDelegationUndeclared:
         _, kinds, _, undeclared = derive_authors(events)
         assert "human" in kinds
         assert undeclared is False
+
+
+class TestOrdinaryDelegationUndeclared:
+    """WI-257: the WI-248 undeclared-principal rule was applied ONLY inside the
+    exempt-service branch, so an ordinary declared proxy laundered an undeclared
+    delegated agent principal into "declared" — adversarial_review passed with
+    no acknowledgment and left no audit breadcrumb at all. The rule now applies
+    on every branch: a delegated agent principal with no declared lineage is an
+    undeclared agent author whoever proxied for it."""
+
+    def _delegated(self, **delegation) -> list:
+        # An ordinary (non-exempt) agent actor that DOES declare its own
+        # lineage, recording work on behalf of some principal.
+        return [
+            _evt("created", "proxy-agent", actor_kind="agent",
+                 actor_metadata={"model_lineage": "lineage-A"},
+                 on_behalf_of=delegation),
+        ]
+
+    def test_ordinary_proxy_undeclared_agent_principal_is_flagged(self):
+        events = self._delegated(
+            principal_id="hidden-agent", principal_kind="agent",
+        )
+        ids, kinds, lineages, undeclared = derive_authors(events)
+        assert "hidden-agent" in ids
+        assert "agent" in kinds
+        # The proxy's own lineage is still recorded — the point is that it no
+        # longer stands in for the principal's missing one.
+        assert lineages == {"lineage-A"}
+        assert undeclared is True
+
+    def test_ordinary_proxy_declared_agent_principal_not_flagged(self):
+        # A delegated agent principal that DOES declare a lineage is genuinely
+        # declared: both lineages are surfaced and the gate is not tripped.
+        events = self._delegated(
+            principal_id="delegated-agent", principal_kind="agent",
+            principal_lineage="lineage-D",
+        )
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert lineages == {"lineage-A", "lineage-D"}
+        assert undeclared is False
+
+    def test_ordinary_proxy_human_principal_not_flagged(self):
+        # A delegated human principal is not an agent author at all.
+        events = self._delegated(
+            principal_id="human:boss", principal_kind="human",
+        )
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "human" in kinds
+        assert undeclared is False
+
+    def test_human_proxy_undeclared_agent_principal_is_flagged(self):
+        # The proxy's own kind is irrelevant: what matters is that an agent
+        # principal never declared itself. A human front for an undeclared
+        # model must not launder it either.
+        events = [
+            _evt("created", "human-proxy", actor_kind="human",
+                 on_behalf_of={
+                     "principal_id": "hidden-agent",
+                     "principal_kind": "agent",
+                 }),
+        ]
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert undeclared is True
+
+    def test_ordinary_and_service_branches_agree(self):
+        # WI-248 parity: the exempt service identity and an ordinary actor must
+        # reach the same verdict on the same delegation shape.
+        delegation = {"principal_id": "hidden-agent", "principal_kind": "agent"}
+        _, _, _, service = derive_authors(
+            [_evt("created", "agent-notes", actor_kind="agent",
+                  on_behalf_of=delegation)]
+        )
+        _, _, _, ordinary = derive_authors(
+            [_evt("created", "proxy-agent", actor_kind="agent",
+                  actor_metadata={"model_lineage": "lineage-A"},
+                  on_behalf_of=delegation)]
+        )
+        assert service is ordinary is True
+
+    def test_cross_lineage_reviewer_blocked_without_ack(self):
+        # The composed attack: the reviewer IS cross-lineage against every
+        # declared lineage, but a mind behind the delegation never declared
+        # itself, so distinctness is not established.
+        ctx = _ctx(
+            self._delegated(principal_id="hidden-agent", principal_kind="agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_cross_lineage_reviewer_passes_with_ack(self):
+        # The escape hatch is unchanged: an explicit acknowledgment records the
+        # breadcrumb the laundering path used to skip entirely.
+        ctx = _ctx(
+            self._delegated(principal_id="hidden-agent", principal_kind="agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload={"review_note": "ack", "same_lineage_acknowledged": True},
+        )
+        adversarial_review(ctx)
+
+    def test_declared_principal_review_passes_without_ack(self):
+        # Legitimate composition: every identity in the history declared a
+        # lineage and the reviewer differs from all of them — no ack needed.
+        ctx = _ctx(
+            self._delegated(
+                principal_id="delegated-agent", principal_kind="agent",
+                principal_lineage="lineage-D",
+            ),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_end_to_end_delegated_undeclared_principal_blocks_review(self):
+        sub = _new_store("wi257_ordinary_delegation")
+        try:
+            wi, _ = sub.create_work_item(
+                workflow_name="wi248_review",
+                work_item_type="issue",
+                actor_id="proxy-agent",
+                actor_kind="agent",
+                actor_metadata={"model_lineage": "lineage-A"},
+            )
+            # An ordinary declared proxy records work for an agent principal
+            # that declares no lineage.
+            sub.transition(
+                wi.work_item_id, "start", "proxy-agent",
+                actor_kind="agent",
+                actor_metadata={"model_lineage": "lineage-A"},
+                on_behalf_of={
+                    "principal_id": "hidden-agent",
+                    "principal_kind": "agent",
+                },
+            )
+            sub.transition(
+                wi.work_item_id, "submit_for_review", "proxy-agent",
+                actor_kind="agent",
+                actor_metadata={"model_lineage": "lineage-A"},
+            )
+            with pytest.raises(RegistaError) as exc_info:
+                sub.transition(
+                    wi.work_item_id, "adversarial_pass", "kimi-agent",
+                    actor_kind="agent",
+                    actor_metadata={"model_lineage": "lineage-B"},
+                    payload=REVIEW_NOTE,
+                )
+            assert "not confirmed distinct" in str(exc_info.value)
+            assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
+        finally:
+            sub.close()
+
+
+class TestDegenerateDelegationValues:
+    """WI-257 follow-up (PR #31 review B1/B2): ``if principal_lineage:`` and
+    ``principal_kind == "agent"`` are only as strong as the values reaching
+    them, and ``validate_delegation_chain`` checks neither field. A blank or
+    non-string lineage used to be str()-ified into a lineage distinct from
+    every real one, and a mis-spelled kind used to read as
+    definitively-not-a-model — both re-opening exactly the hole WI-257
+    closed."""
+
+    def _delegated(self, **delegation) -> list:
+        return [
+            _evt("created", "proxy-agent", actor_kind="agent",
+                 actor_metadata={"model_lineage": "lineage-A"},
+                 on_behalf_of=delegation),
+        ]
+
+    @pytest.mark.parametrize("blank", ["   ", "", "\t\n"])
+    def test_blank_principal_lineage_is_undeclared(self, blank):
+        events = self._delegated(
+            principal_id="hidden-agent", principal_kind="agent",
+            principal_lineage=blank,
+        )
+        _, _, lineages, undeclared = derive_authors(events)
+        # The blank value must not enter the author set as a "lineage" — that
+        # is what made it compare distinct from every real one.
+        assert lineages == {"lineage-A"}
+        assert undeclared is True
+
+    @pytest.mark.parametrize("value", [42, 0, True, ["glm"], {"lineage": "glm"}])
+    def test_non_string_principal_lineage_is_undeclared(self, value):
+        events = self._delegated(
+            principal_id="hidden-agent", principal_kind="agent",
+            principal_lineage=value,
+        )
+        _, _, lineages, undeclared = derive_authors(events)
+        assert lineages == {"lineage-A"}
+        assert undeclared is True
+
+    @pytest.mark.parametrize("kind", ["Agent", "AGENT", " agent ", "\tAgent\n"])
+    def test_non_canonical_agent_kind_still_flags(self, kind):
+        events = self._delegated(principal_id="hidden-agent", principal_kind=kind)
+        _, kinds, _, undeclared = derive_authors(events)
+        # Recorded canonically, so the gate's `"agent" in author_kinds` test
+        # cannot be dodged by capitalisation either.
+        assert "agent" in kinds
+        assert undeclared is True
+
+    @pytest.mark.parametrize("kind", ["Human", "HUMAN", " human "])
+    def test_non_canonical_human_kind_still_exempt(self, kind):
+        events = self._delegated(principal_id="human:boss", principal_kind=kind)
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "human" in kinds
+        assert undeclared is False
+
+    def test_unrecognised_kind_is_recorded_not_flagged(self):
+        # Documented boundary: on the AUTHOR side an unrecognised kind is left
+        # as declared (it is indistinguishable from the existing "system"
+        # principal case, and treating it as an agent would newly block
+        # histories the gate has always allowed). The review side is stricter —
+        # see TestReviewerDelegationLineage — because there an unrecognised
+        # kind is being used to claim independence.
+        events = self._delegated(principal_id="p", principal_kind="ai-agent")
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "ai-agent" in kinds
+        assert undeclared is False
+
+    @pytest.mark.parametrize("blank", ["   ", "", "\t"])
+    def test_blank_actor_model_lineage_is_undeclared(self, blank):
+        # The same laxness on the proxy's own metadata: a blank model_lineage
+        # declares nothing, so the agent author is undeclared.
+        events = [
+            _evt("created", "gpt-agent", actor_kind="agent",
+                 actor_metadata={"model_lineage": blank}),
+        ]
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert lineages == set()
+        assert undeclared is True
+
+    def test_blank_principal_lineage_blocks_review_without_ack(self):
+        ctx = _ctx(
+            self._delegated(
+                principal_id="hidden-agent", principal_kind="agent",
+                principal_lineage="   ",
+            ),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_non_canonical_kind_blocks_review_without_ack(self):
+        ctx = _ctx(
+            self._delegated(principal_id="hidden-agent", principal_kind="Agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_service_branch_applies_the_same_rules(self):
+        # WI-248's exempt branch and the ordinary branch share one
+        # implementation now; prove the degenerate values behave identically.
+        for actor_id, meta in (
+            ("agent-notes", None),
+            ("proxy-agent", {"model_lineage": "lineage-A"}),
+        ):
+            events = [
+                _evt("created", actor_id, actor_kind="agent", actor_metadata=meta,
+                     on_behalf_of={
+                         "principal_id": "hidden-agent",
+                         "principal_kind": " Agent ",
+                         "principal_lineage": "  ",
+                     }),
+            ]
+            _, kinds, _, undeclared = derive_authors(events)
+            assert "agent" in kinds
+            assert undeclared is True
 
 
 class TestAdversarialReviewAfterServiceIdentityAndClaim:

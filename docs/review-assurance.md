@@ -67,6 +67,47 @@ that depends on distinctness, an UNKNOWN reviewer lineage must be treated the
 same as SAME: it cannot skip the human oversight the strict gate exists to
 require.
 
+### What counts as a lineage
+
+Distinctness is a property of *every* identity in the history, not just the
+ones that happened to declare themselves:
+
+- **An undeclared agent author makes the whole comparison UNKNOWN** (WI-256).
+  A history with one declared lineage-A event and one agent event carrying no
+  `model_lineage` is not "distinct from A" — it is distinct from the lineages
+  we happen to know, which is not the same claim. Such an item can never reach
+  `INDEPENDENTLY_REVIEWED`, and the strict gate still demands a human.
+  Genuine non-model service identities (the documented `agent-notes`
+  allowlist) are exempt: they have no model behind them, so their
+  lineage-free events are not agent authorship at all (WI-248).
+- **A delegated agent principal is an author too** (WI-257). When an event
+  carries `on_behalf_of` with `principal_kind: "agent"` and no
+  `principal_lineage`, the principal is an undeclared agent author — whoever
+  proxied for it. The proxy's own declared lineage does not stand in for the
+  principal's missing one.
+- **A delegated agent principal is also a *reviewer*** (WI-258). On an
+  `adversarial_pass`, the effective reviewer lineage is the weakest verdict
+  over the proxy and its agent principal: a collision on either side is
+  `SAME`, an undeclared lineage on either side is `UNKNOWN`, and `DISTINCT`
+  survives only when both are provably distinct from the authors. A proxy
+  declaring lineage B acting for a principal declaring lineage A does not
+  turn a same-lineage review of A-authored work into a cross-lineage one. A
+  `principal_kind: "human"` principal is not a model lineage and changes
+  nothing, and a `principal_kind` the gate does not recognise is `UNKNOWN` —
+  an unrecognised kind cannot vouch that the principal is not a model.
+
+**A declared lineage is a non-blank string.** `model_lineage` and
+`principal_lineage` are self-asserted and validated nowhere at the API
+boundary, so the gate strips before trusting: `"   "`, `""` and any non-string
+declare *nothing* and read as undeclared rather than as a lineage that happens
+to differ from every real one. `principal_kind` is matched case- and
+whitespace-insensitively for the same reason — `"Agent"` means `"agent"`.
+
+Each of these fails closed: the review is still recordable with an explicit
+`same_lineage_acknowledged` acknowledgment, which leaves the breadcrumb an
+auditor needs, and under the strict profile the item still needs a human
+accept to reach `done`.
+
 ### Trust caveat (pre-Plan-026)
 
 Before per-actor Ed25519 signing (Plan 026) lands, the `actor_metadata`
@@ -125,8 +166,16 @@ rationale = gate_rationale(events, GateProfile.STRICT)
 #   "reviewer_lineage": "glm",
 #   "author_lineages": ["glm"],
 #   "lineage_verification": "verified",
+#   "lineage_relation": "same",
+#   "agent_author_undeclared": False,
 # }
 ```
+
+`lineage_relation` is the **effective** verdict the gate decided on — it already
+accounts for a delegated reviewer principal and for undeclared agent authors, so
+it never reads `"distinct"` next to a history that could not establish
+distinctness. `agent_author_undeclared` says why: some agent author declared no
+lineage (WI-256).
 
 `lineage_verification` reports whether the deciding review event's lineage is
 cryptographically bound or merely asserted (WI-215):
