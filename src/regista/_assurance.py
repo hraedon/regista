@@ -5,7 +5,7 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Any
 
-from ._review_validators import derive_authors
+from ._review_validators import declared_lineage, derive_authors, normalized_kind
 
 
 class AssuranceLevel(StrEnum):
@@ -71,9 +71,10 @@ def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> boo
 def _event_lineage(event: Any) -> str | None:
     meta = getattr(event, "actor_metadata", None)
     if isinstance(meta, dict):
-        lineage = meta.get("model_lineage")
-        if lineage:
-            return str(lineage)
+        # declared_lineage strips before trusting: a whitespace-only or
+        # non-string model_lineage declares nothing and must read as UNKNOWN
+        # rather than as a lineage distinct from every real one.
+        return declared_lineage(meta.get("model_lineage"))
     return None
 
 
@@ -106,24 +107,46 @@ def review_lineage_relation(
 
     * declared principal lineage — the verdict is the weakest of the proxy's
       and the principal's relation (same on either side ⇒ ``SAME``);
-    * undeclared principal lineage — ``UNKNOWN``, fail closed exactly as an
-      undeclared reviewer lineage does (WI-239);
-    * ``principal_kind`` "human" (or no delegation) — the proxy's own relation,
-      unchanged; a human principal is not a model lineage at all.
+    * undeclared principal lineage — no better than ``UNKNOWN``, fail closed
+      exactly as an undeclared reviewer lineage does (WI-239). "Undeclared"
+      means empty *after stripping*: a whitespace-only or non-string value
+      names no model, and ``principal_lineage`` is validated nowhere at the API
+      boundary;
+    * ``principal_kind`` "human" — the proxy's own relation, unchanged; a human
+      principal is not a model lineage at all;
+    * any OTHER declared kind — ``UNKNOWN``. An unrecognised kind cannot
+      establish "this principal is not a model", which is the only reason
+      ignoring it would be safe. Kinds are matched case- and
+      whitespace-insensitively, since ``principal_kind`` (unlike ``actor_kind``)
+      passes no boundary validation and "Agent" means "agent".
+
+    A delegation carrying no ``principal_kind`` key at all (or an explicit
+    ``None``) is left alone: that is
+    the bare ``{"principal_id": ...}`` shape regista uses for separation of
+    duties, and it predates any lineage claim, so blocking it would be an
+    unrelated behaviour change rather than a fail-closed fix.
 
     ``review_event`` is anything event-shaped: a stored event or a validator
     ctx (both expose ``actor_metadata`` and ``on_behalf_of``).
     """
     relation = lineage_relation(author_lineages, _event_lineage(review_event))
     delegation = getattr(review_event, "on_behalf_of", None)
-    if isinstance(delegation, dict) and delegation.get("principal_kind") == "agent":
-        principal_lineage = delegation.get("principal_lineage")
-        if not principal_lineage:
-            return LineageRelation.UNKNOWN
-        relation = _weakest(
-            relation, lineage_relation(author_lineages, str(principal_lineage))
-        )
-    return relation
+    if not isinstance(delegation, dict):
+        return relation
+    raw_kind = delegation.get("principal_kind")
+    if raw_kind is None:
+        return relation
+    principal_kind = normalized_kind(raw_kind)
+    if principal_kind == "human":
+        return relation
+    if principal_kind != "agent":
+        # Declared but unusable (blank, non-string, or simply a kind this gate
+        # does not know): it cannot vouch that the principal is not a model.
+        return _weakest(relation, LineageRelation.UNKNOWN)
+    principal_lineage = declared_lineage(delegation.get("principal_lineage"))
+    if principal_lineage is None:
+        return _weakest(relation, LineageRelation.UNKNOWN)
+    return _weakest(relation, lineage_relation(author_lineages, principal_lineage))
 
 
 def effective_lineage_relation(

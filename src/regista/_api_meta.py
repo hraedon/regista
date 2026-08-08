@@ -122,7 +122,15 @@ class MetaApiMixin(_RegistaBase):
 
         Returns:
             Dict with ``profile``, ``reason``, ``assurance_level``,
-            ``reviewer_lineage``, and ``author_lineages``.
+            ``reviewer_lineage``, ``author_lineages``,
+            ``agent_author_undeclared`` (WI-256: some agent author declared no
+            model lineage, so distinctness cannot be established) and — once an
+            ``adversarial_pass`` exists — ``lineage_verification`` (WI-215) and
+            ``lineage_relation``. ``lineage_relation`` is the EFFECTIVE verdict
+            the gate decided on: it already accounts for a delegated reviewer
+            principal (WI-258) and for undeclared agent authors (WI-256), so it
+            never reads ``"distinct"`` for a history that could not establish
+            distinctness.
         """
         self._require_open()
         return self.assurance.gate_rationale(work_item_id, profile=profile)

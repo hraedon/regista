@@ -393,6 +393,208 @@ class TestReviewerDelegationLineageAssurance:
         human_gate(ctx, require_human_on_same_lineage=True)
 
 
+class TestDegenerateLineageValues:
+    """PR #31 review B1/B2: neither ``model_lineage`` nor the ``on_behalf_of``
+    fields are validated at the API boundary, so the assurance view must not
+    mistake a blank, non-string or mis-spelled value for a declared one."""
+
+    def _pass(self, proxy_lineage, **delegation) -> list:
+        return [
+            _evt(
+                "adversarial_pass", "review-proxy",
+                actor_metadata={"model_lineage": proxy_lineage},
+                on_behalf_of=delegation or None,
+                payload=REVIEW_NOTE,
+            ),
+        ]
+
+    @pytest.mark.parametrize("blank", ["   ", "", "\t"])
+    def test_blank_principal_lineage_is_not_independent(self, blank):
+        events = (
+            _author_events("glm")
+            + self._pass(
+                "kimi", principal_id="p", principal_kind="agent",
+                principal_lineage=blank,
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+        assert gate_permits_done(r) is False
+
+    @pytest.mark.parametrize("value", [42, 0, ["glm"]])
+    def test_non_string_principal_lineage_is_not_independent(self, value):
+        events = (
+            _author_events("glm")
+            + self._pass(
+                "kimi", principal_id="p", principal_kind="agent",
+                principal_lineage=value,
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+
+    @pytest.mark.parametrize("kind", ["Agent", " AGENT "])
+    def test_non_canonical_kind_still_compares_the_principal(self, kind):
+        events = (
+            _author_events("glm")
+            + self._pass(
+                "kimi", principal_id="p", principal_kind=kind,
+                principal_lineage="glm",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.SAME.value
+
+    @pytest.mark.parametrize("kind", ["ai-agent", "  ", 42])
+    def test_unrecognised_kind_is_unknown(self, kind):
+        events = (
+            _author_events("glm")
+            + self._pass(
+                "kimi", principal_id="p", principal_kind=kind,
+                principal_lineage="claude",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+    @pytest.mark.parametrize("blank", ["   ", ""])
+    def test_blank_reviewer_lineage_is_unknown(self, blank):
+        events = (
+            _author_events("glm") + self._pass(blank)
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["reviewer_lineage"] is None
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+    def test_blank_author_lineage_is_an_undeclared_agent_author(self):
+        events = [
+            _evt("created", "a1", actor_metadata={"model_lineage": "glm"}),
+            _evt("start", "a2", actor_metadata={"model_lineage": "   "}),
+            *_pass_events("r1", "kimi"),
+            *_accept_events("acceptor", "agent"),
+        ]
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["agent_author_undeclared"] is True
+        assert r["author_lineages"] == ["glm"]
+
+    def test_strict_human_gate_rejects_agent_accept_on_blank_principal(self):
+        prior = _author_events("glm") + self._pass(
+            "kimi", principal_id="p", principal_kind="agent",
+            principal_lineage="   ",
+        )
+        ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
+            human_gate(ctx, require_human_on_same_lineage=True)
+
+
+class TestHistoryShapeAndOrdering:
+    """The whole event history decides, and only the LAST adversarial pass is
+    the deciding one — worth pinning since every read site recomputes rather
+    than caching."""
+
+    def test_author_added_after_the_pass_still_counts(self):
+        # Work recorded after the review is still authorship: an undeclared
+        # agent author appended post-pass must pull the item back off
+        # INDEPENDENTLY_REVIEWED rather than being ignored.
+        events = (
+            _author_events("glm") + _pass_events("r1", "kimi")
+            + [_evt("start", "late-agent", actor_metadata=None)]
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["agent_author_undeclared"] is True
+        assert gate_permits_done(r) is False
+
+    def test_declared_author_added_after_the_pass_can_collide(self):
+        events = (
+            _author_events("glm") + _pass_events("r1", "kimi")
+            + [_evt("start", "late-agent", actor_metadata={"model_lineage": "kimi"})]
+            + _accept_events("acceptor", "agent")
+        )
+        # The reviewer's lineage now appears among the authors.
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.SAME.value
+
+    def test_last_pass_decides_same_after_distinct(self):
+        events = (
+            _author_events("glm") + _pass_events("r1", "kimi")
+            + _pass_events("r2", "glm") + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["reviewer_lineage"] == "glm"
+
+    def test_last_pass_decides_distinct_after_same(self):
+        events = (
+            _author_events("glm") + _pass_events("r1", "glm")
+            + _pass_events("r2", "kimi") + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.INDEPENDENTLY_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["reviewer_lineage"] == "kimi"
+        assert gate_permits_done(r) is True
+
+    def test_last_pass_decides_for_the_strict_human_gate(self):
+        prior = _author_events("glm") + _pass_events("r1", "kimi") + _pass_events(
+            "r2", "glm"
+        )
+        ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
+            human_gate(ctx, require_human_on_same_lineage=True)
+
+    def test_delegated_accept_does_not_add_author_lineage(self):
+        # `accept` is a review verdict, so neither the accepter nor its
+        # principal is an author — a delegated accept cannot introduce a
+        # lineage that would collide with the reviewer.
+        events = (
+            _author_events("glm") + _pass_events("r1", "kimi")
+            + [
+                _evt(
+                    "accept", "accept-proxy",
+                    actor_metadata={"model_lineage": "claude"},
+                    on_behalf_of={
+                        "principal_id": "boss-agent",
+                        "principal_kind": "agent",
+                        "principal_lineage": "kimi",
+                    },
+                    payload=REVIEW_NOTE,
+                ),
+            ]
+        )
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["author_lineages"] == ["glm"]
+        assert r["agent_author_undeclared"] is False
+        assert compute_assurance_level(events) == AssuranceLevel.INDEPENDENTLY_REVIEWED
+
+    def test_delegated_accept_by_human_is_still_human_accepted(self):
+        events = (
+            _author_events("glm") + _pass_events("r1", "glm")
+            + [
+                _evt(
+                    "accept", "h1", actor_kind="human",
+                    on_behalf_of={
+                        "principal_id": "boss-agent",
+                        "principal_kind": "agent",
+                        "principal_lineage": "claude",
+                    },
+                    payload=REVIEW_NOTE,
+                ),
+            ]
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.HUMAN_ACCEPTED
+
+
 class TestAssuranceLevel:
     def test_same_lineage_agent_accept(self):
         events = _author_events("glm") + _pass_events("r1", "glm") + _accept_events("a1", "agent")

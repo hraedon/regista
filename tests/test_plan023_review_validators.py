@@ -525,6 +525,126 @@ class TestReviewerDelegationLineage:
         assert exc_info.value.detail["reviewer_lineage"] == "kimi"
         assert exc_info.value.detail["lineage_relation"] == "same"
 
+    @pytest.mark.parametrize("blank", ["   ", "", "\t\n"])
+    def test_blank_principal_lineage_blocked(self, blank):
+        # PR #31 review B1: a blank principal_lineage is truthy, so it used to
+        # be compared as a lineage distinct from every real one — a declared
+        # and independent verdict conjured from a value naming no model.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": blank,
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    @pytest.mark.parametrize("value", [42, 0, True, ["glm"]])
+    def test_non_string_principal_lineage_blocked(self, value):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": value,
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    @pytest.mark.parametrize("kind", ["Agent", "AGENT", " agent "])
+    def test_non_canonical_agent_kind_still_compared(self, kind):
+        # PR #31 review B2: a mis-spelled kind used to skip the principal
+        # entirely, so a colliding principal_lineage passed as DISTINCT.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": kind,
+                "principal_lineage": "glm",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_non_canonical_agent_kind_does_not_over_block(self):
+        # Normalisation must not turn a genuinely independent delegated review
+        # into a blocked one.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "Agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    @pytest.mark.parametrize("kind", ["ai-agent", "model", "  ", 42])
+    def test_unrecognised_principal_kind_is_unknown(self, kind):
+        # An unrecognised kind cannot establish "this principal is not a
+        # model", which is the only reason ignoring it would be safe — so on
+        # the review side it fails closed to UNKNOWN.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": kind,
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_non_canonical_human_kind_unaffected(self):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={"principal_id": "human:boss", "principal_kind": "Human"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    @pytest.mark.parametrize("blank", ["   ", ""])
+    def test_blank_proxy_lineage_blocked(self, blank):
+        # The same laxness on the reviewer's own metadata: a blank
+        # model_lineage is an undeclared reviewer, not a distinct one.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": blank},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_collision_reported_as_same_even_when_principal_undeclared(self):
+        # The proxy already collides with the authors; an undeclared principal
+        # on top of that must not blur the more precise SAME verdict.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "glm"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected) as exc_info:
+            adversarial_review(ctx)
+        assert exc_info.value.detail["lineage_relation"] == "same"
+
     def test_end_to_end_delegated_same_lineage_review_blocked(self):
         sub = _relaxed_sub()
         try:

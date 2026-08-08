@@ -93,7 +93,15 @@ ones that happened to declare themselves:
   declaring lineage B acting for a principal declaring lineage A does not
   turn a same-lineage review of A-authored work into a cross-lineage one. A
   `principal_kind: "human"` principal is not a model lineage and changes
-  nothing.
+  nothing, and a `principal_kind` the gate does not recognise is `UNKNOWN` —
+  an unrecognised kind cannot vouch that the principal is not a model.
+
+**A declared lineage is a non-blank string.** `model_lineage` and
+`principal_lineage` are self-asserted and validated nowhere at the API
+boundary, so the gate strips before trusting: `"   "`, `""` and any non-string
+declare *nothing* and read as undeclared rather than as a lineage that happens
+to differ from every real one. `principal_kind` is matched case- and
+whitespace-insensitively for the same reason — `"Agent"` means `"agent"`.
 
 Each of these fails closed: the review is still recordable with an explicit
 `same_lineage_acknowledged` acknowledgment, which leaves the breadcrumb an

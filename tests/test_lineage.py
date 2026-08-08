@@ -468,6 +468,128 @@ class TestOrdinaryDelegationUndeclared:
             sub.close()
 
 
+class TestDegenerateDelegationValues:
+    """WI-257 follow-up (PR #31 review B1/B2): ``if principal_lineage:`` and
+    ``principal_kind == "agent"`` are only as strong as the values reaching
+    them, and ``validate_delegation_chain`` checks neither field. A blank or
+    non-string lineage used to be str()-ified into a lineage distinct from
+    every real one, and a mis-spelled kind used to read as
+    definitively-not-a-model — both re-opening exactly the hole WI-257
+    closed."""
+
+    def _delegated(self, **delegation) -> list:
+        return [
+            _evt("created", "proxy-agent", actor_kind="agent",
+                 actor_metadata={"model_lineage": "lineage-A"},
+                 on_behalf_of=delegation),
+        ]
+
+    @pytest.mark.parametrize("blank", ["   ", "", "\t\n"])
+    def test_blank_principal_lineage_is_undeclared(self, blank):
+        events = self._delegated(
+            principal_id="hidden-agent", principal_kind="agent",
+            principal_lineage=blank,
+        )
+        _, _, lineages, undeclared = derive_authors(events)
+        # The blank value must not enter the author set as a "lineage" — that
+        # is what made it compare distinct from every real one.
+        assert lineages == {"lineage-A"}
+        assert undeclared is True
+
+    @pytest.mark.parametrize("value", [42, 0, True, ["glm"], {"lineage": "glm"}])
+    def test_non_string_principal_lineage_is_undeclared(self, value):
+        events = self._delegated(
+            principal_id="hidden-agent", principal_kind="agent",
+            principal_lineage=value,
+        )
+        _, _, lineages, undeclared = derive_authors(events)
+        assert lineages == {"lineage-A"}
+        assert undeclared is True
+
+    @pytest.mark.parametrize("kind", ["Agent", "AGENT", " agent ", "\tAgent\n"])
+    def test_non_canonical_agent_kind_still_flags(self, kind):
+        events = self._delegated(principal_id="hidden-agent", principal_kind=kind)
+        _, kinds, _, undeclared = derive_authors(events)
+        # Recorded canonically, so the gate's `"agent" in author_kinds` test
+        # cannot be dodged by capitalisation either.
+        assert "agent" in kinds
+        assert undeclared is True
+
+    @pytest.mark.parametrize("kind", ["Human", "HUMAN", " human "])
+    def test_non_canonical_human_kind_still_exempt(self, kind):
+        events = self._delegated(principal_id="human:boss", principal_kind=kind)
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "human" in kinds
+        assert undeclared is False
+
+    def test_unrecognised_kind_is_recorded_not_flagged(self):
+        # Documented boundary: on the AUTHOR side an unrecognised kind is left
+        # as declared (it is indistinguishable from the existing "system"
+        # principal case, and treating it as an agent would newly block
+        # histories the gate has always allowed). The review side is stricter —
+        # see TestReviewerDelegationLineage — because there an unrecognised
+        # kind is being used to claim independence.
+        events = self._delegated(principal_id="p", principal_kind="ai-agent")
+        _, kinds, _, undeclared = derive_authors(events)
+        assert "ai-agent" in kinds
+        assert undeclared is False
+
+    @pytest.mark.parametrize("blank", ["   ", "", "\t"])
+    def test_blank_actor_model_lineage_is_undeclared(self, blank):
+        # The same laxness on the proxy's own metadata: a blank model_lineage
+        # declares nothing, so the agent author is undeclared.
+        events = [
+            _evt("created", "gpt-agent", actor_kind="agent",
+                 actor_metadata={"model_lineage": blank}),
+        ]
+        _, kinds, lineages, undeclared = derive_authors(events)
+        assert "agent" in kinds
+        assert lineages == set()
+        assert undeclared is True
+
+    def test_blank_principal_lineage_blocks_review_without_ack(self):
+        ctx = _ctx(
+            self._delegated(
+                principal_id="hidden-agent", principal_kind="agent",
+                principal_lineage="   ",
+            ),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_non_canonical_kind_blocks_review_without_ack(self):
+        ctx = _ctx(
+            self._delegated(principal_id="hidden-agent", principal_kind="Agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_service_branch_applies_the_same_rules(self):
+        # WI-248's exempt branch and the ordinary branch share one
+        # implementation now; prove the degenerate values behave identically.
+        for actor_id, meta in (
+            ("agent-notes", None),
+            ("proxy-agent", {"model_lineage": "lineage-A"}),
+        ):
+            events = [
+                _evt("created", actor_id, actor_kind="agent", actor_metadata=meta,
+                     on_behalf_of={
+                         "principal_id": "hidden-agent",
+                         "principal_kind": " Agent ",
+                         "principal_lineage": "  ",
+                     }),
+            ]
+            _, kinds, _, undeclared = derive_authors(events)
+            assert "agent" in kinds
+            assert undeclared is True
+
+
 class TestAdversarialReviewAfterServiceIdentityAndClaim:
     """End-to-end gate behaviour for an item filed by the service identity and
     claimed with a declared lineage (the WI-248 acceptance scenario)."""
