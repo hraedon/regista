@@ -98,12 +98,14 @@ first attempt claimed.
   `verified=False` — the verifier assumed segment adjacency, but the seal
   event of the earlier segment sits between them. The chain is now walked
   through inter-segment events (archive-aware: gap queries UNION ALL
-  `events` + `events_archive`), with a 66-window exhaustive sweep proving
-  every export window self-verifies. Note the consequence of WI-254's
-  anchor: a store whose segment members have been moved to `events_archive`
-  can no longer produce a *verifying* bundle, because export still reads only
-  live `events` — the honest answer, and the reason archive-aware export is
-  now tracked as a precondition for archived-store audit exports.
+  `events` + `events_archive`), with an exhaustive sweep over every non-empty
+  window of a two-segment corpus proving each export window self-verifies.
+  Note the consequence of WI-254's anchor: a bundle whose scope *includes*
+  segment members that have been moved to `events_archive` can no longer
+  verify, because export still reads only live `events`. A bounded live-only
+  window that excludes archived members still verifies. This is the honest
+  answer, and the reason archive-aware export is now tracked as a
+  precondition for audit exports of archived stores.
 
 ### Fixed — other
 
@@ -117,7 +119,9 @@ first attempt claimed.
   (WI-244), single-coverage CI (WI-245):** `drop_project_schema` unregisters
   catalog rows so leaked test schemas can't accumulate (thousands observed);
   the session-end leak guard sets a real nonzero exit status instead of
-  narrating; doctor project iteration is bounded; CI runs the suite once.
+  narrating; doctor project iteration is bounded; each CI matrix job runs the
+  suite once rather than twice (the matrix itself still runs per Python
+  version).
 
 ### Added
 
@@ -133,19 +137,27 @@ first attempt claimed.
   `--since-seq` as an inclusive upper bound so an over-cap corpus chunks
   into independently verifiable pieces; export and verify share one
   `MAX_BUNDLE_BYTES` cap; export refuses to write an over-cap artifact and
-  verifies what it wrote before returning, distinguishing an export-borne
-  defect (raises, artifact kept for inspection) from a faithfully preserved
-  store defect (reported, not blocking).
+  verifies what it wrote before returning. The self-verification tells
+  bundle-hash corruption — an artifact that fails its own hash, which raises
+  and keeps the file for inspection — apart from every other verification
+  failure, which is reported rather than blocking a degraded store's only
+  archival path. It does *not* generally distinguish an exporter defect from
+  a faithfully preserved store defect; only that one class is separable.
 
-- **Witness public keys enrolled in the anchored key registry (WI-238):**
-  An Ed25519 witness's public key is now enrolled into the `principal_keys`
-  registry under the `witness:<witness_id>` principal at registration time
-  (counterpart to cairn BC-016), so downstream verifiers can treat witness
-  keys as a pinned trust root rather than the unverified
-  `witness_registrations.public_key` column. The lifecycle mirrors principal
-  keys: `rotate_witness_key` supersedes + activates atomically;
+- **Witness public keys registered in the principal-key registry (WI-238):**
+  An Ed25519 witness's public key is now registered in `principal_keys`
+  under the `witness:<witness_id>` principal at registration time
+  (counterpart to cairn BC-016), so a verifier reads witness keys from the
+  same registry and lifecycle as every other principal key rather than from
+  the `witness_registrations.public_key` column. **This is a single source of
+  truth, not yet a cryptographic anchor:** enrollment is a database insert
+  and emits no signed enrollment event, so against an attacker with database
+  write access it is not materially stronger than the column it replaces.
+  Anchored enrollment — the trust root the estate's design calls for — needs
+  a signed enrollment event and remains outstanding. The lifecycle mirrors
+  principal keys: `rotate_witness_key` supersedes + activates atomically;
   `unregister_witness` revokes (the revoked key stays for history);
-  `enrolled_witness_key(witness_id)` reads the active anchored entry; the key
+  `enrolled_witness_key(witness_id)` reads the active registry entry; the key
   is also reachable via `principals.get_active("witness:<witness_id>")`.
   `regista doctor` adds a per-project `witness:key_enrollment:<project>`
   check that warns on an enrollment gap or pinned-key mismatch. The InMemory
@@ -167,10 +179,16 @@ first attempt claimed.
   without a second query.
 
 - **`lineage_verification` on assurance output (WI-215):** an informational
-  `asserted` / `verified` label — actor lineage rides outside the v4 signed
-  scope, so it is merely *asserted* under HMAC and becomes *verified* under a
-  per-actor asymmetric scheme. It never changes a gate decision; an absent or
-  unknown scheme fails to the honest `asserted`.
+  label reporting *which signing scheme the event used*, not the result of
+  any verification. Actor lineage rides outside the v4 signed scope, so under
+  HMAC a database-write attacker can mutate it without breaking the
+  signature; under a per-actor asymmetric scheme the same mutation would
+  break it. The label reads `verified` when the event's `scheme_id` names an
+  asymmetric scheme and `asserted` otherwise — it does **not** check the
+  signature, the principal binding, key status, or validity window, and an
+  absent or unknown scheme fails to `asserted`. It never changes a gate
+  decision. Read it as "this lineage is covered by a signature that would
+  break if it were altered", not as "this lineage was verified".
 
 ### Changed
 
