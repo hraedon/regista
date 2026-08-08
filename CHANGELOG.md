@@ -57,26 +57,64 @@ first attempt claimed.
   of the two (`SAME` on either side wins), and an undeclared principal lineage
   is `UNKNOWN`.
 
-- **Degenerate lineage and kind values are undeclared, not distinct:** a
-  declared lineage is a non-blank *string* — a whitespace-only value or a
-  non-string used to be truthy and `str()`-ified into a lineage that compared
-  distinct from every real one, re-opening the launders above. Principal
-  kinds are matched case- and whitespace-insensitively (`principal_kind`,
-  unlike `actor_kind`, passes no boundary validation), and on the review side
-  any kind outside `{agent, human}` is `UNKNOWN` — an unrecognized kind
-  cannot establish that a principal is not a model.
+- **Degenerate lineage values are undeclared, not distinct:** a declared
+  lineage is a non-blank *string* — a whitespace-only value or a non-string
+  used to be truthy and `str()`-ified into a lineage that compared distinct
+  from every real one, re-opening the launders above.
+
+- **`principal_kind` is validated at ingress, and unrecognized kinds fail
+  closed (WI-262):** unlike `actor_kind`, `principal_kind` passed no boundary
+  validation, so `"ai-agent"` or `"Agent "` on a delegation was silently read
+  as *definitely not a model* and skipped every agent-principal rule. Writes
+  now validate it against `PrincipalKind`'s own values
+  (`agent`/`human`/`service`/`break_glass`) and canonicalize it in place, so
+  signed events store `agent`, never `Agent `; unknown kinds are rejected with
+  `INVALID_PRINCIPAL_KIND`. Recognizing a kind is not trusting it: at the gate
+  only `human` vouches that a principal is not a model, so `service` and
+  `break_glass` with no declared lineage still fail closed, on both the author
+  and review sides.
+
+- **Acknowledgment is required by the review's effective lineage, not by who
+  typed it:** enforcement checked only the recording actor's `actor_kind`, so
+  a human proxy could record an `adversarial_pass` for a same-lineage agent
+  principal without one. It now triggers whenever the effective reviewer
+  relation is not `DISTINCT` and an agent mind is behind the review.
+  Relatedly, a human proxy contributes no lineage *claim* of its own (humans
+  have no model lineage), so a pass a human recorded for a declared
+  cross-lineage agent principal reads `DISTINCT` on that principal — matching
+  how author-side delegation has always treated human proxies.
 
 ### Fixed — offline audit-bundle verification
 
-- **Every segment record is now anchored to the events it spans (WI-254):**
-  the offline verifier accepted a single segment with *no* checks, and in the
-  multi-segment case read `head_hash` only from each *predecessor* — so the
-  terminal segment's metadata was never verified. Since the bundle hash is
-  unkeyed and recomputable, tampering the terminal (or sole) segment verified
-  clean. `head_hash` is now checked against the hashed event at
-  `last_global_seq`, `event_count` against actual membership, and boundaries
-  for sanity and non-overlap. Segments the export window truncates are
-  explicitly skipped, not assumed.
+- **Every segment record is now anchored to its own signed seal event
+  (WI-254):** the offline verifier accepted a single segment with *no* checks
+  and, in the multi-segment case, read `head_hash` only from each
+  *predecessor* — so the terminal segment's metadata was never verified at
+  all. Since the bundle hash is unkeyed and recomputable, tampering the
+  terminal (or sole) segment verified clean. Three layered anchors now apply:
+
+  1. **The signed seal.** Every field of a segment record is reconciled
+     against the `segment_sealed` event's payload, read out of
+     `canonical_envelope` — the bytes the sealer signed and the hash chain
+     commits to — rather than the event's unbound top-level `payload`. A seal
+     counts only when it is *chain-linked*, so deleting the real seal and
+     injecting a free-floating forgery does not substitute for it. A test
+     pins the payload's field set so a later change cannot quietly hollow the
+     reconciliation out.
+  2. **Both boundaries** tied to real events (not merely `first <= last`).
+  3. **A count band** — `1 <= event_count <=` the non-seal events in the
+     declared range — a bound no field of the record can move, next to the
+     exact membership count, which a tamperer editing both `work_item_ids`
+     and `event_count` could otherwise satisfy circularly.
+
+  Anchors 2 and 3 matter because a window-truncated segment legitimately may
+  not carry its seal: the seal event sits *above* `last_global_seq`. Two
+  fields are deliberately not anchored and documented as such — `archived`
+  (set by archival *after* sealing) and `created_at` (row insert time, not in
+  the signed payload). Residual: in a chunk whose declared window excludes
+  the seal, understating `work_item_ids` and `event_count` *together* still
+  passes — inherent to an unkeyed bundle hash, which is why an auditor's
+  chunk plan, not the artifact, is what fixes a window.
 
 - **Manifest counts are checked against the sections they describe (WI-255):**
   counts were read but never compared, so deleting the tail event while
