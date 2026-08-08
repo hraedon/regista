@@ -464,22 +464,20 @@ class TestWhoMakesALineageClaim:
     def test_undeclared_agent_proxy_still_claims_unknown(self):
         # An AGENT proxy that declares nothing is an undeclared model, and its
         # claim survives even when the principal declared a distinct lineage.
-        events = (
-            _author_events("glm")
-            + [
-                _evt(
-                    "adversarial_pass", "agent-proxy", actor_kind="agent",
-                    actor_metadata=None,
-                    on_behalf_of={
-                        "principal_id": "real-reviewer",
-                        "principal_kind": "agent",
-                        "principal_lineage": "claude",
-                    },
-                    payload=REVIEW_NOTE,
-                ),
-            ]
-            + _accept_events("acceptor", "agent")
-        )
+        events = [
+            *_author_events("glm"),
+            _evt(
+                "adversarial_pass", "agent-proxy", actor_kind="agent",
+                actor_metadata=None,
+                on_behalf_of={
+                    "principal_id": "real-reviewer",
+                    "principal_kind": "agent",
+                    "principal_lineage": "claude",
+                },
+                payload=REVIEW_NOTE,
+            ),
+            *_accept_events("acceptor", "agent"),
+        ]
         assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
         r = gate_rationale(events, GateProfile.STRICT)
         assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
