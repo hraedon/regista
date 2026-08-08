@@ -4,7 +4,68 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-08-07
+
+### Fixed
+
+- **Cross-lineage review gate: undeclared lineage no longer passes as distinct
+  (WI-239):** `same_lineage` returned a plain boolean, so a reviewer or author
+  with *no declared* model lineage compared as "not the same" and slipped
+  through the distinctness check — a fail-open in the gate the estate relies
+  on for review independence. Lineage comparison is now the three-state
+  `LineageRelation` (`SAME` / `DISTINCT` / `UNKNOWN`), and `UNKNOWN` fails
+  the gate instead of passing it. This is the G-3 fix Plan 023 records as
+  verified, and the reason this release exists (agent-suite WI-070: the
+  0.5.5 spine predates it).
+
+- **Service-identity exemption hardened against lineage-hiding (WI-248):**
+  `derive_authors()` forced `--same-lineage-acknowledged` on every reviewer
+  of a CLI-filed item because the tracker's service identity and
+  lineage-less `claim_acquired` events counted as undeclared agent authors.
+  Genuine non-model service identities are now exempt via a documented
+  allowlist — but the exemption is gated on the *absence* of a declared
+  lineage (a model agent spoofing the service id with a real lineage falls
+  through to the declared-author path), and an undeclared delegated agent
+  principal behind `on_behalf_of` still trips the gate.
+
+- **Offline segment-chain verification for multi-segment stores (WI-249):**
+  any export from a store with 2+ sealed segments reported
+  `verified=False` — the verifier assumed segment adjacency, but the seal
+  event of the earlier segment sits between them. The chain is now walked
+  through inter-segment events (archive-aware: gap queries UNION ALL
+  `events` + `events_archive`), with tamper negatives proving fail-closed
+  reads and a 66-window exhaustive sweep proving every export window
+  self-verifies.
+
+- **Catalog bootstrap deadlock (WI-246):** migration 037 and
+  `register_project` both `CREATE TABLE IF NOT EXISTS public.projects`;
+  concurrent `create_project` calls could deadlock on the catalog DDL.
+  `ensure_catalog_table` now fast-paths via `to_regclass` and serializes an
+  actual CREATE under the migration advisory lock.
+
+- **Test-schema leak guard fails the run (WI-243), bounded doctor iteration
+  (WI-244), single-coverage CI (WI-245):** `drop_project_schema` unregisters
+  catalog rows so leaked test schemas can't accumulate (thousands observed);
+  the session-end leak guard sets a real nonzero exit status instead of
+  narrating; doctor project iteration is bounded; CI runs the suite once.
+
 ### Added
+
+- **Read-only replay (WI-242):** `Regista(read_only=True)` and
+  `regista replay --read-only` verify against a read-only replica and fail
+  closed with `MIGRATION_REQUIRED` rather than converging schema. Normal
+  replay now uses session-scoped TEMP tables (no more permanent
+  `*_replay_*` residue — 23 tables observed in production), per-item
+  results are returned in-band via `report.entries` in both modes, and temp
+  tables drop in a `finally`.
+
+- **Bounded, capped, self-verifying export (WI-240):** `--until-seq` joins
+  `--since-seq` as an inclusive upper bound so an over-cap corpus chunks
+  into independently verifiable pieces; export and verify share one
+  `MAX_BUNDLE_BYTES` cap; export refuses to write an over-cap artifact and
+  verifies what it wrote before returning, distinguishing an export-borne
+  defect (raises, artifact kept for inspection) from a faithfully preserved
+  store defect (reported, not blocking).
 
 - **Witness public keys enrolled in the anchored key registry (WI-238):**
   An Ed25519 witness's public key is now enrolled into the `principal_keys`
@@ -19,6 +80,18 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `regista doctor` adds a per-project `witness:key_enrollment:<project>`
   check that warns on an enrollment gap or pinned-key mismatch. The InMemory
   backend mirrors the same lifecycle.
+
+- **`key_id` threaded through `create_work_item` (WI-227):** the signing key
+  on a chain's genesis event can now be pinned the way `append_event` and
+  `transition` already allow; unknown ids fail with `UNKNOWN_KEY_ID`.
+
+### Changed
+
+- **Kernel is fully `mypy --strict` (WI-233):** strict typing across the
+  kernel with four deferred modules documented (`_timestamping`, `_secrets`,
+  `_cli`, `sidecar.routes`). Audit-bundle export rejects misleading archive
+  extensions (`.tar.gz`/`.zip` names on canonical JSON, WI-210), and the
+  `multiple_genesis` replay verdict is order-stable (WI-219).
 
 ## [0.5.5] — 2026-08-01
 
