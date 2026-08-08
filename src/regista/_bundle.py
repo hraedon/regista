@@ -15,6 +15,7 @@ import structlog
 
 from ._anchoring import AnchorReceipt, compute_content_anchor
 from ._archive_segments import (
+    _hash_event,
     _segment_chain_links,
     _verify_global_chain,
     _verify_work_item_chains,
@@ -176,9 +177,15 @@ def _slice_segments_to_window(
     trailing segments drop; the slice preserves the order of the kept
     segments, and the offline inter-segment linkage walk
     (:func:`_verify_segment_chain_offline`) compares adjacent kept segments
-    in that order. Segments with unknown bounds (unsealed rows carry
-    ``None``) are kept: the slice must never silently discard what it cannot
-    classify. Returns ``(kept, excluded_count)``.
+    in that order. Segments with unknown bounds are kept: the slice must never
+    silently discard what it cannot classify. (Review N6: no such row can come
+    from the store — migration 039 declares ``first_global_seq``,
+    ``last_global_seq``, ``head_hash`` and ``event_count`` NOT NULL with
+    CHECKs for ``event_count > 0`` and ``first_global_seq <= last_global_seq``,
+    and ``seal_segment`` never inserts without events. The branch guards
+    hand-built and tampered bundles only, which
+    ``_verify_segment_chain_offline`` then rejects.) Returns
+    ``(kept, excluded_count)``.
     """
     if min_exported_seq is None or max_exported_seq is None:
         return segments, 0
@@ -468,6 +475,67 @@ def _list_principal_key_dicts(conn: DictConn) -> list[dict[str, Any]]:
     return [k.to_dict() for k in list_principal_keys_for_conn(conn)]
 
 
+# Manifest count key -> the bundle section it declares the size of. Every
+# count the exporter writes into the manifest is listed here; a count with no
+# section to compare against would be an unchecked claim (WI-255).
+_MANIFEST_COUNT_SECTIONS = (
+    ("event_count", "events"),
+    ("anchor_receipt_count", "anchor_receipts"),
+    ("segment_count", "segments"),
+    ("public_key_count", "public_keys"),
+)
+
+
+def _verify_manifest_counts(
+    manifest: dict[str, Any], bundle: dict[str, Any], fmt_version: Any
+) -> list[str]:
+    """Check every count the manifest declares against the section it describes.
+
+    The manifest is the auditor-facing summary of the bundle, but nothing used
+    to compare it to the document it summarises: the report's ``event_count``
+    is taken from the parsed section, so deleting the tail event and leaving
+    ``manifest.event_count`` alone was silently normalised away and the bundle
+    still verified (WI-255). The bundle hash is unkeyed and therefore
+    attacker-recomputable, so this check does not make the artifact
+    unforgeable — it makes it internally inconsistent to remove a record
+    without also rewriting the claim about how many records there are.
+
+    A count present but not an integer is a malformed claim and fails closed.
+    An ABSENT count is version-gated (review N2): a v2 manifest is always
+    written with all four counts, so one missing from a v2 bundle is tamper
+    evidence — dropping the key would otherwise be a way to opt out of the
+    check. v1 bundles predate the key registry and carry no
+    ``public_key_count``, so for them a missing count declares nothing and is
+    skipped. Returns a list of error strings (empty when every declared count
+    agrees).
+    """
+    errors: list[str] = []
+    for key, section in _MANIFEST_COUNT_SECTIONS:
+        if key not in manifest:
+            if fmt_version == 2:
+                errors.append(
+                    f"Manifest count missing: format_version 2 always declares "
+                    f"{key!r}, so its absence is not a bundle this exporter wrote "
+                    f"(section '{section}' holds "
+                    f"{len(bundle.get(section) or [])} record(s))"
+                )
+            continue
+        declared = manifest[key]
+        actual = len(bundle.get(section) or [])
+        if isinstance(declared, bool) or not isinstance(declared, int):
+            errors.append(
+                f"Manifest count mismatch: manifest.{key}={declared!r} is not an "
+                f"integer (section '{section}' holds {actual} record(s))"
+            )
+            continue
+        if declared != actual:
+            errors.append(
+                f"Manifest count mismatch: manifest.{key}={declared} but section "
+                f"'{section}' holds {actual} record(s)"
+            )
+    return errors
+
+
 def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationReport:
     path = Path(bundle_path)
     if not path.is_file():
@@ -515,6 +583,8 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             f"supported: {sorted(_SUPPORTED_FORMAT_VERSIONS)}"
         )
 
+    errors.extend(_verify_manifest_counts(manifest, bundle, fmt_version))
+
     events: list[Event] = []
     for i, ed in enumerate(events_data):
         try:
@@ -523,6 +593,20 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             errors.append(f"Failed to parse event {i}: {exc}")
 
     events.sort(key=lambda e: e.global_seq if e.global_seq is not None else float("inf"))
+
+    # An event-free bundle proves nothing and verifies trivially — the empty
+    # global chain is vacuously valid and there is nothing left to fail. The
+    # exporter refuses to write one for exactly that reason (WI-240), so a
+    # bundle with no events is not an artifact this tool produced: it is what
+    # is left after someone wipes one and zeroes the counts. Reject it rather
+    # than answer "verified" to a document that makes no claim (review N5).
+    if not events_data:
+        errors.append(
+            "Bundle contains no events: export refuses to write an empty "
+            "bundle, so an event-free bundle proves nothing and cannot verify"
+        )
+
+    errors.extend(_verify_declared_window(manifest, events))
 
     ok_global, err_global, _tail = _verify_global_chain(events)
     ok_wi, err_wi = _verify_work_item_chains(events)
@@ -550,7 +634,12 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
     seg_chain_ok = True
     seg_chain_error: str | None = None
     if segments_data:
-        seg_chain_ok, seg_chain_error = _verify_segment_chain_offline(segments_data, events)
+        seg_chain_ok, seg_chain_error = _verify_segment_chain_offline(
+            segments_data,
+            events,
+            since_seq=manifest.get("since_seq"),
+            until_seq=manifest.get("until_seq"),
+        )
         if not seg_chain_ok:
             errors.append(f"Segment chain error: {seg_chain_error}")
 
@@ -888,23 +977,302 @@ def _verify_anchor_offline(
     }
 
 
-def _verify_segment_chain_offline(
-    segments: list[dict[str, Any]], events: list[Event]
+def _as_seq_bound(value: Any) -> int | None:
+    """Return *value* as a seq bound, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _window_is_impossible(since_seq: Any, until_seq: Any) -> str | None:
+    """Describe why a declared export window could not have been produced.
+
+    ``export_audit_bundle`` refuses ``until_seq <= since_seq`` outright and
+    refuses any window that selects no events, and ``global_seq`` is 1-based —
+    so a non-positive ``until_seq``, a negative ``since_seq`` or an inverted
+    pair cannot appear in a bundle this exporter wrote. A manifest carrying
+    one is tamper evidence, and it is the shape a tamperer reaches for,
+    because the window is what gates the segment checks. Returns the reason,
+    or ``None`` when the declared window is a shape an export could produce.
+    """
+    since = _as_seq_bound(since_seq)
+    until = _as_seq_bound(until_seq)
+    if since_seq is not None and since is None:
+        return f"since_seq={since_seq!r} is not an integer"
+    if until_seq is not None and until is None:
+        return f"until_seq={until_seq!r} is not an integer"
+    if until is not None and until <= 0:
+        return (
+            f"until_seq={until} selects no events (global_seq is 1-based); "
+            f"export refuses such a window"
+        )
+    if since is not None and since < 0:
+        return f"since_seq={since} is negative"
+    if since is not None and until is not None and since >= until:
+        return (
+            f"since_seq={since} is not below until_seq={until}; export refuses "
+            f"an empty range"
+        )
+    return None
+
+
+def _exported_window(
+    since_seq: Any, until_seq: Any
+) -> tuple[int | None, int | None]:
+    """Translate the manifest's export window into inclusive seq bounds.
+
+    ``since_seq`` is exclusive on the export side (``global_seq > since_seq``)
+    and ``until_seq`` inclusive, so the exported window is
+    ``[since_seq + 1, until_seq]``. ``None`` on either side means unbounded.
+
+    Anything that is not a bound an export could have produced ALSO reads as
+    unbounded, which is the strict direction: an unbounded side subjects MORE
+    segments to the full checks, so a manifest cannot buy itself leniency by
+    declaring nonsense. That covers non-integers and — the case the first cut
+    of this fix got wrong (review B1) — integer nonsense: ``until_seq = 0``
+    would otherwise be honoured as a real upper bound, and since every segment
+    has ``last_global_seq > 0`` it skipped EVERY segment check in the bundle,
+    reopening both WI-254 and WI-255 with a one-key manifest edit. Negative
+    and inverted windows did the same. ``_window_is_impossible`` reports these
+    as errors in their own right; this function only has to make sure the
+    segment gate does not act on them.
+    """
+    if _window_is_impossible(since_seq, until_seq) is not None:
+        return None, None
+    since = _as_seq_bound(since_seq)
+    return (since + 1 if since is not None else None), _as_seq_bound(until_seq)
+
+
+def _verify_declared_window(
+    manifest: dict[str, Any], events: list[Event]
+) -> list[str]:
+    """Check the manifest's declared window against the events it shipped.
+
+    Two claims are settled here. First, the window must be a shape an export
+    could have produced at all (see ``_window_is_impossible``). Second — the
+    cheap anchor the first cut of this fix left out (review N1) — every event
+    must lie INSIDE the declared window. A real export guarantees this by
+    construction: the event query is filtered by the same bounds. So a
+    tamperer who invents a window to disclaim completeness for a segment (the
+    residual documented on ``_verify_segment_record_offline``) has to delete
+    the out-of-window events too, rather than just editing one manifest key.
+    """
+    since_seq = manifest.get("since_seq")
+    until_seq = manifest.get("until_seq")
+
+    reason = _window_is_impossible(since_seq, until_seq)
+    if reason is not None:
+        return [
+            f"Manifest window is not one this exporter could have written: "
+            f"{reason} (since_seq={since_seq!r}, until_seq={until_seq!r})"
+        ]
+
+    seqs = [e.global_seq for e in events if e.global_seq is not None]
+    if not seqs:
+        return []
+    lo, hi = _exported_window(since_seq, until_seq)
+    errors: list[str] = []
+    if lo is not None and min(seqs) < lo:
+        errors.append(
+            f"Bundle holds an event at global_seq {min(seqs)}, below the "
+            f"declared window (since_seq={since_seq})"
+        )
+    if hi is not None and max(seqs) > hi:
+        errors.append(
+            f"Bundle holds an event at global_seq {max(seqs)}, above the "
+            f"declared window (until_seq={until_seq})"
+        )
+    return errors
+
+
+def _count_segment_events(
+    seg: dict[str, Any], events: list[Event], first: int, last: int
+) -> int:
+    """Count the bundle's events that belong to *seg*.
+
+    A segment is NOT simply "every event in ``[first, last]``": sealing selects
+    the events of work items that have reached a terminal state, so events of
+    other work items can be interleaved inside the segment's seq range and are
+    not members of it (see ``seal_segment``). The segment record carries the
+    ``work_item_ids`` it sealed, which is the same membership key the store
+    uses, so membership is ``work_item_id in seg.work_item_ids`` bounded by the
+    segment's own declared range. A record with no ``work_item_ids`` (an older
+    row) falls back to the seq range excluding seal events, mirroring
+    ``verify_segment``'s fallback when a segment carries no ``event_ids``.
+    """
+    wi_ids = {str(w) for w in (seg.get("work_item_ids") or [])}
+    count = 0
+    for evt in events:
+        gseq = evt.global_seq
+        if gseq is None or gseq < first or gseq > last:
+            continue
+        if wi_ids:
+            if str(evt.work_item_id) in wi_ids:
+                count += 1
+        elif evt.entity_kind != "segment":
+            count += 1
+    return count
+
+
+def _verify_segment_record_offline(
+    seg: dict[str, Any],
+    events: list[Event],
+    events_by_seq: dict[int, Event],
+    lo: int | None,
+    hi: int | None,
 ) -> tuple[bool, str | None]:
-    if len(segments) <= 1:
+    """Validate one segment record against the events the bundle contains.
+
+    This is the offline mirror of ``verify_segment``: the segment's
+    ``head_hash`` must be the hash of the event at its ``last_global_seq``, and
+    its ``event_count`` must equal the number of its events in the bundle.
+    Before this check the offline verifier read a segment's ``head_hash`` only
+    as the *predecessor* side of an inter-segment link, so the terminal (or
+    sole) segment's metadata was never verified against anything — tampering
+    it and recomputing the unkeyed bundle hash produced ``verified=True``
+    (WI-254).
+
+    WINDOWED EXPORTS (WI-240/WI-249). A chunked export keeps every segment
+    that OVERLAPS the window, so a kept segment may be only partly inside it.
+    The rule, applied against the window the manifest declares:
+
+    * ``last_global_seq <= hi`` — the segment's terminal event is inside the
+      window, so it must be present and its hash must equal ``head_hash``.
+      This holds even when the window truncates the segment's *start*: the
+      tail event is what ``head_hash`` commits to, and a low-side truncation
+      does not remove it.
+    * ``first_global_seq >= lo`` as well — the whole segment is inside the
+      window, so ``event_count`` is a claim the bundle can settle and must.
+    * Otherwise the window cuts the segment and the bundle does not claim to
+      hold all of it; ``head_hash``/``event_count`` describe events the
+      artifact deliberately excludes and cannot be checked here. They are
+      skipped, not assumed — boundary sanity and the inter-segment linkage
+      still apply.
+
+    Two consequences worth stating plainly. (1) A bundle whose manifest
+    declares a window that ends before a segment's ``last_global_seq``
+    disclaims completeness for that segment, so an attacker who rewrites the
+    manifest into a claimed window can still put unverifiable metadata on the
+    segments the window cuts — an inherent limit of an unkeyed bundle hash,
+    and the reason the manifest's ``since_seq``/``until_seq`` belong in the
+    auditor's chunk plan. (2) If a segment's events have been moved to
+    ``events_archive`` and are therefore missing from the bundle, the tail
+    event will be absent and this check fails closed — the same precondition
+    ``_segment_chain_links`` already documents for gap events.
+    """
+    seg_id = seg.get("segment_id", "?")
+    first = seg["first_global_seq"]
+    last = seg["last_global_seq"]
+
+    if hi is not None and last > hi:
+        # Upper-truncated by the export window: nothing below is checkable.
         return True, None
 
+    head_hash = seg.get("head_hash")
+    if head_hash is None:
+        return False, (
+            f"segment {seg_id} has no head_hash but its terminal event "
+            f"(global_seq {last}) is inside the exported window"
+        )
+    try:
+        stored_head = bytes.fromhex(head_hash)
+    except (TypeError, ValueError):
+        return False, f"segment {seg_id} has a malformed head_hash: {head_hash!r}"
+
+    tail = events_by_seq.get(last)
+    if tail is None:
+        return False, (
+            f"segment {seg_id} claims last_global_seq={last} but the bundle "
+            f"holds no event at that global_seq — its head_hash anchors "
+            f"nothing (fail closed)"
+        )
+    recomputed_head = _hash_event(tail)
+    if recomputed_head is None:
+        return False, (
+            f"segment {seg_id}: event at last_global_seq={last} is missing "
+            f"canonical_envelope or signature, so head_hash cannot be checked"
+        )
+    if not _hmac.compare_digest(recomputed_head, stored_head):
+        return False, (
+            f"segment {seg_id} head_hash does not match the event at "
+            f"last_global_seq={last}: stored={head_hash}, "
+            f"recomputed={recomputed_head.hex()}"
+        )
+
+    if lo is not None and first < lo:
+        # Lower-truncated: head_hash was checkable, event_count is not.
+        return True, None
+
+    declared_count = seg.get("event_count")
+    actual_count = _count_segment_events(seg, events, first, last)
+    if declared_count != actual_count:
+        return False, (
+            f"segment {seg_id} declares event_count={declared_count} but the "
+            f"bundle holds {actual_count} of its event(s) in global_seq "
+            f"[{first}, {last}]"
+        )
+
+    return True, None
+
+
+def _verify_segment_chain_offline(
+    segments: list[dict[str, Any]],
+    events: list[Event],
+    *,
+    since_seq: Any = None,
+    until_seq: Any = None,
+) -> tuple[bool, str | None]:
     # Fail closed on malformed segments: a segment with no first_global_seq
     # cannot be placed in the chain, and silently sorting it first (the
     # default 0) would let a corrupt segment masquerade as the chain start.
+    # last_global_seq is equally load-bearing now — it is where the segment's
+    # head_hash is anchored (WI-254) — so an absent or nonsensical boundary is
+    # a refusal, not a skipped check.
     for seg in segments:
-        if seg.get("first_global_seq") is None:
+        seg_id = seg.get("segment_id", "?")
+        first = seg.get("first_global_seq")
+        last = seg.get("last_global_seq")
+        if first is None:
             return False, (
-                f"segment {seg.get('segment_id', '?')} has no first_global_seq "
+                f"segment {seg_id} has no first_global_seq "
                 f"— cannot order it in the segment chain (fail closed)"
+            )
+        if last is None:
+            return False, (
+                f"segment {seg_id} has no last_global_seq — its head_hash "
+                f"cannot be anchored to an event (fail closed)"
+            )
+        if (
+            isinstance(first, bool)
+            or isinstance(last, bool)
+            or not isinstance(first, int)
+            or not isinstance(last, int)
+        ):
+            return False, (
+                f"segment {seg_id} has non-integer bounds "
+                f"(first_global_seq={first!r}, last_global_seq={last!r})"
+            )
+        if first > last:
+            return False, (
+                f"segment {seg_id} has first_global_seq={first} greater than "
+                f"last_global_seq={last}"
             )
 
     sorted_segs = sorted(segments, key=lambda s: s["first_global_seq"])
+
+    # Segments partition the chain: they must not overlap. An overlap would
+    # let two records claim the same events (and the same tail), which the
+    # per-record checks below would then both "confirm".
+    for i in range(1, len(sorted_segs)):
+        prev_last = sorted_segs[i - 1]["last_global_seq"]
+        curr_first = sorted_segs[i]["first_global_seq"]
+        if curr_first <= prev_last:
+            return False, (
+                f"segments {sorted_segs[i - 1].get('segment_id', '?')} "
+                f"[..{prev_last}] and {sorted_segs[i].get('segment_id', '?')} "
+                f"[{curr_first}..] overlap — segment ranges must be disjoint "
+                f"and monotonic"
+            )
 
     # Events indexed by global_seq so the inter-segment gap can be sliced
     # without re-scanning the whole list for every consecutive pair.
@@ -912,6 +1280,17 @@ def _verify_segment_chain_offline(
         (e for e in events if e.global_seq is not None),
         key=lambda e: e.global_seq if e.global_seq is not None else 0,
     )
+    events_at_seq: dict[int, Event] = {
+        e.global_seq: e for e in events_by_seq if e.global_seq is not None
+    }
+
+    # Every segment record — including the terminal one and a sole segment,
+    # which the chain walk below never reaches as a predecessor (WI-254).
+    lo, hi = _exported_window(since_seq, until_seq)
+    for seg in sorted_segs:
+        ok, err = _verify_segment_record_offline(seg, events, events_at_seq, lo, hi)
+        if not ok:
+            return False, err
 
     for i in range(1, len(sorted_segs)):
         prev_seg = sorted_segs[i - 1]
