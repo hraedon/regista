@@ -90,6 +90,17 @@ def derive_authors(prior_events: Iterable[Any]) -> tuple[set[str], set[str], set
             principal_lineage = delegation.get("principal_lineage")
             if principal_lineage:
                 author_lineages.add(str(principal_lineage))
+            # WI-257: the same rule as the service branch above, and for the
+            # same reason. WI-248 only hardened the exempt-service path, so an
+            # ORDINARY declared proxy still laundered an undeclared delegated
+            # agent principal into "declared": the proxy's own lineage landed
+            # in author_lineages, the principal contributed the "agent" kind
+            # but no lineage, and nothing recorded that a mind behind the
+            # delegation never declared itself. A delegated agent principal
+            # without a declared lineage is an undeclared agent author no
+            # matter who proxied for it (agent, human, or service).
+            elif principal_kind == "agent":
+                agent_author_undeclared = True
     return author_ids, author_kinds, author_lineages, agent_author_undeclared
 
 
@@ -148,6 +159,8 @@ def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
 
 
 def adversarial_review(ctx: Any) -> None:
+    from ._assurance import LineageRelation, review_lineage_relation
+
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events
     )
@@ -158,11 +171,16 @@ def adversarial_review(ctx: Any) -> None:
     reviewer_lineage = (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
     reviewer_is_agent = ctx.actor_kind == "agent"
     agent_author = "agent" in author_kinds
-    reviewer_collides = bool(reviewer_lineage) and reviewer_lineage in author_lineages
-    reviewer_undeclared = reviewer_is_agent and not reviewer_lineage
+    # WI-258: the reviewer's lineage is no longer read from the proxy actor
+    # alone. When this review is recorded on behalf of an agent principal, that
+    # principal's lineage must clear the distinctness bar too (and an
+    # undeclared one is UNKNOWN, never independence) — otherwise a proxy
+    # declaring a distinct lineage launders a same-lineage review.
+    reviewer_relation = review_lineage_relation(author_lineages, ctx)
+    distinct = reviewer_relation is LineageRelation.DISTINCT
 
     if reviewer_is_agent and agent_author and (
-        reviewer_collides or reviewer_undeclared or agent_author_undeclared
+        not distinct or agent_author_undeclared
     ):
         payload = getattr(ctx, "payload", None) or {}
         if payload.get("same_lineage_acknowledged") is not True:
@@ -177,18 +195,23 @@ def adversarial_review(ctx: Any) -> None:
                     "reviewer_lineage": reviewer_lineage,
                     "author_lineages": sorted(author_lineages),
                     "agent_author_undeclared": agent_author_undeclared,
+                    "lineage_relation": reviewer_relation.value,
                 },
             )
 
 
-def _last_adversarial_pass_lineage(prior_events: Iterable[Any]) -> str | None:
+def _last_adversarial_pass(prior_events: Iterable[Any]) -> Any | None:
+    """The deciding adversarial pass event, or None if there is none.
+
+    WI-258: callers need the whole event, not just its ``actor_metadata``
+    lineage — the reviewer's effective lineage also depends on the event's
+    ``on_behalf_of`` principal.
+    """
     last_pass = None
     for event in prior_events:
         if getattr(event, "transition", None) == "adversarial_pass":
             last_pass = event
-    if last_pass is None:
-        return None
-    return _event_lineage(last_pass)
+    return last_pass
 
 
 def human_gate(
@@ -209,23 +232,42 @@ def human_gate(
         _check_separation_of_duties(ctx, author_ids, "human_gate")
 
     if require_human_on_same_lineage:
-        from ._assurance import LineageRelation, lineage_relation
+        from ._assurance import (
+            LineageRelation,
+            effective_lineage_relation,
+            review_lineage_relation,
+        )
 
         # A pass may be absent (nothing reviewed yet) or present with an
-        # undeclared lineage. Both leave _last_adversarial_pass_lineage at
-        # None, but only the latter is an escalation trigger: with no pass at
-        # all there is no same-lineage review to catch. Distinguish via the
-        # pass's mere existence.
-        pass_exists = _adversarial_pass_identities(ctx.prior_events) != set()
-        reviewer_lineage = _last_adversarial_pass_lineage(ctx.prior_events)
-        _author_ids, _author_kinds, author_lineages, _undeclared = derive_authors(
-            ctx.prior_events
-        )
+        # undeclared lineage. Both yield a None reviewer lineage, but only the
+        # latter is an escalation trigger: with no pass at all there is no
+        # same-lineage review to catch. Distinguish via the pass's existence.
+        last_pass = _last_adversarial_pass(ctx.prior_events)
+        reviewer_lineage = _event_lineage(last_pass) if last_pass is not None else None
+        (
+            _author_ids,
+            _author_kinds,
+            author_lineages,
+            agent_author_undeclared,
+        ) = derive_authors(ctx.prior_events)
         # WI-239: an undeclared reviewer lineage is UNKNOWN, not independent.
         # For the human-gate escalation it must behave exactly like SAME —
         # unknown independence is never a reason to skip the human.
-        relation = lineage_relation(author_lineages, reviewer_lineage)
-        needs_human = pass_exists and (
+        # WI-258: the deciding pass's delegated agent principal counts toward
+        # that verdict, not just the proxy that recorded it.
+        # WI-256: and an undeclared agent author defeats distinctness outright.
+        # This gate previously discarded the undeclared flag entirely, so a
+        # mixed history (one declared lineage-A event plus an undeclared agent
+        # event) read as DISTINCT and let a non-human accept through.
+        relation = (
+            LineageRelation.UNKNOWN
+            if last_pass is None
+            else effective_lineage_relation(
+                review_lineage_relation(author_lineages, last_pass),
+                agent_author_undeclared,
+            )
+        )
+        needs_human = last_pass is not None and (
             relation in (LineageRelation.SAME, LineageRelation.UNKNOWN)
         )
         if needs_human and ctx.actor_kind != "human":
@@ -238,6 +280,7 @@ def human_gate(
                     "reviewer_lineage": reviewer_lineage,
                     "author_lineages": sorted(author_lineages),
                     "lineage_relation": relation.value,
+                    "agent_author_undeclared": agent_author_undeclared,
                 },
             )
 

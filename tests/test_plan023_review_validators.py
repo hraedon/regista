@@ -384,6 +384,170 @@ class TestAdversarialReview:
             adversarial_review(ctx)
 
 
+class TestReviewerDelegationLineage:
+    """WI-258: reviewer lineage used to be read from the proxy actor's
+    metadata alone, so a proxy declaring lineage B acting on behalf of a
+    principal declaring lineage A reviewed A-authored work as "cross-lineage".
+    The delegated agent principal is the mind doing the review, so its lineage
+    must clear the distinctness bar too; an undeclared one is UNKNOWN and fails
+    closed (WI-239). A human principal keeps the previous behaviour."""
+
+    def _authors(self, lineage: str = "glm") -> list:
+        return [
+            _evt("created", "a1", actor_metadata={"model_lineage": lineage}),
+            _evt("submit_for_review", "a1", actor_metadata={"model_lineage": lineage}),
+        ]
+
+    def test_delegated_principal_same_lineage_blocked_without_ack(self):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "glm",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_delegated_principal_same_lineage_with_ack_passes(self):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "glm",
+            },
+            payload=ACK_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_delegated_principal_cross_lineage_passes_without_ack(self):
+        # Both proxy and principal are distinct from the authors: a genuinely
+        # independent delegated review still needs no acknowledgment.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_undeclared_delegated_principal_blocked(self):
+        # An agent principal that declares no lineage is UNKNOWN, never
+        # independence — the proxy's declared lineage does not stand in for it.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_same_lineage_proxy_blocked_despite_distinct_principal(self):
+        # The verdict is the weakest of the two: a collision on either side is
+        # a same-lineage review.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "glm"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_undeclared_proxy_with_distinct_principal_blocked(self):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata=None,
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "claude",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_human_principal_unaffected(self):
+        # A human principal is not a model lineage: the proxy's own distinct
+        # lineage is the whole verdict, exactly as before WI-258.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={"principal_id": "human:boss", "principal_kind": "human"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_delegation_without_principal_kind_unaffected(self):
+        # The bare {principal_id} delegation shape used by the separation-of-
+        # duties tests declares no principal kind; it must not start failing.
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={"principal_id": "some-operator"},
+            payload=REVIEW_NOTE,
+        )
+        adversarial_review(ctx)
+
+    def test_rejection_detail_reports_the_effective_relation(self):
+        ctx = _ctx(
+            self._authors(), "review-proxy",
+            actor_metadata={"model_lineage": "kimi"},
+            on_behalf_of={
+                "principal_id": "real-reviewer",
+                "principal_kind": "agent",
+                "principal_lineage": "glm",
+            },
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected) as exc_info:
+            adversarial_review(ctx)
+        # The proxy's own lineage still reads distinct; the recorded relation
+        # is the effective one, so the detail cannot be read as "independent".
+        assert exc_info.value.detail["reviewer_lineage"] == "kimi"
+        assert exc_info.value.detail["lineage_relation"] == "same"
+
+    def test_end_to_end_delegated_same_lineage_review_blocked(self):
+        sub = _relaxed_sub()
+        try:
+            wi_id = _setup_to_review(sub)
+            with pytest.raises(RegistaError) as exc_info:
+                sub.transition(
+                    wi_id, "adversarial_pass", "review-proxy",
+                    actor_kind="agent",
+                    actor_metadata={"model_lineage": "kimi"},
+                    payload=REVIEW_NOTE,
+                    on_behalf_of={
+                        "principal_id": "glm-sibling",
+                        "principal_kind": "agent",
+                        "principal_lineage": "glm",
+                    },
+                )
+            cause = _assert_review_rejected(exc_info.value)
+            assert "not confirmed distinct" in cause.reason
+            assert sub.get_work_item(wi_id).current_state == "in_review"
+        finally:
+            sub.close()
+
+
 class TestHumanGateStrict:
     def test_rejects_agent_actor(self):
         events = [_evt("created", "a1", actor_metadata={"model_lineage": "glm"})]
