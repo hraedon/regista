@@ -4,12 +4,18 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
-## [0.5.6] — 2026-08-07
+## [0.5.6] — 2026-08-08
 
-### Fixed
+The review gate and the offline bundle verifier are the two things this
+project asks anyone to trust, so their fixes are grouped first. Several of
+them were found by a pre-publish adversarial review of this very release —
+the entries below say what was actually true when, rather than only what the
+first attempt claimed.
 
-- **Cross-lineage review gate: undeclared lineage no longer passes as distinct
-  (WI-239):** `same_lineage` returned a plain boolean, so a reviewer or author
+### Fixed — cross-lineage review gate
+
+- **Undeclared lineage no longer passes as distinct (WI-239):**
+  `same_lineage` returned a plain boolean, so a reviewer or author
   with *no declared* model lineage compared as "not the same" and slipped
   through the distinctness check — a fail-open in the gate the estate relies
   on for review independence. Lineage comparison is now the three-state
@@ -18,24 +24,88 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   verified, and the reason this release exists (agent-suite WI-070: the
   0.5.5 spine predates it).
 
-- **Service-identity exemption hardened against lineage-hiding (WI-248):**
-  `derive_authors()` forced `--same-lineage-acknowledged` on every reviewer
-  of a CLI-filed item because the tracker's service identity and
-  lineage-less `claim_acquired` events counted as undeclared agent authors.
-  Genuine non-model service identities are now exempt via a documented
-  allowlist — but the exemption is gated on the *absence* of a declared
-  lineage (a model agent spoofing the service id with a real lineage falls
-  through to the declared-author path), and an undeclared delegated agent
-  principal behind `on_behalf_of` still trips the gate.
+- **Mixed declared/undeclared authorship no longer reads as independent
+  (WI-256):** `human_gate()`, `compute_assurance_level()` and
+  `gate_rationale()` all *discarded* the `agent_author_undeclared` flag and
+  classified on declared lineages alone. A history with one declared
+  lineage-A agent event plus one undeclared agent event therefore read
+  `DISTINCT` against a lineage-B reviewer, allowing a non-human accept under
+  the strict profile and reporting `INDEPENDENTLY_REVIEWED` — proven
+  end-to-end. Any undeclared (non-exempt) agent author now forces `UNKNOWN`:
+  distinctness from the lineages we happen to know is not distinctness from
+  the authors. Reported `lineage_relation` is the *effective* verdict, so an
+  auditor never sees "distinct" beside a history that could not establish it.
+
+- **Service-identity exemption hardened against lineage-hiding (WI-248), and
+  extended to ordinary proxies (WI-257):** `derive_authors()` forced
+  `--same-lineage-acknowledged` on every reviewer of a CLI-filed item because
+  the tracker's service identity and lineage-less `claim_acquired` events
+  counted as undeclared agent authors. Genuine non-model service identities
+  are now exempt via a documented allowlist, gated on the *absence* of a
+  declared lineage (a model agent spoofing the service id with a real lineage
+  falls through to the declared-author path). **WI-248 hardened only the
+  exempt-service branch**, so an *ordinary* declared proxy still laundered an
+  undeclared delegated agent principal into "declared" — with no
+  acknowledgment breadcrumb at all. Both branches now share one
+  implementation, because that duplication is what drifted.
+
+- **Reviewer delegation can no longer hide same-lineage review (WI-258):**
+  reviewer lineage was read from the proxy actor's metadata alone, so a proxy
+  declaring lineage B acting `on_behalf_of` a principal declaring lineage A
+  reviewed A-authored work as "cross-lineage". A review's effective lineage
+  now accounts for its delegated agent principal: the verdict is the weakest
+  of the two (`SAME` on either side wins), and an undeclared principal lineage
+  is `UNKNOWN`.
+
+- **Degenerate lineage and kind values are undeclared, not distinct:** a
+  declared lineage is a non-blank *string* — a whitespace-only value or a
+  non-string used to be truthy and `str()`-ified into a lineage that compared
+  distinct from every real one, re-opening the launders above. Principal
+  kinds are matched case- and whitespace-insensitively (`principal_kind`,
+  unlike `actor_kind`, passes no boundary validation), and on the review side
+  any kind outside `{agent, human}` is `UNKNOWN` — an unrecognized kind
+  cannot establish that a principal is not a model.
+
+### Fixed — offline audit-bundle verification
+
+- **Every segment record is now anchored to the events it spans (WI-254):**
+  the offline verifier accepted a single segment with *no* checks, and in the
+  multi-segment case read `head_hash` only from each *predecessor* — so the
+  terminal segment's metadata was never verified. Since the bundle hash is
+  unkeyed and recomputable, tampering the terminal (or sole) segment verified
+  clean. `head_hash` is now checked against the hashed event at
+  `last_global_seq`, `event_count` against actual membership, and boundaries
+  for sanity and non-overlap. Segments the export window truncates are
+  explicitly skipped, not assumed.
+
+- **Manifest counts are checked against the sections they describe (WI-255):**
+  counts were read but never compared, so deleting the tail event while
+  keeping `manifest.event_count` verified clean. All declared counts are now
+  cross-checked; for `format_version` 2, which is always written with all
+  four, a *missing* count is itself tamper evidence. A bundle carrying no
+  events is rejected outright — export refuses to write one, so an event-free
+  bundle proves nothing.
+
+- **A declared export window can no longer disable those checks:** the window
+  that legitimately exempts truncated segments was itself a bypass — an
+  impossible window (`until_seq: 0`, negative, or inverted) was honored as a
+  real bound and skipped every segment check in the bundle. Impossible windows
+  now read as unbounded *and* are reported as tamper evidence, and every event
+  must fall inside the window its manifest declares.
 
 - **Offline segment-chain verification for multi-segment stores (WI-249):**
   any export from a store with 2+ sealed segments reported
   `verified=False` — the verifier assumed segment adjacency, but the seal
   event of the earlier segment sits between them. The chain is now walked
   through inter-segment events (archive-aware: gap queries UNION ALL
-  `events` + `events_archive`), with tamper negatives proving fail-closed
-  reads and a 66-window exhaustive sweep proving every export window
-  self-verifies.
+  `events` + `events_archive`), with a 66-window exhaustive sweep proving
+  every export window self-verifies. Note the consequence of WI-254's
+  anchor: a store whose segment members have been moved to `events_archive`
+  can no longer produce a *verifying* bundle, because export still reads only
+  live `events` — the honest answer, and the reason archive-aware export is
+  now tracked as a precondition for archived-store audit exports.
+
+### Fixed — other
 
 - **Catalog bootstrap deadlock (WI-246):** migration 037 and
   `register_project` both `CREATE TABLE IF NOT EXISTS public.projects`;
