@@ -85,6 +85,23 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   on a chain's genesis event can now be pinned the way `append_event` and
   `transition` already allow; unknown ids fail with `UNKNOWN_KEY_ID`.
 
+- **Two new `regista doctor` checks:** `role:createrole` reports whether the
+  connecting session role can create the per-project service roles
+  `regista provision` needs (WI-230), and `anchoring:<project>` warns when an
+  anchoring receipt has been stuck pending/retryable past the staleness
+  threshold — a state that otherwise silently stops new events from ever being
+  anchored (WI-206).
+
+- **`global_seq` on returned events:** appended events carry their assigned
+  global sequence number, so a caller can chunk exports or resume a walk
+  without a second query.
+
+- **`lineage_verification` on assurance output (WI-215):** an informational
+  `asserted` / `verified` label — actor lineage rides outside the v4 signed
+  scope, so it is merely *asserted* under HMAC and becomes *verified* under a
+  per-actor asymmetric scheme. It never changes a gate decision; an absent or
+  unknown scheme fails to the honest `asserted`.
+
 ### Changed
 
 - **Kernel is fully `mypy --strict` (WI-233):** every source module is
