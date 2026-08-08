@@ -1220,7 +1220,7 @@ class TestSegmentChainOfflineVerification:
         """WI-249 review F2 (exhaustive sweep): every ``since_seq``/
         ``until_seq`` window across a 2-segment corpus must export a bundle
         that self-verifies. This is the parametrized version of the empirical
-        66-window sweep claimed in the round-1 report — now committed so the
+        65-window sweep claimed in the round-1 report — now committed so the
         property is regression-protected. Each window is also re-verified
         offline to lock in agreement between the export-time and offline
         verifiers."""
@@ -1259,6 +1259,14 @@ class TestSegmentChainOfflineVerification:
                 windows.append((since, until))
 
         assert windows, "sweep produced no windows to test"
+        # Pin the count so the claim made about this sweep cannot drift again.
+        # The corpus is 10 events (2 work items x 4, plus 2 seal events), so
+        # boundaries is [0, 1..10, 11] = 12 values and the loop above yields
+        # C(12, 2) = 66 ordered pairs. Exactly one of them — (10, 11] — selects
+        # no event and is skipped, leaving 65. Earlier prose called this a
+        # "66-window sweep"; it is 65 (Sol round-2 NB).
+        assert len(seqs) == 10, f"corpus changed: {len(seqs)} events"
+        assert len(windows) == 65, f"expected 65 non-empty windows, got {len(windows)}"
         # Keep the sweep bounded: cap at a dense grid if the corpus is large.
         # For the typical 2-segment corpus (~10-20 events) this is the full
         # Cartesian set, well under a hundred windows.
@@ -1398,7 +1406,13 @@ class TestSegmentRecordAnchoring:
         report = verify_audit_bundle_offline(str(output))
         assert report.bundle_hash_ok, "the tamperer restored the unkeyed hash"
         assert not report.segment_chain_ok
-        assert "head_hash does not match" in (report.segment_chain_error or "")
+        # The signed seal event is now the first anchor to fire, and it reports
+        # the first field it finds disagreeing — this test tampers two, so
+        # assert on the substance rather than pinning which one is named.
+        assert any(
+            f in (report.segment_chain_error or "")
+            for f in ("head_hash", "event_count")
+        ), report.segment_chain_error
         assert not report.verified
 
     def test_tampered_sole_segment_fails(self, sub, tmp_path):
@@ -1435,7 +1449,7 @@ class TestSegmentRecordAnchoring:
 
         report = verify_audit_bundle_offline(str(output))
         assert not report.segment_chain_ok
-        assert "declares event_count" in (report.segment_chain_error or "")
+        assert "event_count" in (report.segment_chain_error or "")
         assert not report.verified
 
     def test_terminal_segment_boundary_inflation_fails(self, sub, tmp_path):
@@ -1456,9 +1470,7 @@ class TestSegmentRecordAnchoring:
 
         report = verify_audit_bundle_offline(str(output))
         assert not report.segment_chain_ok
-        assert "holds no event at that global_seq" in (
-            report.segment_chain_error or ""
-        )
+        assert "last_global_seq" in (report.segment_chain_error or "")
         assert not report.verified
 
     def test_overlapping_segment_ranges_fail(self, sub, tmp_path):
@@ -1505,7 +1517,7 @@ class TestSegmentRecordAnchoring:
 
         report = verify_audit_bundle_offline(str(output))
         assert not report.segment_chain_ok
-        assert "declares event_count" in (report.segment_chain_error or "")
+        assert "event_count" in (report.segment_chain_error or "")
         assert not report.verified
 
     def test_window_truncated_segment_metadata_is_not_checkable(
@@ -1527,7 +1539,7 @@ class TestSegmentRecordAnchoring:
         (``test_terminal_segment_boundary_inflation_fails``) has no such
         latitude. The complementary direction is covered by
         ``test_segment_fully_inside_a_window_is_still_checked`` and by the
-        66-window sweep, which must keep verifying untampered chunks.
+        65-window sweep, which must keep verifying untampered chunks.
         """
         _build_two_segment_corpus(sub)
         _, b, _ = _segment_and_gap_seqs(sub)
@@ -1557,6 +1569,286 @@ class TestSegmentRecordAnchoring:
             "a window-truncated segment's head_hash/event_count describe "
             "events outside the chunk and are documented as unverifiable here"
         )
+
+
+class TestSegmentSealReconciliation:
+    """Sol round-2 finding 1 (WI-254 re-opened): anchoring the segment record
+    to the EVENTS left the record's own fields unanchored, and made the count
+    check circular — membership is computed from the record's own
+    ``work_item_ids``, so editing it together with ``event_count`` kept the two
+    agreeing. Two full-export attacks verified clean.
+
+    The unforgeable statement was already travelling in the bundle: the
+    ``segment_sealed`` event the sealer signs. Its payload names every
+    structural field of the segment, and its envelope is committed by the
+    global hash chain, so reconciling the record against it means a tamperer
+    must forge a signature rather than edit a JSON field.
+    """
+
+    def _seal_payload_for(self, bundle, segment_id):
+        """The signed seal payload for *segment_id*, read from the envelope."""
+        for e in bundle["events"]:
+            if e.get("entity_kind") != "segment":
+                continue
+            env = json.loads(bytes.fromhex(e["canonical_envelope"]).decode())
+            payload = env.get("payload") or {}
+            if payload.get("segment_id") == segment_id:
+                return e, env, payload
+        raise AssertionError(f"no seal event for segment {segment_id}")
+
+    def test_seal_payload_carries_the_structural_fields(self, sub, tmp_path):
+        """Pin what the seal actually anchors, so a future change to the seal
+        payload cannot quietly hollow out the reconciliation."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "seal_shape.json"
+        sub.export_audit_bundle(str(output))
+        bundle = json.loads(output.read_text())
+        seg = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])[-1]
+        evt, env, payload = self._seal_payload_for(bundle, seg["segment_id"])
+
+        assert env["transition"] == "segment_sealed"
+        assert set(payload) == {
+            "segment_id", "first_global_seq", "last_global_seq",
+            "first_event_id", "last_event_id", "event_count",
+            "min_timestamp", "max_timestamp", "head_hash",
+            "first_event_prev_hash", "archive_path", "work_item_ids",
+        }
+        for name in (
+            "first_global_seq", "last_global_seq", "event_count", "head_hash",
+            "first_event_prev_hash", "first_event_id", "last_event_id",
+            "work_item_ids", "min_timestamp", "max_timestamp", "archive_path",
+        ):
+            assert seg[name] == payload[name], name
+        # Not in the payload, and documented as unanchorable: `archived` is
+        # flipped after sealing, `created_at` is the row's insert time, and
+        # `seal_event_id` is the seal event's own id (reconciled separately).
+        assert {"archived", "created_at", "seal_event_id"} - set(payload) == {
+            "archived", "created_at", "seal_event_id"
+        }
+        assert seg["seal_event_id"] == evt["event_id"]
+
+    def test_sole_segment_first_global_seq_shifted_to_zero_fails(
+        self, sub, tmp_path
+    ):
+        """Sol attack (a): change a sole segment's first_global_seq from 1 to 0
+        on a FULL export and recompute the unkeyed hash."""
+        wi, _ = sub.create_work_item(
+            "test_workflow", "feature", "wi-sole",
+            custom_fields={"title": "wi-sole"},
+        )
+        _drive_to_terminal(sub, wi)
+        sub.archive.seal(before_timestamp=datetime.now(UTC) + timedelta(days=365))
+
+        output = tmp_path / "attack_a.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        assert len(bundle["segments"]) == 1
+        assert bundle["segments"][0]["first_global_seq"] == 1
+        bundle["segments"][0]["first_global_seq"] = 0
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.bundle_hash_ok, "the tamperer restored the unkeyed hash"
+        assert not report.segment_chain_ok, report.segment_chain_error
+        assert "first_global_seq" in (report.segment_chain_error or "")
+        assert not report.verified
+
+    @pytest.mark.parametrize("shifted", [0, -7], ids=["zero", "negative"])
+    def test_first_global_seq_shift_fails_multi_segment(
+        self, sub, tmp_path, shifted
+    ):
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / f"attack_a_multi_{shifted}.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        segs[0]["first_global_seq"] = shifted
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert not report.verified
+
+    def test_work_item_ids_and_count_rewritten_together_fails(
+        self, sub, tmp_path
+    ):
+        """Sol attack (b): replace work_item_ids with an unrelated UUID AND set
+        event_count to 0, so the circular membership count agrees with itself
+        (0 == 0)."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "attack_b.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        terminal = segs[-1]
+        assert terminal["event_count"] == 4
+        terminal["work_item_ids"] = [str(uuid.uuid4())]
+        terminal["event_count"] = 0
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.bundle_hash_ok
+        assert not report.segment_chain_ok, report.segment_chain_error
+        assert not report.verified
+
+    def test_count_band_rejects_zero_without_the_seal(self, sub, tmp_path):
+        """The non-circular half of attack (b)'s defence, exercised where the
+        seal cannot help: a window whose until_seq excludes the seal event.
+        ``event_count`` must still be at least 1."""
+        _build_two_segment_corpus(sub)
+        a, _, _ = _segment_and_gap_seqs(sub)
+
+        # until_seq = a.last: segment A is fully in-window, its seal (which
+        # sits above a.last) is not.
+        output = tmp_path / "band_zero.json"
+        sub.export_audit_bundle(str(output), until_seq=a["last_global_seq"])
+
+        bundle = json.loads(output.read_text())
+        seg = bundle["segments"][0]
+        with pytest.raises(AssertionError):
+            self._seal_payload_for(bundle, seg["segment_id"])
+        seg["work_item_ids"] = [str(uuid.uuid4())]
+        seg["event_count"] = 0
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert "at least one event" in (report.segment_chain_error or "")
+        assert not report.verified
+
+    def test_count_band_rejects_inflation_without_the_seal(self, sub, tmp_path):
+        _build_two_segment_corpus(sub)
+        a, _, _ = _segment_and_gap_seqs(sub)
+
+        output = tmp_path / "band_inflated.json"
+        sub.export_audit_bundle(str(output), until_seq=a["last_global_seq"])
+
+        bundle = json.loads(output.read_text())
+        seg = bundle["segments"][0]
+        seg["work_item_ids"] = []  # force the range-based fallback count
+        seg["event_count"] = 999
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert "non-seal event" in (report.segment_chain_error or "")
+        assert not report.verified
+
+    def test_first_event_id_rewrite_fails(self, sub, tmp_path):
+        """The first-boundary anchor: moving first_global_seq onto a real event
+        lands on the wrong event_id."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "first_event_id.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        segs = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])
+        segs[-1]["first_event_id"] = str(uuid.uuid4())
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert "first_event_id" in (report.segment_chain_error or "")
+        assert not report.verified
+
+    def test_seal_event_deleted_from_full_export_fails(self, sub, tmp_path):
+        """A seal always follows the segment it seals, so a bundle declaring no
+        upper bound must contain it. Deleting it is how a tamperer would try to
+        remove the anchor before editing the record."""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "seal_deleted.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        seg = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])[-1]
+        evt, _, _ = self._seal_payload_for(bundle, seg["segment_id"])
+        bundle["events"] = [
+            e for e in bundle["events"] if e["event_id"] != evt["event_id"]
+        ]
+        bundle["manifest"]["event_count"] = len(bundle["events"])
+        seg["event_count"] = 99999
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.segment_chain_ok
+        assert "no chain-linked segment_sealed event" in (
+            report.segment_chain_error or ""
+        )
+        assert not report.verified
+
+    def test_injected_free_floating_seal_is_not_an_anchor(self, sub, tmp_path):
+        """Deleting the real seal and injecting a forged one that chains from
+        nothing must not supply the anchor: ``_verify_global_chain`` tolerates
+        chain-fragment starts, so an unlinked event is not evidence of
+        anything. (An injected seal that DOES chain from a present event forks
+        that event and is rejected by the chain check already.)"""
+        _build_two_segment_corpus(sub)
+
+        output = tmp_path / "seal_injected.json"
+        sub.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        seg = sorted(bundle["segments"], key=lambda s: s["first_global_seq"])[-1]
+        evt, env, payload = self._seal_payload_for(bundle, seg["segment_id"])
+
+        # Forge a seal whose payload matches the doctored record, and cut it
+        # loose from the chain so it is accepted as a bridge fragment. The
+        # doctoring is Sol attack (b), which the circular count check alone
+        # cannot see: 0 declared events, 0 events matching the record's own
+        # work_item_ids.
+        stolen = [str(uuid.uuid4())]
+        payload["event_count"] = 0
+        payload["work_item_ids"] = stolen
+        env["payload"] = payload
+        env["prev_global_event_hash"] = "ab" * 32
+        forged = dict(evt)
+        forged["canonical_envelope"] = json.dumps(
+            env, sort_keys=True, separators=(",", ":")
+        ).encode().hex()
+        forged["prev_global_event_hash"] = "ab" * 32
+        seg["event_count"] = 0
+        seg["work_item_ids"] = stolen
+
+        bundle["events"] = [
+            e for e in bundle["events"] if e["event_id"] != evt["event_id"]
+        ] + [forged]
+        _rehash_and_write(bundle, output)
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert not report.segment_chain_ok, report.segment_chain_error
+
+    def test_clean_multi_segment_bundle_still_reconciles(self, sub, tmp_path):
+        """The reconciliation must be satisfied by construction on real
+        exports — full and windowed."""
+        _build_two_segment_corpus(sub)
+        a, b, _ = _segment_and_gap_seqs(sub)
+
+        full = tmp_path / "recon_full.json"
+        sub.export_audit_bundle(str(full))
+        assert verify_audit_bundle_offline(str(full)).verified
+
+        for since_seq, until_seq in [
+            (None, b["last_global_seq"]),
+            (a["first_global_seq"], b["last_global_seq"] + 5),
+            (a["last_global_seq"], b["last_global_seq"]),
+        ]:
+            out = tmp_path / f"recon_win_{since_seq}_{until_seq}.json"
+            sub.export_audit_bundle(
+                str(out), since_seq=since_seq, until_seq=until_seq
+            )
+            report = verify_audit_bundle_offline(str(out))
+            assert report.verified, (
+                f"window ({since_seq},{until_seq}] failed: {report.errors}"
+            )
 
 
 class TestDeclaredWindowIntegrity:

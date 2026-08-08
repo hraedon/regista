@@ -1085,6 +1085,178 @@ def _verify_declared_window(
     return errors
 
 
+# Segment-record field -> the key carrying the same fact in the signed
+# ``segment_sealed`` payload. Confirmed against a live seal event: the sealer
+# writes all of these into the payload it signs (``seal_segment``), so a
+# tamperer who edits the record has to forge a signature to keep the two
+# agreeing. ``seal_event_id`` is reconciled separately (it is the seal event's
+# OWN event_id, not a payload key); ``archived`` and ``created_at`` have no
+# payload counterpart — see ``_reconcile_segment_with_seal``.
+_SEAL_RECONCILED_FIELDS = (
+    "first_global_seq",
+    "last_global_seq",
+    "event_count",
+    "head_hash",
+    "first_event_prev_hash",
+    "first_event_id",
+    "last_event_id",
+    "work_item_ids",
+    "min_timestamp",
+    "max_timestamp",
+    "archive_path",
+)
+
+_TIMESTAMP_SEAL_FIELDS = frozenset({"min_timestamp", "max_timestamp"})
+
+
+def _seal_payload_of(evt: Event) -> dict[str, Any] | None:
+    """Return the ``segment_sealed`` payload carried by *evt*'s SIGNED envelope.
+
+    The payload is read out of ``canonical_envelope`` — the exact bytes the
+    sealer signed and the bytes the global hash chain commits to
+    (``_hash_event`` is ``sha256(canonical_envelope + signature)``) — and NOT
+    out of the event's top-level ``payload`` field, which no check binds to
+    anything. Reading the wrong one would make the reconciliation below as
+    forgeable as the record it is meant to anchor.
+    """
+    env_bytes = evt.canonical_envelope
+    if env_bytes is None:
+        return None
+    try:
+        envelope = json.loads(bytes(env_bytes))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get("transition") != "segment_sealed":
+        return None
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict) or "segment_id" not in payload:
+        return None
+    return payload
+
+
+def _index_seal_events(
+    events: list[Event], events_by_seq: dict[int, Event]
+) -> tuple[dict[str, tuple[Event, dict[str, Any]]], set[str]]:
+    """Index the bundle's signed seal events by the segment they seal.
+
+    Returns ``(by_segment_id, ambiguous_ids)``. A segment claimed by two seal
+    events is ambiguous and fails closed rather than letting a verifier pick
+    the convenient one.
+
+    A seal event is only accepted as an anchor if it is CHAIN-LINKED: its
+    ``prev_global_event_hash`` must match an event present in the bundle,
+    unless it is the lowest-``global_seq`` event there (the one event a
+    windowed chunk may legitimately start from). Without that, a tamperer
+    could delete a real seal event and inject a forged one carrying whatever
+    payload the doctored record needs: a free-floating event chains from
+    nothing, so ``_verify_global_chain`` accepts it as a bridge fragment,
+    whereas an injected event that DOES chain from a present predecessor forks
+    that predecessor and is already rejected. (Precondition, same as
+    ``_segment_chain_links``: a store whose events have been moved to
+    ``events_archive`` can have genuine gaps, so a real seal event may look
+    unlinked — see WI-259.)
+    """
+    by_segment: dict[str, tuple[Event, dict[str, Any]]] = {}
+    ambiguous: set[str] = set()
+    min_seq = min(events_by_seq) if events_by_seq else None
+    present_hashes = {
+        h.hex() for h in (_hash_event(e) for e in events) if h is not None
+    }
+
+    for evt in events:
+        if evt.entity_kind != "segment":
+            continue
+        payload = _seal_payload_of(evt)
+        if payload is None:
+            continue
+        if evt.global_seq != min_seq:
+            prev = evt.prev_global_event_hash
+            if prev is None or bytes(prev).hex() not in present_hashes:
+                continue
+        seg_id = str(payload["segment_id"])
+        if seg_id in by_segment:
+            ambiguous.add(seg_id)
+            continue
+        by_segment[seg_id] = (evt, payload)
+    return by_segment, ambiguous
+
+
+def _seal_values_agree(name: str, record_value: Any, seal_value: Any) -> bool:
+    if name == "work_item_ids":
+        return sorted(str(w) for w in (record_value or [])) == sorted(
+            str(w) for w in (seal_value or [])
+        )
+    if name in _TIMESTAMP_SEAL_FIELDS and record_value != seal_value:
+        # Compare instants, not spellings: the record's timestamps round-trip
+        # through the database while the payload's are the event's own
+        # isoformat, so an identical instant could differ in representation.
+        try:
+            return datetime.fromisoformat(str(record_value)) == datetime.fromisoformat(
+                str(seal_value)
+            )
+        except (TypeError, ValueError):
+            return False
+    return bool(record_value == seal_value)
+
+
+def _reconcile_segment_with_seal(
+    seg: dict[str, Any], seal_event: Event, payload: dict[str, Any]
+) -> tuple[bool, str | None]:
+    """Reconcile a segment RECORD against its own signed ``segment_sealed`` event.
+
+    Everything else in this module checks the record against the bundle's
+    EVENTS. That leaves the record's own fields anchored only where an event
+    happens to mirror them, and it makes the ``event_count`` check circular:
+    membership is computed from the record's ``work_item_ids``, so editing
+    both together kept them agreeing (Sol round-2 finding 1, attacks (a) and
+    (b)). The seal event closes the circle. Its payload is the sealer's signed
+    statement of what the segment is, it travels in the bundle as an ordinary
+    event, and its envelope is committed by the global hash chain — so a
+    tamperer must forge a signature, not edit a JSON field.
+
+    Reconciled (all confirmed present in a live seal payload):
+    ``first_global_seq``, ``last_global_seq``, ``event_count``, ``head_hash``,
+    ``first_event_prev_hash``, ``first_event_id``, ``last_event_id``,
+    ``work_item_ids``, ``min_timestamp``, ``max_timestamp``, ``archive_path``,
+    plus ``segment_id`` (implicit — it is the lookup key) and
+    ``seal_event_id`` (against the seal event's own ``event_id``).
+
+    NOT anchored, because the seal payload does not carry them and cannot:
+
+    * ``archived`` — flipped by archival AFTER the segment is sealed, so no
+      value signed at seal time could be authoritative.
+    * ``created_at`` — the row's insert timestamp, written alongside the seal
+      rather than inside it.
+
+    Both are row lifecycle metadata that no verification step consumes; a
+    tamperer can rewrite them and nothing here objects. Stated rather than
+    silently skipped.
+    """
+    seg_id = seg.get("segment_id", "?")
+
+    declared_seal_id = seg.get("seal_event_id")
+    if declared_seal_id is not None and str(declared_seal_id) != str(
+        seal_event.event_id
+    ):
+        return False, (
+            f"segment {seg_id} names seal_event_id={declared_seal_id} but the "
+            f"segment_sealed event that seals it is {seal_event.event_id}"
+        )
+
+    for name in _SEAL_RECONCILED_FIELDS:
+        if name not in payload:
+            continue
+        if not _seal_values_agree(name, seg.get(name), payload[name]):
+            return False, (
+                f"segment {seg_id} record disagrees with its signed "
+                f"segment_sealed event on {name}: record={seg.get(name)!r}, "
+                f"seal={payload[name]!r}"
+            )
+    return True, None
+
+
 def _count_segment_events(
     seg: dict[str, Any], events: list[Event], first: int, last: int
 ) -> int:
@@ -1099,6 +1271,13 @@ def _count_segment_events(
     segment's own declared range. A record with no ``work_item_ids`` (an older
     row) falls back to the seq range excluding seal events, mirroring
     ``verify_segment``'s fallback when a segment carries no ``event_ids``.
+
+    CIRCULARITY. ``work_item_ids`` is part of the record being checked, so
+    this count agrees with ``event_count`` whenever a tamperer edits BOTH
+    (Sol round-2 attack (b): unrelated work_item_ids + ``event_count`` 0).
+    It is exact when the record is honest and it still catches a single-field
+    edit, but it is not an anchor. ``_segment_count_band`` supplies the
+    non-circular bound, and ``_reconcile_segment_with_seal`` the signed one.
     """
     wi_ids = {str(w) for w in (seg.get("work_item_ids") or [])}
     count = 0
@@ -1114,58 +1293,118 @@ def _count_segment_events(
     return count
 
 
+def _segment_count_band(
+    events: list[Event], first: int, last: int
+) -> int:
+    """Upper bound on a segment's event count that the record cannot move.
+
+    A segment's members are a SUBSET of the non-seal events in its own seq
+    range (sealing may skip interleaved work items, so the range can hold more
+    than the segment does — but never fewer). Counting the range without
+    consulting ``work_item_ids`` gives a bound no field of the record can
+    influence, which is what makes it worth having next to the exact count.
+    """
+    return sum(
+        1
+        for evt in events
+        if evt.global_seq is not None
+        and first <= evt.global_seq <= last
+        and evt.entity_kind != "segment"
+    )
+
+
 def _verify_segment_record_offline(
     seg: dict[str, Any],
     events: list[Event],
     events_by_seq: dict[int, Event],
     lo: int | None,
     hi: int | None,
+    seals: dict[str, tuple[Event, dict[str, Any]]],
+    ambiguous_seals: set[str],
 ) -> tuple[bool, str | None]:
-    """Validate one segment record against the events the bundle contains.
+    """Validate one segment record against the bundle.
 
-    This is the offline mirror of ``verify_segment``: the segment's
-    ``head_hash`` must be the hash of the event at its ``last_global_seq``, and
-    its ``event_count`` must equal the number of its events in the bundle.
-    Before this check the offline verifier read a segment's ``head_hash`` only
-    as the *predecessor* side of an inter-segment link, so the terminal (or
-    sole) segment's metadata was never verified against anything — tampering
-    it and recomputing the unkeyed bundle hash produced ``verified=True``
-    (WI-254).
+    Three independent anchors, because each covers what the others cannot:
+
+    1. **The signed seal event** (``_reconcile_segment_with_seal``). The
+       sealer's ``segment_sealed`` payload states what the segment is, and it
+       is committed by the global hash chain, so it anchors the record's own
+       fields — including the ones no event mirrors. This is the only anchor
+       that is not circular, and it is what closes Sol round-2 finding 1.
+    2. **The boundary events.** ``head_hash`` must be the hash of the event at
+       ``last_global_seq``, and the event at ``first_global_seq`` must be the
+       record's ``first_event_id`` with the record's ``first_event_prev_hash``.
+       Anchoring BOTH ends is what makes a boundary edit fail even when the
+       seal event is out of window: moving ``first_global_seq`` to 0 (Sol
+       attack (a)) lands on no event at all, and moving it onto a real event
+       lands on the wrong ``event_id``.
+    3. **The count band.** ``1 <= event_count <=`` the non-seal events in the
+       range — bounds that no field of the record can move — alongside the
+       exact (circular) membership count.
 
     WINDOWED EXPORTS (WI-240/WI-249). A chunked export keeps every segment
     that OVERLAPS the window, so a kept segment may be only partly inside it.
-    The rule, applied against the window the manifest declares:
+    Each anchor is gated on what the window actually contains:
 
-    * ``last_global_seq <= hi`` — the segment's terminal event is inside the
-      window, so it must be present and its hash must equal ``head_hash``.
-      This holds even when the window truncates the segment's *start*: the
-      tail event is what ``head_hash`` commits to, and a low-side truncation
-      does not remove it.
-    * ``first_global_seq >= lo`` as well — the whole segment is inside the
-      window, so ``event_count`` is a claim the bundle can settle and must.
-    * Otherwise the window cuts the segment and the bundle does not claim to
-      hold all of it; ``head_hash``/``event_count`` describe events the
-      artifact deliberately excludes and cannot be checked here. They are
-      skipped, not assumed — boundary sanity and the inter-segment linkage
-      still apply.
+    * ``last_global_seq <= hi`` — the tail event is in-window, so the
+      ``head_hash`` anchor applies. A low-side cut does not remove it.
+    * ``first_global_seq >= lo`` — the first event is in-window, so the
+      first-boundary anchor applies.
+    * both — the whole segment is in-window, so the counts are claims the
+      bundle can settle and must.
+    * The seal event is reconciled whenever it is IN the bundle, whatever the
+      window does, and is REQUIRED when the bundle declares no upper bound
+      (``hi is None``): the seal's ``global_seq`` is always above the
+      segment's ``last_global_seq``, so an unbounded export must contain it.
 
-    Two consequences worth stating plainly. (1) A bundle whose manifest
-    declares a window that ends before a segment's ``last_global_seq``
-    disclaims completeness for that segment, so an attacker who rewrites the
-    manifest into a claimed window can still put unverifiable metadata on the
-    segments the window cuts — an inherent limit of an unkeyed bundle hash,
-    and the reason the manifest's ``since_seq``/``until_seq`` belong in the
-    auditor's chunk plan. (2) If a segment's events have been moved to
-    ``events_archive`` and are therefore missing from the bundle, the tail
-    event will be absent and this check fails closed — the same precondition
-    ``_segment_chain_links`` already documents for gap events.
+    What remains unverifiable, stated rather than skipped:
+
+    * A bundle that declares a window ending before a segment's
+      ``last_global_seq`` disclaims completeness for that segment. A tamperer
+      who rewrites a full export's manifest into such a window buys the
+      leniency that goes with it — including, when the declared ``until_seq``
+      is at or below where the seal event sits, the chance to delete that seal
+      event and lose anchor 1. Anchors 2 and 3 still apply to whatever stays
+      in range, so the surviving move is narrow (understating a segment's
+      ``work_item_ids`` and ``event_count`` together). This is the inherent
+      limit of an unkeyed bundle hash, and the reason the manifest's
+      ``since_seq``/``until_seq`` belong in the auditor's chunk plan.
+    * ``archived`` and ``created_at`` are not in the seal payload and cannot
+      be — see ``_reconcile_segment_with_seal``.
+    * For an HMAC-signed store the seal event's SIGNATURE cannot be checked
+      offline (the secret is deliberately never exported), so anchor 1 rests
+      on the hash chain: rewriting a seal event's envelope changes its hash
+      and breaks whatever chains from it. An ed25519 store additionally gets
+      the signature verified by ``_verify_event_signatures``.
+    * If a segment's events have been moved to ``events_archive`` they are
+      missing from the bundle, and these checks fail closed — the same
+      precondition ``_segment_chain_links`` documents for gap events (WI-259).
     """
-    seg_id = seg.get("segment_id", "?")
+    seg_id = str(seg.get("segment_id", "?"))
     first = seg["first_global_seq"]
     last = seg["last_global_seq"]
 
+    if seg_id in ambiguous_seals:
+        return False, (
+            f"segment {seg_id} is claimed by more than one segment_sealed "
+            f"event — its record cannot be anchored (fail closed)"
+        )
+    seal = seals.get(seg_id)
+    if seal is not None:
+        ok, err = _reconcile_segment_with_seal(seg, seal[0], seal[1])
+        if not ok:
+            return False, err
+    elif hi is None:
+        return False, (
+            f"segment {seg_id} has no chain-linked segment_sealed event in the "
+            f"bundle, which declares no upper window bound — a seal always "
+            f"follows the segment it seals, so an unbounded export contains it "
+            f"(fail closed)"
+        )
+
     if hi is not None and last > hi:
-        # Upper-truncated by the export window: nothing below is checkable.
+        # Upper-truncated by the export window: the boundary/count anchors
+        # below describe events the chunk deliberately excludes.
         return True, None
 
     head_hash = seg.get("head_hash")
@@ -1200,10 +1439,57 @@ def _verify_segment_record_offline(
         )
 
     if lo is not None and first < lo:
-        # Lower-truncated: head_hash was checkable, event_count is not.
+        # Lower-truncated: the tail anchor applied, the first-boundary and
+        # count anchors describe events outside the chunk.
         return True, None
 
+    head = events_by_seq.get(first)
+    if head is None:
+        return False, (
+            f"segment {seg_id} claims first_global_seq={first} but the bundle "
+            f"holds no event at that global_seq (fail closed)"
+        )
+    declared_first_id = seg.get("first_event_id")
+    if declared_first_id is not None and str(declared_first_id) != str(head.event_id):
+        return False, (
+            f"segment {seg_id} names first_event_id={declared_first_id} but the "
+            f"event at first_global_seq={first} is {head.event_id}"
+        )
+    declared_first_prev = seg.get("first_event_prev_hash")
+    actual_first_prev = (
+        bytes(head.prev_global_event_hash).hex()
+        if head.prev_global_event_hash is not None
+        else None
+    )
+    if declared_first_prev != actual_first_prev:
+        return False, (
+            f"segment {seg_id} declares first_event_prev_hash="
+            f"{declared_first_prev!r} but the event at first_global_seq={first} "
+            f"chains from {actual_first_prev!r}"
+        )
+
     declared_count = seg.get("event_count")
+    # Non-circular band first: these bounds cannot be moved by editing the
+    # record, so they hold even when work_item_ids has been rewritten to make
+    # the exact count agree with itself.
+    if not isinstance(declared_count, int) or isinstance(declared_count, bool):
+        return False, (
+            f"segment {seg_id} declares a non-integer event_count="
+            f"{declared_count!r}"
+        )
+    if declared_count < 1:
+        return False, (
+            f"segment {seg_id} declares event_count={declared_count}; a sealed "
+            f"segment always holds at least one event"
+        )
+    range_count = _segment_count_band(events, first, last)
+    if declared_count > range_count:
+        return False, (
+            f"segment {seg_id} declares event_count={declared_count} but its "
+            f"range global_seq [{first}, {last}] holds only {range_count} "
+            f"non-seal event(s) in the bundle"
+        )
+
     actual_count = _count_segment_events(seg, events, first, last)
     if declared_count != actual_count:
         return False, (
@@ -1287,8 +1573,11 @@ def _verify_segment_chain_offline(
     # Every segment record — including the terminal one and a sole segment,
     # which the chain walk below never reaches as a predecessor (WI-254).
     lo, hi = _exported_window(since_seq, until_seq)
+    seals, ambiguous_seals = _index_seal_events(events, events_at_seq)
     for seg in sorted_segs:
-        ok, err = _verify_segment_record_offline(seg, events, events_at_seq, lo, hi)
+        ok, err = _verify_segment_record_offline(
+            seg, events, events_at_seq, lo, hi, seals, ambiguous_seals
+        )
         if not ok:
             return False, err
 
