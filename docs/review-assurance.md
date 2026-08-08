@@ -84,7 +84,11 @@ ones that happened to declare themselves:
   carries `on_behalf_of` with `principal_kind: "agent"` and no
   `principal_lineage`, the principal is an undeclared agent author — whoever
   proxied for it. The proxy's own declared lineage does not stand in for the
-  principal's missing one.
+  principal's missing one. **Only `principal_kind: "human"` exempts a
+  principal** (WI-262): any other kind — `"service"`, `"break_glass"`, or one
+  the gate does not recognise at all — cannot vouch that the principal is not
+  a model, so an undeclared principal of that kind is an undeclared agent
+  author on both the author and the reviewer side.
 - **A delegated agent principal is also a *reviewer*** (WI-258). On an
   `adversarial_pass`, the effective reviewer lineage is the weakest verdict
   over the proxy and its agent principal: a collision on either side is
@@ -96,12 +100,30 @@ ones that happened to declare themselves:
   nothing, and a `principal_kind` the gate does not recognise is `UNKNOWN` —
   an unrecognised kind cannot vouch that the principal is not a model.
 
+**Who makes a lineage claim.** The reviewer side asks the same question the
+author side does. An identity that declares a lineage always makes a claim; an
+identity that declares none makes an `UNKNOWN` claim only if it is an *agent* —
+a model that failed to declare itself. A **human** proxy makes no claim at all,
+because a human has no model lineage to declare, so a pass a human records on
+behalf of a declared cross-lineage agent principal is `DISTINCT` on that
+principal alone. When nobody claims — an undelegated human reviewer — the
+verdict is `UNKNOWN`. The acknowledgment requirement follows the same rule: it
+applies whenever an agent mind is behind the review and the relation is not
+`DISTINCT`, **regardless of who typed it** (WI-262).
+
 **A declared lineage is a non-blank string.** `model_lineage` and
-`principal_lineage` are self-asserted and validated nowhere at the API
-boundary, so the gate strips before trusting: `"   "`, `""` and any non-string
-declare *nothing* and read as undeclared rather than as a lineage that happens
-to differ from every real one. `principal_kind` is matched case- and
-whitespace-insensitively for the same reason — `"Agent"` means `"agent"`.
+`principal_lineage` are self-asserted, so the gate strips before trusting:
+`"   "`, `""` and any non-string declare *nothing* and read as undeclared
+rather than as a lineage that happens to differ from every real one.
+
+**`principal_kind` is validated at ingress** (WI-262). It is checked against a
+closed set — `agent`, `human`, `service`, `break_glass`, the same vocabulary as
+`PrincipalKind` — and stored canonically (lower-cased, stripped); anything else
+is rejected at write time with `INVALID_PRINCIPAL_KIND`. Validation applies to
+new writes, so the gate still normalises and fails closed on whatever older
+events carry. A delegation with no `principal_kind` at all remains legal: that
+is the bare `{"principal_id": ...}` separation-of-duties shape, which claims
+nothing about the principal.
 
 Each of these fails closed: the review is still recordable with an explicit
 `same_lineage_acknowledged` acknowledgment, which leaves the breadcrumb an

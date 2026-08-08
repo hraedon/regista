@@ -522,17 +522,54 @@ class TestDegenerateDelegationValues:
         assert "human" in kinds
         assert undeclared is False
 
-    def test_unrecognised_kind_is_recorded_not_flagged(self):
-        # Documented boundary: on the AUTHOR side an unrecognised kind is left
-        # as declared (it is indistinguishable from the existing "system"
-        # principal case, and treating it as an agent would newly block
-        # histories the gate has always allowed). The review side is stricter —
-        # see TestReviewerDelegationLineage — because there an unrecognised
-        # kind is being used to claim independence.
-        events = self._delegated(principal_id="p", principal_kind="ai-agent")
+    @pytest.mark.parametrize("kind", ["ai-agent", "service", "break_glass", "robot"])
+    def test_unrecognised_kind_is_flagged(self, kind):
+        # WI-262: the author side is symmetric with the review side. An earlier
+        # revision exempted unrecognised kinds on the theory that they were
+        # indistinguishable from a "system" principal — that theory was wrong:
+        # no principal_kind of "system" exists anywhere in the estate (the
+        # actor_kind="system" note in _review_validators is a different field),
+        # so the exemption bought nothing and let principal_kind="ai-agent"
+        # with no lineage past the gate entirely. Only "human" can vouch that a
+        # principal is not a model.
+        events = self._delegated(principal_id="p", principal_kind=kind)
         _, kinds, _, undeclared = derive_authors(events)
-        assert "ai-agent" in kinds
+        assert kind in kinds
+        assert undeclared is True
+
+    @pytest.mark.parametrize("kind", ["ai-agent", "service", 42, "  "])
+    def test_unrecognised_kind_with_declared_lineage_not_flagged(self, kind):
+        # The flag is about an UNDECLARED principal. A lineage-bearing
+        # principal is declared whatever its kind, and the lineage itself is
+        # what the comparison then uses.
+        events = self._delegated(
+            principal_id="p", principal_kind=kind, principal_lineage="lineage-D",
+        )
+        _, _, lineages, undeclared = derive_authors(events)
+        assert lineages == {"lineage-A", "lineage-D"}
         assert undeclared is False
+
+    def test_unrecognised_kind_blocks_review_without_ack(self):
+        # Sol R2 finding 2, end to end at the validator: a lineage-B reviewer
+        # of work delegated to an "ai-agent" principal used to pass with no
+        # acknowledgment at all.
+        ctx = _ctx(
+            self._delegated(principal_id="hidden", principal_kind="ai-agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload=REVIEW_NOTE,
+        )
+        with pytest.raises(ReviewRejected, match="not confirmed distinct"):
+            adversarial_review(ctx)
+
+    def test_unrecognised_kind_review_passes_with_ack(self):
+        ctx = _ctx(
+            self._delegated(principal_id="hidden", principal_kind="ai-agent"),
+            "kimi-agent",
+            actor_metadata={"model_lineage": "lineage-B"},
+            payload={"review_note": "ack", "same_lineage_acknowledged": True},
+        )
+        adversarial_review(ctx)
 
     @pytest.mark.parametrize("blank", ["   ", "", "\t"])
     def test_blank_actor_model_lineage_is_undeclared(self, blank):

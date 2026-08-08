@@ -16,6 +16,21 @@ MAX_CONTENT_HASH_LENGTH = 256
 VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
+
+# WI-262: on_behalf_of.principal_kind used to be accepted unvalidated, so
+# attacker-controlled metadata reached the cross-lineage gate. The gate has to
+# reason about whether a principal could be a model; a kind it does not
+# recognise ("ai-agent", "Agent ", 42) cannot answer that question, and the
+# author side used to fail OPEN on exactly those values.
+#
+# Keep this set identical to principal_lifecycle.PrincipalKind — that is the
+# estate's existing closed vocabulary for what a principal is, and
+# test_wi262_principal_kind_ingress pins the two together so they cannot drift.
+# Recognising a kind here is not the same as trusting it: the gate still lets
+# only "human" vouch that a principal is not a model (see
+# _review_validators.classify_principal_kind), because a self-asserted
+# "service" is exactly the lineage-hiding forgery WI-248 closed.
+_VALID_PRINCIPAL_KINDS = frozenset({"agent", "human", "service", "break_glass"})
 _ALLOWED_ENTITY_KINDS = frozenset({"work_item", "session", "spec", "segment", "principal", "note"})
 
 _RESERVED_TRANSITIONS = frozenset({
@@ -666,6 +681,17 @@ def validate_work_item_exists(
 def validate_delegation_chain(
     on_behalf_of: dict[str, Any] | None, *, event_timestamp: str | None = None,
 ) -> None:
+    """Validate a delegation chain at ingress, canonicalising principal_kind.
+
+    WI-262: this is the single ingress every write path funnels through
+    (``_ops``, ``_events_api``, ``_in_memory_transition``), so it is where an
+    unrecognised ``principal_kind`` has to be refused. Note the in-place
+    canonicalisation of ``principal_kind``: the value is lower-cased and
+    stripped so what lands in the signed event is the canonical spelling rather
+    than whatever casing the caller typed. The gate normalises on read as well —
+    events written before this validation existed still carry whatever they
+    carried, and must keep failing closed rather than crashing.
+    """
     if on_behalf_of is None:
         return
     if not isinstance(on_behalf_of, dict):
@@ -679,6 +705,22 @@ def validate_delegation_chain(
             ErrorCode.INVALID_ARGUMENT,
             "on_behalf_of.principal_id is required and must be a non-empty string",
         )
+    # An absent (or explicitly null) principal_kind stays legal: that is the
+    # bare {"principal_id": ...} shape used for separation of duties, which
+    # claims nothing about the principal and predates any lineage claim.
+    if on_behalf_of.get("principal_kind") is not None:
+        principal_kind = on_behalf_of["principal_kind"]
+        canonical = (
+            principal_kind.strip().lower() if isinstance(principal_kind, str) else None
+        )
+        if canonical not in _VALID_PRINCIPAL_KINDS:
+            raise RegistaError(
+                ErrorCode.INVALID_PRINCIPAL_KIND,
+                f"Invalid on_behalf_of.principal_kind {principal_kind!r}. "
+                f"Must be one of {sorted(_VALID_PRINCIPAL_KINDS)}",
+                detail={"principal_kind": principal_kind},
+            )
+        on_behalf_of["principal_kind"] = canonical
     if "scope" in on_behalf_of and on_behalf_of["scope"] is not None:
         if not isinstance(on_behalf_of["scope"], list):
             raise RegistaError(

@@ -393,6 +393,120 @@ class TestReviewerDelegationLineageAssurance:
         human_gate(ctx, require_human_on_same_lineage=True)
 
 
+class TestWhoMakesALineageClaim:
+    """WI-262: which identities behind a review make a lineage claim, decided
+    the same way ``derive_authors`` decides it for authors — a declared lineage
+    always claims, an undeclared AGENT claims UNKNOWN, and a human claims
+    nothing because a human has no model lineage to declare."""
+
+    def _human_proxy_pass(self, **delegation) -> list:
+        return [
+            _evt(
+                "adversarial_pass", "human-proxy", actor_kind="human",
+                actor_metadata=None,
+                on_behalf_of=delegation or None,
+                payload=REVIEW_NOTE,
+            ),
+        ]
+
+    def test_human_proxy_for_declared_distinct_principal_is_independent(self):
+        # The one place this change reads LESS strictly than before: a human
+        # recording a pass for a declared cross-lineage agent principal used to
+        # score UNKNOWN, because the human's absent model_lineage was treated
+        # as an undeclared model. It is not — the principal is the mind, it
+        # declared itself, and it is distinct.
+        events = (
+            _author_events("glm")
+            + self._human_proxy_pass(
+                principal_id="real-reviewer", principal_kind="agent",
+                principal_lineage="claude",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.INDEPENDENTLY_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.DISTINCT.value
+
+    def test_human_proxy_for_same_lineage_principal_is_not_independent(self):
+        events = (
+            _author_events("glm")
+            + self._human_proxy_pass(
+                principal_id="real-reviewer", principal_kind="agent",
+                principal_lineage="glm",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.SAME.value
+
+    def test_human_proxy_for_undeclared_principal_is_unknown(self):
+        events = (
+            _author_events("glm")
+            + self._human_proxy_pass(
+                principal_id="real-reviewer", principal_kind="agent",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+
+    def test_undelegated_human_reviewer_is_still_unknown(self):
+        # Regression guard on the claims model: nobody claims, so the verdict
+        # stays UNKNOWN exactly as it always has for a bare human review.
+        events = (
+            _author_events("glm") + self._human_proxy_pass()
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+    def test_undeclared_agent_proxy_still_claims_unknown(self):
+        # An AGENT proxy that declares nothing is an undeclared model, and its
+        # claim survives even when the principal declared a distinct lineage.
+        events = (
+            _author_events("glm")
+            + [
+                _evt(
+                    "adversarial_pass", "agent-proxy", actor_kind="agent",
+                    actor_metadata=None,
+                    on_behalf_of={
+                        "principal_id": "real-reviewer",
+                        "principal_kind": "agent",
+                        "principal_lineage": "claude",
+                    },
+                    payload=REVIEW_NOTE,
+                ),
+            ]
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+    def test_human_proxy_for_opaque_principal_is_unknown(self):
+        events = (
+            _author_events("glm")
+            + self._human_proxy_pass(
+                principal_id="real-reviewer", principal_kind="ai-agent",
+                principal_lineage="claude",
+            )
+            + _accept_events("acceptor", "agent")
+        )
+        assert compute_assurance_level(events) == AssuranceLevel.SELF_REVIEWED
+        r = gate_rationale(events, GateProfile.STRICT)
+        assert r["lineage_relation"] == LineageRelation.UNKNOWN.value
+
+    def test_strict_human_gate_follows_the_claims(self):
+        prior = _author_events("glm") + self._human_proxy_pass(
+            principal_id="real-reviewer", principal_kind="agent",
+            principal_lineage="glm",
+        )
+        ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
+            human_gate(ctx, require_human_on_same_lineage=True)
+
+
 class TestDegenerateLineageValues:
     """PR #31 review B1/B2: neither ``model_lineage`` nor the ``on_behalf_of``
     fields are validated at the API boundary, so the assurance view must not
