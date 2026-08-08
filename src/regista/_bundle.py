@@ -15,6 +15,7 @@ import structlog
 
 from ._anchoring import AnchorReceipt, compute_content_anchor
 from ._archive_segments import (
+    _hash_event,
     _segment_chain_links,
     _verify_global_chain,
     _verify_work_item_chains,
@@ -468,6 +469,56 @@ def _list_principal_key_dicts(conn: DictConn) -> list[dict[str, Any]]:
     return [k.to_dict() for k in list_principal_keys_for_conn(conn)]
 
 
+# Manifest count key -> the bundle section it declares the size of. Every
+# count the exporter writes into the manifest is listed here; a count with no
+# section to compare against would be an unchecked claim (WI-255).
+_MANIFEST_COUNT_SECTIONS = (
+    ("event_count", "events"),
+    ("anchor_receipt_count", "anchor_receipts"),
+    ("segment_count", "segments"),
+    ("public_key_count", "public_keys"),
+)
+
+
+def _verify_manifest_counts(
+    manifest: dict[str, Any], bundle: dict[str, Any]
+) -> list[str]:
+    """Check every count the manifest declares against the section it describes.
+
+    The manifest is the auditor-facing summary of the bundle, but nothing used
+    to compare it to the document it summarises: the report's ``event_count``
+    is taken from the parsed section, so deleting the tail event and leaving
+    ``manifest.event_count`` alone was silently normalised away and the bundle
+    still verified (WI-255). The bundle hash is unkeyed and therefore
+    attacker-recomputable, so this check does not make the artifact
+    unforgeable — it makes it internally inconsistent to remove a record
+    without also rewriting the claim about how many records there are.
+
+    Counts absent from the manifest are not invented: v1 bundles carry no
+    ``public_key_count``, and a manifest key that is missing declares nothing.
+    A count present but not an integer is a malformed claim and fails closed.
+    Returns a list of error strings (empty when every declared count agrees).
+    """
+    errors: list[str] = []
+    for key, section in _MANIFEST_COUNT_SECTIONS:
+        if key not in manifest:
+            continue
+        declared = manifest[key]
+        actual = len(bundle.get(section) or [])
+        if isinstance(declared, bool) or not isinstance(declared, int):
+            errors.append(
+                f"Manifest count mismatch: manifest.{key}={declared!r} is not an "
+                f"integer (section '{section}' holds {actual} record(s))"
+            )
+            continue
+        if declared != actual:
+            errors.append(
+                f"Manifest count mismatch: manifest.{key}={declared} but section "
+                f"'{section}' holds {actual} record(s)"
+            )
+    return errors
+
+
 def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationReport:
     path = Path(bundle_path)
     if not path.is_file():
@@ -515,6 +566,8 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
             f"supported: {sorted(_SUPPORTED_FORMAT_VERSIONS)}"
         )
 
+    errors.extend(_verify_manifest_counts(manifest, bundle))
+
     events: list[Event] = []
     for i, ed in enumerate(events_data):
         try:
@@ -550,7 +603,12 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
     seg_chain_ok = True
     seg_chain_error: str | None = None
     if segments_data:
-        seg_chain_ok, seg_chain_error = _verify_segment_chain_offline(segments_data, events)
+        seg_chain_ok, seg_chain_error = _verify_segment_chain_offline(
+            segments_data,
+            events,
+            since_seq=manifest.get("since_seq"),
+            until_seq=manifest.get("until_seq"),
+        )
         if not seg_chain_ok:
             errors.append(f"Segment chain error: {seg_chain_error}")
 
@@ -888,23 +946,219 @@ def _verify_anchor_offline(
     }
 
 
-def _verify_segment_chain_offline(
-    segments: list[dict[str, Any]], events: list[Event]
+def _exported_window(
+    since_seq: Any, until_seq: Any
+) -> tuple[int | None, int | None]:
+    """Translate the manifest's export window into inclusive seq bounds.
+
+    ``since_seq`` is exclusive on the export side (``global_seq > since_seq``)
+    and ``until_seq`` inclusive, so the exported window is
+    ``[since_seq + 1, until_seq]``. ``None`` on either side means unbounded —
+    and so does a non-integer, which is the strict direction: an unbounded
+    side subjects MORE segments to the full checks below, so a manifest that
+    garbles its own window cannot buy itself leniency.
+    """
+    lo = (
+        since_seq + 1
+        if isinstance(since_seq, int) and not isinstance(since_seq, bool)
+        else None
+    )
+    hi = (
+        until_seq
+        if isinstance(until_seq, int) and not isinstance(until_seq, bool)
+        else None
+    )
+    return lo, hi
+
+
+def _count_segment_events(
+    seg: dict[str, Any], events: list[Event], first: int, last: int
+) -> int:
+    """Count the bundle's events that belong to *seg*.
+
+    A segment is NOT simply "every event in ``[first, last]``": sealing selects
+    the events of work items that have reached a terminal state, so events of
+    other work items can be interleaved inside the segment's seq range and are
+    not members of it (see ``seal_segment``). The segment record carries the
+    ``work_item_ids`` it sealed, which is the same membership key the store
+    uses, so membership is ``work_item_id in seg.work_item_ids`` bounded by the
+    segment's own declared range. A record with no ``work_item_ids`` (an older
+    row) falls back to the seq range excluding seal events, mirroring
+    ``verify_segment``'s fallback when a segment carries no ``event_ids``.
+    """
+    wi_ids = {str(w) for w in (seg.get("work_item_ids") or [])}
+    count = 0
+    for evt in events:
+        gseq = evt.global_seq
+        if gseq is None or gseq < first or gseq > last:
+            continue
+        if wi_ids:
+            if str(evt.work_item_id) in wi_ids:
+                count += 1
+        elif evt.entity_kind != "segment":
+            count += 1
+    return count
+
+
+def _verify_segment_record_offline(
+    seg: dict[str, Any],
+    events: list[Event],
+    events_by_seq: dict[int, Event],
+    lo: int | None,
+    hi: int | None,
 ) -> tuple[bool, str | None]:
-    if len(segments) <= 1:
+    """Validate one segment record against the events the bundle contains.
+
+    This is the offline mirror of ``verify_segment``: the segment's
+    ``head_hash`` must be the hash of the event at its ``last_global_seq``, and
+    its ``event_count`` must equal the number of its events in the bundle.
+    Before this check the offline verifier read a segment's ``head_hash`` only
+    as the *predecessor* side of an inter-segment link, so the terminal (or
+    sole) segment's metadata was never verified against anything — tampering
+    it and recomputing the unkeyed bundle hash produced ``verified=True``
+    (WI-254).
+
+    WINDOWED EXPORTS (WI-240/WI-249). A chunked export keeps every segment
+    that OVERLAPS the window, so a kept segment may be only partly inside it.
+    The rule, applied against the window the manifest declares:
+
+    * ``last_global_seq <= hi`` — the segment's terminal event is inside the
+      window, so it must be present and its hash must equal ``head_hash``.
+      This holds even when the window truncates the segment's *start*: the
+      tail event is what ``head_hash`` commits to, and a low-side truncation
+      does not remove it.
+    * ``first_global_seq >= lo`` as well — the whole segment is inside the
+      window, so ``event_count`` is a claim the bundle can settle and must.
+    * Otherwise the window cuts the segment and the bundle does not claim to
+      hold all of it; ``head_hash``/``event_count`` describe events the
+      artifact deliberately excludes and cannot be checked here. They are
+      skipped, not assumed — boundary sanity and the inter-segment linkage
+      still apply.
+
+    Two consequences worth stating plainly. (1) A bundle whose manifest
+    declares a window that ends before a segment's ``last_global_seq``
+    disclaims completeness for that segment, so an attacker who rewrites the
+    manifest into a claimed window can still put unverifiable metadata on the
+    segments the window cuts — an inherent limit of an unkeyed bundle hash,
+    and the reason the manifest's ``since_seq``/``until_seq`` belong in the
+    auditor's chunk plan. (2) If a segment's events have been moved to
+    ``events_archive`` and are therefore missing from the bundle, the tail
+    event will be absent and this check fails closed — the same precondition
+    ``_segment_chain_links`` already documents for gap events.
+    """
+    seg_id = seg.get("segment_id", "?")
+    first = seg["first_global_seq"]
+    last = seg["last_global_seq"]
+
+    if hi is not None and last > hi:
+        # Upper-truncated by the export window: nothing below is checkable.
         return True, None
 
+    head_hash = seg.get("head_hash")
+    if head_hash is None:
+        return False, (
+            f"segment {seg_id} has no head_hash but its terminal event "
+            f"(global_seq {last}) is inside the exported window"
+        )
+    try:
+        stored_head = bytes.fromhex(head_hash)
+    except (TypeError, ValueError):
+        return False, f"segment {seg_id} has a malformed head_hash: {head_hash!r}"
+
+    tail = events_by_seq.get(last)
+    if tail is None:
+        return False, (
+            f"segment {seg_id} claims last_global_seq={last} but the bundle "
+            f"holds no event at that global_seq — its head_hash anchors "
+            f"nothing (fail closed)"
+        )
+    recomputed_head = _hash_event(tail)
+    if recomputed_head is None:
+        return False, (
+            f"segment {seg_id}: event at last_global_seq={last} is missing "
+            f"canonical_envelope or signature, so head_hash cannot be checked"
+        )
+    if not _hmac.compare_digest(recomputed_head, stored_head):
+        return False, (
+            f"segment {seg_id} head_hash does not match the event at "
+            f"last_global_seq={last}: stored={head_hash}, "
+            f"recomputed={recomputed_head.hex()}"
+        )
+
+    if lo is not None and first < lo:
+        # Lower-truncated: head_hash was checkable, event_count is not.
+        return True, None
+
+    declared_count = seg.get("event_count")
+    actual_count = _count_segment_events(seg, events, first, last)
+    if declared_count != actual_count:
+        return False, (
+            f"segment {seg_id} declares event_count={declared_count} but the "
+            f"bundle holds {actual_count} of its event(s) in global_seq "
+            f"[{first}, {last}]"
+        )
+
+    return True, None
+
+
+def _verify_segment_chain_offline(
+    segments: list[dict[str, Any]],
+    events: list[Event],
+    *,
+    since_seq: Any = None,
+    until_seq: Any = None,
+) -> tuple[bool, str | None]:
     # Fail closed on malformed segments: a segment with no first_global_seq
     # cannot be placed in the chain, and silently sorting it first (the
     # default 0) would let a corrupt segment masquerade as the chain start.
+    # last_global_seq is equally load-bearing now — it is where the segment's
+    # head_hash is anchored (WI-254) — so an absent or nonsensical boundary is
+    # a refusal, not a skipped check.
     for seg in segments:
-        if seg.get("first_global_seq") is None:
+        seg_id = seg.get("segment_id", "?")
+        first = seg.get("first_global_seq")
+        last = seg.get("last_global_seq")
+        if first is None:
             return False, (
-                f"segment {seg.get('segment_id', '?')} has no first_global_seq "
+                f"segment {seg_id} has no first_global_seq "
                 f"— cannot order it in the segment chain (fail closed)"
+            )
+        if last is None:
+            return False, (
+                f"segment {seg_id} has no last_global_seq — its head_hash "
+                f"cannot be anchored to an event (fail closed)"
+            )
+        if (
+            isinstance(first, bool)
+            or isinstance(last, bool)
+            or not isinstance(first, int)
+            or not isinstance(last, int)
+        ):
+            return False, (
+                f"segment {seg_id} has non-integer bounds "
+                f"(first_global_seq={first!r}, last_global_seq={last!r})"
+            )
+        if first > last:
+            return False, (
+                f"segment {seg_id} has first_global_seq={first} greater than "
+                f"last_global_seq={last}"
             )
 
     sorted_segs = sorted(segments, key=lambda s: s["first_global_seq"])
+
+    # Segments partition the chain: they must not overlap. An overlap would
+    # let two records claim the same events (and the same tail), which the
+    # per-record checks below would then both "confirm".
+    for i in range(1, len(sorted_segs)):
+        prev_last = sorted_segs[i - 1]["last_global_seq"]
+        curr_first = sorted_segs[i]["first_global_seq"]
+        if curr_first <= prev_last:
+            return False, (
+                f"segments {sorted_segs[i - 1].get('segment_id', '?')} "
+                f"[..{prev_last}] and {sorted_segs[i].get('segment_id', '?')} "
+                f"[{curr_first}..] overlap — segment ranges must be disjoint "
+                f"and monotonic"
+            )
 
     # Events indexed by global_seq so the inter-segment gap can be sliced
     # without re-scanning the whole list for every consecutive pair.
@@ -912,6 +1166,17 @@ def _verify_segment_chain_offline(
         (e for e in events if e.global_seq is not None),
         key=lambda e: e.global_seq if e.global_seq is not None else 0,
     )
+    events_at_seq: dict[int, Event] = {
+        e.global_seq: e for e in events_by_seq if e.global_seq is not None
+    }
+
+    # Every segment record — including the terminal one and a sole segment,
+    # which the chain walk below never reaches as a predecessor (WI-254).
+    lo, hi = _exported_window(since_seq, until_seq)
+    for seg in sorted_segs:
+        ok, err = _verify_segment_record_offline(seg, events, events_at_seq, lo, hi)
+        if not ok:
+            return False, err
 
     for i in range(1, len(sorted_segs)):
         prev_seg = sorted_segs[i - 1]
