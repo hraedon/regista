@@ -609,9 +609,11 @@ Design consequences, stated so an implementer does not accidentally build author
 ### 4.2 Repository layout
 
 Under a GitHub account **distinct from the estate's operational identity**. The estate already
-holds two identities (`hraedon` personal, `pmerritt-elrio` work); the operational estate signs as
-one, the custodian repo lives under the other. This costs nothing and is the whole of the
-"third-party hosting" property available at this budget. It is *not* independence
+holds two separate accounts; the operational estate signs as one, the custodian repo lives under
+the other. (The account names are deliberately not written here — the repository's committed
+identifier gate forbids one of them, and the property that matters is *distinctness*, not which
+pair of names it is. The operator supplies both during Gate 1.) This costs nothing and is the
+whole of the "third-party hosting" property available at this budget. It is *not* independence
 (OPERATOR-FORGERY R3).
 
 ```
