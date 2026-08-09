@@ -31,10 +31,13 @@
     },
     {
       "category": "canonical-order",
-      "description": "JCS top-level key ordering (UTF-16BE) \u2014 not declaration order (V6-ENVEL...",
+      "description": "JCS key ordering by UTF-16BE code unit \u2014 not declaration order and not code-point order (V6-ENVELOPE \u00a75, _vendor/rfc8785.py:164), plus string escaping.",
       "expected_keys": [
         "canonical_bytes",
-        "top_level_key_order"
+        "payload_key_order",
+        "payload_key_order_by_code_point",
+        "top_level_key_order",
+        "utf16be_order_differs_from_code_point_order"
       ],
       "file": "v6-envelope-canonical-order.json",
       "name": "v6-envelope-canonical-order"
@@ -157,12 +160,50 @@
     },
     {
       "category": "bundle-merkle",
-      "description": "Empty tree has no root \u2014 an empty bundle has no membership to sign (BUN...",
+      "description": "Empty tree: MTH({}) = SHA256(empty string) (BUNDLE-V3 \u00a73.3, :214). Unreachable in practice \u2014 empty bundles are rejected \u2014 but frozen so two implementations cannot disagree about it.",
       "expected_keys": [
-        "membership_root"
+        "membership_root",
+        "reachable",
+        "why_unreachable"
       ],
       "file": "bundle-merkle-empty.json",
       "name": "bundle-merkle-empty"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Mixed-epoch tree: two legacy leaves and two v6 leaves in one membership tree (BUNDLE-V3 \u00a73.3 correction 1). The leaf domain and ordinal framing are identical either side of the seam; only the event_hash construction differs.",
+      "expected_keys": [
+        "leaves",
+        "membership_root"
+      ],
+      "file": "bundle-merkle-mixed-epoch.json",
+      "name": "bundle-merkle-mixed-epoch"
+    },
+    {
+      "category": "numeric-bounds",
+      "description": "V6-ENVELOPE \u00a72.5 as amended by P0.2: |v| < 2**53 for both integers and floats. Accepted boundary values are frozen; the rejected band records which values the canonicalizer catches and which only a strict parser can.",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "event_hash",
+        "payload_canonical_hash",
+        "rule",
+        "signature_hex"
+      ],
+      "file": "payload-numeric-bounds.json",
+      "name": "payload-numeric-bounds"
+    },
+    {
+      "category": "occurred-at-lexical-form",
+      "description": "The single accepted occurred_at spelling, with the spellings a strict parser must reject before any signature check (V6-ENVELOPE \u00a72.3, DD-4).",
+      "expected_keys": [
+        "canonical_bytes",
+        "event_hash",
+        "rejection_outcome",
+        "signature_hex"
+      ],
+      "file": "occurred-at-lexical-form.json",
+      "name": "occurred-at-lexical-form"
     },
     {
       "category": "workflow-definition-digest",
@@ -179,6 +220,7 @@
       "category": "review-subject",
       "description": "content_state_digest over a reduced event prefix (REVIEW-VERDICTS \u00a72.3,...",
       "expected_keys": [
+        "construction",
         "content_state_digest",
         "reduced_canonical_bytes",
         "reducer_version"
@@ -188,9 +230,12 @@
     },
     {
       "category": "review-subject",
-      "description": "subject_digest over the review subject object (REVIEW-VERDICTS \u00a72.3).",
+      "description": "subject_digest over the seven-member review subject (REVIEW-VERDICTS \u00a72.3, with subject_profile cut by RECONCILIATION:421). Artifact lists are declared unsorted and sorted before canonicalization.",
       "expected_keys": [
+        "artifacts_sorted",
         "canonical_bytes",
+        "declared_not_reviewed_sorted",
+        "members",
         "subject_digest"
       ],
       "file": "review-subject.json",
@@ -204,7 +249,8 @@
         "canonical_len",
         "credential_hash",
         "signature_hex",
-        "signature_input_domain"
+        "signature_input_domain",
+        "signed_document"
       ],
       "file": "delegation-credential.json",
       "name": "delegation-credential"
@@ -285,7 +331,7 @@
     "workflow_definition": "regista.workflow-definition.v1\u0000"
   },
   "test_fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
-  "test_key_id": "pk_34750f98bd59fcfc",
+  "test_key_id": "pk_1bf310ecef19e79a",
   "test_public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
   "test_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
 }

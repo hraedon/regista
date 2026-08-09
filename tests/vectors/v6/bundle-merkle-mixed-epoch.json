@@ -1,0 +1,137 @@
+{
+  "category": "bundle-merkle",
+  "description": "Mixed-epoch tree: two legacy leaves and two v6 leaves in one membership tree (BUNDLE-V3 \u00a73.3 correction 1). The leaf domain and ordinal framing are identical either side of the seam; only the event_hash construction differs.",
+  "expected": {
+    "leaves": [
+      "sha256:f455b1a5741091d365da217c9715a729821953132111b104a16ccf6d109f8432",
+      "sha256:31d31d0527240c7ab089c1c944a71c756d05e1d451302b6abf3fc22ada7ae6a5",
+      "sha256:4ae254cc445ce86cee282948899f1e91a07251f3618b55e0c4e726d073682dd5",
+      "sha256:8a9e7d9ecc33fe5845efe4046e6622e4974c8ec6ee0b84ad17f8f599425d7916"
+    ],
+    "membership_root": "sha256:a3fa1748cb5503d0fe6f12cd46b34e46b53aec1f8952261762c5e3c007056b83"
+  },
+  "input": {
+    "legacy_canonical_bytes": [
+      "{\"event_id\":\"old-1\",\"type\":\"legacy\"}",
+      "{\"event_id\":\"old-2\",\"type\":\"legacy\"}"
+    ],
+    "legacy_signatures_hex": [
+      "52ec5d8e674931b5be852dc253d6c29c9d7616bc8b6a2b7e4339520d90b3c014bfecc66e7bd526dfcf8d452268003021f5a0dc44f2cb95b39736693f264ec607",
+      "06dbe4a58a306cd72538759f79f4b6a1d46ef295be9b2474e7ff409f25968ce2c8e389cb21cdd198a3e88c41c80e75ac7a96343bc871cfd559fdd898a8be9d0a"
+    ],
+    "members": [
+      {
+        "envelope_version": 5,
+        "event_hash": "sha256:d76c9cf462c3e51d7e91b0d6fd088d9241c6af742e77d618d36e202de09f69d0",
+        "hash_construction": "sha256(canonical_envelope||signature)",
+        "scope_ordinal": 0
+      },
+      {
+        "envelope_version": 5,
+        "event_hash": "sha256:8945350fb8f6907fd6fdb484cf0ecdaa2ee47b5648396d5a252d70557f12c79f",
+        "hash_construction": "sha256(canonical_envelope||signature)",
+        "scope_ordinal": 1
+      },
+      {
+        "envelope_version": 6,
+        "event_hash": "sha256:55069855b63ae7e13e7f64e568131b21df1a0fa3986b691f8601680699783bf6",
+        "hash_construction": "sha256(regista.event.hash.v1\\x00||uint64be(len(env))||env||sig)",
+        "scope_ordinal": 2
+      },
+      {
+        "envelope_version": 6,
+        "event_hash": "sha256:346210567c3c528fa8f71ba2a5dbdd80ca4d94ce064bc9a220417808ccfe9669",
+        "hash_construction": "sha256(regista.event.hash.v1\\x00||uint64be(len(env))||env||sig)",
+        "scope_ordinal": 3
+      }
+    ],
+    "v6_envelopes": [
+      {
+        "actor": {
+          "kind": "agent",
+          "metadata": {},
+          "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+        },
+        "authorization": {
+          "credentials": [],
+          "mode": "direct"
+        },
+        "chain": {
+          "hash_algorithm": "sha-256",
+          "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+          "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+        },
+        "entity": {
+          "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+          "kind": "work_item"
+        },
+        "entity_seq": 17,
+        "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+        "occurred_at": "2026-08-08T12:34:56.123456Z",
+        "payload": {
+          "note": "first v6 event"
+        },
+        "producer": {
+          "harness": "claude-code",
+          "harness_version": "1.0.0",
+          "model": "claude-opus-5",
+          "model_lineage": "anthropic/claude-opus-5"
+        },
+        "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+        "signing": {
+          "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+          "key_id": "pk_1bf310ecef19e79a",
+          "scheme_id": "ed25519"
+        },
+        "transition": "note_added",
+        "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+        "type": "regista.event",
+        "version": 6,
+        "workflow": null
+      },
+      {
+        "actor": {
+          "kind": "agent",
+          "metadata": {},
+          "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+        },
+        "authorization": {
+          "credentials": [],
+          "mode": "direct"
+        },
+        "chain": {
+          "hash_algorithm": "sha-256",
+          "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+          "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+        },
+        "entity": {
+          "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+          "kind": "work_item"
+        },
+        "entity_seq": 18,
+        "event_id": "4c0d2e8f-6053-5b9c-0d2e-1f3a4b5c6d7e",
+        "occurred_at": "2026-08-08T12:34:56.123456Z",
+        "payload": {
+          "note": "second v6 event"
+        },
+        "producer": {
+          "harness": "claude-code",
+          "harness_version": "1.0.0",
+          "model": "claude-opus-5",
+          "model_lineage": "anthropic/claude-opus-5"
+        },
+        "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+        "signing": {
+          "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+          "key_id": "pk_1bf310ecef19e79a",
+          "scheme_id": "ed25519"
+        },
+        "transition": "note_added",
+        "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+        "type": "regista.event",
+        "version": 6,
+        "workflow": null
+      }
+    ]
+  }
+}

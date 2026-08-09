@@ -2,7 +2,7 @@
   "category": "legacy-seam",
   "description": "The one v6 event whose previous_project_event_hash is a legacy-domain h...",
   "expected": {
-    "checkpoint_event_hash": "sha256:8dde6344c4ef826644b690b4eb3b61c0e33678001b0ec4d17e450b732f8e1b63",
+    "checkpoint_event_hash": "sha256:1b9f1d912c620ccd819d2a39bdea12e4b2a7a88ce0a3a2313212f57d93954a5b",
     "legacy_head_hash": "sha256:d76c9cf462c3e51d7e91b0d6fd088d9241c6af742e77d618d36e202de09f69d0"
   },
   "input": {
@@ -42,7 +42,7 @@
       "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
       "signing": {
         "key_binding_event_hash": null,
-        "key_id": "pk_34750f98bd59fcfc",
+        "key_id": "pk_1bf310ecef19e79a",
         "scheme_id": "ed25519"
       },
       "transition": "project_cryptographic_epoch_started",
