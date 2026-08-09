@@ -1,0 +1,57 @@
+{
+  "category": "legacy-seam",
+  "description": "The one v6 event whose previous_project_event_hash is a legacy-domain h...",
+  "expected": {
+    "checkpoint_event_hash": "sha256:8dde6344c4ef826644b690b4eb3b61c0e33678001b0ec4d17e450b732f8e1b63",
+    "legacy_head_hash": "sha256:d76c9cf462c3e51d7e91b0d6fd088d9241c6af742e77d618d36e202de09f69d0"
+  },
+  "input": {
+    "checkpoint_envelope": {
+      "actor": {
+        "kind": "agent",
+        "metadata": {},
+        "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": null,
+        "previous_project_event_hash": "sha256:d76c9cf462c3e51d7e91b0d6fd088d9241c6af742e77d618d36e202de09f69d0"
+      },
+      "entity": {
+        "id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+        "kind": "project"
+      },
+      "entity_seq": 1,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "previous_epoch": {
+          "head_hash_construction": "sha256(canonical_envelope||signature)"
+        }
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": "claude-opus-5",
+        "model_lineage": "anthropic/claude-opus-5"
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": null,
+        "key_id": "pk_34750f98bd59fcfc",
+        "scheme_id": "ed25519"
+      },
+      "transition": "project_cryptographic_epoch_started",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    },
+    "legacy_canonical_bytes": "{\"event_id\":\"old-1\",\"type\":\"legacy\"}",
+    "legacy_signature_hex": "52ec5d8e674931b5be852dc253d6c29c9d7616bc8b6a2b7e4339520d90b3c014bfecc66e7bd526dfcf8d452268003021f5a0dc44f2cb95b39736693f264ec607"
+  }
+}

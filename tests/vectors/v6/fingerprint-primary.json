@@ -1,0 +1,11 @@
+{
+  "category": "fingerprint",
+  "description": "Ed25519 key fingerprint: ed25519:sha256:<SHA256(raw_pubkey)> (TRUST-DOM...",
+  "expected": {
+    "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e"
+  },
+  "input": {
+    "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

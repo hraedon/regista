@@ -1,0 +1,13 @@
+{
+  "category": "bundle-merkle",
+  "description": "Single-leaf tree: MTH({d0}) = leaf_0 (BUNDLE-V3 \u00a73.3).",
+  "expected": {
+    "leaf_0": "sha256:f9cdc538b23cc4b3414391a503cad5f0f0dff7cdf615d26f8d82fa99e49ac5ad",
+    "membership_root": "sha256:f9cdc538b23cc4b3414391a503cad5f0f0dff7cdf615d26f8d82fa99e49ac5ad"
+  },
+  "input": {
+    "event_hashes": [
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]
+  }
+}

@@ -1,0 +1,291 @@
+{
+  "cases": [
+    {
+      "category": "v6-envelope",
+      "description": "The canonical 16-key v6 envelope with producer block (WI-277).",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "canonical_sha256",
+        "event_hash",
+        "payload_canonical_hash",
+        "signature_hex",
+        "signature_input_sha256"
+      ],
+      "file": "v6-envelope-basic.json",
+      "name": "v6-envelope-basic"
+    },
+    {
+      "category": "v6-envelope",
+      "description": "A service-principal event with no model producer (model: null).",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "canonical_sha256",
+        "event_hash",
+        "payload_canonical_hash",
+        "signature_hex"
+      ],
+      "file": "v6-envelope-no-model.json",
+      "name": "v6-envelope-no-model"
+    },
+    {
+      "category": "canonical-order",
+      "description": "JCS top-level key ordering (UTF-16BE) \u2014 not declaration order (V6-ENVEL...",
+      "expected_keys": [
+        "canonical_bytes",
+        "top_level_key_order"
+      ],
+      "file": "v6-envelope-canonical-order.json",
+      "name": "v6-envelope-canonical-order"
+    },
+    {
+      "category": "bootstrap",
+      "description": "Bootstrap A: trust_domain_established \u2014 first v6 event, null key binding.",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "event_hash",
+        "payload_canonical_hash"
+      ],
+      "file": "bootstrap-trust-genesis.json",
+      "name": "bootstrap-trust-genesis"
+    },
+    {
+      "category": "bootstrap",
+      "description": "Bootstrap B: cutover checkpoint \u2014 legacy head in previous_project_event...",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "event_hash",
+        "payload_canonical_hash"
+      ],
+      "file": "bootstrap-cutover-checkpoint.json",
+      "name": "bootstrap-cutover-checkpoint"
+    },
+    {
+      "category": "bootstrap",
+      "description": "Bootstrap C: project_initialized \u2014 genesis of a v6-native project, empt...",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "event_hash",
+        "payload_canonical_hash"
+      ],
+      "file": "bootstrap-project-initialized.json",
+      "name": "bootstrap-project-initialized"
+    },
+    {
+      "category": "fingerprint",
+      "description": "Ed25519 key fingerprint: ed25519:sha256:<SHA256(raw_pubkey)> (TRUST-DOM...",
+      "expected_keys": [
+        "fingerprint"
+      ],
+      "file": "fingerprint-primary.json",
+      "name": "fingerprint-primary"
+    },
+    {
+      "category": "fingerprint",
+      "description": "Second Ed25519 key fingerprint \u2014 proves fingerprints are key-distinct.",
+      "expected_keys": [
+        "fingerprint"
+      ],
+      "file": "fingerprint-second-key.json",
+      "name": "fingerprint-second-key"
+    },
+    {
+      "category": "version-aware-event-hash",
+      "description": "v6 event_hash (domain-tagged + length-framed) vs legacy sha256(env||sig...",
+      "expected_keys": [
+        "legacy_event_hash",
+        "v6_event_hash"
+      ],
+      "file": "version-aware-event-hash.json",
+      "name": "version-aware-event-hash"
+    },
+    {
+      "category": "legacy-seam",
+      "description": "The one v6 event whose previous_project_event_hash is a legacy-domain h...",
+      "expected_keys": [
+        "checkpoint_event_hash",
+        "legacy_head_hash"
+      ],
+      "file": "legacy-seam-checkpoint.json",
+      "name": "legacy-seam-checkpoint"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Single-leaf tree: MTH({d0}) = leaf_0 (BUNDLE-V3 \u00a73.3).",
+      "expected_keys": [
+        "leaf_0",
+        "membership_root"
+      ],
+      "file": "bundle-merkle-single.json",
+      "name": "bundle-merkle-single"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Two-leaf tree: MTH({d0,d1}) = node(leaf_0, leaf_1).",
+      "expected_keys": [
+        "leaf_0",
+        "leaf_1",
+        "membership_root",
+        "node_0_1"
+      ],
+      "file": "bundle-merkle-two.json",
+      "name": "bundle-merkle-two"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Three-leaf tree: RFC 6962 split-at-largest-power-of-two (k=2).",
+      "expected_keys": [
+        "leaves",
+        "membership_root"
+      ],
+      "file": "bundle-merkle-three.json",
+      "name": "bundle-merkle-three"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Five-leaf tree: exercises the odd-split at k=4.",
+      "expected_keys": [
+        "leaves",
+        "membership_root"
+      ],
+      "file": "bundle-merkle-five.json",
+      "name": "bundle-merkle-five"
+    },
+    {
+      "category": "bundle-merkle",
+      "description": "Empty tree has no root \u2014 an empty bundle has no membership to sign (BUN...",
+      "expected_keys": [
+        "membership_root"
+      ],
+      "file": "bundle-merkle-empty.json",
+      "name": "bundle-merkle-empty"
+    },
+    {
+      "category": "workflow-definition-digest",
+      "description": "Domain-separated + length-framed workflow definition digest (V6-ENVELOP...",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "definition_hash"
+      ],
+      "file": "workflow-definition-digest.json",
+      "name": "workflow-definition-digest"
+    },
+    {
+      "category": "review-subject",
+      "description": "content_state_digest over a reduced event prefix (REVIEW-VERDICTS \u00a72.3,...",
+      "expected_keys": [
+        "content_state_digest",
+        "reduced_canonical_bytes",
+        "reducer_version"
+      ],
+      "file": "review-subject-state.json",
+      "name": "review-subject-state"
+    },
+    {
+      "category": "review-subject",
+      "description": "subject_digest over the review subject object (REVIEW-VERDICTS \u00a72.3).",
+      "expected_keys": [
+        "canonical_bytes",
+        "subject_digest"
+      ],
+      "file": "review-subject.json",
+      "name": "review-subject"
+    },
+    {
+      "category": "delegation",
+      "description": "Action-delegation credential: two domains (signing input + hash) over t...",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "credential_hash",
+        "signature_hex",
+        "signature_input_domain"
+      ],
+      "file": "delegation-credential.json",
+      "name": "delegation-credential"
+    },
+    {
+      "category": "genesis",
+      "description": "Trust-domain genesis: core_digest \u2192 trust_domain_id (UUIDv5) + genesis...",
+      "expected_keys": [
+        "core_canonical_bytes",
+        "core_canonical_len",
+        "genesis_signature_hex",
+        "trust_domain_core_digest",
+        "trust_domain_id"
+      ],
+      "file": "trust-genesis.json",
+      "name": "trust-genesis"
+    },
+    {
+      "category": "checkpoint",
+      "description": "Trust-log checkpoint: domain-separated signing (TRUST-DOMAIN \u00a74.3).",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "signature_hex"
+      ],
+      "file": "trust-checkpoint.json",
+      "name": "trust-checkpoint"
+    },
+    {
+      "category": "checkpoint",
+      "description": "Externally published cutover checkpoint digest (V6-ENVELOPE \u00a76.1, CUTOV...",
+      "expected_keys": [
+        "canonical_bytes",
+        "checkpoint_digest"
+      ],
+      "file": "cutover-checkpoint.json",
+      "name": "cutover-checkpoint"
+    },
+    {
+      "category": "producer-policy",
+      "description": "Producer policy digest: domain-separated + length-framed (TRUST-DOMAIN...",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "producer_policy_digest"
+      ],
+      "file": "producer-policy.json",
+      "name": "producer-policy"
+    },
+    {
+      "category": "catalog",
+      "description": "Estate cutover catalog digest (TRUST-DOMAIN \u00a74.3).",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "estate_catalog_digest"
+      ],
+      "file": "estate-catalog.json",
+      "name": "estate-catalog"
+    }
+  ],
+  "description": "Byte-level conformance vectors for regista 0.6.0 (Gate 0, P0.3).",
+  "domain_tags": {
+    "bundle_member": "regista.bundle.member.v1\u0000",
+    "bundle_node": "regista.bundle.node.v1\u0000",
+    "checkpoint": "regista.checkpoint.v1\u0000",
+    "delegation_hash": "regista.action-delegation.hash.v1\u0000",
+    "delegation_signing": "regista.action-delegation.v1\u0000",
+    "estate_catalog": "regista.estate-catalog.v1\u0000",
+    "event_hash": "regista.event.hash.v1\u0000",
+    "event_signing": "regista.event.v6\u0000",
+    "producer_policy": "regista.producer-policy.v1\u0000",
+    "review_subject": "regista.review-subject.v1\u0000",
+    "review_subject_state": "regista.review-subject.state.v1\u0000",
+    "trust_checkpoint": "regista.trust-checkpoint.v1\u0000",
+    "trust_genesis_core": "regista.trust-genesis.core.v1\u0000",
+    "trust_genesis_signing": "regista.trust-genesis.v1\u0000",
+    "workflow_definition": "regista.workflow-definition.v1\u0000"
+  },
+  "test_fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+  "test_key_id": "pk_34750f98bd59fcfc",
+  "test_public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "test_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+}

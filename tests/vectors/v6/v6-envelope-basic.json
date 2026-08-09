@@ -1,0 +1,65 @@
+{
+  "category": "v6-envelope",
+  "description": "The canonical 16-key v6 envelope with producer block (WI-277).",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"note\":\"hello\",\"seq\":17},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_34750f98bd59fcfc\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":{\"definition_hash\":\"sha256:cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf\",\"name\":\"agent-notes\",\"registration_event_hash\":\"sha256:1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\",\"version\":3}}",
+    "canonical_len": 1315,
+    "canonical_sha256": "6457a7da80d47a86d317f15f1881f89f1c69a320b23a394c78e202964baab85d",
+    "event_hash": "sha256:d6d0a0de7e8fc12479e562fd22a469b7751a87748a045df0ae3c3bdd85a7930c",
+    "payload_canonical_hash": "sha256:75bd6195ffe26ca339b93c8e488d49f45dbe2181777e5c38428a57adf59e64cc",
+    "signature_hex": "8d104d4023795513a125936394224fadfa20a13d84b43ed3ce4d2b77de719d28a1638f29c4987f598bf47a9f50b4f339229c381e9a62b6576075b008db5daa06",
+    "signature_input_sha256": "75bd6195ffe26ca339b93c8e488d49f45dbe2181777e5c38428a57adf59e64cc"
+  },
+  "input": {
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "agent",
+        "metadata": {},
+        "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+        "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+      },
+      "entity": {
+        "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+        "kind": "work_item"
+      },
+      "entity_seq": 17,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "note": "hello",
+        "seq": 17
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": "claude-opus-5",
+        "model_lineage": "anthropic/claude-opus-5"
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "key_id": "pk_34750f98bd59fcfc",
+        "scheme_id": "ed25519"
+      },
+      "transition": "note_added",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": {
+        "definition_hash": "sha256:cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf",
+        "name": "agent-notes",
+        "registration_event_hash": "sha256:1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
+        "version": 3
+      }
+    },
+    "signing_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "category": "canonical-order",
+  "description": "JCS top-level key ordering (UTF-16BE) \u2014 not declaration order (V6-ENVEL...",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"note\":\"order-test\"},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_34750f98bd59fcfc\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "top_level_key_order": [
+      "actor",
+      "authorization",
+      "chain",
+      "entity",
+      "entity_seq",
+      "event_id",
+      "occurred_at",
+      "payload",
+      "producer",
+      "project_instance_id",
+      "signing",
+      "transition",
+      "trust_domain_id",
+      "type",
+      "version",
+      "workflow"
+    ]
+  },
+  "input": {
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "agent",
+        "metadata": {},
+        "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+        "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+      },
+      "entity": {
+        "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+        "kind": "work_item"
+      },
+      "entity_seq": 17,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "note": "order-test"
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": "claude-opus-5",
+        "model_lineage": "anthropic/claude-opus-5"
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "key_id": "pk_34750f98bd59fcfc",
+        "scheme_id": "ed25519"
+      },
+      "transition": "note_added",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    }
+  }
+}

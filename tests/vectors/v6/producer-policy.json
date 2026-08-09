@@ -1,0 +1,43 @@
+{
+  "category": "producer-policy",
+  "description": "Producer policy digest: domain-separated + length-framed (TRUST-DOMAIN...",
+  "expected": {
+    "canonical_bytes": "{\"created_at\":\"2026-08-20T12:00:00.000000Z\",\"entries\":[{\"allowed_harnesses\":[\"claude-code\"],\"host\":\"mvmcc03\",\"key_fingerprints\":[\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\"],\"principal_id\":\"agent:mvmcc03\"},{\"allowed_harnesses\":[\"claude-code\",\"opencode\",\"codex\"],\"host\":\"mvmcc02\",\"key_fingerprints\":[\"ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827\"],\"principal_id\":\"agent:mvmcc02\"}],\"prev_commit\":null,\"trust_domain_core_digest\":\"sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.producer-policy\",\"version\":1}",
+    "canonical_len": 675,
+    "producer_policy_digest": "sha256:abb75014821c2a1c24db89179fa3c66ccef29287718640fba7cc8f349b7bfc08"
+  },
+  "input": {
+    "document": {
+      "created_at": "2026-08-20T12:00:00.000000Z",
+      "entries": [
+        {
+          "allowed_harnesses": [
+            "claude-code"
+          ],
+          "host": "mvmcc03",
+          "key_fingerprints": [
+            "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e"
+          ],
+          "principal_id": "agent:mvmcc03"
+        },
+        {
+          "allowed_harnesses": [
+            "claude-code",
+            "opencode",
+            "codex"
+          ],
+          "host": "mvmcc02",
+          "key_fingerprints": [
+            "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827"
+          ],
+          "principal_id": "agent:mvmcc02"
+        }
+      ],
+      "prev_commit": null,
+      "trust_domain_core_digest": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.producer-policy",
+      "version": 1
+    }
+  }
+}

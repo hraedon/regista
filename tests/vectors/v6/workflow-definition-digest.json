@@ -1,0 +1,36 @@
+{
+  "category": "workflow-definition-digest",
+  "description": "Domain-separated + length-framed workflow definition digest (V6-ENVELOP...",
+  "expected": {
+    "canonical_bytes": "{\"states\":[\"open\",\"in_progress\",\"reviewed\",\"done\"],\"transitions\":[{\"from_state\":\"open\",\"name\":\"start\",\"to_state\":\"in_progress\"},{\"from_state\":\"in_progress\",\"name\":\"adversarial_pass\",\"to_state\":\"reviewed\"},{\"from_state\":\"reviewed\",\"name\":\"accept\",\"to_state\":\"done\"}]}",
+    "canonical_len": 266,
+    "definition_hash": "sha256:744e4b5deabdd6255d9793c5b2d02592d88647c2fbde0a1b4f8db775fb44acc2"
+  },
+  "input": {
+    "definition": {
+      "states": [
+        "open",
+        "in_progress",
+        "reviewed",
+        "done"
+      ],
+      "transitions": [
+        {
+          "from_state": "open",
+          "name": "start",
+          "to_state": "in_progress"
+        },
+        {
+          "from_state": "in_progress",
+          "name": "adversarial_pass",
+          "to_state": "reviewed"
+        },
+        {
+          "from_state": "reviewed",
+          "name": "accept",
+          "to_state": "done"
+        }
+      ]
+    }
+  }
+}
