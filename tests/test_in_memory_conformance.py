@@ -536,8 +536,9 @@ def mem_sub():
 class TestBC189OrphanEventDetection:
     """Verify that orphan-event detection in in-memory replay mirrors Postgres behaviour."""
 
-    def test_orphan_with_created_event_counts_as_warning(self, mem_sub):
-        """An orphan work-item whose first event is 'created' is a warning (not halted)."""
+    def test_orphan_with_created_event_counts_as_halted(self, mem_sub):
+        """An orphan work-item whose first event is 'created' is halted (WI-266),
+        matching the Postgres backend's whole-store verdict."""
         from regista._types import Event
 
         orphan_id = uuid.uuid4()
@@ -565,9 +566,9 @@ class TestBC189OrphanEventDetection:
         mem_sub._work_items.pop(orphan_id, None)
 
         report = mem_sub.replay()
-        # The orphan with a 'created' event is a warning, not a halt
-        assert report.halted == 0
-        assert report.warnings >= 1
+        # WI-266: an orphan with a 'created' event is a halt, not a warning.
+        assert report.halted >= 1
+        assert report.warnings == 0
 
     def test_orphan_without_created_event_counts_as_halted(self, mem_sub):
         """An orphan work-item whose events do NOT start with 'created' is halted."""

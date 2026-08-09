@@ -177,7 +177,10 @@ class TestReplayCustomFieldsUpdate:
 
 
 class TestReplayOrphanEvents:
-    def test_orphan_with_created_event_warns(self, regista):
+    def test_orphan_with_created_event_halts(self, regista):
+        # WI-266: a projection row deleted out from under its created log is
+        # the same structural finding scoped replay halts on — halted, not a
+        # warning, so whole-store and scoped replay return the same verdict.
         wi, _evt = regista.create_work_item(
             "test_workflow", "feature", "agent-1",
             custom_fields={"title": "orphan created"},
@@ -189,7 +192,8 @@ class TestReplayOrphanEvents:
             )
 
         report = regista.replay()
-        assert report.warnings >= 1
+        assert report.halted >= 1
+        assert report.warnings == 0
 
     def test_orphan_without_created_event_halts(self, regista):
         from psycopg.sql import SQL
@@ -390,7 +394,7 @@ class TestInMemoryReplayParity:
         assert report.replayed_drift == 0
         assert report.halted == 0
 
-    def test_in_memory_replay_orphan_warning(self):
+    def test_in_memory_replay_orphan_halts(self):
         s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
         s.register_workflow_file(WORKFLOW_PATH)
 
@@ -401,7 +405,10 @@ class TestInMemoryReplayParity:
         del s._work_items[wi.work_item_id]
 
         report = s.replay()
-        assert report.warnings >= 1
+        # WI-266: orphan-with-created is halted in the InMemory backend too,
+        # matching Postgres.
+        assert report.halted >= 1
+        assert report.warnings == 0
 
     def test_in_memory_replay_count_matches(self):
         s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)

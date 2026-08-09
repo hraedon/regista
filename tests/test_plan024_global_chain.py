@@ -75,6 +75,9 @@ class TestPlan024ConcurrentGlobalChain:
             f"Expected 0 warnings, got {report.warnings}. "
             f"ok={report.replayed_ok}, drift={report.replayed_drift}"
         )
+        assert report.chain_breaks == 0, (
+            f"Expected 0 chain breaks, got {report.chain_breaks}"
+        )
 
     def test_concurrent_raw_appends_replay_clean(self, regista):
         wi, _ = regista.create_work_item(
@@ -139,8 +142,9 @@ class TestPlan024VerifierHashWalk:
 
         report = regista.replay()
         assert report.halted == 0
-        assert report.warnings >= 1, (
-            f"Expected >=1 warning for orphaned event, got {report.warnings}"
+        # WI-266: a chain finding is chain_breaks, not warnings.
+        assert report.chain_breaks >= 1, (
+            f"Expected >=1 chain break for orphaned event, got {report.chain_breaks}"
         )
 
     def test_hash_walk_no_genesis_reports_orphans(self, regista):
@@ -182,8 +186,8 @@ class TestPlan024VerifierHashWalk:
 
         report = regista.replay()
         assert report.halted == 0
-        assert report.warnings >= 1, (
-            f"Expected >=1 orphan warning with no genesis, got {report.warnings}"
+        assert report.chain_breaks >= 1, (
+            f"Expected >=1 orphan chain break with no genesis, got {report.chain_breaks}"
         )
 
     def test_unit_detects_cycle(self):
@@ -215,8 +219,8 @@ class TestPlan024VerifierHashWalk:
             mk("e3", head_b, env_a, sig_a),  # chains from e2, head = head_a
             # e3's head (head_a) has successor e2 (prev=head_a) -> walk e1->e2->e3->e2 cycle
         ]
-        warnings, _ = _verify_global_hash_chain(events)
-        assert warnings >= 1, f"Expected cycle warning, got {warnings}"
+        chain_breaks, _ = _verify_global_hash_chain(events)
+        assert chain_breaks >= 1, f"Expected cycle chain break, got {chain_breaks}"
 
     def test_unit_detects_fork(self):
         # Two events claiming the same predecessor hash -> fork warning.
@@ -248,8 +252,8 @@ class TestPlan024VerifierHashWalk:
                 "signature": b"s",
             },
         ]
-        warnings, _ = _verify_global_hash_chain(events)
-        assert warnings >= 1, f"Expected fork warning, got {warnings}"
+        chain_breaks, _ = _verify_global_hash_chain(events)
+        assert chain_breaks >= 1, f"Expected fork chain break, got {chain_breaks}"
 
     def test_compact_links_verify_identically_to_full_rows(self):
         """WI-217: the streaming replay walks compact links, not event rows.
@@ -348,7 +352,7 @@ class TestPlan024VerifierHashWalk:
                 from_links, tail_links = _verify_global_hash_chain(links, segments=segments)
 
             assert from_links == from_rows, (
-                f"{name}: compact links reported {from_links} warnings, "
+                f"{name}: compact links reported {from_links} chain breaks, "
                 f"full rows reported {from_rows}"
             )
             assert link_logs == row_logs, (
@@ -366,14 +370,14 @@ class TestPlan024VerifierHashWalk:
             # The walk follows hash links, so reversing the input must not change
             # the verdict. When several events carry a NULL prev link the walk
             # starts from the lowest-global_seq genesis (tie-broken on event_id),
-            # so the chosen root — and therefore the warning set — is stable
+            # so the chosen root — and therefore the chain-break set — is stable
             # regardless of row order.
-            reversed_links, _ = _verify_global_hash_chain(
+            reversed_breaks, _ = _verify_global_hash_chain(
                 list(reversed(links)), segments=segments
             )
-            assert reversed_links == from_links, (
+            assert reversed_breaks == from_links, (
                 f"{name}: verdict changed when the input order was reversed "
-                f"({reversed_links} vs {from_links}) — the walk is order-sensitive"
+                f"({reversed_breaks} vs {from_links}) — the walk is order-sensitive"
             )
 
             # The links must carry global_seq through faithfully — the walk
@@ -391,7 +395,7 @@ class TestPlan024VerifierHashWalk:
             # Sanity: each case must land on the verdict it is named for, or the
             # equivalence above would be vacuous.
             if name in clean:
-                assert from_links == 0, f"{name} should be clean, got {from_links} warnings"
+                assert from_links == 0, f"{name} should be clean, got {from_links} chain breaks"
             else:
                 assert from_links >= 1, f"{name} not detected when walking compact links"
 
@@ -425,17 +429,17 @@ class TestPlan024VerifierHashWalk:
 
         events = [g1, s1, g2, s2]
 
-        reference_warnings, reference_tail = _verify_global_hash_chain(list(events))
+        reference_breaks, reference_tail = _verify_global_hash_chain(list(events))
         assert reference_tail is not None
         assert reference_tail["event_id"] == "s1", (
             "lowest-global_seq genesis (g1) must be the canonical root"
         )
 
         for perm in itertools.permutations(events):
-            warnings, tail = _verify_global_hash_chain(list(perm))
-            assert warnings == reference_warnings, (
-                f"warning count changed under permutation {[e['event_id'] for e in perm]}: "
-                f"{warnings} vs {reference_warnings}"
+            breaks, tail = _verify_global_hash_chain(list(perm))
+            assert breaks == reference_breaks, (
+                f"chain-break count changed under permutation {[e['event_id'] for e in perm]}: "
+                f"{breaks} vs {reference_breaks}"
             )
             assert (tail or {}).get("event_id") == "s1", (
                 f"chain tail changed under permutation {[e['event_id'] for e in perm]}"
@@ -463,6 +467,9 @@ class TestPlan024VerifierHashWalk:
         assert report.halted == 0
         assert report.warnings == 0, (
             f"Expected 0 warnings for in-memory replay, got {report.warnings}"
+        )
+        assert report.chain_breaks == 0, (
+            f"Expected 0 chain breaks for in-memory replay, got {report.chain_breaks}"
         )
 
     def test_global_seq_matches_chain_order_with_cache1(self, regista):
@@ -559,6 +566,9 @@ class TestPlan024GenesisRace:
         report = regista.replay()
         assert report.warnings == 0, (
             f"Replay reported warnings after concurrent genesis: {report.warnings}"
+        )
+        assert report.chain_breaks == 0, (
+            f"Replay reported chain breaks after concurrent genesis: {report.chain_breaks}"
         )
 
 

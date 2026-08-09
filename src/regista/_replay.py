@@ -85,7 +85,8 @@ class _ReplayStore:
                     "work_item_id UUID PRIMARY KEY, "
                     "category TEXT NOT NULL, "
                     "detail TEXT, "
-                    "warnings INTEGER NOT NULL DEFAULT 0)"
+                    "warnings INTEGER NOT NULL DEFAULT 0, "
+                    "chain_breaks INTEGER NOT NULL DEFAULT 0)"
                 ).format(Identifier(self.report_table))
             )
 
@@ -95,21 +96,22 @@ class _ReplayStore:
         category: str,
         detail: str | None,
         warnings: int,
+        chain_breaks: int = 0,
     ) -> None:
         # Always record the per-item result so `entries` is the portable access
         # path in both modes. In writable mode the same row is also persisted
         # to the (temporary) report table for the duration of the transaction.
         self._report_entries.append(
-            ReplayReportEntry(work_item_id, category, detail, warnings)
+            ReplayReportEntry(work_item_id, category, detail, warnings, chain_breaks)
         )
         if self._read_only:
             return
         self._conn.execute(
             SQL(
-                "INSERT INTO {} (work_item_id, category, detail, warnings) "
-                "VALUES (%s, %s, %s, %s)"
+                "INSERT INTO {} (work_item_id, category, detail, warnings, chain_breaks) "
+                "VALUES (%s, %s, %s, %s, %s)"
             ).format(Identifier(self.report_table)),
-            [work_item_id, category, detail, warnings],
+            [work_item_id, category, detail, warnings, chain_breaks],
         )
 
     def add_replay_row(self, row: dict[str, Any]) -> None:
@@ -255,8 +257,12 @@ def _verify_global_hash_chain(
     be chained iteratively, and a segment with a NULL
     ``first_event_prev_hash`` can stand in for an archived genesis event.
 
-    Returns ``(warning_count, chain_tail)`` where *chain_tail* is the last
-    live event reached by the walk (or ``None`` if the event list[Any] is empty).
+    Returns ``(chain_breaks, chain_tail)``.  Every finding this walk can
+    make is a structural chain failure (WI-266): a broken link, orphan,
+    fork, multiple genesis, or cycle is a tampering verdict, not an
+    advisory, so they all count as ``chain_breaks`` rather than warnings.
+    *chain_tail* is the last live event reached by the walk (or ``None``
+    if the event list is empty or no genesis exists).
     """
     from collections import defaultdict
 
@@ -279,7 +285,7 @@ def _verify_global_hash_chain(
         else:
             link_map[bytes(expected).hex()].append(evt)
 
-    warnings = 0
+    chain_breaks = 0
 
     # Multiple genesis events (NULL prev_global_event_hash) mean a fork or
     # corruption. Which one is the canonical chain start must not depend on the
@@ -295,7 +301,7 @@ def _verify_global_hash_chain(
 
     if len(genesis_events) > 1:
         for g in genesis_events[1:]:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_multiple_genesis",
                 event_id=str(g["event_id"]),
@@ -309,14 +315,14 @@ def _verify_global_hash_chain(
         genesis_seg = seg_by_prev.get("")
         if genesis_seg is None:
             for evt in events:
-                warnings += 1
+                chain_breaks += 1
                 log.warning(
                     "replay.global_chain_orphan",
                     event_id=str(evt["event_id"]),
                     global_seq=evt.get("global_seq"),
                     detail="no genesis event and no segment bridges from genesis",
                 )
-            return warnings, None
+            return chain_breaks, None
         current_head_hex = bytes(genesis_seg["head_hash"]).hex()
         start_from_segment = True
 
@@ -334,7 +340,7 @@ def _verify_global_hash_chain(
                     break
                 seg_id = bridging_seg.get("segment_id")
                 if seg_id in visited_segments:
-                    warnings += 1
+                    chain_breaks += 1
                     log.warning(
                         "replay.global_chain_segment_cycle",
                         segment_id=str(seg_id),
@@ -347,7 +353,7 @@ def _verify_global_hash_chain(
             current = successors[0]
             if len(successors) > 1:
                 for s in successors[1:]:
-                    warnings += 1
+                    chain_breaks += 1
                     log.warning(
                         "replay.global_chain_fork",
                         event_id=str(s["event_id"]),
@@ -360,7 +366,7 @@ def _verify_global_hash_chain(
 
         eid = current["event_id"]
         if eid in visited_events:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_cycle",
                 event_id=str(eid),
@@ -383,7 +389,7 @@ def _verify_global_hash_chain(
                 break
             seg_id = bridging_seg.get("segment_id")
             if seg_id in visited_segments:
-                warnings += 1
+                chain_breaks += 1
                 log.warning(
                     "replay.global_chain_segment_cycle",
                     segment_id=str(seg_id),
@@ -396,7 +402,7 @@ def _verify_global_hash_chain(
 
         if len(successors) > 1:
             for s in successors[1:]:
-                warnings += 1
+                chain_breaks += 1
                 log.warning(
                     "replay.global_chain_fork",
                     event_id=str(s["event_id"]),
@@ -408,7 +414,7 @@ def _verify_global_hash_chain(
 
     for evt in events:
         if evt["event_id"] not in visited_events:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_orphan",
                 event_id=str(evt["event_id"]),
@@ -416,7 +422,7 @@ def _verify_global_hash_chain(
                 detail="event not reachable from genesis via prev_global_event_hash links",
             )
 
-    return warnings, last_event
+    return chain_breaks, last_event
 
 
 class _ReplayHaltError(RegistaError):
@@ -553,6 +559,7 @@ def _replay_inner(
     drift_count = 0
     halted_count = 0
     total_warnings = 0
+    total_chain_breaks = 0
     total_principal_binding_failures = 0
 
     # WI-217: the event log is streamed one entity at a time through a
@@ -565,6 +572,7 @@ def _replay_inner(
     # the server side — the ordering is load bearing for both.
     chain_links: list[dict[str, Any]] = []
     scoped_event_count = 0
+    processed_wi_ids: set[Any] = set()
 
     def _handle_orphan_group(orphan_id: Any, orphan_evts: list[dict[str, Any]]) -> None:
         nonlocal halted_count, total_warnings
@@ -581,8 +589,25 @@ def _replay_inner(
                 event_count=len(orphan_evts),
             )
             return
+        # WI-266: a created work item whose projection row is gone is the same
+        # structural finding scoped replay calls `projection_row_missing` and
+        # halts on. It is a halt, not a warning, and it always gets a report
+        # entry so the two paths cannot disagree about the corpus.
         is_created = len(orphan_evts) > 0 and orphan_evts[0]["transition"] == "created"
-        if not is_created:
+        if is_created:
+            halted_count += 1
+            log.error(
+                "replay.orphan_work_item_missing_projection",
+                work_item_id=str(orphan_id),
+                event_count=len(orphan_evts),
+            )
+            store.add_report_entry(
+                orphan_id,
+                "halted",
+                "events exist but projection row missing from work_items_current",
+                0,
+            )
+        else:
             halted_count += 1
             log.error(
                 "replay.orphan_events",
@@ -595,17 +620,10 @@ def _replay_inner(
                 "Orphaned events with no work_item and no created event",
                 0,
             )
-        else:
-            total_warnings += 1
-            log.warning(
-                "replay.orphan_work_item",
-                work_item_id=str(orphan_id),
-                event_count=len(orphan_evts),
-            )
 
     def _process_group(entity_kind: str, wi_id: Any, events: list[dict[str, Any]]) -> None:
         nonlocal ok_count, drift_count, halted_count
-        nonlocal total_warnings, total_principal_binding_failures
+        nonlocal total_warnings, total_chain_breaks, total_principal_binding_failures
 
         # Only work-item entities have a projection row to rebuild.  Other
         # entity kinds (spec, principal) keep their own `event_seq` space —
@@ -620,8 +638,10 @@ def _replay_inner(
                 _handle_orphan_group(wi_id, events)
             return
 
+        processed_wi_ids.add(wi_id)
+
         try:
-            replayed_state, wi_warnings, wi_pb_failures = _replay_work_item(
+            replayed_state, wi_warnings, wi_chain_breaks, wi_pb_failures = _replay_work_item(
                 conn,
                 wi_id,
                 events,
@@ -630,6 +650,7 @@ def _replay_inner(
                 verify_principal_binding=verify_principal_binding,
             )
             total_warnings += wi_warnings
+            total_chain_breaks += wi_chain_breaks
             total_principal_binding_failures += wi_pb_failures
         except _ReplayHaltError as e:
             halted_count += 1
@@ -661,7 +682,7 @@ def _replay_inner(
 
         if _states_match(replayed_state, live_row):
             ok_count += 1
-            store.add_report_entry(wi_id, "replayed_ok", None, wi_warnings)
+            store.add_report_entry(wi_id, "replayed_ok", None, wi_warnings, wi_chain_breaks)
         else:
             drift_count += 1
             diff_fields = _diff_fields(replayed_state, live_row)
@@ -672,7 +693,9 @@ def _replay_inner(
                 f"replayed state={replayed_state['current_state']!r} "
                 f"seq={replayed_state['last_event_seq']}"
             )
-            store.add_report_entry(wi_id, "replayed_drift", detail, wi_warnings)
+            store.add_report_entry(
+                wi_id, "replayed_drift", detail, wi_warnings, wi_chain_breaks
+            )
 
         store.add_replay_row(
             {
@@ -779,6 +802,25 @@ def _replay_inner(
             0,
         )
 
+    # WI-266: a projection row with NO rows in `events` was never visited by
+    # the group loop — it was never compared at all, so a fabricated projection
+    # row and a fully deleted event log both used to report a clean replay.
+    # Diff the projection against the entity ids actually processed and halt on
+    # every unvisited row.
+    unvisited = wi_ids - processed_wi_ids
+    for missing_id in sorted(unvisited, key=str):
+        halted_count += 1
+        log.error(
+            "replay.projection_row_without_events",
+            work_item_id=str(missing_id),
+        )
+        store.add_report_entry(
+            missing_id,
+            "halted",
+            "projection row has no events in the event log",
+            0,
+        )
+
     if not scoped:
         segment_rows: list[dict[str, Any]] = []
         try:
@@ -791,23 +833,44 @@ def _replay_inner(
         except psycopg.errors.UndefinedTable:
             pass
 
-        chain_warnings, chain_tail = _verify_global_hash_chain(
-            chain_links, segments=segment_rows if segment_rows else None,
-        )
-        total_warnings += chain_warnings
+        head_row = conn.execute(
+            SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
+        ).fetchone()
 
-        if chain_tail is not None:
-            computed_head = _event_head_hash(chain_tail)
-            if computed_head is not None:
-                head_row = conn.execute(
-                    SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
-                ).fetchone()
+        if not chain_links:
+            # WI-266: no events at all, yet the head row still claims a head.
+            # The head proves events were appended — a wholesale-deleted log
+            # must be a hard halt, not a clean replay.
+            if head_row is not None and head_row["head_hash"] is not None:
+                halted_count += 1
+                log.error(
+                    "replay.global_chain_head_without_events",
+                    detail=(
+                        "event_chain_head.head_hash is set but the event log is "
+                        "empty; the log was appended to and then deleted"
+                    ),
+                )
+                store.add_report_entry(
+                    uuid.UUID(int=0),
+                    "halted",
+                    "event_chain_head is set but no events remain in the log",
+                    0,
+                )
+        else:
+            chain_breaks, chain_tail = _verify_global_hash_chain(
+                chain_links, segments=segment_rows if segment_rows else None,
+            )
+            total_chain_breaks += chain_breaks
+
+            if chain_tail is not None:
+                computed_head = _event_head_hash(chain_tail)
                 if (
-                    head_row is not None
+                    computed_head is not None
+                    and head_row is not None
                     and head_row["head_hash"] is not None
                     and not _hmac.compare_digest(bytes(head_row["head_hash"]), computed_head)
                 ):
-                    total_warnings += 1
+                    total_chain_breaks += 1
                     log.warning(
                         "replay.global_chain_head_mismatch",
                         detail=(
@@ -900,6 +963,7 @@ def _replay_inner(
         replayed_drift=drift_count,
         halted=halted_count,
         warnings=total_warnings,
+        chain_breaks=total_chain_breaks,
         principal_binding_failures=total_principal_binding_failures,
         principal_binding_verified=verify_principal_binding,
         entries=store.report_entries(),
@@ -961,7 +1025,7 @@ def _replay_work_item(
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
-) -> tuple[dict[str, Any], int, int]:
+) -> tuple[dict[str, Any], int, int, int]:
     state = None
     custom_fields: dict[str, Any] = {}
     needs_review = False
@@ -972,6 +1036,7 @@ def _replay_work_item(
     claim_expires_at: datetime | None = None
     claim_coalesce_threshold: float = 0.0
     warnings = 0
+    chain_breaks = 0
     principal_binding_failures = 0
 
     _principal_key_cache: dict[str, list[Any]] = {}
@@ -992,6 +1057,8 @@ def _replay_work_item(
 
         ok, err = _verify_hash_chain(evt, prev_evt)
         if not ok:
+            # WI-266: a broken per-work-item hash chain is a structural failure
+            # (tampering verdict), counted as chain_breaks, not warnings.
             log.warning(
                 "replay.hash_chain_broken",
                 work_item_id=str(wi_id),
@@ -999,7 +1066,7 @@ def _replay_work_item(
                 event_seq=evt["event_seq"],
                 detail=err,
             )
-            warnings += 1
+            chain_breaks += 1
 
         key_entry = None
         try:
@@ -1215,7 +1282,7 @@ def _replay_work_item(
         "claimed_by": claimed_by,
         "claim_expires_at": claim_expires_at,
         "claim_coalesce_threshold": claim_coalesce_threshold,
-    }, warnings, principal_binding_failures
+    }, warnings, chain_breaks, principal_binding_failures
 
 
 def _states_match(replayed: dict[str, Any], live: dict[str, Any]) -> bool:

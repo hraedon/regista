@@ -159,7 +159,8 @@ def test_bc300_replay_detects_global_chain_tamper(regista):
         )
 
     report = regista.replay()
-    assert report.warnings >= 1, "replay must warn on corrupted global chain"
+    # WI-266: a corrupted global chain is chain_breaks, not warnings.
+    assert report.chain_breaks >= 1, "replay must report a chain break on corrupted global chain"
 
 
 def test_bc300_replay_clean_global_chain_in_memory():
@@ -204,7 +205,9 @@ def test_bc300_in_memory_replay_detects_global_chain_tamper():
     sub._store.event_id_index[target.event_id] = corrupted
 
     report = sub.replay()
-    assert report.warnings >= 1, "InMemory replay must warn on corrupted global chain"
+    assert report.chain_breaks >= 1, (
+        "InMemory replay must report a chain break on corrupted global chain"
+    )
 
 
 def test_append_returns_db_assigned_global_seq(regista):
