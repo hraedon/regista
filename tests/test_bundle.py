@@ -67,6 +67,38 @@ def sub(project):
     s.close()
 
 
+def assert_bundle_findings_clean(report, context: str = "") -> None:
+    """Assert an offline bundle report carries no findings.
+
+    WI-267 tightened ``BundleVerificationReport.verified`` to also require
+    ``signatures_verified > 0``: a bundle in which *every* signature was
+    unverifiable used to report ``verified=True`` provided ``errors`` was
+    empty, which is "nothing was checked" reported as "everything checks out".
+
+    An HMAC store can never satisfy that requirement — verifying an HMAC needs
+    the secret, which a bundle deliberately never carries — so ``verified`` is
+    ``False`` for every HMAC fixture regardless of how sound the bundle is.
+    These tests are about window, chain, segment and manifest integrity, so
+    they assert those findings directly. Tests whose fixture uses ed25519 still
+    assert ``report.verified``.
+    """
+    assert report.errors == [], f"{context}{report.errors}"
+    assert report.bundle_hash_ok, f"{context}{report.bundle_hash_error}"
+    assert report.global_chain_ok, f"{context}{report.global_chain_error}"
+    assert report.work_item_chain_ok, f"{context}{report.work_item_chain_error}"
+    assert report.segment_chain_ok, f"{context}{report.segment_chain_error}"
+    assert all(av["verified"] for av in report.anchor_verifications), (
+        f"{context}{report.anchor_verifications}"
+    )
+
+
+def assert_self_verification_clean(result, context: str = "") -> None:
+    """As above, for the self-verification block ``export_audit_bundle`` returns."""
+    sv = result["self_verification"]
+    assert sv["errors"] == [], f"{context}{sv['errors']}"
+
+
+
 class TestExportAuditBundle:
     def test_export_creates_valid_json(self, sub, project, tmp_path):
         wi, _ = sub.create_work_item(
@@ -193,7 +225,7 @@ class TestVerifyAuditBundleOffline:
 
         report = verify_audit_bundle_offline(str(output))
 
-        assert report.verified
+        assert_bundle_findings_clean(report)
         assert report.event_count > 0
         assert report.global_chain_ok
         assert report.work_item_chain_ok
@@ -521,10 +553,14 @@ class TestOfflineSignatureVerification:
         sub.export_audit_bundle(str(output))
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified
+        # WI-267: `enforced_none_verified` stops being a passing state.
+        # Nothing was cryptographically checked, so the bundle is not
+        # `verified` — its findings are clean, which is a weaker claim.
+        assert not report.verified
         assert report.signature_check == "enforced_none_verified"
         assert report.signatures_verified == 0
         assert report.signatures_unverifiable == report.event_count
+        assert_bundle_findings_clean(report)
 
     def test_v1_bundle_signature_check_skipped(self, sub, tmp_path):
         """A v1 bundle carries no key registry, so its signature check is
@@ -553,8 +589,13 @@ class TestOfflineSignatureVerification:
         _rehash_and_write(bundle, output)
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, report.errors
+        # WI-267: a v1 manifest disables signature checking entirely, so no
+        # signature is verified and the bundle is not `verified`. It used to
+        # report `verified=True` — a format-version downgrade was a way to turn
+        # the signature check off and still get a pass.
+        assert not report.verified
         assert report.signature_check == "skipped_v1_bundle"
+        assert_bundle_findings_clean(report)
 
     def test_missing_public_key_fails_closed(self, ed25519_setup, tmp_path):
         sub, principal_id = ed25519_setup
@@ -595,7 +636,13 @@ class TestOfflineSignatureVerification:
 
         report = verify_audit_bundle_offline(str(output))
         assert not report.verified
-        assert any("Unknown signing scheme" in e for e in report.errors)
+        # WI-267 / S2-interim: the scheme is taken from the bundled key
+        # registry, not from the event row, so relabelling the row no longer
+        # selects (or fails to select) the verifier. The row's claim is
+        # compared against the key's real scheme and the disagreement is the
+        # finding; previously the row's claim drove `get_scheme` and the
+        # finding was "Unknown signing scheme".
+        assert any("scheme_mismatch" in e for e in report.errors), report.errors
 
     def test_registry_absent_is_recorded_and_fails_closed(
         self, ed25519_setup, tmp_path
@@ -656,7 +703,7 @@ class TestOfflineAnchorHashAgility:
         assert "sha-384" in hash_algs, "test must exercise a non-SHA-256 event"
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, f"offline verification failed: {report.errors}"
+        assert_bundle_findings_clean(report, "offline verification failed: ")
         assert report.anchor_receipt_count > 0
         assert all(av["verified"] for av in report.anchor_verifications)
 
@@ -771,7 +818,7 @@ class TestExportBounds:
 
         for chunk in (chunk1, chunk2):
             report = verify_audit_bundle_offline(str(chunk))
-            assert report.verified, f"{chunk.name}: {report.errors}"
+            assert_bundle_findings_clean(report, f"{chunk.name}: ")
 
         # Completeness is judged against the STORE, not the chunks' own
         # manifests (WI-240 review F3): the union of the chunk pair must be
@@ -815,7 +862,11 @@ class TestExportBounds:
         _drive_to_terminal(sub, wi)
 
         result = sub.export_audit_bundle(str(tmp_path / "sv.json"))
-        assert result["self_verification"]["verified"] is True
+        assert_self_verification_clean(result)
+        # WI-267: an HMAC store cannot produce an offline-authenticated bundle,
+        # so self_verification.verified is False and the export path says so.
+        assert result["self_verification"]["verified"] is False
+        assert result["self_verification"]["signatures_verified"] == 0
         assert result["bundle_bytes"] > 0
 
     def test_hash_mismatch_on_written_artifact_raises_and_keeps_it(
@@ -902,7 +953,7 @@ class TestExportBounds:
         assert bundle["manifest"]["anchor_receipts_excluded"] > 0
 
         report = verify_audit_bundle_offline(str(chunk))
-        assert report.verified, f"mid-chain chunk failed: {report.errors}"
+        assert_bundle_findings_clean(report, "mid-chain chunk failed: ")
 
     def test_prefix_chunk_keeps_only_receipts_it_can_prove(
         self, sub, project, tmp_path
@@ -937,7 +988,7 @@ class TestExportBounds:
         assert result["anchor_receipt_count"] >= 1
         assert result["anchor_receipts_excluded"] >= 1
         report = verify_audit_bundle_offline(str(prefix))
-        assert report.verified, f"prefix chunk failed: {report.errors}"
+        assert_bundle_findings_clean(report, "prefix chunk failed: ")
         assert all(av["verified"] for av in report.anchor_verifications)
 
 
@@ -1075,13 +1126,11 @@ class TestSegmentChainOfflineVerification:
         # The export self-verifies; with the bug the segment chain reports
         # verified=False and export_audit_bundle would have logged a
         # verification error (and the CLI would exit 3).
-        assert result["self_verification"]["verified"] is True, (
-            result["self_verification"]["errors"]
-        )
+        assert_self_verification_clean(result)
         assert result["segment_count"] >= 2
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, report.errors
+        assert_bundle_findings_clean(report)
         assert report.segment_chain_ok, report.segment_chain_error
 
     def test_tampered_head_hash_fails_segment_chain(self, sub, tmp_path):
@@ -1140,15 +1189,14 @@ class TestSegmentChainOfflineVerification:
             result = sub.export_audit_bundle(
                 str(output), since_seq=since_seq, until_seq=until_seq
             )
-            assert result["self_verification"]["verified"] is True, (
-                f"window ({since_seq},{until_seq}] failed self-verification: "
-                f"{result['self_verification']['errors']}"
+            assert_self_verification_clean(
+                result,
+                f"window ({since_seq},{until_seq}] failed self-verification: ",
             )
             # Offline re-verification must agree.
             report = verify_audit_bundle_offline(str(output))
-            assert report.verified, (
-                f"window ({since_seq},{until_seq}] offline failed: "
-                f"{report.errors}"
+            assert_bundle_findings_clean(
+                report, f"window ({since_seq},{until_seq}] offline failed: ",
             )
 
     def test_windowed_export_window_starting_inside_first_segment_keeps_both_linked(
@@ -1171,9 +1219,7 @@ class TestSegmentChainOfflineVerification:
         result = sub.export_audit_bundle(
             str(output), since_seq=since_seq, until_seq=until_seq
         )
-        assert result["self_verification"]["verified"] is True, (
-            result["self_verification"]["errors"]
-        )
+        assert_self_verification_clean(result)
         # Both overlapping segments are kept, none excluded.
         assert result["segment_count"] >= 2
         assert result["segments_excluded"] == 0
@@ -1206,15 +1252,13 @@ class TestSegmentChainOfflineVerification:
         result = sub.export_audit_bundle(
             str(output), since_seq=since_seq, until_seq=until_seq
         )
-        assert result["self_verification"]["verified"] is True, (
-            result["self_verification"]["errors"]
-        )
+        assert_self_verification_clean(result)
         # Only segment B overlaps the window; segment A does not.
         assert result["segment_count"] == 1
         assert result["segments_excluded"] == 1
         # Offline re-verification must agree.
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, report.errors
+        assert_bundle_findings_clean(report)
 
     def test_windowed_export_sweep_self_verifies(self, sub, tmp_path):
         """WI-249 review F2 (exhaustive sweep): every ``since_seq``/
@@ -1279,14 +1323,13 @@ class TestSegmentChainOfflineVerification:
             result = sub.export_audit_bundle(
                 str(output), since_seq=since_seq, until_seq=until_seq
             )
-            assert result["self_verification"]["verified"] is True, (
-                f"window ({since_seq},{until_seq}] failed self-verification: "
-                f"{result['self_verification']['errors']}"
+            assert_self_verification_clean(
+                result,
+                f"window ({since_seq},{until_seq}] failed self-verification: ",
             )
             report = verify_audit_bundle_offline(str(output))
-            assert report.verified, (
-                f"window ({since_seq},{until_seq}] offline failed: "
-                f"{report.errors}"
+            assert_bundle_findings_clean(
+                report, f"window ({since_seq},{until_seq}] offline failed: ",
             )
             # Segment accounting must be consistent: kept + excluded == total
             # segments in the store for this project.
@@ -1552,7 +1595,7 @@ class TestSegmentRecordAnchoring:
         sub.export_audit_bundle(str(output), until_seq=b["first_global_seq"])
 
         clean = verify_audit_bundle_offline(str(output))
-        assert clean.verified, clean.errors
+        assert_bundle_findings_clean(clean)
 
         bundle = json.loads(output.read_text())
         partial = [
@@ -1834,7 +1877,7 @@ class TestSegmentSealReconciliation:
 
         full = tmp_path / "recon_full.json"
         sub.export_audit_bundle(str(full))
-        assert verify_audit_bundle_offline(str(full)).verified
+        assert_bundle_findings_clean(verify_audit_bundle_offline(str(full)))
 
         for since_seq, until_seq in [
             (None, b["last_global_seq"]),
@@ -1846,8 +1889,8 @@ class TestSegmentSealReconciliation:
                 str(out), since_seq=since_seq, until_seq=until_seq
             )
             report = verify_audit_bundle_offline(str(out))
-            assert report.verified, (
-                f"window ({since_seq},{until_seq}] failed: {report.errors}"
+            assert_bundle_findings_clean(
+                report, f"window ({since_seq},{until_seq}] failed: ",
             )
 
 
@@ -1990,8 +2033,8 @@ class TestDeclaredWindowIntegrity:
                 str(output), since_seq=since_seq, until_seq=until_seq
             )
             report = verify_audit_bundle_offline(str(output))
-            assert report.verified, (
-                f"window ({since_seq},{until_seq}] failed: {report.errors}"
+            assert_bundle_findings_clean(
+                report, f"window ({since_seq},{until_seq}] failed: ",
             )
 
 
@@ -2175,7 +2218,7 @@ class TestManifestCountAgreement:
         _rehash_and_write(bundle, output)
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, report.errors
+        assert_bundle_findings_clean(report)
         assert not any("Manifest count" in e for e in report.errors)
 
     def test_clean_bundle_has_no_count_errors(self, sub, tmp_path):
@@ -2191,7 +2234,7 @@ class TestManifestCountAgreement:
         sub.export_audit_bundle(str(output))
 
         report = verify_audit_bundle_offline(str(output))
-        assert report.verified, report.errors
+        assert_bundle_findings_clean(report)
         assert not any("Manifest count mismatch" in e for e in report.errors)
 
 

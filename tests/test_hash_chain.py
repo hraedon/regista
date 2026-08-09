@@ -106,8 +106,16 @@ class TestBC233HashChain:
             )
 
         report = sub.replay()
-        # WI-266: a broken hash chain is a structural tampering verdict — it
-        # counts as chain_breaks, not warnings.
+        # Both guarantees hold, and both are asserted.
+        #
+        # WI-266: a broken hash chain is a structural tampering verdict, so it
+        # counts as chain_breaks rather than as an advisory warning.
+        #
+        # WI-267: `prev_event_hash` is a *signed* field from envelope v3 on, so
+        # rewriting it in the row is also a reconciliation mismatch — caught by
+        # verification, which halts. Verification is now the first line of
+        # defence and the chain walk the second; neither replaces the other.
+        assert report.halted >= 1
         assert report.chain_breaks >= 1
 
     def test_append_event_api_persists_prev_hash(self, regista):
@@ -294,8 +302,11 @@ class TestBC311ReplayChainFields:
             )
 
         report = sub.replay()
+        # WI-267: a row with no canonical_envelope is UNVERIFIABLE — an
+        # evidentiary gap, not an attack — so replay still completes, but the
+        # gap is now *reported* instead of being silently treated as verified.
         assert report.halted == 0
-        assert report.warnings == 0
+        assert report.warnings >= 1
 
     def test_replay_succeeds_with_missing_envelope_in_memory(self):
         import dataclasses
@@ -322,4 +333,4 @@ class TestBC311ReplayChainFields:
 
         report = sub.replay()
         assert report.halted == 0
-        assert report.warnings == 0
+        assert report.warnings >= 1

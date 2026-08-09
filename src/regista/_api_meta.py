@@ -9,6 +9,7 @@ from ._types import Event
 
 if TYPE_CHECKING:
     from ._assurance import AssuranceLevel, GateProfile
+    from ._verification import VerificationResult
 
 _KNOWN_SPEC_SCHEMA_VERSIONS: frozenset[str] = frozenset()
 
@@ -33,7 +34,12 @@ class MetaApiMixin(_RegistaBase):
     def verify_event_signature(
         self, event: Event, *, public_key: bytes | None = None,
     ) -> bool:
-        """Verify an event's cryptographic signature.
+        """Verify an event's signature **and** that the row matches it.
+
+        WI-267: a valid signature over the stored envelope is no longer
+        sufficient. Every field the envelope version signs must also agree with
+        the row's column of the same name, so this returns ``False`` for an
+        event whose signature checks out but whose row was rewritten.
 
         When ``public_key`` is provided, verification uses only that key
         (no secret material needed — the independent-verification path).
@@ -45,21 +51,49 @@ class MetaApiMixin(_RegistaBase):
                 verification. If omitted, the project's key set is used.
 
         Returns:
-            ``True`` if the signature is valid, ``False`` otherwise.
+            ``True`` if the event is fully authenticated, or legacy-partial
+            under the default policy. Use :meth:`verify_event_result` for the
+            structured verdict, including which field disagreed.
         """
-        from ._signing import verify_event_with_public_key
+        return self.verify_event_result(event, public_key=public_key).accepted
+
+    def verify_event_result(
+        self, event: Event, *, public_key: bytes | None = None,
+    ) -> VerificationResult:
+        """The structured verification verdict for ``event``.
+
+        Carries envelope version and schema validity, signature validity,
+        trusted-key source, the row reconciliation result and *which* fields
+        disagreed, authenticated vs unsigned fields, and a final applicability
+        of ``fully_authenticated`` / ``legacy_partial`` / ``invalid`` /
+        ``unverifiable``.
+        """
+        from ._signing import verify_event_result_with_public_key
+        from ._verification import (
+            DEFAULT_POLICY,
+            EventRow,
+            KeySetResolver,
+            verify_event_strict,
+        )
 
         if public_key is None:
             self._require_open()
-            try:
-                key_entry = self._keys.get_key(event.key_id)
-            except RegistaError:
-                return False
-            if key_entry.public_key is not None:
-                public_key = key_entry.public_key
-            else:
-                public_key = key_entry.secret
-        return verify_event_with_public_key(event, public_key)
+            return verify_event_strict(
+                EventRow.from_event(event),
+                keys=KeySetResolver(self._keys),
+                policy=DEFAULT_POLICY,
+            )
+        # A caller-supplied key carries no scheme metadata of its own; the
+        # project key set is consulted for it where the project is open, so the
+        # scheme is still not taken from the row (WI-267 / S2-interim).
+        scheme_id: str | None = None
+        try:
+            scheme_id = self._keys.get_key(event.key_id).scheme
+        except (RegistaError, AttributeError):
+            scheme_id = None
+        return verify_event_result_with_public_key(
+            event, public_key, scheme_id=scheme_id,
+        )
 
     def verify_event_principal_binding(
         self, event: Event,

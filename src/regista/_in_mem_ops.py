@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._errors import ErrorCode, RegistaError
 from ._in_mem_base import _InMemoryBase
@@ -11,6 +11,9 @@ from ._types import (
     Event,
     ProjectCatalogEntry,
 )
+
+if TYPE_CHECKING:
+    from ._verification import VerificationResult
 
 
 class InMemOpsMixin(_InMemoryBase):
@@ -23,20 +26,54 @@ class InMemOpsMixin(_InMemoryBase):
     def verify_event_signature(
         self, event: Event, *, public_key: bytes | None = None,
     ) -> bool:
-        from ._signing import verify_event_with_public_key
+        """Verify an event's signature and reconcile the row against it.
 
-        if public_key is None:
-            if self._key_set is None:
-                return False
-            try:
-                key_entry = self._key_set.get_key(event.key_id)
-            except RegistaError:
-                return False
-            if key_entry.public_key is not None:
-                public_key = key_entry.public_key
-            else:
-                public_key = key_entry.secret
-        return verify_event_with_public_key(event, public_key)
+        Returns ``False`` for a keyless event. That is a *lossy* rendering of
+        the truth — such an event was never signed, so it is ``unverifiable``,
+        not "signature invalid". Use :meth:`verify_event_result` to tell the two
+        apart (CUTOVER-POLICY §5.3).
+        """
+        return self.verify_event_result(event, public_key=public_key).accepted
+
+    def verify_event_result(
+        self, event: Event, *, public_key: bytes | None = None,
+    ) -> VerificationResult:
+        """The structured verification verdict, matching the Postgres backend.
+
+        The InMemory store runs the same reconciliation as Postgres so the two
+        backends cannot disagree about what "verified" means. Its keyless mode
+        is reported as ``unverifiable`` / ``unsigned_event`` rather than being
+        pushed through the strict verifier as a malformed signed event.
+        """
+        from ._signing import verify_event_result_with_public_key
+        from ._verification import (
+            Backend,
+            EventRow,
+            KeySetResolver,
+            StaticKeyResolver,
+            VerificationPolicy,
+            verify_event_strict,
+        )
+
+        policy = VerificationPolicy()
+        row = EventRow.from_event(event, backend=Backend.IN_MEMORY)
+        if public_key is not None:
+            scheme_id: str | None = None
+            if self._key_set is not None:
+                try:
+                    scheme_id = self._key_set.get_key(event.key_id).scheme
+                except RegistaError:
+                    scheme_id = None
+            return verify_event_result_with_public_key(
+                event, public_key, scheme_id=scheme_id, backend=Backend.IN_MEMORY,
+            )
+        if self._key_set is None:
+            return verify_event_strict(
+                row, keys=StaticKeyResolver(material=b""), policy=policy,
+            )
+        return verify_event_strict(
+            row, keys=KeySetResolver(self._key_set), policy=policy,
+        )
 
     @staticmethod
     def validate_actor_metadata(

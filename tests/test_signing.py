@@ -13,6 +13,7 @@ from regista._signing import (
     build_signing_envelope_v4,
     build_signing_envelope_v5,
     classify_envelope_version,
+    verify_event_result,
 )
 from regista._signing_scheme import HMACSHA256Scheme
 from regista._testing import KeySet, raw_transaction, sign_event, verify_event
@@ -113,6 +114,11 @@ class TestAC26JsonbDriftSurvival:
         key_set = KeySet(KEY_PATH)
         key_entry = key_set.active_key()
 
+        # WI-267: verify_event's arguments describe the ROW, and every field
+        # the envelope signs must agree with them. Passing fewer than the
+        # envelope signs (this test used to omit actor_kind/actor_metadata for
+        # a v5 event) is a disagreement with the signed bytes, not a
+        # convenience.
         assert verify_event(
             event_id=evt.event_id,
             work_item_id=evt.work_item_id,
@@ -128,6 +134,12 @@ class TestAC26JsonbDriftSurvival:
             canonical_hash=evt.payload_canonical_hash,
             key=key_entry.secret,
             stored_envelope=evt.canonical_envelope,
+            entity_kind=evt.entity_kind,
+            hash_alg=evt.hash_alg,
+            prev_event_hash=evt.prev_event_hash,
+            prev_global_event_hash=evt.prev_global_event_hash,
+            actor_kind=evt.actor_kind,
+            actor_metadata=evt.actor_metadata,
         )
 
     def test_transition_event_signature_verifies_with_stored_envelope(self, regista):
@@ -251,7 +263,20 @@ class TestDowngradeEnvelopeFiltering:
             stored_envelope=tampered_envelope,
         )
 
-    def test_verify_all_candidates_when_no_stored_envelope(self):
+    def test_missing_stored_envelope_is_unverifiable_not_rebuilt(self):
+        """WI-267: candidate rebuilding is deleted, not disabled.
+
+        This test used to assert the opposite — that a v1-signed event with NO
+        stored envelope verifies because ``verify_event`` rebuilds candidates
+        from the row columns. Those candidates are built from the very columns
+        an attacker rewrites, so the fallback was the escape hatch S1 removes.
+        A row with no envelope is now ``unverifiable``: nothing failed, there is
+        nothing to check, and reconstructing the envelope is an explicit offline
+        operator action (CUTOVER-POLICY §4), never something the verify path
+        does on the fly.
+        """
+        from regista._verification import Applicability, FailureReason
+
         key_set = KeySet(KEY_PATH)
         key_entry = key_set.active_key()
         event_id = uuid.uuid4()
@@ -267,7 +292,7 @@ class TestDowngradeEnvelopeFiltering:
             legacy_envelope, key_entry.secret,
         )
 
-        assert verify_event(
+        kwargs = dict(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id="actor-1",
@@ -283,6 +308,71 @@ class TestDowngradeEnvelopeFiltering:
             key=key_entry.secret,
             stored_envelope=None,
         )
+        assert not verify_event(**kwargs)
+
+        result = verify_event_result(**kwargs)
+        assert result.applicability is Applicability.UNVERIFIABLE
+        assert FailureReason.ENVELOPE_ABSENT in result.reasons
+        assert result.mismatched_fields == ()
+
+    def test_stored_envelope_corruption_is_not_rescued_by_a_rebuild(self):
+        """A corrupted stored envelope must not fall through to a row rebuild."""
+        from regista._verification import Applicability
+
+        key_set = KeySet(KEY_PATH)
+        key_entry = key_set.active_key()
+        event_id = uuid.uuid4()
+        work_item_id = uuid.uuid4()
+        timestamp = datetime.now(UTC)
+        payload = {"foo": "bar"}
+
+        signature, canonical_hash, envelope = sign_event(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            key=key_entry.secret,
+            actor_kind="agent",
+            actor_metadata={"role": "dev"},
+        )
+
+        kwargs = dict(
+            event_id=event_id,
+            work_item_id=work_item_id,
+            actor_id="actor-1",
+            key_id=key_entry.key_id,
+            event_seq=1,
+            workflow_name="wf",
+            workflow_version=1,
+            timestamp=timestamp,
+            transition="t",
+            payload=payload,
+            signature=signature,
+            canonical_hash=canonical_hash,
+            key=key_entry.secret,
+            actor_kind="agent",
+            actor_metadata={"role": "dev"},
+        )
+
+        # Byte-level corruption of the stored envelope. Every row column still
+        # holds exactly the value that was signed, so the OLD code would rebuild
+        # a v5 candidate from the row and report success.
+        corrupted = bytearray(envelope)
+        corrupted[10] ^= 0xFF
+        result = verify_event_result(stored_envelope=bytes(corrupted), **kwargs)
+        assert result.applicability is Applicability.INVALID
+        assert not verify_event(stored_envelope=bytes(corrupted), **kwargs)
+
+        # Truncation: not parseable JSON at all.
+        result = verify_event_result(stored_envelope=envelope[:20], **kwargs)
+        assert result.applicability is Applicability.INVALID
+        assert not verify_event(stored_envelope=envelope[:20], **kwargs)
 
     def test_verify_v4_event_does_not_match_v3_envelope(self):
         key_set = KeySet(KEY_PATH)
@@ -699,12 +789,14 @@ class TestEnvelopeV5:
             actor_metadata=actor_metadata,
         )
 
-        # Verification without actor_kind: the signature matches the stored
-        # envelope, and the tamper check is skipped (actor_kind is None).
-        # This is the backward-compatible path for callers that don't pass
-        # actor_kind (e.g. old verify_event callers). The tamper check only
-        # fires when actor_kind IS provided but differs from the signed value.
-        assert verify_event(
+        # WI-267: omitting actor_kind no longer skips the check. This test
+        # used to assert the opposite and documented the reason as
+        # "backward-compatible path for callers that don't pass actor_kind" —
+        # i.e. a caller could describe a row without actor_kind and have a v5
+        # envelope that signs actor_kind="agent" accepted anyway. The arguments
+        # describe the row; a row with no actor_kind disagrees with the signed
+        # bytes, and disagreement is INVALID.
+        result = verify_event_result(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id="actor-1",
@@ -722,8 +814,10 @@ class TestEnvelopeV5:
             prev_event_hash=b"\x00" * 32,
             global_seq=1,
             prev_global_event_hash=b"\x01" * 32,
-            # actor_kind not provided → tamper check skipped, signature matches
+            # actor_kind deliberately not provided
         )
+        assert not result.accepted
+        assert "actor_kind" in result.mismatched_field_names
 
     def test_v5_with_none_actor_metadata(self, key_entry):
         """v5 with actor_metadata=None should sign and verify correctly."""

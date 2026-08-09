@@ -492,7 +492,7 @@ class TestBackwardCompatibility:
         payload = {"content": "plaintext content", "meta": "public"}
         key = b"test-hmac-key-for-signing!!"
         ts = datetime.now(UTC)
-        signature, canonical_hash, _envelope = sign_event(
+        signature, canonical_hash, envelope = sign_event(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id="actor-1",
@@ -519,6 +519,7 @@ class TestBackwardCompatibility:
             signature=signature,
             canonical_hash=canonical_hash,
             key=key,
+            stored_envelope=envelope,
         )
 
     def test_encrypted_event_verifies_with_ciphertext_payload(
@@ -533,7 +534,7 @@ class TestBackwardCompatibility:
         )
         key = b"test-hmac-key-for-signing!!"
         ts = datetime.now(UTC)
-        signature, canonical_hash, _envelope = sign_event(
+        signature, canonical_hash, envelope = sign_event(
             event_id=event_id,
             work_item_id=work_item_id,
             actor_id="actor-1",
@@ -560,6 +561,7 @@ class TestBackwardCompatibility:
             signature=signature,
             canonical_hash=canonical_hash,
             key=key,
+            stored_envelope=envelope,
         )
 
     def test_encrypted_event_fails_verification_if_payload_tampered(

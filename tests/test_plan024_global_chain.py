@@ -141,8 +141,15 @@ class TestPlan024VerifierHashWalk:
             )
 
         report = regista.replay()
-        assert report.halted == 0
-        # WI-266: a chain finding is chain_breaks, not warnings.
+        # Both guarantees hold. WI-267: `prev_global_event_hash` is signed from
+        # envelope v3 on, so rewriting it in the row is a reconciliation
+        # mismatch and verification halts. WI-266: the global hash walk still
+        # runs over the streamed chain links and still reports the orphan as a
+        # structural chain break. Verification is the first line of defence,
+        # the walk the second.
+        assert report.halted >= 1, (
+            f"Expected the rewritten global chain link to halt, got {report}"
+        )
         assert report.chain_breaks >= 1, (
             f"Expected >=1 chain break for orphaned event, got {report.chain_breaks}"
         )
@@ -185,7 +192,12 @@ class TestPlan024VerifierHashWalk:
                 )
 
         report = regista.replay()
-        assert report.halted == 0
+        # As above, both hold: the genesis event's prev_global_event_hash is a
+        # signed field, so rewriting it halts; and the walk, left with no
+        # genesis, still reports every event as an orphan chain break.
+        assert report.halted >= 1, (
+            f"Expected the rewritten genesis link to halt, got {report}"
+        )
         assert report.chain_breaks >= 1, (
             f"Expected >=1 orphan chain break with no genesis, got {report.chain_breaks}"
         )

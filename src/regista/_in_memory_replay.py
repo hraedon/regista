@@ -12,9 +12,15 @@ from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._event_store import InMemoryEventStore
 from ._keys import KeySet
-from ._signing import verify_event as _verify_event
-from ._signing_scheme import get_scheme
 from ._types import Event, ReplayReport
+from ._verification import (
+    Applicability,
+    Backend,
+    EventRow,
+    KeySetResolver,
+    VerificationPolicy,
+    verify_event_strict,
+)
 
 
 def _try_fromisoformat(value: str | None) -> datetime | None:
@@ -31,6 +37,26 @@ def _try_fromisoformat(value: str | None) -> datetime | None:
 
 
 log = structlog.get_logger()
+
+#: The InMemory backend verifies under the same policy as Postgres: v5 is fully
+#: authenticated, v4 is legacy-partial, everything else is invalid.
+_IN_MEMORY_POLICY = VerificationPolicy()
+
+#: Keyless replay. ``accept_unsigned_keyless`` permits an unsigned event to be
+#: *processed*; it never manufactures authentication — the result's
+#: applicability stays UNVERIFIABLE either way.
+_KEYLESS_POLICY = VerificationPolicy(accept_unsigned_keyless=True)
+
+
+class _NoKeyResolver:
+    """No key material at all: keyless mode has none by construction."""
+
+    def resolve(self, key_id: str | None) -> None:
+        return None
+
+
+_NO_KEY_RESOLVER = _NoKeyResolver()
+
 
 
 def _verify_hash_chain_in_memory(
@@ -305,39 +331,53 @@ def in_memory_replay(
                         else:
                             raise
                     if key_entry is not None:
-                        scheme = get_scheme(evt.scheme_id)
-                        verify_key = key_entry.secret
-                        if scheme.scheme_id == "ed25519" and key_entry.public_key:
-                            verify_key = key_entry.public_key
-                        if not _verify_event(
-                            event_id=evt.event_id,
-                            work_item_id=evt.work_item_id,
-                            actor_id=evt.actor_id,
-                            key_id=evt.key_id,
-                            event_seq=evt.event_seq,
-                            workflow_name=evt.workflow_name,
-                            workflow_version=evt.workflow_version,
-                            timestamp=evt.timestamp,
-                            transition=evt.transition,
-                            payload=evt.payload,
-                            signature=evt.signature,
-                            canonical_hash=evt.payload_canonical_hash,
-                            key=verify_key,
-                            stored_envelope=evt.canonical_envelope,
-                            on_behalf_of=evt.on_behalf_of,
-                            scheme=scheme,
-                            entity_kind=evt.entity_kind,
-                            hash_alg=evt.hash_alg,
-                            prev_event_hash=evt.prev_event_hash,
-                            prev_global_event_hash=evt.prev_global_event_hash,
-                            actor_kind=evt.actor_kind,
-                            actor_metadata=evt.actor_metadata,
-                        ):
+                        # WI-267: the InMemory backend runs the SAME
+                        # reconciliation as Postgres, so the two backends cannot
+                        # disagree about what "verified" means and a
+                        # reconciliation bug cannot hide here until it reaches
+                        # production.
+                        verification = verify_event_strict(
+                            EventRow.from_event(evt, backend=Backend.IN_MEMORY),
+                            keys=KeySetResolver(key_set),
+                            policy=_IN_MEMORY_POLICY,
+                        )
+                        if verification.applicability is Applicability.INVALID:
                             raise RegistaError(
                                 ErrorCode.REPLAY_HALTED,
                                 f"Signature verification failed for event {evt.event_id} "
-                                f"at seq {evt.event_seq}",
+                                f"at seq {evt.event_seq}: {verification.summary()}",
                             )
+                        if not verification.accepted:
+                            # See _replay.py: an evidentiary gap is reported,
+                            # not confused with an attack.
+                            warnings += 1
+                            log.warning(
+                                "replay.event_unverifiable",
+                                work_item_id=str(wi_id),
+                                event_id=str(evt.event_id),
+                                event_seq=evt.event_seq,
+                                detail=verification.summary(),
+                            )
+                else:
+                    # Keyless mode. The store wrote zero-byte dummy crypto
+                    # material, so there is nothing to verify — but "nothing was
+                    # checked" must be *reported*, not silently equated with
+                    # success (CUTOVER-POLICY §5.2). A row that is NOT the
+                    # keyless dummy while running keyless is reported too.
+                    verification = verify_event_strict(
+                        EventRow.from_event(evt, backend=Backend.IN_MEMORY),
+                        keys=_NO_KEY_RESOLVER,
+                        policy=_KEYLESS_POLICY,
+                    )
+                    if not verification.accepted:
+                        warnings += 1
+                        log.warning(
+                            "replay.event_unverifiable",
+                            work_item_id=str(wi_id),
+                            event_id=str(evt.event_id),
+                            event_seq=evt.event_seq,
+                            detail=verification.summary(),
+                        )
                 derived_last_seq = evt.event_seq
                 if evt.transition == "created":
                     p = evt.payload or {}

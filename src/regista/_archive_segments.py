@@ -12,9 +12,15 @@ from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._events import _advance_global_chain_head, _lock_global_chain_head
 from ._keys import KeySet
-from ._signing import sign_event, verify_event
+from ._signing import sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
+from ._verification import (
+    DEFAULT_POLICY,
+    EventRow,
+    KeySetResolver,
+    verify_event_strict,
+)
 
 log = structlog.get_logger()
 
@@ -68,44 +74,17 @@ def _verify_seal_event(
     evt = _row_to_event(row)
     if evt.signature is None or evt.canonical_envelope is None:
         return False
-
-    try:
-        key_entry = key_set.get_key(evt.key_id) if key_set else None
-    except RegistaError:
-        key_entry = None
-    if key_entry is None:
+    if key_set is None:
         return False
 
-    verify_key = key_entry.secret
-    scheme = get_scheme(evt.scheme_id)
-    if scheme.scheme_id == "ed25519" and key_entry.public_key:
-        verify_key = key_entry.public_key
-
-    return verify_event(
-        event_id=evt.event_id,
-        work_item_id=evt.work_item_id,
-        actor_id=evt.actor_id,
-        key_id=evt.key_id,
-        event_seq=evt.event_seq,
-        workflow_name=evt.workflow_name,
-        workflow_version=evt.workflow_version,
-        timestamp=evt.timestamp,
-        transition=evt.transition,
-        payload=evt.payload,
-        signature=evt.signature,
-        canonical_hash=evt.payload_canonical_hash,
-        key=verify_key,
-        stored_envelope=evt.canonical_envelope,
-        on_behalf_of=evt.on_behalf_of,
-        scheme=scheme,
-        prev_event_hash=evt.prev_event_hash,
-        global_seq=evt.global_seq,
-        prev_global_event_hash=evt.prev_global_event_hash,
-        entity_kind=evt.entity_kind,
-        hash_alg=evt.hash_alg,
-        actor_kind=evt.actor_kind,
-        actor_metadata=evt.actor_metadata,
-    )
+    # WI-267: the seal event goes through the one verification primitive, so
+    # the seal row is bound to the envelope that signed it rather than merely
+    # carrying a signature that happens to check out.
+    return verify_event_strict(
+        EventRow.from_event(evt),
+        keys=KeySetResolver(key_set),
+        policy=DEFAULT_POLICY,
+    ).accepted
 
 
 def _verify_global_chain(

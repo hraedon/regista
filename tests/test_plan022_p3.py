@@ -329,9 +329,25 @@ class TestIndependentVerification:
             alice_key = next(k for k in public_keys if k["principal_id"] == "alice")
             pub_bytes = base64.b64decode(alice_key["public_key"])
 
-            from regista._signing import verify_event_with_public_key
+            from regista._signing import verify_event_result_with_public_key
+            from regista._verification import Applicability, FailureReason
 
-            assert verify_event_with_public_key(evt_no_env, pub_bytes) is True
+            # WI-267: this used to assert `is True` — the verifier rebuilt a
+            # candidate envelope from the row columns when the stored envelope
+            # was missing, i.e. it authenticated the row against itself. With
+            # nothing stored there is nothing to verify: the event is
+            # UNVERIFIABLE (an evidentiary gap, CUTOVER-POLICY §4), not valid
+            # and not invalid. Reconstruction is an explicit offline operator
+            # action, never a verify-path fallback.
+            result = verify_event_result_with_public_key(evt_no_env, pub_bytes)
+            assert result.applicability is Applicability.UNVERIFIABLE
+            assert FailureReason.ENVELOPE_ABSENT in result.reasons
+            assert not result.accepted
+
+            # The same event WITH its envelope still verifies.
+            assert verify_event_result_with_public_key(
+                evt, pub_bytes, scheme_id="ed25519",
+            ).ok
         finally:
             sub.close()
             drop_project_schema(DSN, project)

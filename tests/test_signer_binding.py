@@ -244,7 +244,13 @@ class TestVerifyEventPrincipalBinding:
 
         result = sub.verify_event_principal_binding(events[0])
         assert result["verified"] is False
-        assert "scheme" in (result["error"] or "").lower()
+        # WI-267 / S2-interim: the HMAC-claiming row no longer takes the
+        # `elif scheme_id == "hmac-sha256": pass` escape out of the
+        # key-id-must-match filter. The principal has an ed25519 registry key,
+        # so the filter applies and the finding is the more precise one: the
+        # event's key_id is not registered for this principal at all. It used
+        # to fall through to the per-key loop and report "scheme-mismatch".
+        assert "key-id-mismatch" in (result["error"] or "").lower()
 
 
 class TestPrincipalKeyOpsFacade:

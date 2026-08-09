@@ -15,9 +15,16 @@ from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
-from ._signing import verify_event, verify_event_dict_principal_binding
-from ._signing_scheme import get_scheme, resolve_hash_function
+from ._signing import verify_event_dict_principal_binding
+from ._signing_scheme import resolve_hash_function
 from ._types import ReplayReport, ReplayReportEntry
+from ._verification import (
+    DEFAULT_POLICY,
+    Applicability,
+    EventRow,
+    KeySetResolver,
+    verify_event_strict,
+)
 
 log = structlog.get_logger()
 
@@ -1003,7 +1010,9 @@ def _parse_not_before(value: str | datetime | None) -> datetime | None:
 
 
 def _requires_principal_registration(
-    evt: dict[str, Any], asymmetric_schemes: frozenset[str],
+    evt: dict[str, Any],
+    asymmetric_schemes: frozenset[str],
+    key_entry: Any = None,
 ) -> bool:
     """Does this event's scheme demand a registered principal key?
 
@@ -1013,8 +1022,18 @@ def _requires_principal_registration(
     schemes do not — a shared HMAC key predates per-principal custody, and
     ``verify_principal_binding`` is documented as backward compatible with
     those deployments (WI-223).
+
+    WI-267 / S2-interim: the scheme is taken from the **resolved key's**
+    metadata, not from the row. ``scheme_id`` is outside every signed envelope
+    version, so a row that relabels itself ``hmac-sha256`` used to opt itself
+    out of the binding requirement entirely. The row's claim is now only a
+    fallback for events whose key could not be resolved at all — and those are
+    not verified either way.
     """
-    return (evt.get("scheme_id") or "hmac-sha256") in asymmetric_schemes
+    derived = getattr(key_entry, "scheme", None)
+    if derived is None:
+        derived = evt.get("scheme_id") or "hmac-sha256"
+    return derived in asymmetric_schemes
 
 
 def _replay_work_item(
@@ -1098,45 +1117,35 @@ def _replay_work_item(
                 raise
 
         if key_entry is not None:
-            scheme = get_scheme(evt.get("scheme_id", "hmac-sha256"))
-            verify_key = key_entry.secret
-            if scheme.scheme_id == "ed25519" and key_entry.public_key:
-                verify_key = key_entry.public_key
-            if not verify_event(
-                event_id=evt["event_id"],
-                work_item_id=evt["work_item_id"],
-                actor_id=evt["actor_id"],
-                key_id=evt["key_id"],
-                event_seq=evt["event_seq"],
-                workflow_name=evt["workflow_name"],
-                workflow_version=evt["workflow_version"],
-                timestamp=evt["timestamp"],
-                transition=evt["transition"],
-                payload=evt["payload"],
-                signature=bytes(evt["signature"]),
-                canonical_hash=bytes(evt["payload_canonical_hash"]),
-                key=verify_key,
-                stored_envelope=(
-                    bytes(evt["canonical_envelope"]) if evt["canonical_envelope"] else None
-                ),
-                on_behalf_of=evt["on_behalf_of"],
-                scheme=scheme,
-                entity_kind=evt.get("entity_kind", "work_item"),
-                hash_alg=evt.get("hash_alg", "sha-256"),
-                prev_event_hash=(
-                    bytes(evt["prev_event_hash"]) if evt.get("prev_event_hash") else None
-                ),
-                prev_global_event_hash=(
-                    bytes(evt["prev_global_event_hash"])
-                    if evt.get("prev_global_event_hash")
-                    else None
-                ),
-                actor_kind=evt.get("actor_kind"),
-                actor_metadata=evt.get("actor_metadata"),
-            ):
+            # WI-267: one primitive. The stored envelope is verified as-is and
+            # every field it signs must agree with the row column replay is
+            # about to apply — replay used to certify a history whose
+            # transition/payload had been rewritten under an intact signature.
+            verification = verify_event_strict(
+                EventRow.from_mapping(evt),
+                keys=KeySetResolver(key_set),
+                policy=DEFAULT_POLICY,
+            )
+            if verification.applicability is Applicability.INVALID:
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "
-                    f"at seq {evt['event_seq']}"
+                    f"at seq {evt['event_seq']}: {verification.summary()}"
+                )
+            if not verification.accepted:
+                # UNVERIFIABLE is an evidentiary gap, not an attack: a pre-002
+                # row has no envelope to check against, so nothing *failed*.
+                # Collapsing it into a halt would conflate "investigate a
+                # database write attack" with "this record predates the
+                # envelope column" — the exact collapse the result model
+                # exists to prevent (CUTOVER-POLICY §2 vs §4). It is reported,
+                # never silently passed.
+                warnings += 1
+                log.warning(
+                    "replay.event_unverifiable",
+                    work_item_id=str(wi_id),
+                    event_id=str(evt["event_id"]),
+                    event_seq=evt["event_seq"],
+                    detail=verification.summary(),
                 )
 
         if verify_principal_binding:
@@ -1169,7 +1178,9 @@ def _replay_work_item(
             # unregistered signer — the chain is not attributable to anyone
             # this project can name, which is exactly what the offline bundle
             # verifier rejects.
-            if pk_entries or _requires_principal_registration(evt, _asym_schemes):
+            if pk_entries or _requires_principal_registration(
+                evt, _asym_schemes, key_entry,
+            ):
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)
                 if not pb_result.verified:
                     warnings += 1

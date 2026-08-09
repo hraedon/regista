@@ -955,6 +955,16 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
                 "full report:",
                 file=sys.stderr,
             )
+            if result["event_count"] > 0 and sv["signatures_verified"] == 0:
+                print(
+                    "  - no event signature could be verified offline "
+                    f"({sv['signatures_unverifiable']} unverifiable). An HMAC "
+                    "store cannot produce an offline-authenticated bundle: the "
+                    "secret is deliberately never exported. Re-export from an "
+                    "asymmetric (ed25519) store, or pass --allow-unverified to "
+                    "accept an internally-consistent-only artifact.",
+                    file=sys.stderr,
+                )
             for err in sv["errors"]:
                 print(f"  - {err}", file=sys.stderr)
             # Exit codes are the API pipelines read (the WI-240 complaint):
@@ -986,6 +996,19 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                 )
             else:
                 print("Bundle verification FAILED:")
+                if result["event_count"] > 0 and result["signatures_verified"] == 0:
+                    # WI-267: "nothing was checked" is a failure, not a pass.
+                    # Say which one it is so an operator is not left staring at
+                    # an empty findings list.
+                    print(
+                        "  signatures: 0 of "
+                        f"{result['event_count']} event signature(s) could be "
+                        f"verified ({result['signatures_unverifiable']} "
+                        "unverifiable). Verifying a symmetric (HMAC) signature "
+                        "requires the secret, which a bundle deliberately never "
+                        "carries — such a bundle proves internal consistency "
+                        "and nothing cryptographic."
+                    )
                 if not result["bundle_hash_ok"]:
                     print(f"  bundle_hash: {result['bundle_hash_error']}")
                 if not result["global_chain_ok"]:
