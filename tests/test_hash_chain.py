@@ -302,11 +302,21 @@ class TestBC311ReplayChainFields:
             )
 
         report = sub.replay()
-        # WI-267: a row with no canonical_envelope is UNVERIFIABLE — an
-        # evidentiary gap, not an attack — so replay still completes, but the
-        # gap is now *reported* instead of being silently treated as verified.
-        assert report.halted == 0
-        assert report.warnings >= 1
+        # WI-267: a row with no canonical_envelope is normally UNVERIFIABLE —
+        # an evidentiary gap, not an attack — and replay completes while
+        # *reporting* the gap (`report.unverifiable`) instead of silently
+        # treating it as verified.
+        #
+        # This fixture is not that case. The event was signed as v5 and its
+        # `signature`/`payload_canonical_hash` are still present, so no
+        # envelope a genuinely pre-002 row could have carried reproduces them:
+        # the row contradicts its own cryptographic material and replay halts.
+        # That is deliberate — nulling the envelope and rewriting the row is
+        # a real attack, and it halted before WI-267 too (the rebuild-from-row
+        # candidate failed its signature check). See
+        # test_wi267_row_authentication.py for the genuinely-pre-002 case,
+        # which is counted rather than halted.
+        assert report.halted >= 1
 
     def test_replay_succeeds_with_missing_envelope_in_memory(self):
         import dataclasses
@@ -332,5 +342,6 @@ class TestBC311ReplayChainFields:
                     break
 
         report = sub.replay()
-        assert report.halted == 0
-        assert report.warnings >= 1
+        # As above (Postgres): the InMemory backend runs the same check, so the
+        # two backends cannot disagree about what "verified" means.
+        assert report.halted >= 1

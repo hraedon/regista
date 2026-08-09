@@ -36,6 +36,7 @@ from regista._signing import (
 from regista._signing_scheme import HMACSHA256Scheme
 from regista._testing import KeySet
 from regista._verification import (
+    AbsentEnvelopeProbe,
     Applicability,
     Backend,
     EnvelopeVersion,
@@ -48,6 +49,7 @@ from regista._verification import (
     VerificationResult,
     classify_envelope,
     parse_envelope_strict,
+    probe_absent_envelope,
     verify_event_strict,
 )
 from regista.testing import drop_project_schema
@@ -852,6 +854,204 @@ class TestResultModelInvariants:
         assert json.dumps(result.to_dict()).count(secret) == 0
 
 
+class TestNullColumnMasking:
+    """Review residual 1 & 2: a NULL column must not read as the signed value.
+
+    ``events_set_entity_id`` (migration 031) is a BEFORE **INSERT** trigger, so
+    it does not fire on UPDATE. Nulling a column an envelope signs must be a
+    mismatch, not a silent substitution of the default the signer happened to
+    use.
+    """
+
+    def test_nulled_entity_id_is_a_mismatch_not_authenticated(self, key_entry):
+        row = _v5_row(key_entry)
+        tampered = dataclasses.replace(row, entity_id=None)
+        # The `effective_entity_id` fallback would have masked this: with
+        # work_item_id untouched it still equals the signed entity_id.
+        assert tampered.effective_entity_id == row.entity_id
+
+        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        assert result.applicability is Applicability.INVALID
+        assert "entity_id" in result.mismatched_field_names
+        assert "entity_id" not in result.authenticated_fields
+
+    def test_nulled_work_item_id_breaks_the_alias(self, key_entry):
+        row = dataclasses.replace(_v5_row(key_entry), work_item_id=None)
+        result = verify_event_strict(row, keys=_resolver(key_entry))
+        assert result.applicability is Applicability.INVALID
+        assert "work_item_id!=entity_id" in result.mismatched_field_names
+        assert FailureReason.ENTITY_ALIAS_MISMATCH in result.reasons
+
+    @pytest.mark.parametrize("column", ["hash_alg", "entity_kind"])
+    def test_nulled_column_does_not_collapse_to_the_signed_default(
+        self, key_entry, column,
+    ):
+        """`row.get(x) or <default>` used to make a NULL match the signed value."""
+        signed_default = {"hash_alg": "sha-256", "entity_kind": "work_item"}[column]
+        row = _v5_row(key_entry)
+        assert getattr(row, column) == signed_default
+
+        raw = {
+            "event_id": row.event_id,
+            "work_item_id": row.work_item_id,
+            "entity_kind": row.entity_kind,
+            "entity_id": row.entity_id,
+            "actor_id": row.actor_id,
+            "actor_kind": row.actor_kind,
+            "actor_metadata": row.actor_metadata,
+            "key_id": row.key_id,
+            "event_seq": row.event_seq,
+            "workflow_name": row.workflow_name,
+            "workflow_version": row.workflow_version,
+            "timestamp": row.timestamp,
+            "hash_alg": row.hash_alg,
+            "on_behalf_of": row.on_behalf_of,
+            "transition": row.transition,
+            "payload": row.payload,
+            "prev_event_hash": row.prev_event_hash,
+            "prev_global_event_hash": row.prev_global_event_hash,
+            "global_seq": row.global_seq,
+            "canonical_envelope": row.canonical_envelope,
+            "signature": row.signature,
+            "payload_canonical_hash": row.payload_canonical_hash,
+            "scheme_id": row.row_scheme_id,
+        }
+        assert verify_event_strict(
+            EventRow.from_mapping(raw), keys=_resolver(key_entry),
+        ).ok
+
+        raw[column] = None
+        result = verify_event_strict(
+            EventRow.from_mapping(raw), keys=_resolver(key_entry),
+        )
+        assert result.applicability is Applicability.INVALID
+        assert column in result.mismatched_field_names
+        assert column not in result.authenticated_fields
+
+
+class TestAbsentEnvelopeProbe:
+    """Review residual 4: delete-envelope + rewrite-row must not fail OPEN.
+
+    Before WI-267 this attack halted replay, because the rebuild-from-row
+    candidate's signature did not match. Classifying it UNVERIFIABLE and
+    continuing would have been strictly weaker than the code being replaced.
+    """
+
+    def _v1_pre002_row(self, key_entry, *, on_behalf_of=None):
+        """A genuinely pre-002 row: v1-shaped signature, no stored envelope."""
+        event_id = uuid.uuid4()
+        wid = uuid.uuid4()
+        payload = {"legacy": "pre-002"}
+        envelope = build_signing_envelope(
+            event_id, wid, "agent-1", "created", payload, on_behalf_of,
+        )
+        sig, chash = HMACSHA256Scheme().sign(envelope, key_entry.secret)
+        return EventRow(
+            event_id=event_id, work_item_id=wid, entity_kind="work_item",
+            entity_id=wid, actor_id="agent-1", actor_kind="agent",
+            actor_metadata=None, key_id=key_entry.key_id, event_seq=1,
+            workflow_name="wf", workflow_version=1,
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC), hash_alg="sha-256",
+            on_behalf_of=on_behalf_of, transition="created", payload=payload,
+            prev_event_hash=None, prev_global_event_hash=None, global_seq=1,
+            canonical_envelope=None, signature=sig,
+            payload_canonical_hash=chash, row_scheme_id="hmac-sha256",
+        )
+
+    def test_a_genuine_pre002_row_probes_consistent(self, key_entry):
+        row = self._v1_pre002_row(key_entry)
+        assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.CONSISTENT
+        )
+
+    def test_the_on_behalf_of_dropped_v1_variant_probes_consistent(self, key_entry):
+        """CUTOVER-POLICY §4.1 names this shape explicitly."""
+        event_id = uuid.uuid4()
+        wid = uuid.uuid4()
+        bare = build_signing_envelope(
+            event_id, wid, "agent-1", "created", {"x": 1}, None,
+        )
+        sig, chash = HMACSHA256Scheme().sign(bare, key_entry.secret)
+        row = EventRow(
+            event_id=event_id, work_item_id=wid, entity_kind="work_item",
+            entity_id=wid, actor_id="agent-1", actor_kind="agent",
+            actor_metadata=None, key_id=key_entry.key_id, event_seq=1,
+            workflow_name="wf", workflow_version=1,
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC), hash_alg="sha-256",
+            on_behalf_of={"principal_id": "alice"},  # present on the row only
+            transition="created", payload={"x": 1},
+            prev_event_hash=None, prev_global_event_hash=None, global_seq=1,
+            canonical_envelope=None, signature=sig,
+            payload_canonical_hash=chash, row_scheme_id="hmac-sha256",
+        )
+        assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.CONSISTENT
+        )
+
+    def test_a_v2_pre002_row_probes_consistent(self, key_entry):
+        event_id = uuid.uuid4()
+        wid = uuid.uuid4()
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
+        envelope = build_signing_envelope_v2(
+            event_id=event_id, work_item_id=wid, actor_id="agent-1",
+            key_id=key_entry.key_id, event_seq=3, workflow_name="wf",
+            workflow_version=1, timestamp=ts, transition="start", payload=None,
+        )
+        sig, chash = HMACSHA256Scheme().sign(envelope, key_entry.secret)
+        row = EventRow(
+            event_id=event_id, work_item_id=wid, entity_kind="work_item",
+            entity_id=wid, actor_id="agent-1", actor_kind="agent",
+            actor_metadata=None, key_id=key_entry.key_id, event_seq=3,
+            workflow_name="wf", workflow_version=1, timestamp=ts,
+            hash_alg="sha-256", on_behalf_of=None, transition="start",
+            payload=None, prev_event_hash=None, prev_global_event_hash=None,
+            global_seq=1, canonical_envelope=None, signature=sig,
+            payload_canonical_hash=chash, row_scheme_id="hmac-sha256",
+        )
+        assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.CONSISTENT
+        )
+
+    def test_deleting_a_v5_envelope_probes_inconsistent(self, key_entry):
+        """The attack: NULL the envelope, keep the signature, rewrite at will."""
+        row = dataclasses.replace(_v5_row(key_entry), canonical_envelope=None)
+        assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.INCONSISTENT
+        )
+
+    def test_rewriting_a_pre002_row_probes_inconsistent(self, key_entry):
+        row = self._v1_pre002_row(key_entry)
+        tampered = dataclasses.replace(row, payload={"legacy": "rewritten"})
+        assert probe_absent_envelope(tampered, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.INCONSISTENT
+        )
+
+    def test_the_probe_is_unknown_when_it_cannot_run(self, key_entry):
+        class _Nothing:
+            def resolve(self, key_id):
+                return None
+
+        row = self._v1_pre002_row(key_entry)
+        assert probe_absent_envelope(row, keys=_Nothing()) is (
+            AbsentEnvelopeProbe.UNKNOWN
+        )
+        # And it never speaks about a row that HAS an envelope.
+        assert probe_absent_envelope(
+            _v5_row(key_entry), keys=_resolver(key_entry),
+        ) is AbsentEnvelopeProbe.UNKNOWN
+
+    def test_the_probe_can_never_grant_acceptance(self, key_entry):
+        """It convicts only. CONSISTENT changes no verdict."""
+        row = self._v1_pre002_row(key_entry)
+        assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
+            AbsentEnvelopeProbe.CONSISTENT
+        )
+        result = verify_event_strict(row, keys=_resolver(key_entry))
+        assert result.applicability is Applicability.UNVERIFIABLE
+        assert result.accepted is False
+        assert result.ok is False
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: the same mutations against a live Postgres store
 # ---------------------------------------------------------------------------
@@ -1016,13 +1216,53 @@ class TestEndToEndPostgres:
         )
         assert sub.replay().halted >= 1
 
-    def test_a_missing_envelope_is_reported_but_does_not_halt(self, regista):
+    def test_deleting_an_envelope_halts_because_the_row_contradicts_itself(
+        self, regista,
+    ):
+        """Review residual 4. This must not be weaker than the old code.
+
+        Nulling `canonical_envelope` on a v5 event leaves the `signature` and
+        `payload_canonical_hash` that envelope produced. No shape a genuinely
+        pre-002 row could have carried reproduces them, so the row contradicts
+        its own cryptographic material and replay halts — as it did before
+        WI-267, where the rebuild-from-row candidate failed its signature check.
+        """
         sub = regista
         _wi, evt = self._one_event(sub)
         _tamper(sub, evt.event_id, "canonical_envelope", None)
         report = sub.replay()
+        assert report.halted >= 1
+
+    def test_a_missing_envelope_on_a_consistent_row_is_counted_not_halted(
+        self, regista,
+    ):
+        """The pre-002 population: an evidentiary gap, reported as one.
+
+        Built by re-signing the row's own values in the v1 shape, i.e. exactly
+        what a legitimately envelopeless row looks like.
+        """
+        sub = regista
+        _wi, evt = self._one_event(sub)
+        v1 = build_signing_envelope(
+            evt.event_id, evt.work_item_id, evt.actor_id,
+            evt.transition, evt.payload, evt.on_behalf_of,
+        )
+        sig, chash = HMACSHA256Scheme().sign(v1, KeySet(KEY_PATH).active_key().secret)
+        _tamper(sub, evt.event_id, "canonical_envelope", None)
+        _tamper(sub, evt.event_id, "signature", sig)
+        _tamper(sub, evt.event_id, "payload_canonical_hash", chash)
+
+        report = sub.replay()
         assert report.halted == 0
-        assert report.warnings >= 1
+        # Counted as unverifiable — NOT folded into the warnings bucket.
+        assert report.unverifiable >= 1
+
+    def test_unverifiable_is_zero_on_a_clean_store(self, regista):
+        sub = regista
+        self._one_event(sub)
+        report = sub.replay()
+        assert report.unverifiable == 0
+        assert report.to_dict().get("unverifiable") is None
 
 
 class TestInMemoryBackendParity:
@@ -1053,6 +1293,23 @@ class TestInMemoryBackendParity:
             return  # halting via the error path is equally acceptable
         assert report.halted >= 1
 
+    def test_in_memory_envelope_deletion_halts_like_postgres(self):
+        """Backend parity for review residual 4."""
+        from regista.testing import InMemoryRegista
+
+        sub = InMemoryRegista(project="wi267-noenv", hmac_key_path=KEY_PATH)
+        sub.register_workflow_file(WORKFLOW_PATH)
+        sub.register_actor_role("agent-1", "agent")
+        wi, _ = sub.create_work_item(
+            workflow_name="test_workflow", work_item_type="feature",
+            actor_id="agent-1", custom_fields={"title": "noenv"},
+        )
+        evts = sub._store.events[wi.work_item_id]
+        evts[0] = dataclasses.replace(evts[0], canonical_envelope=None)
+        sub._store.event_id_index[evts[0].event_id] = evts[0]
+
+        assert sub.replay().halted >= 1
+
     def test_keyless_in_memory_reports_unverifiable(self):
         from regista.testing import InMemoryRegista
 
@@ -1069,5 +1326,10 @@ class TestInMemoryBackendParity:
         assert FailureReason.UNSIGNED_EVENT in result.reasons
         # Not "signature invalid" — this event was never signed.
         assert result.envelope_version is EnvelopeVersion.KEYLESS_DUMMY
-        # ...and the keyless replay reports that nothing was checked.
-        assert sub.replay().warnings >= 0
+        # ...and the keyless replay REPORTS that nothing was checked. The
+        # previous assertion here was `warnings >= 0`, which is vacuous — and
+        # the code behind it emitted nothing at all, because a genuine keyless
+        # dummy is `accepted` under the keyless policy.
+        report = sub.replay()
+        assert report.unverifiable >= 1
+        assert report.to_dict()["unverifiable"] >= 1

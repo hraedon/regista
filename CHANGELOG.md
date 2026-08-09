@@ -71,6 +71,35 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     into internally-consistent / authenticated-to-an-external-root is separate
     work (S3/S5).
 
+  Follow-ups from the cross-lineage review of the same work item:
+
+  - **A NULL column no longer reads as the signed value.** `entity_id` was
+    compared through a `work_item_id` fallback and the alias check exempted
+    NULLs, so `UPDATE events SET entity_id = NULL` (the migration-031 trigger is
+    BEFORE INSERT, so it does not re-fire) verified clean *and reported
+    `entity_id` as authenticated*. `EventRow.from_mapping` did the same for
+    `hash_alg` and `entity_kind` via `or <default>`. All four now mismatch.
+  - **Keyless InMemory replay reports what it did not check.** A genuine
+    keyless event is `accepted` under `accept_unsigned_keyless`, so the branch
+    meant to report it never fired and the replay was silent.
+  - **`ReplayReport.unverifiable`** is a new first-class counter, deliberately
+    *not* folded into `warnings`: "there is nothing to verify" and "something
+    that should have verified did not" call for different operator responses.
+    `regista replay` prints it and names the log events to grep for
+    (`replay.event_envelope_absent`, `replay.event_unverifiable`,
+    `replay.keyless_no_signatures_verified`).
+  - **Deleting an envelope is no longer a way out.** `UPDATE events SET
+    canonical_envelope = NULL` followed by a row rewrite halted replay *before*
+    this work (the rebuild-from-row candidate failed its signature check) and
+    would have been fail-open after it. `probe_absent_envelope` asks whether
+    the retained `signature`/`payload_canonical_hash` can be reconciled with the
+    row by any shape a genuinely pre-002 row could have carried (v1, v1 without
+    `on_behalf_of`, v2 — CUTOVER-POLICY §4.1). If none can, replay halts. The
+    probe **convicts only**: `verify_event_strict` never calls it, its
+    `CONSISTENT`/`UNKNOWN` outcomes change no verdict, and no path turns any of
+    its outcomes into a pass — that asymmetry is what keeps it from being the
+    rebuild-from-row escape hatch this work deleted.
+
   **Compatibility.** A read-only preflight over the live estate (351,371
   events, 26 project schemas) found **zero** row↔envelope mismatches, zero
   missing envelopes and zero unknown schemas: 94.7% v5, 5.3% v4, no v1/v2/v3.

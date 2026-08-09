@@ -51,6 +51,7 @@ from uuid import UUID
 from ._jcs import canonicalize
 
 __all__ = [
+    "AbsentEnvelopeProbe",
     "Applicability",
     "Backend",
     "BundleKeyResolver",
@@ -67,6 +68,7 @@ __all__ = [
     "VerificationResult",
     "classify_envelope",
     "parse_envelope_strict",
+    "probe_absent_envelope",
     "verify_event_strict",
 ]
 
@@ -375,7 +377,7 @@ class VerificationResult:
 
     # --- identity -------------------------------------------------------
     event_id: UUID | None
-    entity_kind: str
+    entity_kind: str | None
     entity_id: UUID | None
     global_seq: int | None  # structural only; never authenticated
 
@@ -515,7 +517,7 @@ class EventRow:
 
     event_id: UUID
     work_item_id: UUID | None
-    entity_kind: str
+    entity_kind: str | None
     entity_id: UUID | None
     actor_id: str
     actor_kind: str | None
@@ -544,10 +546,20 @@ class EventRow:
 
     @classmethod
     def from_event(cls, event: Any, *, backend: Backend = Backend.POSTGRES) -> EventRow:
+        """Build the row view from an :class:`~regista._types.Event`.
+
+        **Known limitation.** ``Event.__post_init__`` normalises a ``None``
+        ``entity_id`` to ``work_item_id``, and ``Event.from_dict`` defaults
+        ``entity_kind``/``hash_alg``, so this constructor cannot observe a NULL
+        in those columns — the dataclass has already collapsed it. The raw-row
+        path (:meth:`from_mapping`), which is what replay uses and therefore
+        what applies row values to the projection, does observe it. Verifying
+        the raw row is the stronger check; prefer it where the caller has one.
+        """
         return cls(
             event_id=event.event_id,
             work_item_id=event.work_item_id,
-            entity_kind=getattr(event, "entity_kind", "work_item") or "work_item",
+            entity_kind=getattr(event, "entity_kind", None),
             entity_id=getattr(event, "entity_id", None),
             actor_id=event.actor_id,
             actor_kind=getattr(event, "actor_kind", None),
@@ -557,7 +569,7 @@ class EventRow:
             workflow_name=event.workflow_name,
             workflow_version=event.workflow_version,
             timestamp=event.timestamp,
-            hash_alg=getattr(event, "hash_alg", None) or "sha-256",
+            hash_alg=getattr(event, "hash_alg", None),
             on_behalf_of=getattr(event, "on_behalf_of", None),
             transition=event.transition,
             payload=event.payload,
@@ -580,7 +592,10 @@ class EventRow:
         return cls(
             event_id=_as_uuid(row["event_id"]),  # type: ignore[arg-type]
             work_item_id=_as_uuid(row.get("work_item_id")),
-            entity_kind=row.get("entity_kind") or "work_item",
+            # No `or` default: a NULL column must reach the comparator as
+            # None so it mismatches the signed value, rather than being
+            # silently replaced by the value the signer happened to use.
+            entity_kind=row.get("entity_kind"),
             entity_id=_as_uuid(row.get("entity_id")),
             actor_id=row["actor_id"],
             actor_kind=row.get("actor_kind"),
@@ -590,7 +605,7 @@ class EventRow:
             workflow_name=row.get("workflow_name"),
             workflow_version=row.get("workflow_version"),
             timestamp=_as_datetime(row.get("timestamp")),
-            hash_alg=row.get("hash_alg") or "sha-256",
+            hash_alg=row.get("hash_alg"),
             on_behalf_of=row.get("on_behalf_of"),
             transition=row.get("transition"),
             payload=row.get("payload"),
@@ -876,7 +891,13 @@ _COMPARATORS: dict[str, Any] = {
     "event_id": ("event_id", _cmp_uuid),
     "work_item_id": ("work_item_id", _cmp_uuid),
     "entity_kind": ("entity_kind", _cmp_text),
-    "entity_id": ("effective_entity_id", _cmp_uuid),
+    # Compared against the REAL column, never `effective_entity_id`. The
+    # fallback-to-work_item_id property would let an attacker NULL the signed
+    # `entity_id` column and still be told the field was authenticated
+    # (`events_set_entity_id`, migration 031, is a BEFORE INSERT trigger — it
+    # does not fire on UPDATE). `_cmp_uuid` returns False for a NULL row value,
+    # so a NULL is a mismatch.
+    "entity_id": ("entity_id", _cmp_uuid),
     "actor_id": ("actor_id", _cmp_text),
     "actor_kind": ("actor_kind", _cmp_text),
     "actor_metadata": ("actor_metadata", _cmp_json),
@@ -1021,10 +1042,13 @@ def _reconcile(
     # unauthenticated, so without this check the unsigned column can steer a
     # consumer to a different work item than the one the signature covers.
     if version in (EnvelopeVersion.V4, EnvelopeVersion.V5):
+        # A NULL on either side is a mismatch, not an exemption: both columns
+        # are NOT NULL in the schema, so a NULL is already evidence that
+        # something other than the append path wrote this row.
         if (
-            row.work_item_id is not None
-            and row.entity_id is not None
-            and row.work_item_id != row.entity_id
+            row.work_item_id is None
+            or row.entity_id is None
+            or row.work_item_id != row.entity_id
         ):
             mismatches.append(
                 FieldMismatch(
@@ -1061,6 +1085,121 @@ def _is_keyless_dummy(row: EventRow) -> bool:
         and row.canonical_envelope == _KEYLESS_BYTES
         and row.payload_canonical_hash == _KEYLESS_BYTES
     )
+
+
+class AbsentEnvelopeProbe(StrEnum):
+    """Whether a row with NO stored envelope still agrees with its own crypto.
+
+    ``canonical_envelope`` was added nullable and never backfilled (migration
+    002), so a NULL is normally an evidentiary gap: nothing failed, there is
+    nothing to check, and the verdict is ``UNVERIFIABLE``. But a NULL is also
+    what an attacker gets by running ``UPDATE events SET canonical_envelope =
+    NULL`` before rewriting the row — and the row still carries the
+    ``signature`` and ``payload_canonical_hash`` the original envelope
+    produced. Those two retained values can still contradict the row.
+
+    This probe answers only that question. **It can never grant acceptance.**
+    Its single actionable outcome is ``INCONSISTENT``, which makes a verdict
+    *stricter* (``UNVERIFIABLE`` -> halt); ``CONSISTENT`` and ``UNKNOWN`` change
+    nothing. :func:`verify_event_strict` does not call it, and no code path
+    turns any of its outcomes into a pass. That asymmetry is what keeps it from
+    being the rebuild-from-row escape hatch WI-267 deleted: the candidates are
+    built from the columns under attack, so they may only ever be used to
+    convict, never to acquit.
+
+    The candidate shapes are the ones CUTOVER-POLICY §4.1 enumerates as
+    plausible for a genuinely pre-002 row: v1, v1 with ``on_behalf_of``
+    dropped, and v2.
+    """
+
+    CONSISTENT = "consistent"
+    INCONSISTENT = "inconsistent"
+    UNKNOWN = "unknown"
+
+
+def probe_absent_envelope(
+    row: EventRow, *, keys: TrustedKeyResolver,
+) -> AbsentEnvelopeProbe:
+    """See :class:`AbsentEnvelopeProbe`. Convicts only; never acquits."""
+    from ._signing import build_signing_envelope, build_signing_envelope_v2
+    from ._signing_scheme import get_scheme, resolve_hash_function
+
+    if row.canonical_envelope:
+        return AbsentEnvelopeProbe.UNKNOWN
+    signature = row.signature
+    canonical_hash = row.payload_canonical_hash
+    if not signature or not canonical_hash:
+        return AbsentEnvelopeProbe.UNKNOWN
+    if row.event_id is None or row.work_item_id is None or row.actor_id is None:
+        return AbsentEnvelopeProbe.UNKNOWN
+
+    trusted = keys.resolve(row.key_id)
+    if trusted is None:
+        return AbsentEnvelopeProbe.UNKNOWN
+    scheme_id = trusted.scheme_id or row.row_scheme_id or "hmac-sha256"
+    try:
+        scheme = trusted.scheme_obj or get_scheme(scheme_id)
+        # v1/v2 predate hash agility; sha-256 by construction.
+        hash_fn = resolve_hash_function("sha-256")
+    except Exception:
+        return AbsentEnvelopeProbe.UNKNOWN
+
+    candidates: list[bytes] = []
+    try:
+        candidates.append(
+            build_signing_envelope(
+                row.event_id, row.work_item_id, row.actor_id,
+                row.transition, row.payload, row.on_behalf_of,
+            )
+        )
+        if row.on_behalf_of is not None:
+            candidates.append(
+                build_signing_envelope(
+                    row.event_id, row.work_item_id, row.actor_id,
+                    row.transition, row.payload, None,
+                )
+            )
+        if (
+            row.key_id is not None
+            and row.event_seq is not None
+            and row.workflow_name is not None
+            and row.workflow_version is not None
+            and row.timestamp is not None
+        ):
+            candidates.append(
+                build_signing_envelope_v2(
+                    event_id=row.event_id,
+                    work_item_id=row.work_item_id,
+                    actor_id=row.actor_id,
+                    key_id=row.key_id,
+                    event_seq=row.event_seq,
+                    workflow_name=row.workflow_name,
+                    workflow_version=row.workflow_version,
+                    timestamp=row.timestamp,
+                    transition=row.transition,
+                    payload=row.payload,
+                    on_behalf_of=row.on_behalf_of,
+                )
+            )
+    except Exception:
+        return AbsentEnvelopeProbe.UNKNOWN
+
+    for candidate in candidates:
+        try:
+            if hash_fn(candidate).digest() != canonical_hash:
+                continue
+            if scheme.verify(
+                candidate, signature, canonical_hash, trusted.material,
+                hash_alg="sha-256",
+            ):
+                return AbsentEnvelopeProbe.CONSISTENT
+        except Exception:
+            continue
+
+    # No shape a pre-002 row could have carried reproduces the retained
+    # signature over these column values. The envelope did not merely predate
+    # the column; the row and its own crypto disagree.
+    return AbsentEnvelopeProbe.INCONSISTENT
 
 
 def _base_kwargs(row: EventRow) -> dict[str, Any]:

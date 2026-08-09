@@ -325,6 +325,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
                 f"drift={report.replayed_drift}  "
                 f"halted={report.halted}  "
                 f"warnings={report.warnings}  "
+                f"unverifiable={report.unverifiable}  "
                 f"{binding}"
             )
             # WI-266: chain breaks are a structural tampering verdict, not an
@@ -332,6 +333,22 @@ def cmd_replay(args: argparse.Namespace) -> None:
             # cannot mistake them for part of the advisory summary.
             if report.chain_breaks > 0:
                 print(f"chain_breaks={report.chain_breaks}")
+            if report.unverifiable > 0:
+                # WI-267: distinct from BOTH `warnings` and `chain_breaks`.
+                # A chain break is a detected tamper and exits non-zero below;
+                # this says part of the log was replayed with NO cryptographic
+                # check at all. Nothing failed — nothing was checked. That is
+                # an evidentiary gap, so it is reported loudly and does not by
+                # itself fail the exit status.
+                print(
+                    f"note: {report.unverifiable} event(s) could not be "
+                    "verified (no stored envelope, no resolvable key, or "
+                    "never signed). Nothing failed — nothing was checked. "
+                    "Grep the log for replay.event_envelope_absent / "
+                    "replay.event_unverifiable / "
+                    "replay.keyless_no_signatures_verified.",
+                    file=sys.stderr,
+                )
         if (
             report.replayed_drift > 0
             or report.halted > 0

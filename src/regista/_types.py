@@ -614,6 +614,16 @@ class ReplayReport:
     #: ``warnings`` because a chain break is a tampering verdict, not an
     #: advisory: CI and scripted verification must exit non-zero on it.
     chain_breaks: int = 0
+    #: Events that could not be verified at all — no stored envelope, no
+    #: resolvable trusted key, or (InMemory) never signed. WI-267: this is
+    #: deliberately NOT folded into ``warnings`` **or** ``chain_breaks``. The
+    #: three are different findings and call for different operator responses:
+    #: ``chain_breaks`` is "something that should have verified did not"
+    #: (a tampering verdict), ``unverifiable`` is "nothing was checked at all"
+    #: (an evidentiary gap). Collapsing them is how the audit's central defect
+    #: went unnoticed. A non-zero value here means part of the log was
+    #: replayed without any cryptographic check.
+    unverifiable: int = 0
     principal_binding_failures: int = 0
     #: Whether the principal-binding check actually ran. WI-223: a zero
     #: ``principal_binding_failures`` is only an affirmative claim when this is
@@ -636,6 +646,8 @@ class ReplayReport:
             d["warnings"] = self.warnings
         if self.chain_breaks > 0:
             d["chain_breaks"] = self.chain_breaks
+        if self.unverifiable > 0:
+            d["unverifiable"] = self.unverifiable
         d["principal_binding_verified"] = self.principal_binding_verified
         if self.principal_binding_verified:
             d["principal_binding_failures"] = self.principal_binding_failures
@@ -654,6 +666,7 @@ class ReplayReport:
             halted=data["halted"],
             warnings=data.get("warnings", 0),
             chain_breaks=data.get("chain_breaks", 0),
+            unverifiable=data.get("unverifiable", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
             principal_binding_verified=data.get("principal_binding_verified", False),
             entries=tuple(
