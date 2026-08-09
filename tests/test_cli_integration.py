@@ -250,6 +250,73 @@ class TestHooksDeadLetterList:
         assert result.returncode == 0
 
 
+class TestPrincipalRotate:
+    def _keypairs(self, n):
+        import base64
+
+        import nacl.signing
+
+        pairs = []
+        for _ in range(n):
+            sk = nacl.signing.SigningKey.generate()
+            pairs.append((base64.b64encode(bytes(sk.verify_key)).decode("ascii"), bytes(sk)))
+        return pairs
+
+    def test_rotate_supersedes_with_validity_window(self, initialized_project):
+        project = initialized_project
+        principal = f"rotate-cli-{uuid.uuid4().hex[:8]}"
+        (vk1, _sk1), (vk2, _sk2) = self._keypairs(2)
+
+        result = _run(
+            * _project_args(project), "--json", "principal", "register",
+            "--principal", principal, "--public-key", vk1,
+        )
+        assert result.returncode == 0, result.stderr
+        old_key_id = _extract_json(result.stdout)["key_id"]
+
+        result = _run(
+            * _project_args(project), "--json", "principal", "rotate",
+            "--principal", principal, "--public-key", vk2,
+        )
+        assert result.returncode == 0, result.stderr
+        new_key_id = _extract_json(result.stdout)["key_id"]
+        assert new_key_id != old_key_id
+
+        result = _run(
+            * _project_args(project), "--json", "principal", "list",
+            "--principal", principal,
+        )
+        assert result.returncode == 0, result.stderr
+        keys = _extract_json(result.stdout)
+        old = next(k for k in keys if k["key_id"] == old_key_id)
+        new = next(k for k in keys if k["key_id"] == new_key_id)
+        assert old["status"] == "superseded"
+        assert old["valid_to"] is not None
+        assert new["status"] == "active"
+
+    def test_rotate_json_shape(self, initialized_project):
+        project = initialized_project
+        principal = f"rotate-cli-json-{uuid.uuid4().hex[:8]}"
+        (vk1, _sk1), (vk2, _sk2) = self._keypairs(2)
+
+        _run(
+            * _project_args(project), "--json", "principal", "register",
+            "--principal", principal, "--public-key", vk1,
+        )
+        result = _run(
+            * _project_args(project), "--json", "principal", "rotate",
+            "--principal", principal, "--public-key", vk2,
+            "--registered-by", "cli-test",
+        )
+        assert result.returncode == 0, result.stderr
+        data = _extract_json(result.stdout)
+        assert data["principal_id"] == principal
+        assert data["status"] == "active"
+        assert data["scheme"] == "ed25519"
+        assert data["registered_by"] == "cli-test"
+        assert data["valid_to"] is None
+
+
 class TestEnvVarConfig:
     def test_project_from_env(self, project):
         result = _run("schema", "init", env={"REGISTA_PROJECT": project})

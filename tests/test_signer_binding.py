@@ -575,6 +575,100 @@ class TestReplayPrincipalBinding:
         assert new_result["error"] is not None
         assert "key-not-valid-at-time" in (new_result["error"] or "")
 
+    def test_register_superseded_key_closes_validity_window(self, multi_key_setup):
+        """WI-265: superseding a key via `register` must close the old key's
+        validity window exactly like `rotate` does.
+
+        `register` is the operator-facing path (the CLI funnels rotations
+        through it), and before the fix it left the rotated-out key valid
+        forever: an attacker holding the retired private key could still sign
+        events that passed the validity-window check. An event signed with the
+        old key BEFORE the supersede must still verify; one signed AFTER must
+        be rejected with `key-not-valid-at-time`.
+        """
+        import time
+        from datetime import timedelta
+        from types import SimpleNamespace
+
+        from regista._principal_keys import list_principal_keys, register_principal_key
+        from regista._signing import sign_event as _sign_event
+        from regista._signing_scheme import get_scheme
+
+        sub, principal_id, old_key_id, sk1, _vk1, _sk2, vk2 = multi_key_setup
+
+        time.sleep(0.05)
+        register_principal_key(
+            sub._mgr, principal_id, vk2, "ed25519",
+            key_id=f"ed25519-{principal_id}-v2",
+        )
+
+        old_entry = next(
+            k for k in list_principal_keys(sub._mgr, principal_id)
+            if k.key_id == old_key_id
+        )
+        assert old_entry.status == "superseded"
+        assert old_entry.valid_to is not None
+        assert old_entry.valid_from < old_entry.valid_to
+
+        scheme = get_scheme("ed25519")
+
+        def _forge(timestamp):
+            event_id = uuid.uuid4()
+            work_item_id = uuid.uuid4()
+            signature, canonical_hash, envelope = _sign_event(
+                event_id=event_id,
+                work_item_id=work_item_id,
+                actor_id=principal_id,
+                key_id=old_key_id,
+                event_seq=1,
+                workflow_name="test_workflow",
+                workflow_version=1,
+                timestamp=timestamp,
+                transition="created",
+                payload={},
+                key=sk1,
+                scheme=scheme,
+            )
+            return SimpleNamespace(
+                event_id=event_id,
+                work_item_id=work_item_id,
+                event_seq=1,
+                actor_id=principal_id,
+                actor_kind="agent",
+                actor_metadata=None,
+                key_id=old_key_id,
+                workflow_name="test_workflow",
+                workflow_version=1,
+                timestamp=timestamp,
+                transition="created",
+                payload={},
+                payload_canonical_hash=canonical_hash,
+                signature=signature,
+                canonical_envelope=envelope,
+                on_behalf_of=None,
+                scheme_id="ed25519",
+                prev_event_hash=None,
+                prev_global_event_hash=None,
+                entity_kind="work_item",
+                hash_alg="sha-256",
+            )
+
+        # An event signed inside the old key's validity window (before the
+        # supersede) must still verify: rotation is not retroactive.
+        before_ts = old_entry.valid_from + (
+            old_entry.valid_to - old_entry.valid_from
+        ) / 2
+        result_before = sub.verify_event_principal_binding(_forge(before_ts))
+        assert result_before["verified"] is True
+        assert result_before["key_id"] == old_key_id
+
+        # An event signed after the supersede with the retired key must be
+        # rejected: the validity window is closed.
+        after_ts = old_entry.valid_to + timedelta(seconds=1)
+        result_after = sub.verify_event_principal_binding(_forge(after_ts))
+        assert result_after["verified"] is False
+        assert result_after["error"] is not None
+        assert "key-not-valid-at-time" in (result_after["error"] or "")
 
     def test_ed25519_key_id_mismatch_rejected(self, multi_key_setup):
         import time

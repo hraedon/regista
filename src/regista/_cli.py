@@ -1536,6 +1536,36 @@ def cmd_principal_register(args: argparse.Namespace) -> None:
         sub.close()
 
 
+def cmd_principal_rotate(args: argparse.Namespace) -> None:
+    dsn, project, hmac_key_path = _require_config(args)
+    import base64
+
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        from regista._principal_keys import rotate_principal_key
+
+        pub_key = base64.b64decode(args.public_key)
+        entry = rotate_principal_key(
+            sub._mgr,
+            args.principal,
+            pub_key,
+            args.scheme,
+            registered_by=args.registered_by or "cli",
+        )
+        if args.json:
+            _dump_json(entry)
+        else:
+            print(f"Rotated key for principal {entry.principal_id}:")
+            print(f"  new key_id:  {entry.key_id}")
+            print(f"  scheme:      {entry.scheme}")
+            print(f"  fingerprint: {entry.fingerprint}")
+            print(f"  status:      {entry.status}")
+    except RegistaError as e:
+        _handle_error(e, json_mode=getattr(args, "json", False))
+    finally:
+        sub.close()
+
+
 def cmd_principal_enroll(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -2292,6 +2322,15 @@ def main(argv: list[str] | None = None) -> None:
     pr_reg.add_argument("--key-id", help="Optional key ID")
     pr_reg.add_argument("--registered-by", help="Who is registering this key")
     pr_reg.set_defaults(func=cmd_principal_register)
+    pr_rot = pr_sub.add_parser(
+        "rotate",
+        help="Rotate a principal to a new public key (supersedes the active key)",
+    )
+    pr_rot.add_argument("--principal", required=True, help="Principal ID")
+    pr_rot.add_argument("--public-key", required=True, help="Base64-encoded new public key")
+    pr_rot.add_argument("--scheme", default="ed25519", help="Signing scheme (default: ed25519)")
+    pr_rot.add_argument("--registered-by", help="Who is rotating this key")
+    pr_rot.set_defaults(func=cmd_principal_rotate)
     pr_enroll = pr_sub.add_parser("enroll", help="Issue and register a per-principal Ed25519 key")
     pr_enroll.add_argument("--principal", required=True, help="Principal ID")
     pr_enroll.add_argument("--private-key-dir", help="Directory for private key files")
