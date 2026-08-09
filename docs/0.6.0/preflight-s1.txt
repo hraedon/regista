@@ -1,0 +1,44 @@
+2026-08-08 19:20:21 [warning  ] keys.plaintext_at_rest         path=/home/itadmin/.config/regista/keys.json
+2026-08-08 19:20:21 [info     ] keys_loaded                    active_key_id=regista-prod-001 key_count=3 key_sources={'regista-prod-001': 'file', 'pk_7c8cb91057c44ce8': 'secret_ref:file', 'pk_4f70570b481745a8': 'secret_ref:file'}
+2026-08-08 19:20:21 [info     ] keys.loaded                    active=regista-prod-001 key_count=3 path=/home/itadmin/.config/regista/keys.json
+regista S1 preflight (READ-ONLY) — hmac key ids loaded: 3
+==============================================================================
+acme_adcs_ra                       events=66       versions={'v4': 43, 'v5': 23} flagged=0
+ad_steward                         events=4        versions={'v4': 4} flagged=0
+adcs_lens                          events=86       versions={'v4': 58, 'v5': 28} flagged=0
+agent_capability_broker            events=55       versions={'v4': 15, 'v5': 40} flagged=0
+agent_notes                        events=304      versions={'v4': 125, 'v5': 179} flagged=0
+agent_provenance                   events=346476   versions={'v4': 15273, 'v5': 331203} flagged=0
+agent_suite                        events=345      versions={'v4': 13, 'v5': 332} flagged=0
+agent_wake                         events=169      versions={'v4': 62, 'v5': 107} flagged=0
+agentic_onboarding                 events=5        versions={'v5': 5} flagged=0
+cert_watch                         events=696      versions={'v4': 672, 'v5': 24} flagged=0
+dossier                            events=171      versions={'v4': 62, 'v5': 109} flagged=0
+frontier_lag                       events=1        versions={'v5': 1} flagged=0
+gpo_lens                           events=220      versions={'v4': 190, 'v5': 30} flagged=0
+gpo_studio                         events=136      versions={'v4': 1, 'v5': 135} flagged=0
+openbia                            events=1        versions={'v5': 1} flagged=0
+patina                             events=2        versions={'v4': 2} flagged=0
+regista                            events=1819     versions={'v4': 1490, 'v5': 329} flagged=0
+sf2                                events=440      versions={'v4': 440} flagged=0
+sluice                             events=77       versions={'v4': 69, 'v5': 8} flagged=0
+substrate                          events=10       versions={'v4': 10} flagged=0
+switchboard                        events=14       versions={'v4': 2, 'v5': 12} flagged=0
+sysadmin_competence_evaluation     events=29       versions={'v4': 16, 'v5': 13} flagged=0
+usage_dashboard                    events=92       versions={'v4': 45, 'v5': 47} flagged=0
+vitrine                            events=132      versions={'v4': 103, 'v5': 29} flagged=0
+windows_evidence_lab               events=21       versions={'v5': 21} flagged=0
+==============================================================================
+TOTAL events scanned : 351371
+by envelope version  : {'v4': 18695, 'v5': 332676}
+by status            : {'legacy-partial': 18695, 'fully-reconciled': 332676}
+signature checks     : {'ok': 351371}
+mismatched fields    : {}
+notes                : {}
+strict-vs-permissive : {}
+unsigned fields in play (row-column -> event count):
+    global_seq                         351371
+    scheme_id                          351371
+    work_item_id[alias-of-entity_id]   351371
+    actor_kind                         18695
+    actor_metadata                     18693

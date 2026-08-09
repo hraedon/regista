@@ -30,6 +30,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The spec set cites code by `file:line` against the pinned post-S1
+          # commit 334b995; check-crossrefs.py resolves those with `git show`,
+          # which needs that object present.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -56,7 +61,18 @@ jobs:
         run: python3 scripts/check_committed_identifiers.py
 
       - name: Lint
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ tools/
+
+      # Gate 0, P0.1: the 0.6.0 specification set is frozen, and "frozen" is only
+      # true if something checks it. These two scripts are the machine-checkable
+      # half of P0.1's acceptance criterion. check-crossrefs.py resolves code
+      # citations against the pinned post-S1 tree with `git show`, so the full
+      # history has to be present — hence fetch-depth: 0 on the checkout above
+      # would be needed if the pin ever falls outside the default clone depth.
+      - name: 0.6.0 specification set is internally consistent
+        run: |
+          python3 docs/0.6.0/check-crossrefs.py
+          python3 docs/0.6.0/check-conflicts.py
 
       - name: Type-check (strict; burndown list in pyproject [tool.mypy])
         run: mypy
