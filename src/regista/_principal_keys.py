@@ -127,11 +127,12 @@ def register_principal_key_conn(
         [principal_id],
     ).fetchall()
 
+    now = datetime.now(UTC)
     for r in existing_active:
         conn.execute(
-            "UPDATE principal_keys SET status = 'superseded' "
+            "UPDATE principal_keys SET status = 'superseded', valid_to = %s "
             "WHERE principal_id = %s AND key_id = %s",
-            [principal_id, r["key_id"]],
+            [now, principal_id, r["key_id"]],
         )
 
     conn.execute(

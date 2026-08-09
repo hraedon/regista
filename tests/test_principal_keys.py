@@ -95,6 +95,9 @@ class TestRegisterPrincipalKey:
         assert statuses[entry1.key_id] == "superseded"
         assert statuses[entry2.key_id] == "active"
 
+        valid_tos = {k.key_id: k.valid_to for k in all_keys}
+        assert valid_tos[entry1.key_id] is not None
+
     def test_register_empty_principal_raises(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
