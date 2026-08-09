@@ -1,0 +1,40 @@
+{
+  "category": "catalog",
+  "description": "Estate cutover catalog digest (TRUST-DOMAIN \u00a74.3).",
+  "expected": {
+    "canonical_bytes": "{\"catalog_kind\":\"cutover\",\"created_at\":\"2026-08-20T12:00:00.000000Z\",\"prev_commit\":null,\"projects\":[{\"cutover_event_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"legacy_event_count\":1000,\"legacy_head_event_hash\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"new_epoch_head_event_hash\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"project_name_hint\":\"agent_notes\",\"scheme_counts\":{\"ed25519\":200,\"hmac-sha256\":800}}],\"root_governance\":{\"mode\":\"solo_effective\",\"signer_count\":2,\"threshold\":1},\"trust_domain_core_digest\":\"sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"trust_log_checkpoint_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"type\":\"regista.estate-catalog\",\"version\":1}",
+    "canonical_len": 951,
+    "estate_catalog_digest": "sha256:469b7530afa242a158793c5f60f7ad474834d8ff7272e30769b20093a769f509"
+  },
+  "input": {
+    "document": {
+      "catalog_kind": "cutover",
+      "created_at": "2026-08-20T12:00:00.000000Z",
+      "prev_commit": null,
+      "projects": [
+        {
+          "cutover_event_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "legacy_event_count": 1000,
+          "legacy_head_event_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "new_epoch_head_event_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+          "project_name_hint": "agent_notes",
+          "scheme_counts": {
+            "ed25519": 200,
+            "hmac-sha256": 800
+          }
+        }
+      ],
+      "root_governance": {
+        "mode": "solo_effective",
+        "signer_count": 2,
+        "threshold": 1
+      },
+      "trust_domain_core_digest": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "trust_log_checkpoint_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "type": "regista.estate-catalog",
+      "version": 1
+    }
+  }
+}

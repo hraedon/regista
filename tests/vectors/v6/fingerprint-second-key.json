@@ -1,0 +1,11 @@
+{
+  "category": "fingerprint",
+  "description": "Second Ed25519 key fingerprint \u2014 proves fingerprints are key-distinct.",
+  "expected": {
+    "fingerprint": "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827"
+  },
+  "input": {
+    "public_key_hex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+    "seed_hex": "0202020202020202020202020202020202020202020202020202020202020202"
+  }
+}

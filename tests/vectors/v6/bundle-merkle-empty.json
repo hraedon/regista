@@ -1,0 +1,10 @@
+{
+  "category": "bundle-merkle",
+  "description": "Empty tree has no root \u2014 an empty bundle has no membership to sign (BUN...",
+  "expected": {
+    "membership_root": null
+  },
+  "input": {
+    "event_hashes": []
+  }
+}

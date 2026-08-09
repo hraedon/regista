@@ -1,0 +1,89 @@
+{
+  "category": "bootstrap",
+  "description": "Bootstrap B: cutover checkpoint \u2014 legacy head in previous_project_event...",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":null,\"previous_project_event_hash\":\"sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f\"},\"entity\":{\"id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"kind\":\"project\"},\"entity_seq\":1,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"bootstrap_key_acceptance\":{\"fingerprint\":\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\",\"principal_id\":\"agent:mvmcc03\",\"scopes\":[\"may_accept_keys\",\"may_sign_checkpoints\"],\"trust_event_hash\":\"sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\",\"trust_log_checkpoint\":{\"checkpoint_seq\":1,\"document_digest\":\"sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\",\"head_event_hash\":\"sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\"}},\"genesis_document_digest\":\"sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\",\"previous_epoch\":{\"event_count\":1000,\"genesis_event_hash\":\"sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f\",\"head_event_hash\":\"sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f\",\"head_hash_construction\":\"sha256(canonical_envelope||signature)\",\"max_global_seq\":1000,\"scheme_counts\":{\"ed25519\":200,\"hmac-sha256\":800}},\"trust_domain_core_digest\":\"sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"trust_log_checkpoint\":{\"checkpoint_seq\":1,\"document_digest\":\"sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\",\"head_event_hash\":\"sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\"}},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":null,\"key_id\":\"pk_34750f98bd59fcfc\",\"scheme_id\":\"ed25519\"},\"transition\":\"project_cryptographic_epoch_started\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "canonical_len": 2273,
+    "event_hash": "sha256:5b5a8ced73b2eab4758ed8130db432866b3ceda687ee4e29f37fa434555d8000",
+    "payload_canonical_hash": "sha256:c9cb05a19a293d89769c8beb97a72828a2e02e55f80c01df2db38cbe6decccab"
+  },
+  "input": {
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "agent",
+        "metadata": {},
+        "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": null,
+        "previous_project_event_hash": "sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f"
+      },
+      "entity": {
+        "id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+        "kind": "project"
+      },
+      "entity_seq": 1,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "bootstrap_key_acceptance": {
+          "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+          "principal_id": "agent:mvmcc03",
+          "scopes": [
+            "may_accept_keys",
+            "may_sign_checkpoints"
+          ],
+          "trust_event_hash": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "trust_log_checkpoint": {
+            "checkpoint_seq": 1,
+            "document_digest": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+            "head_event_hash": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+          }
+        },
+        "genesis_document_digest": "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "previous_epoch": {
+          "event_count": 1000,
+          "genesis_event_hash": "sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f",
+          "head_event_hash": "sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f",
+          "head_hash_construction": "sha256(canonical_envelope||signature)",
+          "max_global_seq": 1000,
+          "scheme_counts": {
+            "ed25519": 200,
+            "hmac-sha256": 800
+          }
+        },
+        "trust_domain_core_digest": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "trust_log_checkpoint": {
+          "checkpoint_seq": 1,
+          "document_digest": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+          "head_event_hash": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+        }
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": "claude-opus-5",
+        "model_lineage": "anthropic/claude-opus-5"
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": null,
+        "key_id": "pk_34750f98bd59fcfc",
+        "scheme_id": "ed25519"
+      },
+      "transition": "project_cryptographic_epoch_started",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    },
+    "legacy_head_construction": "sha256(canonical_envelope||signature)",
+    "legacy_head_hash": "sha256:42be2ba124f0951afee69d4cc8bf6b23e6d076cb638bcdf347010a896440b63f",
+    "signing_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

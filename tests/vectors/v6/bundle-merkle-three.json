@@ -1,0 +1,19 @@
+{
+  "category": "bundle-merkle",
+  "description": "Three-leaf tree: RFC 6962 split-at-largest-power-of-two (k=2).",
+  "expected": {
+    "leaves": [
+      "sha256:edc89c4929c605404b92d518efd9f4c3366aabbb23e70eb137b2b49ef819e886",
+      "sha256:c8b198d82068cba782ce21322dfdb70ceddfd22b70179cb9965a0e291a854abc",
+      "sha256:805d2c25b882fe04e99ce47d552e833ccf1dc5c8ec5dc6572f35abe26d631576"
+    ],
+    "membership_root": "sha256:195ab10a52a54ee66dd6a8f572eb50b5a532562cd245af34cf9d4435f16a5660"
+  },
+  "input": {
+    "event_hashes": [
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sha256:cccccccccccccccccccccccccccccccc"
+    ]
+  }
+}

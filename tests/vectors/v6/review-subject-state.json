@@ -1,0 +1,13 @@
+{
+  "category": "review-subject",
+  "description": "content_state_digest over a reduced event prefix (REVIEW-VERDICTS \u00a72.3,...",
+  "expected": {
+    "content_state_digest": "sha256:fd5e91c909c73fad888c55eef38193891c14d930354080c2932696a0cf375c5c",
+    "reduced_canonical_bytes": "{\"current_state\":\"reviewed\",\"custom_fields\":{\"a\":1,\"b\":\"two\"},\"last_entity_seq\":3,\"needs_review\":false,\"not_before\":null,\"reducer_version\":1}",
+    "reducer_version": 1
+  },
+  "input": {
+    "envelope_descriptions": "basic-workflow-walk from reducer_v1_vectors",
+    "envelopes_count": 3
+  }
+}

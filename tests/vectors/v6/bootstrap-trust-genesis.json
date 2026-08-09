@@ -1,0 +1,56 @@
+{
+  "category": "bootstrap",
+  "description": "Bootstrap A: trust_domain_established \u2014 first v6 event, null key binding.",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"human\",\"metadata\":{},\"principal_id\":\"human:itadmin\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":null,\"previous_project_event_hash\":null},\"entity\":{\"id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"kind\":\"trust_domain\"},\"entity_seq\":1,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"trust_domain_core_digest\":\"sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":null,\"model_lineage\":null},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":null,\"key_id\":\"pk_34750f98bd59fcfc\",\"scheme_id\":\"ed25519\"},\"transition\":\"trust_domain_established\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "canonical_len": 928,
+    "event_hash": "sha256:69770d2e99edc5a07156fc953c72c9b5694de85295c14a56a4089f52af6ec03d",
+    "payload_canonical_hash": "sha256:78123263b72051a0e0526c8718e3866f4d9e7161290b545023beed4673c6948c"
+  },
+  "input": {
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "human",
+        "metadata": {},
+        "principal_id": "human:itadmin"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": null,
+        "previous_project_event_hash": null
+      },
+      "entity": {
+        "id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+        "kind": "trust_domain"
+      },
+      "entity_seq": 1,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "trust_domain_core_digest": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": null,
+        "model_lineage": null
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": null,
+        "key_id": "pk_34750f98bd59fcfc",
+        "scheme_id": "ed25519"
+      },
+      "transition": "trust_domain_established",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    },
+    "signing_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

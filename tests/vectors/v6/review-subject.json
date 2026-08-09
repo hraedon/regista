@@ -1,0 +1,16 @@
+{
+  "category": "review-subject",
+  "description": "subject_digest over the review subject object (REVIEW-VERDICTS \u00a72.3).",
+  "expected": {
+    "canonical_bytes": "{\"content_state_digest\":\"sha256:7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a\",\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"reviewed_through_event_hash\":\"sha256:8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b\",\"work_item_id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\"}",
+    "subject_digest": "sha256:e1fd0518834a4fb682e608f39864dfd761acfda1b57497976f23c082842f4ae8"
+  },
+  "input": {
+    "review_subject": {
+      "content_state_digest": "sha256:7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "reviewed_through_event_hash": "sha256:8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b",
+      "work_item_id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a"
+    }
+  }
+}

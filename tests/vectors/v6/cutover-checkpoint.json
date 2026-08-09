@@ -1,0 +1,17 @@
+{
+  "category": "checkpoint",
+  "description": "Externally published cutover checkpoint digest (V6-ENVELOPE \u00a76.1, CUTOV...",
+  "expected": {
+    "canonical_bytes": "{\"cutover_event_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.checkpoint\",\"version\":1}",
+    "checkpoint_digest": "sha256:9c89a9c3062fdfcf340743304d22a9a12f0a2479c45b247e46c403f1107c4bc8"
+  },
+  "input": {
+    "checkpoint_statement": {
+      "cutover_event_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.checkpoint",
+      "version": 1
+    }
+  }
+}
