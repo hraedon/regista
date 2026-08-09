@@ -7,15 +7,23 @@ P0.3's acceptance criterion, from ``IMPLEMENTATION-PLAN.md``:
 
 How that requirement is discharged here:
 
-* ``tools/make_v6_vectors.py`` is the generator — it imports only the vendored RFC 8785
-  canonicalizer, PyNaCl and the stdlib, and every domain tag and framing rule comes from the
-  frozen spec set (``V6-ENVELOPE.md`` §6.1 and its siblings), not from the generator.
+* ``tools/make_v6_vectors.py`` is the generator — it imports the vendored RFC 8785
+  canonicalizer, PyNaCl, the stdlib, and (for the ``review-subject-state`` case only)
+  ``regista._reducer``; every domain tag and framing rule comes from the frozen spec set
+  (``V6-ENVELOPE.md`` §6.1 and its siblings), not from the generator.
 * ``tests/vectors/v6/`` holds one JSON file per case plus a ``manifest.json``.
-* This module regenerates the same bytes from the same inputs and asserts equality, then
+* This module recomputes the same bytes from the same inputs and asserts equality, then
   flips one byte in each input and asserts the digest changes.
 
 The vectors are the artifact that makes a future non-Python verifier possible — nobody has
 written one yet, but the frozen bytes are what an independent implementation checks against.
+
+**What this module does not yet prove.** Except for ``review-subject-state``, every
+expectation here is recomputed from the vector's own inputs by helpers in this file, not by
+regista's production code — most of the v6 constructions have no implementation yet. Binding
+them is P1.1's job ("*and the vectors pass*", ``IMPLEMENTATION-PLAN.md`` §P1.1); until then a
+passing suite means the vectors are self-consistent and reproducible, not that regista agrees
+with them.
 
 The test key is 32 bytes of 0x01 — NEVER usable in production.  It exists so every byte is
 reproducible by an implementer with no private material.
@@ -25,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 import sys
 import uuid
@@ -158,6 +167,42 @@ def test_v6_envelope_has_sixteen_keys_in_jcs_order() -> None:
     assert list(parsed.keys()) == case["expected"]["top_level_key_order"]
 
 
+def test_jcs_orders_by_utf16be_not_code_point() -> None:
+    """The sixteen top-level keys are ASCII and cannot distinguish the two orderings.
+
+    The payload keys can: a non-BMP character's UTF-16BE form starts with a surrogate
+    (0xD83D), which sorts *before* U+FF21 (fullwidth A), while by code point it sorts after
+    (``_vendor/rfc8785.py:164``). This is the one assertion in the suite that fails for an
+    implementation that sorted by code point.
+    """
+    case = _load_case("v6-envelope-canonical-order")
+    env = case["input"]["envelope_declaration_order"]
+    parsed = json.loads(canonicalize(env))
+    payload_keys = list(parsed["payload"].keys())
+
+    assert payload_keys == case["expected"]["payload_key_order"]
+    assert payload_keys == sorted(env["payload"].keys(), key=lambda k: k.encode("utf-16be"))
+    assert payload_keys != sorted(env["payload"].keys()), (
+        "the vector must discriminate UTF-16BE ordering from code-point ordering"
+    )
+    assert case["expected"]["utf16be_order_differs_from_code_point_order"] is True
+    assert payload_keys.index("\U0001f600") < payload_keys.index("\uff21")
+
+
+def test_key_id_matches_the_spec_test_key_block() -> None:
+    """`key_id` is an opaque fixture and must be the one V6-ENVELOPE §10.1 declares.
+
+    Production key ids are random (`_principal_keys.py:49-50`), so nothing derives this
+    value — which is exactly why it has to be pinned to the spec's own test-key block
+    rather than computed. It is signed input in every envelope vector.
+    """
+    for name in ("v6-envelope-basic", "v6-envelope-no-model", "bootstrap-trust-genesis"):
+        env = _load_case(name)["input"]["envelope_declaration_order"]
+        assert env["signing"]["key_id"] == "pk_1bf310ecef19e79a", (
+            f"{name}: key_id must equal the V6-ENVELOPE §10.1 test key id"
+        )
+
+
 def test_v6_envelope_no_model() -> None:
     case = _load_case("v6-envelope-no-model")
     env = case["input"]["envelope_declaration_order"]
@@ -268,9 +313,9 @@ def _merkle_node(left: str, right: str) -> str:
     return digest_str(DOMAINS["bundle_node"] + lb + rb)
 
 
-def _merkle_root_rfc6962(leaf_hashes: list[str]) -> str | None:
+def _merkle_root_rfc6962(leaf_hashes: list[str]) -> str:
     if not leaf_hashes:
-        return None
+        return digest_str(b"")  # MTH({}) = SHA256() — BUNDLE-V3.md:214
 
     def mth(ds: list[str]) -> str:
         if len(ds) == 1:
@@ -313,9 +358,68 @@ def test_bundle_merkle_two_combines() -> None:
     assert case["expected"]["membership_root"] == case["expected"]["node_0_1"]
 
 
-def test_bundle_merkle_empty_has_no_root() -> None:
+def test_bundle_merkle_empty_root_is_sha256_of_empty_string() -> None:
+    """BUNDLE-V3.md:214 — ``MTH({}) = SHA256()``, unreachable but specified.
+
+    Returning null here instead would be a silent disagreement between two conforming
+    implementations at the one input neither of them can test against real data.
+    """
     case = _load_case("bundle-merkle-empty")
-    assert case["expected"]["membership_root"] is None
+    assert case["expected"]["membership_root"] == "sha256:" + hashlib.sha256(b"").hexdigest()
+    assert _merkle_root_rfc6962([]) == case["expected"]["membership_root"]
+    assert case["expected"]["reachable"] is False
+
+
+def test_bundle_merkle_mixed_epoch() -> None:
+    """A tree spanning the cutover seam — BUNDLE-V3 §3.3 correction 1.
+
+    Each leaf takes the *referenced event's* version-derived hash. Recomputed here from
+    the raw legacy envelopes and v6 envelopes in the vector, not copied from its members.
+    """
+    case = _load_case("bundle-merkle-mixed-epoch")
+    members = case["input"]["members"]
+
+    legacy_bytes = [b.encode() for b in case["input"]["legacy_canonical_bytes"]]
+    legacy_sigs = [bytes.fromhex(s) for s in case["input"]["legacy_signatures_hex"]]
+    for i, (lb, ls) in enumerate(zip(legacy_bytes, legacy_sigs, strict=True)):
+        assert members[i]["envelope_version"] == 5
+        assert members[i]["event_hash"] == digest_str(lb + ls), (
+            "legacy leaves must use sha256(canonical_envelope||signature)"
+        )
+
+    for i, env in enumerate(case["input"]["v6_envelopes"], start=2):
+        canonical = canonicalize(env)
+        signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
+        expected = digest_str(DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature)
+        assert members[i]["envelope_version"] == 6
+        assert members[i]["event_hash"] == expected, (
+            "v6 leaves must use the domain-separated, length-framed construction"
+        )
+
+    leaves = [_merkle_leaf(m["scope_ordinal"], m["event_hash"]) for m in members]
+    assert leaves == case["expected"]["leaves"]
+    assert _merkle_root_rfc6962(leaves) == case["expected"]["membership_root"]
+
+
+def test_mixed_epoch_leaf_would_differ_under_a_hardcoded_legacy_formula() -> None:
+    """The failure BUNDLE-V3 correction 1 exists to prevent.
+
+    Computing a v6 member's leaf with the v1-v5 formula yields a different root, so a
+    bundle built that way would not match the hash the chain itself commits to.
+    """
+    case = _load_case("bundle-merkle-mixed-epoch")
+    members = case["input"]["members"]
+    correct = [_merkle_leaf(m["scope_ordinal"], m["event_hash"]) for m in members]
+
+    wrong_members = list(members)
+    v6_env = case["input"]["v6_envelopes"][0]
+    canonical = canonicalize(v6_env)
+    signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
+    wrong_members[2] = {**members[2], "event_hash": digest_str(canonical + signature)}
+    wrong = [_merkle_leaf(m["scope_ordinal"], m["event_hash"]) for m in wrong_members]
+
+    assert wrong != correct
+    assert _merkle_root_rfc6962(wrong) != case["expected"]["membership_root"]
 
 
 def test_bundle_merkle_leaf_and_node_domains_differ() -> None:
@@ -362,13 +466,103 @@ def test_review_subject_state_agrees_with_frozen_digests() -> None:
     assert digest == case["expected"]["content_state_digest"]
 
 
+def test_review_subject_state_construction_matches_the_raw_domain_tag() -> None:
+    """`content_state_digest` is the one frozen digest a production function produces.
+
+    Recomputing it from the raw tag is what verifies the tag transcription itself — every
+    other domain in the registry is exercised by a hand-built construction, this one was
+    only ever taken on trust from `_reducer`.
+    """
+    case = _load_case("review-subject-state")
+    reduced = case["expected"]["reduced_canonical_bytes"].encode()
+    assert (
+        domain_digest(DOMAINS["review_subject_state"], reduced)
+        == (case["expected"]["content_state_digest"])
+    )
+
+
+REVIEW_SUBJECT_MEMBERS = [
+    "artifacts",
+    "content_state_digest",
+    "declared_not_reviewed",
+    "entity_id",
+    "entity_kind",
+    "project_instance_id",
+    "reviewed_through_event_hash",
+]
+
+
 def test_review_subject() -> None:
     case = _load_case("review-subject")
-    subject = case["input"]["review_subject"]
+    subject = case["input"]["review_subject_after_sorting"]
     b = canonicalize(subject)
     assert b == case["expected"]["canonical_bytes"].encode()
     digest = domain_digest(DOMAINS["review_subject"], b)
     assert digest == case["expected"]["subject_digest"]
+
+
+def test_review_subject_has_exactly_the_specified_members() -> None:
+    """REVIEW-VERDICTS §2.3, less `subject_profile` — cut by RECONCILIATION:421.
+
+    `entity_kind`/`entity_id`, never `work_item_id`: the subject is a chain, not a row.
+    A member set that differs from the spec's produces a different `subject_digest` for
+    the same review, which is the whole failure this vector exists to prevent.
+    """
+    case = _load_case("review-subject")
+    subject = case["input"]["review_subject_after_sorting"]
+    assert sorted(subject.keys()) == REVIEW_SUBJECT_MEMBERS
+    assert case["expected"]["members"] == REVIEW_SUBJECT_MEMBERS
+    assert "subject_profile" not in subject
+    assert "work_item_id" not in subject
+
+
+def test_review_subject_artifact_lists_are_sorted_before_canonicalization() -> None:
+    """RECONCILIATION:424 — artifacts by (media_type, locator, digest), exclusions by
+    (media_type, locator, reason), so two gates reviewing the same thing agree."""
+    case = _load_case("review-subject")
+    declared = case["input"]["artifacts_declaration_order"]
+    excluded = case["input"]["declared_not_reviewed_declaration_order"]
+    subject = case["input"]["review_subject_after_sorting"]
+
+    assert subject["artifacts"] == sorted(
+        declared, key=lambda a: (a["media_type"], a["locator"], a["digest"])
+    )
+    assert subject["declared_not_reviewed"] == sorted(
+        excluded, key=lambda a: (a["media_type"], a["locator"], a["reason"])
+    )
+    assert subject["artifacts"] != declared, (
+        "the vector must declare artifacts out of order or it pins no sort"
+    )
+    assert subject["declared_not_reviewed"] != excluded
+
+
+def test_review_subject_digest_is_order_independent() -> None:
+    """The same review submitted with the artifact lists in any order digests identically."""
+    case = _load_case("review-subject")
+    subject = case["input"]["review_subject_after_sorting"]
+    shuffled = {
+        **subject,
+        "artifacts": list(reversed(subject["artifacts"])),
+        "declared_not_reviewed": list(reversed(subject["declared_not_reviewed"])),
+    }
+    resorted = {
+        **shuffled,
+        "artifacts": sorted(
+            shuffled["artifacts"], key=lambda a: (a["media_type"], a["locator"], a["digest"])
+        ),
+        "declared_not_reviewed": sorted(
+            shuffled["declared_not_reviewed"],
+            key=lambda a: (a["media_type"], a["locator"], a["reason"]),
+        ),
+    }
+    assert (
+        domain_digest(DOMAINS["review_subject"], canonicalize(resorted))
+        == (case["expected"]["subject_digest"])
+    )
+    assert (
+        domain_digest(DOMAINS["review_subject"], canonicalize(shuffled))
+        != (case["expected"]["subject_digest"])
+    ), "JSON arrays are ordered — an unsorted list must not reach canonicalization"
 
 
 def test_delegation_credential() -> None:
@@ -536,7 +730,6 @@ def test_fingerprint_one_byte_flip_changes_hash() -> None:
 def test_merkle_leaf_one_byte_flip_changes_hash() -> None:
     case = _load_case("bundle-merkle-single")
     original = case["expected"]["leaf_0"]
-    "sha256:" + "aa" * 32
     flipped_eh = "sha256:" + ("ab" + "aa" * 31)
     flipped_leaf = _merkle_leaf(0, flipped_eh)
     assert flipped_leaf != original
@@ -615,9 +808,9 @@ def test_estate_catalog_one_byte_flip_changes_hash() -> None:
 def test_review_subject_one_byte_flip_changes_hash() -> None:
     case = _load_case("review-subject")
     original = case["expected"]["subject_digest"]
-    subject = case["input"]["review_subject"]
+    subject = case["input"]["review_subject_after_sorting"]
     mutated = dict(subject)
-    mutated["work_item_id"] = _flip_one_char(subject["work_item_id"])
+    mutated["entity_id"] = _flip_one_char(subject["entity_id"])
     b = canonicalize(mutated)
     assert domain_digest(DOMAINS["review_subject"], b) != original
 
@@ -644,6 +837,88 @@ def test_trust_checkpoint_one_byte_flip_changes_signature() -> None:
     mb = canonicalize(mutated)
     mutated_sig = SK.sign(DOMAINS["trust_checkpoint"] + u64be(len(mb)) + mb).signature
     assert mutated_sig != original_sig
+
+
+def test_payload_numeric_bounds_accepts_the_boundary() -> None:
+    """V6-ENVELOPE §2.5 as amended by P0.2: `|v| < 2**53`, integers and floats alike."""
+    case = _load_case("payload-numeric-bounds")
+    env = case["input"]["envelope_declaration_order"]
+    canonical = canonicalize(env)
+    assert canonical == case["expected"]["canonical_bytes"].encode()
+
+    payload = case["input"]["accepted_payload"]
+    assert payload["max_positive_int"] == 2**53 - 1
+    assert payload["max_negative_int"] == -(2**53 - 1)
+    for value in payload.values():
+        if isinstance(value, int) and not isinstance(value, bool):
+            assert abs(value) < 2**53
+
+    signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
+    assert signature.hex() == case["expected"]["signature_hex"]
+    assert case["expected"]["event_hash"] == digest_str(
+        DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature
+    )
+
+
+def test_payload_numeric_bounds_rejected_band_is_measured_not_asserted() -> None:
+    """The half of §2.5 the canonicalizer will not enforce for you.
+
+    Integers at or above `2**53` raise. Floats in `2**53 <= |v| < 1e21` do not: they
+    canonicalize to an integer literal outside the safe domain, so the *second* pass
+    fails — signable, canonical, and no computable digest. That asymmetry is the reason
+    the rule is magnitude-based and applies to both types, and a strict parser that only
+    trusts the canonicalizer inherits the gap.
+    """
+    case = _load_case("payload-numeric-bounds")
+    by_label = {r["label"]: r for r in case["input"]["rejected_values"]}
+
+    assert by_label["int_at_2_53"]["rejects_at_canonicalization"] is True
+    assert by_label["int_at_negative_2_53"]["rejects_at_canonicalization"] is True
+
+    band = by_label["float_in_measured_band"]
+    assert band["rejects_at_canonicalization"] is False
+    assert band["recanonicalizing_that_output_fails"] is True
+
+    # The measurement, re-run: 1e16 prints as an integer literal, and that literal is
+    # outside the domain the canonicalizer will accept back.
+    produced = canonicalize({"v": 1e16})
+    assert produced == b'{"v":10000000000000000}'
+    with pytest.raises(Exception):
+        canonicalize(json.loads(produced))
+
+
+def test_occurred_at_has_exactly_one_lexical_form() -> None:
+    """V6-ENVELOPE §2.3 / DD-4, and the `24:00` divergence P0.2 measured."""
+    case = _load_case("occurred-at-lexical-form")
+    env = case["input"]["envelope_declaration_order"]
+    assert env["occurred_at"] == case["input"]["accepted"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", case["input"]["accepted"])
+
+    canonical = canonicalize(env)
+    assert canonical == case["expected"]["canonical_bytes"].encode()
+
+    pattern = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+    rejected = {r["value"] for r in case["input"]["rejected"]}
+    assert "2026-08-09T24:00:00.000000Z" in rejected, (
+        "the 24:00 form must be pinned as rejected — it is lexically well-formed, which is "
+        "why only an explicit rule keeps it out of signed bytes"
+    )
+    for value in rejected:
+        if value == "2026-08-09T24:00:00.000000Z":
+            # Matches the pattern but is rejected on the calendar rule, not the lexical one.
+            assert pattern.fullmatch(value)
+            continue
+        assert not pattern.fullmatch(value), f"{value!r} must not match the §2.3 form"
+
+
+def test_occurred_at_rejected_forms_change_the_signed_bytes() -> None:
+    """Each rejected spelling is a different signed artifact, not a synonym."""
+    case = _load_case("occurred-at-lexical-form")
+    env = case["input"]["envelope_declaration_order"]
+    original = canonicalize(env)
+    for entry in case["input"]["rejected"]:
+        mutated = {**env, "occurred_at": entry["value"]}
+        assert canonicalize(mutated) != original
 
 
 def test_cross_domain_non_confusability() -> None:

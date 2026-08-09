@@ -1,0 +1,102 @@
+{
+  "category": "numeric-bounds",
+  "description": "V6-ENVELOPE \u00a72.5 as amended by P0.2: |v| < 2**53 for both integers and floats. Accepted boundary values are frozen; the rejected band records which values the canonicalizer catches and which only a strict parser can.",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"float_at_1e21_round_trips\":1e+21,\"float_below_band\":1.5,\"max_negative_int\":-9007199254740991,\"max_positive_int\":9007199254740991,\"zero\":0},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "canonical_len": 1208,
+    "event_hash": "sha256:59fd4b27909d28906ea74ca5e865c98d2e9b0de668321f0af30c024e06e6377b",
+    "payload_canonical_hash": "sha256:718706f49b194e5676363dd78fe8136fcc3088830563ca67533be94d82ba487e",
+    "rule": "|v| < 2**53, integers and floats alike",
+    "signature_hex": "e814c6ea3ee8714d3135a75ba2e5f9ac0d985448d03d9258b2f6573fdd7573c2da149ddac35a1e800d978e0903a2328c91ddc598c6b62b3043968b743f44ec03"
+  },
+  "input": {
+    "accepted_payload": {
+      "float_at_1e21_round_trips": 1e+21,
+      "float_below_band": 1.5,
+      "max_negative_int": -9007199254740991,
+      "max_positive_int": 9007199254740991,
+      "zero": 0
+    },
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "agent",
+        "metadata": {},
+        "principal_id": "agent:01J8ZC4M9QK3V7XN2R6TB5HFAD"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+        "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+      },
+      "entity": {
+        "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+        "kind": "work_item"
+      },
+      "entity_seq": 17,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "float_at_1e21_round_trips": 1e+21,
+        "float_below_band": 1.5,
+        "max_negative_int": -9007199254740991,
+        "max_positive_int": 9007199254740991,
+        "zero": 0
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": "claude-opus-5",
+        "model_lineage": "anthropic/claude-opus-5"
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "key_id": "pk_1bf310ecef19e79a",
+        "scheme_id": "ed25519"
+      },
+      "transition": "note_added",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    },
+    "rejected_values": [
+      {
+        "canonicalizer_output_or_error": "IntegerDomainError",
+        "label": "int_at_2_53",
+        "recanonicalizing_that_output_fails": false,
+        "rejects_at_canonicalization": true,
+        "value_repr": "9007199254740992",
+        "why_rejected_by_2_5": "|v| >= 2**53 \u2014 outside the JCS safe integer domain"
+      },
+      {
+        "canonicalizer_output_or_error": "IntegerDomainError",
+        "label": "int_at_negative_2_53",
+        "recanonicalizing_that_output_fails": false,
+        "rejects_at_canonicalization": true,
+        "value_repr": "-9007199254740992",
+        "why_rejected_by_2_5": "|v| >= 2**53"
+      },
+      {
+        "canonicalizer_output_or_error": "{\"v\":10000000000000000}",
+        "label": "float_in_measured_band",
+        "recanonicalizing_that_output_fails": true,
+        "rejects_at_canonicalization": false,
+        "value_repr": "1e+16",
+        "why_rejected_by_2_5": "2**53 <= |v| < 1e21 \u2014 canonicalizes to an integer literal that cannot be canonicalized again; this is the P0.2 amendment's whole reason to exist"
+      },
+      {
+        "canonicalizer_output_or_error": "{\"v\":100000000000000000000}",
+        "label": "float_just_below_1e21",
+        "recanonicalizing_that_output_fails": true,
+        "rejects_at_canonicalization": false,
+        "value_repr": "1e+20",
+        "why_rejected_by_2_5": "2**53 <= |v| < 1e21 \u2014 same band"
+      }
+    ]
+  }
+}
