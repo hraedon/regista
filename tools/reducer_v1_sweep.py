@@ -94,7 +94,11 @@ def emit() -> dict[str, object]:
     digests: dict[str, str] = {}
     content_only: dict[str, str] = {}
     for name, envelopes, definitions in VECTORS:
-        digests[name] = content_state_digest(envelopes, workflow_definitions=definitions)
+        # Both field sets are swept so the decided default (content-only) and the retained
+        # alternative stay proved together — reversing the decision must not need a re-freeze.
+        digests[name] = content_state_digest(
+            envelopes, workflow_definitions=definitions, include_claim_state=True
+        )
         content_only[name] = content_state_digest(
             envelopes, workflow_definitions=definitions, include_claim_state=False
         )

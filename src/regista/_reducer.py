@@ -276,7 +276,7 @@ def reduce_v1(
     envelopes: Sequence[bytes],
     *,
     workflow_definitions: Mapping[tuple[str, int], Mapping[str, Any]],
-    include_claim_state: bool = True,
+    include_claim_state: bool = False,
 ) -> dict[str, Any]:
     """Reduce a signed event prefix to the state a review verdict binds to.
 
@@ -289,7 +289,8 @@ def reduce_v1(
     that is absent is an error, not an unknown-transition warning: without it the reduction is
     not determined by the material presented.
 
-    ``include_claim_state`` selects the field set. See :func:`reduced_field_names`.
+    ``include_claim_state`` selects the field set; it defaults to **False** (content only) by
+    the 2026-08-09 decision recorded in :func:`reduced_field_names`.
     """
     state: str | None = None
     custom_fields: dict[str, Any] = {}
@@ -435,15 +436,39 @@ def reduce_v1(
     return reduced
 
 
-def reduced_field_names(*, include_claim_state: bool = True) -> tuple[str, ...]:
+def reduced_field_names(*, include_claim_state: bool = False) -> tuple[str, ...]:
     """The reduced field set, in declaration order (JCS sorts them anyway).
 
-    ``include_claim_state=True`` is the strict reading of "stale a verdict after any
-    state-changing event": a claim, a heartbeat or a lease expiry changes the projection, so it
-    stales the verdict. ``False`` reduces content only, so lease churn does not invalidate a
-    review. **This is an owner decision, not a determinism question** — both field sets are
-    proved byte-stable by the conformance vectors, so the choice can be made on operational
-    grounds without reopening Gate 0.
+    **Decided 2026-08-09: claim state is excluded, and that is the default.** Both field sets are
+    proved byte-stable by the conformance vectors, so this was an operational call rather than a
+    determinism one — but it is not a close call, for two reasons that are about correctness
+    rather than taste:
+
+    1. **Including claim state breaks the pass → accept flow in the ordinary case.**
+       `REVIEW-VERDICTS.md` §2.5 requires an ``accept`` to carry the same ``subject_digest`` as
+       the pass it supersedes, or a later ``reviewed_through_event_hash`` whose
+       ``content_state_digest`` is unchanged. An accepter routinely *claims* the item in order to
+       act on it. With claim state inside the digest, that claim changes the digest, and the
+       accept can never match the pass it is accepting. The gate would fail closed on its own
+       happy path.
+    2. **It hands out a denial tool.** ``claim_expired`` is emitted by the maintenance thread
+       with no human involved. If a lease expiry stales every verdict on an item, anything that
+       can cause churn — including ordinary timeouts — can invalidate a completed review. §4.4's
+       monotonicity invariant is about stopping appended work from *inflating* a claim; a
+       mechanism that lets background timers *destroy* one is the same defect pointing the other
+       way, and D11 already names "hand an attacker a denial tool" as the reason an unverdicted
+       event must not downgrade.
+
+    So "stale a verdict after any state-changing event" is read as **any event that changes what
+    the item says** — which is what a *content* state digest was named for. ``claimed_by``,
+    ``claim_expires_at``, ``claim_coalesce_threshold`` and ``attempt_number`` describe who is
+    holding the work, not what the work is. ``attempt_number`` is the closest call of the four,
+    since a retry count is arguably history rather than lease state; it goes with the others
+    because it is derived entirely from claim transitions.
+
+    ``include_claim_state=True`` is retained, tested and frozen so the decision is reversible
+    without reopening Gate 0 — and so that anyone who thinks it should be reversed argues with
+    the two points above rather than with an absent option.
     """
     base = (
         "reducer_version",
@@ -460,7 +485,7 @@ def content_state_digest(
     envelopes: Sequence[bytes],
     *,
     workflow_definitions: Mapping[tuple[str, int], Mapping[str, Any]],
-    include_claim_state: bool = True,
+    include_claim_state: bool = False,
 ) -> str:
     """``sha256:<hex>`` over the domain-separated JCS of :func:`reduce_v1`."""
     reduced = reduce_v1(
@@ -475,7 +500,7 @@ def reduce_and_canonicalize(
     envelopes: Iterable[bytes],
     *,
     workflow_definitions: Mapping[tuple[str, int], Mapping[str, Any]],
-    include_claim_state: bool = True,
+    include_claim_state: bool = False,
 ) -> bytes:
     """The exact JCS bytes the digest is taken over. Exposed for conformance vectors."""
     return canonicalize(

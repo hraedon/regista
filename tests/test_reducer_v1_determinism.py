@@ -62,13 +62,33 @@ def test_frozen_digests_were_agreed_by_multiple_interpreters() -> None:
 
 @pytest.mark.parametrize("name,envelopes,definitions", VECTORS, ids=[v[0] for v in VECTORS])
 def test_vector_matches_frozen_digest(name, envelopes, definitions) -> None:
+    # The default field set is content-only (claim state excluded) — decided 2026-08-09,
+    # reasoning in `reduced_field_names`. `digests` is the with-claim-state variant, kept
+    # frozen so the decision is reversible without re-freezing.
     assert (
         content_state_digest(envelopes, workflow_definitions=definitions)
-        == FROZEN["digests"][name]
+        == FROZEN["digests_content_only"][name]
     )
     assert (
-        content_state_digest(envelopes, workflow_definitions=definitions, include_claim_state=False)
-        == FROZEN["digests_content_only"][name]
+        content_state_digest(envelopes, workflow_definitions=definitions, include_claim_state=True)
+        == FROZEN["digests"][name]
+    )
+
+
+def test_default_field_set_excludes_claim_state() -> None:
+    """The decision itself, pinned. Flipping the default must break a test, not a deployment."""
+    _name, envelopes, definitions = next(v for v in VECTORS if v[0] == "claim-churn")
+    reduced = reduce_v1(envelopes, workflow_definitions=definitions)
+    assert set(reduced) == {
+        "reducer_version",
+        "current_state",
+        "custom_fields",
+        "needs_review",
+        "not_before",
+        "last_entity_seq",
+    }
+    assert reduced == reduce_v1(
+        envelopes, workflow_definitions=definitions, include_claim_state=False
     )
 
 
@@ -95,15 +115,15 @@ def test_key_insertion_order_does_not_reach_the_digest() -> None:
 def test_claim_state_field_set_is_a_real_choice() -> None:
     """The two field sets must actually differ, or `include_claim_state` is decoration."""
     _name, envelopes, definitions = next(v for v in VECTORS if v[0] == "claim-churn")
-    full = content_state_digest(envelopes, workflow_definitions=definitions)
-    content = content_state_digest(
-        envelopes, workflow_definitions=definitions, include_claim_state=False
+    full = content_state_digest(
+        envelopes, workflow_definitions=definitions, include_claim_state=True
     )
+    content = content_state_digest(envelopes, workflow_definitions=definitions)
     assert full != content
-    assert "claimed_by" in reduce_v1(envelopes, workflow_definitions=definitions)
-    assert "claimed_by" not in reduce_v1(
-        envelopes, workflow_definitions=definitions, include_claim_state=False
+    assert "claimed_by" in reduce_v1(
+        envelopes, workflow_definitions=definitions, include_claim_state=True
     )
+    assert "claimed_by" not in reduce_v1(envelopes, workflow_definitions=definitions)
 
 
 @pytest.mark.parametrize(
