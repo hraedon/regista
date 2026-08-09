@@ -436,8 +436,29 @@ def _verify_global_hash_chain(
 
 
 class _ReplayHaltError(RegistaError):
-    def __init__(self, message: str) -> None:
+    """A per-work-item halt, carrying the findings made before it fired.
+
+    A halt aborts ``_replay_work_item`` mid-loop, so any counter it had
+    accumulated would be discarded by the caller's ``except`` branch. That
+    silently drops real findings: WI-267 verification and the WI-266 chain
+    walk look at the *same* event, and a rewritten ``prev_event_hash`` is both
+    a broken chain link and a signed-field mismatch. The halt must not erase
+    the chain-break count on its way out — the two are distinct guarantees and
+    a scripted reader may be watching either.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        chain_breaks: int = 0,
+        warnings: int = 0,
+        unverifiable: int = 0,
+    ) -> None:
         super().__init__(ErrorCode.REPLAY_HALTED, message)
+        self.chain_breaks = chain_breaks
+        self.warnings = warnings
+        self.unverifiable = unverifiable
 
 
 _EVENT_FIELDS = (
@@ -673,8 +694,12 @@ def _replay_inner(
             total_unverifiable += wi_unverifiable
         except _ReplayHaltError as e:
             halted_count += 1
+            # Findings made before the halt survive it — see _ReplayHaltError.
+            total_warnings += e.warnings
+            total_chain_breaks += e.chain_breaks
+            total_unverifiable += e.unverifiable
             log.error("replay.halted", work_item_id=str(wi_id), error=str(e))
-            store.add_report_entry(wi_id, "halted", str(e), 0)
+            store.add_report_entry(wi_id, "halted", str(e), e.warnings, e.chain_breaks)
             return
         except Exception as e:
             halted_count += 1
@@ -1147,7 +1172,10 @@ def _replay_work_item(
             if verification.applicability is Applicability.INVALID:
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "
-                    f"at seq {evt['event_seq']}: {verification.summary()}"
+                    f"at seq {evt['event_seq']}: {verification.summary()}",
+                    chain_breaks=chain_breaks,
+                    warnings=warnings,
+                    unverifiable=unverifiable,
                 )
             if not verification.accepted:
                 # UNVERIFIABLE is an evidentiary gap, not an attack: a pre-002
@@ -1179,7 +1207,10 @@ def _replay_work_item(
                             "has no canonical_envelope, and no envelope this "
                             "row could have carried reproduces its retained "
                             "signature: the row contradicts its own "
-                            "cryptographic material"
+                            "cryptographic material",
+                            chain_breaks=chain_breaks,
+                            warnings=warnings,
+                            unverifiable=unverifiable,
                         )
                     unverifiable += 1
                     log.warning(
@@ -1304,7 +1335,10 @@ def _replay_work_item(
             ).fetchone()
             if wf_row is None:
                 raise _ReplayHaltError(
-                    f"Missing workflow {evt['workflow_name']!r} v{evt['workflow_version']}"
+                    f"Missing workflow {evt['workflow_name']!r} v{evt['workflow_version']}",
+                    chain_breaks=chain_breaks,
+                    warnings=warnings,
+                    unverifiable=unverifiable,
                 )
 
             defn = wf_row["definition"]
@@ -1318,7 +1352,10 @@ def _replay_work_item(
                 name_matches = any(t["name"] == transition for t in defn.get("transitions", []))
                 if name_matches:
                     raise _ReplayHaltError(
-                        f"Transition {transition!r} exists but not valid from state {state!r}"
+                        f"Transition {transition!r} exists but not valid from state {state!r}",
+                        chain_breaks=chain_breaks,
+                        warnings=warnings,
+                        unverifiable=unverifiable,
                     )
                 warnings += 1
                 log.warning(

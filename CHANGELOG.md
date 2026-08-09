@@ -100,6 +100,16 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     its outcomes into a pass — that asymmetry is what keeps it from being the
     rebuild-from-row escape hatch this work deleted.
 
+  **Interaction with WI-266.** `chain_breaks` and `unverifiable` are three-way
+  distinct from `warnings` and from each other: a chain break is a detected
+  tamper (exit non-zero), `unverifiable` is "nothing was checked at all" (an
+  evidentiary gap — reported loudly, does not by itself fail the exit status).
+  Where both fire on the same event — a rewritten `prev_event_hash` is a broken
+  chain link *and*, from envelope v3, a signed-field mismatch — both are
+  reported: `_ReplayHaltError` now carries the counters accumulated before the
+  halt so a per-work-item halt cannot silently erase the chain-walk finding on
+  its way out.
+
   **Compatibility.** A read-only preflight over the live estate (351,371
   events, 26 project schemas) found **zero** row↔envelope mismatches, zero
   missing envelopes and zero unknown schemas: 94.7% v5, 5.3% v4, no v1/v2/v3.
