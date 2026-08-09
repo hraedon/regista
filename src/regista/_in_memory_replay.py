@@ -61,7 +61,9 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
     (BC-300 / Plan 024).
 
     Immune to ``global_seq`` ordering issues (CACHE 100 interleaving).
-    Returns ``(warning_count, chain_tail)``.
+    Returns ``(chain_breaks, chain_tail)`` — every finding this walk makes is
+    a structural chain failure (WI-266), so they count as chain breaks, not
+    warnings.
     """
     from collections import defaultdict
 
@@ -80,7 +82,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
         else:
             link_map[bytes(evt.prev_global_event_hash).hex()].append(evt)
 
-    warnings = 0
+    chain_breaks = 0
 
     # Order-stable genesis selection (WI-219): the canonical chain start is the
     # lowest global_seq, tie-broken on event_id, so the verdict does not depend
@@ -95,7 +97,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
 
     if len(genesis_events) > 1:
         for g in genesis_events[1:]:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_multiple_genesis",
                 event_id=str(g.event_id),
@@ -104,14 +106,14 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
 
     if not genesis_events:
         for evt in events:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_orphan",
                 event_id=str(evt.event_id),
                 global_seq=evt.global_seq,
                 detail="no genesis event",
             )
-        return warnings, None
+        return chain_breaks, None
 
     current = genesis_events[0]
     visited: set[uuid.UUID] = set()
@@ -119,7 +121,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
     while True:
         eid = current.event_id
         if eid in visited:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_cycle",
                 event_id=str(eid),
@@ -142,7 +144,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
 
         if len(successors) > 1:
             for s in successors[1:]:
-                warnings += 1
+                chain_breaks += 1
                 log.warning(
                     "replay.global_chain_fork",
                     event_id=str(s.event_id),
@@ -154,7 +156,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
 
     for evt in events:
         if evt.event_id not in visited:
-            warnings += 1
+            chain_breaks += 1
             log.warning(
                 "replay.global_chain_orphan",
                 event_id=str(evt.event_id),
@@ -162,7 +164,7 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
                 detail="event not reachable from genesis via prev_global_event_hash links",
             )
 
-    return warnings, current
+    return chain_breaks, current
 
 
 def in_memory_replay(
@@ -179,6 +181,7 @@ def in_memory_replay(
     drift = 0
     halted = 0
     warnings = 0
+    chain_breaks = 0
     scoped = work_item_id is not None
 
     if verify_principal_binding:
@@ -206,24 +209,31 @@ def in_memory_replay(
                     event_count=len(orphan_evts),
                 )
                 continue
+            # WI-266: a created work item whose projection row is gone is the
+            # same structural finding scoped replay halts on. Both the created
+            # and non-created orphan are halts now, matching the Postgres path.
             is_created = len(orphan_evts) > 0 and orphan_evts[0].transition == "created"
-            if not is_created:
-                halted += 1
+            halted += 1
+            if is_created:
+                log.error(
+                    "replay.orphan_work_item_missing_projection",
+                    work_item_id=str(orphan_id),
+                    event_count=len(orphan_evts),
+                )
+            else:
                 log.error(
                     "replay.orphan_events",
                     work_item_id=str(orphan_id),
                     event_count=len(orphan_evts),
                 )
-            else:
-                warnings += 1
-                log.warning(
-                    "replay.orphan_work_item",
-                    work_item_id=str(orphan_id),
-                    event_count=len(orphan_evts),
-                )
 
     if scoped:
-        items = [(work_item_id, work_items[work_item_id])] if work_item_id in work_items else []
+        wi_ids = {work_item_id} if work_item_id in work_items else set()
+        items = (
+            [(work_item_id, work_items[work_item_id])]
+            if work_item_id in work_items
+            else []
+        )
         if work_item_id not in work_items and work_item_id in store.events:
             halted += 1
             log.error(
@@ -234,10 +244,13 @@ def in_memory_replay(
     else:
         items = list(work_items.items())
 
+    processed_wi_ids: set[uuid.UUID] = set()
+
     for wi_id, wi in items:
         evts = store.events.get(wi_id, [])
         if not evts:
             continue
+        processed_wi_ids.add(wi_id)
         try:
             derived_state = None
             derived_fields: dict[str, Any] = {}
@@ -252,6 +265,7 @@ def in_memory_replay(
             for evt in sorted(evts, key=lambda e: e.event_seq):
                 chain_ok, chain_err = _verify_hash_chain_in_memory(evt, prev_evt)
                 if not chain_ok:
+                    # WI-266: structural failure — chain_breaks, not warnings.
                     log.warning(
                         "replay.hash_chain_broken",
                         work_item_id=str(wi_id),
@@ -259,7 +273,7 @@ def in_memory_replay(
                         event_seq=evt.event_seq,
                         detail=chain_err,
                     )
-                    warnings += 1
+                    chain_breaks += 1
 
                 if key_set is not None:
                     key_entry = None
@@ -441,33 +455,59 @@ def in_memory_replay(
                 else:
                     ok += 1
 
+    # WI-266: a projection row with NO events was never compared above — the
+    # group loop skips it. A fabricated projection row or a wholesale-deleted
+    # event log must halt, exactly like the Postgres path.
+    for missing_id in sorted(wi_ids - processed_wi_ids, key=str):
+        halted += 1
+        log.error(
+            "replay.projection_row_without_events",
+            work_item_id=str(missing_id),
+        )
+
     if not scoped:
         all_global_events = []
         for wid in store.events:
             all_global_events.extend(store.events[wid])
-        chain_warnings, chain_tail = _verify_global_hash_chain_in_memory(all_global_events)
-        warnings += chain_warnings
+        stored_head = getattr(store, "_global_chain_head", None)
 
-        if chain_tail is not None:
-            last = chain_tail
-            if last.canonical_envelope is not None and last.signature is not None:
-                from ._signing_scheme import resolve_hash_function
+        if not all_global_events:
+            # WI-266: no events at all, yet the chain head claims one — the
+            # head proves events were appended and then deleted wholesale.
+            if stored_head is not None:
+                halted += 1
+                log.error(
+                    "replay.global_chain_head_without_events",
+                    detail=(
+                        "global chain head is set but the event log is empty; "
+                        "the log was appended to and then deleted"
+                    ),
+                )
+        else:
+            chain_breaks_found, chain_tail = _verify_global_hash_chain_in_memory(
+                all_global_events
+            )
+            chain_breaks += chain_breaks_found
 
-                computed_head = resolve_hash_function("sha-256")(
-                    bytes(last.canonical_envelope) + bytes(last.signature)
-                ).digest()
-                stored_head = getattr(store, "_global_chain_head", None)
-                if stored_head is not None and not _hmac.compare_digest(
-                    bytes(stored_head), computed_head
-                ):
-                    warnings += 1
-                    log.warning(
-                        "replay.global_chain_head_mismatch",
-                        detail=(
-                            "global chain head does not match the chain tail; "
-                            "a tail event may have been deleted or the head tampered"
-                        ),
-                    )
+            if chain_tail is not None:
+                last = chain_tail
+                if last.canonical_envelope is not None and last.signature is not None:
+                    from ._signing_scheme import resolve_hash_function
+
+                    computed_head = resolve_hash_function("sha-256")(
+                        bytes(last.canonical_envelope) + bytes(last.signature)
+                    ).digest()
+                    if stored_head is not None and not _hmac.compare_digest(
+                        bytes(stored_head), computed_head
+                    ):
+                        chain_breaks += 1
+                        log.warning(
+                            "replay.global_chain_head_mismatch",
+                            detail=(
+                                "global chain head does not match the chain tail; "
+                                "a tail event may have been deleted or the head tampered"
+                            ),
+                        )
     else:
         log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))
 
@@ -477,6 +517,7 @@ def in_memory_replay(
         replayed_drift=drift,
         halted=halted,
         warnings=warnings,
+        chain_breaks=chain_breaks,
         # Deliberately False even when verify_principal_binding was requested:
         # the InMemory backend has no principal_keys registry, so the check did
         # not run. WI-223 — never claim a binding was verified when it wasn't.

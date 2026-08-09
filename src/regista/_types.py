@@ -609,6 +609,11 @@ class ReplayReport:
     replayed_drift: int
     halted: int
     warnings: int = 0
+    #: Structural hash-chain findings (broken per-work-item chain, global-chain
+    #: orphan, fork, multiple genesis, chain head mismatch). Distinct from
+    #: ``warnings`` because a chain break is a tampering verdict, not an
+    #: advisory: CI and scripted verification must exit non-zero on it.
+    chain_breaks: int = 0
     principal_binding_failures: int = 0
     #: Whether the principal-binding check actually ran. WI-223: a zero
     #: ``principal_binding_failures`` is only an affirmative claim when this is
@@ -629,6 +634,8 @@ class ReplayReport:
         }
         if self.warnings > 0:
             d["warnings"] = self.warnings
+        if self.chain_breaks > 0:
+            d["chain_breaks"] = self.chain_breaks
         d["principal_binding_verified"] = self.principal_binding_verified
         if self.principal_binding_verified:
             d["principal_binding_failures"] = self.principal_binding_failures
@@ -646,6 +653,7 @@ class ReplayReport:
             replayed_drift=data["replayed_drift"],
             halted=data["halted"],
             warnings=data.get("warnings", 0),
+            chain_breaks=data.get("chain_breaks", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
             principal_binding_verified=data.get("principal_binding_verified", False),
             entries=tuple(
@@ -663,6 +671,8 @@ class ReplayReportEntry:
     # column of the (now-temporary) report table so callers reading ``entries``
     # see the same detail the table once held.
     warnings: int = 0
+    #: Per-work-item structural chain-break count for this entry (WI-266).
+    chain_breaks: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -670,6 +680,7 @@ class ReplayReportEntry:
             "category": self.category,
             "detail": self.detail,
             "warnings": self.warnings,
+            "chain_breaks": self.chain_breaks,
         }
 
     @classmethod
@@ -679,6 +690,7 @@ class ReplayReportEntry:
             category=data["category"],
             detail=data.get("detail"),
             warnings=data.get("warnings", 0),
+            chain_breaks=data.get("chain_breaks", 0),
         )
 
 

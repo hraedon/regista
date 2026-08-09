@@ -327,7 +327,16 @@ def cmd_replay(args: argparse.Namespace) -> None:
                 f"warnings={report.warnings}  "
                 f"{binding}"
             )
-        if report.replayed_drift > 0 or report.halted > 0:
+            # WI-266: chain breaks are a structural tampering verdict, not an
+            # advisory — print them on their own line so a scripted reader
+            # cannot mistake them for part of the advisory summary.
+            if report.chain_breaks > 0:
+                print(f"chain_breaks={report.chain_breaks}")
+        if (
+            report.replayed_drift > 0
+            or report.halted > 0
+            or report.chain_breaks > 0
+        ):
             sys.exit(1)
         if args.strict_principal_binding and report.principal_binding_failures > 0:
             sys.exit(1)

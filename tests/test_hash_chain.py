@@ -106,7 +106,9 @@ class TestBC233HashChain:
             )
 
         report = sub.replay()
-        assert report.warnings >= 1
+        # WI-266: a broken hash chain is a structural tampering verdict — it
+        # counts as chain_breaks, not warnings.
+        assert report.chain_breaks >= 1
 
     def test_append_event_api_persists_prev_hash(self, regista):
         sub = regista
