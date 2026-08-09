@@ -325,6 +325,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
                 f"drift={report.replayed_drift}  "
                 f"halted={report.halted}  "
                 f"warnings={report.warnings}  "
+                f"unverifiable={report.unverifiable}  "
                 f"{binding}"
             )
             # WI-266: chain breaks are a structural tampering verdict, not an
@@ -332,6 +333,22 @@ def cmd_replay(args: argparse.Namespace) -> None:
             # cannot mistake them for part of the advisory summary.
             if report.chain_breaks > 0:
                 print(f"chain_breaks={report.chain_breaks}")
+            if report.unverifiable > 0:
+                # WI-267: distinct from BOTH `warnings` and `chain_breaks`.
+                # A chain break is a detected tamper and exits non-zero below;
+                # this says part of the log was replayed with NO cryptographic
+                # check at all. Nothing failed — nothing was checked. That is
+                # an evidentiary gap, so it is reported loudly and does not by
+                # itself fail the exit status.
+                print(
+                    f"note: {report.unverifiable} event(s) could not be "
+                    "verified (no stored envelope, no resolvable key, or "
+                    "never signed). Nothing failed — nothing was checked. "
+                    "Grep the log for replay.event_envelope_absent / "
+                    "replay.event_unverifiable / "
+                    "replay.keyless_no_signatures_verified.",
+                    file=sys.stderr,
+                )
         if (
             report.replayed_drift > 0
             or report.halted > 0
@@ -955,6 +972,16 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
                 "full report:",
                 file=sys.stderr,
             )
+            if result["event_count"] > 0 and sv["signatures_verified"] == 0:
+                print(
+                    "  - no event signature could be verified offline "
+                    f"({sv['signatures_unverifiable']} unverifiable). An HMAC "
+                    "store cannot produce an offline-authenticated bundle: the "
+                    "secret is deliberately never exported. Re-export from an "
+                    "asymmetric (ed25519) store, or pass --allow-unverified to "
+                    "accept an internally-consistent-only artifact.",
+                    file=sys.stderr,
+                )
             for err in sv["errors"]:
                 print(f"  - {err}", file=sys.stderr)
             # Exit codes are the API pipelines read (the WI-240 complaint):
@@ -986,6 +1013,19 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                 )
             else:
                 print("Bundle verification FAILED:")
+                if result["event_count"] > 0 and result["signatures_verified"] == 0:
+                    # WI-267: "nothing was checked" is a failure, not a pass.
+                    # Say which one it is so an operator is not left staring at
+                    # an empty findings list.
+                    print(
+                        "  signatures: 0 of "
+                        f"{result['event_count']} event signature(s) could be "
+                        f"verified ({result['signatures_unverifiable']} "
+                        "unverifiable). Verifying a symmetric (HMAC) signature "
+                        "requires the secret, which a bundle deliberately never "
+                        "carries — such a bundle proves internal consistency "
+                        "and nothing cryptographic."
+                    )
                 if not result["bundle_hash_ok"]:
                     print(f"  bundle_hash: {result['bundle_hash_error']}")
                 if not result["global_chain_ok"]:

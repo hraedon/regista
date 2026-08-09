@@ -265,6 +265,13 @@ class TestBC214EnvelopeV2:
 
         from regista._jcs import canonicalize
         from regista._signing_scheme import HMACSHA256Scheme
+        from regista._verification import EnvelopeVersion, VerificationPolicy
+
+        legacy_policy = VerificationPolicy(
+            accept_legacy_versions=frozenset(
+                {EnvelopeVersion.V2, EnvelopeVersion.V3, EnvelopeVersion.V4}
+            ),
+        )
 
         key = b"x" * 32
         now = datetime.now(UTC)
@@ -286,8 +293,14 @@ class TestBC214EnvelopeV2:
         envelope_bytes = canonicalize(env2)
         sig, ch = HMACSHA256Scheme().sign(envelope_bytes, key)
 
-        # Verify via public API (should retry old envelope internally)
+        # WI-267: a v2 envelope is only accepted when the policy names v2.
+        # There is no fallback and no implicit tolerance — accepting a legacy
+        # envelope version is now an explicit, greppable decision
+        # (CUTOVER-POLICY §3). The stored bytes must also be supplied: nothing
+        # is rebuilt from the row.
         assert verify_event(
+            stored_envelope=envelope_bytes,
+            policy=legacy_policy,
             event_id=uuid.UUID(env2["event_id"]),
             work_item_id=uuid.UUID(env2["work_item_id"]),
             actor_id=env2["actor_id"],

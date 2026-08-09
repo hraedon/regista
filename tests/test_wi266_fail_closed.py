@@ -79,8 +79,7 @@ class TestChainBreaksFailClosed:
     def test_per_work_item_hash_chain_break_counts_as_chain_breaks(self, regista):
         wid = _create_transitioned(regista)
         # NULL -> garbage prev_event_hash on the genesis: the walk cannot chain
-        # to any predecessor, but the stored envelope still verifies, so this
-        # must be a chain break rather than a signature halt.
+        # to any predecessor, so this is a chain break.
         with raw_transaction(regista) as conn:
             conn.execute(
                 "UPDATE events SET prev_event_hash = decode(%s, 'hex') "
@@ -89,9 +88,22 @@ class TestChainBreaksFailClosed:
             )
 
         report = regista.replay()
+        # The WI-266 guarantee is intact: a chain break is counted as a chain
+        # break and never folded into `warnings`.
         assert report.chain_breaks >= 1
         assert report.warnings == 0
-        assert report.halted == 0
+        # It now ALSO halts. This assertion was `halted == 0`, on the stated
+        # premise that "the stored envelope still verifies, so this must be a
+        # chain break rather than a signature halt". WI-267 removed that
+        # premise: the envelope does still verify, but `prev_event_hash` is a
+        # signed field from envelope v3 on and the envelope for this event
+        # omits it, so a row that *gains* a link the signature never covered is
+        # a reconciliation mismatch. The chain walk was the only defence when
+        # WI-266 was written; verification is now the first one and the walk
+        # the second. Both fire, and both are asserted — the WI-266 signal is
+        # preserved, not replaced (see _ReplayHaltError, which carries the
+        # counters accumulated before the halt so they survive it).
+        assert report.halted >= 1
 
     def test_global_chain_orphan_counts_as_chain_breaks(self, regista):
         wid = _create_transitioned(regista)

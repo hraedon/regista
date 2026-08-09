@@ -106,8 +106,16 @@ class TestBC233HashChain:
             )
 
         report = sub.replay()
-        # WI-266: a broken hash chain is a structural tampering verdict — it
-        # counts as chain_breaks, not warnings.
+        # Both guarantees hold, and both are asserted.
+        #
+        # WI-266: a broken hash chain is a structural tampering verdict, so it
+        # counts as chain_breaks rather than as an advisory warning.
+        #
+        # WI-267: `prev_event_hash` is a *signed* field from envelope v3 on, so
+        # rewriting it in the row is also a reconciliation mismatch — caught by
+        # verification, which halts. Verification is now the first line of
+        # defence and the chain walk the second; neither replaces the other.
+        assert report.halted >= 1
         assert report.chain_breaks >= 1
 
     def test_append_event_api_persists_prev_hash(self, regista):
@@ -294,8 +302,21 @@ class TestBC311ReplayChainFields:
             )
 
         report = sub.replay()
-        assert report.halted == 0
-        assert report.warnings == 0
+        # WI-267: a row with no canonical_envelope is normally UNVERIFIABLE —
+        # an evidentiary gap, not an attack — and replay completes while
+        # *reporting* the gap (`report.unverifiable`) instead of silently
+        # treating it as verified.
+        #
+        # This fixture is not that case. The event was signed as v5 and its
+        # `signature`/`payload_canonical_hash` are still present, so no
+        # envelope a genuinely pre-002 row could have carried reproduces them:
+        # the row contradicts its own cryptographic material and replay halts.
+        # That is deliberate — nulling the envelope and rewriting the row is
+        # a real attack, and it halted before WI-267 too (the rebuild-from-row
+        # candidate failed its signature check). See
+        # test_wi267_row_authentication.py for the genuinely-pre-002 case,
+        # which is counted rather than halted.
+        assert report.halted >= 1
 
     def test_replay_succeeds_with_missing_envelope_in_memory(self):
         import dataclasses
@@ -321,5 +342,6 @@ class TestBC311ReplayChainFields:
                     break
 
         report = sub.replay()
-        assert report.halted == 0
-        assert report.warnings == 0
+        # As above (Postgres): the InMemory backend runs the same check, so the
+        # two backends cannot disagree about what "verified" means.
+        assert report.halted >= 1

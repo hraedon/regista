@@ -137,13 +137,18 @@ class TestDeprecatedKeyId:
 
         eid = uuid.uuid4()
         wid = uuid.uuid4()
+        # WI-267: sign and verify must name the SAME instant. This test used to
+        # call datetime.now(UTC) twice — the row it described carried a
+        # different timestamp than the envelope signed, and verification did
+        # not care, which is the defect in miniature.
+        ts = datetime.now(UTC)
         sig, chash, envelope = sign_event(
             event_id=eid, work_item_id=wid, actor_id="test",
             key_id=entry.key_id,
             event_seq=1,
             workflow_name="wf",
             workflow_version=1,
-            timestamp=datetime.now(UTC),
+            timestamp=ts,
             transition="evt", payload=None, key=entry.secret,
         )
         assert verify_event(
@@ -152,7 +157,7 @@ class TestDeprecatedKeyId:
             event_seq=1,
             workflow_name="wf",
             workflow_version=1,
-            timestamp=datetime.now(UTC),
+            timestamp=ts,
             transition="evt", payload=None, signature=sig,
             canonical_hash=chash, key=entry.secret,
             stored_envelope=envelope,

@@ -244,7 +244,13 @@ class TestVerifyEventPrincipalBinding:
 
         result = sub.verify_event_principal_binding(events[0])
         assert result["verified"] is False
-        assert "scheme" in (result["error"] or "").lower()
+        # WI-267 / S2-interim: the HMAC-claiming row no longer takes the
+        # `elif scheme_id == "hmac-sha256": pass` escape out of the
+        # key-id-must-match filter. The principal has an ed25519 registry key,
+        # so the filter applies and the finding is the more precise one: the
+        # event's key_id is not registered for this principal at all. It used
+        # to fall through to the per-key loop and report "scheme-mismatch".
+        assert "key-id-mismatch" in (result["error"] or "").lower()
 
 
 class TestPrincipalKeyOpsFacade:
@@ -632,6 +638,16 @@ class TestReplayPrincipalBinding:
             return SimpleNamespace(
                 event_id=event_id,
                 work_item_id=work_item_id,
+                # WI-267: this stand-in must carry `entity_id` and `global_seq`
+                # like the real row does. Verification reconciles the row
+                # against the signed envelope, and `entity_id` is what v4/v5
+                # sign — a stand-in that omits it is not describing a row the
+                # store could hold. (It used to be masked by an
+                # `effective_entity_id` fallback that treated a missing/NULL
+                # `entity_id` as `work_item_id`; that fallback was itself a
+                # masking bug and was removed.)
+                entity_id=work_item_id,
+                global_seq=None,
                 event_seq=1,
                 actor_id=principal_id,
                 actor_kind="agent",

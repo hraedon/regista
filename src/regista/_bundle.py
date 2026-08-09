@@ -24,6 +24,13 @@ from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
+from ._verification import (
+    DEFAULT_POLICY,
+    Backend,
+    BundleKeyResolver,
+    EventRow,
+    verify_event_strict,
+)
 
 log = structlog.get_logger()
 
@@ -657,6 +664,15 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         if sigs_verified == 0 and len(events) > 0:
             signature_check = "enforced_none_verified"
 
+    # WI-267: `signatures_verified > 0` is part of the verdict. A bundle in
+    # which every signature was unverifiable used to report verified=True
+    # provided `errors` was empty — "nothing was checked" was being reported as
+    # "everything checks out", which is exactly the silent-pass shape S1 exists
+    # to make structurally impossible. Note this means an HMAC-only bundle is
+    # NOT `verified`: the secret is deliberately never exported, so such a
+    # bundle proves internal consistency and nothing cryptographic. Splitting
+    # the verdict into internally-consistent / authenticated-to-an-external-root
+    # is S3/S5 and is deliberately not attempted here.
     verified = (
         bundle_hash_ok
         and ok_global
@@ -664,6 +680,7 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         and all(av["verified"] for av in anchor_verifications)
         and seg_chain_ok
         and len(errors) == 0
+        and sigs_verified > 0
     )
 
     return BundleVerificationReport(
@@ -737,38 +754,47 @@ def _verify_event_signatures(
 
     verified_count = 0
     unverifiable_count = 0
+    resolver = BundleKeyResolver(keys_by_id)
 
     for evt in events:
         label = f"event {evt.event_id} (global_seq={evt.global_seq})"
 
+        key = keys_by_id.get(evt.key_id)
+        if key is None:
+            # WI-267 / S2-interim: whether this event needs an asymmetric check
+            # is decided from key metadata, not from the row's self-declared
+            # scheme_id. With no registry entry there is no metadata, so a row
+            # claiming a symmetric scheme can no longer excuse itself — an
+            # event whose key the bundle does not carry is unverifiable.
+            try:
+                claimed = get_scheme(evt.scheme_id)
+            except RegistaError:
+                errors.append(
+                    f"Unknown signing scheme {evt.scheme_id!r} at {label} (fail closed)"
+                )
+                continue
+            if getattr(claimed, "is_asymmetric", False):
+                errors.append(
+                    f"No public key for key_id {evt.key_id!r} in bundle registry at {label}"
+                )
+            else:
+                unverifiable_count += 1
+            continue
+
+        key_scheme = key["scheme"]
         try:
-            scheme = get_scheme(evt.scheme_id)
+            scheme = get_scheme(key_scheme)
         except RegistaError:
             errors.append(
-                f"Unknown signing scheme {evt.scheme_id!r} at {label} (fail closed)"
+                f"Unknown signing scheme {key_scheme!r} for key {evt.key_id!r} "
+                f"at {label} (fail closed)"
             )
             continue
 
         if not getattr(scheme, "is_asymmetric", False):
+            # Verifying an HMAC requires the secret, which is deliberately never
+            # exported. Unverifiable, and it must not count towards `verified`.
             unverifiable_count += 1
-            continue
-
-        if evt.canonical_envelope is None or evt.signature is None:
-            errors.append(f"Missing canonical_envelope or signature at {label}")
-            continue
-
-        key = keys_by_id.get(evt.key_id)
-        if key is None:
-            errors.append(
-                f"No public key for key_id {evt.key_id!r} in bundle registry at {label}"
-            )
-            continue
-
-        if key["scheme"] != evt.scheme_id:
-            errors.append(
-                f"Key scheme mismatch at {label}: key {evt.key_id!r} is "
-                f"{key['scheme']!r}, event claims {evt.scheme_id!r}"
-            )
             continue
 
         if key["principal_id"] != evt.actor_id:
@@ -798,14 +824,18 @@ def _verify_event_signatures(
             errors.append(f"Key validity comparison failed at {label}: {exc}")
             continue
 
-        if not scheme.verify(
-            bytes(evt.canonical_envelope),
-            bytes(evt.signature),
-            bytes(evt.payload_canonical_hash),
-            key["public_key"],
-            hash_alg=evt.hash_alg or "sha-256",
-        ):
-            errors.append(f"Signature verification failed at {label}")
+        # WI-267: this used to be a second, independent verifier that called
+        # scheme.verify() on the stored envelope and never reconciled the row —
+        # the audit's defect in its purest form. It now delegates to the one
+        # primitive, so a bundle whose event records were rewritten under intact
+        # envelopes no longer verifies.
+        result = verify_event_strict(
+            EventRow.from_event(evt, backend=Backend.BUNDLE),
+            keys=resolver,
+            policy=DEFAULT_POLICY,
+        )
+        if not result.accepted:
+            errors.append(f"Signature verification failed at {label}: {result.summary()}")
             continue
 
         verified_count += 1
@@ -1652,13 +1682,18 @@ def _row_to_event_dict(row: dict[str, Any]) -> dict[str, Any]:
         "event_seq": row["event_seq"],
         "actor_id": row["actor_id"],
         "actor_kind": row["actor_kind"],
-        "actor_metadata": row["actor_metadata"] if row["actor_metadata"] else None,
+        # `is not None`, not truthiness: an empty object is a *signed value*
+        # distinct from null (JCS emits `{}` vs `null`), so collapsing it would
+        # make the exported row disagree with the envelope that signed it.
+        "actor_metadata": (
+            row["actor_metadata"] if row["actor_metadata"] is not None else None
+        ),
         "key_id": row["key_id"],
         "workflow_name": row["workflow_name"],
         "workflow_version": row["workflow_version"],
         "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
         "transition": row["transition"],
-        "payload": row["payload"] if row["payload"] else None,
+        "payload": row["payload"] if row["payload"] is not None else None,
         "payload_canonical_hash": bytes(pch).hex(),
         "signature": bytes(sig).hex(),
         "entity_kind": row.get("entity_kind") or "work_item",

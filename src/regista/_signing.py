@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ._jcs import canonicalize
+
+if TYPE_CHECKING:
+    from ._verification import Backend, VerificationPolicy, VerificationResult
 
 
 def build_signing_envelope(
@@ -262,65 +265,28 @@ def sign_event(
     return (signature, canonical_hash, envelope)
 
 
-def _verify_once(
-    envelope: bytes,
-    signature: bytes,
-    canonical_hash: bytes,
-    scheme: Any,
-    key: bytes,
-    hash_alg: str = "sha-256",
-) -> bool:
-    return scheme.verify(envelope, signature, canonical_hash, key, hash_alg=hash_alg)  # type: ignore[no-any-return]
-
-
-_V5_FIELDS = frozenset(
-    {"event_id", "entity_kind", "entity_id", "actor_id", "actor_kind",
-     "actor_metadata", "key_id", "event_seq", "workflow_name",
-     "workflow_version", "timestamp", "hash_alg", "on_behalf_of",
-     "transition", "payload", "prev_event_hash", "global_seq",
-     "prev_global_event_hash"}
-)
-_V4_FIELDS = frozenset(
-    {"event_id", "entity_kind", "entity_id", "actor_id", "key_id", "event_seq",
-     "workflow_name", "workflow_version", "timestamp", "hash_alg",
-     "on_behalf_of", "transition", "payload", "prev_event_hash", "global_seq",
-     "prev_global_event_hash"}
-)
-_V3_FIELDS = frozenset(
-    {"event_id", "work_item_id", "actor_id", "key_id", "event_seq",
-     "workflow_name", "workflow_version", "timestamp", "on_behalf_of",
-     "transition", "payload", "prev_event_hash", "global_seq",
-     "prev_global_event_hash"}
-)
-_V2_FIELDS = frozenset(
-    {"event_id", "work_item_id", "actor_id", "key_id", "event_seq",
-     "workflow_name", "workflow_version", "timestamp", "on_behalf_of",
-     "transition", "payload"}
-)
-
-
-_V3_CHAIN_FIELDS = {"prev_event_hash", "global_seq", "prev_global_event_hash"}
+_VERSION_NUMBERS: dict[str, int] = {
+    "v1": 1,
+    "v2": 2,
+    "v3": 3,
+    "v4": 4,
+    "v5": 5,
+}
 
 
 def classify_envelope_version(envelope: bytes) -> int:
-    import json
+    """Classify stored envelope bytes strictly. ``0`` means "no known schema".
 
-    try:
-        obj = json.loads(envelope)
-        keys = set(obj.keys())
-        if "actor_kind" in keys and "actor_metadata" in keys and _V5_FIELDS.issuperset(keys):
-            return 5
-        if "entity_kind" in keys and "hash_alg" in keys and _V4_FIELDS.issuperset(keys):
-            return 4
-        if _V3_FIELDS.issuperset(keys) and (keys & _V3_CHAIN_FIELDS):
-            return 3
-        if keys == _V2_FIELDS:
-            return 2
-        return 1
-    except json.JSONDecodeError:
-        return 0
-    except Exception:
-        return 0
+    WI-267: the classifier this replaced used ``issuperset``, so *any subset* of
+    a version's fields — including ``{}`` and an attacker-authored object — fell
+    through to ``return 1`` and was treated as a v1 envelope. Being classified
+    v1 is the weakest possible claim (v1 signs six fields) and was therefore the
+    most attractive target. Nothing falls through to v1 now: a missing required
+    field or an unrecognised key is ``0``.
+    """
+    from ._verification import classify_envelope_bytes
+
+    return _VERSION_NUMBERS.get(str(classify_envelope_bytes(envelope)), 0)
 
 
 def verify_event(
@@ -347,257 +313,186 @@ def verify_event(
     hash_alg: str = "sha-256",
     actor_kind: str | None = None,
     actor_metadata: dict[str, Any] | None = None,
+    scheme_id: str | None = None,
+    backend: Backend | None = None,
+    policy: VerificationPolicy | None = None,
 ) -> bool:
+    """Boolean bridge over :func:`regista._verification.verify_event_strict`.
+
+    WI-267: this used to assemble up to six candidate envelopes **from the row
+    columns under attack** and return ``True`` on the first that verified. That
+    fallback is deleted, not disabled — there is no flag to re-enable it,
+    because a flag would be the silent pass. The stored envelope is now the only
+    envelope, and every field it signs must agree with the values passed here
+    before this returns ``True``.
+
+    Two consequences callers must know about:
+
+    * ``stored_envelope=None`` is ``unverifiable``, not "try to rebuild one".
+      Reconstructing a missing envelope is an explicit offline operator action.
+    * The arguments describe the *row*. Passing fewer of them than the envelope
+      signs (e.g. omitting ``actor_kind`` for a v5 event) is a disagreement with
+      the signed bytes and fails.
+
+    Prefer :func:`verify_event_strict`, which returns the structured result
+    including *which* field disagreed.
+    """
+    return verify_event_result(
+        event_id=event_id,
+        work_item_id=work_item_id,
+        actor_id=actor_id,
+        key_id=key_id,
+        event_seq=event_seq,
+        workflow_name=workflow_name,
+        workflow_version=workflow_version,
+        timestamp=timestamp,
+        transition=transition,
+        payload=payload,
+        signature=signature,
+        canonical_hash=canonical_hash,
+        key=key,
+        stored_envelope=stored_envelope,
+        on_behalf_of=on_behalf_of,
+        scheme=scheme,
+        prev_event_hash=prev_event_hash,
+        global_seq=global_seq,
+        prev_global_event_hash=prev_global_event_hash,
+        entity_kind=entity_kind,
+        hash_alg=hash_alg,
+        actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
+        scheme_id=scheme_id,
+        backend=backend,
+        policy=policy,
+    ).accepted
+
+
+def verify_event_result(
+    event_id: UUID,
+    work_item_id: UUID,
+    actor_id: str,
+    key_id: str,
+    event_seq: int,
+    workflow_name: str,
+    workflow_version: int,
+    timestamp: datetime,
+    transition: str | None,
+    payload: dict[str, Any] | None,
+    signature: bytes,
+    canonical_hash: bytes,
+    key: bytes,
+    stored_envelope: bytes | None = None,
+    on_behalf_of: dict[str, Any] | None = None,
+    scheme: Any = None,
+    prev_event_hash: bytes | None = None,
+    global_seq: int | None = None,
+    prev_global_event_hash: bytes | None = None,
+    entity_kind: str = "work_item",
+    hash_alg: str = "sha-256",
+    actor_kind: str | None = None,
+    actor_metadata: dict[str, Any] | None = None,
+    entity_id: UUID | None = None,
+    scheme_id: str | None = None,
+    backend: Backend | None = None,
+    policy: VerificationPolicy | None = None,
+) -> VerificationResult:
+    """Field-wise entry point to the one verification primitive."""
     from ._signing_scheme import HMACSHA256Scheme
+    from ._verification import (
+        DEFAULT_POLICY,
+        Backend,
+        EventRow,
+        StaticKeyResolver,
+        TrustedKeySource,
+        verify_event_strict,
+    )
 
     if scheme is None:
         scheme = HMACSHA256Scheme()
 
-    stored_ver = 0
-    if stored_envelope is not None:
-        stored_ver = classify_envelope_version(stored_envelope)
-
-    has_chain_fields = (
-        prev_event_hash is not None
-        or prev_global_event_hash is not None
-        or global_seq is not None
-    )
-
-    if has_chain_fields or stored_ver >= 3:
-        candidate_envelopes: list[tuple[bytes, int]] = []
-
-        # Try the stored envelope first (it's the canonical truth for
-        # signature verification). For v5, we additionally check that
-        # the provided actor_kind/actor_metadata match the stored envelope's
-        # values AFTER signature verification succeeds — this detects
-        # tampering with those fields in the database row (WI-208)
-        # without requiring every caller to pass all envelope fields.
-        if stored_ver >= 3:
-            candidate_envelopes.append((stored_envelope, stored_ver))  # type: ignore[arg-type]
-
-        # Build v5 candidate when actor_kind is provided — needed when the
-        # stored envelope is missing (old events) or for tamper detection
-        # cross-check. When the stored envelope IS available, it's tried
-        # first and the tamper check handles consistency (WI-208).
-        if actor_kind is not None:
-            candidate_envelopes.append((
-                build_signing_envelope_v5(
-                    event_id=event_id,
-                    entity_kind=entity_kind,
-                    entity_id=work_item_id,
-                    actor_id=actor_id,
-                    actor_kind=actor_kind,
-                    actor_metadata=actor_metadata,
-                    key_id=key_id,
-                    event_seq=event_seq,
-                    workflow_name=workflow_name,
-                    workflow_version=workflow_version,
-                    timestamp=timestamp,
-                    hash_alg=hash_alg,
-                    transition=transition,
-                    payload=payload,
-                    on_behalf_of=on_behalf_of,
-                    prev_event_hash=prev_event_hash,
-                    global_seq=global_seq,
-                    prev_global_event_hash=prev_global_event_hash,
-                ),
-                5,
-            ))
-
-        candidate_envelopes.append((
-            build_signing_envelope_v4(
-                event_id=event_id,
-                entity_kind=entity_kind,
-                entity_id=work_item_id,
-                actor_id=actor_id,
-                key_id=key_id,
-                event_seq=event_seq,
-                workflow_name=workflow_name,
-                workflow_version=workflow_version,
-                timestamp=timestamp,
-                hash_alg=hash_alg,
-                transition=transition,
-                payload=payload,
-                on_behalf_of=on_behalf_of,
-                prev_event_hash=prev_event_hash,
-                global_seq=global_seq,
-                prev_global_event_hash=prev_global_event_hash,
-            ),
-            4,
-        ))
-
-        candidate_envelopes.append((
-            build_signing_envelope_v3(
-                event_id=event_id,
-                work_item_id=work_item_id,
-                actor_id=actor_id,
-                key_id=key_id,
-                event_seq=event_seq,
-                workflow_name=workflow_name,
-                workflow_version=workflow_version,
-                timestamp=timestamp,
-                transition=transition,
-                payload=payload,
-                on_behalf_of=on_behalf_of,
-                prev_event_hash=prev_event_hash,
-                global_seq=global_seq,
-                prev_global_event_hash=prev_global_event_hash,
-            ),
-            3,
-        ))
-
-        if stored_ver >= 5:
-            candidate_envelopes = [
-                (env, ver) for env, ver in candidate_envelopes if ver >= 5
-            ]
-        elif stored_ver == 4:
-            candidate_envelopes = [
-                (env, ver) for env, ver in candidate_envelopes if ver >= 4
-            ]
-        elif stored_ver == 3:
-            candidate_envelopes = [
-                (env, ver) for env, ver in candidate_envelopes if ver >= 3
-            ]
-
-        for envelope, ver in candidate_envelopes:
-            candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
-            if _verify_once(
-                envelope, signature, canonical_hash, scheme, key,
-                hash_alg=candidate_hash_alg,
-            ):
-                # WI-208: For v5 envelopes, verify that the provided
-                # actor_kind/actor_metadata match the values in the stored
-                # envelope. This detects database tampering: if someone
-                # changes actor_kind in the events table, the signature
-                # still matches the stored envelope (which is unchanged),
-                # but the provided value won't match the signed value.
-                if stored_ver == 5 and actor_kind is not None:
-                    import json as _json
-
-                    try:
-                        env_obj = _json.loads(stored_envelope or b"")
-                        env_actor_kind = env_obj.get("actor_kind")
-                        env_actor_metadata = env_obj.get("actor_metadata")
-                    except (ValueError, TypeError):
-                        return False
-                    if actor_kind != env_actor_kind:
-                        return False
-                    if actor_metadata != env_actor_metadata:
-                        return False
-                return True
-
-        return False
-
-    candidate_envelopes = []
-
-    v4_envelope = build_signing_envelope_v4(
+    row = EventRow(
         event_id=event_id,
+        work_item_id=work_item_id,
         entity_kind=entity_kind,
-        entity_id=work_item_id,
+        entity_id=entity_id if entity_id is not None else work_item_id,
         actor_id=actor_id,
+        actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
         key_id=key_id,
         event_seq=event_seq,
         workflow_name=workflow_name,
         workflow_version=workflow_version,
         timestamp=timestamp,
         hash_alg=hash_alg,
+        on_behalf_of=on_behalf_of,
         transition=transition,
         payload=payload,
-        on_behalf_of=on_behalf_of,
+        prev_event_hash=prev_event_hash,
+        prev_global_event_hash=prev_global_event_hash,
+        global_seq=global_seq,
+        canonical_envelope=stored_envelope,
+        signature=signature,
+        payload_canonical_hash=canonical_hash,
+        row_scheme_id=scheme_id,
+        backend=backend or Backend.POSTGRES,
     )
-    candidate_envelopes.append((v4_envelope, 4))
-
-    if stored_ver == 2:
-        candidate_envelopes.append((stored_envelope, stored_ver))  # type: ignore[arg-type]
-
-    v3_envelope = build_signing_envelope_v3(
-        event_id=event_id,
-        work_item_id=work_item_id,
-        actor_id=actor_id,
-        key_id=key_id,
-        event_seq=event_seq,
-        workflow_name=workflow_name,
-        workflow_version=workflow_version,
-        timestamp=timestamp,
-        transition=transition,
-        payload=payload,
-        on_behalf_of=on_behalf_of,
+    resolver = StaticKeyResolver(
+        material=key,
+        scheme_id=getattr(scheme, "scheme_id", None),
+        scheme_obj=scheme,
+        source=TrustedKeySource.SUPPLIED_PUBLIC_KEY,
     )
-    candidate_envelopes.append((v3_envelope, 3))
-
-    v2_envelope = build_signing_envelope_v2(
-        event_id=event_id,
-        work_item_id=work_item_id,
-        actor_id=actor_id,
-        key_id=key_id,
-        event_seq=event_seq,
-        workflow_name=workflow_name,
-        workflow_version=workflow_version,
-        timestamp=timestamp,
-        transition=transition,
-        payload=payload,
-        on_behalf_of=on_behalf_of,
+    return verify_event_strict(
+        row, keys=resolver, policy=policy or DEFAULT_POLICY,
     )
-    candidate_envelopes.append((v2_envelope, 2))
 
-    old_envelope = build_signing_envelope(
-        event_id, work_item_id, actor_id, transition, payload, on_behalf_of,
+
+def verify_event_with_public_key(
+    event: Any,
+    public_key: bytes,
+    *,
+    scheme_id: str | None = None,
+    backend: Backend | None = None,
+    policy: VerificationPolicy | None = None,
+) -> bool:
+    """Verify ``event`` under caller-supplied key material.
+
+    ``scheme_id`` names the scheme the *key* uses. When omitted the event row's
+    self-declared ``scheme_id`` is used, which is trusted metadata only insofar
+    as the caller vouched for the key: with no registry there is nothing else to
+    derive it from. Callers that hold key metadata (a KeySet, the principal
+    registry, a bundle registry) must pass it — that is the S2 binding.
+    """
+    return verify_event_result_with_public_key(
+        event, public_key, scheme_id=scheme_id, backend=backend, policy=policy,
+    ).accepted
+
+
+def verify_event_result_with_public_key(
+    event: Any,
+    public_key: bytes,
+    *,
+    scheme_id: str | None = None,
+    backend: Backend | None = None,
+    policy: VerificationPolicy | None = None,
+) -> VerificationResult:
+    from ._verification import (
+        DEFAULT_POLICY,
+        Backend,
+        EventRow,
+        StaticKeyResolver,
+        TrustedKeySource,
+        verify_event_strict,
     )
-    candidate_envelopes.append((old_envelope, 1))
 
-    if on_behalf_of is not None:
-        bare_envelope = build_signing_envelope(
-            event_id, work_item_id, actor_id, transition, payload, on_behalf_of=None,
-        )
-        candidate_envelopes.append((bare_envelope, 1))
-
-    if stored_ver == 2:
-        candidate_envelopes = [
-            (env, ver) for env, ver in candidate_envelopes if ver >= 2
-        ]
-
-    for envelope, ver in candidate_envelopes:
-        candidate_hash_alg = hash_alg if ver >= 4 else "sha-256"
-        if _verify_once(
-            envelope, signature, canonical_hash, scheme, key,
-            hash_alg=candidate_hash_alg,
-        ):
-            return True
-
-    return False
-
-
-def verify_event_with_public_key(event: Any, public_key: bytes) -> bool:
-    from ._signing_scheme import get_scheme
-
-    try:
-        scheme = get_scheme(event.scheme_id)
-    except Exception:
-        return False
-    return verify_event(
-        event_id=event.event_id,
-        work_item_id=event.work_item_id,
-        actor_id=event.actor_id,
-        key_id=event.key_id,
-        event_seq=event.event_seq,
-        workflow_name=event.workflow_name,
-        workflow_version=event.workflow_version,
-        timestamp=event.timestamp,
-        transition=event.transition,
-        payload=event.payload,
-        signature=event.signature,
-        canonical_hash=event.payload_canonical_hash,
-        key=public_key,
-        stored_envelope=event.canonical_envelope,
-        on_behalf_of=event.on_behalf_of,
-        scheme=scheme,
-        prev_event_hash=event.prev_event_hash,
-        prev_global_event_hash=event.prev_global_event_hash,
-        entity_kind=event.entity_kind,
-        hash_alg=event.hash_alg,
-        actor_kind=event.actor_kind,
-        actor_metadata=event.actor_metadata,
+    row = EventRow.from_event(event, backend=backend or Backend.POSTGRES)
+    resolver = StaticKeyResolver(
+        material=public_key,
+        scheme_id=scheme_id,
+        source=TrustedKeySource.SUPPLIED_PUBLIC_KEY,
     )
+    return verify_event_strict(row, keys=resolver, policy=policy or DEFAULT_POLICY)
+
 
 
 @dataclass(frozen=True)
@@ -665,14 +560,46 @@ def _ensure_aware(value: datetime) -> datetime:
     return value
 
 
+def _derived_scheme_for_binding(
+    entries: list[Any], event_key_id: str | None,
+) -> str | None:
+    """The scheme this event's key actually uses, per the trusted registry.
+
+    WI-267 / S2-interim. ``scheme_id`` is outside every signed envelope version,
+    so the row's claim is an assertion by whoever wrote the row. Where the
+    principal-key registry names the key, the registry's scheme is the answer
+    and the row's claim is advisory.
+    """
+    if event_key_id is None:
+        return None
+    for entry in entries:
+        if entry.key_id == event_key_id:
+            return str(entry.scheme)
+    return None
+
+
+def _any_asymmetric(entries: list[Any]) -> bool:
+    from ._signing_scheme import asymmetric_scheme_ids
+
+    asym = asymmetric_scheme_ids()
+    return any(e.scheme in asym for e in entries)
+
+
 def _verify_principal_binding_core(
     entries: list[Any],
     actor_id: str,
     scheme_id: str,
-    verify_fn: Callable[[bytes], bool],
+    verify_fn: Callable[[Any], bool],
     event_key_id: str | None = None,
     event_timestamp: datetime | None = None,
 ) -> PrincipalVerificationResult:
+    """Bind an event's signature to a registered principal key.
+
+    ``scheme_id`` is the **row's** self-declared scheme and is used only for
+    reporting and as a last resort when the registry knows nothing about the
+    key. Every decision that matters is taken from the registry entry's own
+    ``scheme`` (WI-267 / S2-interim).
+    """
     if not entries:
         return PrincipalVerificationResult(
             verified=False,
@@ -690,11 +617,38 @@ def _verify_principal_binding_core(
             error=f"key-revoked: all keys for principal {actor_id!r} have been revoked",
         )
 
+    # The scheme comes from trusted key metadata, never from the row. A row
+    # relabelled 'hmac-sha256' must not exempt an ed25519 key from anything.
+    derived_scheme_id = _derived_scheme_for_binding(entries, event_key_id)
+    if (
+        derived_scheme_id is not None
+        and scheme_id is not None
+        and derived_scheme_id != scheme_id
+    ):
+        return PrincipalVerificationResult(
+            verified=False,
+            principal_id=next(
+                (e.principal_id for e in entries if e.key_id == event_key_id), actor_id,
+            ),
+            key_id=event_key_id,
+            error=(
+                f"scheme-mismatch: event claims scheme_id={scheme_id!r} but "
+                f"registered key {event_key_id!r} is {derived_scheme_id!r}; "
+                f"the registry's scheme wins"
+            ),
+        )
+    effective_scheme_id = derived_scheme_id or scheme_id
+
     if event_key_id is not None:
         matching = [e for e in non_revoked if e.key_id == event_key_id]
         if matching:
             non_revoked = matching
-        elif scheme_id == "hmac-sha256":
+        elif not _any_asymmetric(non_revoked):
+            # Legacy symmetric deployment: a shared HMAC key predates
+            # per-principal custody, so an event key_id absent from the registry
+            # is not evidence of anything (WI-223). The exemption is keyed on
+            # the *registered keys being symmetric*, not on the row's claim —
+            # otherwise an ed25519 event opts itself out by relabelling.
             pass
         else:
             revoked_match = [
@@ -727,23 +681,23 @@ def _verify_principal_binding_core(
         pre_filtered = True
         candidate_keys = [
             e for e in non_revoked
-            if _is_key_valid_at(e, event_timestamp) and e.scheme == scheme_id
+            if _is_key_valid_at(e, event_timestamp) and e.scheme == effective_scheme_id
         ]
 
     scheme_mismatch = False
     temporal_skip = False
     if pre_filtered and not candidate_keys:
-        any_scheme_match = any(e.scheme == scheme_id for e in non_revoked)
+        any_scheme_match = any(e.scheme == effective_scheme_id for e in non_revoked)
         any_valid = any(
             _is_key_valid_at(e, event_timestamp) for e in non_revoked
-            if e.scheme == scheme_id
+            if e.scheme == effective_scheme_id
         )
         if not any_scheme_match:
             scheme_mismatch = True
         elif not any_valid:
             temporal_skip = True
     for entry in candidate_keys:
-        if entry.scheme != scheme_id:
+        if entry.scheme != effective_scheme_id:
             scheme_mismatch = True
             continue
 
@@ -751,7 +705,7 @@ def _verify_principal_binding_core(
             temporal_skip = True
             continue
 
-        if verify_fn(entry.public_key):
+        if verify_fn(entry):
             return PrincipalVerificationResult(
                 verified=True,
                 principal_id=entry.principal_id,
@@ -772,14 +726,14 @@ def _verify_principal_binding_core(
         )
 
     if scheme_mismatch and all(
-        e.scheme != scheme_id for e in non_revoked
+        e.scheme != effective_scheme_id for e in non_revoked
     ):
         return PrincipalVerificationResult(
             verified=False,
             principal_id=non_revoked[0].principal_id,
             key_id=non_revoked[0].key_id,
             error=(
-                f"scheme-mismatch: event scheme_id={scheme_id!r} "
+                f"scheme-mismatch: event scheme_id={effective_scheme_id!r} "
                 f"but no registered key uses that scheme for principal {actor_id!r}"
             ),
         )
@@ -800,9 +754,13 @@ def verify_event_with_principal_binding(
 
     entries = list_principal_keys(mgr, event.actor_id, status=None)
 
-    def _verify_with_key(public_key: bytes) -> bool:
+    def _verify_with_key(entry: Any) -> bool:
+        # The scheme is taken from the registry entry, never from the event
+        # row's self-declared scheme_id (WI-267 / S2-interim).
         try:
-            return verify_event_with_public_key(event, public_key)
+            return verify_event_with_public_key(
+                event, entry.public_key, scheme_id=entry.scheme,
+            )
         except Exception:
             return False
 
@@ -821,55 +779,32 @@ def verify_event_dict_principal_binding(
     entries: list[Any],
 ) -> PrincipalVerificationResult:
     scheme_id = evt.get("scheme_id") or "hmac-sha256"
-    entity_kind = evt.get("entity_kind") or "work_item"
-    hash_alg = evt.get("hash_alg") or "sha-256"
 
-    try:
-        from ._signing_scheme import get_scheme
+    from ._verification import (
+        DEFAULT_POLICY,
+        EventRow,
+        StaticKeyResolver,
+        TrustedKeySource,
+        verify_event_strict,
+    )
 
-        scheme = get_scheme(scheme_id)
-    except Exception:
-        return PrincipalVerificationResult(
-            verified=False,
-            principal_id=None,
-            key_id=None,
-            error=f"unknown-scheme: cannot resolve scheme_id={scheme_id!r}",
-        )
+    row = EventRow.from_mapping(evt)
 
-    def _verify_with_key(public_key: bytes) -> bool:
+    def _verify_with_key(entry: Any) -> bool:
+        # The scheme is taken from the registry entry, never from the row's
+        # self-declared scheme_id (WI-267 / S2-interim). Row reconciliation
+        # runs inside verify_event_strict, so a principal binding can no longer
+        # be asserted over an envelope whose row was rewritten.
         try:
-            return verify_event(
-                event_id=evt["event_id"],
-                work_item_id=evt["work_item_id"],
-                actor_id=evt["actor_id"],
-                key_id=evt["key_id"],
-                event_seq=evt["event_seq"],
-                workflow_name=evt["workflow_name"],
-                workflow_version=evt["workflow_version"],
-                timestamp=evt["timestamp"],
-                transition=evt["transition"],
-                payload=evt["payload"],
-                signature=bytes(evt["signature"]),
-                canonical_hash=bytes(evt["payload_canonical_hash"]),
-                key=public_key,
-                stored_envelope=(
-                    bytes(evt["canonical_envelope"]) if evt.get("canonical_envelope") else None
-                ),
-                on_behalf_of=evt.get("on_behalf_of"),
-                scheme=scheme,
-                entity_kind=entity_kind,
-                hash_alg=hash_alg,
-                prev_event_hash=(
-                    bytes(evt["prev_event_hash"]) if evt.get("prev_event_hash") else None
-                ),
-                prev_global_event_hash=(
-                    bytes(evt["prev_global_event_hash"])
-                    if evt.get("prev_global_event_hash")
-                    else None
-                ),
-                actor_kind=evt.get("actor_kind"),
-                actor_metadata=evt.get("actor_metadata"),
+            resolver = StaticKeyResolver(
+                material=entry.public_key,
+                scheme_id=entry.scheme,
+                source=TrustedKeySource.PRINCIPAL_REGISTRY,
+                principal_id=entry.principal_id,
             )
+            return verify_event_strict(
+                row, keys=resolver, policy=DEFAULT_POLICY,
+            ).accepted
         except Exception:
             return False
 

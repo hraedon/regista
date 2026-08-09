@@ -4,6 +4,128 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Signature verification authenticates the row, not just the envelope
+  (WI-267):** `verify_event()` verified the stored `canonical_envelope` bytes
+  and returned as soon as they verified. Only `actor_kind`/`actor_metadata`
+  were reconciled against it, and only on v5 (WI-208). Every consumer then read
+  the **unsigned row columns**, so an attacker with database write access could
+  rewrite `transition`, `payload`, `timestamp`, `event_seq`, `prev_event_hash`,
+  `prev_global_event_hash`, `on_behalf_of`, `key_id`, `entity_id`,
+  `entity_kind` or `workflow_name`/`workflow_version` in the row and everything
+  still reported "verified" — measured: 13 of 14 single-field row rewrites
+  verified clean before this change.
+
+  The rule is now: **the stored canonical envelope is the cryptographic
+  artifact; the row is its indexed projection.** The exact stored bytes are
+  verified, then every field that envelope version signs must agree with its
+  row representation before any consumer uses the row.
+
+  What lands with it:
+
+  - **One verification primitive.** `regista._verification.verify_event_strict`
+    returns a structured `VerificationResult` — envelope version and schema
+    validity, signature validity, trusted-key source, row reconciliation and
+    the *names* of any mismatched fields, authenticated vs unsigned field sets,
+    and an applicability of `fully_authenticated` / `legacy_partial` /
+    `invalid` / `unverifiable`. It replaces the incompatible result
+    vocabularies that replay, the offline bundle, segments and the API each
+    used. `_bundle.py` no longer carries a second, independent verifier.
+  - **Strict envelope parsing.** The classifier used `issuperset`, so *any
+    subset* of a version's fields — including `{}` and an attacker-authored
+    object — fell through to "v1", the weakest possible claim. Unknown schemas
+    are now rejected (`classify_envelope_version` returns `0`).
+  - **No fallback.** Once a stored envelope exists it is the only envelope. A
+    parse, signature or reconciliation failure is `invalid`; no candidate is
+    rebuilt from the row columns under attack. `verify_event(stored_envelope=None)`
+    is `unverifiable`, not "rebuild and try" — reconstructing a missing
+    envelope is an explicit offline operator action.
+  - **The signing scheme comes from trusted key metadata, never the row**
+    (S2-interim). `scheme_id` is outside every envelope version. Three sites
+    are closed: verification dispatch (a row claiming `hmac-sha256` against an
+    ed25519 registry key is now an error), replay's principal-binding
+    requirement (a row could opt itself out by relabelling), and the
+    key-id-must-match filter in principal binding.
+  - **`work_item_id == entity_id` is enforced** wherever both are present.
+    `entity_id` is the signed identifier from v4 onward; `work_item_id` is the
+    original column and carries no signature of its own.
+  - **`global_seq` remains unsigned by design** (assigned post-signing, §17.11)
+    and can never appear in `authenticated_fields`. A `global_seq` rewrite is
+    not reported as a mismatch.
+  - **The InMemory backend runs the same reconciliation**, so the two backends
+    cannot disagree about what "verified" means. Its keyless mode reports
+    `unverifiable` / `unsigned_event` rather than being pushed through the
+    strict verifier as a malformed signed event — and a *Postgres* row showing
+    the keyless byte pattern stays `invalid`, because the exemption is a
+    property of the backend, not of the bytes.
+  - **`BundleVerificationReport.verified` now requires
+    `signatures_verified > 0`.** A bundle in which every signature was
+    unverifiable reported `verified=True` provided `errors` was empty — that is
+    "nothing was checked" reported as "everything checks out". **An HMAC-only
+    bundle is therefore no longer `verified`:** verifying an HMAC needs the
+    secret, which a bundle deliberately never carries, so such a bundle proves
+    internal consistency and nothing cryptographic. `regista bundle export`
+    against an HMAC store now exits `3` unless `--allow-unverified` is passed,
+    and both `bundle export` and `bundle verify` say why. Splitting the verdict
+    into internally-consistent / authenticated-to-an-external-root is separate
+    work (S3/S5).
+
+  Follow-ups from the cross-lineage review of the same work item:
+
+  - **A NULL column no longer reads as the signed value.** `entity_id` was
+    compared through a `work_item_id` fallback and the alias check exempted
+    NULLs, so `UPDATE events SET entity_id = NULL` (the migration-031 trigger is
+    BEFORE INSERT, so it does not re-fire) verified clean *and reported
+    `entity_id` as authenticated*. `EventRow.from_mapping` did the same for
+    `hash_alg` and `entity_kind` via `or <default>`. All four now mismatch.
+  - **Keyless InMemory replay reports what it did not check.** A genuine
+    keyless event is `accepted` under `accept_unsigned_keyless`, so the branch
+    meant to report it never fired and the replay was silent.
+  - **`ReplayReport.unverifiable`** is a new first-class counter, deliberately
+    *not* folded into `warnings`: "there is nothing to verify" and "something
+    that should have verified did not" call for different operator responses.
+    `regista replay` prints it and names the log events to grep for
+    (`replay.event_envelope_absent`, `replay.event_unverifiable`,
+    `replay.keyless_no_signatures_verified`).
+  - **Deleting an envelope is no longer a way out.** `UPDATE events SET
+    canonical_envelope = NULL` followed by a row rewrite halted replay *before*
+    this work (the rebuild-from-row candidate failed its signature check) and
+    would have been fail-open after it. `probe_absent_envelope` asks whether
+    the retained `signature`/`payload_canonical_hash` can be reconciled with the
+    row by any shape a genuinely pre-002 row could have carried (v1, v1 without
+    `on_behalf_of`, v2 — CUTOVER-POLICY §4.1). If none can, replay halts. The
+    probe **convicts only**: `verify_event_strict` never calls it, its
+    `CONSISTENT`/`UNKNOWN` outcomes change no verdict, and no path turns any of
+    its outcomes into a pass — that asymmetry is what keeps it from being the
+    rebuild-from-row escape hatch this work deleted.
+
+  **Interaction with WI-266.** `chain_breaks` and `unverifiable` are three-way
+  distinct from `warnings` and from each other: a chain break is a detected
+  tamper (exit non-zero), `unverifiable` is "nothing was checked at all" (an
+  evidentiary gap — reported loudly, does not by itself fail the exit status).
+  Where both fire on the same event — a rewritten `prev_event_hash` is a broken
+  chain link *and*, from envelope v3, a signed-field mismatch — both are
+  reported: `_ReplayHaltError` now carries the counters accumulated before the
+  halt so a per-work-item halt cannot silently erase the chain-walk finding on
+  its way out.
+
+  **Compatibility.** A read-only preflight over the live estate (351,371
+  events, 26 project schemas) found **zero** row↔envelope mismatches, zero
+  missing envelopes and zero unknown schemas: 94.7% v5, 5.3% v4, no v1/v2/v3.
+  No migration and no re-signing is required there. v4 events verify as
+  `legacy_partial` with `actor_kind`/`actor_metadata` listed as unsigned;
+  events with no stored envelope are `unverifiable` and are reported by replay
+  rather than halting it. **Envelope versions v1/v2/v3 are `invalid` under the
+  shipped default policy** (`accept_legacy_versions={v4}`) — a deployment
+  carrying such history must widen `VerificationPolicy.accept_legacy_versions`
+  explicitly. Rewriting a *signed* row field now halts replay where it
+  previously produced a warning or nothing at all.
+
+  `spec.md` §17.9 and §17.9.2 are corrected: they still described
+  `actor_kind`/`actor_metadata` as absent from the signing envelope, which v5
+  falsified.
+
 ### Added
 
 - **Witness public keys enrolled in the anchored key registry (WI-238):**

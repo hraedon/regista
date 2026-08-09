@@ -15,9 +15,19 @@ from ._datetime_utils import ts_equal as _ts_equal
 from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
-from ._signing import verify_event, verify_event_dict_principal_binding
-from ._signing_scheme import get_scheme, resolve_hash_function
+from ._signing import verify_event_dict_principal_binding
+from ._signing_scheme import resolve_hash_function
 from ._types import ReplayReport, ReplayReportEntry
+from ._verification import (
+    DEFAULT_POLICY,
+    AbsentEnvelopeProbe,
+    Applicability,
+    EventRow,
+    FailureReason,
+    KeySetResolver,
+    probe_absent_envelope,
+    verify_event_strict,
+)
 
 log = structlog.get_logger()
 
@@ -426,8 +436,29 @@ def _verify_global_hash_chain(
 
 
 class _ReplayHaltError(RegistaError):
-    def __init__(self, message: str) -> None:
+    """A per-work-item halt, carrying the findings made before it fired.
+
+    A halt aborts ``_replay_work_item`` mid-loop, so any counter it had
+    accumulated would be discarded by the caller's ``except`` branch. That
+    silently drops real findings: WI-267 verification and the WI-266 chain
+    walk look at the *same* event, and a rewritten ``prev_event_hash`` is both
+    a broken chain link and a signed-field mismatch. The halt must not erase
+    the chain-break count on its way out — the two are distinct guarantees and
+    a scripted reader may be watching either.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        chain_breaks: int = 0,
+        warnings: int = 0,
+        unverifiable: int = 0,
+    ) -> None:
         super().__init__(ErrorCode.REPLAY_HALTED, message)
+        self.chain_breaks = chain_breaks
+        self.warnings = warnings
+        self.unverifiable = unverifiable
 
 
 _EVENT_FIELDS = (
@@ -561,6 +592,7 @@ def _replay_inner(
     total_warnings = 0
     total_chain_breaks = 0
     total_principal_binding_failures = 0
+    total_unverifiable = 0
 
     # WI-217: the event log is streamed one entity at a time through a
     # server-side cursor, so the replay working set[Any] is bounded by the widest
@@ -624,6 +656,7 @@ def _replay_inner(
     def _process_group(entity_kind: str, wi_id: Any, events: list[dict[str, Any]]) -> None:
         nonlocal ok_count, drift_count, halted_count
         nonlocal total_warnings, total_chain_breaks, total_principal_binding_failures
+        nonlocal total_unverifiable
 
         # Only work-item entities have a projection row to rebuild.  Other
         # entity kinds (spec, principal) keep their own `event_seq` space —
@@ -641,7 +674,13 @@ def _replay_inner(
         processed_wi_ids.add(wi_id)
 
         try:
-            replayed_state, wi_warnings, wi_chain_breaks, wi_pb_failures = _replay_work_item(
+            (
+                replayed_state,
+                wi_warnings,
+                wi_chain_breaks,
+                wi_pb_failures,
+                wi_unverifiable,
+            ) = _replay_work_item(
                 conn,
                 wi_id,
                 events,
@@ -652,10 +691,15 @@ def _replay_inner(
             total_warnings += wi_warnings
             total_chain_breaks += wi_chain_breaks
             total_principal_binding_failures += wi_pb_failures
+            total_unverifiable += wi_unverifiable
         except _ReplayHaltError as e:
             halted_count += 1
+            # Findings made before the halt survive it — see _ReplayHaltError.
+            total_warnings += e.warnings
+            total_chain_breaks += e.chain_breaks
+            total_unverifiable += e.unverifiable
             log.error("replay.halted", work_item_id=str(wi_id), error=str(e))
-            store.add_report_entry(wi_id, "halted", str(e), 0)
+            store.add_report_entry(wi_id, "halted", str(e), e.warnings, e.chain_breaks)
             return
         except Exception as e:
             halted_count += 1
@@ -964,6 +1008,7 @@ def _replay_inner(
         halted=halted_count,
         warnings=total_warnings,
         chain_breaks=total_chain_breaks,
+        unverifiable=total_unverifiable,
         principal_binding_failures=total_principal_binding_failures,
         principal_binding_verified=verify_principal_binding,
         entries=store.report_entries(),
@@ -1003,7 +1048,9 @@ def _parse_not_before(value: str | datetime | None) -> datetime | None:
 
 
 def _requires_principal_registration(
-    evt: dict[str, Any], asymmetric_schemes: frozenset[str],
+    evt: dict[str, Any],
+    asymmetric_schemes: frozenset[str],
+    key_entry: Any = None,
 ) -> bool:
     """Does this event's scheme demand a registered principal key?
 
@@ -1013,8 +1060,18 @@ def _requires_principal_registration(
     schemes do not — a shared HMAC key predates per-principal custody, and
     ``verify_principal_binding`` is documented as backward compatible with
     those deployments (WI-223).
+
+    WI-267 / S2-interim: the scheme is taken from the **resolved key's**
+    metadata, not from the row. ``scheme_id`` is outside every signed envelope
+    version, so a row that relabels itself ``hmac-sha256`` used to opt itself
+    out of the binding requirement entirely. The row's claim is now only a
+    fallback for events whose key could not be resolved at all — and those are
+    not verified either way.
     """
-    return (evt.get("scheme_id") or "hmac-sha256") in asymmetric_schemes
+    derived = getattr(key_entry, "scheme", None)
+    if derived is None:
+        derived = evt.get("scheme_id") or "hmac-sha256"
+    return derived in asymmetric_schemes
 
 
 def _replay_work_item(
@@ -1025,7 +1082,11 @@ def _replay_work_item(
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
-) -> tuple[dict[str, Any], int, int, int]:
+) -> tuple[dict[str, Any], int, int, int, int]:
+    """Returns ``(state, warnings, chain_breaks, principal_binding_failures,
+    unverifiable)``. The last three are deliberately distinct counters — see
+    :class:`~regista._types.ReplayReport`.
+    """
     state = None
     custom_fields: dict[str, Any] = {}
     needs_review = False
@@ -1038,6 +1099,7 @@ def _replay_work_item(
     warnings = 0
     chain_breaks = 0
     principal_binding_failures = 0
+    unverifiable = 0
 
     _principal_key_cache: dict[str, list[Any]] = {}
     # Resolved once per work item rather than per event: the scheme registry is
@@ -1098,46 +1160,79 @@ def _replay_work_item(
                 raise
 
         if key_entry is not None:
-            scheme = get_scheme(evt.get("scheme_id", "hmac-sha256"))
-            verify_key = key_entry.secret
-            if scheme.scheme_id == "ed25519" and key_entry.public_key:
-                verify_key = key_entry.public_key
-            if not verify_event(
-                event_id=evt["event_id"],
-                work_item_id=evt["work_item_id"],
-                actor_id=evt["actor_id"],
-                key_id=evt["key_id"],
-                event_seq=evt["event_seq"],
-                workflow_name=evt["workflow_name"],
-                workflow_version=evt["workflow_version"],
-                timestamp=evt["timestamp"],
-                transition=evt["transition"],
-                payload=evt["payload"],
-                signature=bytes(evt["signature"]),
-                canonical_hash=bytes(evt["payload_canonical_hash"]),
-                key=verify_key,
-                stored_envelope=(
-                    bytes(evt["canonical_envelope"]) if evt["canonical_envelope"] else None
-                ),
-                on_behalf_of=evt["on_behalf_of"],
-                scheme=scheme,
-                entity_kind=evt.get("entity_kind", "work_item"),
-                hash_alg=evt.get("hash_alg", "sha-256"),
-                prev_event_hash=(
-                    bytes(evt["prev_event_hash"]) if evt.get("prev_event_hash") else None
-                ),
-                prev_global_event_hash=(
-                    bytes(evt["prev_global_event_hash"])
-                    if evt.get("prev_global_event_hash")
-                    else None
-                ),
-                actor_kind=evt.get("actor_kind"),
-                actor_metadata=evt.get("actor_metadata"),
-            ):
+            # WI-267: one primitive. The stored envelope is verified as-is and
+            # every field it signs must agree with the row column replay is
+            # about to apply — replay used to certify a history whose
+            # transition/payload had been rewritten under an intact signature.
+            verification = verify_event_strict(
+                EventRow.from_mapping(evt),
+                keys=KeySetResolver(key_set),
+                policy=DEFAULT_POLICY,
+            )
+            if verification.applicability is Applicability.INVALID:
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "
-                    f"at seq {evt['event_seq']}"
+                    f"at seq {evt['event_seq']}: {verification.summary()}",
+                    chain_breaks=chain_breaks,
+                    warnings=warnings,
+                    unverifiable=unverifiable,
                 )
+            if not verification.accepted:
+                # UNVERIFIABLE is an evidentiary gap, not an attack: a pre-002
+                # row has no envelope to check against, so nothing *failed*.
+                # Collapsing it into a halt would conflate "investigate a
+                # database write attack" with "this record predates the
+                # envelope column" — the exact collapse the result model
+                # exists to prevent (CUTOVER-POLICY §2 vs §4).
+                #
+                # But a NULL envelope is also what `UPDATE events SET
+                # canonical_envelope = NULL` produces, and the row still
+                # carries the `signature` and `payload_canonical_hash` its
+                # original envelope produced. Before WI-267 that attack halted
+                # replay, because the rebuild-from-row candidate's signature
+                # did not match; classifying it UNVERIFIABLE and continuing
+                # would be strictly WEAKER than the code being replaced. So we
+                # ask the retained crypto whether it can still be reconciled
+                # with these column values at all. The probe convicts only —
+                # it can never turn a failure into a pass (see
+                # AbsentEnvelopeProbe) — so this branch can only ever make the
+                # verdict stricter.
+                if FailureReason.ENVELOPE_ABSENT in verification.reasons:
+                    probe = probe_absent_envelope(
+                        EventRow.from_mapping(evt), keys=KeySetResolver(key_set),
+                    )
+                    if probe is AbsentEnvelopeProbe.INCONSISTENT:
+                        raise _ReplayHaltError(
+                            f"Event {evt['event_id']} at seq {evt['event_seq']} "
+                            "has no canonical_envelope, and no envelope this "
+                            "row could have carried reproduces its retained "
+                            "signature: the row contradicts its own "
+                            "cryptographic material",
+                            chain_breaks=chain_breaks,
+                            warnings=warnings,
+                            unverifiable=unverifiable,
+                        )
+                    unverifiable += 1
+                    log.warning(
+                        # Distinct and greppable: an auditor alerting on
+                        # "part of the log was replayed with no cryptographic
+                        # check" wants this event, not the warning bucket.
+                        "replay.event_envelope_absent",
+                        work_item_id=str(wi_id),
+                        event_id=str(evt["event_id"]),
+                        event_seq=evt["event_seq"],
+                        probe=probe.value,
+                        detail=verification.summary(),
+                    )
+                else:
+                    unverifiable += 1
+                    log.warning(
+                        "replay.event_unverifiable",
+                        work_item_id=str(wi_id),
+                        event_id=str(evt["event_id"]),
+                        event_seq=evt["event_seq"],
+                        detail=verification.summary(),
+                    )
 
         if verify_principal_binding:
             from ._principal_keys import list_principal_keys_for_conn
@@ -1169,7 +1264,9 @@ def _replay_work_item(
             # unregistered signer — the chain is not attributable to anyone
             # this project can name, which is exactly what the offline bundle
             # verifier rejects.
-            if pk_entries or _requires_principal_registration(evt, _asym_schemes):
+            if pk_entries or _requires_principal_registration(
+                evt, _asym_schemes, key_entry,
+            ):
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)
                 if not pb_result.verified:
                     warnings += 1
@@ -1238,7 +1335,10 @@ def _replay_work_item(
             ).fetchone()
             if wf_row is None:
                 raise _ReplayHaltError(
-                    f"Missing workflow {evt['workflow_name']!r} v{evt['workflow_version']}"
+                    f"Missing workflow {evt['workflow_name']!r} v{evt['workflow_version']}",
+                    chain_breaks=chain_breaks,
+                    warnings=warnings,
+                    unverifiable=unverifiable,
                 )
 
             defn = wf_row["definition"]
@@ -1252,7 +1352,10 @@ def _replay_work_item(
                 name_matches = any(t["name"] == transition for t in defn.get("transitions", []))
                 if name_matches:
                     raise _ReplayHaltError(
-                        f"Transition {transition!r} exists but not valid from state {state!r}"
+                        f"Transition {transition!r} exists but not valid from state {state!r}",
+                        chain_breaks=chain_breaks,
+                        warnings=warnings,
+                        unverifiable=unverifiable,
                     )
                 warnings += 1
                 log.warning(
@@ -1282,7 +1385,7 @@ def _replay_work_item(
         "claimed_by": claimed_by,
         "claim_expires_at": claim_expires_at,
         "claim_coalesce_threshold": claim_coalesce_threshold,
-    }, warnings, chain_breaks, principal_binding_failures
+    }, warnings, chain_breaks, principal_binding_failures, unverifiable
 
 
 def _states_match(replayed: dict[str, Any], live: dict[str, Any]) -> bool:

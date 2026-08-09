@@ -17,6 +17,7 @@ from regista._signing import (
     verify_event,
 )
 from regista._types import Event, Link
+from regista._verification import EnvelopeVersion, VerificationPolicy
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
@@ -303,6 +304,17 @@ class TestSignAndVerifyV4:
         )
 
 
+#: WI-267: accepting a v2/v3 envelope is an explicit, greppable policy
+#: decision (CUTOVER-POLICY §3). The shipped default accepts only v4 as legacy,
+#: because every writer since 0.5.x emits v5 and the measured estate holds no
+#: v1/v2/v3 events at all.
+_LEGACY_V2_V3_POLICY = VerificationPolicy(
+    accept_legacy_versions=frozenset(
+        {EnvelopeVersion.V2, EnvelopeVersion.V3, EnvelopeVersion.V4}
+    ),
+)
+
+
 class TestBackwardCompatVerification:
     def test_v3_event_verifies_with_v4_verify(self):
         eid = uuid.uuid4()
@@ -342,6 +354,7 @@ class TestBackwardCompatVerification:
             canonical_hash=chash,
             key=_SECRET,
             stored_envelope=v3_env,
+            policy=_LEGACY_V2_V3_POLICY,
             prev_event_hash=prev_hash,
         )
 
@@ -351,7 +364,7 @@ class TestBackwardCompatVerification:
         now = datetime.now(UTC)
         prev_hash = hashlib.sha256(b"prev").digest()
 
-        sig, chash, _env = sign_event(
+        sig, chash, env = sign_event(
             event_id=eid,
             work_item_id=wid,
             actor_id="a",
@@ -380,6 +393,7 @@ class TestBackwardCompatVerification:
             signature=sig,
             canonical_hash=chash,
             key=_SECRET,
+            stored_envelope=env,
             prev_event_hash=prev_hash,
         )
 
@@ -475,6 +489,7 @@ class TestBackwardCompatVerification:
             canonical_hash=chash,
             key=_SECRET,
             stored_envelope=v2_env,
+            policy=_LEGACY_V2_V3_POLICY,
         )
 
 
