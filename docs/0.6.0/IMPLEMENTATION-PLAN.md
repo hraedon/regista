@@ -85,6 +85,12 @@ that, and in v6 the envelope would *sign* the falsehood.
 **Done when:** migration applies and rolls back cleanly on a copy of the live schema set, and a
 checkpoint inserts with genuinely null workflow identity.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** The requirement survives; the migration does not. An empty
+> store declares `workflow_name`/`workflow_version` nullable in its **initial schema**, so there
+> is no forward migration, no 26-project blast radius and no irreversibility. The sentinel ban
+> stands unchanged — v6 would sign the falsehood. **Done when:** the initial schema permits null
+> workflow identity and a genesis event inserts with genuinely null values, neither `""` nor `0`.
+
 ### P1.3 — Consolidated result model + v5 reclassification · **owner: team** · dep: P0.1
 Extend `VerificationResult` for v6. Post-cutover, v4/v5 become `LEGACY_PARTIAL`.
 **Done when:** preflight reports the before/after label distribution, and the ~334k relabel is
