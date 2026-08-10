@@ -1,8 +1,8 @@
 # regista S1 — Authenticated-Field Matrix
 
-> **RANK 4 — unamended.** This matrix describes what v1–v5 envelopes authenticate, and the
-> overlay changes none of it: v6 is a new envelope version, not a re-interpretation of the old
-> ones. Two reading notes: its §9 counts belong to the **S1 snapshot** (`preflight-s1.json`,
+> **RANK 4 — unamended for v1–v5.** This matrix describes what v1–v5 envelopes authenticate, and
+> the overlay changes none of those rows: v6 is a new envelope version, not a re-interpretation of
+> the old ones. Two reading notes: its §9 counts belong to the **S1 snapshot** (`preflight-s1.json`,
 > 351,371 events) and not to the current estate (`preflight-live.json`, 353,985); and
 > `RECONCILIATION.md` governs wherever a v6 question arises.
 
@@ -33,7 +33,7 @@ enumerated set rather than an implementer's guess.
 | v3 envelope | `src/regista/_signing.py:60-95` (`build_signing_envelope_v3`) |
 | v4 envelope | `src/regista/_signing.py:98-137` (`build_signing_envelope_v4`) |
 | v5 envelope | `src/regista/_signing.py:140-191` (`build_signing_envelope_v5`) |
-| Version classifier (permissive, to be replaced) | `src/regista/_signing.py:305-323` |
+| S1 strict version classifier (shipped) | `src/regista/_verification.py:277-296` |
 | Declared field sets | `src/regista/_signing.py:276-302` |
 | Canonicalisation | `src/regista/_jcs.py:1-10` → `regista._vendor.rfc8785.dumps` (RFC 8785 JCS) |
 | Row shape | `migrations/001_initial.sql` + 002, 014, 015, 017, 018, 030, 031 |
@@ -81,7 +81,8 @@ Two structural facts that shape the whole matrix:
 | `global_seq` | — | — | O | O | O |
 | `prev_global_event_hash` | — | — | O | O | O |
 
-Counts: v1 = 6 fields, v2 = 11, v3 = 11 + up to 3, v4 = 13 + up to 3, v5 = 15 + up to 3.
+Counts for the v1–v5 rows: v1 = 6 fields, v2 = 11, v3 = 11 + up to 3, v4 = 13 + up to 3,
+v5 = 15 + up to 3. These counts do not describe v6.
 
 **v2 and v3 are the same schema when no chain field is present.** `build_signing_envelope_v3`
 with all three chain arguments `None` emits byte-identical output to
@@ -156,7 +157,7 @@ unauthenticated**, so equality must be enforced rather than assumed.
 | `canonical_envelope` BYTEA NULL (`002_add_canonical_envelope.sql:1`) | It **is** the signed artifact | Verify the exact stored bytes. Never rebuild-and-substitute (see §7). Nullable with **no backfill**, so pre-002 rows have no envelope at all and are `unverifiable`, not `invalid`. |
 | `signature` BYTEA NOT NULL (`001:15`) | The signature *over* the envelope | Not an envelope field. Verified by the scheme (`_signing_scheme.py:104-123` HMAC, `:148-190` Ed25519). |
 | `payload_canonical_hash` BYTEA NOT NULL (`001:14`) | Derived: `hash_alg(envelope)` | Not an envelope field, and — despite the name — it is a hash of the **envelope**, not of `payload` (`_signing_scheme.py:108-110`). Both shipped schemes already check it inside `verify` (`_signing_scheme.py:121-123`, `:188-190`), so it is covered by the signature check; the verifier must not treat it as an independently trusted value. |
-| `scheme_id` TEXT NOT NULL DEFAULT `'hmac-sha256'` (`015_event_scheme_id.sql:2`) | **Never, in any version** | See §3. |
+| `scheme_id` TEXT NOT NULL DEFAULT `'hmac-sha256'` (`015_event_scheme_id.sql:2`) | **Not in v1–v5**; signed in v6 | See §3.2. |
 
 ---
 
@@ -192,10 +193,10 @@ unauthenticated**, so equality must be enforced rather than assumed.
   a "verified" result that implicitly covers `global_seq` would be a false claim about the
   017 backfill.
 
-### 3.2 `scheme_id` — outside every envelope, yet it selects the verifier
+### 3.2 `scheme_id` — outside v1–v5 envelopes; signed in v6
 
-`scheme_id` appears in none of `_V2_FIELDS`…`_V5_FIELDS` (`_signing.py:276-299`) and in none
-of the five builders. It was added by `015_event_scheme_id.sql:2` as
+`scheme_id` appears in none of the v1–v5 field sets (`_signing.py:276-299`) and in none of those
+five legacy builders. It was added by `015_event_scheme_id.sql:2` as
 `NOT NULL DEFAULT 'hmac-sha256'`, silently stamping every pre-015 row.
 
 It is nonetheless read **from the row** on essentially every verification path:
@@ -212,13 +213,15 @@ privilege-relevant behaviours, not hypotheticals:
 3. `_assurance.py:211-217` derives the string `"verified"` vs `"asserted"` purely from the
    row's `scheme_id`, with no signature check anywhere in that path.
 
-**Ruling.** `scheme_id` must be **derived from trusted key metadata, never read from the row**:
+**Ruling for v1–v5.** `scheme_id` must be **derived from trusted key metadata, never read from the row**:
 resolve the key from the envelope's `key_id` (v2+) via the principal-key registry / `KeySet`,
 and take the scheme from that key entry (`KeyEntry.scheme`, as the write path already does at
 `_events.py:231-232`). The row's `scheme_id` becomes an advisory column that may be *compared*
 to the derived value and reported on mismatch, but must never select the algorithm, and must
 always appear in the **unsigned** field list. For v1 envelopes there is no signed `key_id`, so
-scheme derivation is itself unauthenticated for v1 — a fact the result must carry.
+scheme derivation is itself unauthenticated for v1 — a fact the result must carry. **V6 is outside
+this matrix:** its `signing.scheme_id` is signed and reconciled, while `global_seq` remains
+unsigned.
 
 ### 3.3 v4 `actor_kind` / `actor_metadata` — unsigned legacy provenance
 
@@ -317,9 +320,11 @@ information):**
 **Presence of a required field is a schema question, not a reconciliation question.** If a v5
 envelope is missing `actor_metadata`, it is not "a v5 event with an absent optional field" —
 it is not a valid v5 envelope at all, and strict classification rejects it (see RESULT-MODEL
-§3). This is the hole the current permissive classifier leaves open: `_signing.py:311-319`
-uses `issuperset`, so any *subset* of a version's fields — including `{}` — falls through to
-`return 1` and is treated as a v1 envelope.
+§3). The pre-S1 classifier had this hole: it used `issuperset`, so any *subset* of a version's
+fields — including `{}` — fell through to `return 1` and was treated as a v1 envelope. The
+shipped S1 classifier at `_verification.py:277-296` rejects missing required fields and unknown
+schemas without falling back to v1; the measurement below records strict-classifier agreement
+with the legacy corpus, not a live permissive implementation.
 
 ---
 
@@ -353,7 +358,8 @@ passing, which is the correct failure direction.
    `hash_alg` (§2.3) both currently do, and `key_id` selects the key.
 3. **Never report a v1–v4 event as fully authenticated.** The unsigned set is non-empty by
    construction for those versions.
-4. **Never claim `global_seq` or `scheme_id` is authenticated.** In any version.
+4. **Never claim `global_seq` is authenticated.** For v1–v5, never claim `scheme_id` is
+   authenticated either; v6 signs and reconciles `scheme_id`.
 
 ---
 
@@ -409,7 +415,7 @@ From `preflight_check.py` against the estate store, all 26 project schemas, read
 | Envelope v4 | 18,695 (5.3%) |
 | Envelope v1/v2/v3 | **0** |
 | Envelope absent or unparseable | **0** |
-| Envelopes whose strict class ≠ permissive class | **0** |
+| Envelopes whose shipped strict class disagreed with the legacy corpus classification | **0** |
 | Signature valid (HMAC-SHA256, real key material) | 351,371 / 351,371 |
 | Row↔envelope field mismatches | **0** |
 | Rows where `work_item_id ≠ entity_id` | **0** |

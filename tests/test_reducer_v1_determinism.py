@@ -85,11 +85,21 @@ def test_default_field_set_excludes_claim_state() -> None:
         "custom_fields",
         "needs_review",
         "not_before",
-        "last_entity_seq",
     }
     assert reduced == reduce_v1(
         envelopes, workflow_definitions=definitions, include_claim_state=False
     )
+
+
+def test_claim_churn_does_not_change_content_digest() -> None:
+    _name, envelopes, definitions = next(v for v in VECTORS if v[0] == "claim-churn")
+    before_claim = content_state_digest(envelopes[:1], workflow_definitions=definitions)
+
+    for prefix_end in range(2, len(envelopes) + 1):
+        assert (
+            content_state_digest(envelopes[:prefix_end], workflow_definitions=definitions)
+            == before_claim
+        )
 
 
 @pytest.mark.parametrize("name,envelopes,definitions", VECTORS, ids=[v[0] for v in VECTORS])

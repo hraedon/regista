@@ -21,7 +21,9 @@ migration. It is a measurement.
 1. Run preflight_check.py, read-only, against every store.        (no code change)
 2. Classify every finding using §2 / §4 below.                    (operator judgement)
 3. Remediate or quarantine each INVALID / UNVERIFIABLE event.     (operator action)
-4. Only then set the cutover watermark and ship the verifier.     (§3)
+4. Only then apply the per-project cutover rule: record a signed checkpoint and use its chain
+   position for a project that cuts over; retain the administrative legacy watermark only for a
+   project that has no checkpoint.                                                     (§3)
 ```
 
 Step 1 exists because **the set of events that will newly fail is not assumed empty — it is
@@ -44,13 +46,14 @@ that disagrees was written by something other than the append path.
 **(a) Restore the row from the signed envelope.** Preferred when the envelope verifies under a
 trusted key and the mismatched fields are all signed by that version. The envelope *is* the
 record; the row is a projection that has drifted or been rewritten. Restoration rewrites only
-projection columns — no signature, no chain hash, no seal, no anchor changes, because none of
-them commit to the row.
+projection columns — no signature, event hash, chain link, checkpoint or publication bytes change,
+because none of them commit to the row.
 
 Constraints:
-- Only fields the envelope actually signs may be restored from it. Restoring `global_seq` or
-  `scheme_id` from an envelope is meaningless (neither is ever signed) and restoring a v4 row's
-  `actor_kind` is impossible (v4 does not sign it).
+- Only fields the envelope actually signs may be restored from it. For v1–v5, restoring
+  `global_seq` or `scheme_id` from an envelope is meaningless (neither is signed in those
+  versions); restoring a v4 row's `actor_kind` is impossible (v4 does not sign it). v6's signed
+  `scheme_id` is governed by the v6 verifier and is not a legacy projection repair.
 - Derived columns must be recomputed consistently: `entity_id` from the signed value, and
   `work_item_id` set equal to it (FIELD-MATRIX §2.1).
 - The restoration itself must be recorded — outside the event log, in an operator audit trail.
@@ -60,10 +63,10 @@ Constraints:
 **(b) Restore from trusted backup.** Preferred when the envelope does **not** verify, when more
 than the row was altered, or when the blast radius is unclear. Restore the whole row (or the
 whole table) from a backup taken before the divergence, then re-run preflight over the restored
-range. Choosing the backup point requires knowing *when* the divergence happened, which the
-event log cannot tell you — use the anchor receipts (`anchor_receipts.submitted_at` +
-`target_global_seq`) to bound it: any event at or below a confirmed anchor's
-`target_global_seq` had its envelope and signature fixed at that anchor's time.
+range. Choosing the backup point requires knowing *when* the divergence happened, which the event
+log cannot tell you. A signed cutover checkpoint and the externally published catalog bound the
+portion of history committed at publication; absent that evidence, use ordinary backup and
+operator-audit timestamps and state that the event log cannot date its own divergence.
 
 **(c) Quarantine.** The correct answer when neither (a) nor (b) is safe. Mark the event
 range as quarantined **outside** the events table, refuse to serve it as authenticated, and
@@ -87,14 +90,12 @@ cascade:
 | the **successor's** `prev_event_hash` | it commits to the predecessor's head hash — and it is a **signed** field in v3+ | `_events.py:214-228`; `_signing.py:131-132` |
 | every subsequent event in that entity's chain | each link commits to the one before | — |
 | the **global** chain from that point forward | `prev_global_event_hash` is signed in v3+ and links every event across all work items | `spec.md` §17.11; `_events.py:230`, `030_global_event_chain.sql` |
-| every **segment seal** covering the range | the seal signs `head_hash` of the last event in the segment | `_archive_segments.py:436-448`, `039_event_segments.sql:14-29` |
-| every **witness receipt** over those events | the witness countersignature covers `canonical_envelope` bytes | `spec.md` §17.14; `_witness.py:709-725` |
-| every **anchor receipt** covering the range | `merkle_root` is the chain head, `sha256(canonical_envelope ‖ signature)` | `042_anchor_content_commit.sql:3-7`; `_anchoring.py:129-150` |
+| the signed cutover checkpoint and any published head/catalog covering the range | the checkpoint or publication commits to the relevant chain head and count | `CUTOVER-CLASSIFICATION.md` §§4–5; `TRUST-DOMAIN.md` §4.3 |
 
-For an externally anchored batch this is worse than data loss: the anchored root no longer
-matches the live events, so the anchor now *proves* that the log was rewritten after
-anchoring — and a third party cannot distinguish a well-intentioned repair from the attack.
-Re-signing to fix a mismatch destroys the property the system exists to provide.
+For a published checkpoint this is worse than data loss: the published head no longer matches the
+live events, so the publication now shows that the log changed after publication — and a third
+party cannot distinguish a well-intentioned repair from the attack. Re-signing to fix a mismatch
+destroys the property the system exists to provide.
 
 The single narrow exception is §4's reconstruction of a **missing** envelope, where nothing is
 being replaced and the reconstruction must be *proved* by the pre-existing signature.
@@ -111,52 +112,31 @@ the row.
 
 ## 3. Where the cutover sits
 
-The cutover is a pair, per project: **an envelope version floor and a `global_seq` watermark.**
+For a project that has cut over, the boundary is the signed checkpoint and its **chain position**.
+There is no `global_seq` watermark for a checkpoint project. The verifier walks predecessor links,
+locates the unique `project_cryptographic_epoch_started` event, and applies these semantics:
 
-```
-policy.accept_legacy_versions          = {v4}     # and only v4
-policy.accept_legacy_before_global_seq = <W>      # per-project integer, recorded once
-```
-
-**Chosen floor: v5.** Justification: v5 is the only version that signs `actor_kind` and
-`actor_metadata` (`_signing.py:140-191`), which are the fields the review gate and assurance
-actually make decisions from. It is also what every writer in 0.5.6 already emits — all four
-sign sites pass a non-None `actor_kind` (`_events.py:251`, `:451`, `_event_store.py:130`,
-`_archive_segments.py:472`), so `sign_event` always takes the v5 branch (`_signing.py:221-241`).
-No new event should ever be v4, and the cutover makes that a checked invariant rather than an
-emergent behaviour.
-
-**Watermark `W`: set once per project, at S1 deployment, to `max(global_seq) + 1` at the moment
-preflight last reported clean.** Recorded in the project catalog (or a new
-`verification_policy` row), not in code, and never moved forward afterwards. Semantics:
-
-| Event | Envelope | Result |
+| Chain position | Envelope | Result |
 |---|---|---|
-| `global_seq < W` | v5 | `FULLY_AUTHENTICATED` |
-| `global_seq < W` | v4 | `LEGACY_PARTIAL` with `unsigned_fields ⊇ {actor_kind, actor_metadata, global_seq, scheme_id, work_item_id}` |
-| `global_seq < W` | v1/v2/v3 | `LEGACY_PARTIAL` **only if** explicitly added to `accept_legacy_versions` for that project; otherwise `INVALID` |
-| `global_seq ≥ W` | v5 | `FULLY_AUTHENTICATED` |
-| `global_seq ≥ W` | anything below v5 | **`INVALID`** — a legacy envelope written after the cutover is a regression, not history |
+| before the checkpoint | v4 or v5 | `LEGACY_PARTIAL` with the version's named unsigned properties |
+| before the checkpoint | v1/v2/v3 | `LEGACY_PARTIAL` only when explicitly accepted for that project; otherwise `INVALID` |
+| the checkpoint or after it | v6 Ed25519 | `FULLY_AUTHENTICATED` when all v6 checks pass |
+| after the checkpoint | anything below v6 or non-Ed25519 v6 | **`INVALID` / `EPOCH_VIOLATION`** |
 
-**`global_seq` is an administrative bound, not a cryptographic one.** It is unsigned by design
-(FIELD-MATRIX §3.1) and was backfilled by a `(timestamp, event_id)` proxy for pre-017 rows
-(`017_events_global_seq.sql:8-14`), so an attacker who can write rows can move an event across
-the watermark. This is acceptable **only** because crossing the watermark can never turn
-`INVALID` into a pass — it can only turn `LEGACY_PARTIAL` into `INVALID` or the reverse, and
-the reverse still requires the signature and every signed field to reconcile. The policy's
-docstring and the CLI output must state this so nobody reads the watermark as a security
-boundary.
+For a project with **no checkpoint**, `accept_legacy_versions` and, for compatibility, an
+`accept_legacy_before_global_seq` value may bound the legacy policy. That watermark is an
+administrative index hint only: `global_seq` is unsigned and never establishes chain order,
+completeness or epoch membership. It must not be reused as the boundary after a signed checkpoint.
 
 **Default `accept_legacy_versions` for a store with no v1/v2/v3 events is `{v4}`.** Empty is
 not a valid value while v4 history exists; the estate has 18,695 v4 events (§7) and setting
 `{}` would make 5.3% of the log `INVALID` overnight for no security gain — v4 events are
 correctly signed, they simply sign less.
 
-**Sunsetting.** `accept_legacy_versions` is expected to shrink, never grow. Removing `v4` from
-it becomes possible only when every v4 event has been archived out of the live query path
-(segments, `events_archive`) or the deployment accepts them as `INVALID`. Growing the set for
-any reason other than discovering genuine v1/v2/v3 history in a store is a policy regression
-and should require the same review as a schema change.
+**Sunsetting.** `accept_legacy_versions` is expected to shrink, never grow. Removing `v4` becomes
+possible only when the deployment accepts those historical events as `INVALID` or no longer
+serves them. Growing the set for any reason other than discovering genuine v1/v2/v3 history is a
+policy regression and should require the same review as a schema change.
 
 ---
 
@@ -304,20 +284,25 @@ Then, per finding class:
 
 | preflight status | Meaning | Action |
 |---|---|---|
-| `fully-reconciled` | v5, signature valid, row agrees | none |
-| `legacy-partial` | v4 (or older), signature valid, every signed field agrees | record; set `accept_legacy_versions` accordingly (§3); plan sunset |
+| `fully-reconciled` | v5 before cutover, or v6 after its checkpoint, signature valid, row agrees | none |
+| `legacy-partial` | pre-cutover v4/v5 (or older), signature valid, every signed field agrees | record; apply the chain-position policy in §3; plan sunset |
 | `would-newly-fail`, `mismatched_fields` in signed set | row disagrees with a signed field | **§2** — restore from envelope, restore from backup, or quarantine. Never accept, never re-sign |
-| `would-newly-fail`, `<schema>` | envelope matches no known schema strictly | treat as §2; note that the *current* code would classify it `v1` and let it through — this is the escape hatch, so expect these to be the interesting findings |
+| `would-newly-fail`, `<schema>` | envelope matches no known schema strictly | treat as §2; the shipped strict classifier reports `UNKNOWN_SCHEMA` rather than falling back to v1 |
 | `unverifiable`, `no-stored-envelope` | pre-002 row | **§4** — optional offline reconstruction, else permanent `UNVERIFIABLE` |
 | `unsigned`, `keyless-dummy-envelope` | InMemory keyless | **§5** — not a failure; must never be reported as signed |
 | `invalid` (signature bad) | stored bytes do not verify under the resolved key | §2(b)/(c); (a) is not available because the envelope itself is not trustworthy |
 
-Only when every finding is dispositioned: set `W`, set `accept_legacy_versions`, ship the
-verifier, and re-run preflight as a post-deployment check.
+Only when every finding is dispositioned: record the signed checkpoint (or the explicitly
+administrative no-checkpoint policy), set `accept_legacy_versions`, ship the verifier, and
+re-run preflight as a post-deployment check.
 
 ---
 
 ## 7. What the estate actually looks like
+
+> **HISTORICAL SNAPSHOT — `preflight-s1.json` / `preflight-s1.txt`.** The table below records
+> the S1-era store only. It does not authorise a 0.6.0 cutover or supply a checkpoint payload;
+> the ceremony re-measures under quiescence and records named snapshot values in the signed event.
 
 Measured with `preflight_check.py`, read-only, all 26 project schemas, with real HMAC key
 material loaded from `~/.config/regista/keys.json`:
@@ -332,21 +317,19 @@ material loaded from `~/.config/regista/keys.json`:
 | `legacy_partial` (v4 — unsigned `actor_kind`/`actor_metadata`) | 18,695 (5.3%) |
 | `unverifiable` (missing envelope) | 0 |
 | Unknown / unparseable envelope schemas | 0 |
-| Strict vs permissive classifier disagreements | 0 |
-| Affected segments | 0 (no `event_segments` rows exist in any schema) |
-| Affected anchor receipts | 0 (no `anchor_receipts` rows exist in any schema) |
+| Strict-classifier disagreements in the measured legacy corpus | 0 |
+| Rows in retired segment/anchor subsystems | 0 (no such rows exist in any schema) |
 
 **Consequences for this estate specifically:**
 
 - Step 2 of §1 is a no-op. No restoration, no quarantine, no reconstruction is required.
-- The cutover can be set immediately, per project, at current `max(global_seq) + 1`.
-- `accept_legacy_versions = {v4}` is required and sufficient. Setting `{}` would make 18,695
-  correctly-signed events `INVALID` for no gain.
-- Because no segments and no anchor receipts exist anywhere, the seal/anchor cascade described
-  in §2.2 is currently hypothetical here — which is *fortunate timing*, since it means the
-  window in which a re-sign would have been merely expensive rather than externally detectable
-  is still open. It will close the first time anchoring is enabled. That is an argument for
-  landing S1 before anchoring is turned on, not after.
+- The snapshot does not authorize an immediate cutover or supply a checkpoint payload. Cutover
+  re-measures each project under quiescence and records the signed checkpoint and its chain
+  position.
+- Before a project checkpoint, `accept_legacy_versions = {v4}` is required and sufficient for
+  this named snapshot. After a checkpoint, v4/v5 are classified by position as `LEGACY_PARTIAL`.
+- No segment, witness or anchor cascade is active in this estate. The release publishes signed
+  checkpoints and catalogs; it does not defer the security boundary to a later anchoring feature.
 
 **This result does not generalise.** It says the estate is clean; it says nothing about a store
 carrying pre-002, pre-017 or pre-031 history, which is exactly the population the backfill

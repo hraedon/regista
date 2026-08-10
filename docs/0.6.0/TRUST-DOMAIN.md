@@ -2,8 +2,9 @@
 
 **Status:** FROZEN CONTRACT, Stage 0 of the 0.6.0 cutover. Normative.
 **Owns:** trust-domain genesis, publication and pinning, principal identity, key
-enrolment/rotation/revocation/witness enrolment as signed events, and how a verifier obtains
-trust material.
+enrolment/rotation/revocation as signed events, and how a verifier obtains trust material.
+Witness lifecycle text is retained only as a clearly marked future design in §7; it is not a
+0.6.0 trust mechanism.
 **Does not own:** the v6 envelope field list (sibling A — this document defines the *meaning* of
 `trust_domain_id` and `signing.key_binding_event_hash`, not their encoding), the bundle v3
 membership statement and review-verdict schemas (sibling C), the preflight tool (sibling D).
@@ -60,9 +61,9 @@ traverse a link reports the gap; it never bridges it with a database row.
   public git repo (custodian account) ───────┤ re-check: substitution detectable
                                              ▼
   [1] genesis document        regista.trust-genesis/v1, k-of-n root signatures
-        │  determines trust_domain_id (§3.3) — governance is IN the identifier
+        │  determines stable trust_domain_id (§3.3); current governance is replayed from the signed log
         ▼
-  [2] trust-root rotation     signed trust-log events, threshold preserved
+   [2] trust-root rotation     signed trust-log events, threshold monotone
         ▼
   [3] registrar delegation    scoped, expiring, signed by root at threshold
         ▼
@@ -155,6 +156,10 @@ The canonical principal id is stored *inside* the secret as a field
 unauditable by hand — which the migration posture depends on.
 
 ### 2.3 The fourth convention: `witness:` — resolved
+
+> **FUTURE DESIGN ONLY — witness lifecycle is cut from 0.6.0.** The identity alias and canonical
+> service form below apply only if a later release restores signed witness enrolment. No 0.6.0
+> registration, receipt or callback may establish trust.
 
 WI-055 enumerated three conventions. There is a fourth in regista itself:
 `_witness.py:17` defines `_WITNESS_PRINCIPAL_PREFIX = "witness:"` and `_witness.py:20-21`
@@ -278,7 +283,7 @@ line moved, the behaviour did not.)
 | `principal_key_accepted` (project) | **Yes**, always |
 | Delegation credential issue/subject [→ sibling A, WI-008] | **Yes**, always |
 | `append_event` actor_id | **Yes**, per project, from its cutover event onward |
-| Witness registration | **Yes**, always (§2.3) |
+| Witness registration | **No in 0.6.0** — cut; future design only (§7) |
 | Verification, replay, bundle import, historical key lookup | **Never** |
 
 Legacy principals stay eligible for rotation and revocation after enrolment goes strict — a
@@ -304,10 +309,10 @@ permissive rule.
 > default becomes theater. Do not implement the opt-in as a config flag that leaves the artifact
 > identical. — WI-272
 
-The design satisfies this by making governance a **determinant of `trust_domain_id` itself**
-(§3.3). Not an adjacent field that a verifier might forget to read, and not a flag: the
-identifier that every single v6 event carries is a function of the signer set and threshold. An
-estate cannot restate its governance without becoming a different trust domain.
+The design satisfies this without putting mutable governance into `trust_domain_id`: the
+identifier is derived from stable genesis identity, while governance is replayed from a signed,
+monotone log and copied into every verification result, bundle and publication. It is not an
+unverifiable configuration flag, and an estate cannot lower its threshold inside the domain.
 
 ### 3.2 The genesis document
 
@@ -319,11 +324,6 @@ estate cannot restate its governance without becoming a different trust domain.
   "binding_core": {
     "type": "regista.trust-genesis.core",
     "version": 1,
-    "governance": {
-      "mode": "co_signed",
-      "threshold": 2,
-      "signer_count": 2
-    },
     "signers": [
       {
         "signer_id": "root-a",
@@ -346,6 +346,12 @@ estate cannot restate its governance without becoming a different trust domain.
     ],
     "created_at": "2026-08-20T00:00:00.000000Z",
     "nonce": "64-hex-chars"
+  },
+
+  "initial_governance": {
+    "mode": "co_signed",
+    "threshold": 2,
+    "signer_count": 2
   },
 
   "trust_domain_core_digest": "sha256:...",
@@ -387,7 +393,7 @@ is an unverified operator claim and every report that displays it must label it 
 (OPERATOR-FORGERY R1). It exists in the artifact anyway, because a claim that is written down
 and later contradicted is evidence, and a claim that was never written down is not.
 
-### 3.3 `trust_domain_id` derivation — governance is in the identifier
+### 3.3 `trust_domain_id` derivation — stable genesis identity only
 
 ```
 core_bytes   = JCS(binding_core)
@@ -396,13 +402,18 @@ trust_domain_core_digest = "sha256:" || lowercase_hex(core_digest)
 trust_domain_id          = UUIDv5( NAMESPACE_OID, "regista.trust-domain:" || lowercase_hex(core_digest) )
 ```
 
-Consequences, all intended:
+`binding_core` is the stable genesis identity: its type/version, initial signer public keys and
+creation nonce are fixed for the life of the trust domain. `initial_governance` is signed genesis
+state, but `threshold`, `signer_count` and `mode` are deliberately **not** inputs to `binding_core`
+and do not enter `trust_domain_id` derivation.
 
-1. **Governance downgrade changes the epoch.** `threshold` and `signer_count` are inside
-   `binding_core`. An estate cannot move from `co_signed` to `solo` without producing a
-   different `trust_domain_id`, and every v6 event carries `trust_domain_id`, so the change is
-   visible in every artifact from that moment. A verifier holding a pin sees a *different domain*,
-   not a reconfigured one. This is the mechanism that makes the owner's constraint structural.
+Consequences:
+
+1. **Governance is a monotone signed log inside the domain.** The initial governance state seeds
+   the log; subsequent signed governance events may raise the threshold and replace signers at the
+   current threshold. A verifier rejects any threshold decrease, regardless of who signed it.
+   `solo_effective` → `co_signed` is therefore a signed upgrade with no epoch change, while a
+   downgrade is structurally impossible.
 
 > **SUPERSEDED — WI-280, recorded at `ARCHITECTURE-FINAL.md` §3 decision 1.** Consequence 1 is
 > withdrawn: **`threshold` and `signer_count` are NOT in `binding_core` and NOT in the
@@ -428,22 +439,23 @@ Consequences, all intended:
 > genesis signer set still anchors the epoch; `root_governance` in every artifact is the
 > *replayed current* state, not a copy of a genesis field; and a verifier that cannot replay the
 > governance log reports `root_governance: unknown` rather than assuming genesis values.
-2. **The UUID is plumbing; the digest is the security value.** UUIDv5 truncates to 122 usable
+2. **Governance remains visible in artifacts, not configuration.** `root_governance` in every
+   result, bundle and publication is the current state replayed from the signed log. A verifier
+   that cannot replay the log reports `root_governance: unknown`, never a genesis-derived guess.
+3. **The UUID is plumbing; the digest is the security value.** UUIDv5 truncates to 122 usable
    bits. A trust policy therefore pins `trust_domain_core_digest` (full SHA-256) and treats
-   `trust_domain_id` as an index. `[→ sibling A]` the envelope carries only the UUID, which is
-   correct: the UUID's job in the envelope is to prevent importing a credential from another
-   estate (`ARCHITECTURE-0.6.0.md:78`), and 122 bits is ample for that. It is *not* the
-   auditor's pin.
-3. **Root-key rotation does not change the epoch.** The genesis *signer set* is immutable and
-   anchors the epoch; the *current* signer set is derived by replaying `trust_root_rotated`
-   events (§5.4) authorised at the genesis threshold. A custodian countersignature or a public
-   anchor added later lives outside `binding_core` and outside the signature input (§3.5), so it
-   changes nothing — satisfying the owner's "without a new epoch" constraint.
+   `trust_domain_id` as an index. The envelope carries the UUID to prevent importing a credential
+   from another estate; it is not the auditor's full pin.
+4. **Root-key rotation does not change the epoch.** The initial signer set anchors the stable
+   identity; the current signer set is derived by replaying signed `trust_root_rotated` events
+   (§5.4), authorised at the current threshold. Later countersignatures or publication records
+   also do not change the domain.
 
 ### 3.4 Governance modes and threshold semantics
 
-`governance.mode` is a **derived, restated** value: it must equal the function of `threshold` and
-`signer_count` below, and a document where it does not is invalid, not merely mislabelled.
+`root_governance.mode` is a **derived, restated** value from the current signed-log state: it must
+equal the function of the replayed `threshold` and `signer_count` below, and a document where it
+does not is invalid, not merely mislabelled.
 
 | `signer_count` | `threshold` | Required `mode` | Meaning |
 |---|---|---|---|
@@ -515,19 +527,21 @@ and a verifier that reports them as `present_unverified`. Verifying an anchor re
 anchoring work that `ARCHITECTURE-0.6.0.md` §7 deliberately deletes from this release, and
 claiming otherwise would repeat exactly the S7 defect.
 
-### 3.6 How a verifier distinguishes co-signed from solo-rooted
+### 3.6 How a verifier distinguishes `co_signed` from solo-rooted
 
-The verifier does **not** read `governance.mode` and report it. It:
+The verifier does not read a mutable `governance.mode` field and report it. It:
 
 1. Recomputes `core_digest` from `binding_core` and compares to `trust_domain_core_digest`.
    Mismatch → `root_governance = unknown`, document invalid.
 2. Recomputes `trust_domain_id` and compares. Mismatch → invalid.
-3. Recomputes the required `mode` from `threshold`/`signer_count` (§3.4 table) and compares to
-   the stated `mode`. Mismatch → invalid.
-4. Verifies each entry in `signatures` against the signer set. Counts the valid ones as `k_seen`.
+3. Verifies the genesis signatures against the initial signer set and the signed
+   `initial_governance` threshold. Invalid or unknown-signer entries make the document invalid.
+4. Replays every signed governance event in order, rejecting any threshold decrease and requiring
+   signer replacement at the current threshold. Derive the current `mode` from the replayed
+   `threshold`/`signer_count` (§3.4 table). A disagreement in a signed restatement is invalid.
+5. Requires each governance transition to meet the threshold active immediately before it.
    Any invalid or unknown-signer entry → invalid.
-5. Requires `k_seen ≥ threshold`.
-6. Emits:
+6. Emits the resulting current state:
 
 ```json
 "root_governance": {
@@ -551,14 +565,13 @@ reader.
 
 Three carriers, all mandatory:
 
-1. **Every v6 event** carries `trust_domain_id` `[→ sibling A]`. Because the id is derived from
-   governance (§3.3), the governance mode is *implied* by every event to any verifier holding the
-   genesis document. This is the structural guarantee; the next two are ergonomics.
+1. **Every v6 event** carries the stable `trust_domain_id` `[→ sibling A]`. A verifier learns
+   governance by replaying the signed log, not by deriving it from the event's identifier.
 2. **Every bundle v3 membership statement** `[→ sibling C]` carries a `trust_root` block:
    `{ trust_domain_id, trust_domain_core_digest, root_governance: {mode, threshold, signer_count},
-   genesis_document_digest }`. The bundle verifier reconciles this against the genesis document it
-   was given; disagreement is a verification failure, not a display difference. A bundle produced
-   by a solo-rooted estate therefore says `"mode": "solo"` in a signed statement.
+    genesis_document_digest }`. The bundle verifier reconciles this against the replayed governance
+    log and the sole trust policy; disagreement is a verification failure, not a display difference.
+    A bundle produced by a solo-rooted estate therefore says `"mode": "solo"` in a signed statement.
 3. **Every project cutover checkpoint** (`project_cryptographic_epoch_started`,
    `ARCHITECTURE-0.6.0.md:444-473`) carries `new_epoch.trust_domain_id` and, added here,
    `new_epoch.trust_domain_core_digest` and `new_epoch.root_governance` — so the governance claim
@@ -587,11 +600,10 @@ Design consequences, stated so an implementer does not accidentally build author
   shows no rewrite".
 - Therefore the tooling must never fetch-and-trust. `regista bundle verify` does **not** reach
   out to the publication URL. Pinning is an auditor action with an auditor-held artifact.
-- Force-push detection is the mechanism. It works only for a party holding a prior clone or a
-  prior commit sha. Every published document therefore records the commit sha of the *previous*
-  publication (§4.3), so a single fresh clone still exhibits a chain an auditor can check for
-  gaps, and a rewrite that removes an intermediate publication becomes a broken `prev_commit`
-  link rather than an absence nobody notices.
+- Force-push and `prev_commit` checks detect substitution only for a party holding a prior clone,
+  prior commit sha or prior digest. A fresh clone can be internally coherent after an operator
+  rewrites genesis, checkpoints, links and `index.json`; it cannot establish that the first
+  publication was honest. The tooling must print that fresh-clone limit.
 
 > **SUPERSEDED (claim strength) — `RECONCILIATION.md` collision 18, per
 > `OPERATOR-FORGERY.md` §5.** A **coherent** malicious rewrite is not detectable from a fresh
@@ -635,6 +647,12 @@ Invariants enforced by the publish command and re-checkable by anyone with a clo
   `regista: publish <kind> <identifier> <sha256-prefix>`.
 
 ### 4.3 Published documents besides genesis
+
+> **LOCAL APPLICATION — `RECONCILIATION.md` collisions 19, 20, 21 and 22.** The JSON skeletons
+> below are illustrative only. Implement the amended signer/root-signature shape, append-only
+> index rule, immutable attestation records and optional `catalog_kind: project_heads` rules in
+> the amendment immediately following the examples. The publication repository is retention and
+> history, not a trust root; a fresh clone cannot prove the first publication was honest.
 
 **Trust-log checkpoint** — the document that makes trust-log state externally known, and the
 cross-chain ordering primitive of §6.6.
@@ -945,8 +963,8 @@ One estate-wide project (`ARCHITECTURE-0.6.0.md:343`), with:
 - **no legacy epoch.** Its genesis event is a v6 Ed25519 event. There is no HMAC prefix, no
   `project_cryptographic_epoch_started`, no cutover checkpoint. A trust log with a legacy prefix
   would root the estate in exactly the semantics the epoch exists to leave behind.
-- entity `kind = "principal"`, `id = principal_entity_id(principal_id)` for all
-  principal/key/witness events; `kind = "trust_domain"`, `id = trust_domain_id` for root and
+   - entity `kind = "principal"`, `id = principal_entity_id(principal_id)` for all
+     principal/key events; witness events are cut from 0.6.0 and retained only in §7; `kind = "trust_domain"`, `id = trust_domain_id` for root and
   domain-level events; `kind = "project_instance"`, `id = project_instance_id` for registrations.
 
 > **AMENDED — `RECONCILIATION.md` Resolution 1 and collision 5.** Two rules:
@@ -977,7 +995,7 @@ All are v6 Ed25519 events in the trust-domain log unless marked *(project)*.
 | Transition | Entity | Purpose |
 |---|---|---|
 | `trust_domain_established` | trust_domain | First event; restates `binding_core` and `trust_domain_core_digest`. |
-| `trust_root_rotated` | trust_domain | Replace/add/remove a root signer. Threshold and signer_count **must not change** (§5.4). |
+| `trust_root_rotated` | trust_domain | Replace/add/remove a root signer or raise the threshold. The verifier enforces the monotone governance rules in §3.3/§5.4. |
 | `registrar_delegated` | trust_domain | Scoped, expiring online credential. |
 | `registrar_revoked` | trust_domain | |
 | `project_instance_registered` | project_instance | Binds `project_instance_id` ↔ name hint ↔ trust domain. |
@@ -987,8 +1005,8 @@ All are v6 Ed25519 events in the trust-domain log unless marked *(project)*.
 | `principal_key_revoked` | principal | §5.7. |
 | `principal_alias_bound` | principal | §2.5. |
 | `legacy_key_binding_attested` | principal | §6. |
-| `witness_registered` | principal | §7. |
-| `witness_key_rotated` / `witness_paused` / `witness_resumed` / `witness_revoked` | principal | §7. |
+| ~~`witness_registered`~~ | principal | **CUT FROM 0.6.0** — future witness lifecycle, retained only under §7's CUT marker. |
+| ~~`witness_key_rotated` / `witness_paused` / `witness_resumed` / `witness_revoked`~~ | principal | **CUT FROM 0.6.0** — future witness lifecycle, retained only under §7's CUT marker. |
 | `bundle_signing_authority_granted` / `_revoked` | principal | Which principal may sign bundle v3 statements `[→ sibling C]`. |
 | `trust_log_checkpoint_published` | trust_domain | Records the digest of a §4.3 checkpoint *inside* the log, so the log commits to its own publications. |
 | `principal_key_accepted` *(project)* | principal | §5.8. The binding every v6 event points at. |
@@ -1008,21 +1026,19 @@ trust log:
 
 - The event must carry ≥ `threshold` detached root signatures over its own canonical bytes,
   by keys in the *current* signer set (genesis set, as evolved by prior rotations).
-- ~~`threshold` and `signer_count` **must not change.**~~ **SUPERSEDED — WI-280 (§3.3).**
-  Governance is a monotone signed log inside the domain, so a rotation event may change the
-  signer set and may *raise* the threshold. The binding rules are: **the threshold may never
-  decrease** (a verifier rejects a lowering event no matter who signed it), and **signers may be
-  replaced at the current threshold**. Neither is an epoch change, and `trust_domain_id` does
-  not move. Removing a compromised co-signer is therefore possible — the property the frozen
-  rule accidentally forbade.
+- **WI-280 live rule.** A rotation event may change the signer set and may *raise* the threshold.
+  The threshold may never decrease (a verifier rejects a lowering event no matter who signed it),
+  and signers may be replaced at the current threshold. Neither is an epoch change, and
+  `trust_domain_id` does not move. Removing a compromised co-signer is therefore possible.
 - The resulting signer set must have pairwise-distinct fingerprints and cardinality
   `signer_count`.
 
 **`registrar_delegated`** payload: `{ registrar_principal_id, key_id, fingerprint, scheme_id,
-scopes: ["principal_key_enrolled","principal_key_rotated","witness_registered", ...],
-not_before, not_after, max_operations: int|null }`. Signed at root threshold. `not_after` is
-mandatory and bounded (contract: ≤ 400 days). Routine lifecycle operations use the registrar; the
-root is used for genesis, root rotation, registrar delegation, and nothing else.
+scopes: ["principal_key_enrolled","principal_key_rotated", ...], not_before, not_after,
+max_operations: int|null }`. Signed at root threshold. `not_after` is mandatory and bounded
+(contract: ≤ 400 days). Routine non-recovery lifecycle operations use the registrar; the root is
+used for genesis, root rotation, registrar delegation and every recovery operation. The registrar
+may prepare and submit a recovery request but cannot authorise it.
 
 A registrar cannot delegate. `registrar_delegated` naming a principal that is itself a registrar
 is invalid — no chains, no depth question, no cycle check needed.
@@ -1104,10 +1120,11 @@ Payload is `principal_key_enrolled` plus `supersedes_key_id` (non-null) and:
 - `mode: "dual"` requires a signature by the **superseded** key over the same canonical rotation
   bytes, in addition to the registrar authorisation. This proves the rotation was requested by the
   holder of the outgoing key, not merely by the registrar.
-- `mode: "recovery"` omits it and is **visibly classified as recovery** — the verifier reports
-  `key_binding: recovery_rotated` and it propagates into `VerificationResult` (§8.3) and into
-  bundle verdicts `[→ sibling C]`. Recovery is legitimate and must not be hidden;
-  `ARCHITECTURE-0.6.0.md:363`.
+- `mode: "recovery"` requires the **current root threshold**. The registrar may prepare and
+  submit the request but cannot authorise it. Root-key and registrar-key recovery use the same
+  threshold. Recovery remains **visibly classified**: the verifier reports
+  `key_binding: recovery_rotated` and it propagates into `VerificationResult` (§8.3) and bundle
+  verdicts `[→ sibling C]`; visibility is not a substitute for prevention.
 
 > **SUPERSEDED (authority) — `RECONCILIATION.md` Resolution 5, overlay change 9.** Recovery
 > rotation requires signatures from the **current root threshold**. The registrar may *prepare
@@ -1313,7 +1330,7 @@ This is the case implementations get wrong by falling back, so it is specified e
 
 | Situation | Verdict | Reason code | Rationale |
 |---|---|---|---|
-| `h_A` not present in the material, and the material makes **no completeness claim** (bundle scope `declared-selection`, or a partial export) | `UNVERIFIABLE`, `key_binding: unresolved` | `KEY_BINDING_UNRESOLVED` | Absence of evidence. The signature may well be fine; the verifier cannot say. |
+| `h_A` not present in the material, and the material makes **no completeness claim** (a partial export) | `UNVERIFIABLE`, `key_binding: unresolved` | `KEY_BINDING_UNRESOLVED` | Absence of evidence. The signature may well be fine; the verifier cannot say. |
 | `h_A` not present, and the material **claims completeness** (bundle scope `complete-store`, or an online store) | `INVALID` | `KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE` | The completeness claim is false. That is a fact about the artifact, not an absence. |
 | `h_A` resolves to an event that is not a `principal_key_accepted`, or is for a different principal/key/project | `INVALID` | `KEY_BINDING_MISMATCH` | Contradicted evidence. |
 | `h_A` resolves but does not precede `E` in chain order | `INVALID` | `ENROLLMENT_AFTER_USE` | |
@@ -1794,7 +1811,8 @@ frozen. They are listed here so an implementer cannot satisfy the prose and miss
    `co_signed`.
 2. Removing one of two signatures from a `threshold: 2` document makes it **invalid**, not
    "verified with one signature".
-3. Editing `governance.mode` alone makes the document invalid (mode/threshold disagreement).
+3. Editing `initial_governance.mode` or any signed governance restatement alone makes the
+   document invalid (mode/threshold disagreement).
 4. Editing `binding_core` at all changes `trust_domain_core_digest` and `trust_domain_id`; a
    pinned policy rejects the result as a *different domain*.
 5. Adding a countersignature or an anchor changes neither digest and invalidates no signature.
@@ -1821,8 +1839,9 @@ frozen. They are listed here so an implementer cannot satisfy the prose and miss
     named as outside scope. (`declared-selection` is cut from 0.6.0 — `BUNDLE-V3.md` §3.5.)
 16. An enrolment event lacking `public_key` is rejected at write time (guards Defect A).
 17. Importing `regista._principal_keys.register_principal_key` fails (guards the bypass paths).
-18. A rotation without `dual_authorization.old_key_signature` is reported `recovery_rotated`
-    everywhere it surfaces, including in a bundle verdict.
+18. A recovery rotation without `dual_authorization.old_key_signature` is accepted only with the
+     current root threshold and is reported `recovery_rotated` everywhere it surfaces, including in
+     a bundle verdict.
 
 **Identity**
 19. `enroll_principal("mvmcc03-agent")` is refused post-cutover; `enroll_principal("agent:...")`
@@ -1831,8 +1850,8 @@ frozen. They are listed here so an implementer cannot satisfy the prose and miss
     exception.
 21. An alias never affects `key.principal_id == actor_id` binding: a covered legacy event still
     binds to its exact old id.
-22. `witness_principal_id()` returns `service:witness.<uuid>`; historical `witness:<uuid>` events
-    still verify.
+22. Witness lifecycle is cut from 0.6.0; if a future implementation is tested, its canonical id is
+    `service:witness.<uuid>` and historical `witness:<uuid>` events still verify.
 
 **Cross-schema**
 23. The 12,866/48,688 figures appear in no source file, migration, test fixture or cutover
@@ -1855,15 +1874,11 @@ no artifact hardcodes any of them (§6.1). *Owner check:* if 48,688 was intended
 `agent_provenance` figure re-measured after 2026-08-02, the estate grew by ~36k Ed25519 events in
 six days and that is worth knowing independently.
 
-**D-2 — I made `trust_domain_id` a derivation of the genesis binding core; the architecture just
-says "uuid".** `ARCHITECTURE-0.6.0.md:78` treats it as an opaque identifier preventing
-cross-estate credential import. Deriving it from governance is a strictly stronger construction
-and is, as far as I can see, the only way to satisfy the owner's "visible in the artifact"
-constraint *structurally* rather than by convention. Cost: a governance change is an epoch change
-(§3.3 consequence 1). I consider that correct — a governance downgrade *should* be an epoch
-event — but it is a real constraint and the owner should confirm it. If rejected, the fallback is
-`trust_domain_id` as a random UUID plus a mandatory `root_governance` block in every checkpoint,
-catalog and bundle statement, which is weaker because it depends on every producer remembering.
+**D-2 — RESOLVED by WI-280.** `trust_domain_id` is derived from the stable genesis binding core;
+governance is not an input to that identifier. The initial governance is signed genesis state and
+later governance is a monotone signed log. Every result, checkpoint, catalog and bundle carries the
+replayed `root_governance`; threshold decreases are rejected and threshold increases do not create
+a new epoch (§3.3–§3.7).
 
 **D-3 — `solo_effective` is mine, not the architecture's.** The architecture and WI-272 describe
 two modes. A `threshold: 1, signer_count: 3` document is neither, and calling it `co_signed`
@@ -1891,26 +1906,17 @@ failing, four times over. I have specified that the public mutation functions ar
 the package surface* (§5.9 rule 2) so the bypass paths break at import. Documentation is not a
 control.
 
-**D-7 — Witness independence.** `ARCHITECTURE-0.6.0.md:424` says "a registered callback in the
-same database is not an external witness", and `:880` limitation 11 repeats it, but §3's witness
-contract still lists four conditions of which the fourth (independent acquisition) is not
-checkable by regista at all. I have specified that `witness_independence` is reported as
-`not_established` and that **no** code path sets it otherwise in 0.6.0 (§7.3). This means the
-witness subsystem produces *no* positive independence claim in this release. If that is
-unacceptable, the honest alternative is to delete the witness subsystem in 0.6.0 as the anchoring
-subsystem is being deleted, for the same reason. I recommend keeping it, reporting honestly, and
-flagging the deletion question for 0.7.0.
+**D-7 — RESOLVED for 0.6.0 by the final scope cut.** `ARCHITECTURE-0.6.0.md` says a callback in
+the same database is not an external witness, and the retained §7 design cannot establish
+independent acquisition. Witness lifecycle and positive witness-independence work are therefore
+cut from 0.6.0. §7 remains only as a clearly marked future design, and any retained webhook
+delivery is transport, not trust evidence.
 
-**D-8 — Recovery rotation and the co-signed default interact, and the architecture does not say
-how.** `ARCHITECTURE-0.6.0.md:363` says recovery rotation "requires the registrar". But the
-registrar is an *online* credential, so an attacker with the registrar key can recovery-rotate
-any principal's key and then sign as them. That is a real escalation and it deserves an explicit
-decision. My specification keeps recovery at registrar authority (matching the architecture) but
-makes it *visibly classified* everywhere (§5.6) so the escalation leaves a permanent, externally
-visible mark. **I think the stronger rule — recovery rotation requires root threshold, not
-registrar — is probably correct for a co-signed estate**, and I have not adopted it only because
-it contradicts the architecture. Owner decision requested; this is the residual with the shortest
-path from "documented" to "exploited". Tracked in OPERATOR-FORGERY as R11.
+**D-8 — RESOLVED by `RECONCILIATION.md` Resolution 5.** Recovery rotation requires the current
+root threshold; the online registrar may prepare and submit the request but cannot authorise it.
+Normal rotation remains dual-authorised by the outgoing key and registrar. Root-key and
+registrar-key recovery use the same threshold, and every recovery remains visibly classified as
+`recovery_rotated` (§5.6 and OPERATOR-FORGERY R11).
 
 **D-9 — The domain-separator convention is inconsistent in the existing tree and I have partially
 diverged.** `principal_lifecycle.py:63-65` puts the domain *inside* the JCS object as a `"domain"`
@@ -1943,7 +1949,7 @@ Stated explicitly so they are not mistaken for guarantees.
 
 | To | Obligation |
 |---|---|
-| Sibling A (v6 envelope) | `trust_domain_id`: lowercase canonical UUID, derived per §3.3, required on every v6 event, non-null. `signing.key_binding_event_hash`: `"sha256:<hex>"` of the `principal_key_accepted` event in **this** project for **this** principal+key; non-null for every v6 event; semantics in §5.8/§5.10. Cutover checkpoint payload additions in §3.7 item 3. |
+| Sibling A (v6 envelope) | `trust_domain_id`: lowercase canonical UUID, derived per §3.3, required on every v6 event, non-null. `signing.key_binding_event_hash` is `string | null`; null is permitted only for the three Bootstrap A/B positions in `RECONCILIATION.md` Resolution 1, and otherwise names a preceding project key-binding anchor for this principal+key. Cutover checkpoint payload additions in §3.7 item 3. |
 | Sibling C (bundle v3) | Bundle must carry the `trust_root` block (§3.7 item 2), the trust-log lifecycle events and project acceptances for every signing key (§6.2), and must surface `root_governance.mode` in the verdict. `externally_authenticated` is unreachable when any event resolved via `BUNDLE_EMBEDDED` (§8.2). Trust policy schema is §4.6. |
-| Sibling D (preflight) | Per project: distinct `actor_id`/`principal_id` values with canonical/non-canonical classification (§2.7); Ed25519 events by key-resolution locus (this schema / named other schema / unresolved) (§6.1); `principal_keys` rows lacking a corresponding signed event; witness principals using the `witness:` prefix (§2.3); `principal_kind_conflict` counts (§2.6). Output canonical JSON. |
+| Sibling D (preflight) | Per project: distinct `actor_id`/`principal_id` values with canonical/non-canonical classification (§2.7); Ed25519 events by key-resolution locus (this schema / named other schema / unresolved) (§6.1); `principal_keys` rows lacking a corresponding signed event; `principal_kind_conflict` counts (§2.6). Witness lifecycle is cut from 0.6.0, so no witness registration/receipt count is a trust gate. Output canonical JSON. |
 | Release notes | §11 obligations, and the non-claims in `OPERATOR-FORGERY.md` §6. |

@@ -76,6 +76,10 @@ where it sits.
 >
 > §1's four consequences below remain correct — none of them depends on the exact figures.
 
+> **HISTORICAL SNAPSHOT — `preflight-s1.json` / `preflight-s1.txt`.** The following table is
+> retained as the S1-era measurement only. It is not a 0.6.0 ceremony input; use a named,
+> quiesced preflight snapshot and re-measure inside the cutover transaction.
+
 Measured, not assumed. Not re-derived here.
 
 | Fact | Value | Source |
@@ -176,8 +180,9 @@ holds one event in isolation. Rules:
 
 ### 2.3 The label downgrade nobody should be surprised by
 
-Under the S1 policy, `full_authentication_versions = {V5}` (`_verification.py:350-352`), so
-94.7% of the estate reports `FULLY_AUTHENTICATED` today.
+> **HISTORICAL S1 STATE.** Under the pre-cutover S1 policy,
+> `full_authentication_versions = {V5}` (`_verification.py:350-352`), so 94.7% of the named
+> S1-era estate reported `FULLY_AUTHENTICATED`. This is not the post-cutover 0.6.0 result model.
 
 **After a project cuts over, that changes for that project's pre-cutover events.** v5 does not
 sign project identity, trust domain, scheme, key binding, workflow definition or authorization.
@@ -387,7 +392,7 @@ Field rules:
 | `envelope_version_counts` | **Added by this document.** Same shape, keyed by envelope version. Needed to verify `allowed_envelope_versions` is exhaustive rather than asserted; must also sum to `event_count`. |
 | `production_signing_scheme` | `"ed25519"`. |
 | `project_instance_id` | Must equal the checkpoint envelope's own `project_instance_id`. |
-| `trust_log_checkpoint_hash` | The trust-domain log head the cutover signer observed. Referent owned by sibling B. |
+| `trust_log_checkpoint` | The three-field trust-domain checkpoint object (`checkpoint_seq`, `head_event_hash`, `document_digest`) the cutover signer observed. Referent owned by sibling B. |
 | `root_governance` | **Added by this document; renamed by the overlay.** Records the trust domain's **replayed current** signer set, threshold and mode **in the artifact**, per the owner's binding constraint that solo mode be *visible in the artifact, not merely in configuration*. `mode ∈ {"co_signed","solo","solo_effective"}` — see `TRUST-DOMAIN.md` §3.3/§3.4 (WI-280: governance is a monotone signed log, not part of the `trust_domain_id` derivation). |
 | `bootstrap_key_acceptance` | **Added by the overlay (Resolution 1).** The exact acceptance object that authorises the checkpoint's own signer. Mandatory. Its `scopes` must include `may_accept_keys` and `may_sign_checkpoints`. |
 | `trust_domain_core_digest`, `genesis_document_digest`, `trust_log_checkpoint` | **Added by the overlay (collision 7).** Together they let a verifier walk from the checkpoint to an externally pinned genesis without holding the trust log. |
@@ -413,7 +418,8 @@ arrived at exactly `head_event_hash` with exactly `event_count` events starting 
 3. The scheme and version composition of the legacy region is as stated, if the recomputed
    counts match `scheme_counts` and `envelope_version_counts`.
 4. Individual legacy **Ed25519** events additionally carry individual attribution (§3.3).
-5. The estate's root governance mode, from `governance` (§4.2) — solo or co-signed, visibly.
+5. The estate's current root governance mode, from `root_governance` (§4.2) — the state replayed
+   from the signed trust-domain governance log, visibly (`solo`, `co_signed` or `solo_effective`).
 
 **MAY NOT conclude:**
 
@@ -788,24 +794,17 @@ add, impossible to add later without a payload version bump.
 architecture does not say so, and a verifier that infers the construction has reintroduced
 domain confusion.
 
-**D-3 — the checkpoint payload needs `governance`.** §4.2. The owner's decision on open
-question 1 makes single-signer lab mode's *visibility in the artifact* a binding constraint:
-*"Implementing the opt-in as a config flag that leaves the artifact identical is forbidden."*
-The architecture applies this to the genesis trust document and to bundles, but the cutover
-checkpoint is an artifact an auditor may see **without** either — it is the one thing published
-in the estate catalog. If it does not carry the governance mode, an estate rooted by a solo
-signer can present a checkpoint indistinguishable from a co-signed one.
+**D-3 — RESOLVED: the checkpoint payload carries `root_governance`.** §4.2. The field is the
+current signer set, threshold and mode replayed from the signed trust-domain governance log. It is
+visible in the artifact without making governance part of `trust_domain_id`; the monotone log and
+the sole trust policy determine whether the restatement is valid.
 
-**D-4 — the checkpoint's own key binding is a bootstrap the architecture does not resolve.**
-§4.4(7). Every v6 event must carry `signing.key_binding_event_hash` pointing at a project-local
-`principal_key_accepted` event that **precedes** it (`V6-ENVELOPE.md` §3.5). The checkpoint is
-the project's first v6 event, so no such project-local event can exist yet. Either (a) the
-`principal_key_accepted` event is itself appended as a legacy-epoch event immediately before the
-checkpoint — which contradicts "the first post-migration event in each project is the
-checkpoint" and would be a v5 event asserting a v6 fact; or (b) the checkpoint alone is
-permitted to reference a trust-domain-log event hash instead. **(b) is the only coherent
-option**, and it needs to be written down by sibling B. Left unresolved, the first event of
-every project fails its own validation rule.
+**D-4 — RESOLVED: the checkpoint uses Bootstrap A/B.** §4.4(7). The checkpoint's
+`signing.key_binding_event_hash` is `null` as the unique first project event, and its mandatory
+`bootstrap_key_acceptance` is externally authorised through the pinned genesis and verified
+trust-log checkpoint. The checkpoint's own event hash becomes the first project-local key-binding
+anchor; the next event references it. There is no self-referential acceptance and no unresolved
+registrar or sibling ownership gap.
 
 **D-5 — "the first post-migration event in each project" is ambiguous for empty projects.**
 `ARCHITECTURE-0.6.0.md` §4. Four of the 26 schemas have ≤ 5 events and at least conceptually a
