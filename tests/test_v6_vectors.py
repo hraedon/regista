@@ -663,6 +663,47 @@ def test_estate_catalog() -> None:
     assert digest == case["expected"]["estate_catalog_digest"]
 
 
+def test_producer_lineage_is_a_family_not_a_versioned_model() -> None:
+    """`model_lineage` is the family; `model` is the build (V6-ENVELOPE §1.8).
+
+    They are separate members so that a version bump is not a change of lineage:
+    `claude-opus-5` and `claude-opus-4-8` are the same lineage and must compare SAME.
+    This matters because `_assurance.lineage_relation` compares by exact string
+    membership with DISTINCT as the *default*, so any spelling variance fails **open** —
+    it manufactures the independence a cross-lineage review exists to demonstrate
+    (regista WI-285). An undeclared lineage fails closed; a mis-spelled one does not.
+
+    Every envelope vector is an exemplar an implementer copies, so a vector carrying a
+    versioned or vendor-qualified lineage teaches the defect. These vectors did exactly
+    that until 2026-08-10 (`model_lineage: "anthropic/claude-opus-5"`).
+    """
+    checked = 0
+    for name in CASE_NAMES:
+        case = _load_case(name)
+        env = case["input"].get("envelope_declaration_order")
+        if not isinstance(env, dict) or "producer" not in env:
+            continue
+        producer = env["producer"]
+        model, lineage = producer.get("model"), producer.get("model_lineage")
+        if lineage is None:
+            assert model is None, f"{name}: a model with no lineage is undeclared, not lineage-free"
+            continue
+        checked += 1
+        assert "/" not in lineage, (
+            f"{name}: lineage {lineage!r} is vendor-qualified; the vendor belongs to the "
+            "model id, not the family"
+        )
+        assert lineage != model, (
+            f"{name}: lineage {lineage!r} equals the model — the family must not carry the build"
+        )
+        assert model is not None and model.startswith(lineage), (
+            f"{name}: model {model!r} should extend its family {lineage!r}; if a canonical "
+            "vocabulary chooses a non-prefix family name, this assertion is the right place "
+            "to record that decision (WI-285)"
+        )
+    assert checked, "no producer-bearing vector exercised the family rule"
+
+
 def test_all_domain_tags_are_distinct_and_null_terminated() -> None:
     tags = MANIFEST["domain_tags"]
     raw_tags = list(tags.values())

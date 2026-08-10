@@ -176,7 +176,15 @@ def make_v6_envelope(
     producer_harness: str = "claude-code",
     producer_harness_version: str = "1.0.0",
     producer_model: str | None = "claude-opus-5",
-    producer_model_lineage: str | None = "anthropic/claude-opus-5",
+    # `model` is the exact build; `model_lineage` is the **family** (V6-ENVELOPE §1.8).
+    # They are two members precisely so that a version bump does not read as a change of
+    # lineage: `claude-opus-5` and `claude-opus-4-8` are the same lineage and must compare
+    # SAME. Spelling the lineage as a versioned, vendor-qualified model id — as this fixture
+    # did until 2026-08-10 — teaches the opposite and makes independence fail open, since
+    # the comparison is exact string membership with DISTINCT as the default
+    # (`_assurance.lineage_relation`). The canonical family vocabulary is regista WI-285;
+    # `claude-opus` is used here as an illustrative family, not as a registry entry.
+    producer_model_lineage: str | None = "claude-opus",
     auth_mode: str = "direct",
     auth_credentials: list[dict[str, str]] | None = None,
     event_id: str = EVENT_ID,
