@@ -2,13 +2,13 @@
   "category": "v6-envelope",
   "description": "The canonical 16-key v6 envelope with producer block (WI-277).",
   "expected": {
-    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"note\":\"hello\",\"seq\":17},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":{\"definition_hash\":\"sha256:cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf\",\"name\":\"agent-notes\",\"registration_event_hash\":\"sha256:1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\",\"version\":3}}",
-    "canonical_len": 1315,
-    "canonical_sha256": "302ae1c0481ffd94e8a8aa597232bf55e8c4c25533db3521856ef840bdc7fe46",
-    "event_hash": "sha256:647081ded4617367aefb5f9fa2cf7aafd2181cf97672c1bbf30e553975101edf",
-    "payload_canonical_hash": "sha256:20932c04bf604f507c1d022360223ccc9143ecd099d398633162062afa167f2d",
-    "signature_hex": "34bd0d74eebd0511cc6943e236e5989e756b298c78a61df24adb91cb1183e3bdc004661fbb1f673977ca74705fc6a34adebc96f34744d99609ee24bb31d7dc0a",
-    "signature_input_sha256": "20932c04bf604f507c1d022360223ccc9143ecd099d398633162062afa167f2d"
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"note\":\"hello\",\"seq\":17},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"claude-opus\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":{\"definition_hash\":\"sha256:cfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcf\",\"name\":\"agent-notes\",\"registration_event_hash\":\"sha256:1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\",\"version\":3}}",
+    "canonical_len": 1303,
+    "canonical_sha256": "83f54c292fa5c5a8e8b4f5b4257e0af83eea4b1a7c6bc3caefed5da7c16c0a58",
+    "event_hash": "sha256:cec0a9100e2a021db08cd86240a7721defaaad2c3fa5dbb2a3f760e84d295884",
+    "payload_canonical_hash": "sha256:6cbf846eeddf91e2e704b867a820ec6c35ad697d9069d65894fd0d1e12fc14aa",
+    "signature_hex": "0173b6c2c32c736b33b12fda9dd4aae16ce64d1bdddc05f76a46830921e861302582669ab0b93513ba16f5b2b9ab3720435f2c09995998fa0bd28485f883cc0b",
+    "signature_input_sha256": "6cbf846eeddf91e2e704b867a820ec6c35ad697d9069d65894fd0d1e12fc14aa"
   },
   "input": {
     "envelope_declaration_order": {
@@ -41,7 +41,7 @@
         "harness": "claude-code",
         "harness_version": "1.0.0",
         "model": "claude-opus-5",
-        "model_lineage": "anthropic/claude-opus-5"
+        "model_lineage": "claude-opus"
       },
       "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
       "signing": {

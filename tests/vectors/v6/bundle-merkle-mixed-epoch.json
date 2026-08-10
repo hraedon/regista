@@ -5,10 +5,10 @@
     "leaves": [
       "sha256:f455b1a5741091d365da217c9715a729821953132111b104a16ccf6d109f8432",
       "sha256:31d31d0527240c7ab089c1c944a71c756d05e1d451302b6abf3fc22ada7ae6a5",
-      "sha256:4ae254cc445ce86cee282948899f1e91a07251f3618b55e0c4e726d073682dd5",
-      "sha256:8a9e7d9ecc33fe5845efe4046e6622e4974c8ec6ee0b84ad17f8f599425d7916"
+      "sha256:107bd1962a161f4529bc1b9ac3afccb256f44c01f911e9c1e95668ef5466aeaf",
+      "sha256:8a3b3a2a62628b529479e492b4386ec82c509dea7000d8ad7a714131b214002d"
     ],
-    "membership_root": "sha256:a3fa1748cb5503d0fe6f12cd46b34e46b53aec1f8952261762c5e3c007056b83"
+    "membership_root": "sha256:d16582c2e1b210684bb5de6a0f01929df7122fe3bf86ca2c1edca800621d95ac"
   },
   "input": {
     "legacy_canonical_bytes": [
@@ -34,13 +34,13 @@
       },
       {
         "envelope_version": 6,
-        "event_hash": "sha256:55069855b63ae7e13e7f64e568131b21df1a0fa3986b691f8601680699783bf6",
+        "event_hash": "sha256:5561019634c4498b6e597cd0b4b0c3e5717268b021347501b8da91cf9229d087",
         "hash_construction": "sha256(regista.event.hash.v1\\x00||uint64be(len(env))||env||sig)",
         "scope_ordinal": 2
       },
       {
         "envelope_version": 6,
-        "event_hash": "sha256:346210567c3c528fa8f71ba2a5dbdd80ca4d94ce064bc9a220417808ccfe9669",
+        "event_hash": "sha256:bbf3188d04fe174c41298033e4cb4f2a0f29a42d302b59d0e51612f9499a0da1",
         "hash_construction": "sha256(regista.event.hash.v1\\x00||uint64be(len(env))||env||sig)",
         "scope_ordinal": 3
       }
@@ -75,7 +75,7 @@
           "harness": "claude-code",
           "harness_version": "1.0.0",
           "model": "claude-opus-5",
-          "model_lineage": "anthropic/claude-opus-5"
+          "model_lineage": "claude-opus"
         },
         "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
         "signing": {
@@ -118,7 +118,7 @@
           "harness": "claude-code",
           "harness_version": "1.0.0",
           "model": "claude-opus-5",
-          "model_lineage": "anthropic/claude-opus-5"
+          "model_lineage": "claude-opus"
         },
         "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
         "signing": {

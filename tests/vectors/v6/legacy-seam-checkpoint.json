@@ -2,7 +2,7 @@
   "category": "legacy-seam",
   "description": "The one v6 event whose previous_project_event_hash is a legacy-domain h...",
   "expected": {
-    "checkpoint_event_hash": "sha256:1b9f1d912c620ccd819d2a39bdea12e4b2a7a88ce0a3a2313212f57d93954a5b",
+    "checkpoint_event_hash": "sha256:666f0e34565ec1380f9aee1b8759092dc4ede91a3f42d82ebe679e9a9985c330",
     "legacy_head_hash": "sha256:d76c9cf462c3e51d7e91b0d6fd088d9241c6af742e77d618d36e202de09f69d0"
   },
   "input": {
@@ -37,7 +37,7 @@
         "harness": "claude-code",
         "harness_version": "1.0.0",
         "model": "claude-opus-5",
-        "model_lineage": "anthropic/claude-opus-5"
+        "model_lineage": "claude-opus"
       },
       "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
       "signing": {

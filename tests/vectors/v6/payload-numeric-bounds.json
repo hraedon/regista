@@ -2,12 +2,12 @@
   "category": "numeric-bounds",
   "description": "V6-ENVELOPE \u00a72.5 as amended by P0.2: |v| < 2**53 for both integers and floats. Accepted boundary values are frozen; the rejected band records which values the canonicalizer catches and which only a strict parser can.",
   "expected": {
-    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"float_below_band\":1.5,\"max_negative_int\":-9007199254740991,\"max_positive_int\":9007199254740991,\"zero\":0},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"anthropic/claude-opus-5\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
-    "canonical_len": 1174,
-    "event_hash": "sha256:ac2414a6deb7fafed0668a56dc22f0ddc598ff80e4fba742b8806d0de78c6ab8",
-    "payload_canonical_hash": "sha256:e7b083cb8597e812dd03e7d7bea57a98edd2f9161085068cf34c012936f87ffe",
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"float_below_band\":1.5,\"max_negative_int\":-9007199254740991,\"max_positive_int\":9007199254740991,\"zero\":0},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"claude-opus\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "canonical_len": 1162,
+    "event_hash": "sha256:707c55d1780d75fbdf6545048339db8e8fc88d0a2b675e2032b51cb634871f92",
+    "payload_canonical_hash": "sha256:5f412d23795b6532dece1d68070ccc0c3dc3d4de60ef9a3c3d5bb9f306353b72",
     "rule": "|v| < 2**53, integers and floats alike",
-    "signature_hex": "29e870046f54e8a4ca0ffdde5960fd457aa0337a7473ef7e6129c4b4d9490ae6ab099211437028ffb50f134cec4c3ac7ae581f218b502816683f5dcdf1d5730a"
+    "signature_hex": "4d2bbbbf497bc8297e89538def57677f63e60090ffb550a1ef44a0d060e09df96996cce21da45569a762546304fa374db5f7fa3f601cdda69243176462d80c0e"
   },
   "input": {
     "accepted_payload": {
@@ -48,7 +48,7 @@
         "harness": "claude-code",
         "harness_version": "1.0.0",
         "model": "claude-opus-5",
-        "model_lineage": "anthropic/claude-opus-5"
+        "model_lineage": "claude-opus"
       },
       "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
       "signing": {
