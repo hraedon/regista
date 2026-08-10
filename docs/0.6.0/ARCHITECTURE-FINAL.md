@@ -53,7 +53,7 @@ Recorded as regista **WI-272** (governance, publication, lineage strictness, v5 
    the `trust_domain_id` derivation: **the threshold may never decrease** (a verifier rejects a
    lowering event no matter who signed it), while **signers may be replaced at the current
    threshold** — so a compromised co-signer key is removable, which a pure append-only signer set
-   would have prevented. Upgrading `solo_effective` → co-signed is therefore a cheap signed event
+   would have prevented. Upgrading `solo_effective` → `co_signed` is therefore a cheap signed event
    with **no epoch change**, and downgrade is structurally impossible. Deriving governance into
    `trust_domain_id` (as the spec originally had it) made upgrade as expensive as a full epoch
    cutover *and* left downgrade equally available — expensive in both directions rather than
@@ -61,13 +61,13 @@ Recorded as regista **WI-272** (governance, publication, lineage strictness, v5 
    it is replayed from the signed log and stamped into verification output, every bundle and every
    published artifact. Modes: `co_signed`, `solo`, and `solo_effective` (`threshold=1` with
    `signer_count>1`) — the last exists to stop an estate listing several fingerprints, setting
-   threshold 1, and calling itself co-signed. **Initial posture is `solo_effective`, deliberately
+   threshold 1, and calling itself `co_signed`. **Initial posture is `solo_effective`, deliberately
    and visibly.**
 2. **Publication** to a git repository under an account distinct from the estate's operational
    identity, bootstrapped by direct exchange. **One command, canonical JSON.** The channel provides
-   *substitution detection*, never prevention: retention, history and third-party hosting are the
-   properties relied on, not authority. Format leaves room for a custodian countersignature or an
-   anchor later **without a new epoch**.
+   *substitution detection to a party holding a prior observation*, never prevention: retention,
+   history and third-party hosting are the properties relied on, not authority. Format leaves room
+   for a custodian countersignature or an anchor later **without a new epoch**.
 3. **Lineage assurance is strict.** 0.6.0 claims only *principal-signed model-lineage assertion*.
    `independently_reviewed` is **policy evidence, not cryptographic proof of independence** — a
    principal can sign a truthful or untruthful claim about its own lineage and 0.6.0 cannot
@@ -134,12 +134,12 @@ a frozen payload.**
 ## 5. Scope
 
 **In:** v6 envelope with producer block and full binding; consolidated result model and v5
-reclassification; co-signed root with visible solo mode and root-threshold recovery; trust log,
+reclassification; `co_signed` root with visible solo mode and root-threshold recovery; trust log,
 canonical principal/host mapping, signed lifecycle, projection-only registries; per-host Ed25519
 provisioning for all three hosts; forward nullable-workflow migration and signed workflow
-registration; action delegation v1; signed review verdicts **conditional on reducer determinism**;
-bundle v3 with signed membership and external trust policy; one-command git publication; WI-278
-containment (compare/retain interim head, quiesced cutover, permanent rejection of post-checkpoint
+registration; action delegation v1; signed review verdicts **enabled after the P0.2 determinism
+gate passed**; bundle v3 with signed membership and external trust policy; one-command git
+publication; WI-278 containment (compare/retain interim head, quiesced cutover, permanent rejection of post-checkpoint
 HMAC/v5 writes); removal of inline secrets from `keys.json`; deletion of the dead subsystems;
 operational blockers WI-216/235/247/251/252/260 to the extent needed for honest failure.
 
@@ -182,6 +182,16 @@ Release notes must state all of these plainly. This section is not optional and 
     valid-looking history.
 11. A local witness configured and stored by the same operator is not an independent witness.
 12. `global_seq` remains an unsigned database index and is not cryptographic ordering evidence.
+13. A valid legacy HMAC proves knowledge of a shared value that is now disclosed; it does not prove
+    origin, creation time or pre-disclosure existence.
+14. The `regista-prod-001` legacy population has no store-side principal/key binding; a verifier
+    cannot infer one from an operator key file or create one retrospectively.
+15. The cutover checkpoint contains the disclosure but does not remediate it: an observed head can
+    detect later substitution, not prove earlier HMAC history was honestly produced.
+16. Distinct root signatures prove distinct keys, not distinct people or custody; a distinct
+    publication account proves address separation, not independent control.
+17. The v6 `producer` block is a principal-signed assertion. Policy matching detects
+    inconsistency; it is not remote attestation of the process or model.
 
 **Defensible headline:** *regista 0.6.0 makes event semantics, identity lifecycle, review verdicts
 and exported membership cryptographically checkable against externally pinned Ed25519 trust

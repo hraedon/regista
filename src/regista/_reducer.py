@@ -422,11 +422,11 @@ def reduce_v1(
         "custom_fields": custom_fields,
         "needs_review": needs_review,
         "not_before": not_before,
-        "last_entity_seq": last_entity_seq,
     }
     if include_claim_state:
         reduced.update(
             {
+                "last_entity_seq": last_entity_seq,
                 "attempt_number": attempt_number,
                 "claimed_by": claimed_by,
                 "claim_expires_at": claim_expires_at,
@@ -466,19 +466,24 @@ def reduced_field_names(*, include_claim_state: bool = False) -> tuple[str, ...]
     since a retry count is arguably history rather than lease state; it goes with the others
     because it is derived entirely from claim transitions.
 
+    ``last_entity_seq`` follows the projection-only fields. Counting an excluded claim or
+    intrinsic event in an otherwise content-only object would still change its digest and defeat
+    the exclusion indirectly. It remains in the full projection shape selected by
+    ``include_claim_state=True``.
+
     ``include_claim_state=True`` is retained, tested and frozen so the decision is reversible
     without reopening Gate 0 — and so that anyone who thinks it should be reversed argues with
     the two points above rather than with an absent option.
     """
-    base = (
+    content = (
         "reducer_version",
         "current_state",
         "custom_fields",
         "needs_review",
         "not_before",
-        "last_entity_seq",
     )
-    return base + _CLAIM_FIELDS if include_claim_state else base
+    projection = ("last_entity_seq", *_CLAIM_FIELDS)
+    return content + projection if include_claim_state else content
 
 
 def content_state_digest(

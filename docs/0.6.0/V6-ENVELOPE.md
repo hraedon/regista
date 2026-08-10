@@ -137,7 +137,7 @@ reconciliation bug.
 | 10 | `authorization` | object | yes | Direct action, or a delegation chain | Exactly the keys in §1.5. |
 | 11 | `workflow` | object \| null | yes | The exact workflow definition this event's transition is evaluated against | `null` for non-workflow entities; otherwise exactly the keys in §1.6. |
 | 12 | `occurred_at` | string | yes | The signer's asserted time | The single lexical form in §2.3. A **signed actor claim, not trusted time.** |
-| 13 | `transition` | string \| null | yes | Workflow transition name | `null` iff `workflow` is `null`. Non-empty string otherwise, ≤ 255 chars. |
+| 13 | `transition` | string | yes | Workflow or lifecycle transition name | Non-empty on every v6 event, ≤ 255 chars. |
 | 14 | `payload` | object \| null | yes | Event content | JSON object or `null`. Never an array or scalar. Constrained by §2.5. |
 | 15 | `chain` | object | yes | Predecessor commitments | Exactly the keys in §1.7. |
 | 16 | `producer` | object | yes | The harness and model that produced this event | Exactly the keys in §1.8. **Added by WI-277**; `model_lineage` lives here and **nowhere else**. |
@@ -182,7 +182,7 @@ tolerance (§8).
 |---|---|---|---|---|
 | `principal_id` | string | yes | The acting principal | Must match the WI-055 canonical grammar `(human\|agent\|service):<stable-opaque-subject>` (`ARCHITECTURE-0.6.0.md` §3). Enforced at **append** for post-cutover events; **never** enforced when verifying pre-cutover history. ≤ 255 chars (`_contract.py:11`). `key:*` is never a principal. |
 | `kind` | string | yes | Execution classification | One of `{"agent","human","system"}` — the existing row CHECK (`001_initial.sql:6`). This is the *execution* kind and is deliberately allowed to differ from the `principal_id` prefix; disagreement is reported as `principal_kind_conflict`, never silently resolved (`ARCHITECTURE-0.6.0.md` §3). |
-| `metadata` | object \| null | yes | Lineage and harness claims | JSON object or `null`. ≤ 65 536 bytes canonical (`_contract.py:13`). **Signed, but a signed assertion only** — see §4.3. |
+| `metadata` | object \| null | yes | Supplementary actor claims | JSON object or `null`. ≤ 65 536 bytes canonical (`_contract.py:13`). MUST NOT contain `harness`, `harness_version`, `model` or `model_lineage`; those live only in `producer` (§1.8). **Signed, but a signed assertion only** — see §4.3. |
 
 ### 1.4 `signing`
 
@@ -703,7 +703,7 @@ both WI-263 and assurance-level naming.
 
 ### 5.1 What is canonicalized
 
-Exactly the 15-key top-level object of §1, with its nested objects, and nothing else. Not the
+Exactly the 16-key top-level object of §1, with its nested objects, and nothing else. Not the
 row. Not the signature. Not the event hash. Not any derived column.
 
 ### 5.2 In what order
@@ -718,12 +718,13 @@ Concretely, the top-level key order in the canonical bytes is:
 
 ```
 actor, authorization, chain, entity, entity_seq, event_id, occurred_at,
-payload, project_instance_id, signing, transition, trust_domain_id, type,
-version, workflow
+payload, producer, project_instance_id, signing, transition, trust_domain_id,
+type, version, workflow
 ```
 
-— which is what the worked example in §10 shows, and is *not* the declaration order of §1.1.
-Implementations must never assume declaration order.
+— which is frozen by `tests/vectors/v6/v6-envelope-canonical-order.json` and is *not* the
+declaration order of §1.1. The inline worked example in §10 is explicitly obsolete and does not
+contain `producer`. Implementations must never assume declaration order.
 
 ### 5.3 The signing pipeline, exactly
 
@@ -1225,6 +1226,12 @@ as a convenience read.
 | `_NEVER_SIGNED` becomes version-dependent | `scheme_id` is signed in v6; `global_seq` never is (`_verification.py:217`, §3.1). |
 | `VerificationPolicy` gains `pinned_project_instance_id`, `pinned_trust_domain_id` | Both `UUID \| None`; `None` means the verifier cannot check project binding and must report it, not skip it. |
 | `payload_canonical_hash` semantics are version-dependent | v1–v5: `SHA256(canonical_envelope)`; v6: `SHA256(signature_input)`. The defence-in-depth check at `_verification.py:1413-1452` must apply the domain tag for v6. **This is the single easiest place to introduce a v6 verification bug.** |
+
+P1.1 exposes the byte-level v6 contract through the strict parser and focused
+`verify_v6_signature` result. Project and trust pins can be supplied there; key-binding,
+workflow-registration, delegation-chain and epoch referents remain the external verification
+boundary assigned to P1.2/P1.3. The legacy `VerificationResult` therefore never treats a
+cryptographically valid but externally unresolved v6 event as fully authenticated.
 
 ---
 

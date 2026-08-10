@@ -18,12 +18,9 @@ How that requirement is discharged here:
 The vectors are the artifact that makes a future non-Python verifier possible — nobody has
 written one yet, but the frozen bytes are what an independent implementation checks against.
 
-**What this module does not yet prove.** Except for ``review-subject-state``, every
-expectation here is recomputed from the vector's own inputs by helpers in this file, not by
-regista's production code — most of the v6 constructions have no implementation yet. Binding
-them is P1.1's job ("*and the vectors pass*", ``IMPLEMENTATION-PLAN.md`` §P1.1); until then a
-passing suite means the vectors are self-consistent and reproducible, not that regista agrees
-with them.
+The v6 envelope, signature input, payload hash, event hash and strict parser assertions below
+run through regista's production implementation. The remaining sibling-domain vectors stay
+independent until their owning implementation packages land.
 
 The test key is 32 bytes of 0x01 — NEVER usable in production.  It exists so every byte is
 reproducible by an implementer with no private material.
@@ -31,6 +28,7 @@ reproducible by an implementer with no private material.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -47,6 +45,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 import nacl.signing
 
 from regista._jcs import canonicalize
+from regista._signing import (
+    canonicalize_v6_envelope,
+    compute_v6_event_hash,
+    sign_v6_envelope,
+    v6_signature_input,
+)
+from regista._verification import (
+    EnvelopeVersion,
+    classify_envelope_bytes,
+    parse_v6_envelope_strict,
+    verify_v6_signature,
+)
 
 VECTORS_DIR = Path(__file__).resolve().parents[1] / "tests" / "vectors" / "v6"
 MANIFEST_PATH = VECTORS_DIR / "manifest.json"
@@ -122,28 +132,41 @@ def test_vector_file_exists_and_round_trips(name: str) -> None:
 def test_v6_envelope_basic() -> None:
     case = _load_case("v6-envelope-basic")
     env = case["input"]["envelope_declaration_order"]
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     assert canonical == case["expected"]["canonical_bytes"].encode()
     assert len(canonical) == case["expected"]["canonical_len"]
     assert sha256_hex(canonical) == case["expected"]["canonical_sha256"]
 
-    sig_input = DOMAINS["event_signing"] + canonical
+    sig_input = v6_signature_input(canonical)
     assert sha256_hex(sig_input) == case["expected"]["signature_input_sha256"]
 
-    signature = SK.sign(sig_input).signature
+    signed = sign_v6_envelope(env, SEED)
+    signature = signed.signature
     assert signature.hex() == case["expected"]["signature_hex"]
 
-    expected_hash = digest_str(
-        DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature
+    assert signed.event_hash_text == case["expected"]["event_hash"]
+    assert signed.payload_canonical_hash_text == case["expected"]["payload_canonical_hash"]
+    result = verify_v6_signature(
+        canonical,
+        signature,
+        PUB,
+        payload_canonical_hash=case["expected"]["payload_canonical_hash"],
+        expected_event_hash=case["expected"]["event_hash"],
+        expected_project_instance_id=env["project_instance_id"],
+        expected_trust_domain_id=env["trust_domain_id"],
     )
-    assert expected_hash == case["expected"]["event_hash"]
-    assert digest_str(sig_input) == case["expected"]["payload_canonical_hash"]
+    assert result.cryptographically_valid
+    assert result.project_binding_valid is True
+    assert result.trust_domain_binding_valid is True
+    assert result.envelope_version is EnvelopeVersion.V6
+    assert parse_v6_envelope_strict(canonical) == json.loads(canonical)
+    assert classify_envelope_bytes(canonical) is EnvelopeVersion.V6
 
 
 def test_v6_envelope_has_sixteen_keys_in_jcs_order() -> None:
     case = _load_case("v6-envelope-canonical-order")
     env = case["input"]["envelope_declaration_order"]
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     parsed = json.loads(canonical)
     expected_order = [
         "actor",
@@ -177,7 +200,7 @@ def test_jcs_orders_by_utf16be_not_code_point() -> None:
     """
     case = _load_case("v6-envelope-canonical-order")
     env = case["input"]["envelope_declaration_order"]
-    parsed = json.loads(canonicalize(env))
+    parsed = json.loads(canonicalize_v6_envelope(env))
     payload_keys = list(parsed["payload"].keys())
 
     assert payload_keys == case["expected"]["payload_key_order"]
@@ -206,7 +229,7 @@ def test_key_id_matches_the_spec_test_key_block() -> None:
 def test_v6_envelope_no_model() -> None:
     case = _load_case("v6-envelope-no-model")
     env = case["input"]["envelope_declaration_order"]
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     assert canonical == case["expected"]["canonical_bytes"].encode()
     parsed = json.loads(canonical)
     assert parsed["producer"]["model"] is None
@@ -226,21 +249,18 @@ def test_v6_envelope_no_model() -> None:
 def test_bootstrap_cases_have_null_key_binding(name: str) -> None:
     case = _load_case(name)
     env = case["input"]["envelope_declaration_order"]
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     parsed = json.loads(canonical)
     assert parsed["signing"]["key_binding_event_hash"] is None
-    assert case["expected"]["event_hash"] == digest_str(
-        DOMAINS["event_hash"]
-        + u64be(len(canonical))
-        + canonical
-        + SK.sign(DOMAINS["event_signing"] + canonical).signature
-    )
+    signed = sign_v6_envelope(env, SEED)
+    assert case["expected"]["event_hash"] == signed.event_hash_text
+    assert case["expected"]["payload_canonical_hash"] == signed.payload_canonical_hash_text
 
 
 def test_bootstrap_cutover_uses_legacy_head_hash() -> None:
     case = _load_case("bootstrap-cutover-checkpoint")
     env = case["input"]["envelope_declaration_order"]
-    parsed = json.loads(canonicalize(env))
+    parsed = json.loads(canonicalize_v6_envelope(env))
     assert parsed["chain"]["previous_project_event_hash"] == case["input"]["legacy_head_hash"]
     assert parsed["payload"]["previous_epoch"]["head_hash_construction"] == (
         "sha256(canonical_envelope||signature)"
@@ -250,7 +270,7 @@ def test_bootstrap_cutover_uses_legacy_head_hash() -> None:
 def test_bootstrap_project_initialized_has_empty_epoch() -> None:
     case = _load_case("bootstrap-project-initialized")
     env = case["input"]["envelope_declaration_order"]
-    parsed = json.loads(canonicalize(env))
+    parsed = json.loads(canonicalize_v6_envelope(env))
     assert parsed["payload"]["previous_epoch"]["event_count"] == 0
     assert parsed["payload"]["previous_epoch"]["head_event_hash"] is None
     assert parsed["chain"]["previous_project_event_hash"] is None
@@ -275,7 +295,7 @@ def test_version_aware_event_hash() -> None:
     canonical = case["input"]["canonical_bytes"].encode()
     signature = bytes.fromhex(case["input"]["signature_hex"])
 
-    v6_hash = digest_str(DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature)
+    v6_hash = "sha256:" + compute_v6_event_hash(canonical, signature).hex()
     legacy_hash = digest_str(canonical + signature)
 
     assert v6_hash == case["expected"]["v6_event_hash"]
@@ -296,10 +316,8 @@ def test_legacy_seam_checkpoint() -> None:
     parsed = json.loads(canonicalize(checkpoint_env))
     assert parsed["chain"]["previous_project_event_hash"] == legacy_head
 
-    canonical = canonicalize(checkpoint_env)
-    signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
-    event_hash = digest_str(DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature)
-    assert event_hash == case["expected"]["checkpoint_event_hash"]
+    signed = sign_v6_envelope(checkpoint_env, SEED)
+    assert signed.event_hash_text == case["expected"]["checkpoint_event_hash"]
 
 
 def _merkle_leaf(scope_ordinal: int, event_hash_hex: str) -> str:
@@ -388,9 +406,8 @@ def test_bundle_merkle_mixed_epoch() -> None:
         )
 
     for i, env in enumerate(case["input"]["v6_envelopes"], start=2):
-        canonical = canonicalize(env)
-        signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
-        expected = digest_str(DOMAINS["event_hash"] + u64be(len(canonical)) + canonical + signature)
+        signed = sign_v6_envelope(env, SEED)
+        expected = signed.event_hash_text
         assert members[i]["envelope_version"] == 6
         assert members[i]["event_hash"] == expected, (
             "v6 leaves must use the domain-separated, length-framed construction"
@@ -666,7 +683,7 @@ def test_all_domain_tags_are_pairwise_prefix_free() -> None:
 def test_v6_envelope_basic_one_byte_flip_changes_hash() -> None:
     case = _load_case("v6-envelope-basic")
     env = case["input"]["envelope_declaration_order"]
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     original_hash = case["expected"]["canonical_sha256"]
 
     mutated_env = dict(env)
@@ -805,12 +822,18 @@ def test_estate_catalog_one_byte_flip_changes_hash() -> None:
     assert domain_digest_framed(DOMAINS["estate_catalog"], b) != original
 
 
-def test_review_subject_one_byte_flip_changes_hash() -> None:
+@pytest.mark.parametrize("member", REVIEW_SUBJECT_MEMBERS)
+def test_every_review_subject_member_change_changes_hash(member: str) -> None:
     case = _load_case("review-subject")
     original = case["expected"]["subject_digest"]
     subject = case["input"]["review_subject_after_sorting"]
-    mutated = dict(subject)
-    mutated["entity_id"] = _flip_one_char(subject["entity_id"])
+    mutated = copy.deepcopy(subject)
+    if member == "artifacts":
+        mutated[member][0]["digest"] = _flip_one_char(mutated[member][0]["digest"])
+    elif member == "declared_not_reviewed":
+        mutated[member][0]["reason"] = _flip_one_char(mutated[member][0]["reason"])
+    else:
+        mutated[member] = _flip_one_char(mutated[member])
     b = canonicalize(mutated)
     assert domain_digest(DOMAINS["review_subject"], b) != original
 
@@ -850,7 +873,7 @@ def test_payload_numeric_bounds_accepts_the_boundary() -> None:
     assert payload["max_positive_int"] == 2**53 - 1
     assert payload["max_negative_int"] == -(2**53 - 1)
     for value in payload.values():
-        if isinstance(value, int) and not isinstance(value, bool):
+        if isinstance(value, int | float) and not isinstance(value, bool):
             assert abs(value) < 2**53
 
     signature = SK.sign(DOMAINS["event_signing"] + canonical).signature
@@ -879,6 +902,10 @@ def test_payload_numeric_bounds_rejected_band_is_measured_not_asserted() -> None
     assert band["rejects_at_canonicalization"] is False
     assert band["recanonicalizing_that_output_fails"] is True
 
+    round_tripping = by_label["float_at_1e21"]
+    assert round_tripping["rejects_at_canonicalization"] is False
+    assert round_tripping["recanonicalizing_that_output_fails"] is False
+
     # The measurement, re-run: 1e16 prints as an integer literal, and that literal is
     # outside the domain the canonicalizer will accept back.
     produced = canonicalize({"v": 1e16})
@@ -894,7 +921,7 @@ def test_occurred_at_has_exactly_one_lexical_form() -> None:
     assert env["occurred_at"] == case["input"]["accepted"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", case["input"]["accepted"])
 
-    canonical = canonicalize(env)
+    canonical = canonicalize_v6_envelope(env)
     assert canonical == case["expected"]["canonical_bytes"].encode()
 
     pattern = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
@@ -904,6 +931,10 @@ def test_occurred_at_has_exactly_one_lexical_form() -> None:
         "why only an explicit rule keeps it out of signed bytes"
     )
     for value in rejected:
+        mutated = dict(env)
+        mutated["occurred_at"] = value
+        with pytest.raises(ValueError):
+            canonicalize_v6_envelope(mutated)
         if value == "2026-08-09T24:00:00.000000Z":
             # Matches the pattern but is rejected on the calendar rule, not the lexical one.
             assert pattern.fullmatch(value)

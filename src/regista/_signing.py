@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
+import struct
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -194,6 +196,272 @@ def build_signing_envelope_v5(
     return canonicalize(envelope)
 
 
+def canonicalize_v6_envelope(envelope: Mapping[str, Any]) -> bytes:
+    """Canonicalize a structurally valid v6 envelope with RFC 8785."""
+
+    from ._verification import validate_v6_envelope
+
+    validate_v6_envelope(envelope)
+    return canonicalize(dict(envelope))
+
+
+_V6_MISSING = object()
+
+
+def _v6_take(fields: dict[str, Any], *names: str, default: Any = _V6_MISSING) -> Any:
+    for name in names:
+        if name in fields:
+            return fields.pop(name)
+    return default
+
+
+def _v6_text(value: Any) -> Any:
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, bytes):
+        return "sha256:" + value.hex()
+    return value
+
+
+def _v6_occurred_at(value: Any) -> Any:
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        raise ValueError("v6 occurred_at requires an aware datetime")
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _v6_flatten_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    remaining = dict(fields)
+    result: dict[str, Any] = {
+        "type": _v6_take(remaining, "type", default="regista.event"),
+        "version": _v6_take(remaining, "version", default=6),
+        "project_instance_id": _v6_text(_v6_take(remaining, "project_instance_id")),
+        "trust_domain_id": _v6_text(_v6_take(remaining, "trust_domain_id")),
+        "event_id": _v6_text(_v6_take(remaining, "event_id")),
+        "entity_seq": _v6_take(remaining, "entity_seq", "event_seq"),
+    }
+    entity = _v6_take(remaining, "entity")
+    if entity is _V6_MISSING:
+        entity = {
+            "kind": _v6_take(remaining, "entity_kind"),
+            "id": _v6_text(_v6_take(remaining, "entity_id")),
+        }
+    result["entity"] = entity
+
+    actor = _v6_take(remaining, "actor")
+    if actor is _V6_MISSING:
+        actor = {
+            "principal_id": _v6_take(
+                remaining, "actor_principal_id", "principal_id", "actor_id"
+            ),
+            "kind": _v6_take(remaining, "actor_kind"),
+            "metadata": _v6_take(remaining, "actor_metadata", default=None),
+        }
+    result["actor"] = actor
+
+    signing = _v6_take(remaining, "signing")
+    if signing is _V6_MISSING:
+        signing = {
+            "scheme_id": _v6_take(remaining, "scheme_id", default="ed25519"),
+            "key_id": _v6_take(remaining, "key_id"),
+            "key_binding_event_hash": _v6_text(
+                _v6_take(remaining, "key_binding_event_hash", default=None)
+            ),
+        }
+    result["signing"] = signing
+
+    authorization = _v6_take(remaining, "authorization")
+    if authorization is _V6_MISSING:
+        authorization = {
+            "mode": _v6_take(remaining, "authorization_mode", "auth_mode", default="direct"),
+            "credentials": _v6_take(
+                remaining,
+                "authorization_credentials",
+                "auth_credentials",
+                "credentials",
+                default=[],
+            ),
+        }
+    result["authorization"] = authorization
+
+    workflow = _v6_take(remaining, "workflow")
+    workflow_name = _v6_take(remaining, "workflow_name")
+    workflow_version = _v6_take(remaining, "workflow_version")
+    workflow_definition_hash = _v6_text(
+        _v6_take(remaining, "workflow_definition_hash", "definition_hash")
+    )
+    workflow_registration_event_hash = _v6_text(
+        _v6_take(remaining, "workflow_registration_event_hash", "registration_event_hash")
+    )
+    flattened_workflow = (
+        workflow_name,
+        workflow_version,
+        workflow_definition_hash,
+        workflow_registration_event_hash,
+    )
+    flattened_workflow_present = tuple(
+        value is not _V6_MISSING for value in flattened_workflow
+    )
+    if workflow is not _V6_MISSING and any(flattened_workflow_present):
+        raise TypeError("nested workflow cannot be combined with flattened workflow fields")
+    if workflow is _V6_MISSING:
+        if any(flattened_workflow_present) and not all(flattened_workflow_present):
+            raise TypeError("flattened workflow requires all four workflow fields")
+        workflow = None if not any(flattened_workflow_present) else {
+            "name": workflow_name,
+            "version": workflow_version,
+            "definition_hash": workflow_definition_hash,
+            "registration_event_hash": workflow_registration_event_hash,
+        }
+    result["workflow"] = workflow
+
+    result["occurred_at"] = _v6_occurred_at(
+        _v6_take(remaining, "occurred_at", "timestamp")
+    )
+    result["transition"] = _v6_take(remaining, "transition")
+    result["payload"] = _v6_take(remaining, "payload", default=None)
+
+    chain = _v6_take(remaining, "chain")
+    if chain is _V6_MISSING:
+        chain = {
+            "hash_algorithm": _v6_take(
+                remaining, "hash_algorithm", "hash_alg", default="sha-256"
+            ),
+            "previous_entity_event_hash": _v6_text(
+                _v6_take(remaining, "previous_entity_event_hash", "prev_event_hash", default=None)
+            ),
+            "previous_project_event_hash": _v6_text(
+                _v6_take(
+                    remaining,
+                    "previous_project_event_hash",
+                    "prev_global_event_hash",
+                    default=None,
+                )
+            ),
+        }
+    result["chain"] = chain
+
+    producer = _v6_take(remaining, "producer")
+    if producer is _V6_MISSING:
+        producer = {
+            "harness": _v6_take(remaining, "producer_harness", "harness"),
+            "harness_version": _v6_take(
+                remaining, "producer_harness_version", "harness_version"
+            ),
+            "model": _v6_take(remaining, "producer_model", "model"),
+            "model_lineage": _v6_take(remaining, "producer_model_lineage", "model_lineage"),
+        }
+    result["producer"] = producer
+
+    if remaining:
+        result.update(remaining)
+    return result
+
+
+def build_signing_envelope_v6(
+    envelope: Mapping[str, Any] | None = None,
+    **fields: Any,
+) -> bytes:
+    """Build canonical v6 bytes without changing legacy signing defaults.
+
+    The preferred input is the complete sixteen-member object. Keyword fields
+    are accepted as a convenience for callers using the legacy flattened
+    builder style; all resulting fields still pass the strict v6 validator.
+    """
+
+    if envelope is not None and fields:
+        raise TypeError("pass either envelope or keyword fields, not both")
+    value: Mapping[str, Any] = envelope if envelope is not None else _v6_flatten_fields(fields)
+    return canonicalize_v6_envelope(value)
+
+
+@dataclass(frozen=True)
+class V6SignedEnvelope:
+    canonical_envelope: bytes
+    signature: bytes
+    payload_canonical_hash: bytes
+    event_hash: bytes
+
+    @property
+    def payload_canonical_hash_text(self) -> str:
+        return "sha256:" + self.payload_canonical_hash.hex()
+
+    @property
+    def event_hash_text(self) -> str:
+        return "sha256:" + self.event_hash.hex()
+
+
+def v6_signature_input(canonical_envelope: bytes) -> bytes:
+    """Return the domain-separated Ed25519 input for canonical v6 bytes."""
+
+    return b"regista.event.v6\x00" + canonical_envelope
+
+
+def compute_v6_payload_canonical_hash(canonical_envelope: bytes) -> bytes:
+    """Hash the v6 signature input, as required by the row projection contract."""
+
+    return hashlib.sha256(v6_signature_input(canonical_envelope)).digest()
+
+
+def compute_v6_event_hash(canonical_envelope: bytes, signature: bytes) -> bytes:
+    """Compute the domain-separated, length-framed v6 event hash."""
+
+    return hashlib.sha256(
+        b"regista.event.hash.v1\x00"
+        + struct.pack(">Q", len(canonical_envelope))
+        + canonical_envelope
+        + signature
+    ).digest()
+
+
+def v6_payload_canonical_hash(canonical_envelope: bytes) -> str:
+    return "sha256:" + compute_v6_payload_canonical_hash(canonical_envelope).hex()
+
+
+def v6_event_hash(canonical_envelope: bytes, signature: bytes) -> str:
+    return "sha256:" + compute_v6_event_hash(canonical_envelope, signature).hex()
+
+
+compute_v6_payload_canonical_hash_text = v6_payload_canonical_hash
+compute_v6_event_hash_text = v6_event_hash
+
+
+def sign_v6_envelope(
+    envelope: Mapping[str, Any] | bytes,
+    private_key: bytes,
+) -> V6SignedEnvelope:
+    """Sign a v6 envelope with Ed25519 and return all production artifacts."""
+
+    if isinstance(envelope, bytes):
+        from ._verification import parse_v6_envelope_strict
+
+        parsed = parse_v6_envelope_strict(envelope)
+        canonical_envelope = canonicalize_v6_envelope(parsed)
+    else:
+        canonical_envelope = canonicalize_v6_envelope(envelope)
+    signing_input = v6_signature_input(canonical_envelope)
+    from ._signing_scheme import Ed25519Scheme
+
+    signature, payload_hash = Ed25519Scheme().sign(signing_input, private_key)
+    return V6SignedEnvelope(
+        canonical_envelope=canonical_envelope,
+        signature=signature,
+        payload_canonical_hash=payload_hash,
+        event_hash=compute_v6_event_hash(canonical_envelope, signature),
+    )
+
+
+build_v6_envelope = build_signing_envelope_v6
+canonicalize_envelope_v6 = canonicalize_v6_envelope
+canonicalize_v6 = canonicalize_v6_envelope
+sign_v6_event = sign_v6_envelope
+signature_input_v6 = v6_signature_input
+compute_v6_signature_input = v6_signature_input
+event_hash_v6 = v6_event_hash
+payload_canonical_hash_v6 = v6_payload_canonical_hash
+
+
 def sign_event(
     event_id: UUID,
     work_item_id: UUID,
@@ -271,6 +539,7 @@ _VERSION_NUMBERS: dict[str, int] = {
     "v3": 3,
     "v4": 4,
     "v5": 5,
+    "v6": 6,
 }
 
 

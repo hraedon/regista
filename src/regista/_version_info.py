@@ -8,7 +8,7 @@ from typing import Any
 from ._integrity import REGISTA_VERSION
 
 SCHEMA_VERSION: int = 44
-ENVELOPE_VERSION: int = 5
+ENVELOPE_VERSION: int = 6
 
 
 @functools.lru_cache(maxsize=1)

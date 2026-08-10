@@ -1,9 +1,10 @@
 # P0.1 — overlay application record
 
-**Status: COMPLETE, 2026-08-09.** `RECONCILIATION.md` has been applied to the sibling
-specifications in place. This document is the coverage matrix: every correction, resolution and
-collision in the overlay maps to the edit that discharges it, so the claim "the overlay is
-applied" is checkable rather than asserted.
+**Status: COMPLETE, 2026-08-10.** `RECONCILIATION.md` has been applied to the sibling
+specifications in place, and WI-283's local-safety hardening has been applied to the owning
+documents. This document is the coverage matrix: every correction, resolution and collision in
+the overlay maps to the edit that discharges it, so the claim "the overlay is applied" is
+checkable rather than asserted.
 
 **Acceptance criterion (`IMPLEMENTATION-PLAN.md` P0.1):** *every internal cross-reference
 resolves, and no two documents give conflicting rules for the same field.* Both halves are
@@ -11,15 +12,17 @@ enforced by scripts in this directory and both currently pass:
 
 ```
 $ python3 check-crossrefs.py --repo <regista-checkout> --code-ref 334b995
-0 unresolved reference(s) across 15 documents.
+0 unresolved reference(s) across 18 documents.
 
 $ python3 check-conflicts.py
-0 contested value(s) still stated as live rules.
+0 contested value(s) or structural decision-coverage violation(s).
 ```
 
-Run both before any change to this set. They are cheap and they are the only thing standing
-between a frozen specification and a slow drift back into the state that made this pass
-necessary.
+Run both before any change to this set. `check-conflicts.py` now checks not only retired tokens but
+also local marker adjacency and required decision coverage for each owning document. A banner far
+away from a stale declaration is not enough, and deleting the old token without carrying the
+replacement decision is also reported. The checks are cheap and are the machine-enforced boundary
+against a slow drift back into the state that made this pass necessary.
 
 ---
 
@@ -39,7 +42,9 @@ conflicting clauses superseded in place. This pass did both, chosen per clause:
   assigns them to.
 
 Every marker is a blockquote beginning `SUPERSEDED`, `AMENDED`, `CUT`, `WITHDRAWN`, `OBSOLETE`,
-`RESOLVED` or `CONFIRMED`. `check-conflicts.py` depends on that convention.
+`RESOLVED` or `CONFIRMED`, a strikethrough/table marker, or an explicit local historical-snapshot
+note. A marker immediately before a declaration or at the start of its section covers the
+declaration; a distant banner does not. `check-conflicts.py` depends on that convention.
 
 **Precedence when a marker and prose disagree:** the marker wins. **When a marker and
 `RECONCILIATION.md` disagree:** the overlay wins and the marker is a defect — report it, do not
@@ -129,7 +134,7 @@ absolute filesystem path. Three artifacts were brought in so their citations res
 | Script | Enforces |
 |---|---|
 | `check-crossrefs.py` | Every sibling citation, section reference and **code citation** resolves. Code citations are checked against the pinned post-S1 tree with `git show 334b995:<path>`, which is how correction 14 stays discharged rather than decaying |
-| `check-conflicts.py` | No retired value is stated as a live rule outside a marker |
+| `check-conflicts.py` | No retired value or superseded declaration is live outside a local marker; required replacement decisions remain present |
 
 **Pre-overlay snapshot** retained at `~/audit-scratch/0.6.0-specs-pre-overlay-20260809/` so every
 edit in this pass is diffable.
@@ -181,3 +186,25 @@ Recorded because they are the places a reviewer should look hardest.
 4. **`TRUST-DOMAIN.md` §7 (witness) was marked CUT rather than deleted**, and its §7.1 correction
    to `spec.md` was explicitly preserved. A false sentence in the repository should be corrected
    whether or not the feature it describes ships.
+
+---
+
+## 9. WI-283 local-safety hardening
+
+The read-everything sweep found that a top banner or a later correction paragraph did not stop an
+implementer from copying an earlier live-looking schema. The remediation is deliberately local:
+
+| Owning document | Local safety boundary |
+|---|---|
+| `ARCHITECTURE-0.6.0.md` | Rank-5 historical sections carry local supersession/cut markers; the bundle scope example, review payload, witness lifecycle, recovery authority, rehearsal counts and 17-item non-claim list are explicitly qualified. |
+| `ARCHITECTURE-FINAL.md` | The binding decisions use the monotone governance, prior-observation publication, root-threshold recovery and producer-assertion rules, with the complete non-claim set. |
+| `BUNDLE-V3.md` | The statement schema is locally qualified for illustrative counts, closed sections, direct root signatures and the cut scope kind. |
+| `CUTOVER-CLASSIFICATION.md` / `CUTOVER-POLICY.md` | S1-era counts and compatibility watermarks are identified as historical or administrative; signed chain position owns cutover classification. |
+| `RESULT-MODEL.md` / `REVIEW-VERDICTS.md` | v6 result ownership, chain-position legacy bounds, reducer v1, and the removal of `subject_profile` are stated at the declarations they govern. |
+| `TRUST-DOMAIN.md` | Governance derivation, fresh-clone limits, witness scope, recovery authority, bootstrap nulls and handoffs are locally stated; §7 is future-only. |
+| `IMPLEMENTATION-PLAN.md` / `OPERATOR-FORGERY.md` | Scheduling, hard gates, witness scope, recovery resolution, prior-observation limits and the five added non-claims agree with the owning contracts. |
+
+The checker is intentionally inventory-backed rather than a prose-quality heuristic. Its
+structural guards fail when one of these declarations reappears without a local marker, while its
+decision-coverage inventory fails when a future edit deletes the stale token and also deletes the
+replacement rule.

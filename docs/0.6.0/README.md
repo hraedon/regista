@@ -24,7 +24,7 @@ evidence. `ARCHITECTURE-0.6.0.md` is **rank 5, superseded in 14 places, retained
 
 | Gate | Package | State |
 |---|---|---|
-| 0 | **P0.1** apply the reconciliation overlay | **DONE** 2026-08-09 — record in `OVERLAY-APPLICATION.md` |
+| 0 | **P0.1** apply the reconciliation overlay | **DONE** 2026-08-10 — record in `OVERLAY-APPLICATION.md` |
 | 0 | **P0.2** prove reducer v1 determinism | **DONE 2026-08-09, PASS** — record in `P0.2-REDUCER-DETERMINISM.md`. **Signed review verdicts are GO** |
 | 0 | **P0.3** byte-level conformance vectors | **DONE 2026-08-09** — 27 vector cases across 16 categories. Generator at `tools/make_v6_vectors.py`, vectors in `tests/vectors/v6/`, conformance test `tests/test_v6_vectors.py` (87 assertions). Review-subject vectors agree with `reducer_v1_frozen_digests.json`. Fail-then-pass evidence recorded. **Corrected after review 2026-08-09** — see below. |
 | 1–4 | everything else | Gate 0 is complete; parallel tracks may begin. |

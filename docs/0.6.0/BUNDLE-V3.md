@@ -14,8 +14,8 @@ I do not specify these. I state the minimum each must provide for bundle v3 to b
 
 | From | Artifact (Stage 0 item) | What bundle v3 requires |
 |---|---|---|
-| Sibling A | v6 envelope schema + canonicalization (item 2) | (A1) A stable **canonical envelope byte string** per event and a stable **JCS** function I can call over my own statement. (A2) `project_instance_id` and `trust_domain_id` **inside** the signed envelope (S9). (A3) `scheme_id` **inside** the signed envelope (S2), so bundle v3 never has to infer scheme from a row column. (A4) A frozen definition of `event_hash` — bundle v3 **reuses** the existing `sha256(canonical_envelope ‖ signature)` (documented at `src/regista/_bundle.py:1147-1149`); if v6 changes it, the membership leaf definition in §3.3 changes with it and this document must be re-frozen. |
-| Sibling B | trust-domain genesis / key lifecycle / publication channel (item 5) | (B1) A **trust policy file** format the auditor receives out of band, carrying at minimum the fields in §4.2. (B2) A **fingerprint function** over a public key, identical to the one the genesis document and the enrollment events use, so a pinned fingerprint and a bundled key are comparable without me re-deriving it. (B3) The genesis document's **signer set and threshold visible in the artifact** (owner decision Q1, WI-272) — bundle v3 must be able to restate the governance mode it verified under, so §4.5 requires a field for it. (B4) A **bundle-signing authority** that is nameable by fingerprint in the trust policy *independently of the bundle*. (B5) A signed **trust-log checkpoint** with a hash the auditor can pin. (B6) Delegation credentials (WI-008) — optional for v3, consumed only in `REVIEW-VERDICTS.md` §5. |
+| Sibling A | v6 envelope schema + canonicalization (item 2) | (A1) A stable **canonical envelope byte string** per event and a stable **JCS** function I can call over my own statement. (A2) `project_instance_id` and `trust_domain_id` **inside** the signed envelope (S9). (A3) `scheme_id` **inside** the signed envelope (S2), so bundle v3 never has to infer scheme from a row column. (A4) A frozen, **version-aware** definition of `event_hash`: v1–v5 use `sha256(canonical_envelope ‖ signature)` and v6 uses the domain-separated, length-framed construction in `V6-ENVELOPE.md` §5.3. The membership leaf in §3.3 uses the referenced event's version-derived hash. |
+| Sibling B | trust-domain genesis / key lifecycle / publication channel (item 5) | (B1) A **trust policy file** format the auditor receives out of band, carrying at minimum the fields in §4.2. (B2) A **fingerprint function** over a public key, identical to the one the genesis document and the enrollment events use, so a pinned fingerprint and a bundled key are comparable without me re-deriving it. (B3) The genesis document's **signer set and threshold visible in the artifact** (owner decision Q1, WI-272) — bundle v3 must be able to restate the governance mode it verified under, so §4.5 requires a field for it. (B4) A **bundle-signing authority** that is nameable by fingerprint in the trust policy *independently of the bundle*. (B5) A signed **trust-log checkpoint** with a hash the auditor can pin. (B6) The `regista.action-delegation/v1` credential (WI-008) — optional for v3, consumed only in `REVIEW-VERDICTS.md` §5; it authorises an action and never establishes principal kind. |
 | Sibling D | preflight tool (item 7 / Stage 0 preflight extension) | (D1) Per-project canonical-JSON preflight output containing chain genesis hash, head hash, event count, envelope/scheme counts, and identity conflicts — bundle export **must** compare its own observation against a preflight result before signing (§5.2), and the auditor may be given the preflight output as corroborating evidence. |
 | Me → siblings | | Bundle v3 needs **nothing** from segments or anchors (§7). Sibling B's publication channel is the only source of the head pin that makes `complete-store` checkable (§3.5). |
 
@@ -100,6 +100,12 @@ they sit. Summary of what changed here:
 
 ### 3.2 Statement schema
 
+> **LOCAL APPLICATION — `RECONCILIATION.md` collisions 12, 21 and Resolution 4.** The schema
+> example is illustrative and its counts are named-snapshot placeholders. The amended rules below
+> are already part of the contract: use `trust_root`, the single signer shape or direct
+> `root_signatures[]`, the closed section set and the cut `declared-selection` scope; do not
+> implement an older shape merely because it appears in a worked example.
+
 Building on `ARCHITECTURE-0.6.0.md:198-233`, with the additions marked **[+]** (see §11 DIVERGENCES for why).
 
 ```json
@@ -167,7 +173,12 @@ Hard rules:
 - **Every section named in `section_digests` MUST be present in `sections`, and every section present MUST be named in `section_digests`.** A one-sided set is a rejection. This is what makes "delete a whole section" fail without enumerating fields — the *set of section names* is signed, not just their contents.
 - `scope.event_count` MUST equal the number of leaves in the membership tree AND the length of `sections.events`. Two independent equalities, one signature.
 - `epoch.legacy_event_count + epoch.v6_event_count` MUST equal `scope.event_count`.
-- `governance` restates what the exporter verified in the genesis document (B3). A verifier that holds the genesis document independently MUST compare; a mismatch is `invalid`. An estate rooted by a solo signer therefore says so **in every bundle it produces**, satisfying WI-272's binding constraint that lab mode be visible in the artifact.
+- `trust_root.root_governance` MUST be the current governance state obtained by replaying the
+  signed trust-domain governance log through the authenticated trust-log checkpoint. It is not
+  copied from genesis, configuration or a mutable projection. A verifier compares the replayed
+  state with the signed statement and the sole trust policy from `TRUST-DOMAIN.md` §4.6; a mismatch
+  is `invalid`. An estate rooted by a solo signer therefore says so **in every bundle it produces**,
+  satisfying WI-272's binding constraint that lab mode be visible in the artifact.
 - `signer.fingerprint` is redundant with `key_id` **on purpose**: the auditor pins fingerprints, not key ids (B2), and a signed self-statement of the fingerprint means the pin comparison never has to route through the bundled registry.
 
 > **SUPERSEDED — `RECONCILIATION.md` collisions 12, 21 and Resolution 4.** Four changes to the
@@ -236,7 +247,10 @@ MTH(D[n])      = SHA256( b"regista.bundle.node.v1\x00" ‖ MTH(D[0:k]) ‖ MTH(D
 
 Three reasons this exact tree and not a rolling hash:
 
-1. **Interior/leaf domain separation** (`0x01` / `0x00`) is what makes second-preimage across tree shapes impossible. A tree without it is a known forgery hazard.
+1. **Named domains provide leaf/interior separation.** Leaves use
+   `regista.bundle.member.v1\x00`; interior nodes use `regista.bundle.node.v1\x00`. Do not add a
+   separate positional `0x00` or `0x01` byte: the domain tags, together with the RFC 6962 split,
+   are the frozen construction.
 2. **No odd-node duplication.** The Bitcoin-style "duplicate the last node" rule admits two distinct leaf sequences with the same root. RFC 6962's split-at-largest-power-of-two has no such collision.
 3. It buys **single-event inclusion proofs** for free. Bundle v3 does not use them, but a later "prove this one event was in the bundle you already verified" workflow needs no format change.
 
@@ -350,18 +364,20 @@ This is the S5 fix. Everything below is elaboration.
 > supply verification keys. **Key material and trust are separate inputs:** bytes may come from
 > `bundled_key_evidence`, authority comes only from the auditor's pin.
 
-Bundle v3 requires these fields be present and MUST reject a policy missing any of them:
+Bundle v3 consumes the policy owned by `TRUST-DOMAIN.md` §4.6 and MUST reject a policy missing
+the fields that section requires. It does not define a second trust-policy schema. The relevant
+fields are `trust_domain_id`, `trust_domain_core_digest`, `genesis_document_digest`,
+`required_root_governance`, `root_signer_fingerprints`, `min_root_signatures`, `publication`,
+`accepted_project_instance_ids`, `min_trust_log_checkpoint`, `known_project_checkpoints`,
+`bundle_signing` and `legacy_epoch_policy`. `known_project_checkpoints` is optional; supplying
+the project's signed head and count is what upgrades `complete-store` from an attestation to a
+checked claim (§3.5). The legacy policy uses `accept_legacy_shared_secret_events`, not a prefix
+model. There is no competing `governance_expectation` or `permitted_bundle_signers` field.
 
-- `trust_domain_id`
-- `root_fingerprints[]` — pinned root public-key fingerprints
-- `accepted_project_instance_ids[]`
-- `permitted_bundle_signers[]` — fingerprints **and** permitted `scheme_id`
-- `min_trust_log_checkpoint` — the minimum known signed trust-log checkpoint (B5)
-- `known_project_head` — optional; `{project_instance_id, head_event_hash, event_count, observed_at}`. Supplying it is what upgrades `complete-store` from an attestation to a checked claim (§3.5)
-- `legacy_epoch_policy` — `{accept_legacy: bool, require_cutover_checkpoint: bool}`
-- `governance_expectation` — optional; `{mode, signer_count, threshold}` to compare against `statement.governance`
-
-WI-209's `--trusted-fingerprints <file>` (acceptance criterion 4) is subsumed: `--trusted-fingerprint <fp>` repeated remains as a minimal ad-hoc form that constructs a `TrustPolicy` with only `root_fingerprints` and `permitted_bundle_signers` set, and every policy-dependent axis it cannot answer reports `not_checkable` rather than passing.
+WI-209's `--trusted-fingerprints <file>` (acceptance criterion 4) is subsumed: repeated
+`--trusted-fingerprint <fp>` remains as a minimal ad-hoc form for the caller-supplied trust
+material, and every policy-dependent axis it cannot answer reports `not_checkable` rather than
+passing.
 
 ### 4.3 The bundled registry is evidence, never a root
 
@@ -380,7 +396,7 @@ WI-209 specified this area first and most of it survives. Where it changes, it i
 | WI-209 acceptance criterion | 0.6.0 disposition |
 |---|---|
 | 1. Registry⇄chain consistency — every registry key used for verification has a matching `principal_enrolled` event in the bundle whose fingerprint equals `sha256(public_key)` | **Kept, and strengthened.** No longer "a registry key with no enrollment is reported and treated as operator-asserted" — under v3 a key with no enrollment event is **not usable for verification at all**, because verification keys come from the policy. The consistency check becomes a corroboration finding (§4.3), which is the correct demotion. Enrollment events live in `sections.key_lifecycle` and are themselves strict-verified. |
-| 2. Enrollment-before-use ordering — a key verifies only events after its enrollment; rotation/revocation bound the window the same way | **Kept verbatim, and it is now checkable.** WI-209 wrote this against `global_seq` ("events with global_seq after its enrollment event"). **I diverge**: `global_seq` is unsigned (`src/regista/_verification.py:430-434`), so ordering on it is attacker-movable. Enrollment-before-use MUST be evaluated on **chain ordinal** (membership-tree position) and on the signed `timestamp`, never on `global_seq`. The existing validity-window checks at `src/regista/_bundle.py:807-825` already use `timestamp`; the ordinal check is new. |
+| 2. Enrollment-before-use ordering — a key verifies only events after its enrollment; rotation/revocation bound the window the same way | **Kept verbatim, and it is now checkable.** Enrollment-before-use MUST be evaluated on **chain ordinal** (membership-tree position) and on the signed `timestamp`; `global_seq` is only an unsigned locator and never a security ordering input. The ordinal check is new. |
 | 3. Anchor coverage report — distinguish anchored bindings from unanchored-tail bindings | **Replaced.** There are zero `anchor_receipts` estate-wide (verified: `affected_anchors=[]` for all 26 schemas in `preflight-s1.json`), and anchoring is being deleted. The axis WI-209 wanted survives as **`epoch_binding`** (§5.1 A6): bindings covered by an externally-authenticated **cutover checkpoint** versus bindings in the post-checkpoint tail. Same shape, honest mechanism. `ARCHITECTURE-0.6.0.md:271-273` says the same thing; I am agreeing with it explicitly and naming the replacement axis. |
 | 4. `--trusted-fingerprints <file>`; fail closed on disagreement with the bundle registry | **Kept and hardened.** WI-209 made it an option. Bundle v3 makes trust material a **required argument** (§4.1). "Fail closed on disagreement" is retained: a bundled key whose fingerprint contradicts a pinned fingerprint for the same key id is `invalid`, not merely reported. |
 | 5. Genesis ceremony runbook published through a channel the operator does not solely control | **Kept; owned by sibling B.** Owner decision Q2 (WI-272) settles the channel: a dedicated public git repository under an account distinct from the estate's operational identity, one command, canonical JSON. Bundle v3 consumes its output as `known_project_head` and `min_trust_log_checkpoint`. |
@@ -396,9 +412,13 @@ WI-209's stated out-of-scope (CT-style key transparency, witness countersignatur
 > expectation reports `unverified_restatement`. Mode spellings are `co_signed | solo |
 > solo_effective`.
 
-`statement.trust_root.root_governance` (§3.2) is not decoration. WI-272's binding constraint is that single-signer lab mode must be visible in the artifact, "not merely in configuration", because "if lab mode is invisible, anyone can claim co-signed governance and no verifier can check, which makes the default theater".
+`statement.trust_root.root_governance` (§3.2) is not decoration. WI-272's binding constraint is that single-signer lab mode must be visible in the artifact, "not merely in configuration", because "if lab mode is invisible, anyone can claim `co_signed` governance and no verifier can check, which makes the default theater".
 
-Bundle v3's obligation: restate, inside the signed statement, the signer count / threshold / mode the exporter observed in the genesis document. A verifier holding the genesis document compares; a verifier holding only `governance_expectation` in its policy compares against that; a verifier holding neither reports `governance: unverified_restatement` — which is honest, because a restatement inside an artifact signed by the estate is exactly as trustworthy as the estate.
+Bundle v3's obligation: restate, inside the signed statement, the current signer count / threshold /
+mode obtained by replaying the signed governance log. A verifier holding the authenticated trust log
+compares the statement to that replay; the sole trust policy supplies the required governance
+expectation when one is configured. A verifier that cannot replay the log reports
+`root_governance: unknown` or `unverified_restatement`, never a genesis-derived value.
 
 ### 4.6 External evidence section
 
@@ -607,7 +627,11 @@ Before running anything, record — in your own notes, outside the bundle:
 - root fingerprint(s), and the date/route you received them;
 - the project head hash and event count from the published catalog;
 - the trust-log checkpoint hash;
-- the expected governance mode (`co_signed`, `solo` or `solo_effective` — `single_signer_lab` is a retired spelling). **If the estate claims co-signed governance, check the genesis document's signer set yourself**, and note that `solo_effective` exists precisely to stop an estate listing several fingerprints at threshold 1 and calling itself co-signed. WI-272's whole point is that this is checkable.
+  - the expected current governance state (`co_signed`, `solo` or `solo_effective`) obtained by
+    replaying the signed governance log through that checkpoint. Do not infer it from a genesis
+    copy or from configuration; verify the current signer set, threshold and mode against the
+    policy and the monotone-log rules. `solo_effective` exists precisely to stop an estate listing
+    several fingerprints at threshold 1 and calling itself `co_signed`.
 
 On a **repeat** audit, first confirm the channel still publishes the same fingerprint and that its history shows no rewrite. That is the property the channel buys you (owner decision Q2): it cannot prevent a false publication, only make substitution detectable.
 
@@ -645,7 +669,8 @@ Always read these alongside the summary, because they are not visible in it:
 
 - **`tail_truncation_undetectable: true`** (Rule H) — the operator could have withheld events after the last head you pinned, and nothing in the bundle can reveal it. Your pin date bounds the claim. Say so.
 - ~~**`scope.kind: "declared-selection"`** (Rule S)~~ — **the scope kind is cut from 0.6.0** (§3.5). A bundle declaring it is rejected, not attested. If you are handed one, you are looking at a pre-0.6.0 artifact or a non-conforming exporter.
-- **`A9 governance: unverified_restatement`** — the bundle says the estate is co-signed but you did not check the genesis document. Check it, or downgrade the claim.
+- **`A9 root_governance: unverified_restatement`** — the bundle's replayed governance state was not
+  checked against the authenticated trust log and policy. Check it, or downgrade the claim.
 - **`A8 registry_chain_consistency: inconsistent`** — the operator's key registry disagrees with their own signed enrollment events. This does not affect authentication (your root did that), but it is a finding worth raising on its own.
 
 ### What no answer ever means
@@ -672,7 +697,12 @@ Where I depart from `ARCHITECTURE-0.6.0.md` §2 or WI-209, or where they are amb
 
 **D7 — Event records are base64, not hex.** The current exporter hex-encodes (`src/regista/_bundle.py:1697-1706`); the architecture's example uses base64 (`:190-195`) without saying it is a change. It is, and it matters: at 352k events the difference is whether the estate's largest project fits under `MAX_BUNDLE_BYTES`. Flagged so it is a decision, not a transcription. §3.6.
 
-**D8 — `epoch`, `governance`, `signer.fingerprint` and `exporter` added to the statement.** Architecture `:200-232` omits them. `governance` is required by WI-272's binding constraint (lab mode visible in the artifact); `epoch` is required to make `legacy_checkpoint_bound` computable without re-scanning; `signer.fingerprint` lets the pin comparison bypass the bundled registry entirely; `exporter` is diagnostic. §3.2.
+**D8 — `epoch`, `trust_root.root_governance`, `signer.fingerprint` and `exporter` are part of the
+statement.** Architecture `:200-232` omits them. `root_governance` is the current state replayed
+from the signed trust-domain log, not a genesis-derived input to `trust_domain_id`; it is required
+by WI-272's visible-artifact constraint. `epoch` makes `legacy_checkpoint_bound` computable without
+re-scanning; `signer.fingerprint` lets pin comparison bypass the bundled registry; `exporter` is
+diagnostic. §3.2.
 
 **D9 — `external_evidence` may never raise a verdict axis.** Architecture `:186` says "optional externally obtained evidence, explicitly classified" but does not say what classification *does*. Left unstated, someone will make a bundled copy of a checkpoint count as external evidence, which is BC-016 again. §4.6.
 

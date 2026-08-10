@@ -4,6 +4,24 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-08-10 — Session 91: Gate 0 reconciliation and strict v6 P1.1
+
+**Focus:** Reconcile WI-282/WI-283, implement WI-277/P1.1's strict sixteen-member v6 envelope, bind production code to the frozen vectors, and carry the combined working tree through self-review and repository-wide verification.
+
+**Context:** The session began from Gate 0 base `f260d99` with WI-282/WI-283 fixes uncommitted. P1.1 had an initial Luna implementation, but direct review found gaps in signed-scheme handling, row-field reporting, nullable workflow reconciliation, required payload-hash enforcement, uncanonical classification, and numeric-vector consistency.
+
+**Delivered:**
+
+1. **WI-282:** Preserved the seven-member review subject, made `reviewed_through_event_hash` immutable across pass/accept, excluded `last_entity_seq` from the content-only reducer, retained it for claim-state reductions, re-froze digests, and added claim-churn plus all-seven-member mutation coverage.
+2. **WI-283:** Corrected stale implementable declarations throughout the 0.6.0 owning documents. Expanded `check-conflicts.py` with local-marker, structural, section, and decision-coverage guards plus 12 tests, including direct guards for v6 transition nullability and producer identity leaking back into `actor.metadata`.
+3. **WI-277 / P1.1:** Added strict v6 construction, parsing, classification, JCS fixed-point enforcement, Ed25519 signing/verification, domain-separated hashes, producer validation, workflow lifecycle validation, and row reconciliation without activating v6 on legacy append paths. Production functions now bind the envelope-related P0.3 vectors.
+4. **Self-review hardening:** Corrected the numeric vector's contradictory acceptance of `1e21`; accepted numbers now all satisfy `|v| < 2**53`. Bare public-key verification derives the scheme from the signed v6 envelope rather than the advisory row. Invalid crypto paths mark all row columns unauthenticated; `on_behalf_of` remains explicit row-only data. Missing `payload_canonical_hash` fails closed.
+5. **Adversarial remediation:** A gate review requested changes for three real gaps: incomplete review-subject mutation coverage, two stale v6 table declarations, and silently discarded nested-plus-flattened workflow arguments. All three were fixed and regression-tested. Non-Qwen cross-lineage reviewer providers were unavailable afterward, so WI-282/WI-283/WI-277 remain honestly in `in_review` rather than receiving a fabricated pass.
+
+**Test results:** full suite 1,356 passed / 1,603 skipped / 11 deselected / 0 failed. Ruff clean. mypy strict clean across 93 source files. Documentation crossrefs: 0 unresolved across 18 documents. Conflict checker: 0 violations; 12 mutation tests passed. Deterministic vector regeneration and `git diff --check` passed.
+
+---
+
 ## 2026-08-03 — Session 90: Land WI-243/244/245 + fix WI-246, WI-239; handoff execution
 
 **Focus:** Execute the 2026-08-02 handoff (§1–§7): land the reviewed WI-243/244/245 work on branch `agent/wi243-245-leak-doctor-ci`, fix WI-246 (create_project deadlock) and WI-239 (lineage fail-open), declare lineage on all tracker transitions, and run repo housekeeping.

@@ -71,7 +71,7 @@ class Applicability(StrEnum):
 
 
 class TrustedKeySource(StrEnum):
-    PRINCIPAL_REGISTRY = "principal_registry"   # principal_keys, the anchored root
+    PRINCIPAL_REGISTRY = "principal_registry"   # legacy principal_keys projection only
     KEYSET_FILE = "keyset_file"                 # local KeySet (_keys.py)
     SUPPLIED_PUBLIC_KEY = "supplied_public_key" # offline bundle / auditor export
     BUNDLE_EMBEDDED = "bundle_embedded"         # public keys carried in the bundle
@@ -186,7 +186,7 @@ marked for removal at the cutover, so that no caller silently keeps its old sema
 @dataclass(frozen=True)
 class VerificationPolicy:
     """Bounded, explicit, and non-silent. There is no 'lenient' mode."""
-    accept_legacy_before_global_seq: int | None   # the cutover watermark, CUTOVER §3
+    accept_legacy_before_global_seq: int | None   # no-checkpoint compatibility bound only
     accept_legacy_versions: frozenset[EnvelopeVersion]   # e.g. {V4}; never {}
     accept_unsigned_keyless: bool = False         # InMemory keyless only
     require_principal_binding: bool = True
@@ -200,21 +200,10 @@ policy. That is a class invariant asserted in `__post_init__`, not a convention.
 
 ## 3. Strict envelope parsing
 
-The current classifier is permissive by construction. `classify_envelope_version`
-(`_signing.py:305-323`) uses `issuperset`:
-
-```python
-if "actor_kind" in keys and "actor_metadata" in keys and _V5_FIELDS.issuperset(keys): return 5
-if "entity_kind" in keys and "hash_alg" in keys and _V4_FIELDS.issuperset(keys):      return 4
-if _V3_FIELDS.issuperset(keys) and (keys & _V3_CHAIN_FIELDS):                         return 3
-if keys == _V2_FIELDS:                                                                return 2
-return 1
-```
-
-So an envelope holding *any subset* of v5's fields classifies as v5; and — the real hole —
-**anything that matches nothing at all falls through to `return 1`.** `{}`, `{"x": 1}`, and an
-attacker-authored object all become "a v1 envelope". Since v1 signs only six fields, being
-classified v1 is the weakest possible claim and therefore the most attractive target.
+The pre-S1 classifier was permissive by construction and used `issuperset`; that historical
+failure is retained only as audit evidence. The shipped S1 classifier is strict and lives at
+`_verification.py:277-296`. It accepts only a complete known schema, rejects unknown fields and
+missing required fields, and never promotes a failed high-version candidate to v1.
 
 ### 3.1 Required / optional sets, normative
 
@@ -226,12 +215,12 @@ classified v1 is the weakest possible claim and therefore the most attractive ta
 | v4 | `event_id, entity_kind, entity_id, actor_id, key_id, event_seq, workflow_name, workflow_version, timestamp, hash_alg, on_behalf_of, transition, payload` | same three |
 | v5 | v4 REQUIRED + `actor_kind, actor_metadata` | same three |
 
-### 3.2 The algorithm
+### 3.2 The shipped algorithm
 
 ```
 parse strict JSON (no duplicate keys, no NaN/Infinity, top level must be an object)
 for version in (v5, v4, v3, v1):            # highest first
-    if REQUIRED[version] ⊆ keys and (keys − REQUIRED[version]) ⊆ OPTIONAL[version]:
+    if REQUIRED[version] ⊆ keys ⊆ (REQUIRED[version] ∪ OPTIONAL[version]):
         if version is v3 and no optional key present: return V2
         return version
 return UNKNOWN_SCHEMA                        # NEVER v1
@@ -249,13 +238,13 @@ Rules that follow from it and must be stated in the implementation:
    envelope to evaluate".)
 4. **v2 and chain-less v3 are one schema.** Reported as `V2`; not a defect, see FIELD-MATRIX §1.
 5. The classifier operates on the **stored bytes only**. Nothing about the row informs the
-   version. Today `verify_event` mixes them: `has_chain_fields` is computed from *row* values
-   (`_signing.py:360-364`) and steers which candidate branch runs.
+   version. The pre-S1 `verify_event` path mixed them: `has_chain_fields` was computed from *row*
+   values (`_signing.py:360-364`) and steered a candidate branch; the shipped strict path does not.
 
-**Measured:** across 351,371 estate events, the strict and permissive classifiers agree on
-every one (0 disagreements). On the deliberately corrupted test corpus, the injected
-`{"event_id":"x","attacker_field":1}` envelope is `UNKNOWN_SCHEMA` under strict rules and
-**`v1` under the current permissive rules** — the hole, reproduced.
+**Measured:** across 351,371 estate events, the shipped strict classifier agrees with the
+legacy-corpus classification on every one (0 disagreements). On the deliberately corrupted test
+corpus, the injected `{"event_id":"x","attacker_field":1}` envelope is `UNKNOWN_SCHEMA`; it
+does not fall through to v1.
 
 ---
 
@@ -297,8 +286,8 @@ exist.
 
 | Applicability | Meaning | Required conditions |
 |---|---|---|
-| `FULLY_AUTHENTICATED` | every field the consumer may read is covered by a valid signature over the stored bytes, and the row agrees | envelope present ∧ schema valid ∧ version ∈ policy's full set (v5 today) ∧ signature valid under a key from a trusted source ∧ `trusted_key_source != NONE` ∧ `mismatched_fields == ()` ∧ principal binding verified (when required) |
-| `LEGACY_PARTIAL` | the signature is valid over the stored bytes and the row agrees on **every field that version signs**, but the version leaves named fields unsigned | all of the above **except** version is a legacy version explicitly listed in `policy.accept_legacy_versions` **and** `global_seq < policy.accept_legacy_before_global_seq`. `unsigned_fields` is non-empty and `legacy_reason` is populated. |
+| `FULLY_AUTHENTICATED` | every field the consumer may read is covered by a valid signature over the stored bytes, and the row agrees | envelope present ∧ schema valid ∧ version ∈ policy's full set (v6 after cutover; v5 only before a checkpoint) ∧ signature valid under a key from a trusted source ∧ `trusted_key_source != NONE` ∧ `mismatched_fields == ()` ∧ principal binding verified (when required) |
+| `LEGACY_PARTIAL` | the signature is valid over the stored bytes and the row agrees on **every field that version signs**, but the version leaves named fields unsigned | all of the above **except** the event is a pre-cutover legacy version explicitly listed in `policy.accept_legacy_versions` and its chain position is before the signed checkpoint. For a project with no checkpoint, the optional `global_seq` bound is administrative only. `unsigned_fields` is non-empty and `legacy_reason` is populated. |
 | `INVALID` | something that should have verified did not | any of: signature invalid, canonical-hash mismatch, `mismatched_fields != ()`, `UNKNOWN_SCHEMA`, unparseable envelope, entity-alias mismatch, key revoked / not valid at time / id mismatch |
 | `UNVERIFIABLE` | there is nothing to verify against | `canonical_envelope IS NULL` (pre-002 rows); or no trusted key could be resolved at all; or the keyless-dummy InMemory case when `policy.accept_unsigned_keyless` is false |
 
@@ -312,8 +301,9 @@ Collapsing them — as today's `bool` does — is why the audit's central defect
 ## 6. How `legacy_partial` is prevented from becoming a silent pass
 
 The design review's hard constraint: *there must be NO mode which turns a signed-field mismatch
-into success, and legacy statuses must be explicit, bounded by a fixed cutover, and surfaced in
-CLI/API output and exit status.* Six mechanisms, each structural rather than conventional:
+into success, and legacy statuses must be explicit, bounded by signed chain position after a
+cutover, and surfaced in CLI/API output and exit status.* Six mechanisms, each structural rather
+than conventional:
 
 1. **`legacy_partial` is never reachable from a mismatch.** `mismatched_fields != ()` forces
    `INVALID` before the legacy branch is evaluated. Legacy describes fields the version *never
@@ -332,12 +322,12 @@ CLI/API output and exit status.* Six mechanisms, each structural rather than con
    reads `actor_kind` off a `LEGACY_PARTIAL` result can be made to check membership; a consumer
    that cannot is a bug the type makes visible.
 
-4. **Bounded by a fixed cutover watermark.** `policy.accept_legacy_before_global_seq` is a
-   concrete integer per project (CUTOVER §3). An event with `global_seq` at or above it and a
-   legacy envelope version is `INVALID`, not `LEGACY_PARTIAL` — so legacy cannot creep forward
-   as new events are written. Because `global_seq` is unsigned, the watermark is an
-   *administrative* bound, not a cryptographic one, and the policy must say so in its docstring
-   and in CLI output: it bounds *policy scope*, it does not authenticate anything.
+4. **Bounded by the signed chain position.** For a project with a checkpoint, an event's
+   predecessor-link position determines whether a legacy version is pre-cutover or an
+   `EPOCH_VIOLATION`; no `global_seq` policy can override that. A project with no checkpoint may
+   retain `policy.accept_legacy_before_global_seq` as an explicit administrative compatibility
+   bound. Because `global_seq` is unsigned, that fallback bounds policy scope only and never
+   authenticates anything; the policy and CLI must say so.
 
 5. **Surfaced in output and exit status.**
    - JSON: every verification-bearing command emits
@@ -351,8 +341,9 @@ CLI/API output and exit status.* Six mechanisms, each structural rather than con
      (`_cli.py:566-...`), `regista assurance` always exits `0` (`_cli.py:1456`), and
      `regista anchor verify` exits non-zero only for the exact string `"failed"`
      (`_cli.py:676-677`).
-   - Counts of `legacy_partial` appear in `ReplayReport`, `BundleVerificationReport` and the
-     segment/anchor results as first-class fields, not log lines.
+    - Counts of `legacy_partial` appear in `ReplayReport` and `BundleVerificationReport` as
+      first-class fields, not log lines. Retained compatibility result surfaces use the same
+      vocabulary; deleted segment/anchor trust mechanisms are not release gates.
 
 6. **The escape hatch is deleted, not disabled.** Candidate rebuilding (§4) is removed from the
    verify path entirely. There is no flag to re-enable it. A flag would be the silent pass.

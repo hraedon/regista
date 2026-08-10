@@ -1119,7 +1119,6 @@ def case_payload_numeric_bounds() -> dict[str, Any]:
         "max_negative_int": -(2**53 - 1),
         "zero": 0,
         "float_below_band": 1.5,
-        "float_at_1e21_round_trips": 1e21,
     }
     env = make_v6_envelope(payload=accepted_payload, transition="note_added")
     canonical, signature, event_hash, pch = sign_event(env)
@@ -1135,6 +1134,11 @@ def case_payload_numeric_bounds() -> dict[str, Any]:
             "canonicalized again; this is the P0.2 amendment's whole reason to exist",
         ),
         ("float_just_below_1e21", 1e20, "2**53 <= |v| < 1e21 — same band"),
+        (
+            "float_at_1e21",
+            1e21,
+            "|v| >= 2**53 — round-trips through JCS but is outside the v6 magnitude bound",
+        ),
     ]:
         try:
             produced = canonicalize({"v": value}).decode()
