@@ -1141,13 +1141,23 @@ class V6VerificationResult:
     errors: tuple[str, ...] = ()
 
     @property
-    def cryptographically_valid(self) -> bool:
+    def signature_and_hashes_valid(self) -> bool:
         checks = [self.schema_valid, self.canonical_valid, self.signature_valid]
         if self.payload_canonical_hash_valid is not None:
             checks.append(self.payload_canonical_hash_valid)
         if self.event_hash_valid is not None:
             checks.append(self.event_hash_valid)
         return all(checks)
+
+    @property
+    def unchecked(self) -> tuple[str, ...]:
+        checks = (
+            ("payload_canonical_hash", self.payload_canonical_hash_valid),
+            ("event_hash", self.event_hash_valid),
+            ("project_binding", self.project_binding_valid),
+            ("trust_domain_binding", self.trust_domain_binding_valid),
+        )
+        return tuple(name for name, result in checks if result is None)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1164,7 +1174,8 @@ class V6VerificationResult:
             "trust_domain_binding_valid": self.trust_domain_binding_valid,
             "scheme_id": self.scheme_id,
             "key_id": self.key_id,
-            "cryptographically_valid": self.cryptographically_valid,
+            "signature_and_hashes_valid": self.signature_and_hashes_valid,
+            "unchecked": list(self.unchecked),
             "errors": list(self.errors),
         }
 

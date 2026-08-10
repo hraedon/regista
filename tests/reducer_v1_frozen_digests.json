@@ -31,7 +31,8 @@
   },
   "interpreters": [
     "CPython 3.12.3",
-    "CPython 3.13.13"
+    "CPython 3.13.13",
+    "CPython 3.14.4"
   ],
   "reducer_version": 1
 }

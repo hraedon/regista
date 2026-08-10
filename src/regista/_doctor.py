@@ -802,7 +802,10 @@ def run_doctor(
     checks.append(DoctorCheck(
         name="version:schema",
         status="ok",
-        detail=f"Library declares schema {SCHEMA_VERSION}, envelope {ver.envelope_version}",
+        detail=(
+            f"Library declares schema {SCHEMA_VERSION}, writable envelope "
+            f"{ver.envelope_version}"
+        ),
     ))
 
     checks.append(DoctorCheck(

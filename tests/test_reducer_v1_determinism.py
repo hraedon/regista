@@ -7,9 +7,9 @@ review verdicts, and requires the proof to hold **across at least two interprete
 
 How that requirement is discharged here:
 
-* `tests/reducer_v1_frozen_digests.json` holds the digests agreed by CPython 3.12, CPython 3.13,
-  CPython 3.14 and PyPy 3.11 — four interpreters, three `PYTHONHASHSEED` values each, produced by
-  `tools/reducer_v1_sweep.py`.
+* `tests/reducer_v1_frozen_digests.json` holds the corrected digests agreed by CPython 3.12,
+  CPython 3.13 and CPython 3.14, with three `PYTHONHASHSEED` values each, produced by
+  `tools/reducer_v1_sweep.py`. PyPy covered the original shape but is not current evidence.
 * This module asserts the *current* interpreter reproduces them exactly. CI runs the suite on
   3.13 and 3.14, so every CI run is itself a two-interpreter agreement check, and any future
   interpreter that disagrees fails the build rather than silently minting a second digest.
@@ -58,6 +58,10 @@ def test_frozen_digests_were_agreed_by_multiple_interpreters() -> None:
     versions = {entry for entry in interpreters}
     assert len(versions) >= 2, "at least two interpreter versions must have agreed"
     assert implementations, interpreters
+
+
+def test_frozen_digests_include_the_estate_runtime() -> None:
+    assert "CPython 3.14.4" in FROZEN["interpreters"]
 
 
 @pytest.mark.parametrize("name,envelopes,definitions", VECTORS, ids=[v[0] for v in VECTORS])

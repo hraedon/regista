@@ -1,0 +1,28 @@
+# Identifiers that must never appear in tracked files or git history.
+# Derived from the samples/ audit (git history leaks + real environment).
+# Covers ALL identifier forms per the adcs-lens WI-010 lesson:
+# hostnames, AD domain, email, personal name, GitHub username — not just hostnames.
+#
+# This file is gitignored (.identifiers-denylist.local) and never committed.
+# In CI it comes from the REGISTA_FORBIDDEN_IDENTIFIERS repo secret.
+
+# --- Hostnames (NetBIOS / short) ---
+mvmcitest01
+mvmpostgres01
+
+# --- AD domain (DNS) ---
+hraedon.com
+
+# --- GitHub username (appears in noreply email + GitHub paths) ---
+# NOTE: 'hraedon' alone is too broad for the working-tree gate (matches
+# github.com/hraedon/... URLs in README, docs, CI). It IS needed for the
+# history scrub — see scripts/filter-repo-replacements.txt. The working-tree
+# gate catches the email form (plm@hraedon.com) which is the real concern;
+# the broad 'hraedon' replacement is handled by the filter-repo scrub.
+# hraedon
+
+# --- Email ---
+plm@hraedon.com
+
+# --- Personal name (surname only — first name too generic) ---
+Merritt
