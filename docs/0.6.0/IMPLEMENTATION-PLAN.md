@@ -61,6 +61,12 @@ checkpoint, producer policy, catalog.
 **Done when:** each vector is reproducible from a clean checkout by a documented command, and a
 deliberate one-byte change to each input flips its expected hash.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** Four of the 27 committed vectors exist only for the
+> legacy seam and are **deleted**: `legacy-seam-checkpoint`, `version-aware-event-hash`,
+> `bundle-merkle-mixed-epoch`, `bootstrap-cutover-checkpoint`. There is one epoch, so there
+> is one event-hash construction and no mixed-epoch tree. The remaining 23 stand, including
+> the acceptance criterion above, which is unchanged.
+
 ---
 
 ## Parallel tracks (after Gate 0 only)
@@ -83,6 +89,12 @@ checkpoint inserts with genuinely null workflow identity.
 Extend `VerificationResult` for v6. Post-cutover, v4/v5 become `LEGACY_PARTIAL`.
 **Done when:** preflight reports the before/after label distribution, and the ~334k relabel is
 demonstrated on a copy rather than asserted.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** The reclassification half is **dropped**: the legacy
+> population is discarded rather than migrated, so there is nothing to relabel and no
+> before/after distribution to report. The consolidated v6 result model survives and is the
+> whole of P1.3. **Done when:** `VerificationResult` covers v6 and no `LEGACY_PARTIAL` path
+> is reachable.
 
 ### P1.4 — Delete the dead subsystems · **owner: team** · dep: P0.1
 Remove `_archive_segments.py`, `_anchoring.py`, `_timestamping.py`, the window/segment/manifest
@@ -161,6 +173,11 @@ impossible otherwise). Compare against the published interim head record.
 **Done when:** a full rehearsal on a restored copy produces a verifying checkpoint per project and
 a bundle that authenticates to an externally pinned root.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** **Dropped.** There is no migration to rehearse: the
+> legacy population is discarded and the epoch opens in an empty store. What replaces it is
+> the genesis conformance gate (`EPOCH-RESET.md` §5), which is a precondition on the first
+> write rather than a rehearsal of a transformation.
+
 ---
 
 ## Gate 4 — production ceremony · dep: Gate 3 · **owner: me, owner present**
@@ -170,6 +187,12 @@ Quiesced, one locked transaction per project, checkpoint signed and published, p
 HMAC/v5 writes permanently rejected. Irreversible.
 **Done when:** every project verifies end to end across the seam, the catalog is published, and a
 post-checkpoint HMAC write is refused.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** Cut-over becomes **genesis**. There is no seam to verify
+> across and no prefix to checkpoint: provision keys, pass the §5 conformance gate, write the
+> first event into an empty store. **Done when:** the gate passes, genesis verifies against an
+> externally pinned root, and an HMAC write is refused — the last of which was always the
+> point and is unchanged.
 
 ---
 
@@ -190,6 +213,12 @@ material is a **required argument with no default** — that function-signature 
 structural fix for BC-016, not a policy flag. Drop `format_version` 1 entirely.
 **Done when:** an auditor can follow the documented workflow without the author present, and a
 bundle whose keys come only from itself cannot report external authentication.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** Version-aware event hashing and mixed-epoch membership
+> trees are **dropped** — one epoch means one construction, and `BUNDLE-V3.md` §3.3's
+> mixed-epoch vector requirement lapses with them. The signed membership statement, the
+> chain-traversal ordering and the no-default trust argument are untouched; they were never
+> about the seam.
 
 ---
 

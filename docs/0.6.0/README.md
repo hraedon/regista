@@ -6,6 +6,11 @@ implementation is written against.
 
 **Read in this order:**
 
+0. **`EPOCH-RESET.md`** — owner decision, 2026-08-10. The legacy event population is discarded
+   rather than migrated; the evidentiary record starts at a deliberate genesis in an empty
+   store, gated on a conformance check. It has precedence over everything below for the two
+   questions it decides, and it removes work from P0.3, P1.3, P3.3, P4.1 and P5.1. Read it
+   first or you will implement a seam that will not exist.
 1. **`ARCHITECTURE-FINAL.md`** — precedence, the binding decisions, scope, gates. Short by design.
 2. **`IMPLEMENTATION-PLAN.md`** — the work packages, their owners, their dependencies, and how
    each one is proved done. **A package whose acceptance criterion is "implemented" is not
