@@ -54,7 +54,7 @@ retroactively implying guarantees over data that never had them.
 | Plan item | Effect |
 |---|---|
 | **P0.3** | Four vectors exist only for the seam and are deleted: `legacy-seam-checkpoint`, `version-aware-event-hash`, `bundle-merkle-mixed-epoch`, `bootstrap-cutover-checkpoint`. The remaining 23 stand unchanged. |
-| **P1.2** | **Unaffected.** A project-kind genesis event carries a null workflow whether or not a legacy prefix exists, so the nullable-workflow migration is still a hard prerequisite of the first v6 append. |
+| **P1.2** | **Requirement survives, shape changes.** A project-kind genesis event carries a null workflow either way, so nullable `events.workflow_name`/`workflow_version` remain a hard prerequisite of the first v6 append — and the ban on `""`/`0` sentinels stands, because v6 would *sign* the falsehood. But there is no forward migration: an empty store declares the columns nullable in its initial schema. The acceptance criterion "applies and rolls back cleanly on a copy of the live schema set" lapses with the 26 live schemas it referred to, and the irreversibility warning with it. |
 | **P1.3** | The v5 reclassification half — the ~334k relabel to `LEGACY_PARTIAL` — is dropped. The consolidated v6 result model survives. |
 | **P3.3** | Version-aware event hashing and mixed-epoch membership trees are dropped: there is one construction, because there is one epoch. `BUNDLE-V3.md` §3.3's mixed-epoch requirement lapses with it. |
 | **P4.1** | Full-estate rehearsal is dropped. There is no migration to rehearse. |
