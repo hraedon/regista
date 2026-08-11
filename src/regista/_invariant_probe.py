@@ -10,8 +10,9 @@ from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
 
 from ._connection import validate_project_name
+from ._contract import validate_actor_metadata, validate_delegation_chain
 from ._errors import ErrorCode, RegistaError
-from ._lineage import MODEL_LINEAGE_FAMILIES, validate_model_lineage
+from ._lineage import MODEL_LINEAGE_FAMILIES
 
 
 @dataclass(frozen=True)
@@ -62,20 +63,49 @@ def _delegation_lineages(value: object) -> Iterable[tuple[object, bool]]:
         depth += 1
 
 
+#: Row keys carrying the v6 producer lineage already extracted by the query.
+#: ``probe_project`` projects these server-side so the measurement never ships
+#: whole ``canonical_envelope`` blobs over the wire; rows that arrive with a
+#: raw envelope instead (unit tests, callers holding rows in hand) are parsed
+#: here exactly as before. The two paths must agree — see
+#: ``test_projected_and_raw_envelope_rows_measure_identically``.
+ENVELOPE_PRODUCER_PRESENT_KEY = "envelope_producer_present"
+ENVELOPE_LINEAGE_KEY = "envelope_model_lineage"
+
+
+def _envelope_producer_lineage(row: dict[str, Any]) -> tuple[bool, object]:
+    """Return ``(producer_present, model_lineage)`` for a v6 envelope.
+
+    ``producer_present`` is true only when the envelope parses as a JSON object
+    declaring ``version == 6`` whose ``producer`` is itself an object. Anything
+    else — absent envelope, undecodable bytes, a different version, a producer
+    that is not an object — reads as absent, and the caller falls through to the
+    payload and actor-metadata sources.
+    """
+    if ENVELOPE_PRODUCER_PRESENT_KEY in row:
+        return bool(row.get(ENVELOPE_PRODUCER_PRESENT_KEY)), row.get(ENVELOPE_LINEAGE_KEY)
+    envelope = row.get("canonical_envelope")
+    if envelope is None:
+        return False, None
+    try:
+        parsed = json.loads(bytes(envelope))
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return False, None
+    if not (isinstance(parsed, dict) and parsed.get("version") == 6):
+        return False, None
+    producer = parsed.get("producer")
+    if not isinstance(producer, dict):
+        return False, None
+    return True, producer.get("model_lineage")
+
+
 def _event_lineages(row: dict[str, Any]) -> list[tuple[object, bool]]:
     result: list[tuple[object, bool]] = []
     actor_kind = row.get("actor_kind")
     actor_is_agent = isinstance(actor_kind, str) and actor_kind.strip().lower() == "agent"
-    envelope = row.get("canonical_envelope")
-    if envelope is not None:
-        try:
-            parsed = json.loads(bytes(envelope))
-        except (TypeError, ValueError, UnicodeDecodeError):
-            parsed = None
-        if isinstance(parsed, dict) and parsed.get("version") == 6:
-            producer = parsed.get("producer")
-            if isinstance(producer, dict):
-                result.append((producer.get("model_lineage"), actor_is_agent))
+    producer_present, producer_lineage = _envelope_producer_lineage(row)
+    if producer_present:
+        result.append((producer_lineage, actor_is_agent))
     if not result and row.get("transition") == "model_observation":
         payload = row.get("payload")
         observed_lineage = (
@@ -166,17 +196,147 @@ def discover_projects(dsn: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+#: Rows are streamed in batches of this size rather than materialised at once,
+#: so a probe's resident memory is bounded by the batch and not by the table.
+PROBE_FETCH_BATCH = 2000
+
+#: The measurement needs five scalars and two narrow objects per event, not the
+#: whole row. ``canonical_envelope`` (a bytea holding the signed envelope) and
+#: ``payload`` together dominate the table — on the estate's largest schema they
+#: are 330 MB and 135 MB against 14 MB of ``actor_metadata`` — so both are
+#: reduced server-side to just the fields the measurement reads. ``->`` is used
+#: throughout rather than ``->>`` to preserve JSON types: a non-string lineage
+#: must keep reading as an unresolvable *value*, not as the token ``"42"``.
+#:
+#: A ``canonical_envelope`` that is not decodable UTF-8, or not parseable as
+#: JSON, raises here rather than reading as "no declared lineage". That is
+#: deliberate and is a change from the row-parsing path, which was lenient: a
+#: measurement whose job is to surface undeclared lineage must not answer "none
+#: declared" when what it actually found was corruption.
+#: ``invariant_probe_report`` catches it and names the project in ``errors``,
+#: which fails that project's check rather than the whole process.
+_PROBE_QUERY = """
+SELECT
+  e.actor_kind,
+  jsonb_build_object('model_lineage', e.actor_metadata -> 'model_lineage')
+    AS actor_metadata,
+  e.on_behalf_of,
+  e.scheme_id,
+  e.transition,
+  CASE WHEN e.transition = 'model_observation' THEN jsonb_build_object(
+         'status', e.payload -> 'status',
+         'observed_model_lineage', e.payload -> 'observed_model_lineage')
+  END AS payload,
+  (env.doc -> 'version' = '6'::jsonb
+   AND jsonb_typeof(env.doc -> 'producer') = 'object') AS envelope_producer_present,
+  env.doc -> 'producer' -> 'model_lineage' AS envelope_model_lineage
+FROM events e
+LEFT JOIN LATERAL (
+  SELECT CASE
+    WHEN e.canonical_envelope IS NOT NULL
+    THEN convert_from(e.canonical_envelope, 'UTF8')::jsonb
+  END AS doc
+) env ON true
+"""
+
+
+#: Spelling variants that must be refused. Every one of these was observed in,
+#: or is the obvious near-miss of, a token the estate actually wrote: versioned
+#: family names, bare vendor and bare size names, provider-qualified ids,
+#: prefixed forks, harness names mistaken for models, and whitespace or case
+#: variants. WI-285 exists because free text compared by exact string let these
+#: read as distinct lineages and so manufacture false review independence, and a
+#: check that refuses only one hardcoded variant would not have caught it.
+_REJECTED_LINEAGE_VARIANTS: tuple[object, ...] = (
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "glm-5.2",
+    "GLM-5.2",
+    "gpt-5.6-sol",
+    "openai/gpt-5.6-sol",
+    "nemotron-3-ultra",
+    "claude",
+    "opus",
+    "gpt",
+    "umans-glm-5.2",
+    "opencode",
+    " claude-opus ",
+    "CLAUDE-OPUS",
+    "claude-opus\n",
+    "",
+    "   ",
+    42,
+    None,
+    ["claude-opus"],
+)
+
+
+def _measure_closed_registry() -> tuple[bool, str]:
+    """Exercise the write-path validator, not the registry's own membership.
+
+    The naive form of this check — asserting every registered family validates —
+    is a tautology: ``validate_model_lineage`` accepts exactly the registry, so
+    it cannot fail however broken the ingress is. What is worth measuring is the
+    surface a caller actually reaches: ``validate_actor_metadata`` and
+    ``validate_delegation_chain``, the two functions every append path routes
+    through. Both must accept each canonical family and refuse each variant with
+    ``INVALID_MODEL_LINEAGE``.
+    """
+    accepted: list[str] = []
+    for family in sorted(MODEL_LINEAGE_FAMILIES):
+        try:
+            validate_actor_metadata({"model_lineage": family})
+            validate_delegation_chain(
+                {"principal_id": "probe:agent", "principal_kind": "agent",
+                 "principal_lineage": family}
+            )
+        except RegistaError:
+            accepted.append(family)
+    admitted: list[str] = []
+    for variant in _REJECTED_LINEAGE_VARIANTS:
+        if variant is None:
+            # An explicit null is "undeclared", which is a legitimate state that
+            # reads as UNKNOWN downstream; it must not be refused at ingress.
+            continue
+        for surface in ("actor_metadata", "on_behalf_of"):
+            try:
+                if surface == "actor_metadata":
+                    validate_actor_metadata({"model_lineage": variant})
+                else:
+                    validate_delegation_chain(
+                        {"principal_id": "probe:agent", "principal_kind": "agent",
+                         "principal_lineage": variant}
+                    )
+            except RegistaError as exc:
+                if exc.code is not ErrorCode.INVALID_MODEL_LINEAGE:
+                    admitted.append(f"{surface}:{variant!r}")
+            else:
+                admitted.append(f"{surface}:{variant!r}")
+    if accepted or admitted:
+        return False, (
+            f"canonical families refused: {accepted or 'none'}; "
+            f"variants admitted: {admitted or 'none'}"
+        )
+    return True, (
+        f"{len(MODEL_LINEAGE_FAMILIES)} canonical families accepted and "
+        f"{len(_REJECTED_LINEAGE_VARIANTS) - 1} spelling variants refused at "
+        "both write-path surfaces"
+    )
+
+
 def probe_project(dsn: str, project: str) -> ProjectInvariantMeasurements:
     validate_project_name(project)
     with psycopg.connect(dsn, connect_timeout=5, row_factory=dict_row) as conn:
         with conn.transaction():
             conn.execute("SET TRANSACTION READ ONLY")
             conn.execute(SQL("SET LOCAL search_path TO {}").format(Identifier(project)))
-            rows = conn.execute(
-                "SELECT actor_kind, actor_metadata, on_behalf_of, canonical_envelope, "
-                "scheme_id, transition, payload FROM events"
-            ).fetchall()
-    return measure_event_rows(project, rows)
+            # A server-side cursor: the measurement is scheduled every five
+            # minutes and the event table only grows, so it must never depend on
+            # the whole population fitting in the prober's memory.
+            with conn.cursor(name="regista_invariant_probe", row_factory=dict_row) as cur:
+                cur.itersize = PROBE_FETCH_BATCH
+                cur.execute(_PROBE_QUERY)
+                return measure_event_rows(project, cur)
 
 
 def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
@@ -187,16 +347,7 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
             measurements.append(probe_project(dsn, project))
         except (ValueError, psycopg.Error) as exc:
             errors.append({"project": project, "error_type": type(exc).__name__})
-    closed_registry = all(
-        validate_model_lineage(family, field="probe") == family
-        for family in MODEL_LINEAGE_FAMILIES
-    )
-    try:
-        validate_model_lineage("GLM-5.2", field="probe")
-    except RegistaError as exc:
-        closed_registry = closed_registry and exc.code is ErrorCode.INVALID_MODEL_LINEAGE
-    else:
-        closed_registry = False
+    closed_registry, registry_detail = _measure_closed_registry()
     return {
         "component": "regista",
         "probe_version": 1,
@@ -211,7 +362,7 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
             {
                 "id": "regista.closed_lineage_registry",
                 "status": "pass" if closed_registry else "fail",
-                "detail": "canonical families are accepted and spelling variants are refused",
+                "detail": registry_detail,
             },
         ],
     }

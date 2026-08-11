@@ -72,7 +72,7 @@ def append_event(
 ) -> Event:
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
-    validate_delegation_chain(on_behalf_of)
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
     validate_entity_kind(entity_kind)
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 

@@ -7,7 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from regista._cli import cmd_invariants_probe
-from regista._invariant_probe import invariant_probe_report, measure_event_rows
+from regista._errors import ErrorCode, RegistaError
+from regista._invariant_probe import (
+    ENVELOPE_LINEAGE_KEY,
+    ENVELOPE_PRODUCER_PRESENT_KEY,
+    _envelope_producer_lineage,
+    _measure_closed_registry,
+    invariant_probe_report,
+    measure_event_rows,
+)
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -164,3 +172,88 @@ def test_cli_json_shape_and_failure_exit(
         "component": "regista",
         "ok": False,
     }
+
+
+def _v6_envelope(lineage: object, *, version: int = 6, producer: object = None) -> bytes:
+    body: dict[str, object] = {"version": version}
+    body["producer"] = (
+        producer if producer is not None else {"model": "m", "model_lineage": lineage}
+    )
+    return json.dumps(body).encode()
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        _v6_envelope("qwen"),
+        _v6_envelope(None),
+        _v6_envelope(42),
+        _v6_envelope("GLM-5.2"),
+        _v6_envelope("qwen", version=5),
+        _v6_envelope(None, producer="not-an-object"),
+        b"{not json",
+        b"\xff\xfe not utf-8",
+        None,
+    ],
+)
+def test_projected_and_raw_envelope_rows_measure_identically(envelope: object) -> None:
+    """The server-side projection must not change what the measurement sees.
+
+    ``probe_project`` extracts the v6 producer lineage in SQL so it never ships
+    whole envelopes; every other caller hands over the raw bytea. If those two
+    paths ever disagree, the scheduled measurement and the tests pinning it are
+    measuring different things.
+    """
+    raw_row = _row(actor_metadata={"model_lineage": "glm"}, canonical_envelope=envelope)
+    present, lineage = _envelope_producer_lineage(raw_row)
+    projected_row = _row(actor_metadata={"model_lineage": "glm"})
+    projected_row.pop("canonical_envelope")
+    projected_row[ENVELOPE_PRODUCER_PRESENT_KEY] = present
+    projected_row[ENVELOPE_LINEAGE_KEY] = lineage
+
+    assert measure_event_rows("p", [raw_row]) == measure_event_rows("p", [projected_row])
+
+
+def test_projection_keys_win_over_a_raw_envelope() -> None:
+    """A row carrying both must trust the projection, not re-parse the blob."""
+    row = _row(
+        canonical_envelope=_v6_envelope("qwen"),
+        **{ENVELOPE_PRODUCER_PRESENT_KEY: True, ENVELOPE_LINEAGE_KEY: "kimi"},
+    )
+    assert measure_event_rows("p", [row]).distinct_lineage_tokens == ("kimi",)
+
+
+def test_closed_registry_check_measures_the_write_path() -> None:
+    ok, detail = _measure_closed_registry()
+    assert ok is True
+    assert "canonical families accepted" in detail
+
+
+def test_closed_registry_check_fails_when_ingress_admits_a_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check must be capable of going red — the tautological form was not.
+
+    Validating the registry against itself can never fail however broken ingress
+    is. Neutering the write-path validator must turn this check red.
+    """
+    monkeypatch.setattr(
+        "regista._invariant_probe.validate_actor_metadata", lambda _metadata: None
+    )
+    ok, detail = _measure_closed_registry()
+    assert ok is False
+    assert "variants admitted" in detail
+
+
+def test_closed_registry_check_fails_when_a_canonical_family_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_everything(_metadata: object) -> None:
+        raise RegistaError(ErrorCode.INVALID_MODEL_LINEAGE, "no")
+
+    monkeypatch.setattr(
+        "regista._invariant_probe.validate_actor_metadata", refuse_everything
+    )
+    ok, detail = _measure_closed_registry()
+    assert ok is False
+    assert "canonical families refused" in detail
