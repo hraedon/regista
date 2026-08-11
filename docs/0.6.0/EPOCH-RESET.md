@@ -113,6 +113,14 @@ conformance check gates the epoch; if it does not pass, the epoch does not open.
    every defect above was seconds of SQL that nobody ran. Run continuously, these surface at
    a hundred events rather than three hundred and seventy-one thousand.
 
+The executable surfaces are split deliberately. `regista invariants probe` owns read-only store
+measurements; `cairn invariants probe` owns the observed-model behavioral checks; agent-suite
+orchestrates them with `agent-suite invariant-probes` and applies the separate first-write verdict
+with `agent-suite genesis-gate`. The measurement command is scheduled even while the genesis verdict
+is blocked. Every required behavioral check and every store predicate has both a passing throwaway
+fixture and a deny fixture, so "red because incomplete" remains distinguishable from "red because
+the gate is broken."
+
 ## 6. Standing rules for the new epoch
 
 1. Fail closed at write time on anything the record's value depends on. Unfixable history is
@@ -131,7 +139,7 @@ conformance check gates the epoch; if it does not pass, the epoch does not open.
 - **Disposition of the discarded data.** Archived read-only for a period, or dropped. It has
   no evidentiary value either way; this is a storage and sentiment question, not a
   correctness one.
-- **Where the canonical family registry lives** — regista enforces the comparison, cairn is
-  the only component that sees every harness (WI-285).
+- **Canonical family ownership is resolved:** regista owns the release-controlled comparison
+  registry; cairn owns harness-specific observed-model-to-family mapping (WI-285/WI-045).
 - **Whether `agent_provenance` telemetry restarts empty or is retained as an operational
   log.** It is 98.7% of the volume and nobody reads historical tool-call captures.

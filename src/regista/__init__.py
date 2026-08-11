@@ -26,6 +26,7 @@ from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
 from ._integrity import REGISTA_VERSION, check_integrity
 from ._keys import KeySet
+from ._lineage import MODEL_LINEAGE_FAMILIES as MODEL_LINEAGE_FAMILIES
 from ._migrations import run_migrations
 from ._observability import Metrics
 from ._ops import (

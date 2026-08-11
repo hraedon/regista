@@ -4,6 +4,25 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-08-11 - Session 92: Canonical lineage, observed models, and genesis probes
+
+**Focus:** Close WI-285 and WI-045 through implementation and cross-lineage review, then add an executable genesis preflight whose measurements run now while the first-write verdict remains honestly blocked.
+
+**Context:** Work began on regista `agent/wi285-lineage-genesis-gate` at `991ff15`, agent-provenance `agent/wi045-observed-model`, and agent-suite `agent/genesis-conformance-gate`. The owner selected a failing preflight rather than pulling v6 persistence into this tranche, with the additional requirement that every implemented probe demonstrate both pass and deny behavior.
+
+**Delivered:**
+
+1. **WI-285:** Added a release-controlled canonical model-family registry, write-time validation for actor/delegation/v6 producer/env surfaces, defensive UNKNOWN read semantics, and sidecar error mapping. Updated affected fixtures to canonical family tokens.
+2. **WI-045:** Added signed session `model_observation` events preserving requested, declared and observed identity. OpenCode records actual `providerID`/`modelID`, detects configured-A/dispatched-B, persists restart deduplication, derives deterministic event IDs, and does not await the bridge. Claude and Codex read runtime transcript/rollout metadata. Hermes is explicitly a single-model service declaration, not runtime observation. Unavailable capture degrades without blocking.
+3. **Invariant measurements:** `regista invariants probe` reports event count, lineage coverage/tokens, unresolvable and ambiguous values, scheme mix, undeclared agent authors, and model-observation statuses. `cairn invariants probe` executes behavioral model/degradation checks.
+4. **Genesis gate:** agent-suite now separates scheduled `invariant-probes` from manual `genesis-gate`. Strict child contracts, exact value-shape predicates, duplicate-ID rejection, and immutable required checks have pass/deny fixtures. A real empty throwaway schema passes every implemented probe; the gate remains blocked only on `agent_notes.session_identity_resolvable`, `regista.load_bearing_fields_refused`, and `regista.first_write_admission`.
+5. **Scheduling/docs:** Added five-minute Linux/Windows invariant-probe schedules with 30-second systemd jitter and byte-matched generated artifacts. Updated operator docs and `EPOCH-RESET.md`; cross-reference and conflict checks remain clean.
+6. **Review:** Nemotron/GLM reviewed regista and agent-suite; DeepSeek reviewed cairn. High findings were fixed and re-reviewed. WI-285 and WI-045 advanced to `in_human_review`; no self-accept was attempted.
+
+**Test results:** regista full suite 2,985 passed / 18 skipped / 11 deselected; strict mypy and Ruff clean. Cairn 645 passed / 1 skipped plus 33 Bun tests; Ruff clean. Agent-suite 1,652 passed / 39 skipped; strict mypy and Ruff clean. Documentation crossrefs: 0 unresolved across 19 documents; conflict checker: 0 violations.
+
+---
+
 ## 2026-08-10 — Session 91: Gate 0 reconciliation and strict v6 P1.1
 
 **Focus:** Reconcile WI-282/WI-283, implement WI-277/P1.1's strict sixteen-member v6 envelope, bind production code to the frozen vectors, and carry the combined working tree through self-review and repository-wide verification.

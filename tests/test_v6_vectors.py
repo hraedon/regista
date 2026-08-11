@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 import nacl.signing
 
 from regista._jcs import canonicalize
+from regista._lineage import MODEL_LINEAGE_FAMILIES
 from regista._signing import (
     canonicalize_v6_envelope,
     compute_v6_event_hash,
@@ -236,6 +237,17 @@ def test_v6_envelope_no_model() -> None:
     assert parsed["producer"]["model"] is None
     assert parsed["producer"]["model_lineage"] is None
     assert parsed["producer"]["harness"] == "claude-code"
+
+
+def test_producer_lineage_is_a_registered_family() -> None:
+    for name in CASE_NAMES:
+        case = _load_case(name)
+        envelope = case.get("input", {}).get("envelope_declaration_order")
+        if not isinstance(envelope, dict) or "producer" not in envelope:
+            continue
+        lineage = envelope["producer"]["model_lineage"]
+        if lineage is not None:
+            assert lineage in MODEL_LINEAGE_FAMILIES
 
 
 @pytest.mark.parametrize(

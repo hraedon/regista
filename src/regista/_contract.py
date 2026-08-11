@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from ._errors import ErrorCode, RegistaError
+from ._lineage import validate_model_lineage
 from ._types import Event
 
 MAX_ACTOR_ID_LENGTH = 255
@@ -623,6 +624,10 @@ def validate_actor_metadata(actor_metadata: dict[str, Any] | None) -> None:
             f"actor_metadata exceeds maximum size of {MAX_ACTOR_METADATA_BYTES} bytes",
             detail={"size": len(serialized.encode("utf-8")), "max": MAX_ACTOR_METADATA_BYTES},
         )
+    if actor_metadata.get("model_lineage") is not None:
+        validate_model_lineage(
+            actor_metadata["model_lineage"], field="actor_metadata.model_lineage"
+        )
 
 
 def validate_content_hash(content_hash: str | None) -> None:
@@ -721,6 +726,11 @@ def validate_delegation_chain(
                 detail={"principal_kind": principal_kind},
             )
         on_behalf_of["principal_kind"] = canonical
+    if on_behalf_of.get("principal_lineage") is not None:
+        validate_model_lineage(
+            on_behalf_of["principal_lineage"],
+            field="on_behalf_of.principal_lineage",
+        )
     if "scope" in on_behalf_of and on_behalf_of["scope"] is not None:
         if not isinstance(on_behalf_of["scope"], list):
             raise RegistaError(

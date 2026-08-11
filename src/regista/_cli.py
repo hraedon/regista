@@ -1534,6 +1534,41 @@ def cmd_assurance(args: argparse.Namespace) -> None:
         sub.close()
 
 
+def cmd_invariants_probe(args: argparse.Namespace) -> None:
+    from regista._invariant_probe import discover_projects, invariant_probe_report
+
+    dsn, configured_project, _ = _resolve_config(args)
+    if not dsn:
+        print("Missing required config: --dsn or REGISTA_DSN", file=sys.stderr)
+        sys.exit(2)
+    projects = [configured_project] if configured_project else discover_projects(dsn)
+    if not projects:
+        raise RegistaError(ErrorCode.DB_NOT_FOUND, "No regista projects discovered")
+    report = invariant_probe_report(dsn, projects)
+    if args.json:
+        _dump_json(report)
+    else:
+        for measurement in report["checks"][0]["projects"]:
+            coverage = measurement["lineage_coverage"]
+            print(f"Project: {measurement['project']}")
+            print(f"  events: {measurement['event_count']}")
+            print(
+                "  lineage: "
+                f"{coverage['numerator']}/{coverage['denominator']} declared"
+            )
+            print(
+                "  unresolvable lineage values: "
+                f"{measurement['unresolvable_lineage_value_count']}"
+            )
+            print(
+                "  undeclared agent authors: "
+                f"{measurement['undeclared_agent_author_event_count']}"
+            )
+            print(f"  schemes: {measurement['scheme_counts']}")
+    if not report["ok"]:
+        sys.exit(1)
+
+
 def cmd_principal_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -2356,6 +2391,18 @@ def main(argv: list[str] | None = None) -> None:
     )
     assurance_parser.add_argument("--json", action="store_true", help="JSON output")
     assurance_parser.set_defaults(func=cmd_assurance)
+
+    invariants_parser = subs.add_parser(
+        "invariants", help="Read-only evidentiary invariant measurements"
+    )
+    invariants_sub = invariants_parser.add_subparsers(dest="subcommand")
+    invariants_probe_parser = invariants_sub.add_parser(
+        "probe", help="Measure event-store invariants"
+    )
+    invariants_probe_parser.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    invariants_probe_parser.set_defaults(func=cmd_invariants_probe)
 
     # principal (Plan 026)
     pr_parser = subs.add_parser("principal", help="Principal key registry commands")

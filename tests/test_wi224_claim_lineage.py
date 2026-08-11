@@ -75,8 +75,8 @@ work_item_types:
     custom_fields: []
 """
 
-OPUS = {"model_lineage": "opus-5"}
-SONNET = {"model_lineage": "sonnet-4-5"}
+OPUS = {"model_lineage": "claude-opus"}
+SONNET = {"model_lineage": "claude-sonnet"}
 
 
 def _sub() -> InMemoryRegista:
@@ -169,7 +169,7 @@ class TestDeriveAuthorsReadsClaimLineage:
 
         assert author_ids == {"qual-agent"}
         assert author_kinds == {"agent"}
-        assert lineages == {"opus-5"}
+        assert lineages == {"claude-opus"}
         assert undeclared is False
 
     def test_claim_acquired_without_lineage_still_flags_undeclared(self):

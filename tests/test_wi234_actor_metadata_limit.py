@@ -87,7 +87,7 @@ class TestValidateActorMetadata:
         validate_actor_metadata(None)
 
     def test_small_metadata_passes(self):
-        validate_actor_metadata({"model_lineage": "opus-5"})
+        validate_actor_metadata({"model_lineage": "claude-opus"})
 
     def test_exactly_at_limit_passes(self):
         validate_actor_metadata(_metadata_of_size(MAX_ACTOR_METADATA_BYTES))
@@ -188,7 +188,7 @@ class TestLimitEnforcedAtMutationEntryPoints:
         sub.transition(
             wi.work_item_id, "close", "agent-1",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "opus-5"},
+            actor_metadata={"model_lineage": "claude-opus"},
         )
 
 
@@ -224,6 +224,6 @@ class TestClaimPathHonoursTheLimit:
             wi.work_item_id,
             actor_id="agent-2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "opus-5"},
+            actor_metadata={"model_lineage": "claude-opus"},
         )
         assert claim is not None

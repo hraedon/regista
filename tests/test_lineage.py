@@ -72,10 +72,11 @@ class TestResolveModelLineage:
 
     def test_falls_back_through_vars(self):
         assert resolve_model_lineage({"MODEL_LINEAGE": "glm"}) == "glm"
-        assert resolve_model_lineage({"AGENT_MODEL_LINEAGE": "kimi"}) == "kimi"
+        assert resolve_model_lineage({"AGENT_MODEL_LINEAGE": "deepseek"}) == "deepseek"
 
-    def test_strips_whitespace(self):
-        assert resolve_model_lineage({"REGISTA_MODEL_LINEAGE": "  gpt-sol  "}) == "gpt-sol"
+    def test_rejects_whitespace_variant(self):
+        with pytest.raises(RegistaError):
+            resolve_model_lineage({"REGISTA_MODEL_LINEAGE": "  gpt-sol  "})
 
     def test_none_when_unset(self):
         assert resolve_model_lineage({}) is None
@@ -97,11 +98,11 @@ class TestStampModelLineage:
 
     def test_never_overwrites_declared_lineage(self):
         result = stamp_model_lineage(
-            {"model_lineage": "declared"},
+            {"model_lineage": "kimi"},
             "agent",
-            environ={"REGISTA_MODEL_LINEAGE": "resolved"},
+            environ={"REGISTA_MODEL_LINEAGE": "glm"},
         )
-        assert result == {"model_lineage": "declared"}
+        assert result == {"model_lineage": "kimi"}
 
     def test_passthrough_when_no_lineage_resolvable(self):
         original = {"role": "agent"}
@@ -202,12 +203,12 @@ class TestDeriveAuthorsServiceIdentityExemption:
         events = [
             _evt("created", "agent-notes", actor_kind="agent"),
             _evt("claim_acquired", "gpt-agent", actor_kind="agent",
-                 actor_metadata={"model_lineage": "lineage-A"}),
+                 actor_metadata={"model_lineage": "glm"}),
         ]
         ids, kinds, lineages, undeclared = derive_authors(events)
         assert "gpt-agent" in ids
         assert "agent" in kinds
-        assert lineages == {"lineage-A"}
+        assert lineages == {"glm"}
         assert undeclared is False
 
     def test_genuine_undeclared_model_agent_still_flagged(self):
@@ -236,11 +237,11 @@ class TestDeriveAuthorsServiceIdentityExemption:
         # itself invisible to the cross-lineage gate.
         events = [
             _evt("created", "agent-notes", actor_kind="agent",
-                 actor_metadata={"model_lineage": "lineage-X"}),
+                 actor_metadata={"model_lineage": "kimi"}),
         ]
         _, kinds, lineages, undeclared = derive_authors(events)
         assert "agent" in kinds
-        assert "lineage-X" in lineages
+        assert "kimi" in lineages
         assert undeclared is False
 
     def test_spoofed_service_id_without_lineage_still_exempt(self):
@@ -289,12 +290,12 @@ class TestServiceIdentityDelegationUndeclared:
                  on_behalf_of={
                      "principal_id": "delegated-agent",
                      "principal_kind": "agent",
-                     "principal_lineage": "lineage-D",
+                     "principal_lineage": "deepseek",
                  }),
         ]
         _, kinds, lineages, undeclared = derive_authors(events)
         assert "agent" in kinds
-        assert "lineage-D" in lineages
+        assert "deepseek" in lineages
         assert undeclared is False
 
     def test_delegated_human_principal_not_flagged(self):
@@ -324,7 +325,7 @@ class TestOrdinaryDelegationUndeclared:
         # lineage, recording work on behalf of some principal.
         return [
             _evt("created", "proxy-agent", actor_kind="agent",
-                 actor_metadata={"model_lineage": "lineage-A"},
+                 actor_metadata={"model_lineage": "glm"},
                  on_behalf_of=delegation),
         ]
 
@@ -337,7 +338,7 @@ class TestOrdinaryDelegationUndeclared:
         assert "agent" in kinds
         # The proxy's own lineage is still recorded — the point is that it no
         # longer stands in for the principal's missing one.
-        assert lineages == {"lineage-A"}
+        assert lineages == {"glm"}
         assert undeclared is True
 
     def test_ordinary_proxy_declared_agent_principal_not_flagged(self):
@@ -345,11 +346,11 @@ class TestOrdinaryDelegationUndeclared:
         # declared: both lineages are surfaced and the gate is not tripped.
         events = self._delegated(
             principal_id="delegated-agent", principal_kind="agent",
-            principal_lineage="lineage-D",
+            principal_lineage="deepseek",
         )
         _, kinds, lineages, undeclared = derive_authors(events)
         assert "agent" in kinds
-        assert lineages == {"lineage-A", "lineage-D"}
+        assert lineages == {"glm", "deepseek"}
         assert undeclared is False
 
     def test_ordinary_proxy_human_principal_not_flagged(self):
@@ -386,7 +387,7 @@ class TestOrdinaryDelegationUndeclared:
         )
         _, _, _, ordinary = derive_authors(
             [_evt("created", "proxy-agent", actor_kind="agent",
-                  actor_metadata={"model_lineage": "lineage-A"},
+                  actor_metadata={"model_lineage": "glm"},
                   on_behalf_of=delegation)]
         )
         assert service is ordinary is True
@@ -398,7 +399,7 @@ class TestOrdinaryDelegationUndeclared:
         ctx = _ctx(
             self._delegated(principal_id="hidden-agent", principal_kind="agent"),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         with pytest.raises(ReviewRejected, match="not confirmed distinct"):
@@ -410,7 +411,7 @@ class TestOrdinaryDelegationUndeclared:
         ctx = _ctx(
             self._delegated(principal_id="hidden-agent", principal_kind="agent"),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload={"review_note": "ack", "same_lineage_acknowledged": True},
         )
         adversarial_review(ctx)
@@ -421,10 +422,10 @@ class TestOrdinaryDelegationUndeclared:
         ctx = _ctx(
             self._delegated(
                 principal_id="delegated-agent", principal_kind="agent",
-                principal_lineage="lineage-D",
+                principal_lineage="deepseek",
             ),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         adversarial_review(ctx)
@@ -437,14 +438,14 @@ class TestOrdinaryDelegationUndeclared:
                 work_item_type="issue",
                 actor_id="proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             # An ordinary declared proxy records work for an agent principal
             # that declares no lineage.
             sub.transition(
                 wi.work_item_id, "start", "proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
                 on_behalf_of={
                     "principal_id": "hidden-agent",
                     "principal_kind": "agent",
@@ -453,13 +454,13 @@ class TestOrdinaryDelegationUndeclared:
             sub.transition(
                 wi.work_item_id, "submit_for_review", "proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             with pytest.raises(RegistaError) as exc_info:
                 sub.transition(
                     wi.work_item_id, "adversarial_pass", "kimi-agent",
                     actor_kind="agent",
-                    actor_metadata={"model_lineage": "lineage-B"},
+                    actor_metadata={"model_lineage": "kimi"},
                     payload=REVIEW_NOTE,
                 )
             assert "not confirmed distinct" in str(exc_info.value)
@@ -480,7 +481,7 @@ class TestDegenerateDelegationValues:
     def _delegated(self, **delegation) -> list:
         return [
             _evt("created", "proxy-agent", actor_kind="agent",
-                 actor_metadata={"model_lineage": "lineage-A"},
+                 actor_metadata={"model_lineage": "glm"},
                  on_behalf_of=delegation),
         ]
 
@@ -493,7 +494,7 @@ class TestDegenerateDelegationValues:
         _, _, lineages, undeclared = derive_authors(events)
         # The blank value must not enter the author set as a "lineage" — that
         # is what made it compare distinct from every real one.
-        assert lineages == {"lineage-A"}
+        assert lineages == {"glm"}
         assert undeclared is True
 
     @pytest.mark.parametrize("value", [42, 0, True, ["glm"], {"lineage": "glm"}])
@@ -503,7 +504,7 @@ class TestDegenerateDelegationValues:
             principal_lineage=value,
         )
         _, _, lineages, undeclared = derive_authors(events)
-        assert lineages == {"lineage-A"}
+        assert lineages == {"glm"}
         assert undeclared is True
 
     @pytest.mark.parametrize("kind", ["Agent", "AGENT", " agent ", "\tAgent\n"])
@@ -543,10 +544,10 @@ class TestDegenerateDelegationValues:
         # principal is declared whatever its kind, and the lineage itself is
         # what the comparison then uses.
         events = self._delegated(
-            principal_id="p", principal_kind=kind, principal_lineage="lineage-D",
+            principal_id="p", principal_kind=kind, principal_lineage="deepseek",
         )
         _, _, lineages, undeclared = derive_authors(events)
-        assert lineages == {"lineage-A", "lineage-D"}
+        assert lineages == {"glm", "deepseek"}
         assert undeclared is False
 
     def test_unrecognised_kind_blocks_review_without_ack(self):
@@ -556,7 +557,7 @@ class TestDegenerateDelegationValues:
         ctx = _ctx(
             self._delegated(principal_id="hidden", principal_kind="ai-agent"),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         with pytest.raises(ReviewRejected, match="not confirmed distinct"):
@@ -566,7 +567,7 @@ class TestDegenerateDelegationValues:
         ctx = _ctx(
             self._delegated(principal_id="hidden", principal_kind="ai-agent"),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload={"review_note": "ack", "same_lineage_acknowledged": True},
         )
         adversarial_review(ctx)
@@ -591,7 +592,7 @@ class TestDegenerateDelegationValues:
                 principal_lineage="   ",
             ),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         with pytest.raises(ReviewRejected, match="not confirmed distinct"):
@@ -601,7 +602,7 @@ class TestDegenerateDelegationValues:
         ctx = _ctx(
             self._delegated(principal_id="hidden-agent", principal_kind="Agent"),
             "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         with pytest.raises(ReviewRejected, match="not confirmed distinct"):
@@ -612,7 +613,7 @@ class TestDegenerateDelegationValues:
         # implementation now; prove the degenerate values behave identically.
         for actor_id, meta in (
             ("agent-notes", None),
-            ("proxy-agent", {"model_lineage": "lineage-A"}),
+            ("proxy-agent", {"model_lineage": "glm"}),
         ):
             events = [
                 _evt("created", actor_id, actor_kind="agent", actor_metadata=meta,
@@ -635,7 +636,7 @@ class TestAdversarialReviewAfterServiceIdentityAndClaim:
         return [
             _evt("created", "agent-notes", actor_kind="agent"),
             _evt("claim_acquired", "gpt-agent", actor_kind="agent",
-                 actor_metadata={"model_lineage": "lineage-A"}),
+                 actor_metadata={"model_lineage": "glm"}),
         ]
 
     def test_cross_lineage_reviewer_passes_without_ack(self):
@@ -643,7 +644,7 @@ class TestAdversarialReviewAfterServiceIdentityAndClaim:
         # able to record a review WITHOUT --same-lineage-acknowledged.
         ctx = _ctx(
             self._prior(), "kimi-agent",
-            actor_metadata={"model_lineage": "lineage-B"},
+            actor_metadata={"model_lineage": "kimi"},
             payload=REVIEW_NOTE,
         )
         adversarial_review(ctx)  # must not raise
@@ -653,7 +654,7 @@ class TestAdversarialReviewAfterServiceIdentityAndClaim:
         # the fix must not loosen the invariant.
         ctx = _ctx(
             self._prior(), "gpt-agent-2",
-            actor_metadata={"model_lineage": "lineage-A"},
+            actor_metadata={"model_lineage": "glm"},
             payload=REVIEW_NOTE,
         )
         with pytest.raises(ReviewRejected, match="not confirmed distinct"):
@@ -691,15 +692,15 @@ class TestClaimLineagePropagationIntegration:
                 wi.work_item_id, "gpt-agent",
                 ttl_seconds=300,
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             events = sub.read_events(work_item_id=wi.work_item_id, limit=100)
             claim_events = [e for e in events if e.transition == "claim_acquired"]
             assert len(claim_events) == 1
-            assert claim_events[0].actor_metadata == {"model_lineage": "lineage-A"}
+            assert claim_events[0].actor_metadata == {"model_lineage": "glm"}
 
             _ids, kinds, lineages, undeclared = derive_authors(events)
-            assert "lineage-A" in lineages
+            assert "glm" in lineages
             assert "agent" in kinds
             assert undeclared is False
         finally:
@@ -743,23 +744,23 @@ class TestClaimLineagePropagationIntegration:
                 wi.work_item_id, "gpt-agent",
                 ttl_seconds=300,
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
                 wi.work_item_id, "start", "gpt-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
                 wi.work_item_id, "submit_for_review", "gpt-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             # Cross-lineage reviewer, no ack flag -> must pass.
             sub.transition(
                 wi.work_item_id, "adversarial_pass", "kimi-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-B"},
+                actor_metadata={"model_lineage": "kimi"},
                 payload=REVIEW_NOTE,
             )
             assert sub.get_work_item(wi.work_item_id).current_state == "done"
