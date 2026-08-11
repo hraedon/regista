@@ -159,7 +159,7 @@ def append_event(
 ) -> Event:
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
-    validate_delegation_chain(on_behalf_of)
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
     validate_entity_kind(entity_kind)
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
@@ -382,7 +382,7 @@ def append_transition_event(
 ) -> Event:
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
-    validate_delegation_chain(on_behalf_of)
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
     check_key_role_policy(key_entry.role, transition_name)
