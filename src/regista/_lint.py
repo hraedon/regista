@@ -5,6 +5,7 @@ from typing import Any
 
 import jsonschema
 
+from ._lineage import validate_model_lineage
 from ._types import Event
 
 _RECOMMENDED_FIELDS = ("model", "provider", "role_source")
@@ -26,7 +27,7 @@ def resolve_model_lineage(environ: dict[str, Any] | None = None) -> str | None:
     """Resolve the current agent's model lineage from the runtime environment.
 
     Probes ``REGISTA_MODEL_LINEAGE`` (canonical), then ``AGENT_MODEL_LINEAGE``,
-    then ``MODEL_LINEAGE``; returns the first non-empty value (stripped), or
+    then ``MODEL_LINEAGE``; validates and returns the first non-empty value, or
     ``None`` when no lineage is declared. ``environ`` overrides ``os.environ``
     for tests.
     """
@@ -34,7 +35,7 @@ def resolve_model_lineage(environ: dict[str, Any] | None = None) -> str | None:
     for var in _MODEL_LINEAGE_ENV_VARS:
         value = env.get(var)
         if value and value.strip():
-            return value.strip()
+            return validate_model_lineage(value, field=var)
     return None
 
 
@@ -48,12 +49,15 @@ def stamp_model_lineage(
 
     Pure (returns a new dict; never mutates the input). Non-agent actors are
     passed through unchanged. An already-declared ``model_lineage`` is never
-    overwritten. When no lineage can be resolved the input is returned as-is, so
+    overwritten after validation. When no lineage can be resolved the input is returned as-is, so
     a deployment without a configured lineage behaves exactly as before.
     """
     if actor_kind != "agent":
         return actor_metadata
     if isinstance(actor_metadata, dict) and actor_metadata.get("model_lineage"):
+        validate_model_lineage(
+            actor_metadata["model_lineage"], field="actor_metadata.model_lineage"
+        )
         return actor_metadata
     lineage = resolve_model_lineage(environ)
     if not lineage:

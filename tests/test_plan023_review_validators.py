@@ -280,11 +280,11 @@ class TestDeriveAuthors:
                  on_behalf_of={
                      "principal_id": "human:boss",
                      "principal_kind": "human",
-                     "principal_lineage": "claude",
+                     "principal_lineage": "claude-opus",
                  }),
         ]
         _, _, lineages, _ = derive_authors(events)
-        assert "claude" in lineages
+        assert "claude-opus" in lineages
 
 
 class TestAdversarialReview:
@@ -434,7 +434,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -464,7 +464,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -478,7 +478,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -584,7 +584,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "Agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -601,7 +601,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": kind,
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -694,7 +694,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "ai-agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -709,7 +709,7 @@ class TestReviewerDelegationLineage:
             on_behalf_of={
                 "principal_id": "real-reviewer",
                 "principal_kind": "agent",
-                "principal_lineage": "claude",
+                "principal_lineage": "claude-opus",
             },
             payload=REVIEW_NOTE,
         )
@@ -880,7 +880,7 @@ class TestHumanGateRelaxed:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -938,7 +938,7 @@ class TestHumanGateRelaxed:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
             on_behalf_of={"principal_id": "r1"},
@@ -968,7 +968,7 @@ class TestHumanGateDirectParameter:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -982,7 +982,7 @@ class TestHumanGateDirectParameter:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -1000,7 +1000,7 @@ class TestHumanGateBuiltinTypeValidation:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -1018,7 +1018,7 @@ class TestHumanGateBuiltinTypeValidation:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -1036,7 +1036,7 @@ class TestHumanGateBuiltinTypeValidation:
         ctx = _ctx(
             events, "a2",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude"},
+            actor_metadata={"model_lineage": "claude-opus"},
             payload=REVIEW_NOTE,
             transition_name="accept",
         )
@@ -1227,7 +1227,7 @@ class TestDelegationIntegration:
                 sub.transition(
                     wi_id, "accept", "other-agent",
                     actor_kind="agent",
-                    actor_metadata={"model_lineage": "claude"},
+                    actor_metadata={"model_lineage": "claude-opus"},
                     payload=REVIEW_NOTE,
                     on_behalf_of={"principal_id": "kimi-agent"},
                 )
@@ -1306,7 +1306,7 @@ class TestFullReviewCycle:
             sub.transition(
                 wi_id, "adversarial_pass", "claude-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "claude"},
+                actor_metadata={"model_lineage": "claude-opus"},
                 payload=REVIEW_NOTE,
             )
             with pytest.raises(RegistaError) as exc_info:

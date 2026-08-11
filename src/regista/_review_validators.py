@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from ._lineage import declared_model_lineage, event_model_lineage
+
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
 
@@ -43,9 +45,7 @@ def declared_lineage(value: Any) -> str | None:
     lineage) while ``0`` stayed falsy and read as absent — so the type is now
     part of the contract: a declared lineage is a non-blank string, full stop.
     """
-    if not isinstance(value, str):
-        return None
-    return value.strip() or None
+    return declared_model_lineage(value)
 
 
 def normalized_kind(kind: Any) -> str | None:
@@ -105,10 +105,7 @@ def classify_principal_kind(delegation: Any) -> str:
 
 
 def _event_lineage(event: Any) -> str | None:
-    meta = getattr(event, "actor_metadata", None)
-    if isinstance(meta, dict):
-        return declared_lineage(meta.get("model_lineage"))
-    return None
+    return event_model_lineage(event)
 
 
 def _add_delegated_principal(
@@ -267,7 +264,9 @@ def adversarial_review(ctx: Any) -> None:
     _check_separation_of_duties(ctx, author_ids, "adversarial_review")
     _require_review_note(ctx, "adversarial_review")
 
-    reviewer_lineage = (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
+    reviewer_lineage = declared_lineage(
+        (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
+    )
     # WI-262: "is there an agent mind behind this review?" is not answered by
     # the proxy's actor_kind alone. A HUMAN proxy recording a pass on behalf of
     # an agent principal is an agent review with a human typing it, and the

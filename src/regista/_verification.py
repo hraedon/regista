@@ -53,6 +53,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ._jcs import canonicalize
+from ._lineage import MODEL_LINEAGE_FAMILIES
 
 __all__ = [
     "V6_ACTOR_KEYS",
@@ -647,6 +648,11 @@ def _validate_v6_object(
         (producer["model"] is None) == (producer["model_lineage"] is None),
         "producer.model and producer.model_lineage must be null together",
     )
+    if producer["model_lineage"] is not None:
+        _v6_require(
+            producer["model_lineage"] in MODEL_LINEAGE_FAMILIES,
+            "producer.model_lineage must name a registered model family",
+        )
 
     transition = envelope["transition"]
     if signing["key_binding_event_hash"] is None:

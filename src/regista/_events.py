@@ -14,6 +14,8 @@ from ._contract import (
     Jsonb,
     check_expected_seq,
     check_key_role_policy,
+    validate_actor_metadata,
+    validate_delegation_chain,
     validate_entity_kind,
     validate_json_safe_value,
 )
@@ -155,6 +157,9 @@ def append_event(
     _key_id: str | None = None,
     entity_kind: str = "work_item",
 ) -> Event:
+    am = actor_metadata.value if actor_metadata is not None else None
+    validate_actor_metadata(am)
+    validate_delegation_chain(on_behalf_of)
     validate_entity_kind(entity_kind)
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
@@ -204,7 +209,6 @@ def append_event(
         next_seq = row["next_seq"]  # type: ignore[index]
     check_expected_seq(next_seq, expected_event_seq)
 
-    am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
     if on_behalf_of is not None:
         validate_json_safe_value(on_behalf_of, "on_behalf_of")
@@ -376,6 +380,9 @@ def append_transition_event(
     _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
 ) -> Event:
+    am = actor_metadata.value if actor_metadata is not None else None
+    validate_actor_metadata(am)
+    validate_delegation_chain(on_behalf_of)
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
     check_key_role_policy(key_entry.role, transition_name)
@@ -405,7 +412,6 @@ def append_transition_event(
     next_seq = wi_row["next_event_seq"]
     check_expected_seq(next_seq, expected_event_seq)
 
-    am = actor_metadata.value if actor_metadata is not None else None
     if on_behalf_of is not None:
         validate_json_safe_value(on_behalf_of, "on_behalf_of")
 

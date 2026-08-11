@@ -146,12 +146,12 @@ class TestCanonicalisation:
             wi, _ = sub.create_work_item(
                 workflow_name="wi262_review", work_item_type="issue",
                 actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
                 wi.work_item_id, "start", "proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
                 on_behalf_of={"principal_id": "boss", "principal_kind": " Human "},
             )
             events = sub.read_events(work_item_id=wi.work_item_id, limit=100)
@@ -168,13 +168,13 @@ class TestIngressEndToEnd:
             wi, _ = sub.create_work_item(
                 workflow_name="wi262_review", work_item_type="issue",
                 actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             with pytest.raises(RegistaError) as exc_info:
                 sub.transition(
                     wi.work_item_id, "start", "proxy-agent",
                     actor_kind="agent",
-                    actor_metadata={"model_lineage": "lineage-A"},
+                    actor_metadata={"model_lineage": "glm"},
                     on_behalf_of={
                         "principal_id": "hidden",
                         "principal_kind": "ai-agent",
@@ -197,13 +197,13 @@ class TestIngressEndToEnd:
             transition="created",
             actor_id="proxy-agent",
             actor_kind="agent",
-            actor_metadata={"model_lineage": "lineage-A"},
+            actor_metadata={"model_lineage": "glm"},
             on_behalf_of={"principal_id": "hidden", "principal_kind": "ai-agent"},
         )
         _ids, kinds, lineages, undeclared = derive_authors([legacy])
         assert "hidden" in _ids
         assert "ai-agent" in kinds
-        assert lineages == {"lineage-A"}
+        assert lineages == {"glm"}
         assert undeclared is True
 
     def test_recognised_kind_still_writes(self):
@@ -212,29 +212,29 @@ class TestIngressEndToEnd:
             wi, _ = sub.create_work_item(
                 workflow_name="wi262_review", work_item_type="issue",
                 actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
                 wi.work_item_id, "start", "proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
                 on_behalf_of={
                     "principal_id": "delegated-agent",
                     "principal_kind": "agent",
-                    "principal_lineage": "lineage-D",
+                    "principal_lineage": "deepseek",
                 },
             )
             sub.transition(
                 wi.work_item_id, "submit_for_review", "proxy-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-A"},
+                actor_metadata={"model_lineage": "glm"},
             )
             # Every identity declared a lineage and the reviewer differs from
             # all of them: still no acknowledgment required.
             sub.transition(
                 wi.work_item_id, "adversarial_pass", "kimi-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "lineage-B"},
+                actor_metadata={"model_lineage": "kimi"},
                 payload=REVIEW_NOTE,
             )
             assert sub.get_work_item(wi.work_item_id).current_state == "done"
