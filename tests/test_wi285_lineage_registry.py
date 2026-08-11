@@ -25,11 +25,12 @@ EXPECTED_FAMILIES = {
     "deepseek",
     "fable",
     "glm",
-    "gpt-codex",
     "gpt-luna",
     "gpt-sol",
+    "gpt-terra",
     "kimi",
     "longcat",
+    "minimax",
     "nemotron",
     "qwen",
 }
@@ -71,6 +72,11 @@ def test_explicit_null_lineage_remains_undeclared() -> None:
         "openai/gpt-5.6-sol",
         "umans-glm-5.2",
         "opencode",
+        # A harness is not a model line: 'codex' names the tool, not the mind
+        # behind the work, so it must not resolve to a family (owner decision
+        # 2026-08-10).
+        "codex",
+        "gpt-codex",
         " CLAUDE-OPUS ",
         "",
         42,

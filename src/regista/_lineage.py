@@ -5,6 +5,28 @@ from typing import Any, TypeGuard
 
 from ._errors import ErrorCode, RegistaError
 
+#: The canonical lineage vocabulary. A *family* is the unit of review
+#: independence: two events with different families were produced by minds
+#: independent enough for one to adversarially review the other.
+#:
+#: Families are unversioned (``V6-ENVELOPE.md`` §1.8) — ``claude-opus-5`` and
+#: ``claude-opus-4-8`` are both ``claude-opus``. Whether that rule holds for
+#: every line is an open question the owner has flagged: ``kimi-k3`` is a 2.8T
+#: model where ``kimi-k2.7`` is 1T, which is a larger gap than some *different*
+#: families. See regista WI-286 — the fix is not to smuggle a version into this
+#: token but to carry the observed version alongside it, so the independence
+#: policy stays changeable at read time.
+#:
+#: Sibling models of one release are separate families, not one: ``gpt-luna``,
+#: ``gpt-terra`` and ``gpt-sol`` are the three gpt-5.6 models and are treated
+#: exactly as ``claude-opus``/``claude-sonnet``/``fable`` are — distinct, even
+#: though they share a vendor and a release. (Owner decision, 2026-08-10: if
+#: Sonnet/Opus/Fable are different lineages then Luna/Terra/Sol are too.)
+#:
+#: ``codex`` is deliberately absent: it is a *harness*, not a model. A model id
+#: that says only ``codex`` does not identify which model ran, and the honest
+#: answer is an unresolvable lineage the probe will surface — not a family
+#: invented to make the field non-empty.
 MODEL_LINEAGE_FAMILIES: frozenset[str] = frozenset(
     {
         "claude-haiku",
@@ -13,11 +35,12 @@ MODEL_LINEAGE_FAMILIES: frozenset[str] = frozenset(
         "deepseek",
         "fable",
         "glm",
-        "gpt-codex",
         "gpt-luna",
         "gpt-sol",
+        "gpt-terra",
         "kimi",
         "longcat",
+        "minimax",
         "nemotron",
         "qwen",
     }
