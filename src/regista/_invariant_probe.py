@@ -106,6 +106,14 @@ def _event_lineages(row: dict[str, Any]) -> list[tuple[object, bool]]:
     producer_present, producer_lineage = _envelope_producer_lineage(row)
     if producer_present:
         result.append((producer_lineage, actor_is_agent))
+    # Ordering seam, latent until v6 envelopes carry a producer block: a
+    # model_observation event is written by cairn, whose actor declares no
+    # model_lineage of its own, so today the payload's observed lineage is what
+    # gets measured. Once producer_present starts coming back true for these
+    # rows, the branch below stops running and they will read as undeclared
+    # agent authors instead. Settling that means deciding whose lineage a
+    # model_observation event carries — the observer's or the observed's — which
+    # is a modelling question, not a measurement one.
     if not result and row.get("transition") == "model_observation":
         payload = row.get("payload")
         observed_lineage = (
@@ -260,6 +268,9 @@ _REJECTED_LINEAGE_VARIANTS: tuple[object, ...] = (
     "gpt",
     "umans-glm-5.2",
     "opencode",
+    "codex",
+    "gpt-codex",
+    "kimi-k3",
     " claude-opus ",
     "CLAUDE-OPUS",
     "claude-opus\n",
