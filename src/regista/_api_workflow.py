@@ -100,8 +100,7 @@ class WorkflowApiMixin(_RegistaBase):
 
         Raises:
             RegistaError: ``WORKFLOW_NOT_REGISTERED``,
-                ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``,
-                ``VALIDATOR_FAILED``.
+                ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``.
         """
         wi, evt = self.work_items.create(
             workflow_name, work_item_type, actor_id, actor_kind,
@@ -265,7 +264,7 @@ class WorkflowApiMixin(_RegistaBase):
         Raises:
             RegistaError: ``INVALID_TRANSITION``, ``ROLE_NOT_PERMITTED``,
                 ``ACTOR_ROLE_NOT_AUTHORIZED``, ``CUSTOM_FIELD_VIOLATION``,
-                ``VALIDATOR_FAILED``.
+                ``VALIDATOR_FAILED``, ``VALIDATOR_NOT_REGISTERED``.
         """
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         self._require_open()

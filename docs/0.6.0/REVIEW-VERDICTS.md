@@ -175,6 +175,16 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
 
 **The verifier recomputes every field under `decided` and `author_snapshot` and reconciles.** Payload values are evidence to compare against, never trusted answers (`ARCHITECTURE-0.6.0.md:601`). A verdict whose `decided.effective_lineage_relation` disagrees with recomputation is `invalid` and contributes nothing — it is not "downgraded to the recomputed value", because a gate that reported the wrong answer is a gate whose other outputs are also untrustworthy.
 
+> **INGRESS AMENDMENT — 2026-08-13, WI-284.** `request_changes` remains a signed
+> verdict and retains its recomputable author and lineage snapshot, but ingress
+> does not require distinct lineage or separation of duties for this negative
+> decision. It removes assurance rather than granting it, so suppressing the
+> finding when independence is unknown is the unsafe direction. The canonical
+> workflow declares `validator_params.finding_only: true`; `pass` and `accept`
+> retain their positive-verdict gates. `decided.acknowledgment_required` remains
+> a recomputed statement about the reviewer/author relation for negative
+> verdicts; it is recorded but not enforced at `request_changes` ingress.
+
 ### 2.3 The content binding — `subject_digest`
 
 This is the part that closes the audit's headline S8 scenario, so it is specified to the byte.

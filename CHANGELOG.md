@@ -6,6 +6,14 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed — BREAKING
 
+- **Review findings no longer require reviewer independence (WI-284):** canonical
+  workflow v3 marks `request_changes` as `finding_only`, so any actor may return
+  an item to `in_progress` when it supplies a substantive review note. Positive
+  `adversarial_pass` verdicts retain separation-of-duties and lineage checks.
+  Persisted canonical v1/v2 items receive the same negative-finding semantics.
+  Transitions whose declared validator is unavailable now fail closed with
+  `VALIDATOR_NOT_REGISTERED` instead of executing without validation.
+
 - **Signature verification authenticates the row, not just the envelope
   (WI-267):** `verify_event()` verified the stored `canonical_envelope` bytes
   and returned as soon as they verified. Only `actor_kind`/`actor_metadata`

@@ -50,6 +50,10 @@ def _ctx(
     transition_name: str = "adversarial_pass",
     on_behalf_of: dict | None = None,
     validator_params: dict | None = None,
+    workflow_name: str = "review_relaxed",
+    workflow_version: int = 1,
+    current_state: str = "in_review",
+    new_state: str = "in_human_review",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         prior_events=tuple(prior_events),
@@ -60,6 +64,10 @@ def _ctx(
         transition_name=transition_name,
         on_behalf_of=on_behalf_of,
         validator_params=validator_params,
+        workflow_name=workflow_name,
+        workflow_version=workflow_version,
+        current_state=current_state,
+        new_state=new_state,
     )
 
 
@@ -92,6 +100,8 @@ transitions:
     from: in_review
     to: in_progress
     validator: adversarial_review
+    validator_params:
+      finding_only: true
   - name: accept
     from: in_human_review
     to: done
@@ -137,6 +147,8 @@ transitions:
     from: in_review
     to: in_progress
     validator: adversarial_review
+    validator_params:
+      finding_only: true
   - name: accept
     from: in_human_review
     to: done
@@ -288,6 +300,90 @@ class TestDeriveAuthors:
 
 
 class TestAdversarialReview:
+    def test_request_changes_does_not_require_independent_lineage(self):
+        events = [_evt("created", "a1", actor_metadata=None)]
+        ctx = _ctx(
+            events,
+            "a1",
+            actor_metadata=None,
+            payload={"review_note": "The implementation drops failed records."},
+            transition_name="request_changes",
+            new_state="in_progress",
+            validator_params={"finding_only": True},
+        )
+
+        adversarial_review(ctx)
+
+    def test_request_changes_still_requires_a_review_note(self):
+        events = [_evt("created", "a1", actor_metadata=None)]
+        ctx = _ctx(
+            events,
+            "r1",
+            actor_metadata=None,
+            payload={},
+            transition_name="request_changes",
+            new_state="in_progress",
+            validator_params={"finding_only": True},
+        )
+
+        with pytest.raises(ReviewRejected, match="non-empty review note"):
+            adversarial_review(ctx)
+
+    def test_finding_only_must_be_boolean(self):
+        ctx = _ctx(
+            [],
+            "r1",
+            payload=REVIEW_NOTE,
+            validator_params={"finding_only": "yes"},
+        )
+
+        with pytest.raises(ReviewRejected, match="finding_only must be a boolean"):
+            adversarial_review(ctx)
+
+    def test_finding_only_cannot_weaken_a_positive_verdict(self):
+        ctx = _ctx(
+            [],
+            "r1",
+            payload=REVIEW_NOTE,
+            transition_name="adversarial_pass",
+            validator_params={"finding_only": True},
+        )
+
+        with pytest.raises(ReviewRejected, match="valid only for request_changes"):
+            adversarial_review(ctx)
+
+    def test_custom_request_changes_does_not_bypass_independence(self):
+        events = [_evt("created", "a1", actor_metadata={"model_lineage": "glm"})]
+        ctx = _ctx(
+            events,
+            "a1",
+            actor_metadata={"model_lineage": "glm"},
+            payload=REVIEW_NOTE,
+            transition_name="request_changes",
+            new_state="in_progress",
+        )
+
+        with pytest.raises(ReviewRejected, match="self-review is not allowed"):
+            adversarial_review(ctx)
+
+    @pytest.mark.parametrize("workflow_version", [1, 2])
+    def test_persisted_canonical_request_changes_uses_finding_semantics(
+        self, workflow_version: int
+    ):
+        events = [_evt("created", "a1", actor_metadata=None)]
+        ctx = _ctx(
+            events,
+            "a1",
+            actor_metadata=None,
+            payload=REVIEW_NOTE,
+            transition_name="request_changes",
+            workflow_name="canonical",
+            workflow_version=workflow_version,
+            new_state="in_progress",
+        )
+
+        adversarial_review(ctx)
+
     def test_same_lineage_no_ack_rejected(self):
         events = [_evt("created", "a1", actor_metadata={"model_lineage": "glm"})]
         ctx = _ctx(events, "r1", actor_metadata={"model_lineage": "glm"}, payload=REVIEW_NOTE)
@@ -1052,6 +1148,42 @@ def _assert_review_rejected(exc: RegistaError) -> ReviewRejected:
 
 
 class TestRelaxedFlowIntegration:
+    def test_finding_only_workflow_allows_author_to_request_changes(self):
+        sub = _relaxed_sub()
+        try:
+            wi_id = _setup_to_review(sub)
+            sub.transition(
+                wi_id,
+                "request_changes",
+                "glm-agent",
+                actor_kind="agent",
+                actor_metadata={"model_lineage": "glm"},
+                payload={"review_note": "The failure path is not transactional."},
+            )
+            wi = sub.get_work_item(wi_id)
+            assert wi is not None
+            assert wi.current_state == "in_progress"
+        finally:
+            sub.close()
+
+    def test_finding_only_workflow_request_changes_still_requires_note(self):
+        sub = _relaxed_sub()
+        try:
+            wi_id = _setup_to_review(sub)
+            with pytest.raises(RegistaError) as exc_info:
+                sub.transition(
+                    wi_id,
+                    "request_changes",
+                    "reviewer",
+                    actor_kind="agent",
+                    actor_metadata={"model_lineage": "kimi"},
+                    payload={},
+                )
+            cause = _assert_review_rejected(exc_info.value)
+            assert "non-empty review note" in cause.reason
+        finally:
+            sub.close()
+
     def test_agent_self_close_after_cross_lineage_review(self):
         sub = _relaxed_sub()
         try:

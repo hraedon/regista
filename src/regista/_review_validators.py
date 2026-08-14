@@ -257,6 +257,39 @@ def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
 def adversarial_review(ctx: Any) -> None:
     from ._assurance import LineageRelation, review_lineage_relation
 
+    params = getattr(ctx, "validator_params", None) or {}
+    finding_only = params.get("finding_only", False)
+    if not isinstance(finding_only, bool):
+        raise ReviewRejected(
+            "adversarial_review: validator_params.finding_only must be a boolean, "
+            f"got {type(finding_only).__name__}",
+            detail={"finding_only": finding_only},
+        )
+    negative_finding_transition = (
+        getattr(ctx, "current_state", None) == "in_review"
+        and getattr(ctx, "new_state", None) == "in_progress"
+        and getattr(ctx, "transition_name", None) == "request_changes"
+    )
+    if finding_only and not negative_finding_transition:
+        raise ReviewRejected(
+            "adversarial_review: validator_params.finding_only is valid only "
+            "for request_changes from in_review to in_progress",
+            detail={
+                "transition": getattr(ctx, "transition_name", None),
+                "current_state": getattr(ctx, "current_state", None),
+                "new_state": getattr(ctx, "new_state", None),
+            },
+        )
+    # WI-284: persisted canonical v1/v2 definitions predate finding_only.
+    canonical_legacy_request_changes = (
+        getattr(ctx, "workflow_name", None) == "canonical"
+        and getattr(ctx, "workflow_version", None) in (1, 2)
+        and negative_finding_transition
+    )
+    if finding_only or canonical_legacy_request_changes:
+        _require_review_note(ctx, "adversarial_review")
+        return
+
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events
     )

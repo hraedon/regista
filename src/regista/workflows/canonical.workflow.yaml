@@ -13,10 +13,12 @@
 # two-stage review (adversarial_review + human_gate), except the one
 # review-exempt `close_from_open` (pre-work dismissal — won't-fix/duplicate).
 #
-# Review gate (regista built-in dual-mode validators, Plan 023, referenced by
+# Review gate (regista built-in validators, Plan 023, referenced by
 # name — auto-available on every Regista instance):
-#   - `adversarial_review` on the `in_review` exits: the reviewer must differ
-#     from every author (cross-lineage), with explicit same-lineage acknowledgment.
+#   - `adversarial_review` on `adversarial_pass`: the reviewer must differ from
+#     every author (cross-lineage), with explicit same-lineage acknowledgment.
+#   - `adversarial_review` with `finding_only: true` on `request_changes`: any
+#     actor may record a negative finding, but must provide a substantive note.
 #   - `human_gate` on the `in_human_review` exits: **relaxed default**
 #     (`require_human: false`) — any actor (incl. the author, after an independent
 #     cross-lineage adversarial pass) may accept; the validator still requires a
@@ -39,7 +41,7 @@
 # a human: `human` (authenticated people — dossier maps its users here), `agent`
 # (model-driven actors — agent-notes' default), `system` (regista/maintenance).
 name: canonical
-version: 2
+version: 3
 regista_version: "0.4.0"
 
 states:
@@ -109,6 +111,8 @@ transitions:
     to: in_progress
     allowed_roles: [human, agent, system]
     validator: adversarial_review
+    validator_params:
+      finding_only: true
   # Stage 2: final acceptance (relaxed — any actor may accept after the
   # independent adversarial pass; the validator enforces a distinct accepter).
   - name: accept
