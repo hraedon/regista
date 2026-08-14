@@ -1,0 +1,39 @@
+{
+  "digests": {
+    "basic-workflow-walk": "sha256:724d58ed791963b48cc1464cb6d982e54854d078d6d7db15d0dec07696008ac0",
+    "claim-churn": "sha256:69e84a22898515e85625682aa753c2ae8190fc9cf3598ebe330d3e2451e3a8da",
+    "created-only": "sha256:4ade15ed6dffa58009a1b592ee984014bda9a930a1fd62e29c291bd733e6db31",
+    "empty-prefix": "sha256:8ee8efe8a988734f5d23e065a2b09013d2018954d619d3c16ba8425ca4a419ae",
+    "float-boundaries": "sha256:81fee77c9f84ab3927fbc3116afe32909052329e2b002c26f2712d5f44e206af",
+    "key-order-irrelevant-a": "sha256:761319c54887ddbe5bf6950e204c08195a842612c28680e5a814769001aebc29",
+    "key-order-irrelevant-b": "sha256:761319c54887ddbe5bf6950e204c08195a842612c28680e5a814769001aebc29",
+    "nested-structures": "sha256:c54fcef4d38fb2b424b629b316ff0af121c6005a28abaea25be2792adf03c563",
+    "timestamp-fraction-truncation": "sha256:ac887e2585fc53ca46855e620373d74e892c692880a1b5ef033ab6f9d78985b4",
+    "timestamp-leap-day": "sha256:451ad5e6cc8eb3aa85b7871c5ec54e1366a912265e197d407cff0b8b82b66080",
+    "timestamp-normalisation": "sha256:d30103abccfb95d24d2901b0af137b431477c83c77d398bd49ef75fad0619241",
+    "timestamp-offset-crosses-day": "sha256:8f258a471a7e118c0721e8463445241d072c24df16060aa4518a1590c0e03dc0",
+    "unicode-key-ordering": "sha256:16b9cd6f6fc36da74c703ec60570bce78462c7e8eb65e0cfd924525f7586177b"
+  },
+  "digests_content_only": {
+    "basic-workflow-walk": "sha256:fd5e91c909c73fad888c55eef38193891c14d930354080c2932696a0cf375c5c",
+    "claim-churn": "sha256:f8587e4f344715a18965cbc01b0bbe607cee8d665d42c3fdf4a841a6922e99e4",
+    "created-only": "sha256:24bec5ab761b99725bc908ad1f7baf979d786d53100a70c1e987d9c4ee42af8c",
+    "empty-prefix": "sha256:fda3470dd6c2445c9eca8158cc23fbbc159c798892b639526ca31bbd7f7edac7",
+    "float-boundaries": "sha256:73fb7c6172283bb04e55ea24d4c40cfc2a12f56ce55038884e368b4040c1c20e",
+    "key-order-irrelevant-a": "sha256:6f1ef449980811c3162163b66bd1f0089f2985486fb9240a87198118966382dc",
+    "key-order-irrelevant-b": "sha256:6f1ef449980811c3162163b66bd1f0089f2985486fb9240a87198118966382dc",
+    "nested-structures": "sha256:4040271f53e451c025a2612c8a21683711b6b3c544e21141aba9ada347629d05",
+    "timestamp-fraction-truncation": "sha256:9cdb450464230e10321313a12684eddbe063d6ee0227a8415a3f51424190412c",
+    "timestamp-leap-day": "sha256:2696f5beec0c4feca72e71060b631f81b2902bce56419ef77b352f3c7d82552f",
+    "timestamp-normalisation": "sha256:4ece1a1e4a6bfee3fa10f16062b0239cc6975347f20e45b1adab9422c9cf7f51",
+    "timestamp-offset-crosses-day": "sha256:492f7f11a3faa47ca5c28eae47b7a90bf54b87e0f7ae56e327efc3d3f57eb013",
+    "unicode-key-ordering": "sha256:c05531d74053d52f28e2695697de7642715c41c630eefc737d88273ca10aed25"
+  },
+  "interpreters": [
+    "CPython 3.12.13",
+    "CPython 3.13.14",
+    "CPython 3.14.4",
+    "PyPy 3.11.15"
+  ],
+  "reducer_version": 1
+}

@@ -1,0 +1,718 @@
+[
+  {
+    "schema": "acme_adcs_ra",
+    "total": 66,
+    "by_strict_version": {
+      "v4": 43,
+      "v5": 23
+    },
+    "by_status": {
+      "legacy-partial": 43,
+      "fully-reconciled": 23
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 43,
+      "actor_metadata": 43,
+      "global_seq": 66,
+      "scheme_id": 66,
+      "work_item_id[alias-of-entity_id]": 66
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 66
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "ad_steward",
+    "total": 4,
+    "by_strict_version": {
+      "v4": 4
+    },
+    "by_status": {
+      "legacy-partial": 4
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 4,
+      "actor_metadata": 4,
+      "global_seq": 4,
+      "scheme_id": 4,
+      "work_item_id[alias-of-entity_id]": 4
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 4
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "adcs_lens",
+    "total": 86,
+    "by_strict_version": {
+      "v4": 58,
+      "v5": 28
+    },
+    "by_status": {
+      "legacy-partial": 58,
+      "fully-reconciled": 28
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 58,
+      "actor_metadata": 58,
+      "global_seq": 86,
+      "scheme_id": 86,
+      "work_item_id[alias-of-entity_id]": 86
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 86
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agent_capability_broker",
+    "total": 55,
+    "by_strict_version": {
+      "v4": 15,
+      "v5": 40
+    },
+    "by_status": {
+      "legacy-partial": 15,
+      "fully-reconciled": 40
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 15,
+      "actor_metadata": 15,
+      "global_seq": 55,
+      "scheme_id": 55,
+      "work_item_id[alias-of-entity_id]": 55
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 55
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agent_notes",
+    "total": 304,
+    "by_strict_version": {
+      "v4": 125,
+      "v5": 179
+    },
+    "by_status": {
+      "legacy-partial": 125,
+      "fully-reconciled": 179
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 125,
+      "actor_metadata": 125,
+      "global_seq": 304,
+      "scheme_id": 304,
+      "work_item_id[alias-of-entity_id]": 304
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 304
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agent_provenance",
+    "total": 346476,
+    "by_strict_version": {
+      "v4": 15273,
+      "v5": 331203
+    },
+    "by_status": {
+      "legacy-partial": 15273,
+      "fully-reconciled": 331203
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 15273,
+      "actor_metadata": 15273,
+      "global_seq": 346476,
+      "scheme_id": 346476,
+      "work_item_id[alias-of-entity_id]": 346476
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 346476
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agent_suite",
+    "total": 345,
+    "by_strict_version": {
+      "v4": 13,
+      "v5": 332
+    },
+    "by_status": {
+      "legacy-partial": 13,
+      "fully-reconciled": 332
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 13,
+      "actor_metadata": 13,
+      "global_seq": 345,
+      "scheme_id": 345,
+      "work_item_id[alias-of-entity_id]": 345
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 345
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agent_wake",
+    "total": 169,
+    "by_strict_version": {
+      "v4": 62,
+      "v5": 107
+    },
+    "by_status": {
+      "legacy-partial": 62,
+      "fully-reconciled": 107
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 62,
+      "actor_metadata": 62,
+      "global_seq": 169,
+      "scheme_id": 169,
+      "work_item_id[alias-of-entity_id]": 169
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 169
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "agentic_onboarding",
+    "total": 5,
+    "by_strict_version": {
+      "v5": 5
+    },
+    "by_status": {
+      "fully-reconciled": 5
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "global_seq": 5,
+      "scheme_id": 5,
+      "work_item_id[alias-of-entity_id]": 5
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 5
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "cert_watch",
+    "total": 696,
+    "by_strict_version": {
+      "v4": 672,
+      "v5": 24
+    },
+    "by_status": {
+      "legacy-partial": 672,
+      "fully-reconciled": 24
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 672,
+      "actor_metadata": 672,
+      "global_seq": 696,
+      "scheme_id": 696,
+      "work_item_id[alias-of-entity_id]": 696
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 696
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "dossier",
+    "total": 171,
+    "by_strict_version": {
+      "v4": 62,
+      "v5": 109
+    },
+    "by_status": {
+      "legacy-partial": 62,
+      "fully-reconciled": 109
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 62,
+      "actor_metadata": 62,
+      "global_seq": 171,
+      "scheme_id": 171,
+      "work_item_id[alias-of-entity_id]": 171
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 171
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "frontier_lag",
+    "total": 1,
+    "by_strict_version": {
+      "v5": 1
+    },
+    "by_status": {
+      "fully-reconciled": 1
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "global_seq": 1,
+      "scheme_id": 1,
+      "work_item_id[alias-of-entity_id]": 1
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 1
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "gpo_lens",
+    "total": 220,
+    "by_strict_version": {
+      "v4": 190,
+      "v5": 30
+    },
+    "by_status": {
+      "legacy-partial": 190,
+      "fully-reconciled": 30
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 190,
+      "actor_metadata": 190,
+      "global_seq": 220,
+      "scheme_id": 220,
+      "work_item_id[alias-of-entity_id]": 220
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 220
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "gpo_studio",
+    "total": 136,
+    "by_strict_version": {
+      "v4": 1,
+      "v5": 135
+    },
+    "by_status": {
+      "legacy-partial": 1,
+      "fully-reconciled": 135
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 1,
+      "actor_metadata": 1,
+      "global_seq": 136,
+      "scheme_id": 136,
+      "work_item_id[alias-of-entity_id]": 136
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 136
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "openbia",
+    "total": 1,
+    "by_strict_version": {
+      "v5": 1
+    },
+    "by_status": {
+      "fully-reconciled": 1
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "global_seq": 1,
+      "scheme_id": 1,
+      "work_item_id[alias-of-entity_id]": 1
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 1
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "patina",
+    "total": 2,
+    "by_strict_version": {
+      "v4": 2
+    },
+    "by_status": {
+      "legacy-partial": 2
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 2,
+      "actor_metadata": 2,
+      "global_seq": 2,
+      "scheme_id": 2,
+      "work_item_id[alias-of-entity_id]": 2
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 2
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "regista",
+    "total": 1819,
+    "by_strict_version": {
+      "v4": 1490,
+      "v5": 329
+    },
+    "by_status": {
+      "legacy-partial": 1490,
+      "fully-reconciled": 329
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 1490,
+      "actor_metadata": 1490,
+      "global_seq": 1819,
+      "scheme_id": 1819,
+      "work_item_id[alias-of-entity_id]": 1819
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 1819
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "sf2",
+    "total": 440,
+    "by_strict_version": {
+      "v4": 440
+    },
+    "by_status": {
+      "legacy-partial": 440
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 440,
+      "actor_metadata": 440,
+      "global_seq": 440,
+      "scheme_id": 440,
+      "work_item_id[alias-of-entity_id]": 440
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 440
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "sluice",
+    "total": 77,
+    "by_strict_version": {
+      "v4": 69,
+      "v5": 8
+    },
+    "by_status": {
+      "legacy-partial": 69,
+      "fully-reconciled": 8
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 69,
+      "actor_metadata": 69,
+      "global_seq": 77,
+      "scheme_id": 77,
+      "work_item_id[alias-of-entity_id]": 77
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 77
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "substrate",
+    "total": 10,
+    "by_strict_version": {
+      "v4": 10
+    },
+    "by_status": {
+      "legacy-partial": 10
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 10,
+      "actor_metadata": 10,
+      "global_seq": 10,
+      "scheme_id": 10,
+      "work_item_id[alias-of-entity_id]": 10
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 10
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "switchboard",
+    "total": 14,
+    "by_strict_version": {
+      "v4": 2,
+      "v5": 12
+    },
+    "by_status": {
+      "legacy-partial": 2,
+      "fully-reconciled": 12
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 2,
+      "actor_metadata": 2,
+      "global_seq": 14,
+      "scheme_id": 14,
+      "work_item_id[alias-of-entity_id]": 14
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 14
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "sysadmin_competence_evaluation",
+    "total": 29,
+    "by_strict_version": {
+      "v4": 16,
+      "v5": 13
+    },
+    "by_status": {
+      "legacy-partial": 16,
+      "fully-reconciled": 13
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 16,
+      "actor_metadata": 16,
+      "global_seq": 29,
+      "scheme_id": 29,
+      "work_item_id[alias-of-entity_id]": 29
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 29
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "usage_dashboard",
+    "total": 92,
+    "by_strict_version": {
+      "v4": 45,
+      "v5": 47
+    },
+    "by_status": {
+      "legacy-partial": 45,
+      "fully-reconciled": 47
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 45,
+      "actor_metadata": 45,
+      "global_seq": 92,
+      "scheme_id": 92,
+      "work_item_id[alias-of-entity_id]": 92
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 92
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "vitrine",
+    "total": 132,
+    "by_strict_version": {
+      "v4": 103,
+      "v5": 29
+    },
+    "by_status": {
+      "legacy-partial": 103,
+      "fully-reconciled": 29
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "actor_kind": 103,
+      "actor_metadata": 101,
+      "global_seq": 132,
+      "scheme_id": 132,
+      "work_item_id[alias-of-entity_id]": 132
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 132
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "windows_evidence_lab",
+    "total": 21,
+    "by_strict_version": {
+      "v5": 21
+    },
+    "by_status": {
+      "fully-reconciled": 21
+    },
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {
+      "global_seq": 21,
+      "scheme_id": 21,
+      "work_item_id[alias-of-entity_id]": 21
+    },
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {
+      "ok": 21
+    },
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  },
+  {
+    "schema": "x",
+    "total": 0,
+    "by_strict_version": {},
+    "by_status": {},
+    "mismatch_field_counts": {},
+    "unsigned_field_counts": {},
+    "notes": {},
+    "classifier_disagreements": {},
+    "signature_counts": {},
+    "affected_entity_count": 0,
+    "affected_segments": [],
+    "affected_anchors": [],
+    "samples": []
+  }
+]
