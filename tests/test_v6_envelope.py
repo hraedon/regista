@@ -398,7 +398,8 @@ def test_v6_signature_verification_checks_the_signed_domain_and_external_pins() 
         expected_project_instance_id=BASE["project_instance_id"],
         expected_trust_domain_id=BASE["trust_domain_id"],
     )
-    assert result.cryptographically_valid
+    assert result.signature_and_hashes_valid
+    assert result.unchecked == ()
     assert result.project_binding_valid is True
     assert result.trust_domain_binding_valid is True
 
@@ -409,15 +410,24 @@ def test_v6_signature_verification_checks_the_signed_domain_and_external_pins() 
         bytes(tampered),
         PUBLIC_KEY,
         payload_canonical_hash=signed.payload_canonical_hash,
-    ).cryptographically_valid
+    ).signature_and_hashes_valid
     project_mismatch = verify_v6_signature(
         signed.canonical_envelope,
         signed.signature,
         PUBLIC_KEY,
         expected_project_instance_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     )
-    assert project_mismatch.cryptographically_valid
+    assert project_mismatch.signature_and_hashes_valid
     assert project_mismatch.project_binding_valid is False
+    assert project_mismatch.unchecked == (
+        "payload_canonical_hash",
+        "event_hash",
+        "trust_domain_binding",
+    )
+    project_mismatch_dict = project_mismatch.to_dict()
+    assert project_mismatch_dict["signature_and_hashes_valid"] is True
+    assert project_mismatch_dict["unchecked"] == list(project_mismatch.unchecked)
+    assert "cryptographically_valid" not in project_mismatch_dict
 
     trust_mismatch = verify_v6_signature(
         signed.canonical_envelope,
@@ -425,7 +435,7 @@ def test_v6_signature_verification_checks_the_signed_domain_and_external_pins() 
         PUBLIC_KEY,
         expected_trust_domain_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     )
-    assert trust_mismatch.cryptographically_valid
+    assert trust_mismatch.signature_and_hashes_valid
     assert trust_mismatch.trust_domain_binding_valid is False
 
     hash_mismatch = verify_v6_signature(
@@ -435,7 +445,7 @@ def test_v6_signature_verification_checks_the_signed_domain_and_external_pins() 
         payload_canonical_hash=b"\x00" * 32,
         expected_event_hash=b"\x00" * 32,
     )
-    assert not hash_mismatch.cryptographically_valid
+    assert not hash_mismatch.signature_and_hashes_valid
     assert hash_mismatch.payload_canonical_hash_valid is False
     assert hash_mismatch.event_hash_valid is False
 

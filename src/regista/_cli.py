@@ -1245,7 +1245,7 @@ def cmd_version(args: argparse.Namespace) -> None:
         print(f"regista {info.library_version}")
         print(f"  schema_version:           {info.schema_version}")
         print(f"  canonical_workflow_ver:   {info.canonical_workflow_version}")
-        print(f"  envelope_version:         {info.envelope_version}")
+        print(f"  writable_envelope_ver:    {info.envelope_version}")
         print(f"  canonical_workflow_hash:  {info.canonical_workflow_hash[:16]}...")
         print(f"  signing_schemes:          {', '.join(info.available_signing_schemes)}")
 
@@ -2533,4 +2533,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

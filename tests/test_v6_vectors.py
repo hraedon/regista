@@ -155,7 +155,8 @@ def test_v6_envelope_basic() -> None:
         expected_project_instance_id=env["project_instance_id"],
         expected_trust_domain_id=env["trust_domain_id"],
     )
-    assert result.cryptographically_valid
+    assert result.signature_and_hashes_valid
+    assert result.unchecked == ()
     assert result.project_binding_valid is True
     assert result.trust_domain_binding_valid is True
     assert result.envelope_version is EnvelopeVersion.V6
