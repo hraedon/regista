@@ -121,6 +121,18 @@ is blocked. Every required behavioral check and every store predicate has both a
 fixture and a deny fixture, so "red because incomplete" remains distinguishable from "red because
 the gate is broken."
 
+### 5.1 Regista controls now implemented
+
+The clean baseline in `migrations/001_initial.sql` makes workflow identity nullable and adds the
+single-row `project_identity` projection. `Regista.write_genesis(..., gate_passed=True)` is the only
+path that may open the epoch: it validates the complete v6 envelope and bootstrap acceptance,
+requires an active Ed25519 actor key bound to the envelope principal, serializes on the global-chain
+sentinel, and records the project/trust/key identity in the same transaction. Ordinary event and
+segment writers are refused before genesis and after the v6 epoch opens, with named error codes.
+`Regista.read_genesis()` re-derives and verifies the signed record without writing. The invariant
+probe exposes the load-bearing-field refusal, first-write admission, credential-free store
+fingerprint, and transaction snapshot required by the suite gate.
+
 ## 6. Standing rules for the new epoch
 
 1. Fail closed at write time on anything the record's value depends on. Unfixable history is

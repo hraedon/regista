@@ -13,8 +13,11 @@ from regista._invariant_probe import (
     ENVELOPE_PRODUCER_PRESENT_KEY,
     _envelope_producer_lineage,
     _measure_closed_registry,
+    _probe_first_write_admission,
+    _probe_load_bearing_fields,
     invariant_probe_report,
     measure_event_rows,
+    postgres_database_fingerprint,
 )
 
 
@@ -116,6 +119,30 @@ def test_empty_store_is_measured_without_inventing_coverage() -> None:
 
     assert measured.to_dict()["lineage_coverage"] == {"numerator": 0, "denominator": 0}
     assert measured.scheme_counts == {}
+
+
+def test_store_fingerprint_excludes_credentials() -> None:
+    left = "postgresql://alice:one@suite-db.example:5433/agent_suite?sslmode=require"
+    right = "postgresql://bob:two@suite-db.example:5433/agent_suite?sslmode=disable"
+    assert postgres_database_fingerprint(left) == postgres_database_fingerprint(right)
+    assert postgres_database_fingerprint(left) == postgres_database_fingerprint(
+        "host=suite-db.example. port=5433 dbname=agent_suite user=bob password=two"
+    )
+    assert postgres_database_fingerprint(left) == postgres_database_fingerprint(
+        "hostaddr=suite-db.example port=5433 dbname='agent_suite'"
+    )
+    assert postgres_database_fingerprint(left).startswith("sha256:")  # type: ignore[union-attr]
+    assert postgres_database_fingerprint("not-a-postgres-dsn") is None
+
+
+def test_first_write_probe_names_identity_and_blank_field_denials() -> None:
+    load_bearing_ok, load_bearing_detail = _probe_load_bearing_fields()
+    first_write_ok, first_write_detail = _probe_first_write_admission()
+
+    assert load_bearing_ok is True
+    assert "whitespace-only" in load_bearing_detail
+    assert first_write_ok is True
+    assert "existing data" in first_write_detail
 
 
 def test_report_passes_with_measured_project(monkeypatch: pytest.MonkeyPatch) -> None:

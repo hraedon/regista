@@ -109,8 +109,8 @@ class Event:
     actor_kind: str
     actor_metadata: dict[str, Any] | None
     key_id: str
-    workflow_name: str
-    workflow_version: int
+    workflow_name: str | None
+    workflow_version: int | None
     timestamp: datetime
     transition: str | None
     payload: dict[str, Any] | None
@@ -177,8 +177,8 @@ class Event:
             actor_kind=data["actor_kind"],
             actor_metadata=data.get("actor_metadata"),
             key_id=data["key_id"],
-            workflow_name=data["workflow_name"],
-            workflow_version=data["workflow_version"],
+            workflow_name=data.get("workflow_name"),
+            workflow_version=data.get("workflow_version"),
             timestamp=datetime.fromisoformat(data["timestamp"]),
             transition=data.get("transition"),
             payload=data.get("payload"),

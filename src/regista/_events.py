@@ -80,7 +80,13 @@ def _lock_global_chain_head(conn: DictConn) -> bytes | None:
     row = conn.execute(
         SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE FOR UPDATE")
     ).fetchone()
-    if row is None or row["head_hash"] is None:
+    if row is None:
+        raise RegistaError(
+            ErrorCode.GENESIS_SENTINEL_MISSING,
+            "event_chain_head sentinel is missing; refusing an append because "
+            "the first-write lock cannot be established",
+        )
+    if row["head_hash"] is None:
         return None
     return bytes(row["head_hash"])
 
@@ -157,6 +163,9 @@ def append_event(
     _key_id: str | None = None,
     entity_kind: str = "work_item",
 ) -> Event:
+    from ._genesis import admit_legacy_append, check_legacy_append
+
+    check_legacy_append(conn, writer="events.append_event")
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
@@ -231,8 +240,10 @@ def append_event(
                 _chain_fn = resolve_hash_function("sha-256")
                 prev_event_hash = _chain_fn(bytes(prev_env) + bytes(prev_sig)).digest()
 
-    prev_global_event_hash = _lock_global_chain_head(conn)
-
+    previous_global_event_hash = admit_legacy_append(
+        conn,
+        writer="events.append_event",
+    )
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -249,7 +260,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme=scheme,
         prev_event_hash=prev_event_hash,
-        prev_global_event_hash=prev_global_event_hash,
+        prev_global_event_hash=previous_global_event_hash,
         entity_kind=entity_kind,
         hash_alg="sha-256",
         actor_kind=actor_kind,
@@ -292,7 +303,7 @@ def append_event(
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
                 prev_event_hash,
-                prev_global_event_hash,
+                previous_global_event_hash,
             ],
         )
         assigned_global_seq = inserted.fetchone()["global_seq"]  # type: ignore[index]
@@ -358,7 +369,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
         prev_event_hash=prev_event_hash,
-        prev_global_event_hash=prev_global_event_hash,
+        prev_global_event_hash=previous_global_event_hash,
     )
 
 
@@ -380,6 +391,9 @@ def append_transition_event(
     _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
 ) -> Event:
+    from ._genesis import admit_legacy_append, check_legacy_append
+
+    check_legacy_append(conn, writer="events.append_transition_event")
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
@@ -433,8 +447,10 @@ def append_transition_event(
                 _chain_fn = resolve_hash_function("sha-256")
                 prev_event_hash = _chain_fn(bytes(prev_env) + bytes(prev_sig)).digest()
 
-    prev_global_event_hash = _lock_global_chain_head(conn)
-
+    previous_global_event_hash = admit_legacy_append(
+        conn,
+        writer="events.append_transition_event",
+    )
     scheme = get_scheme(key_entry.scheme)
     signature, canonical_hash, canonical_envelope = sign_event(
         event_id=event_id,
@@ -451,7 +467,7 @@ def append_transition_event(
         on_behalf_of=on_behalf_of,
         scheme=scheme,
         prev_event_hash=prev_event_hash,
-        prev_global_event_hash=prev_global_event_hash,
+        prev_global_event_hash=previous_global_event_hash,
         entity_kind="work_item",
         hash_alg="sha-256",
         actor_kind=actor_kind,
@@ -497,7 +513,7 @@ def append_transition_event(
                 psycopg.types.json.Jsonb(on_behalf_of) if on_behalf_of is not None else None,
                 scheme.scheme_id,
                 prev_event_hash,
-                prev_global_event_hash,
+                previous_global_event_hash,
             ],
         )
         assigned_global_seq = inserted.fetchone()["global_seq"]  # type: ignore[index]
@@ -586,7 +602,7 @@ def append_transition_event(
         on_behalf_of=on_behalf_of,
         scheme_id=scheme.scheme_id,
         prev_event_hash=prev_event_hash,
-        prev_global_event_hash=prev_global_event_hash,
+        prev_global_event_hash=previous_global_event_hash,
     )
 
 

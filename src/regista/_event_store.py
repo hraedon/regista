@@ -35,6 +35,10 @@ class EventStore(Protocol):
 
     def lock_global_chain_head(self) -> bytes | None: ...
 
+    def admit_legacy_append(self) -> bytes | None: ...
+
+    def check_legacy_append(self) -> None: ...
+
     def find_by_event_id(self, event_id: uuid.UUID) -> Event | None: ...
 
     def append(self, event: Event) -> Event: ...
@@ -70,6 +74,7 @@ def append_event(
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
+    store.check_legacy_append()
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
@@ -89,6 +94,8 @@ def append_event(
 
     check_expected_seq(event_seq, expected_event_seq)
 
+    previous_global_event_hash = store.admit_legacy_append()
+
     pl = payload.value if payload is not None else None
     if on_behalf_of is not None:
         validate_json_safe_value(on_behalf_of, "on_behalf_of")
@@ -105,8 +112,6 @@ def append_event(
                 prev_event_hash = chain_hash_fn(
                     prev_evt.canonical_envelope + prev_evt.signature
                 ).digest()
-
-    prev_global_event_hash = store.lock_global_chain_head()
 
     if key_set is not None:
         key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
@@ -128,7 +133,7 @@ def append_event(
             on_behalf_of=on_behalf_of,
             scheme=scheme,
             prev_event_hash=prev_event_hash,
-            prev_global_event_hash=prev_global_event_hash,
+            prev_global_event_hash=previous_global_event_hash,
             entity_kind=entity_kind,
             hash_alg=hash_alg,
             actor_kind=actor_kind,
@@ -164,7 +169,7 @@ def append_event(
         on_behalf_of=on_behalf_of,
         scheme_id=_scheme_id,
         prev_event_hash=prev_event_hash,
-        prev_global_event_hash=prev_global_event_hash,
+        prev_global_event_hash=previous_global_event_hash,
     )
 
     return store.append(evt)
@@ -196,6 +201,18 @@ class InMemoryEventStore:
 
     def lock_global_chain_head(self) -> bytes | None:
         return self._global_chain_head
+
+    def admit_legacy_append(self) -> bytes | None:
+        raise RegistaError(
+            ErrorCode.GENESIS_REQUIRED,
+            "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
+        )
+
+    def check_legacy_append(self) -> None:
+        raise RegistaError(
+            ErrorCode.GENESIS_REQUIRED,
+            "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
+        )
 
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
         if entity_kind == "work_item":
@@ -325,6 +342,16 @@ class PostgresEventStore:
 
         return _lock_global_chain_head(self._conn)
 
+    def admit_legacy_append(self) -> bytes | None:
+        from ._genesis import admit_legacy_append
+
+        return admit_legacy_append(self._conn, writer="event_store.append")
+
+    def check_legacy_append(self) -> None:
+        from ._genesis import check_legacy_append
+
+        check_legacy_append(self._conn, writer="event_store.append")
+
     def prepare(
         self,
         work_item_id: uuid.UUID,
@@ -337,6 +364,7 @@ class PostgresEventStore:
         return wi
 
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
+        self.check_legacy_append()
         if entity_kind != "work_item":
             entity_bytes = work_item_id.bytes
             key = int.from_bytes(entity_bytes[:8], "big", signed=False)
@@ -380,6 +408,8 @@ class PostgresEventStore:
     def append(self, event: Event) -> Event:
         import psycopg.types.json
         from psycopg.sql import SQL
+
+        self.admit_legacy_append()
 
         am = event.actor_metadata
         pl = event.payload

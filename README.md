@@ -73,6 +73,17 @@ sub = Regista.create_project(
     hmac_key_path="/secrets/regista-keys.json",
 )
 
+# In the 0.6.0 clean epoch, open the project explicitly with an externally
+# prepared v6/Ed25519 genesis envelope. Legacy append APIs are refused until
+# the v6 ordinary-event writer is enabled.
+genesis = sub.write_genesis(genesis_envelope, gate_passed=True)
+assert sub.read_genesis().event_hash == genesis.event_hash
+
+# InMemoryRegista remains a legacy-only test backend and fails closed in the
+# clean epoch until it gains an equivalent v6 genesis implementation.
+
+# The legacy operation examples below document the historical API; legacy
+# writers are refused on the clean baseline before and after genesis.
 # Register a workflow
 sub.register_workflow_file("workflows/spec-pipeline.yaml")
 

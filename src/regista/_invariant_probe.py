@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -12,6 +15,7 @@ from psycopg.sql import SQL, Identifier
 from ._connection import validate_project_name
 from ._contract import validate_actor_metadata, validate_delegation_chain
 from ._errors import ErrorCode, RegistaError
+from ._genesis import first_write_admission, validate_load_bearing_fields
 from ._lineage import MODEL_LINEAGE_FAMILIES
 
 
@@ -27,6 +31,7 @@ class ProjectInvariantMeasurements:
     scheme_counts: dict[str, int]
     undeclared_agent_author_event_count: int
     model_observation_status_counts: dict[str, int]
+    snapshot_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +51,7 @@ class ProjectInvariantMeasurements:
             "model_observation_status_counts": dict(
                 sorted(self.model_observation_status_counts.items())
             ),
+            "snapshot_id": self.snapshot_id,
         }
 
 
@@ -131,6 +137,8 @@ def _event_lineages(row: dict[str, Any]) -> list[tuple[object, bool]]:
 def measure_event_rows(
     project: str,
     rows: Iterable[dict[str, Any]],
+    *,
+    snapshot_id: str = "",
 ) -> ProjectInvariantMeasurements:
     event_count = 0
     declared_lineage_event_count = 0
@@ -193,6 +201,238 @@ def measure_event_rows(
         scheme_counts=scheme_counts,
         undeclared_agent_author_event_count=undeclared_agent_author_event_count,
         model_observation_status_counts=model_observation_status_counts,
+        snapshot_id=snapshot_id,
+    )
+
+
+_CONNINFO_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _parse_conninfo_keywords(dsn: str) -> dict[str, str] | None:
+    """Parse the supported libpq keyword/value grammar without guessing."""
+    result: dict[str, str] = {}
+    i, n = 0, len(dsn)
+    while i < n:
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        matched = _CONNINFO_KEY_RE.match(dsn, i)
+        if matched is None:
+            return None
+        key = matched.group(0).lower()
+        i = matched.end()
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n or dsn[i] != "=":
+            return None
+        i += 1
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i < n and dsn[i] == "'":
+            i += 1
+            chars: list[str] = []
+            closed = False
+            while i < n:
+                ch = dsn[i]
+                if ch == "\\" and i + 1 < n:
+                    chars.append(dsn[i + 1])
+                    i += 2
+                    continue
+                if ch == "'":
+                    closed = True
+                    i += 1
+                    break
+                chars.append(ch)
+                i += 1
+            if not closed:
+                return None
+            value = "".join(chars)
+        else:
+            start = i
+            while i < n and not dsn[i].isspace():
+                i += 1
+            value = dsn[start:i]
+        result[key] = value
+    return result or None
+
+
+def _keyword_value_identity(dsn: str) -> tuple[str, str, int, str] | None:
+    keywords = _parse_conninfo_keywords(dsn)
+    if keywords is None:
+        return None
+    database = keywords.get("dbname", "")
+    if not database or "=" in database:
+        return None
+    host = keywords.get("host") or keywords.get("hostaddr") or ""
+    if "," in host:
+        return None
+    host = host.strip().lower().rstrip(".")
+    raw_port = keywords.get("port", "5432")
+    if "," in raw_port:
+        return None
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return None
+    return ("postgresql", host, port, database)
+
+
+def _postgres_database_identity(dsn: str) -> tuple[str, str, int, str] | None:
+    try:
+        parsed = urlsplit(dsn)
+        if parsed.scheme.lower() not in {"postgres", "postgresql"}:
+            return _keyword_value_identity(dsn)
+        options = parse_qs(parsed.query, keep_blank_values=True)
+        host = parsed.hostname
+        if host is None:
+            host = options.get("host", [""])[0]
+        host = unquote(host).strip().lower().rstrip(".")
+
+        port = parsed.port
+        if port is None:
+            raw_port = options.get("port", ["5432"])[0]
+            port = int(raw_port)
+
+        database = unquote(parsed.path.lstrip("/").rstrip("/"))
+        if not database:
+            database = unquote(options.get("dbname", [""])[0])
+        if not database:
+            return None
+        return ("postgresql", host, port, database)
+    except (ValueError, UnicodeError):
+        return None
+
+
+def postgres_database_fingerprint(dsn: str) -> str | None:
+    """Return the credential-free identity used by the suite gate.
+
+    This mirrors Agent Suite's supported URI and libpq keyword/value parser.
+    The normalization is part of the cross-component probe contract.
+    """
+    try:
+        identity = _postgres_database_identity(dsn)
+    except (ValueError, TypeError):
+        return None
+    if identity is None:
+        return None
+    material = "\0".join((identity[0], identity[1], str(identity[2]), identity[3]))
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _probe_snapshot_id(conn: psycopg.Connection[dict[str, Any]]) -> str:
+    row = conn.execute("SELECT txid_current_snapshot() AS snapshot").fetchone()
+    if row is None or not isinstance(row["snapshot"], str) or not row["snapshot"]:
+        raise psycopg.OperationalError("read-only probe returned no transaction snapshot")
+    return "pg:" + row["snapshot"]
+
+
+def _probe_load_bearing_fields() -> tuple[bool, str]:
+    envelope: dict[str, Any] = {
+        "type": "regista.event",
+        "version": 6,
+        "project_instance_id": "project",
+        "trust_domain_id": "trust",
+        "event_id": "event",
+        "entity": {"kind": "project", "id": "project"},
+        "entity_seq": 1,
+        "actor": {"principal_id": "agent:probe", "kind": "agent", "metadata": None},
+        "signing": {
+            "scheme_id": "ed25519",
+            "key_id": "probe-key",
+            "key_binding_event_hash": None,
+        },
+        "authorization": {"mode": "direct", "credentials": []},
+        "workflow": None,
+        "occurred_at": "2026-08-08T12:34:56.123456Z",
+        "transition": "project_initialized",
+        "payload": None,
+        "chain": {
+            "hash_algorithm": "sha-256",
+            "previous_entity_event_hash": None,
+            "previous_project_event_hash": None,
+        },
+        "producer": {
+            "harness": "probe",
+            "harness_version": "1",
+            "model": None,
+            "model_lineage": None,
+        },
+    }
+    try:
+        validate_load_bearing_fields(envelope)
+    except RegistaError as exc:
+        return False, f"complete load-bearing fixture was refused: {exc.code}"
+
+    del envelope["producer"]["harness"]
+    try:
+        validate_load_bearing_fields(envelope)
+    except RegistaError as exc:
+        if exc.code is ErrorCode.LOAD_BEARING_FIELD_MISSING:
+            pass
+        else:
+            return False, f"missing load-bearing field used {exc.code}, not the named error"
+    else:
+        return False, "missing producer.harness was accepted"
+
+    envelope["producer"]["harness"] = "   "
+    try:
+        validate_load_bearing_fields(envelope)
+    except RegistaError as exc:
+        if exc.code is ErrorCode.LOAD_BEARING_FIELD_MISSING:
+            return True, (
+                "complete fixture accepted; missing and whitespace-only "
+                "producer.harness were refused"
+            )
+        return False, f"whitespace load-bearing field used {exc.code}, not the named error"
+    return False, "whitespace-only producer.harness was accepted"
+
+
+def _probe_first_write_admission() -> tuple[bool, str]:
+    try:
+        first_write_admission(
+            gate_passed=True,
+            event_count=0,
+            head_hash=None,
+            transition="project_initialized",
+        )
+    except RegistaError as exc:
+        return False, f"empty gated first write was refused: {exc.code}"
+
+    denials = (
+        (False, 0, None, 0, False, "project_initialized", ErrorCode.GENESIS_GATE_NOT_PASSED),
+        (True, 1, None, 0, False, "project_initialized", ErrorCode.GENESIS_ALREADY_WRITTEN),
+        (True, 0, b"head", 0, False, "project_initialized", ErrorCode.GENESIS_ALREADY_WRITTEN),
+        (True, 0, None, 1, False, "project_initialized", ErrorCode.GENESIS_ALREADY_WRITTEN),
+        (True, 0, None, 0, True, "project_initialized", ErrorCode.GENESIS_ALREADY_WRITTEN),
+        (True, 0, None, 0, False, "not_project_initialized", ErrorCode.GENESIS_INVALID),
+    )
+    for (
+        gate_passed,
+        event_count,
+        head_hash,
+        archived_count,
+        identity_present,
+        transition,
+        expected,
+    ) in denials:
+        try:
+            first_write_admission(
+                gate_passed=gate_passed,
+                event_count=event_count,
+                head_hash=head_hash,
+                archived_event_count=archived_count,
+                identity_present=identity_present,
+                transition=transition,
+            )
+        except RegistaError as exc:
+            if exc.code is not expected:
+                return False, f"denial used {exc.code}, expected {expected}"
+        else:
+            return False, f"denial with expected code {expected} was accepted"
+    return True, (
+        "empty gated first write accepted; gate, existing data, head, and "
+        "transition denials refused"
     )
 
 
@@ -339,15 +579,16 @@ def probe_project(dsn: str, project: str) -> ProjectInvariantMeasurements:
     validate_project_name(project)
     with psycopg.connect(dsn, connect_timeout=5, row_factory=dict_row) as conn:
         with conn.transaction():
-            conn.execute("SET TRANSACTION READ ONLY")
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             conn.execute(SQL("SET LOCAL search_path TO {}").format(Identifier(project)))
+            snapshot_id = _probe_snapshot_id(conn)
             # A server-side cursor: the measurement is scheduled every five
             # minutes and the event table only grows, so it must never depend on
             # the whole population fitting in the prober's memory.
             with conn.cursor(name="regista_invariant_probe", row_factory=dict_row) as cur:
                 cur.itersize = PROBE_FETCH_BATCH
                 cur.execute(_PROBE_QUERY)
-                return measure_event_rows(project, cur)
+                return measure_event_rows(project, cur, snapshot_id=snapshot_id)
 
 
 def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
@@ -359,14 +600,18 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
         except (ValueError, psycopg.Error) as exc:
             errors.append({"project": project, "error_type": type(exc).__name__})
     closed_registry, registry_detail = _measure_closed_registry()
+    load_bearing_ok, load_bearing_detail = _probe_load_bearing_fields()
+    first_write_ok, first_write_detail = _probe_first_write_admission()
+    store_fingerprint = postgres_database_fingerprint(dsn)
     return {
         "component": "regista",
         "probe_version": 1,
-        "ok": closed_registry and not errors,
+        "ok": closed_registry and load_bearing_ok and first_write_ok and not errors,
         "checks": [
             {
                 "id": "regista.store_invariant_measurements",
                 "status": "measured" if not errors else "fail",
+                "store_fingerprint": store_fingerprint,
                 "projects": [measurement.to_dict() for measurement in measurements],
                 "errors": errors,
             },
@@ -374,6 +619,16 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
                 "id": "regista.closed_lineage_registry",
                 "status": "pass" if closed_registry else "fail",
                 "detail": registry_detail,
+            },
+            {
+                "id": "regista.load_bearing_fields_refused",
+                "status": "pass" if load_bearing_ok else "fail",
+                "detail": load_bearing_detail,
+            },
+            {
+                "id": "regista.first_write_admission",
+                "status": "pass" if first_write_ok else "fail",
+                "detail": first_write_detail,
             },
         ],
     }
