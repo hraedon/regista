@@ -66,6 +66,9 @@ def append_event(
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
         with mgr.transaction() as conn:
+            from ._genesis import check_legacy_append
+
+            check_legacy_append(conn, writer="events.append_event")
             if entity_kind == "work_item":
                 wi_row = conn.execute(
                     "SELECT workflow_name, workflow_version FROM work_items_current "

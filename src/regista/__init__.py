@@ -13,6 +13,7 @@ from . import secrets as secrets
 from ._api_async import AsyncApiMixin
 from ._api_claim import ClaimApiMixin
 from ._api_external import ExternalApiMixin
+from ._api_genesis import GenesisApiMixin
 from ._api_meta import MetaApiMixin
 from ._api_workflow import WorkflowApiMixin
 from ._assurance import AssuranceLevel as AssuranceLevel
@@ -24,6 +25,8 @@ from ._assurance import lineage_relation as lineage_relation
 from ._assurance import same_lineage as same_lineage
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
+from ._genesis import GenesisRecovery as GenesisRecovery
+from ._genesis import V6GenesisWrite as V6GenesisWrite
 from ._integrity import REGISTA_VERSION, check_integrity
 from ._keys import KeySet
 from ._lineage import MODEL_LINEAGE_FAMILIES as MODEL_LINEAGE_FAMILIES
@@ -149,6 +152,7 @@ log = structlog.get_logger()
 
 
 class Regista(
+    GenesisApiMixin,
     WorkflowApiMixin,
     ClaimApiMixin,
     AsyncApiMixin,

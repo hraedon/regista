@@ -10,7 +10,7 @@ from psycopg.sql import SQL
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
-from ._events import _advance_global_chain_head, _lock_global_chain_head
+from ._events import _advance_global_chain_head
 from ._keys import KeySet
 from ._signing import sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
@@ -429,7 +429,12 @@ def seal_segment(
         key_entry = key_set.active_key()
         scheme = get_scheme(key_entry.scheme)
 
-        prev_global_event_hash = _lock_global_chain_head(conn)
+        from ._genesis import admit_legacy_append
+
+        prev_global_event_hash = admit_legacy_append(
+            conn,
+            writer="archive.seal_segment",
+        )
 
         seal_signature, canonical_hash, canonical_envelope = sign_event(
             event_id=seal_event_id,

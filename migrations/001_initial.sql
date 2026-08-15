@@ -6,8 +6,8 @@ CREATE TABLE events (
     actor_kind TEXT NOT NULL CHECK (actor_kind IN ('agent', 'human', 'system')),
     actor_metadata JSONB,
     key_id TEXT NOT NULL,
-    workflow_name TEXT NOT NULL,
-    workflow_version INTEGER NOT NULL,
+    workflow_name TEXT,
+    workflow_version INTEGER,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
     transition TEXT,
     payload JSONB,
@@ -20,6 +20,20 @@ CREATE INDEX idx_events_actor_id ON events (actor_id);
 CREATE INDEX idx_events_timestamp ON events (timestamp);
 CREATE INDEX idx_events_transition ON events (transition);
 CREATE INDEX idx_events_workflow ON events (workflow_name, workflow_version);
+
+CREATE TABLE project_identity (
+    id                  BOOLEAN PRIMARY KEY DEFAULT TRUE,
+    project_instance_id UUID NOT NULL UNIQUE,
+    trust_domain_id     UUID NOT NULL,
+    genesis_event_id    UUID NOT NULL UNIQUE,
+    genesis_event_hash  BYTEA NOT NULL,
+    principal_id        TEXT NOT NULL,
+    key_id              TEXT NOT NULL,
+    scheme_id           TEXT NOT NULL CHECK (scheme_id = 'ed25519'),
+    key_fingerprint     TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT project_identity_singleton CHECK (id)
+);
 
 CREATE TABLE work_items_current (
     work_item_id UUID PRIMARY KEY,

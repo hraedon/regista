@@ -77,19 +77,18 @@ binding, rejection of unknown fields and versions, no fallback on failure.
 **Done when:** the mutation matrix covers every signed field (each rewrite named in
 `mismatched_fields`), unknown-schema and degenerate-value cases fail closed, and the vectors pass.
 
-### P1.2 — Forward migration: nullable workflow columns · **owner: me** · dep: P0.1
-`events.workflow_name`/`workflow_version` are `NOT NULL` since migration 001, so the checkpoint —
-the first v6 event in **every** project — cannot be inserted. Touches all 26 projects and is
-irreversible in production. **Do not fudge with `""`/`0` sentinels**: the segment seal already does
-that, and in v6 the envelope would *sign* the falsehood.
-**Done when:** migration applies and rolls back cleanly on a copy of the live schema set, and a
-checkpoint inserts with genuinely null workflow identity.
+### P1.2 — Clean-epoch baseline and project genesis · **owner: team** · dep: P0.1
+The clean baseline makes `events.workflow_name`/`workflow_version` nullable and records the
+project/trust identity in a singleton projection. **Do not fudge with `""`/`0` sentinels**: v6
+would sign the falsehood. The first write is an explicit v6/Ed25519 project genesis, not an
+implicit upgrade performed by a legacy append path.
+**Done when:** the load-bearing-field and first-write gates pass, genesis inserts with genuinely
+null workflow identity, the project identity is transactionally bound to the signed event, and
+ordinary v5/HMAC writers are refused on both sides of the epoch boundary.
 
-> **AMENDED — `EPOCH-RESET.md` §3.** The requirement survives; the migration does not. An empty
-> store declares `workflow_name`/`workflow_version` nullable in its **initial schema**, so there
-> is no forward migration, no 26-project blast radius and no irreversibility. The sentinel ban
-> stands unchanged — v6 would sign the falsehood. **Done when:** the initial schema permits null
-> workflow identity and a genesis event inserts with genuinely null values, neither `""` nor `0`.
+> **AMENDED — `EPOCH-RESET.md` §3.** The requirement survives; the legacy population and its
+> migration rehearsal do not. An empty store declares `workflow_name`/`workflow_version` nullable
+> in its **initial schema**; the sentinel ban stands unchanged because v6 would sign the falsehood.
 
 ### P1.3 — Consolidated result model + v5 reclassification · **owner: team** · dep: P0.1
 Extend `VerificationResult` for v6. Post-cutover, v4/v5 become `LEGACY_PARTIAL`.

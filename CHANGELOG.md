@@ -6,6 +6,13 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed — BREAKING
 
+- **Clean v6 project genesis:** fresh schemas now carry nullable workflow identity
+  and a `project_identity` projection. `write_genesis()` requires an explicit
+  passed conformance gate, complete load-bearing fields, an active Ed25519 actor
+  key bound to the envelope principal, and bootstrap acceptance. The write is
+  serialized behind the chain sentinel and is recoverable through the read-only
+  `read_genesis()` API; legacy writers are refused before and after the v6 epoch.
+
 - **Review findings no longer require reviewer independence (WI-284):** canonical
   workflow v3 marks `request_changes` as `finding_only`, so any actor may return
   an item to `in_progress` when it supplies a substantive review note. Positive

@@ -20,8 +20,8 @@
 -- old code did `bytes(row["head_hash"])` unconditionally, which TypeErrors on
 -- NULL. New code returns None for a NULL head_hash. Applying the migration
 -- without the code update breaks the first append in every fresh schema
--- (loudly). The reverse (code without migration) is safe — it degrades to the
--- pre-fix behaviour (no sentinel, genesis race still possible).
+-- (loudly). The reverse also fails closed: current code refuses an append when
+-- the sentinel is absent rather than degrading to the pre-fix genesis race.
 
 ALTER TABLE event_chain_head ALTER COLUMN head_hash DROP NOT NULL;
 ALTER TABLE event_chain_head ALTER COLUMN head_event_id DROP NOT NULL;
