@@ -195,9 +195,12 @@ post-checkpoint HMAC write is refused.
 
 > **AMENDED — `EPOCH-RESET.md` §3.** Cut-over becomes **genesis**. There is no seam to verify
 > across and no prefix to checkpoint: provision keys, pass the §5 conformance gate, write the
-> first event into an empty store. **Done when:** the gate passes, genesis verifies against an
-> externally pinned root, and an HMAC write is refused — the last of which was always the
-> point and is unchanged.
+> first event into an empty store. The §5 gate includes the R-10 actor-boundary prerequisite
+> from Plan 023 M3. The component-owned `regista.actor_boundary_signing` check is intentionally
+> missing until M3 implements a real actor-boundary API and behavioral proof, so agent-suite
+> treats its omission as a blocker. **Done when:** the gate passes, genesis verifies against an
+> externally pinned root, and an HMAC write is refused — the last of which was always the point
+> and is unchanged.
 
 ---
 

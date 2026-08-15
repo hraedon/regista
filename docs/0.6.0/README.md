@@ -34,6 +34,12 @@ evidence. `ARCHITECTURE-0.6.0.md` is **rank 5, superseded in 14 places, retained
 | 0 | **P0.3** byte-level conformance vectors | **DONE 2026-08-09** — 27 vector cases across 16 categories. Generator at `tools/make_v6_vectors.py`, vectors in `tests/vectors/v6/`, conformance test `tests/test_v6_vectors.py` (87 assertions). Review-subject vectors agree with `reducer_v1_frozen_digests.json`. Fail-then-pass evidence recorded. **Corrected after review 2026-08-09** — see below. |
 | 1–4 | everything else | Gate 0 is complete; parallel tracks may begin. |
 
+The pre-genesis gate also carries Plan 023 M3's R-10 actor-boundary prerequisite. The
+component-owned `regista.actor_boundary_signing` probe is not emitted in this stack: M3 must
+first implement a real actor-boundary API and behavioral proof. Agent-suite treats the missing
+check as a blocker, so the genesis gate must stay blocked until the probe exists and reports a
+real refusal.
+
 ---
 
 ## If you are picking up P0.3

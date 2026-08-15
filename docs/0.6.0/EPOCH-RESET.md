@@ -112,14 +112,21 @@ conformance check gates the epoch; if it does not pass, the epoch does not open.
    lineage, distinct lineage tokens, unresolvable tokens, scheme mix, undeclared authors —
    every defect above was seconds of SQL that nobody ran. Run continuously, these surface at
    a hundred events rather than three hundred and seventy-one thousand.
+6. **Signing happens at the actor boundary (R-10 / Plan 023 M3).** A behavioral signing
+   attempt for an unbound principal must be refused; no service may hold a keyset that can
+   sign as arbitrary principals. This is a precondition on genesis, not a configuration claim.
+   The component-owned `regista.actor_boundary_signing` probe is not emitted until M3
+   implements a real actor-boundary API and behavioral proof. Agent-suite treats that omission
+   as a blocker; R-10 must precede genesis.
 
 The executable surfaces are split deliberately. `regista invariants probe` owns read-only store
 measurements; `cairn invariants probe` owns the observed-model behavioral checks; agent-suite
 orchestrates them with `agent-suite invariant-probes` and applies the separate first-write verdict
 with `agent-suite genesis-gate`. The measurement command is scheduled even while the genesis verdict
-is blocked. Every required behavioral check and every store predicate has both a passing throwaway
-fixture and a deny fixture, so "red because incomplete" remains distinguishable from "red because
-the gate is broken."
+is blocked. Implemented checks have both a passing throwaway fixture and a deny fixture, so "red
+because incomplete" remains distinguishable from "red because the gate is broken." The R-10 check
+is intentionally not replaced with a placeholder: until M3 supplies the API and proof,
+`regista.actor_boundary_signing` is missing and agent-suite names that omission as a gate blocker.
 
 ### 5.1 Regista controls now implemented
 
@@ -131,7 +138,9 @@ sentinel, and records the project/trust/key identity in the same transaction. Or
 segment writers are refused before genesis and after the v6 epoch opens, with named error codes.
 `Regista.read_genesis()` re-derives and verifies the signed record without writing. The invariant
 probe exposes the load-bearing-field refusal, first-write admission, credential-free store
-fingerprint, and transaction snapshot required by the suite gate.
+fingerprint, and transaction snapshot required by the suite gate. The component-owned
+actor-boundary probe is not among the implemented controls: M3 must first provide a real
+actor-boundary API and behavioral proof, after which the probe is required before genesis.
 
 ## 6. Standing rules for the new epoch
 
