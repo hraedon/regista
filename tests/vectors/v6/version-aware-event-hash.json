@@ -1,0 +1,12 @@
+{
+  "category": "version-aware-event-hash",
+  "description": "v6 event_hash (domain-tagged + length-framed) vs legacy sha256(env||sig...",
+  "expected": {
+    "legacy_event_hash": "sha256:3b2dcc2d83cdb2c0b0efc3aea4122734e98cf86074844ddfdea2b42daa9aac95",
+    "v6_event_hash": "sha256:997ec5b513f51e070febec14908330abdda1e41e358f393316a19e451e52282d"
+  },
+  "input": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"agent\",\"metadata\":{},\"principal_id\":\"agent:01J8ZC4M9QK3V7XN2R6TB5HFAD\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"v\":6},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":\"claude-opus-5\",\"model_lineage\":\"claude-opus\"},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"note_added\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "signature_hex": "57bc0471224138645602fff6ec5c8f7431b0dbb25e905b20402975063c28a00b3ef132f809f52a94143bb419804163cd152a2031efadd39aae10a9e0644e9602"
+  }
+}

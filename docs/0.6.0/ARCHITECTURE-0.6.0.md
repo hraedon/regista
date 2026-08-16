@@ -31,6 +31,12 @@
 > `RECONCILIATION.md`, and where this document and a sibling specification disagree, the sibling
 > wins (rank 3 or 4 beats rank 5).
 
+> **LOCAL SAFETY MARKER — WI-283.** The historical design below is retained for rejected
+> alternatives and architecture reasoning. It is not an implementation contract. Before using a
+> declaration from this file, resolve it against the owning sibling named in the banner; a local
+> `SUPERSEDED`, `AMENDED` or `CUT` marker immediately before a declaration is authoritative for
+> that declaration.
+
 ## EXECUTIVE SUMMARY
 
 Regista 0.6.0 should establish a new cryptographic epoch: strict v6 envelopes, Ed25519-only production signing, signed identity and workflow state, content-bound review verdicts, and externally rooted bundle v3 artifacts. Existing v4/v5 and HMAC events remain immutable and verifiable under their original, explicitly limited semantics; a signed per-project cutover checkpoint binds each legacy history to the new public-key epoch without pretending to re-authenticate it. Public keys move from project-local mutable tables into an estate-wide signed trust-domain log rooted in operator-supplied fingerprints, while project-local tables become rebuildable projections only. The unused segment and anchoring implementations should be deleted rather than repaired during this release: they currently provide no deployed evidence and keeping them preserves false security surfaces. After 0.6.0, regista can defend against database-only tampering when signing keys are kept outside PostgreSQL, but it still cannot defeat a host operator who controls every signing key and every publication channel.
@@ -40,6 +46,12 @@ Regista 0.6.0 should establish a new cryptographic epoch: strict v6 envelopes, E
 ## 1. The v6 signed envelope
 
 ### Decision
+
+> **SUPERSEDED — `V6-ENVELOPE.md` §1.1–§1.9 and `RECONCILIATION.md` Resolution 1.** The envelope
+> object shown in this historical section predates the required `producer` block and the bootstrap
+> exceptions. Implement the 16-key v6 contract, canonical order, signed producer semantics and
+> `string | null` key-binding rules from `V6-ENVELOPE.md`; do not copy this section's 15-key
+> example.
 
 Introduce exactly one writable event format:
 
@@ -197,6 +209,11 @@ Signed checkpoints and bundle membership statements should attest `event_count`,
 
 ### Decision
 
+> **SUPERSEDED — `BUNDLE-V3.md` §§3–5 and `RECONCILIATION.md` Resolution 4.** This historical
+> bundle sketch predates the final scope and trust-policy amendments. `declared-selection` is cut;
+> the bundle verifier must use the owning v3 contract, externally supplied trust material and the
+> corrected signer, index and attestation rules.
+
 Delete bundle formats v1 and v2 from the public verifier. Old bundles are regenerable artifacts, unlike event history. Bundle v3 becomes the only accepted format.
 
 This removes the v1 signature downgrade at `_bundle.py:646-658` rather than preserving another legacy mode.
@@ -227,6 +244,11 @@ Each event record should contain only:
 An optional index may contain derived fields for display, but verification must recompute it from the envelope.
 
 ### Signed membership statement
+
+> **CUT — `BUNDLE-V3.md` §3.5.** The historical scope example below includes
+> `declared-selection` for rejected-alternative reasoning. 0.6.0 accepts only
+> `complete-store` and `contiguous-range`; do not implement the third value or its `selection`
+> member.
 
 The statement should be:
 
@@ -278,7 +300,10 @@ SHA256(
 
 This closes S4 against an offline attacker: deleting, adding, replacing or reordering any event or supporting section invalidates the signed statement. The existing unkeyed bundle hash (`_bundle.py:570-577`) can be removed.
 
-`complete-store` is allowed only when the statement identifies the exact chain head and count observed by the signer. `contiguous-range` must include the predecessor hash. `declared-selection` is an attestation by the manifest signer to the selection result; local chain mathematics alone cannot prove that all matching items were included.
+`complete-store` is allowed only when the statement identifies the exact chain head and count
+observed by the signer. `contiguous-range` must include the predecessor hash. The rejected
+`declared-selection` alternative is retained only to explain why it was cut; it is not a 0.6.0
+scope kind.
 
 ### Trust root and WI-209
 
@@ -379,7 +404,7 @@ Create one estate-wide identity/trust project, with a stable `trust_domain_id`. 
 - revocation,
 - registrar delegation,
 - legacy identity mapping,
-- witness key enrollment,
+- ~~witness key enrollment~~ **CUT FROM 0.6.0** — future witness lifecycle only,
 - bundle-signing authority,
 - project instance registration.
 
@@ -391,7 +416,11 @@ The genesis root is necessarily out-of-band. It should be an offline Ed25519 roo
 - initial trust-log head,
 - document format and signature.
 
-Routine lifecycle operations use a scoped, expiring registrar credential signed by the offline root. New principal enrollment also requires proof of possession by the principal key. Rotation should be dual-authorized by the old key and registrar where possible; recovery rotation requires the registrar and must be visibly classified as recovery.
+Routine non-recovery lifecycle operations use a scoped, expiring registrar credential signed by the
+offline root. New principal enrollment also requires proof of possession by the principal key.
+Normal rotation is dual-authorized by the old key and registrar; recovery rotation requires the
+current root threshold and remains visibly classified as recovery. The registrar may prepare and
+submit recovery but cannot authorise it.
 
 ### Project-local key acceptance
 
@@ -430,7 +459,10 @@ It records:
 - who performed the retrospective attestation,
 - that enrollment-before-use was not proven.
 
-The 48,688 historical Ed25519 signatures can then be cryptographically verified, while their registry chronology is honestly classified as retrospective. Future cross-project use goes through the trust-domain log and project-local acceptance.
+The historical Ed25519 signatures in the named preflight snapshot can then be cryptographically
+verified, while their registry chronology is honestly classified as retrospective. Counts are
+measured inputs, not architecture constants. Future cross-project use goes through the trust-domain
+log and project-local acceptance.
 
 ### Workflow and other side tables: S6
 
@@ -443,7 +475,14 @@ The 48,688 historical Ed25519 signatures can then be cryptographically verified,
 
 ### Witness enrollment: WI-264
 
-Witness registration, key rotation, pause and revocation become signed project/trust events. The current plain insert followed by principal-key insertion (`_witness.py:133-163`) and mutable rotation (`_witness.py:227-262`) must no longer establish trust.
+> **CUT FROM 0.6.0 — `RECONCILIATION.md` FINAL SCOPE.** The witness lifecycle and positive
+> witness-independence work are retained below only as a future design. No witness row, callback or
+> receipt is a 0.6.0 trust mechanism.
+
+For a later release, witness registration, key rotation, pause and revocation would become signed
+project/trust events. The current plain insert followed by principal-key insertion
+(`_witness.py:133-163`) and mutable rotation (`_witness.py:227-262`) must not establish trust in
+0.6.0.
 
 A witness receipt is evidence only when:
 
@@ -457,6 +496,11 @@ A registered callback in the same database is not an external witness.
 ---
 
 ## 4. Ed25519 cutover and the history seam
+
+> **SUPERSEDED — `CUTOVER-CLASSIFICATION.md` §§1–5 and `RECONCILIATION.md` Resolution 1.**
+> The checkpoint sketch in this historical section is not the complete Bootstrap A/B contract.
+> Implement the owning cutover schema, including explicit checkpoint/initialisation bootstrap,
+> measured snapshot counts, chain-position classification and the post-cutover legacy boundary.
 
 ### Classification of the existing corpus
 
@@ -498,7 +542,19 @@ Its payload includes:
     "production_signing_scheme": "ed25519",
     "project_instance_id": "uuid",
     "trust_domain_id": "uuid",
-    "trust_log_checkpoint_hash": "sha256:..."
+    "trust_domain_core_digest": "sha256:...",
+    "genesis_document_digest": "sha256:...",
+    "trust_log_checkpoint": {
+      "checkpoint_seq": 12,
+      "head_event_hash": "sha256:...",
+      "document_digest": "sha256:..."
+    },
+    "root_governance": {
+      "mode": "co_signed",
+      "threshold": 2,
+      "signer_count": 2
+    },
+    "bootstrap_key_acceptance": {}
   }
 }
 ```
@@ -575,16 +631,26 @@ The practical mitigations are:
 - scoped online registrar,
 - per-principal Vault policy separation,
 - external publication of checkpoint heads,
-- independent witnesses,
+- ~~independent witnesses~~ **CUT FROM 0.6.0** — future release only,
 - eventual multi-party root or transparency log.
 
-Only the first three are in 0.6.0. WI-007 should remain open as a narrowed decision item rather than being marked resolved.
+The 0.6.0 posture includes the offline root, scoped registrar, per-principal custody and the
+publication channel. Governance is a **monotone signed log** inside the stable trust domain, and
+the publication limit is explicit: a **fresh clone cannot establish that the first publication was
+honest**; detection requires a prior observation. Independent witnesses and eventual multi-party
+transparency remain outside the release. WI-007 stays open as a narrowed decision item rather than
+being marked resolved.
 
 ---
 
 ## 6. Review assurance as signed verdicts
 
 ### Verdict event
+
+> **SUPERSEDED — `REVIEW-VERDICTS.md` §§2–5 and `RECONCILIATION.md` Resolution 2/4.** This
+> historical payload predates the complete seven-member subject and reducer-v1 staleness contract.
+> Do not implement `subject_profile`, credential-established human kind or the old digest formula
+> from this section; use the owning review-verdict document.
 
 Replace transition-name inference with a versioned signed payload:
 
@@ -706,6 +772,11 @@ S7 is therefore closed in 0.6.0 by removing the false implementation and narrowi
 
 ### Remove segment/archive complexity
 
+> **AMENDED — `CUTOVER-CLASSIFICATION.md` and `CUTOVER-POLICY.md` are the owning cutover
+> contracts.** The operational direction below is retained as architecture reasoning only; the
+> signed checkpoint payload, snapshot counts and read-only/rehearsal boundaries in those siblings
+> win whenever this section is less specific.
+
 Because the estate has zero `event_segments`, delete segment sealing, replay bridging and destructive event archival.
 
 Before cutover:
@@ -716,7 +787,9 @@ Before cutover:
 - drop `event_segments` after confirming it is empty;
 - stop deleting events.
 
-At 352,509 events, retention is not currently worth an unauthenticated chain-hole mechanism. Future storage optimization should use transparent PostgreSQL partitioning or immutable external objects with independently pinned manifests, not verifier-trusted side rows.
+At the measured estate size, retention is not currently worth an unauthenticated chain-hole
+mechanism. Future storage optimization should use transparent PostgreSQL partitioning or immutable
+external objects with independently pinned manifests, not verifier-trusted side rows.
 
 This structurally closes S10 and removes the `event_segments` part of S6. The current live verifier's dependence on mutable segment rows (`_archive_segments.py:597-706`) and replay bridge trust (`_replay.py:782-817`) disappears rather than being patched.
 
@@ -793,7 +866,7 @@ In parallel after schemas stabilize:
 - project-local key acceptance/revocation;
 - retrospective WI-241 binding records;
 - signed workflow registration;
-- signed witness enrollment;
+- ~~signed witness enrollment~~ **CUT FROM 0.6.0** — future design only in `TRUST-DOMAIN.md` §7;
 - delegation credentials for WI-008;
 - Ed25519 Vault provisioning.
 
@@ -842,13 +915,17 @@ WI-251 is not product architecture, but fix the worktree editable-install hazard
 
 ## Stage 6 — rehearsal
 
+> **AMENDED — `RECONCILIATION.md` Resolution 6 and `preflight-live.json`.** The numeric values in
+> the historical rehearsal checklist are not frozen inputs. The ceremony must use a named,
+> quiesced preflight snapshot and carry its measured counts into the signed checkpoint payload.
+
 Run the complete upgrade against restored copies of all 26 schemas:
 
 - no rewritten envelope/signature/hash bytes;
-- all 352,509 events retain exact artifact hashes;
+- all events in the approved named snapshot retain exact artifact hashes;
 - every project produces the expected legacy checkpoint payload;
-- all 48,689 historical Ed25519 signatures resolve;
-- all 303,820 HMAC events receive explicit legacy classification;
+- all historical Ed25519 signatures in the approved snapshot resolve;
+- all HMAC events in the approved snapshot receive explicit legacy classification;
 - replay and bundle results match;
 - old binaries fail safely after schema capability change;
 - v6 append and rollback-before-commit are exercised.
@@ -881,7 +958,8 @@ Despite the expansive mandate, exclude:
 
 - a new RFC 3161 or OpenTimestamps provider;
 - CT-style key transparency or witness federation;
-- quorum/multi-signature roots;
+- ~~quorum/multi-signature roots~~ **WITHDRAWN — WI-272 makes independent co-signing the default;
+  solo is visible lab/dev posture.**
 - post-quantum algorithms;
 - per-event signed `global_seq` attestations;
 - historical re-signing;
@@ -910,6 +988,16 @@ Release notes must state all of the following plainly:
 10. A host operator controlling all roots, private keys and publication channels can fabricate a valid-looking history.
 11. A local witness configured and stored by the same operator is not an independent external witness.
 12. `global_seq` remains an unsigned database index and is not cryptographic ordering evidence.
+13. A valid legacy HMAC proves knowledge of a shared value that is now disclosed; it does not prove
+    origin, creation time or pre-disclosure existence.
+14. The `regista-prod-001` legacy population has no store-side principal/key binding; a verifier
+    cannot infer one from an operator key file or create one retrospectively.
+15. The cutover checkpoint contains the disclosure but does not remediate it: an observed head can
+    detect later substitution, not prove earlier HMAC history was honestly produced.
+16. Distinct root signatures prove distinct keys, not distinct people or custody; a distinct
+    publication account proves address separation, not independent control.
+17. The v6 `producer` block is a principal-signed assertion. Policy matching detects
+    inconsistency; it is not remote attestation of the process or model.
 
 The defensible headline is:
 
@@ -918,6 +1006,9 @@ The defensible headline is:
 ---
 
 # OPEN QUESTIONS FOR THE OWNER
+
+> **RESOLVED — WI-272, recorded immediately below.** These questions are retained as decision
+> history only. Implement the owner decisions, not the interrogative text.
 
 1. **Root governance:** Is an offline root controlled solely by the owner acceptable for 0.6.0, or must the genesis trust document require a second independent co-signer? This changes the operator-forgery boundary, not merely implementation detail.
 2. **Publication channel:** What channel will auditors actually treat as independent for root fingerprints and the estate cutover catalog—direct exchange, a separately controlled repository/account, or another custodian?
@@ -936,15 +1027,16 @@ A single-signer lab/dev mode exists. **Binding constraint:** it must be *visible
 not merely in configuration. The genesis trust document carries its own signer set and threshold;
 verification reports which it actually saw; an estate rooted by a solo signer says so in every
 bundle it produces. Implementing the opt-in as a config flag that leaves the artifact identical is
-forbidden — if lab mode is invisible, anyone can claim co-signed governance and no verifier can
+forbidden — if lab mode is invisible, anyone can claim `co_signed` governance and no verifier can
 check, which makes the default theater.
 
 **2. Publication channel — a dedicated public git repository under an account distinct from the
 estate's operational identity, bootstrapped by direct exchange.**
 
 The channel *cannot prevent* an operator publishing a false fingerprint; nothing short of a real
-transparency log can. Its job is to make **substitution detectable** — an auditor told fingerprint
-F at time T can check the channel still says F at T+1, and that its history shows no rewrite. The
+transparency log can. Its job is to make **substitution detectable to an auditor holding a prior
+observation** — an auditor told fingerprint F at time T can check the channel still says F at T+1,
+and that its history shows no rewrite. The
 properties that matter are therefore **retention, history and third-party hosting, not authority**.
 Git on a separate account supplies all three at near-zero ongoing cost, and the estate already
 holds two distinct GitHub identities, so the separation is free.

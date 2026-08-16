@@ -28,11 +28,11 @@ work. Every package below names its gate, its dependencies, its owner, and — m
 
 *Nothing else starts. Incompatible hash fixtures create unrecoverable signed artifacts.*
 
-### P0.1 — Apply the reconciliation overlay · **owner: me** · **DONE 2026-08-09**
+### P0.1 — Apply the reconciliation overlay · **owner: me** · **DONE 2026-08-10**
 **Record:** `OVERLAY-APPLICATION.md`. Both acceptance halves are enforced by
-`check-crossrefs.py` (0 unresolved references across 17 documents, code citations checked against
-`334b995`) and `check-conflicts.py` (0 retired values stated as live rules). Re-run both before
-any change to this set.
+`check-crossrefs.py` (0 unresolved references across 18 documents, code citations checked against
+`334b995`) and `check-conflicts.py` (0 contested values or structural decision-coverage
+violations). Re-run both before any change to this set.
 Apply `RECONCILIATION.md` to the sibling specs, or mark superseded clauses in place. Resolve the
 two bootstrap circularities and the three ownerless artifacts into the documents that will be
 implemented from. **Judgment-heavy and cross-cutting; I am not delegating it.**
@@ -41,11 +41,12 @@ for the same field.
 
 ### P0.2 — Prove reducer v1 determinism under JCS · **owner: me** · **DONE 2026-08-09 — PASS**
 **Record:** `P0.2-REDUCER-DETERMINISM.md`. Byte-identical across CPython 3.12/3.13/3.14 and PyPy
-3.11, three hash seeds each. **P3.2 is GO.** Two real defects found and fixed: a cross-version
+3.11, three hash seeds each. **P3.2 is GO.** Three real defects found and fixed: a cross-version
 `fromisoformat` divergence that replay converted into a silent digest difference, and a JCS
 number band (`2**53 <= |v| < 1e21`) that makes a signable, canonical event's digest
-uncomputable — the latter forced an amendment to `V6-ENVELOPE.md` §2.5, so **P0.3's vectors must
-be generated against the amended rule**.
+uncomputable, plus `last_entity_seq` allowing excluded claim churn to change the content digest.
+The number defect forced an amendment to `V6-ENVELOPE.md` §2.5, and the claim-churn defect forced
+a corrective re-freeze of the content-only reducer digests before P3.2 implementation.
 The go/no-go for signed review verdicts. Must be byte-identical across machines and Python
 versions. **If it fails, signed verdicts do not ship in this window** — transition-name inference is
 removed and assurance reports `legacy_unverdicted/none` rather than shipping an unverifiable digest.
@@ -59,6 +60,12 @@ hashes, bundle Merkle tree, workflow definition digest, review subject, delegati
 checkpoint, producer policy, catalog.
 **Done when:** each vector is reproducible from a clean checkout by a documented command, and a
 deliberate one-byte change to each input flips its expected hash.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** Four of the 27 committed vectors exist only for the
+> legacy seam and are **deleted**: `legacy-seam-checkpoint`, `version-aware-event-hash`,
+> `bundle-merkle-mixed-epoch`, `bootstrap-cutover-checkpoint`. There is one epoch, so there
+> is one event-hash construction and no mixed-epoch tree. The remaining 23 stand, including
+> the acceptance criterion above, which is unchanged.
 
 ---
 
@@ -78,10 +85,22 @@ that, and in v6 the envelope would *sign* the falsehood.
 **Done when:** migration applies and rolls back cleanly on a copy of the live schema set, and a
 checkpoint inserts with genuinely null workflow identity.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** The requirement survives; the migration does not. An empty
+> store declares `workflow_name`/`workflow_version` nullable in its **initial schema**, so there
+> is no forward migration, no 26-project blast radius and no irreversibility. The sentinel ban
+> stands unchanged — v6 would sign the falsehood. **Done when:** the initial schema permits null
+> workflow identity and a genesis event inserts with genuinely null values, neither `""` nor `0`.
+
 ### P1.3 — Consolidated result model + v5 reclassification · **owner: team** · dep: P0.1
 Extend `VerificationResult` for v6. Post-cutover, v4/v5 become `LEGACY_PARTIAL`.
 **Done when:** preflight reports the before/after label distribution, and the ~334k relabel is
 demonstrated on a copy rather than asserted.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** The reclassification half is **dropped**: the legacy
+> population is discarded rather than migrated, so there is nothing to relabel and no
+> before/after distribution to report. The consolidated v6 result model survives and is the
+> whole of P1.3. **Done when:** `VerificationResult` covers v6 and no `LEGACY_PARTIAL` path
+> is reachable.
 
 ### P1.4 — Delete the dead subsystems · **owner: team** · dep: P0.1
 Remove `_archive_segments.py`, `_anchoring.py`, `_timestamping.py`, the window/segment/manifest
@@ -110,8 +129,8 @@ Independent root keys, threshold-signed genesis, `trust_domain_id` derived from 
 **I will not generate or handle root private key material** — I disclosed a secret in this session
 (WI-278), and the trust root is precisely the wrong place to accept that risk. I will prepare the
 ceremony, script the non-secret steps, and verify the artifacts afterwards.
-**Done when:** genesis verifies from a fresh direct-exchange pin, `solo` vs `co-signed` vs
-`solo-effective` is distinguishable from the artifact alone, and the mode is visible in every
+**Done when:** genesis verifies from a fresh direct-exchange pin, `solo` vs `co_signed` vs
+`solo_effective` is distinguishable from the artifact alone, and the mode is visible in every
 downstream artifact.
 
 ### P2.2 — Trust log + signed key lifecycle · **owner: team** · dep: P2.1
@@ -123,9 +142,10 @@ bytes** — a fingerprint alone makes the projection unrebuildable and silently 
 fails to import rather than fails review.
 
 ### P2.3 — Canonical principals and host mapping · **owner: team** · dep: P2.1
-Canonical `kind:subject`, kinds closed to `{human, agent, service}`; witness principals become
-`service:witness.<id>` (zero live instances — cheap). Assign the `actor_id → principal_id` mapping
-**deliberately**; it does not exist in the store and must not be inferred from string similarity.
+Canonical `kind:subject`, kinds closed to `{human, agent, service}`. Witness lifecycle and witness
+principal migration are cut from 0.6.0; retain their future `service:witness.<id>` convention only
+in `TRUST-DOMAIN.md` §7. Assign the `actor_id → principal_id` mapping **deliberately**; it does not
+exist in the store and must not be inferred from string similarity.
 **Done when:** every writing actor resolves to exactly one canonical principal, recorded as signed
 scoped mappings.
 
@@ -133,7 +153,7 @@ scoped mappings.
 One command, canonical JSON, distinct account, append-only index with `prev_commit` links, no
 private key in the publishing process.
 **Done when:** `--dry-run` is byte-identical to the real run, and a verifier pins from direct
-exchange then detects a substituted fingerprint.
+exchange then detects a substituted fingerprint when it has a prior publication observation.
 
 ---
 
@@ -159,6 +179,11 @@ impossible otherwise). Compare against the published interim head record.
 **Done when:** a full rehearsal on a restored copy produces a verifying checkpoint per project and
 a bundle that authenticates to an externally pinned root.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** **Dropped.** There is no migration to rehearse: the
+> legacy population is discarded and the epoch opens in an empty store. What replaces it is
+> the genesis conformance gate (`EPOCH-RESET.md` §5), which is a precondition on the first
+> write rather than a rehearsal of a transformation.
+
 ---
 
 ## Gate 4 — production ceremony · dep: Gate 3 · **owner: me, owner present**
@@ -169,11 +194,17 @@ HMAC/v5 writes permanently rejected. Irreversible.
 **Done when:** every project verifies end to end across the seam, the catalog is published, and a
 post-checkpoint HMAC write is refused.
 
+> **AMENDED — `EPOCH-RESET.md` §3.** Cut-over becomes **genesis**. There is no seam to verify
+> across and no prefix to checkpoint: provision keys, pass the §5 conformance gate, write the
+> first event into an empty store. **Done when:** the gate passes, genesis verifies against an
+> externally pinned root, and an HMAC write is refused — the last of which was always the
+> point and is unchanged.
+
 ---
 
-## Deferred, tracked, not in this window
+## Later implementation tracks
 
-### P3.2 — Signed review verdicts · **owner: team** · dep: **P0.2 passing**
+### P3.2 — Signed review verdicts · **owner: team** · dep: **P0.2 passing — satisfied**
 Signed verdict subject with content binding, monotonicity (freeze the author set at the deciding
 verdict), one `decide_lineage()` consumed everywhere, honest assurance names
 (`cross_lineage_asserted`, `accepted_by_declared_human`, `same_lineage_asserted` /
@@ -188,6 +219,12 @@ material is a **required argument with no default** — that function-signature 
 structural fix for BC-016, not a policy flag. Drop `format_version` 1 entirely.
 **Done when:** an auditor can follow the documented workflow without the author present, and a
 bundle whose keys come only from itself cannot report external authentication.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** Version-aware event hashing and mixed-epoch membership
+> trees are **dropped** — one epoch means one construction, and `BUNDLE-V3.md` §3.3's
+> mixed-epoch vector requirement lapses with them. The signed membership statement, the
+> chain-traversal ordering and the no-default trust argument are untouched; they were never
+> about the seam.
 
 ---
 

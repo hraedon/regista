@@ -13,6 +13,8 @@ from ._contract import (
     check_expected_seq,
     check_idempotency,
     check_key_role_policy,
+    validate_actor_metadata,
+    validate_delegation_chain,
     validate_entity_kind,
     validate_json_safe_value,
 )
@@ -68,6 +70,9 @@ def append_event(
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
+    am = actor_metadata.value if actor_metadata is not None else None
+    validate_actor_metadata(am)
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
     validate_entity_kind(entity_kind)
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
@@ -84,7 +89,6 @@ def append_event(
 
     check_expected_seq(event_seq, expected_event_seq)
 
-    am = actor_metadata.value if actor_metadata is not None else None
     pl = payload.value if payload is not None else None
     if on_behalf_of is not None:
         validate_json_safe_value(on_behalf_of, "on_behalf_of")

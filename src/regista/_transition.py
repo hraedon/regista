@@ -174,10 +174,20 @@ def transition(
                     finally:
                         conn.execute("SET LOCAL statement_timeout = '0'")
                 else:
-                    log.warning(
+                    metrics.inc("validators_failed", project)
+                    log.error(
                         "validator.not_registered",
                         validator=validator_name,
                         transition=transition_name,
+                    )
+                    raise RegistaError(
+                        ErrorCode.VALIDATOR_NOT_REGISTERED,
+                        f"Validator {validator_name!r} is required by transition "
+                        f"{transition_name!r} but is not registered",
+                        detail={
+                            "validator": validator_name,
+                            "transition": transition_name,
+                        },
                     )
 
             evt = _append_transition_event(

@@ -6,6 +6,11 @@ implementation is written against.
 
 **Read in this order:**
 
+0. **`EPOCH-RESET.md`** — owner decision, 2026-08-10. The legacy event population is discarded
+   rather than migrated; the evidentiary record starts at a deliberate genesis in an empty
+   store, gated on a conformance check. It has precedence over everything below for the two
+   questions it decides, and it removes work from P0.3, P1.3, P3.3, P4.1 and P5.1. Read it
+   first or you will implement a seam that will not exist.
 1. **`ARCHITECTURE-FINAL.md`** — precedence, the binding decisions, scope, gates. Short by design.
 2. **`IMPLEMENTATION-PLAN.md`** — the work packages, their owners, their dependencies, and how
    each one is proved done. **A package whose acceptance criterion is "implemented" is not
@@ -24,13 +29,10 @@ evidence. `ARCHITECTURE-0.6.0.md` is **rank 5, superseded in 14 places, retained
 
 | Gate | Package | State |
 |---|---|---|
-| 0 | **P0.1** apply the reconciliation overlay | **DONE** 2026-08-09 — record in `OVERLAY-APPLICATION.md` |
+| 0 | **P0.1** apply the reconciliation overlay | **DONE** 2026-08-10 — record in `OVERLAY-APPLICATION.md` |
 | 0 | **P0.2** prove reducer v1 determinism | **DONE 2026-08-09, PASS** — record in `P0.2-REDUCER-DETERMINISM.md`. **Signed review verdicts are GO** |
-| 0 | **P0.3** byte-level conformance vectors | **OPEN — team. This is the next thing, and nothing else starts before it.** |
-| 1–4 | everything else | blocked on Gate 0 |
-
-**Nothing outside Gate 0 starts before P0.3 lands.** Incompatible hash fixtures create signed
-artifacts that cannot be recovered — that is the entire reason for the ordering.
+| 0 | **P0.3** byte-level conformance vectors | **DONE 2026-08-09** — 27 vector cases across 16 categories. Generator at `tools/make_v6_vectors.py`, vectors in `tests/vectors/v6/`, conformance test `tests/test_v6_vectors.py` (87 assertions). Review-subject vectors agree with `reducer_v1_frozen_digests.json`. Fail-then-pass evidence recorded. **Corrected after review 2026-08-09** — see below. |
+| 1–4 | everything else | Gate 0 is complete; parallel tracks may begin. |
 
 ---
 
@@ -59,6 +61,30 @@ block and generates a 15-key envelope.
 
 Acceptance is unchanged from the plan: each vector reproducible from a clean checkout by one
 documented command, and a deliberate one-byte change to each input flips its expected hash.
+
+**Corrections applied after review (2026-08-09).** The first cut of the vectors diverged from the
+spec in four places and under-covered in two; all six are closed, and the frozen bytes changed:
+
+1. **`review-subject`** froze a four-member subject with a `work_item_id` field that no document
+   defines. The members are those of `REVIEW-VERDICTS.md` §2.3 less `subject_profile`, which
+   `RECONCILIATION.md`:421 cuts — seven, keyed on `entity_kind`/`entity_id`. The artifact lists
+   are now declared out of order so the §424 sort is actually pinned.
+2. **`bundle-merkle-empty`** froze `null`; `BUNDLE-V3.md`:214 defines `MTH({}) = SHA256()`.
+3. **The mixed-epoch tree** required by `BUNDLE-V3.md`:236 ("do not implement this section
+   without them") was absent. Added, with a test that the hardcoded-legacy-formula mistake
+   correction 1 warns about produces a different root.
+4. **`key_id`** was derived as `sha256(pubkey)[:16]`, disagreeing with the value
+   `V6-ENVELOPE.md` §10.1 declares for the same seed. Production key ids are random
+   (`_principal_keys.py:49-50`), so nothing derives it: it is now the spec's fixture, pinned.
+5. **The §2.5 negative cases** this section asks for above were missing — added as
+   `payload-numeric-bounds`, which *measures* rather than asserts which values the canonicalizer
+   rejects and which only a strict parser can.
+6. **`occurred_at`** had no vector, so DD-4's single lexical form and P0.2's `24:00` divergence
+   were unpinned. Added as `occurred-at-lexical-form`.
+
+Two coverage notes, not defects: the canonical-order case now uses payload keys that
+**distinguish UTF-16BE ordering from code-point ordering** (the sixteen ASCII top-level keys
+cannot); and `§10.5`'s negative vectors remain P1.1's mutation matrix, not P0.3's.
 
 ---
 

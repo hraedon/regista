@@ -1,0 +1,58 @@
+{
+  "category": "v6-envelope",
+  "description": "A service-principal event with no model producer (model: null).",
+  "expected": {
+    "canonical_bytes": "{\"actor\":{\"kind\":\"system\",\"metadata\":{},\"principal_id\":\"service:agent-notes\"},\"authorization\":{\"credentials\":[],\"mode\":\"direct\"},\"chain\":{\"hash_algorithm\":\"sha-256\",\"previous_entity_event_hash\":\"sha256:3535353535353535353535353535353535353535353535353535353535353535\",\"previous_project_event_hash\":\"sha256:7373737373737373737373737373737373737373737373737373737373737373\"},\"entity\":{\"id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"kind\":\"work_item\"},\"entity_seq\":17,\"event_id\":\"3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d\",\"occurred_at\":\"2026-08-08T12:34:56.123456Z\",\"payload\":{\"link_type\":\"blocks\"},\"producer\":{\"harness\":\"claude-code\",\"harness_version\":\"1.0.0\",\"model\":null,\"model_lineage\":null},\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"signing\":{\"key_binding_event_hash\":\"sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"key_id\":\"pk_1bf310ecef19e79a\",\"scheme_id\":\"ed25519\"},\"transition\":\"link_created\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"type\":\"regista.event\",\"version\":6,\"workflow\":null}",
+    "canonical_len": 1048,
+    "canonical_sha256": "d8effcb3d2b4aabead51c6b969f53ad0ee2c9f2a03e24026d807379c437671d1",
+    "event_hash": "sha256:fcf4afe3632c30f1da796a7e60c8ff481e85d43ba4bd4af059dfe9f3ce61a58b",
+    "payload_canonical_hash": "sha256:6cc1356f896821940d60a091f8492f296b0952dd821c38449e030edfef4b6988",
+    "signature_hex": "51e8357507a793dd5d4078da2721b2ebffec6fbdb4d3f84a09ce1fa0f5792f6e1cb66ea75c7b430ddf7c2ce18ebe33ca432d0daeb813e15559c6e3bea9368c0b"
+  },
+  "input": {
+    "envelope_declaration_order": {
+      "actor": {
+        "kind": "system",
+        "metadata": {},
+        "principal_id": "service:agent-notes"
+      },
+      "authorization": {
+        "credentials": [],
+        "mode": "direct"
+      },
+      "chain": {
+        "hash_algorithm": "sha-256",
+        "previous_entity_event_hash": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+        "previous_project_event_hash": "sha256:7373737373737373737373737373737373737373737373737373737373737373"
+      },
+      "entity": {
+        "id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+        "kind": "work_item"
+      },
+      "entity_seq": 17,
+      "event_id": "3b9c1d7e-5f42-4a8b-9c1d-0e2f3a4b5c6d",
+      "occurred_at": "2026-08-08T12:34:56.123456Z",
+      "payload": {
+        "link_type": "blocks"
+      },
+      "producer": {
+        "harness": "claude-code",
+        "harness_version": "1.0.0",
+        "model": null,
+        "model_lineage": null
+      },
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "signing": {
+        "key_binding_event_hash": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "key_id": "pk_1bf310ecef19e79a",
+        "scheme_id": "ed25519"
+      },
+      "transition": "link_created",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "type": "regista.event",
+      "version": 6,
+      "workflow": null
+    },
+    "signing_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

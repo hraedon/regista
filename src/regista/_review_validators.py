@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from ._lineage import declared_model_lineage, event_model_lineage
+
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
 
@@ -43,9 +45,7 @@ def declared_lineage(value: Any) -> str | None:
     lineage) while ``0`` stayed falsy and read as absent — so the type is now
     part of the contract: a declared lineage is a non-blank string, full stop.
     """
-    if not isinstance(value, str):
-        return None
-    return value.strip() or None
+    return declared_model_lineage(value)
 
 
 def normalized_kind(kind: Any) -> str | None:
@@ -105,10 +105,7 @@ def classify_principal_kind(delegation: Any) -> str:
 
 
 def _event_lineage(event: Any) -> str | None:
-    meta = getattr(event, "actor_metadata", None)
-    if isinstance(meta, dict):
-        return declared_lineage(meta.get("model_lineage"))
-    return None
+    return event_model_lineage(event)
 
 
 def _add_delegated_principal(
@@ -260,6 +257,39 @@ def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
 def adversarial_review(ctx: Any) -> None:
     from ._assurance import LineageRelation, review_lineage_relation
 
+    params = getattr(ctx, "validator_params", None) or {}
+    finding_only = params.get("finding_only", False)
+    if not isinstance(finding_only, bool):
+        raise ReviewRejected(
+            "adversarial_review: validator_params.finding_only must be a boolean, "
+            f"got {type(finding_only).__name__}",
+            detail={"finding_only": finding_only},
+        )
+    negative_finding_transition = (
+        getattr(ctx, "current_state", None) == "in_review"
+        and getattr(ctx, "new_state", None) == "in_progress"
+        and getattr(ctx, "transition_name", None) == "request_changes"
+    )
+    if finding_only and not negative_finding_transition:
+        raise ReviewRejected(
+            "adversarial_review: validator_params.finding_only is valid only "
+            "for request_changes from in_review to in_progress",
+            detail={
+                "transition": getattr(ctx, "transition_name", None),
+                "current_state": getattr(ctx, "current_state", None),
+                "new_state": getattr(ctx, "new_state", None),
+            },
+        )
+    # WI-284: persisted canonical v1/v2 definitions predate finding_only.
+    canonical_legacy_request_changes = (
+        getattr(ctx, "workflow_name", None) == "canonical"
+        and getattr(ctx, "workflow_version", None) in (1, 2)
+        and negative_finding_transition
+    )
+    if finding_only or canonical_legacy_request_changes:
+        _require_review_note(ctx, "adversarial_review")
+        return
+
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events
     )
@@ -267,7 +297,9 @@ def adversarial_review(ctx: Any) -> None:
     _check_separation_of_duties(ctx, author_ids, "adversarial_review")
     _require_review_note(ctx, "adversarial_review")
 
-    reviewer_lineage = (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
+    reviewer_lineage = declared_lineage(
+        (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
+    )
     # WI-262: "is there an agent mind behind this review?" is not answered by
     # the proxy's actor_kind alone. A HUMAN proxy recording a pass on behalf of
     # an agent principal is an agent review with a human typing it, and the

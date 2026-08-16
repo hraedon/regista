@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from regista._errors import RegistaError
+from regista._errors import ErrorCode, RegistaError
 from regista._testing import raw_transaction
 from regista.testing import drop_project_schema
 
@@ -202,7 +202,7 @@ class TestValidators:
     # validator now hangs the transaction; see tests/test_validator_hardening.py
     # for the trusted-contract assertions.
 
-    def test_validator_not_registered_warns(self, regista):
+    def test_validator_not_registered_fails_closed(self, regista):
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
@@ -212,13 +212,15 @@ class TestValidators:
 
         regista._validators.pop("validate_start", None)
 
-        evt = regista.transition(
-            work_item_id=wi.work_item_id,
-            transition_name="start",
-            actor_id="agent-1",
-            actor_metadata={"role": "agent"},
-        )
-        assert evt.transition == "start"
+        with pytest.raises(RegistaError) as exc_info:
+            regista.transition(
+                work_item_id=wi.work_item_id,
+                transition_name="start",
+                actor_id="agent-1",
+                actor_metadata={"role": "agent"},
+            )
+        assert exc_info.value.code == ErrorCode.VALIDATOR_NOT_REGISTERED
+        assert regista.get_work_item(wi.work_item_id).current_state == "new"
 
 
 class TestAsyncHooks:

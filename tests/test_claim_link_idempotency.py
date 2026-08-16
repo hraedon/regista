@@ -175,7 +175,7 @@ class TestClaimActorMetadataWI224:
             actor_id="agent-1",
             custom_fields={"title": "claim lineage"},
         )
-        lineage = {"model_lineage": "opus-5"}
+        lineage = {"model_lineage": "claude-opus"}
 
         regista.acquire_claim(
             work_item_id=wi.work_item_id,

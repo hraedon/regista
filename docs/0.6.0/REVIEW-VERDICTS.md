@@ -13,7 +13,7 @@ Companion document: `BUNDLE-V3.md` (same author, same freeze). Verdict events tr
 | From | Artifact | What I require |
 |---|---|---|
 | Sibling A | v6 envelope schema (Stage 0 item 2) | (A1) `payload` remains **inside** the signed envelope. It is today at both v4 (`src/regista/_signing.py:132`) and v5 (`:186`); the entire design rests on it. (A2) `actor_kind` and `actor_metadata` remain inside the signed scope, as v5 introduced (`:176-177`). (A3) `project_instance_id` inside the envelope (S9), so a verdict cannot be replayed into another project. (A4) A frozen `event_hash` definition, since verdicts reference events by hash. |
-| Sibling B | trust-domain / key lifecycle / delegation credentials (Stage 0 item 5) | (B1) **Delegation credentials (WI-008)** issued under the trust root that can assert `principal_kind: "human"`. This is the only mechanism by which 0.6.0 can distinguish an evidenced human reviewer from an actor that typed `actor_kind="human"`. §5.3 depends on it; without it, §5.3's fallback is fail-closed. (B2) Signed workflow-registration events, so the workflow definition digest that participates in the subject digest (§2.3) is itself authenticated rather than read from `workflow_registry.definition` (S6). |
+| Sibling B | trust-domain / key lifecycle / delegation credentials (Stage 0 item 5) | (B1) A root/registrar-authorised signed `principal_registered` event establishes the principal's kind. This is the only mechanism by which 0.6.0 can distinguish an evidenced human reviewer from an actor that merely asserted `actor_kind="human"`. An action-delegation credential authorises an action under scope; it never establishes human kind. §5.3 depends on the registration evidence and remains fail-closed without it. (B2) Signed workflow-registration events, so the workflow definition digest that participates in the subject digest (§2.3) is itself authenticated rather than read from `workflow_registry.definition` (S6). |
 | Sibling D | preflight (Stage 0 item 7) | (D1) A per-project count of work items whose history contains review transitions **without** a verdict payload. This is the size of the `LEGACY_UNVERDICTED` population (§4.5) and the owner needs the number before Stage 3 starts. |
 | Me → siblings | | The verdict payload is an ordinary event payload. It needs no envelope change beyond A1–A3. `BUNDLE-V3.md` §3.6 already carries it. |
 
@@ -35,10 +35,8 @@ marker where it sits.
 | §8 L2 — "is `reduce()` deterministic enough to digest?" | **P0.2** | §8 L2 — answered by the Gate 0 conformance proof; this document does not ship signed verdicts unless it passed |
 | §2.2 — reviewer claims duplicating lineage | collision 20 | The `producer` block (`V6-ENVELOPE.md` §1.8) is the source; `reviewer_claims` restates it and must reconcile, or omits the duplicates entirely |
 
-**Scheduling note, from `IMPLEMENTATION-PLAN.md`:** signed review verdicts (P3.2) are **deferred
-out of the 0.6.0 implementation window** and are gated on P0.2 passing. If P0.2 fails,
-transition-name inference is removed and assurance reports `legacy_unverdicted` / `none` rather
-than shipping a digest nobody can reproduce. **WI-250 must be rewritten before implementation** —
+**Scheduling note:** P0.2 passed, so signed review verdicts (P3.2) are **GO for 0.6.0**.
+**WI-250 must be rewritten before implementation** —
 its headline claim is stale (§3.1); the live defect is the `reviewer_is_agent and agent_author`
 gating, which lets a human reviewer with no delegation skip the check entirely.
 
@@ -125,12 +123,6 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
     "entity_id": "uuid",
     "reviewed_through_event_hash": "sha256:...",
     "content_state_digest": "sha256:...",            // [Δ] §2.3
-    "subject_profile": {                             // [+] §2.3
-      "profile_id": "regista.review-subject.default/1",
-      "workflow_name": "...",
-      "workflow_version": 3,
-      "workflow_definition_digest": "sha256:..."
-    },
     "artifacts": [
       { "media_type": "application/vnd.git.commit",
         "locator": "regista",
@@ -155,7 +147,7 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
     "harness": "opencode",
     "harness_version": "...",
     "same_lineage_acknowledged": false,
-    "claim_evidence": "self_asserted"                // [+] §5.3: self_asserted | delegation_credential
+    "claim_evidence": "self_asserted"                // [+] §5.3: lineage is a signed assertion; kind comes from registration
   },
 
   "decided": {                                       // [Δ] renamed from computed_relation
@@ -183,6 +175,16 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
 
 **The verifier recomputes every field under `decided` and `author_snapshot` and reconciles.** Payload values are evidence to compare against, never trusted answers (`ARCHITECTURE-0.6.0.md:601`). A verdict whose `decided.effective_lineage_relation` disagrees with recomputation is `invalid` and contributes nothing — it is not "downgraded to the recomputed value", because a gate that reported the wrong answer is a gate whose other outputs are also untrustworthy.
 
+> **INGRESS AMENDMENT — 2026-08-13, WI-284.** `request_changes` remains a signed
+> verdict and retains its recomputable author and lineage snapshot, but ingress
+> does not require distinct lineage or separation of duties for this negative
+> decision. It removes assurance rather than granting it, so suppressing the
+> finding when independence is unknown is the unsafe direction. The canonical
+> workflow declares `validator_params.finding_only: true`; `pass` and `accept`
+> retain their positive-verdict gates. `decided.acknowledgment_required` remains
+> a recomputed statement about the reviewer/author relation for negative
+> verdicts; it is recorded but not enforced at `request_changes` ingress.
+
 ### 2.3 The content binding — `subject_digest`
 
 This is the part that closes the audit's headline S8 scenario, so it is specified to the byte.
@@ -191,11 +193,14 @@ This is the part that closes the audit's headline S8 scenario, so it is specifie
 
 ```text
 content_state_digest = SHA256(
-    b"regista.review-subject.state.v1\x00" ‖ JCS( reduce(E[0..k], profile) )
+    b"regista.review-subject.state.v1\x00" ‖ JCS( reduce_v1(E[0..k]) )
 )
 ```
 
-where `E[0..k]` is the item's event chain up to and including the event named by `reviewed_through_event_hash`, and `reduce` is the deterministic replay reducer restricted to the fields named by `subject_profile.profile_id`.
+where `E[0..k]` is the item's event chain up to and including the event named by
+`reviewed_through_event_hash`, and `reduce_v1` emits the complete content-only reduced state. Its
+field set excludes lease state and `last_entity_seq`: an excluded claim, heartbeat, expiry or
+intrinsic event must not change the digest indirectly through a positional counter.
 
 Why the *reduced prefix* and not a projection-table digest: `work_items` rows are mutable side state, and S6's whole finding is that unsigned side tables must not be verification oracles. A digest over the reduced signed prefix is recomputable by an offline auditor holding only the bundle, with no database access. That property is non-negotiable — a subject binding a bundle verifier cannot check is not a binding.
 
@@ -206,45 +211,29 @@ subject_digest = SHA256(
     b"regista.review-subject.v1\x00" ‖ JCS({
         project_instance_id, entity_kind, entity_id,
         reviewed_through_event_hash, content_state_digest,
-        subject_profile, artifacts, declared_not_reviewed
+        artifacts, declared_not_reviewed
     })
 )
 ```
 
-with `artifacts` and `declared_not_reviewed` sorted by `(media_type, locator, digest)` before canonicalization, so two gates reviewing the same thing produce the same digest.
+with `artifacts` sorted by `(media_type, locator, digest)` and `declared_not_reviewed` sorted by
+`(media_type, locator, reason)` before canonicalization, so two gates reviewing the same thing
+produce the same digest.
 
-**Staleness is automatic and needs no flag.** Appending any event that changes the reduced projection changes `content_state_digest` at the new head, which no longer equals the verdict's. The reducer decides, so the architecture's rule — "do not trust a caller-provided `affects_review=false`" (`ARCHITECTURE-0.6.0.md:620-621`) — is enforced structurally rather than by policy. A diagnostic event that genuinely does not touch a profile field genuinely does not stale the verdict, and one that does, does.
+**Staleness is automatic and needs no flag.** At the current head, recompute only
+`content_state_digest` and compare it with the verdict's frozen value. A content-changing event
+changes the digest and stales the verdict. Claim and intrinsic events leave it unchanged. The
+reviewed prefix remains immutable: `reviewed_through_event_hash` says exactly what the reviewer
+saw and is never advanced merely because a later non-content event exists.
 
-**`subject_profile` is itself in the digest.** Otherwise a reviewer could narrow the profile after the fact and revive a stale verdict. `workflow_definition_digest` comes from the signed workflow-registration event, never from `workflow_registry.definition` — which is S6's replay oracle whose `content_hash` column "is never consulted" (`AUDIT-REPORT.md:64`).
+> **CUT — `RECONCILIATION.md` Resolution 4.** `subject_profile` is deliberately absent. Reducer
+> v1 covers one complete content field set, so there is no profile to narrow after the fact.
+> `reducer_version` is inside the reduced object and therefore inside `content_state_digest`.
 
-> **SUPERSEDED — `RECONCILIATION.md` Resolution 4 (simplify) and Resolution 2 (ownership).**
->
-> **(a) `subject_profile` is cut from 0.6.0.** `content_state_digest` is computed over the
-> **complete deterministic reduced signed prefix under reducer version 1** — no profile object,
-> no field subsetting, no profile id in the digest. A verdict is stale after **any**
-> state-changing event. This is L1's stricter-and-simpler alternative, chosen deliberately: the
-> profile mechanism existed so a diagnostic comment could survive a pass, and it bought that
-> convenience with a cross-version reducer/profile mechanism nobody had tested (L2). Shipping an
-> untested extensibility mechanism inside a *signed* digest is how you get artifacts that cannot
-> be verified after an upgrade.
->
-> Consequences: the schema in §2.2 loses `subject_profile`; §2.3's `subject_digest` input loses
-> it too; `profile_id` disappears from the domain. `reducer_version` is **1**, and it is the
-> thing an implementation must pin — see §8 L2 for the determinism proof this rests on.
->
-> **(b) The workflow-registration event is owned by `V6-ENVELOPE.md` §1.9**, not by sibling B.
-> The requirement is unchanged and is now satisfiable: the definition digest is
-> `SHA256("regista.workflow-definition.v1\x00" ‖ uint64be(len(b)) ‖ b)` where `b = JCS(definition)`,
-> and exactly one registration may introduce a `(name, workflow_version)` pair per project.
-> Reducer v1 is a pure function of the signed prefix **plus the signed registrations it
-> references** — which is what makes an offline auditor able to recompute it with no database.
->
-> **(c) Sorting and supersession, from the same resolution.** `artifacts` sorts by
-> `(media_type, locator, digest)`; `declared_not_reviewed` sorts by
-> `(media_type, locator, reason)`. The pass / request-changes / reject / accept supersession
-> state machine is **frozen before its reducer is coded**, and **competing successors are
-> invalid** — two verdicts claiming to supersede the same predecessor is a rejection, not a
-> race to be resolved by ordering.
+The workflow-registration event is owned by `V6-ENVELOPE.md` §1.9. Reducer v1 is a pure function
+of the signed prefix plus the signed registrations it references. The pass / request-changes /
+reject / accept supersession state machine is frozen before its reducer is coded, and competing
+successors are invalid.
 
 ### 2.4 Saying what was *not* reviewed
 
@@ -260,7 +249,9 @@ Per `ARCHITECTURE-0.6.0.md:603-608`, an `accept` verdict MUST reference:
 
 - the exact pass verdict id and event hash (`supersedes`);
 - the same `subject_digest`;
-- the same `reviewed_through_event_hash`, or a later one whose `content_state_digest` is unchanged (a non-content extension, proven by the reducer, not asserted);
+- the same `reviewed_through_event_hash` and complete seven-member review subject as the pass;
+- a recomputation proving the current head's `content_state_digest` still equals the pass's frozen
+  value; later claim or intrinsic events are permitted because they do not alter content;
 - a different effective reviewer principal where policy requires it — which the existing two-stage independence check already enforces (`src/regista/_review_validators.py:399-414`) and which is retained unchanged.
 
 A `subject_digest` mismatch between the pass and the accept is exactly the audit's rewrite-then-self-accept scenario, and it now fails closed at the accept, before `done` is reachable.
@@ -383,7 +374,11 @@ Counting rules, in order:
 2. An event contributes **nothing** unless its payload parses as `regista.review-verdict/v1` under a strict parser. **A review event carrying no verdict is not a review.** It is not a downgrade signal, not a warning, not a weaker pass — it is invisible to the reducer.
 3. Transition names are **not consulted at all**. The `_REVIEW_VERDICTS` frozenset (`src/regista/_review_validators.py:6`) survives only as an ingress-side hint for which transitions must carry a verdict; the reducer keys on `payload.type` and `payload.decision`. This kills the `append_event` forgery in §1.1 outright: a forged `"adversarial_pass"` string with no verdict payload contributes nothing, and a forged verdict payload has to survive recomputation of `author_snapshot`, `decided` and `subject_digest`.
 4. A verdict whose recomputed `decided` or `author_snapshot` disagrees with the payload is `invalid` and contributes nothing (§2.2).
-5. A verdict whose `subject_digest` does not equal the digest recomputed at the item's current head is **stale** and contributes nothing to the *current* level. It remains in the history and is reported as a superseded verdict.
+5. A verdict whose frozen `content_state_digest` does not equal the content digest recomputed at
+   the item's current head is **stale** and contributes nothing to the *current* level. The full
+   `subject_digest` is not recomputed with a new `reviewed_through_event_hash`; that hash records
+   the immutable prefix the reviewer actually saw. The verdict remains in history and is reported
+   as stale.
 
 ### 4.2 The level is two orthogonal fields, not one enum
 
@@ -505,7 +500,9 @@ WI-211 is not on the 0.6.0 critical path. It is specified here because its bindi
 
 ```
 self_asserted            — actor_kind and/or actor_metadata.model_lineage, signed at v5, asserted by the subject
-delegation_credential    — a trust-root-issued credential asserting principal kind and/or lineage (B1)
+principal_registration   — a root/registrar-authorised `principal_registered` event establishing
+                           the effective principal's kind; it does not authenticate lineage
+action_delegation        — a scoped authorisation credential; it does not establish principal kind
 harness_attestation      — NOT AVAILABLE IN 0.6.0
 ```
 
@@ -513,7 +510,11 @@ The third value is declared and permanently unreachable in 0.6.0, deliberately. 
 
 ### 5.3 What the credential does and does not buy
 
-A delegation credential asserting `principal_kind: "human"` lets the gate skip the acknowledgment for an evidenced human reviewer (§3.3). It does **not** upgrade `cross_lineage_asserted`, because a credential says who the principal is, not which model generated the action. Per `ARCHITECTURE-0.6.0.md:878`: delegation credentials prove authorization under the configured trust root, not subjective human intent — and, one step further, not authorship.
+An authenticated human registration lets the gate treat the effective reviewer as a non-model
+principal for the acknowledgment rule (§3.3). An action-delegation credential can establish that
+the action was authorised under the configured scope, but it does **not** establish human kind,
+lineage, intent or authorship, and it does not upgrade `cross_lineage_asserted`. Per
+`ARCHITECTURE-0.6.0.md:878`, authorization evidence and identity evidence are separate claims.
 
 ---
 
@@ -564,12 +565,14 @@ Update `docs/review-assurance.md` in the same change. WI-263 is explicit that co
 
 ## 8. Least-confident areas
 
-**L1 — The `subject_profile` mechanism may be over-built for 0.6.0.** It exists so a diagnostic comment can survive a pass without staling it, and so the profile cannot be narrowed after the fact. If the answer is "any event after the pass stales the verdict, full stop", the whole `subject_profile` object collapses to `content_state_digest` over the full reduced prefix and the schema gets meaningfully simpler. That is a stricter and simpler design; I did not choose it because `comment` is already a non-author transition (`src/regista/_review_validators.py:6-7`) and the current gate clearly expects commentary to be harmless. Worth an explicit owner call.
+**L1 — RESOLVED.** `subject_profile` is cut. Reducer v1 covers the complete content field set;
+claim and intrinsic events are excluded structurally, while every event that changes what the item
+says changes `content_state_digest`.
 
-**L2 — RESOLVED by P0.2, 2026-08-09: it is, once two defects are fixed. Signed verdicts are
-GO.** Proof: 13 conformance vectors x 2 field sets produce byte-identical digests across CPython
-3.12, CPython 3.13, CPython 3.14 and PyPy 3.11 — four interpreters, three `PYTHONHASHSEED`
-values each — with 26 rejection cases agreeing everywhere. Committed at
+**L2 — RESOLVED by P0.2 and its 2026-08-10 corrective re-freeze. Signed verdicts are GO.** The
+original 13-vector proof covered four interpreters; after removing `last_entity_seq` from the
+content-only shape, the corrected digests were reproduced under CPython 3.12 and 3.13 with three
+`PYTHONHASHSEED` values each. The full projection digests did not change. Artifacts are committed at
 `tests/test_reducer_v1_determinism.py`, `tests/reducer_v1_frozen_digests.json` and
 `tools/reducer_v1_sweep.py`; CI's 3.13 + 3.14 matrix keeps it a standing two-interpreter check.
 

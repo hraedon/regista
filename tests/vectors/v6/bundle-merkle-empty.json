@@ -1,0 +1,12 @@
+{
+  "category": "bundle-merkle",
+  "description": "Empty tree: MTH({}) = SHA256(empty string) (BUNDLE-V3 \u00a73.3, :214). Unreachable in practice \u2014 empty bundles are rejected \u2014 but frozen so two implementations cannot disagree about it.",
+  "expected": {
+    "membership_root": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reachable": false,
+    "why_unreachable": "an empty bundle is rejected before a root is computed"
+  },
+  "input": {
+    "event_hashes": []
+  }
+}

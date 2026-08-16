@@ -5,6 +5,7 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Any
 
+from ._lineage import event_model_lineage, is_model_lineage
 from ._review_validators import (
     KIND_AGENT,
     KIND_OPAQUE,
@@ -55,9 +56,11 @@ def lineage_relation(
         reviewer declared nothing (or there are no author lineages to compare
         against), so independence cannot be established.
     """
-    if not reviewer_lineage:
+    if not is_model_lineage(reviewer_lineage):
         return LineageRelation.UNKNOWN
     if not author_lineages:
+        return LineageRelation.UNKNOWN
+    if any(not is_model_lineage(lineage) for lineage in author_lineages):
         return LineageRelation.UNKNOWN
     if reviewer_lineage in author_lineages:
         return LineageRelation.SAME
@@ -75,13 +78,7 @@ def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> boo
 
 
 def _event_lineage(event: Any) -> str | None:
-    meta = getattr(event, "actor_metadata", None)
-    if isinstance(meta, dict):
-        # declared_lineage strips before trusting: a whitespace-only or
-        # non-string model_lineage declares nothing and must read as UNKNOWN
-        # rather than as a lineage distinct from every real one.
-        return declared_lineage(meta.get("model_lineage"))
-    return None
+    return event_model_lineage(event)
 
 
 def _weakest(first: LineageRelation, second: LineageRelation) -> LineageRelation:

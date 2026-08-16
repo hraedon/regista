@@ -1,0 +1,23 @@
+{
+  "category": "bundle-merkle",
+  "description": "Five-leaf tree: exercises the odd-split at k=4.",
+  "expected": {
+    "leaves": [
+      "sha256:edc89c4929c605404b92d518efd9f4c3366aabbb23e70eb137b2b49ef819e886",
+      "sha256:c8b198d82068cba782ce21322dfdb70ceddfd22b70179cb9965a0e291a854abc",
+      "sha256:805d2c25b882fe04e99ce47d552e833ccf1dc5c8ec5dc6572f35abe26d631576",
+      "sha256:ca58aae27a13284373dc59dd5841f9b98c67abec8babdf7fdec2bdc0edc13c22",
+      "sha256:38a27aa0744ebd88e9e6cc2e29d27f7b27f07fdd8a952ac63c6f3cb396be64d8"
+    ],
+    "membership_root": "sha256:936cc19d5e83f4c557a265189349d3ea934aa721181e2832bffceb028fbfff84"
+  },
+  "input": {
+    "event_hashes": [
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sha256:cccccccccccccccccccccccccccccccc",
+      "sha256:dddddddddddddddddddddddddddddddd",
+      "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ]
+  }
+}

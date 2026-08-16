@@ -62,7 +62,7 @@ it lands, because "closed" should be checkable.
 | Swap `scheme_id` to `hmac-sha256` to skip verification | `scheme_id` is inside the signed v6 envelope and is derived from trusted key metadata, never the row | S2; `_verification.py:391-392` |
 | Mutate `workflow_registry.definition` to change replay | Events bind `workflow.definition_hash` | `ARCHITECTURE-0.6.0.md:79` |
 | Replay a signed event into a different project | `project_instance_id` is signed | S9 |
-| Forge a witness enrolment by inserting rows | Enrolment is a signed trust-log event authorised by root/registrar | WI-264; `TRUST-DOMAIN.md` §7.2 |
+| Insert or mutate witness rows and present them as trust evidence | Witness lifecycle/enrolment is not a 0.6.0 trust mechanism; any retained webhook delivery is non-evidentiary and cannot raise a verification result | `ARCHITECTURE-FINAL.md` §5; `RECONCILIATION.md` FINAL SCOPE |
 | Rewrite a bundle's contents | Signed membership statement over an ordered membership root | S4; `ARCHITECTURE-0.6.0.md:198-248` |
 | Substitute the bundle's key registry to make forged events verify | The registry is `BUNDLE_EMBEDDED`; `externally_authenticated` is unreachable when any event resolves that way | S5/BC-016; `TRUST-DOMAIN.md` §8.2 |
 | Flip `HUMAN_ACCEPTED` → `INDEPENDENT_AND_ACCEPTED` with an `UPDATE` | Assurance reads only signed, content-bound verdicts | S8 `[→ sibling C]` |
@@ -126,11 +126,12 @@ real reduction: it moves A3 out of A4.
 ### R2 — Co-signer independence is unverifiable
 
 **Statement.** The owner's decision requires an independent co-signer by default (WI-272), and
-`TRUST-DOMAIN.md` §3 makes the *threshold* structural — a solo-rooted estate cannot claim
-`co_signed` without changing `trust_domain_id`. What it cannot make structural is
-**independence**. Two distinct public keys prove two distinct keys. They do not prove two distinct
-people, two distinct custodies, or two distinct interests. One person holding both keys produces
-a document indistinguishable from genuine co-signing. This is A6.
+`TRUST-DOMAIN.md` §3 makes the *threshold* a monotone state in the signed governance log. A
+`solo_effective` estate may upgrade to `co_signed` without changing `trust_domain_id`; lowering the
+threshold is rejected. What the log cannot make structural is **independence**. Two distinct public
+keys prove two distinct keys. They do not prove two distinct people, two distinct custodies, or two
+distinct interests. One person holding both keys produces a document indistinguishable from genuine
+co-signing. This is A6.
 
 **Why irreducible in 0.6.0.** There is no protocol-level notion of "a different person". The
 nearest approximations — a custodian countersignature from a third party, or an external identity
@@ -274,30 +275,28 @@ as fully authenticated, including a policy written by the operator.
 
 ### R7 — A locally configured witness is not an independent witness
 
-**Statement.** `ARCHITECTURE-0.6.0.md:880`, limitation 11. The witness is registered by the
-operator (`_witness.py:134-163`), its receipts are stored in the operator's database, and its
-enrolment — after WI-264 lands — is authorised by the operator's own registrar. It is a callback,
-not an observer. Signing its enrolment makes the *enrolment* tamper-evident; it does not make the
-witness independent.
+**Statement.** `ARCHITECTURE-0.6.0.md` limitation 11 remains: a witness configured and stored by
+the same operator is not an independent witness. 0.6.0 does not ship signed witness enrolment or
+receipt verification as a trust mechanism. If webhook delivery is retained for consumers, it is
+transport only; a row, callback or locally stored receipt cannot raise an assurance or trust axis.
 
-**Why irreducible in 0.6.0.** Independence is a property of who runs the witness and where the
-receipt is retained, neither of which is a code change. Witness federation is explicitly excluded
-(`ARCHITECTURE-0.6.0.md:853`).
+**Why irreducible in 0.6.0.** Independence is a property of who runs the witness and where a
+receipt is retained, neither of which is established by this release. Positive witness-independence
+work and witness federation are cut from the final scope.
 
 **Closing condition, in order of increasing strength.**
-1. Receipts retained by the witness *and* obtainable by the auditor directly from it, so
-   condition 4 of `TRUST-DOMAIN.md` §7.3 can be met.
+1. A later release must retain receipts by the witness *and* make them obtainable by the auditor
+   directly from it.
 2. A witness running on infrastructure the estate operator does not administer.
 3. A witness operated by a party with an independent interest, publishing its own signed
    checkpoint feed.
 
-**Evidence once closed.** `witness_independence` moves off the hard-coded `"not_established"`.
+**Evidence once closed.** A later release may move `witness_independence` off
+`"not_established"` only after the independent acquisition conditions are implemented and tested.
 
-**Consequence for 0.6.0.** The witness subsystem produces **no positive independence claim**.
-`spec.md:698`'s "anchored `principal_keys` registry" wording is false and must be corrected in the
-same change (`TRUST-DOMAIN.md` §7.1). See also `TRUST-DOMAIN.md` D-7: an argument exists for
-deleting the witness subsystem in 0.6.0 on the same grounds anchoring is being deleted. I
-recommend keeping it with honest reporting and deciding for 0.7.0.
+**Consequence for 0.6.0.** No witness operation produces a positive independence or trust-root
+claim. The false `spec.md` wording about an anchored `principal_keys` registry is corrected, and
+the future signed lifecycle remains only under the explicit CUT marker in `TRUST-DOMAIN.md` §7.
 
 ---
 
@@ -376,30 +375,17 @@ build too) but meaningful when combined with R1 and R3.
 
 ---
 
-### R11 — Recovery rotation is an online-credential escalation path
+### R11 — Recovery rotation is resolved by Resolution 5
 
-**Statement.** `ARCHITECTURE-0.6.0.md:363` puts recovery rotation (rotation without the outgoing
-key's signature) at **registrar** authority. The registrar is an online, scoped credential. An
-attacker holding it — i.e. A2 who reached the registrar key — can recovery-rotate any principal's
-key to one it controls and then sign as that principal, with everything verifying.
+**Resolution.** Recovery rotation requires signatures from the **current root threshold**. The
+online registrar may prepare and submit the request, but it cannot authorise recovery. Normal
+rotation remains dual-authorised by the outgoing key and registrar. Root-key and registrar-key
+recovery use the same current-root-threshold rule.
 
-**Why this is listed as a residual rather than a bug.** It is an architectural choice with a real
-operational justification: requiring the offline root for every lost key makes key loss a
-ceremony, and ceremonies that hurt get skipped or worked around.
-
-**Mitigation implemented in 0.6.0.** `mode: "recovery"` is a signed field and is **visibly
-classified everywhere** — `key_binding: recovery_rotated` in `VerificationResult`, propagated into
-bundle verdicts (`TRUST-DOMAIN.md` §5.6, §8.3). The escalation cannot be performed quietly; it
-leaves a permanent, externally visible mark on every event signed by the recovered key.
-
-**Closing condition.** Recovery rotation requires root threshold rather than registrar. For a
-`co_signed` estate this means the escalation requires k roots, which is the whole point of having
-them.
-
-**Owner decision requested.** `TRUST-DOMAIN.md` D-8. I believe root-threshold recovery is correct
-for a co-signed estate and I have not adopted it only because it contradicts the architecture.
-**Of the eleven residuals this has the shortest path from "documented" to "exploited"**, because
-it needs only the online registrar key rather than host root.
+`mode: "recovery"` remains a signed, visible classification (`key_binding: recovery_rotated`) in
+verification and bundle reports. Visibility records the exceptional path; it is not a substitute
+for the root-threshold prevention rule. This closes the registrar takeover path in 0.6.0 under
+`RECONCILIATION.md` Resolution 5.
 
 ---
 
@@ -411,21 +397,21 @@ it needs only the online registrar key rather than host root.
 | R2 | Co-signer independence unverifiable | A6 | Custodian countersignature / distinct attested devices | A willing third party | **3rd** |
 | R3 | Publication controlled by the operator | A5 | Transparency log or public anchor in `anchors[]` | Small integration, real test cost | **1st** |
 | R4 | No trusted time | all | One correct anchoring provider | Interop testing | with R3 |
-| R5 | HMAC prefix unattributable | all | Never, for existing data | — | permanent |
+| R5 | Legacy HMAC events unattributable | all | Never, for existing data | — | permanent |
 | R6 | Retrospective bindings ≠ enrolment-before-use | all | Never, for existing data | — | permanent |
 | R7 | Witness not independent | A3+ | Externally operated witness | Infrastructure | 4th |
 | R8 | Custody separation unverifiable | A2 | Signing service / HSM | Significant | 5th |
 | R9 | Lineage is an assertion | all | Harness-issued attestation | Upstream dependency | blocked |
 | R10 | Signing code under operator control | A3 | Reproducible builds + provenance | High | last |
-| R11 | Recovery rotation at registrar authority | A2 | Root-threshold recovery | **One decision** | **now** |
+| R11 | Recovery rotation escalation | A2 | **Resolved by current root threshold** | landed in 0.6.0 | closed |
 
 R1, R2 and R3 close **without a new epoch** — the genesis and checkpoint formats already carry
 `custody.attestation`, `countersignatures[]` and `anchors[]` (`TRUST-DOMAIN.md` §3.5, §4.3). That
 is the concrete payoff of the owner's "leave format room ... without requiring a new epoch"
 constraint, and it is why the format room is not speculative generality.
 
-R11 closes with a decision and roughly a day of work, and is the only residual whose exploitation
-does not require host root.
+R11 is closed by Resolution 5: an online registrar can no longer authorise recovery without the
+current root threshold. Its `recovery_rotated` label remains so the exceptional path is visible.
 
 ---
 
@@ -443,16 +429,17 @@ Verbatim-usable. Anything stronger than these sentences is an overclaim.
 3. Each post-cutover event is attributable to a **specific enrolled key** whose enrolment,
    rotation and revocation are themselves signed events, and whose authorisation to sign in that
    project precedes its first use **by chain traversal**.
-4. The trust root of an estate is an externally published genesis document whose **signer set and
-   threshold determine the trust-domain identifier**, so an estate cannot claim co-signed
-   governance it does not have without becoming a different trust domain.
+4. The trust root of an estate is an externally published genesis document with a stable
+   `trust_domain_id`; current governance is replayed from a monotone signed log and stamped into
+   every verification result, bundle and publication. A threshold increase is a signed upgrade;
+   a threshold decrease is rejected without changing the domain.
 5. Substitution of published trust material is **detectable** to any party holding a prior
    observation of the publication channel.
 
 ## 6. What 0.6.0 must not claim
 
-These are `ARCHITECTURE-0.6.0.md:868-882`'s twelve, reordered against the residuals and with the
-two additions this analysis produced (13 and 14). Release notes must state all of them plainly.
+These are `ARCHITECTURE-0.6.0.md:868-882`'s twelve, plus the five limits in
+`RECONCILIATION.md` Resolution 6. Release notes must state all of them plainly.
 
 1. Historical HMAC events are **not** independently attributable to individual principals. (R5)
 2. The cutover checkpoint binds **the exact legacy bytes the checkpoint signer committed to**; it
@@ -475,11 +462,18 @@ two additions this analysis produced (13 and 14). Release notes must state all o
 11. **A local witness configured and stored by the same operator is not an independent external
     witness.** (R7)
 12. `global_seq` remains an unsigned database index and is not cryptographic ordering evidence.
-13. *(new)* The genesis document proves **k signatures by k distinct keys**. It does not prove k
-    distinct people, custodies or interests; `root_governance.independence` is permanently
-    `unverifiable` in 0.6.0. (R2)
-14. *(new)* Per-principal key custody separation is a **declared** property. No artifact evidences
-    it, and a verifier cannot check it. (R8)
+13. A valid legacy HMAC proves knowledge of a shared value that is now disclosed; it does not
+    prove origin, creation time, or pre-disclosure existence. (WI-278)
+14. The 304,333 `regista-prod-001` events have no store-side principal/key binding. A verifier
+    cannot infer one from the operator key file or create one retrospectively. (WI-275)
+15. The cutover checkpoint contains the disclosure. It does not remediate it: an externally
+    observed head can detect later substitution, but neither that head nor the checkpoint proves
+    that earlier HMAC history was honestly produced.
+16. Distinct root signatures prove distinct keys, not distinct people or custody; publication
+    under a distinct account is address separation, not independent control. Per-principal custody
+    separation is likewise a declared property that no artifact evidences. (R2, R8)
+17. The producer block is a principal-signed assertion. Matching a published host/harness policy
+    makes inconsistency detectable; it is not remote attestation of the process or model. (R9)
 
 ---
 
@@ -503,7 +497,7 @@ Proposed successor items, so WI-007 stops being a single unfalsifiable question:
 | WI-007a | Adopt a public anchor / transparency log for checkpoint digests? (R3, R4) | Owner priority; anchoring interop tests |
 | WI-007b | Hardware-attested root custody? (R1, and it substantially helps R2) | ~$100 and a ceremony |
 | WI-007c | Obtain a custodian countersignature over `trust_domain_core_digest`? (R2) | Identifying a willing third party |
-| WI-007d | **Move recovery rotation from registrar to root threshold?** (R11) | **Owner decision only** — `TRUST-DOMAIN.md` D-8 |
+| WI-007d | **Move recovery rotation from registrar to root threshold?** (R11) | **Resolved by `RECONCILIATION.md` Resolution 5; no longer open** |
 | WI-007e | Externally operated witness, or delete the witness subsystem? (R7) | Depends on 007a |
 
 WI-007 itself becomes the parent decision: *which of R1/R2/R3 does the owner intend to close, and
@@ -519,8 +513,8 @@ in which release.* That is answerable. "Defend against operator forgery" is not.
 > full write access to the database. It does not yet provide external timestamping or
 > transparency-log publication, and it does not protect against an operator who controls every
 > private key and every observation channel. The estate's trust root is an externally published
-> genesis document whose signer set and threshold are part of the trust-domain identifier, so
-> governance is visible in every artifact the estate produces — but two signatures prove two keys,
+> genesis document with a stable trust-domain identifier, while current governance is replayed from
+> a monotone signed log and is visible in every artifact the estate produces — but two signatures prove two keys,
 > not two people, and the publication channel makes substitution detectable rather than
 > impossible. Those three assumptions — root custody, co-signer independence, publication control
 > — are what remains, and they are named individually so they can be closed individually.

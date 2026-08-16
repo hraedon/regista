@@ -124,7 +124,7 @@ class TestSameLineage:
         assert same_lineage({"glm", "kimi"}, "glm") is True
 
     def test_multiple_authors_none_match(self):
-        assert same_lineage({"glm", "kimi"}, "claude") is False
+        assert same_lineage({"glm", "kimi"}, "claude-opus") is False
 
 
 class TestLineageRelation:
@@ -342,7 +342,7 @@ class TestReviewerDelegationLineageAssurance:
             _author_events("glm")
             + self._pass(
                 "kimi", principal_id="real-reviewer", principal_kind="agent",
-                principal_lineage="claude",
+                principal_lineage="claude-opus",
             )
             + _accept_events("acceptor", "agent")
         )
@@ -379,7 +379,7 @@ class TestReviewerDelegationLineageAssurance:
     def test_strict_human_gate_allows_agent_accept_after_delegated_cross_lineage(self):
         prior = _author_events("glm") + self._pass(
             "kimi", principal_id="real-reviewer", principal_kind="agent",
-            principal_lineage="claude",
+            principal_lineage="claude-opus",
         )
         ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
         human_gate(ctx, require_human_on_same_lineage=True)
@@ -419,7 +419,7 @@ class TestWhoMakesALineageClaim:
             _author_events("glm")
             + self._human_proxy_pass(
                 principal_id="real-reviewer", principal_kind="agent",
-                principal_lineage="claude",
+                principal_lineage="claude-opus",
             )
             + _accept_events("acceptor", "agent")
         )
@@ -472,7 +472,7 @@ class TestWhoMakesALineageClaim:
                 on_behalf_of={
                     "principal_id": "real-reviewer",
                     "principal_kind": "agent",
-                    "principal_lineage": "claude",
+                    "principal_lineage": "claude-opus",
                 },
                 payload=REVIEW_NOTE,
             ),
@@ -487,7 +487,7 @@ class TestWhoMakesALineageClaim:
             _author_events("glm")
             + self._human_proxy_pass(
                 principal_id="real-reviewer", principal_kind="ai-agent",
-                principal_lineage="claude",
+                principal_lineage="claude-opus",
             )
             + _accept_events("acceptor", "agent")
         )
@@ -567,7 +567,7 @@ class TestDegenerateLineageValues:
             _author_events("glm")
             + self._pass(
                 "kimi", principal_id="p", principal_kind=kind,
-                principal_lineage="claude",
+                principal_lineage="claude-opus",
             )
             + _accept_events("acceptor", "agent")
         )
@@ -674,7 +674,7 @@ class TestHistoryShapeAndOrdering:
             + [
                 _evt(
                     "accept", "accept-proxy",
-                    actor_metadata={"model_lineage": "claude"},
+                    actor_metadata={"model_lineage": "claude-opus"},
                     on_behalf_of={
                         "principal_id": "boss-agent",
                         "principal_kind": "agent",
@@ -698,7 +698,7 @@ class TestHistoryShapeAndOrdering:
                     on_behalf_of={
                         "principal_id": "boss-agent",
                         "principal_kind": "agent",
-                        "principal_lineage": "claude",
+                        "principal_lineage": "claude-opus",
                     },
                     payload=REVIEW_NOTE,
                 ),

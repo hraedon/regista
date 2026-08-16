@@ -7,6 +7,7 @@ from typing import Any
 from ._contract import (
     Jsonb,
     validate_actor_kind,
+    validate_delegation_chain,
     validate_mutation_params,
     validate_work_item_exists,
 )
@@ -231,6 +232,7 @@ def in_memory_update_not_before(
         event_id=event_id,
         not_before=not_before,
     )
+    validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
     wi = work_items.get(work_item_id)
     validate_work_item_exists(wi, work_item_id)

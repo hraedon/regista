@@ -1,0 +1,155 @@
+{
+  "category": "review-subject",
+  "description": "subject_digest over the seven-member review subject (REVIEW-VERDICTS \u00a72.3, with subject_profile cut by RECONCILIATION:421). Artifact lists are declared unsorted and sorted before canonicalization.",
+  "expected": {
+    "artifacts_sorted": [
+      {
+        "digest": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "locator": "agent-notes",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "locator": "agent-notes",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+        "locator": "regista",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "locator": "regista",
+        "media_type": "application/vnd.git.commit"
+      }
+    ],
+    "canonical_bytes": "{\"artifacts\":[{\"digest\":\"sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"locator\":\"agent-notes\",\"media_type\":\"application/vnd.git.commit\"},{\"digest\":\"sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"locator\":\"agent-notes\",\"media_type\":\"application/vnd.git.commit\"},{\"digest\":\"sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0\",\"locator\":\"regista\",\"media_type\":\"application/vnd.git.commit\"},{\"digest\":\"sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"locator\":\"regista\",\"media_type\":\"application/vnd.git.commit\"}],\"content_state_digest\":\"sha256:7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a\",\"declared_not_reviewed\":[{\"locator\":\"tests/vectors/v6/manifest.json\",\"media_type\":\"application/json\",\"reason\":\"generated artifact\"},{\"locator\":\"docs/0.6.0/BUNDLE-V3.md\",\"media_type\":\"text/markdown\",\"reason\":\"reviewed under a separate verdict\"},{\"locator\":\"docs/0.6.0/BUNDLE-V3.md\",\"media_type\":\"text/markdown\",\"reason\":\"specification, not under review\"}],\"entity_id\":\"7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a\",\"entity_kind\":\"work_item\",\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\",\"reviewed_through_event_hash\":\"sha256:8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b\"}",
+    "declared_not_reviewed_sorted": [
+      {
+        "locator": "tests/vectors/v6/manifest.json",
+        "media_type": "application/json",
+        "reason": "generated artifact"
+      },
+      {
+        "locator": "docs/0.6.0/BUNDLE-V3.md",
+        "media_type": "text/markdown",
+        "reason": "reviewed under a separate verdict"
+      },
+      {
+        "locator": "docs/0.6.0/BUNDLE-V3.md",
+        "media_type": "text/markdown",
+        "reason": "specification, not under review"
+      }
+    ],
+    "members": [
+      "artifacts",
+      "content_state_digest",
+      "declared_not_reviewed",
+      "entity_id",
+      "entity_kind",
+      "project_instance_id",
+      "reviewed_through_event_hash"
+    ],
+    "subject_digest": "sha256:a80734c2e37adc6acb3fdadb1ccf3016bb011bf713b0464d1b5719c6cd4adff5"
+  },
+  "input": {
+    "artifacts_declaration_order": [
+      {
+        "digest": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "locator": "regista",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "locator": "agent-notes",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+        "locator": "regista",
+        "media_type": "application/vnd.git.commit"
+      },
+      {
+        "digest": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "locator": "agent-notes",
+        "media_type": "application/vnd.git.commit"
+      }
+    ],
+    "declared_not_reviewed_declaration_order": [
+      {
+        "locator": "docs/0.6.0/BUNDLE-V3.md",
+        "media_type": "text/markdown",
+        "reason": "specification, not under review"
+      },
+      {
+        "locator": "docs/0.6.0/BUNDLE-V3.md",
+        "media_type": "text/markdown",
+        "reason": "reviewed under a separate verdict"
+      },
+      {
+        "locator": "tests/vectors/v6/manifest.json",
+        "media_type": "application/json",
+        "reason": "generated artifact"
+      }
+    ],
+    "review_subject_after_sorting": {
+      "artifacts": [
+        {
+          "digest": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "locator": "agent-notes",
+          "media_type": "application/vnd.git.commit"
+        },
+        {
+          "digest": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "locator": "agent-notes",
+          "media_type": "application/vnd.git.commit"
+        },
+        {
+          "digest": "sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+          "locator": "regista",
+          "media_type": "application/vnd.git.commit"
+        },
+        {
+          "digest": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "locator": "regista",
+          "media_type": "application/vnd.git.commit"
+        }
+      ],
+      "content_state_digest": "sha256:7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+      "declared_not_reviewed": [
+        {
+          "locator": "tests/vectors/v6/manifest.json",
+          "media_type": "application/json",
+          "reason": "generated artifact"
+        },
+        {
+          "locator": "docs/0.6.0/BUNDLE-V3.md",
+          "media_type": "text/markdown",
+          "reason": "reviewed under a separate verdict"
+        },
+        {
+          "locator": "docs/0.6.0/BUNDLE-V3.md",
+          "media_type": "text/markdown",
+          "reason": "specification, not under review"
+        }
+      ],
+      "entity_id": "7e4d2c1a-9b8f-4e3d-a2c1-5f6e7d8c9b0a",
+      "entity_kind": "work_item",
+      "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d",
+      "reviewed_through_event_hash": "sha256:8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b"
+    },
+    "sort_keys": {
+      "artifacts": [
+        "media_type",
+        "locator",
+        "digest"
+      ],
+      "declared_not_reviewed": [
+        "media_type",
+        "locator",
+        "reason"
+      ]
+    }
+  }
+}

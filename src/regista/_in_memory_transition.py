@@ -110,33 +110,42 @@ def in_memory_transition(
     validator_name = transition_def.get("validator")
     if validator_name:
         handler = validators.get(validator_name)
-        if handler is not None:
-            prior_events = tuple(
-                sorted(
-                    store.events.get(work_item_id, []),
-                    key=lambda e: e.event_seq,
-                )[-VALIDATOR_HISTORY_LIMIT:]
+        if handler is None:
+            raise RegistaError(
+                ErrorCode.VALIDATOR_NOT_REGISTERED,
+                f"Validator {validator_name!r} is required by transition "
+                f"{transition_name!r} but is not registered",
+                detail={
+                    "validator": validator_name,
+                    "transition": transition_name,
+                },
             )
-            ctx = ValidatorContext(
-                work_item_id=work_item_id,
-                workflow_name=wi["workflow_name"],
-                workflow_version=wi["workflow_version"],
-                work_item_type=wi["work_item_type"],
-                current_state=wi["current_state"],
-                new_state=new_state,
-                transition_name=transition_name,
-                payload=payload,
-                custom_fields=wi["custom_fields"] or {},
-                actor_id=actor_id,
-                actor_metadata=actor_metadata,
-                actor_kind=actor_kind,
-                prior_events=prior_events,
-                on_behalf_of=(
-                    dict(on_behalf_of) if on_behalf_of is not None else None
-                ),
-                validator_params=transition_def.get("validator_params"),
-            )
-            run_validator(validator_name, handler, ctx)
+        prior_events = tuple(
+            sorted(
+                store.events.get(work_item_id, []),
+                key=lambda e: e.event_seq,
+            )[-VALIDATOR_HISTORY_LIMIT:]
+        )
+        ctx = ValidatorContext(
+            work_item_id=work_item_id,
+            workflow_name=wi["workflow_name"],
+            workflow_version=wi["workflow_version"],
+            work_item_type=wi["work_item_type"],
+            current_state=wi["current_state"],
+            new_state=new_state,
+            transition_name=transition_name,
+            payload=payload,
+            custom_fields=wi["custom_fields"] or {},
+            actor_id=actor_id,
+            actor_metadata=actor_metadata,
+            actor_kind=actor_kind,
+            prior_events=prior_events,
+            on_behalf_of=(
+                dict(on_behalf_of) if on_behalf_of is not None else None
+            ),
+            validator_params=transition_def.get("validator_params"),
+        )
+        run_validator(validator_name, handler, ctx)
 
     stored_payload = dict(payload) if payload else {}
     if custom_fields:

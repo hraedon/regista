@@ -66,7 +66,7 @@ class TestVersions:
         if versions_list:
             assert SCHEMA_VERSION == max(versions_list)
 
-    def test_envelope_version_is_5(self):
+    def test_envelope_version_remains_5_until_v6_is_writable(self):
         assert ENVELOPE_VERSION == 5
 
 
