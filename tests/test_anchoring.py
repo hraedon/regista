@@ -1077,11 +1077,13 @@ class TestMaintenanceAnchoring:
 
         project = f"test_maint_anchor_{uuid.uuid4().hex[:8]}"
         sub = Regista.create_project(DSN, project, KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        provider = FileAnchorProvider(directory=str(tmp_path / "anchors"))
-        sub.anchoring.set_provider(provider)
-        _create_event(sub)
+        # try covers everything from creation (epoch-blocked mid-body refusal
+        # must not leak the schema — WI-243 guard).
         try:
+            sub.register_workflow_file(WORKFLOW_PATH)
+            provider = FileAnchorProvider(directory=str(tmp_path / "anchors"))
+            sub.anchoring.set_provider(provider)
+            _create_event(sub)
             mt = MaintenanceThread(
                 sub,
                 sweep_interval=0.05,
@@ -1248,12 +1250,16 @@ class TestTriggerAnchoringFailurePersistence:
 
         project = f"test_fail_{uuid.uuid4().hex[:8]}"
         sub = Regista.create_project(DSN, project, KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        _create_event(sub)
-        failing_provider = MagicMock()
-        failing_provider.name = "failing"
-        failing_provider.submit.side_effect = RuntimeError("network down")
+        # Cleanup must cover everything from creation: the epoch admission
+        # gate refuses _create_event mid-body (absorbed as XFAIL), and a
+        # narrower try would leak the schema — the WI-243 guard fails CI on
+        # exactly that.
         try:
+            sub.register_workflow_file(WORKFLOW_PATH)
+            _create_event(sub)
+            failing_provider = MagicMock()
+            failing_provider.name = "failing"
+            failing_provider.submit.side_effect = RuntimeError("network down")
             receipt = trigger_anchoring(
                 sub._mgr, failing_provider, project_name=sub._project,
             )
@@ -1273,12 +1279,14 @@ class TestTriggerAnchoringFailurePersistence:
 
         project = f"test_retry_{uuid.uuid4().hex[:8]}"
         sub = Regista.create_project(DSN, project, KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        _create_event(sub)
-        failing_provider = MagicMock()
-        failing_provider.name = "failing"
-        failing_provider.submit.side_effect = RuntimeError("network down")
+        # try covers everything from creation (epoch-blocked mid-body refusal
+        # must not leak the schema — WI-243 guard).
         try:
+            sub.register_workflow_file(WORKFLOW_PATH)
+            _create_event(sub)
+            failing_provider = MagicMock()
+            failing_provider.name = "failing"
+            failing_provider.submit.side_effect = RuntimeError("network down")
             receipt = trigger_anchoring(
                 sub._mgr, failing_provider, project_name=sub._project,
             )
@@ -1302,12 +1310,14 @@ class TestTriggerAnchoringFailurePersistence:
 
         project = f"test_maxfail_{uuid.uuid4().hex[:8]}"
         sub = Regista.create_project(DSN, project, KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        _create_event(sub)
-        failing_provider = MagicMock()
-        failing_provider.name = "failing"
-        failing_provider.submit.side_effect = RuntimeError("persistent error")
+        # try covers everything from creation (epoch-blocked mid-body refusal
+        # must not leak the schema — WI-243 guard).
         try:
+            sub.register_workflow_file(WORKFLOW_PATH)
+            _create_event(sub)
+            failing_provider = MagicMock()
+            failing_provider.name = "failing"
+            failing_provider.submit.side_effect = RuntimeError("persistent error")
             receipt = trigger_anchoring(
                 sub._mgr, failing_provider, project_name=sub._project,
             )

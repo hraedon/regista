@@ -329,7 +329,11 @@ class TestBC220ClientTimestamp:
         dsn = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
         project_name = f"ts_test_{uuid.uuid4().hex[:12]}"
         sub = Regista.create_project(dsn, project_name, hmac_key_path=str(kf))
-        sub.register_workflow(
+        # try/finally from creation: the epoch admission gate refuses the
+        # writes below mid-body (absorbed as XFAIL), and unguarded inline
+        # cleanup would leak the schema — the WI-243 guard fails CI on that.
+        try:
+            sub.register_workflow(
             "name: wf\n"
             "version: 1\n"
             "regista_version: 5.0.0\n"
@@ -345,21 +349,22 @@ class TestBC220ClientTimestamp:
             "    allowed_roles: [admin]\n"
             "roles:\n"
             "  - name: admin\n"
-            "work_item_types:\n"
-            "  - name: t\n"
-            "    custom_fields: []\n"
-            "link_types: []\n"
-        )
-        _wi, _event = sub.create_work_item("wf", "t", "actor", actor_kind="agent")
-        client_before = datetime.now(UTC)
-        evt = sub.append_event(
-            _wi.work_item_id, "actor", actor_kind="agent",
-            transition="note", payload={"k": "v"},
-        )
-        client_after = datetime.now(UTC)
-        mgr = sub._mgr
-        sub.close()
-        drop_project_schema(mgr.dsn, project_name)
+                "work_item_types:\n"
+                "  - name: t\n"
+                "    custom_fields: []\n"
+                "link_types: []\n"
+            )
+            _wi, _event = sub.create_work_item("wf", "t", "actor", actor_kind="agent")
+            client_before = datetime.now(UTC)
+            evt = sub.append_event(
+                _wi.work_item_id, "actor", actor_kind="agent",
+                transition="note", payload={"k": "v"},
+            )
+            client_after = datetime.now(UTC)
+        finally:
+            mgr = sub._mgr
+            sub.close()
+            drop_project_schema(mgr.dsn, project_name)
         # The returned timestamp must be the client-side value, not a DB server value.
         assert client_before <= evt.timestamp <= client_after
 
