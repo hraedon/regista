@@ -152,13 +152,16 @@ passing read-only tests that continue to run unmarked. Mechanics:
      PR as its bypass; the target branch cannot. Locally, the meta-test
      asserts the count never exceeds the ratified 881. New epoch-blocked
      entries require a ratified amendment here, not a manifest edit;
-  4. **the reconciled slow tier executes in CI** (round-5 B6): the default
-     lane inherits `-m 'not slow'`, so a dedicated CI step runs
-     `pytest -m "slow and epoch_blocked"` — without it, the 7 slow manifest
-     nodes would never run and their XPASS/changed-form detection would not
-     be load-bearing. The step treats "nothing collected" as success, which
-     is the state after P1.7 empties the slow entries;
-  3. no test outside the manifest may fail with
+  3. **the whole slow tier executes in CI, independent of manifest
+     membership** (round-5 B6; round-6 B1): the default lane inherits
+     `-m 'not slow'`, so a dedicated CI step runs `pytest -m slow` with a
+     single explicit deselect (the documented pre-existing failure, §5).
+     Selection deliberately does NOT key off the `epoch_blocked` marker —
+     if it did, a still-failing slow node *removed* from the manifest would
+     execute nowhere (shrink allowed by the ratchet, excluded from both
+     lanes); manifest-independent selection makes a removed slow entry run
+     unmarked and prove it passes;
+  4. no test outside the manifest may fail with
      `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` — ordinary red CI enforces it, and
      the meta-test documents that this is the enforcement.
 
