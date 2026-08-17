@@ -27,8 +27,8 @@ import sys
 from pathlib import Path
 
 # sha256 of tests/epoch_blocked_manifest.json as ratified at the
-# establishing reconciliation commit (881 entries). Recorded in
-# docs/0.6.0/SUITE-RECONCILIATION.md §5.
+# establishing reconciliation commit (820 entries after the RETIRE-v5
+# tranche). Recorded in docs/0.6.0/SUITE-RECONCILIATION.md §5.
 RATIFIED_BOOTSTRAP_SHA256 = "a78b5d9e9d76ca132dd4b4b7dd78bfaea4e1471e7db61645fd33bd700b34f949"
 # sha256 of tests/epoch_blocked_inventory.txt (3073 nodes) — used only in
 # the one-time bootstrap case. After bootstrap, inventory immutability is
