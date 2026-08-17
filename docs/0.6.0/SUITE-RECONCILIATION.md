@@ -1,14 +1,21 @@
 # Suite reconciliation at the epoch boundary
 
-**Status: PROPOSED — owner ratification required.** Drafted 2026-08-16 from a
-static triage of the full suite at the PR #40 stack tip (88e44b8; branch head
-now 9e673f9). **Revised 2026-08-16 after a cross-lineage design review
-(openai/gpt-5.6-sol, verdict request-changes; session
-ses_ff2403264ffeK0BSJ1evKP5gAZ)** — the revision replaces the misassigned
-P1.3 blocker with a new writer package, adds the P1.4 retirement population,
-moves from module-level marking to exact node IDs, and makes the debt and
-retirement records machine-enforced. Nothing in this document is implemented
-yet. EPOCH-RESET decides the *data* disposition ("discarded, not migrated");
+**Status: RATIFIED 2026-08-16.** Owner ratified D1/D2/D3 ("Your D1/2/3
+suggestions seem reasonable to me: please run a manual review using sol and
+then proceed as suggested"), conditioned on a cross-lineage design review:
+**openai/gpt-5.6-sol, seven rounds in session ses_ff2403264ffeK0BSJ1evKP5gAZ,
+final verdict PASS with zero findings** ("the reconciliation policy and
+enforcement mechanism are sound for the stated scope"). The mechanics
+evolved substantially through the review rounds within the ratified
+direction — the misassigned P1.3 blocker became the new P1.7 package, the
+P1.4 retirement population was added, module-level skip became exact-node
+strict xfail with structural form pinning, and the debt and retirement
+records became machine-enforced (set ratchet, target-branch inventory
+anchor, manifest-independent slow lane). **The §2.1/§2.2 enforcement
+mechanism is implemented on this branch** (commits 17ddc82…e2381f8);
+the RETIRE-v5 per-test triage, P1.7 itself, and D2 execution are
+downstream, gated by these mechanisms. EPOCH-RESET decides the *data*
+disposition ("discarded, not migrated");
 no document decides the *test* disposition — the **881 epoch-caused test
 failures** (fact 3; the historically quoted 892 was contaminated, and the
 slow tier adds 7) are an undocumented consequence of a documented decision.
