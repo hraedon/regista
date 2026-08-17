@@ -163,6 +163,9 @@ passing read-only tests that continue to run unmarked. Mechanics:
      membership** (round-5 B6; round-6 B1): the default lane inherits
      `-m 'not slow'`, so a dedicated CI step runs `pytest -m slow` with a
      single explicit deselect (the documented pre-existing failure, §5).
+     *(Successor note, 2026-08-17: the deselect is removed — WI-288 fixed
+     the sweep harness's interpreter resolution and the node passes
+     unmarked. The manifest-independence mechanism below is unchanged.)*
      Selection deliberately does NOT key off the `epoch_blocked` marker —
      if it did, a still-failing slow node *removed* from the manifest would
      execute nowhere (shrink allowed by the ratchet, excluded from both
@@ -309,7 +312,9 @@ The counts in this document trace to committed artifacts, not prose:
   Nothing enters by judgment. Known pre-existing exclusion:
   `test_reducer_v1_determinism.py::test_cross_interpreter_sweep_if_alternates_available`
   (slow) fails identically on pre-#40 main and under reversion — not epoch
-  debt, tracked separately.
+  debt, tracked separately. *(RESOLVED 2026-08-17, WI-288: a harness PATH
+  defect in `tools/reducer_v1_sweep.py` — no reducer divergence; the node
+  now passes and the CI deselect is removed.)*
 - **Committed artifacts** (all in this branch), sha256 recorded in full:
   - `docs/0.6.0/evidence/suite-junit-base-9e673f9.xml.gz` —
     `451fbadca35210de1cc9b0e3c429c9783faa66d469e20c9bf04ede135760d381`

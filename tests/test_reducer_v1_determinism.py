@@ -244,6 +244,37 @@ def test_cross_interpreter_sweep_if_alternates_available() -> None:
     assert "RESULT: IDENTICAL" in proc.stdout
 
 
+def test_sweep_fails_loudly_on_unresolvable_interpreter() -> None:
+    """The WI-288 resolution step must refuse, not soft-pass, a missing interpreter.
+
+    Exit 2 is the harness-failure contract, distinct from exit 1 (divergence);
+    a refactor that collapses them would let a broken sweep read as evidence.
+    """
+    sweep = Path(__file__).parents[1] / "tools" / "reducer_v1_sweep.py"
+    proc = subprocess.run(
+        [sys.executable, str(sweep), "--sweep", "no-such-interpreter-wi288"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "FAILED to resolve interpreter" in proc.stdout
+    assert "RESULT:" not in proc.stdout
+
+
+def test_sweep_refuses_duplicate_resolved_interpreters() -> None:
+    """Two names aliasing one binary must not count as a two-interpreter sweep."""
+    sweep = Path(__file__).parents[1] / "tools" / "reducer_v1_sweep.py"
+    name = Path(sys.executable).name
+    proc = subprocess.run(
+        [sys.executable, str(sweep), "--sweep", name, name],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "DUPLICATE interpreter" in proc.stdout
+    assert "RESULT:" not in proc.stdout
+
+
 def _which(name: str) -> str | None:
     import shutil
 

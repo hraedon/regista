@@ -109,14 +109,13 @@ jobs:
       # Run the WHOLE slow tier — selection must not depend on manifest
       # membership, or a still-failing slow node removed from the manifest
       # would execute nowhere (the round-6 removal bypass): here a removed
-      # entry runs unmarked and must prove it passes. The single deselect is
-      # the documented pre-existing failure (red on pre-#40 main too —
-      # SUITE-RECONCILIATION.md §5), not epoch debt.
+      # entry runs unmarked and must prove it passes. (The former deselect for
+      # tests/test_reducer_v1_determinism.py::test_cross_interpreter_sweep_if_alternates_available
+      # was removed when WI-288 fixed the sweep's interpreter resolution.)
       - name: Slow tier (manifest-independent)
         run: |
           set +e
-          pytest -m slow --tb=short -q \
-            --deselect "tests/test_reducer_v1_determinism.py::test_cross_interpreter_sweep_if_alternates_available"
+          pytest -m slow --tb=short -q
           rc=$?
           set -e
           if [ "$rc" != "0" ] && [ "$rc" != "5" ]; then exit "$rc"; fi
