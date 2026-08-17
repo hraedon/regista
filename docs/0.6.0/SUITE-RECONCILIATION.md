@@ -34,11 +34,15 @@ of these are judgment calls.
 3. **The failure surface is exactly the event-writing tests — 874 nodes,
    each empirically traced to the epoch boundary.** A clean full-suite run at
    the branch head with **all extras installed** (see §5) yields 848 failures
-   + 26 errors / 2160 passed / 18 skipped. All 848 failures carry the refusal
-   directly; the 26 errors/others present indirectly (sidecar HTTP 409s,
-   downstream empty-state asserts) and were **proven** epoch-caused by
-   running exactly those nodes on pre-#40 main: 24 pass there outright and
-   the remaining 2 pass in module context (order-dependent seeding). The
+   + 26 errors / 2160 passed / 18 skipped. Of the 874, **842 are `direct`** —
+   the live exception is the `RegistaError` refusal itself — and **32 are
+   `indirect`**: the refusal reaches the test through a boundary (fixture
+   setup, the sidecar's HTTP 409 mapping, CLI subprocess output asserted on,
+   assert-wrapped concurrency errors, downstream empty-state asserts). The
+   direct/indirect split was **live-validated** by the form validator (§2.1)
+   across full-suite passes, which caught three boundary nodes that text
+   classification had over-marked as direct. Every one of the 874 is proven
+   epoch-caused by the guard-reverted control run (§5). The
    historically quoted **892/1977/97/26 was contaminated**: 72 of its
    failures (and 79 of its skips) were missing-optional-extras artifacts of a
    `--extra dev`-only environment, not epoch refusals. Passing tests are the
@@ -92,10 +96,19 @@ passing read-only tests that continue to run unmarked. Mechanics:
   evidence).
 - **Mark application**: a `pytest_collection_modifyitems` hook in
   `tests/conftest.py` applies `pytest.mark.xfail(strict=True, reason=…P1.7…)`
-  to exactly the manifest's nodes — `raises=` pinned to the refusal error for
-  `direct` entries; unpinned (documented as weaker) for `indirect` ones. (A
-  bare marker registration alone would neither xfail nor skip; the hook is
-  the mechanism.)
+  to exactly the manifest's nodes. (A bare marker registration alone would
+  neither xfail nor skip; the hook is the mechanism.)
+- **Failure-form pinning** (design-review round-3 B1): every manifest entry
+  records its expected failure form — `direct` entries carry the exception
+  class and the refusal code (`GENESIS_REQUIRED`/`V6_EPOCH_OPEN`); `indirect`
+  entries carry the observed failure signature (e.g. `assert 409 == 200`,
+  `KeyError: 'work_item'`). A `pytest_runtest_makereport` validator in
+  conftest compares each XFAIL against the recorded form and **converts a
+  changed failure mode into honest red** — strict xfail alone would absorb
+  an unrelated new failure as XFAIL. `raises=` is not used: it can pin only
+  a class, not the refusal code. The validator's deny cases are proven in
+  `tests/test_epoch_blocked_meta.py` (a guard that cannot reject is a
+  tautology).
 - **Why strict xfail and not skip** (corrects the previous revision, which
   wrongly claimed fixture-phase errors escape xfail — an empirical probe on
   this repo's pytest 9.1.1 shows fixture-phase exceptions report as XFAIL
@@ -110,12 +123,15 @@ passing read-only tests that continue to run unmarked. Mechanics:
   1. every manifest node ID must exist in the current collection (a renamed
      or deleted blocked test is loud, not silently absorbed);
   2. **shrink-only ratchet with an external baseline** (the in-file count
-     alone is mutable together with its entries and proves nothing): CI
-     compares the PR's manifest count against the **target branch's**
-     manifest and fails on any increase. Locally, the meta-test asserts the
-     count never exceeds the committed reconciliation baseline (874). New
-     epoch-blocked entries require a ratified amendment here, not a manifest
-     edit;
+     alone is mutable together with its entries and proves nothing):
+     `scripts/check-epoch-debt.py` in CI compares the PR's manifest count
+     against the **target branch's** manifest and fails on any increase.
+     **Bootstrap rule** (design-review round-3 B2): when the base ref has no
+     manifest — true exactly once, for the establishing reconciliation PR —
+     the count must be **exactly 874**, the ratified bootstrap; absence of a
+     base manifest is not license to establish arbitrary debt. Locally, the
+     meta-test asserts the count never exceeds 874. New epoch-blocked
+     entries require a ratified amendment here, not a manifest edit;
   3. no test outside the manifest may fail with
      `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` — ordinary red CI enforces it, and
      the meta-test documents that this is the enforcement.
@@ -130,8 +146,12 @@ manifest count is a machine-readable debt figure with three bindings:
   estate unless the claim states `green-with-epoch-debt(N)`. Pre-release
   artifacts may ship carrying the figure;
 - **the release gate refuses to cut any final (non-pre-release) 0.6.x
-  release while the manifest is nonempty** — enforced as a check in the
-  release workflow, not as convention.
+  release while the manifest is nonempty** — regista has no separate
+  release workflow (releases are version bumps whose CI runs this suite),
+  so the gate is a meta-test
+  (`tests/test_epoch_blocked_meta.py::test_final_060_release_refuses_nonempty_manifest`):
+  a final `>= 0.6.0` version in `pyproject.toml` with entries outstanding
+  is a failing suite, wherever the release is cut.
 
 ### 2.2 RETIRE — per-test, recorded in a machine-checked ledger
 
@@ -211,10 +231,10 @@ work belongs to P1.7 (§2.0), not to the reconciliation PR.
 
 ## 4. Owner decision points
 
-- **D1** — ratify the taxonomy: BLOCKED-ON-P1.7 exact-node skip with
-  ratcheted manifest + release-gate binding (§2.1), per-test RETIRE with the
-  validated ledger (§2.2), landing as a stacked PR that is the merge vehicle
-  (§3). (Alternatives considered: hold #40 until the writer exists — leaves
+- **D1** — ratify the taxonomy: BLOCKED-ON-P1.7 **exact-node strict xfail**
+  with form pinning, ratcheted manifest + release-gate binding (§2.1),
+  per-test RETIRE with the validated ledger (§2.2), landing as a stacked PR
+  that is the merge vehicle (§3). (Alternatives considered: hold #40 until the writer exists — leaves
   the 0.6.0 line blocked for the whole build; merge red — corrosive; blanket
   module-level skip or xfail — suppresses passing coverage and is
   unaccountable.)
@@ -249,10 +269,16 @@ The counts in this document trace to committed artifacts, not prose:
   `src/regista/sidecar/errors.py:89,94`; refused creations yield responses
   missing `work_item`; refused seeding yields empty-state asserts). Nothing
   enters by judgment.
-- The two JUnit reports (base and guard-reverted control), the derived
-  manifest, and the full pre-reconciliation collection inventory are
-  committed together with the reconciliation (manifest and inventory are
-  already staged in `tests/`). The 08-15 prose figures are superseded;
+- **Committed artifacts** (all in this branch): the two JUnit reports at
+  `docs/0.6.0/evidence/suite-junit-base-9e673f9.xml.gz` (sha256
+  `451fbadc…5760d381`) and
+  `docs/0.6.0/evidence/suite-junit-guard-reverted-9e673f9.xml.gz` (sha256
+  `ab4838dc…18c750d6b`), the derived manifest
+  (`tests/epoch_blocked_manifest.json`), and the pre-reconciliation
+  collection inventory (`tests/epoch_blocked_inventory.txt`). Environment:
+  dedicated local Postgres via the default test DSN shape
+  (`postgresql://regista_test:…@localhost:5432/regista_test`), python 3.13,
+  `uv sync --frozen --all-extras`. The 08-15 prose figures are superseded;
   cluster tables from the static triage remain estimates of *blast radius*
   (def counts per module), and the manifest — exact node IDs from the run —
   is the normative inventory.

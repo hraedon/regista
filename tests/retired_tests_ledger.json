@@ -1,0 +1,4 @@
+{
+ "description": "Retired-test ledger (SUITE-RECONCILIATION.md §2.2). Every test node deleted from the suite after the epoch reconciliation must be recorded here, keyed by its exact former node ID, with a disposition: 'dies_with_v5' (the invariant is v5/HMAC mechanics the epoch reset deletes), 'deleted_by: P1.4' (the subsystem is deleted outright), or 'coverage_owed: <work item>' (the invariant reappears in v6; coverage is owed there). tests/test_retired_tests_ledger.py enforces this against the committed pre-reconciliation inventory: a node cannot vanish without an entry.",
+ "entries": []
+}

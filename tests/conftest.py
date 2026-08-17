@@ -7,6 +7,7 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
+from _epoch_blocked import epoch_failure_form_matches, load_epoch_manifest
 from _helpers import DSN, KEY_PATH
 
 # ---------------------------------------------------------------------------
@@ -101,8 +102,61 @@ def _module_is_db_dependent(module: object) -> bool:
     return has_db
 
 
+# ---------------------------------------------------------------------------
+# Epoch-blocked manifest (SUITE-RECONCILIATION.md §2.1)
+#
+# Every node in tests/epoch_blocked_manifest.json is proven blocked on the
+# missing v6 ordinary-event writer (P1.7): non-passing at the reconciliation
+# base AND passing in the guard-reverted control run. The hook marks exactly
+# those nodes strict-xfail, so they keep running and the moment one starts
+# passing, strict XPASS fails the suite — the manifest must shrink in the
+# same change. Enforcement of the manifest's own integrity lives in
+# tests/test_epoch_blocked_meta.py; the retirement side in
+# tests/test_retired_tests_ledger.py.
+# ---------------------------------------------------------------------------
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    rep = yield
+    entry = load_epoch_manifest().get(item.nodeid)
+    if (
+        entry is not None
+        and call.excinfo is not None
+        and getattr(rep, "wasxfail", None) is not None
+        and not epoch_failure_form_matches(entry, call.excinfo)
+    ):
+        # Changed failure form under an epoch-blocked mark: refuse the XFAIL.
+        rep.outcome = "failed"
+        del rep.wasxfail
+        rep.sections.append(
+            (
+                "epoch_blocked form validator",
+                f"{item.nodeid} is epoch-blocked but no longer fails with the "
+                f"recorded refusal form {entry.get('expected')!r}; it now raises "
+                f"{call.excinfo.type.__name__}: {call.excinfo.value!r}. A changed "
+                "failure mode must be triaged, not absorbed as XFAIL "
+                "(SUITE-RECONCILIATION.md §2.1).",
+            )
+        )
+    return rep
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip DB-dependent tests when PostgreSQL is not reachable."""
+    """Apply the PG-reachability skip and the epoch-blocked strict xfails."""
+    epoch_blocked = load_epoch_manifest()
+    if epoch_blocked:
+        reason = (
+            "epoch-blocked on the v6 ordinary-event writer (P1.7) — "
+            "SUITE-RECONCILIATION.md §2.1; proven by the guard-reverted control run"
+        )
+        xfail_marker = pytest.mark.xfail(strict=True, reason=reason)
+        for item in items:
+            if item.nodeid in epoch_blocked:
+                # Failure-form pinning happens in pytest_runtest_makereport —
+                # raises= can only pin a class, not the refusal code.
+                item.add_marker(xfail_marker)
+                item.add_marker(pytest.mark.epoch_blocked)
+
     reason = _pg_skip_decision()
     if not reason:
         return
@@ -199,6 +253,13 @@ def pytest_sessionstart(session) -> None:
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     if not _controller_process(session):
+        return
+    if session.config.option.collectonly:
+        # A collect-only session runs no tests and cannot leak schemas; any
+        # schema delta it observes was created by a concurrent real session
+        # (e.g. the epoch-blocked meta-guards collect in a subprocess while
+        # the suite runs). Flagging it here is a false positive by
+        # construction.
         return
     global _SESSION_START_SCHEMAS
     if _SESSION_START_SCHEMAS is None:

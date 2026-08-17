@@ -80,6 +80,7 @@ pythonpath = ["src", ".", "tests"]
 addopts = "-m 'not slow' --strict-markers"
 markers = [
     "slow: scale benchmarks, skipped by default",
+    "epoch_blocked: strict-xfail nodes blocked on the v6 ordinary-event writer (P1.7); applied from tests/epoch_blocked_manifest.json, never by hand",
 ]
 
 [tool.ruff]

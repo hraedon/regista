@@ -132,6 +132,14 @@ ceremony, script the non-secret steps, and verify the artifacts afterwards.
 `solo_effective` is distinguishable from the artifact alone, and the mode is visible in every
 downstream artifact.
 
+> **Contract/ceremony split (2026-08-16, with the P1.7 amendment).** P2.1 has two separable
+> halves: its **contracts and code** (envelope shapes, trust-domain derivation, verification
+> paths — buildable and testable against test trust roots), and its **owner-executed
+> production ceremony** (the acceptance criterion above). Where P2.2, P2.3, or P1.7 state
+> `dep: P2.1`, the build dependency is on the contracts/code half; the production ceremony
+> gates **Gate 2 onward**, not package development. This resolves the transitive ambiguity
+> flagged in the SUITE-RECONCILIATION design review (round 3).
+
 ### P2.2 — Trust log + signed key lifecycle · **owner: team** · dep: P2.1
 v6/Ed25519 from its genesis event, no legacy epoch. Enrollment payloads **must carry public key
 bytes** — a fingerprint alone makes the projection unrebuildable and silently defeats the remedy
