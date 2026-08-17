@@ -145,9 +145,19 @@ passing read-only tests that continue to run unmarked. Mechanics:
      neither an arbitrary set nor an arbitrary same-size set can bootstrap.
      CI base ref: the PR's target branch for pull requests, the pre-push tip
      (`github.event.before`) for pushes to main (round-4 B4: `origin/main`
-     on a push would compare the commit to itself). Locally, the meta-test
+     on a push would compare the commit to itself). The same CI check
+     enforces **inventory immutability against the target branch** (round-5
+     B5): `tests/epoch_blocked_inventory.txt` must be byte-identical to the
+     base ref's copy — an in-repo hash pin alone could be edited in the same
+     PR as its bypass; the target branch cannot. Locally, the meta-test
      asserts the count never exceeds the ratified 881. New epoch-blocked
      entries require a ratified amendment here, not a manifest edit;
+  4. **the reconciled slow tier executes in CI** (round-5 B6): the default
+     lane inherits `-m 'not slow'`, so a dedicated CI step runs
+     `pytest -m "slow and epoch_blocked"` — without it, the 7 slow manifest
+     nodes would never run and their XPASS/changed-form detection would not
+     be load-bearing. The step treats "nothing collected" as success, which
+     is the state after P1.7 empties the slow entries;
   3. no test outside the manifest may fail with
      `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` — ordinary red CI enforces it, and
      the meta-test documents that this is the enforcement.
@@ -302,9 +312,11 @@ The counts in this document trace to committed artifacts, not prose:
   - `tests/epoch_blocked_manifest.json` (881 entries; its sha256 is the
     ratified bootstrap digest pinned in `scripts/check-epoch-debt.py`)
   - `tests/epoch_blocked_inventory.txt` (3073 nodes, collected with the
-    marker filter disabled; **immutable-by-hash** — its sha256 is pinned in
-    `tests/test_retired_tests_ledger.py`, so shrinking it requires editing
-    the pin in the same reviewable diff)
+    marker filter disabled; **immutable** — CI requires byte-identity with
+    the target branch's copy (the mechanical anchor, round-5 B5); the
+    sha256 pins in `tests/test_retired_tests_ledger.py` and
+    `scripts/check-epoch-debt.py` serve local runs and the one-time
+    bootstrap)
 
   Environment: dedicated local Postgres via the default test DSN shape
   (`postgresql://regista_test:…@localhost:5432/regista_test`), python 3.13,

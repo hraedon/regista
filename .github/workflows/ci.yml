@@ -103,6 +103,20 @@ jobs:
             base="${{ github.event.before }}"
           fi
           python3 scripts/check-epoch-debt.py --base "$base"
+
+      # SUITE-RECONCILIATION.md §2.1 (round-5 B6): the default lane inherits
+      # -m 'not slow', so the reconciled slow-tier nodes would never execute
+      # and their strict-xfail XPASS/changed-form detection would not be
+      # load-bearing. Run exactly the reconciled slow population here.
+      # Exit 5 (nothing collected) becomes success once P1.7 empties the
+      # slow entries from the manifest.
+      - name: Epoch-blocked slow tier
+        run: |
+          set +e
+          pytest -m "slow and epoch_blocked" --tb=short -q
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "5" ]; then exit "$rc"; fi
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean

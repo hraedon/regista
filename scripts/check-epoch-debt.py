@@ -29,8 +29,14 @@ from pathlib import Path
 # sha256 of tests/epoch_blocked_manifest.json as ratified at the
 # establishing reconciliation commit (881 entries). Recorded in
 # docs/0.6.0/SUITE-RECONCILIATION.md §5.
-RATIFIED_BOOTSTRAP_SHA256 = "d69726bf41365408d67aa0fe1dfa23185759ceed3e753fe535cd5b8c498b9c21"
+RATIFIED_BOOTSTRAP_SHA256 = "533068656137d05735dca2d23f51748bbcda33013548becd8dc66a140106d34c"
+# sha256 of tests/epoch_blocked_inventory.txt (3073 nodes) — used only in
+# the one-time bootstrap case. After bootstrap, inventory immutability is
+# anchored to the TARGET BRANCH (byte-identity via git show), which no PR
+# can edit alongside its bypass (round-5 B5).
+RATIFIED_INVENTORY_SHA256 = "8696641ae892240f8c6f42d5dc432c12a3345b95b9cd8d3f352789152824dec3"
 MANIFEST_REL = "tests/epoch_blocked_manifest.json"
+INVENTORY_REL = "tests/epoch_blocked_inventory.txt"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -63,15 +69,37 @@ def main() -> int:
         check=False,
     )
     new_nodes: set[str] = set()
+    inventory_bytes = (REPO_ROOT / INVENTORY_REL).read_bytes()
     if proc.returncode == 0:
+        # Inventory immutability, anchored to the TARGET BRANCH — not to an
+        # in-repo pin a PR could edit alongside its bypass (round-5 B5). The
+        # inventory never changes after bootstrap; byte-identity or refusal.
+        inv_proc = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{args.base}:{INVENTORY_REL}"],
+            capture_output=True,
+            check=False,
+        )
+        if inv_proc.returncode != 0 or inv_proc.stdout != inventory_bytes:
+            print(
+                "epoch-debt: tests/epoch_blocked_inventory.txt differs from the "
+                f"base ref {args.base}. The pre-reconciliation inventory is "
+                "immutable; deleting a test requires a retirement-ledger entry, "
+                "never an inventory edit (SUITE-RECONCILIATION.md §2.2)",
+                file=sys.stderr,
+            )
+            return 1
         base_nodes = _nodes(proc.stdout)
         new_nodes = current - base_nodes
         verdict_ok = not new_nodes
         rule = f"shrink-only node set vs {args.base} ({len(base_nodes)})"
     else:
         digest = hashlib.sha256(manifest_bytes).hexdigest()
-        verdict_ok = digest == RATIFIED_BOOTSTRAP_SHA256
-        rule = "bootstrap: base ref has no manifest, file must be the ratified digest"
+        inv_digest = hashlib.sha256(inventory_bytes).hexdigest()
+        verdict_ok = (
+            digest == RATIFIED_BOOTSTRAP_SHA256
+            and inv_digest == RATIFIED_INVENTORY_SHA256
+        )
+        rule = "bootstrap: base ref has no manifest, files must match the ratified digests"
 
     verdict = "OK" if verdict_ok else "VIOLATION"
     line = f"epoch debt: {len(current)} blocked test node(s) [{rule}] -> {verdict}"

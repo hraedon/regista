@@ -111,7 +111,10 @@ def test_final_060_release_refuses_nonempty_manifest(manifest: dict) -> None:
     import tomllib
 
     version = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]["version"]
-    is_final = re.fullmatch(r"\d+\.\d+\.\d+", version) is not None
+    # Final = X.Y.Z with an optional .postN (a post-release of a final IS
+    # final, PEP 440); anything carrying a/b/rc/dev segments is a
+    # pre-release and may ship with labeled debt per §2.1.
+    is_final = re.fullmatch(r"\d+\.\d+\.\d+(\.post\d+)?", version) is not None
     major, minor = (int(p) for p in version.split(".")[:2])
     if is_final and (major, minor) >= (0, 6) and manifest["entries"]:
         pytest.fail(
