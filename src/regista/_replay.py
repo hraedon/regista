@@ -179,10 +179,9 @@ def _verify_hash_chain(
     prev_sig = prev_event.get("signature")
     if prev_env is None or prev_sig is None:
         return False, "previous event missing canonical_envelope or signature"
-    from ._signing_scheme import resolve_hash_function
-
-    hash_fn = resolve_hash_function("sha-256")
-    computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
+    computed = _event_head_hash(prev_event)
+    if computed is None:
+        return False, "previous event has no computable event hash"
     if not _hmac.compare_digest(computed, bytes(expected)):
         detail = f"hash chain mismatch: computed={computed.hex()} expected={bytes(expected).hex()}"
         return False, detail
@@ -198,12 +197,10 @@ def _event_head_hash(evt: dict[str, Any]) -> bytes | None:
     driven either from link records or from full event rows (unit tests
     construct the latter directly).
 
-    The chain-link digest is SHA-256 unconditionally — NOT the event's own
-    ``hash_alg``.  ``hash_alg`` selects the digest used inside the signing
-    envelope; the append path hard-codes SHA-256 for both chain links
-    (``_event_store`` computes ``prev_event_hash`` and the global chain head
-    that way), so the verifier must too or every link would mismatch on an
-    event signed with a non-default ``hash_alg``.
+    v6 uses its domain-separated, length-framed event hash. Legacy envelopes
+    use SHA-256 over the envelope/signature concatenation. ``hash_alg`` is not
+    consulted: it selects a digest inside legacy signing envelopes, not the
+    chain-link construction.
     """
     precomputed = evt.get("head_hash")
     if precomputed is not None:
@@ -212,7 +209,13 @@ def _event_head_hash(evt: dict[str, Any]) -> bytes | None:
     sig = evt.get("signature")
     if env is None or sig is None:
         return None
-    return resolve_hash_function("sha-256")(bytes(env) + bytes(sig)).digest()
+    canonical_envelope = bytes(env)
+    signature = bytes(sig)
+    from ._signing import classify_envelope_version, compute_v6_event_hash
+
+    if classify_envelope_version(canonical_envelope) == 6:
+        return compute_v6_event_hash(canonical_envelope, signature)
+    return resolve_hash_function("sha-256")(canonical_envelope + signature).digest()
 
 
 def _chain_link(evt: dict[str, Any]) -> dict[str, Any]:

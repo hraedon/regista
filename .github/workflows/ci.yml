@@ -86,6 +86,40 @@ jobs:
       # prerequisite before parallelising.
       - name: Test + coverage
         run: pytest tests/ -v --cov=regista --cov-report=term-missing --durations=10 --durations-min=1.0
+
+      # SUITE-RECONCILIATION.md §2.1: the epoch-blocked manifest node set may
+      # only shrink (bootstrap: the ratified manifest digest when the base has
+      # no manifest). Publishes the debt figure to the step summary — a
+      # manifest-bearing green is green-with-epoch-debt(N), not "suite green".
+      # Base ref: the PR's target branch for pull_request events; the
+      # pre-push tip (github.event.before) for pushes — origin/main on a push
+      # to main would compare the commit to itself and make the ratchet
+      # vacuous.
+      - name: Epoch-debt ratchet
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          python3 scripts/check-epoch-debt.py --base "$base"
+
+      # SUITE-RECONCILIATION.md §2.1 (round-5 B6, round-6 B1): the default
+      # lane inherits -m 'not slow', so slow-tier nodes would never execute.
+      # Run the WHOLE slow tier — selection must not depend on manifest
+      # membership, or a still-failing slow node removed from the manifest
+      # would execute nowhere (the round-6 removal bypass): here a removed
+      # entry runs unmarked and must prove it passes. The single deselect is
+      # the documented pre-existing failure (red on pre-#40 main too —
+      # SUITE-RECONCILIATION.md §5), not epoch debt.
+      - name: Slow tier (manifest-independent)
+        run: |
+          set +e
+          pytest -m slow --tb=short -q \
+            --deselect "tests/test_reducer_v1_determinism.py::test_cross_interpreter_sweep_if_alternates_available"
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "5" ]; then exit "$rc"; fi
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean

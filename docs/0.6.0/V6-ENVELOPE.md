@@ -1177,17 +1177,18 @@ evaluate".
 | — | `events.payload_canonical_hash` | `SHA256(signature_input)` | **Changed for v6**: legacy stores `SHA256(canonical_envelope)`. See §9.4. |
 | `project_instance_id`, `trust_domain_id`, `signing.key_binding_event_hash`, `authorization.*`, `workflow.definition_hash`, `workflow.registration_event_hash`, `type`, `version` | **no column** | read from the envelope | §9.3, rule N1. |
 
-### 9.3 Required schema changes (forward migrations only)
+### 9.3 Required schema shape for the clean epoch
 
-`ARCHITECTURE-0.6.0.md` § SEQUENCING Stage 4: "Do not rewrite old migration files; add forward
-migrations so existing stores upgrade safely."
+The clean-epoch decision discards the legacy population rather than upgrading it. New schemas use
+the baseline shape directly; a populated legacy schema is not a genesis target and is refused by
+first-write admission.
 
 | # | Change | Why |
 |---|---|---|
-| M1 | `ALTER TABLE events ALTER COLUMN workflow_name DROP NOT NULL; ALTER COLUMN workflow_version DROP NOT NULL` | v6 project-system events have `workflow == null` (§1.6), and both columns are `NOT NULL` today (`001_initial.sql:9-10`). Without this, the cutover checkpoint cannot be inserted — or, worse, is inserted with the segment seal's `""`/`0` sentinels (`_archive_segments.py:527-528`), which v6 would then *sign*. **On the critical path of the ceremony**, and a **prerequisite of the first v6 append** — `RECONCILIATION.md` Resolution 3. Owned by P1.2; acceptance is that the migration applies *and rolls back* cleanly on a copy of the live schema set and that a checkpoint inserts with genuinely null workflow identity. Apply the same change to `events_archive` only if archive consolidation has not already removed that table. |
+| M1 | Clean baseline: `events.workflow_name`/`workflow_version` are nullable in `migrations/001_initial.sql` (and `events_archive` inherits that shape). | v6 project-system events have `workflow == null` (§1.6). The clean-epoch decision removes the live-schema migration rehearsal; the first genesis insert must use SQL `NULL`, never the segment-seal `""`/`0` sentinels. |
 | M2 | `ALTER TABLE events ADD COLUMN envelope_version SMALLINT NULL` | Operational counting (the checkpoint payload needs per-version counts) and index-supported epoch queries. **Advisory only:** it must be reconciled against the derived classification and must never select the parser. NULL for pre-migration rows; the preflight (sibling D) backfills it from the classifier, and that backfill is one more unsigned column the verifier must reconcile rather than trust. |
 | M3 | `ALTER TABLE events ADD COLUMN event_hash BYTEA NULL` + `CREATE UNIQUE INDEX … ON events (event_hash) WHERE event_hash IS NOT NULL` | Chain traversal by hash reference (§2.4) is O(n) without it. **Cache only:** every verifier recomputes it (§5.3) and compares; a mismatch is `INVALID`. |
-| M4 | `CREATE TABLE project_identity (id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id), project_instance_id UUID NOT NULL, trust_domain_id UUID NOT NULL, cutover_event_id UUID NOT NULL)` — single-row | The project needs a local answer to "which instance am I?". **Projection only**, rebuilt from the signed cutover checkpoint; a verifier takes the expected value from the trust policy, not from this table (§3.2). |
+| M4 | `CREATE TABLE project_identity` — single-row projection with project/trust IDs, genesis event/hash, principal, key, scheme, and fingerprint (`migrations/001_initial.sql`). | The project needs a local answer to "which instance am I?" and which bootstrap key opened it. The writer populates it in the same transaction as genesis; recovery verifies it against the signed event and key set. |
 | M5 | `DROP TRIGGER events_set_entity_id ON events` | §7.3. |
 | M6 | Widen `events.actor_kind` CHECK **only if** a new execution kind is needed | Not currently needed; listed so the omission is deliberate. |
 
@@ -1488,6 +1489,10 @@ existing non-workflow event, and it writes the sentinels `workflow_name = ""` an
 `workflow_name: ""`. Carrying that pattern into v6 would mean the envelope signs a workflow that
 does not exist, which is a signed falsehood rather than a harmless placeholder. Making the
 columns nullable is therefore correctness, not tidiness.
+
+> **AMENDED — `EPOCH-RESET.md` §3.** The live cutover described above was replaced by a clean
+> epoch. The nullable columns and `project_identity` now exist in the initial baseline, and the
+> explicit `project_initialized` writer enforces the same invariant before the first event.
 
 **D-4 — the architecture's `scheme_counts` in the checkpoint payload implies a per-project
 count, but the estate's numbers are quoted globally.** `ARCHITECTURE-0.6.0.md` §4 shows

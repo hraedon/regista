@@ -7,6 +7,7 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
+from _epoch_blocked import apply_epoch_marks, validate_xfail_report
 from _helpers import DSN, KEY_PATH
 
 # ---------------------------------------------------------------------------
@@ -101,8 +102,34 @@ def _module_is_db_dependent(module: object) -> bool:
     return has_db
 
 
+# ---------------------------------------------------------------------------
+# Epoch-blocked manifest (SUITE-RECONCILIATION.md §2.1)
+#
+# Every node in tests/epoch_blocked_manifest.json is proven blocked on the
+# missing v6 ordinary-event writer (P1.7): non-passing at the reconciliation
+# base AND passing in the guard-reverted control run. The hook marks exactly
+# those nodes strict-xfail, so they keep running and the moment one starts
+# passing, strict XPASS fails the suite — the manifest must shrink in the
+# same change. Enforcement of the manifest's own integrity lives in
+# tests/test_epoch_blocked_meta.py; the retirement side in
+# tests/test_retired_tests_ledger.py.
+# ---------------------------------------------------------------------------
+
+# tryfirst on a wrapper makes it OUTERMOST: its post-yield code runs after
+# every inner implementation — in particular after _pytest.skipping has set
+# rep.wasxfail — so the form validation always sees the finished XFAIL
+# report (design-review round-4 B2: ordering is explicit, not incidental).
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    rep = yield
+    validate_xfail_report(item, call, rep)
+    return rep
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip DB-dependent tests when PostgreSQL is not reachable."""
+    """Apply the epoch-blocked strict xfails and the PG-reachability skip."""
+    apply_epoch_marks(items, pytest)
+
     reason = _pg_skip_decision()
     if not reason:
         return
@@ -199,6 +226,13 @@ def pytest_sessionstart(session) -> None:
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     if not _controller_process(session):
+        return
+    if session.config.option.collectonly:
+        # A collect-only session runs no tests and cannot leak schemas; any
+        # schema delta it observes was created by a concurrent real session
+        # (e.g. the epoch-blocked meta-guards collect in a subprocess while
+        # the suite runs). Flagging it here is a false positive by
+        # construction.
         return
     global _SESSION_START_SCHEMAS
     if _SESSION_START_SCHEMAS is None:
