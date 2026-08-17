@@ -9,9 +9,10 @@ P1.3 blocker with a new writer package, adds the P1.4 retirement population,
 moves from module-level marking to exact node IDs, and makes the debt and
 retirement records machine-enforced. Nothing in this document is implemented
 yet. EPOCH-RESET decides the *data* disposition ("discarded, not migrated");
-no document decides the *test* disposition — the 892 `GENESIS_REQUIRED`
-failures are an undocumented consequence of a documented decision. This
-document exists to make that consequence a decision.
+no document decides the *test* disposition — the **874 epoch-caused test
+failures** (fact 3; the historically quoted 892 was contaminated) are an
+undocumented consequence of a documented decision. This document exists to
+make that consequence a decision.
 
 ## 1. Facts the proposal rests on
 
@@ -60,63 +61,77 @@ wrong: P1.3's amended scope is the consolidated v6 `VerificationResult` and
 nothing else (IMPLEMENTATION-PLAN §P1.3), and no other package owns ordinary
 v6 writes. The proposal therefore adds:
 
-> **P1.7 — v6 ordinary-event writer** · owner: team · dep: P1.1, P1.2, and
-> the admission gates PR #40's body names (trust-domain P2.1/P2.2, canonical
-> principals P2.3, workflow registration, producer authorization).
-> Deliverables: the post-genesis v6 append path; the shared Ed25519
-> actor-role test keyset and genesis test fixture; emptying the
-> `epoch_blocked` manifest (§2.1). **Done when:** the manifest is empty, the
-> retired-test ledger (§2.2) accounts for every node that did not return, and
-> the suite is green with no epoch skips remaining.
+> **P1.7 — v6 ordinary-event writer** · owner: team · dep: P1.1, P1.2,
+> P1.4, P2.2, P2.3 (implementations) + P2.1 **contracts** — explicitly not
+> the owner-executed trust-root ceremony. The **workflow-registration and
+> producer-authorization admission checks are implemented by P1.7 itself**;
+> no other package owns them. Deliverables: the post-genesis v6 append path
+> behind those gates; the shared Ed25519 actor-role test keyset and genesis
+> test fixture; emptying the `epoch_blocked` manifest (§2.1). **Done when:**
+> the manifest is **literally empty** (its `retires_with: P1.4` entries are
+> already gone via the P1.4 dependency), the retired-test ledger (§2.2)
+> accounts for every node that did not return, and the suite is green with
+> no epoch-blocked entries remaining.
 
-D3 accordingly attaches to P1.7, not P1.3.
+In the plan's gate graph P1.7 is sequenced **inside Gate 1's closure**, and
+**Gate 3 (quiesced rehearsal) explicitly depends on P1.7** — the rehearsal
+and cutover cannot complete without the ordinary writer. D3 accordingly
+attaches to P1.7, not P1.3.
 
-### 2.1 BLOCKED-ON-P1.7 — exact-node skips with a machine-checked manifest
+### 2.1 BLOCKED-ON-P1.7 — exact-node **strict xfail** with a machine-checked manifest
 
-Tests of functionality that survives the epoch reset are **kept** and skipped
-by **exact node ID**, never by module — affected modules contain passing
-read-only tests that continue to run. Mechanics:
+Tests of functionality that survives the epoch reset are **kept** and marked
+**strict-xfail by exact node ID**, never by module — affected modules contain
+passing read-only tests that continue to run unmarked. Mechanics:
 
 - **Manifest**: a committed, machine-readable inventory
-  (`tests/epoch_blocked_manifest.json`) listing the exact node IDs that fail
-  or error with `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` at the reconciliation
-  commit, taken from a committed full-suite run artifact (§5) — not from
-  judgment.
-- **Skip application**: a `pytest_collection_modifyitems` hook in
-  `tests/conftest.py` applies `pytest.mark.skip` with a reason naming P1.7 to
-  exactly the manifest's nodes. (A bare `epoch_blocked` marker registration
-  alone marks, it does not skip; the hook is the mechanism.)
+  (`tests/epoch_blocked_manifest.json`) listing the exact node IDs proven
+  epoch-caused at the reconciliation commit (membership criterion in §5) —
+  not from judgment. Each entry carries its `cause` (`direct` — failure text
+  is the refusal; `indirect` — downstream presentation with committed causal
+  evidence).
+- **Mark application**: a `pytest_collection_modifyitems` hook in
+  `tests/conftest.py` applies `pytest.mark.xfail(strict=True, reason=…P1.7…)`
+  to exactly the manifest's nodes — `raises=` pinned to the refusal error for
+  `direct` entries; unpinned (documented as weaker) for `indirect` ones. (A
+  bare marker registration alone would neither xfail nor skip; the hook is
+  the mechanism.)
+- **Why strict xfail and not skip** (corrects the previous revision, which
+  wrongly claimed fixture-phase errors escape xfail — an empirical probe on
+  this repo's pytest 9.1.1 shows fixture-phase exceptions report as XFAIL
+  under both bare and `raises=` marks): blocked tests **keep running**, so
+  the moment any node starts passing, `strict=True` turns the XPASS into a
+  suite failure — the manifest must shrink in the same change. Debt
+  reduction is machine-forced, with no separate probe lane to maintain. The
+  cost is runtime: the blocked nodes execute and fail fast at the refusal;
+  the measured full-suite wall time at the branch head is ~5.5 minutes,
+  which is acceptable.
 - **Meta-test enforcement**, all machine-checked:
   1. every manifest node ID must exist in the current collection (a renamed
      or deleted blocked test is loud, not silently absorbed);
-  2. **shrink-only ratchet**: the manifest carries its baseline count; the
-     meta-test fails if the count ever exceeds the committed baseline — the
-     manifest can only shrink. New epoch-blocked tests cannot be added by
-     expanding the manifest; they must wait for P1.7 or get their own
-     ratified amendment here;
-  3. a full-suite CI lane asserts that **no test outside the manifest** fails
-     with `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` (an unmarked module acquiring
-     the refusal is ordinary red CI — that is the enforcement, and the
-     meta-test names it).
+  2. **shrink-only ratchet with an external baseline** (the in-file count
+     alone is mutable together with its entries and proves nothing): CI
+     compares the PR's manifest count against the **target branch's**
+     manifest and fails on any increase. Locally, the meta-test asserts the
+     count never exceeds the committed reconciliation baseline (874). New
+     epoch-blocked entries require a ratified amendment here, not a manifest
+     edit;
+  3. no test outside the manifest may fail with
+     `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` — ordinary red CI enforces it, and
+     the meta-test documents that this is the enforcement.
 
-**The green check is not allowed to stand in for "no debt" (design-review
-B4):** the manifest count is a machine-readable debt figure, not log output.
-Two bindings make it load-bearing:
+**Manifest-bearing green is not "suite green" (design-review B4):** the
+manifest count is a machine-readable debt figure with three bindings:
 
-- CI publishes the manifest count as a visible per-run output (step summary),
-  and
+- CI publishes the count as a visible per-run output (step summary);
+- **no assurance, release-readiness, or agent "verified" claim may cite the
+  suite as green without carrying the debt count** — a manifest-bearing
+  suite result satisfies no "suite green" precondition anywhere in the
+  estate unless the claim states `green-with-epoch-debt(N)`. Pre-release
+  artifacts may ship carrying the figure;
 - **the release gate refuses to cut any final (non-pre-release) 0.6.x
   release while the manifest is nonempty** — enforced as a check in the
-  release workflow, not as convention. Release candidates may ship with debt;
-  a final may not.
-
-Why exact-node skip and not exact-node xfail (design-review NB2): the
-refusal fires during **fixture setup** for 26 of the affected nodes, and
-pytest reports a fixture-phase exception under an xfail mark as ERROR, not
-XFAIL — xfail semantics only reliably cover the call phase. Skip-at-collection
-is deterministic across both phases. The ratchet plus P1.7's emptying
-criterion carry the "this debt must reach zero" force that strict-xfail would
-otherwise provide.
+  release workflow, not as convention.
 
 ### 2.2 RETIRE — per-test, recorded in a machine-checked ledger
 
@@ -136,11 +151,13 @@ Two retirement populations, one mechanism:
   `_bundle.py`, "and their tests" (IMPLEMENTATION-PLAN §P1.4). Affected
   modules include `test_anchoring`, `test_timestamping`,
   `test_archive_segments`, `test_webhooks_archive`, and parts of
-  `test_bundle` and `test_witness_integration`. These must NOT ride the
-  §2.1 manifest — P1.7 cannot empty a manifest containing tests of code P1.4
-  deletes. They are assigned to P1.4 and leave with it. Until P1.4 executes,
-  they sit in the manifest under an explicit `retires_with: P1.4` field so
-  the P1.7 emptying criterion excludes them arithmetically, not silently.
+  `test_bundle` and `test_witness_integration`. Until P1.4 executes they
+  ride the §2.1 manifest under an explicit `retires_with: P1.4` field;
+  **P1.4's execution removes them** (into the ledger, disposition
+  `deleted_by: P1.4`), and because **P1.7 depends on P1.4** (plan dep line),
+  P1.7's "manifest literally empty" criterion is evaluated only after those
+  entries are already gone — no arithmetic exclusion, no ambiguity between
+  the plan's and this document's acceptance wording.
 
 **Enforcement (design-review B5) — the ledger is checked, not aspirational:**
 
@@ -216,13 +233,26 @@ The counts in this document trace to committed artifacts, not prose:
   Postgres (`REGISTA_TEST_DSN` shape recorded with the artifact). `--extra
   dev` alone is **not** a valid evidence environment — it produced the
   contaminated 892 figure (fact 3).
-- **Manifest membership criterion**, machine-applied from the JUnit report:
-  a node enters the manifest iff it is non-passing at the reconciliation
-  base AND (its failure text carries `GENESIS_REQUIRED`/`V6_EPOCH_OPEN`, OR
-  it passes on pre-#40 main — the indirect-presentation cases). Nothing
+- **Manifest membership criterion**, machine-applied and causally proven
+  (design-review round-2 B2): a node enters the manifest iff it is
+  non-passing at the reconciliation base AND it **passes in the
+  guard-reverted control run** — a run at the same commit with only
+  `check_legacy_append`/`_admit_legacy_append_after_lock` and the in-memory
+  refusals neutered (never committed). Result at the branch head: **all 874
+  candidate nodes pass under reversion, zero exceptions**, and the only new
+  failures are the three `tests/test_genesis.py` tests that assert the guard
+  exists — the built-in falsifier that the reversion changed exactly and
+  only the admission gates. Correlation-only evidence ("passes on pre-#40
+  main") is thereby superseded by direct causal evidence for every node,
+  including the 26 indirect-presentation ones (their surface forms: the
+  sidecar maps `GENESIS_REQUIRED`/`V6_EPOCH_OPEN` to HTTP 409 at
+  `src/regista/sidecar/errors.py:89,94`; refused creations yield responses
+  missing `work_item`; refused seeding yields empty-state asserts). Nothing
   enters by judgment.
-- The JUnit report, the derived manifest, and the full pre-reconciliation
-  collection inventory are committed together with the reconciliation. The
-  08-15 prose figures are superseded; cluster tables from the static triage
-  remain estimates of *blast radius* (def counts per module), and the
-  manifest — exact node IDs from the run — is the normative inventory.
+- The two JUnit reports (base and guard-reverted control), the derived
+  manifest, and the full pre-reconciliation collection inventory are
+  committed together with the reconciliation (manifest and inventory are
+  already staged in `tests/`). The 08-15 prose figures are superseded;
+  cluster tables from the static triage remain estimates of *blast radius*
+  (def counts per module), and the manifest — exact node IDs from the run —
+  is the normative inventory.

@@ -119,22 +119,6 @@ migration, doctor, replay and ceremony **fail honestly**. Also clear the danglin
 in 23 of 26 schemas (WI-252 debris).
 **Done when:** each failure path reports a distinct, actionable error rather than a generic one.
 
-### P1.7 — v6 ordinary-event writer · **owner: team** · dep: P1.1, P1.2, P2.1–P2.3
-
-> **PROPOSED 2026-08-16 (SUITE-RECONCILIATION.md §2.0, pending owner decision D3).** Added
-> after a cross-lineage design review found the ordinary v6 append path had no owning
-> package: P1.2 deliberately refuses every writer on both sides of genesis, P1.3's amended
-> scope is the result model only, and PR #40's body defers ordinary writes to trust-domain,
-> canonical-principal, key-lifecycle, workflow-registration and producer-authorization gates
-> that no package connected back to a writer.
-
-The post-genesis v6 append path, behind the admission gates named above. Includes the shared
-Ed25519 actor-role test keyset and genesis test fixture (the legacy `tests/test_keys.json`
-HMAC key is unusable in the clean epoch), and emptying the `epoch_blocked` manifest
-(SUITE-RECONCILIATION.md §2.1).
-**Done when:** the manifest is empty, the retired-test ledger accounts for every node that
-did not return, and the suite is green with no epoch skips remaining.
-
 ---
 
 ## Gate 1 — trust and identity bootstrap · dep: P0.*, P1.1
@@ -170,6 +154,28 @@ private key in the publishing process.
 **Done when:** `--dry-run` is byte-identical to the real run, and a verifier pins from direct
 exchange then detects a substituted fingerprint when it has a prior publication observation.
 
+### P1.7 — v6 ordinary-event writer · **owner: team** · dep: P1.1, P1.2, P1.4, P2.2, P2.3
+
+> **PROPOSED 2026-08-16 (SUITE-RECONCILIATION.md §2.0, pending owner decision D3).** Added
+> after a cross-lineage design review found the ordinary v6 append path had no owning
+> package: P1.2 deliberately refuses every writer on both sides of genesis, and P1.3's
+> amended scope is the result model only. Numbered P1.7 for its subject matter but
+> **sequenced inside Gate 1's closure**: it depends on the P2.2/P2.3 *implementations*
+> (signed key lifecycle, canonical principals) and on P2.1's **contracts** — not on the
+> owner-executed trust-root ceremony itself, which can complete later. It depends on P1.4
+> so the epoch-blocked manifest's `retires_with: P1.4` entries are already gone when its
+> emptying criterion is evaluated.
+
+The post-genesis v6 append path. The **workflow-registration and producer-authorization
+admission checks are implemented by this package** — PR #40's body names them as gates the
+writer must sit behind, and no other package owns them. Includes the shared Ed25519
+actor-role test keyset and genesis test fixture (the legacy `tests/test_keys.json` HMAC key
+is unusable in the clean epoch), and emptying the `epoch_blocked` manifest
+(SUITE-RECONCILIATION.md §2.1).
+**Done when:** the manifest is **literally empty**, the retired-test ledger accounts for
+every node that did not return, and the suite is green with no epoch-blocked entries
+remaining.
+
 ---
 
 ## Gate 2 — key provisioning · **HARD PREREQUISITE** · dep: Gate 1
@@ -186,7 +192,7 @@ it does not provision a missing key.*
 
 ---
 
-## Gate 3 — quiesced rehearsal · dep: Gate 2
+## Gate 3 — quiesced rehearsal · dep: Gate 2, **P1.7**
 
 ### P4.1 — Full-estate rehearsal · **owner: me, with team support**
 Writers quiesced (the store drifted ~500 events during measurement, so byte-comparison is
