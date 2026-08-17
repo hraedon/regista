@@ -7,7 +7,7 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
-from _epoch_blocked import epoch_failure_form_matches, load_epoch_manifest
+from _epoch_blocked import apply_epoch_marks, validate_xfail_report
 from _helpers import DSN, KEY_PATH
 
 # ---------------------------------------------------------------------------
@@ -115,47 +115,20 @@ def _module_is_db_dependent(module: object) -> bool:
 # tests/test_retired_tests_ledger.py.
 # ---------------------------------------------------------------------------
 
-@pytest.hookimpl(wrapper=True)
+# tryfirst on a wrapper makes it OUTERMOST: its post-yield code runs after
+# every inner implementation — in particular after _pytest.skipping has set
+# rep.wasxfail — so the form validation always sees the finished XFAIL
+# report (design-review round-4 B2: ordering is explicit, not incidental).
+@pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     rep = yield
-    entry = load_epoch_manifest().get(item.nodeid)
-    if (
-        entry is not None
-        and call.excinfo is not None
-        and getattr(rep, "wasxfail", None) is not None
-        and not epoch_failure_form_matches(entry, call.excinfo)
-    ):
-        # Changed failure form under an epoch-blocked mark: refuse the XFAIL.
-        rep.outcome = "failed"
-        del rep.wasxfail
-        rep.sections.append(
-            (
-                "epoch_blocked form validator",
-                f"{item.nodeid} is epoch-blocked but no longer fails with the "
-                f"recorded refusal form {entry.get('expected')!r}; it now raises "
-                f"{call.excinfo.type.__name__}: {call.excinfo.value!r}. A changed "
-                "failure mode must be triaged, not absorbed as XFAIL "
-                "(SUITE-RECONCILIATION.md §2.1).",
-            )
-        )
+    validate_xfail_report(item, call, rep)
     return rep
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Apply the PG-reachability skip and the epoch-blocked strict xfails."""
-    epoch_blocked = load_epoch_manifest()
-    if epoch_blocked:
-        reason = (
-            "epoch-blocked on the v6 ordinary-event writer (P1.7) — "
-            "SUITE-RECONCILIATION.md §2.1; proven by the guard-reverted control run"
-        )
-        xfail_marker = pytest.mark.xfail(strict=True, reason=reason)
-        for item in items:
-            if item.nodeid in epoch_blocked:
-                # Failure-form pinning happens in pytest_runtest_makereport —
-                # raises= can only pin a class, not the refusal code.
-                item.add_marker(xfail_marker)
-                item.add_marker(pytest.mark.epoch_blocked)
+    """Apply the epoch-blocked strict xfails and the PG-reachability skip."""
+    apply_epoch_marks(items, pytest)
 
     reason = _pg_skip_decision()
     if not reason:

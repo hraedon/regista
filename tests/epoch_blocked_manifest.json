@@ -1,7 +1,7 @@
 {
- "baseline_count": 874,
+ "baseline_count": 881,
  "bootstrap_note": "One-time ratified bootstrap at exactly 874 entries (SUITE-RECONCILIATION.md \u00a72.1); thereafter shrink-only vs the target branch.",
- "generated_from": "guard-reverted causal criterion over the base all-extras JUnit run at 9e673f9 (see docs/0.6.0/SUITE-RECONCILIATION.md \u00a75)",
+ "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 \u2014 docs/0.6.0/SUITE-RECONCILIATION.md \u00a75",
  "blocker": "P1.7 (v6 ordinary-event writer) \u2014 SUITE-RECONCILIATION.md \u00a72.1",
  "entries": [
   {
@@ -9,7 +9,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -17,7 +18,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "KeyError: 'work_item'"
+    "signature": "KeyError: 'work_item'",
+    "exception": "KeyError"
    }
   },
   {
@@ -25,7 +27,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -33,7 +36,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -41,7 +45,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -49,7 +54,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -57,7 +63,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -65,7 +72,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -73,7 +81,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -81,7 +90,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "KeyError: 'work_item'"
+    "signature": "KeyError: 'work_item'",
+    "exception": "KeyError"
    }
   },
   {
@@ -89,7 +99,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -97,7 +108,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -105,7 +117,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -113,7 +126,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "KeyError: 'work_item'"
+    "signature": "KeyError: 'work_item'",
+    "exception": "KeyError"
    }
   },
   {
@@ -121,7 +135,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -409,7 +424,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 0 >= 1"
+    "signature": "assert 0 >= 1",
+    "exception": "AssertionError"
    },
    "retires_with": "P1.4"
   },
@@ -418,7 +434,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 0 >= 1"
+    "signature": "assert 0 >= 1",
+    "exception": "AssertionError"
    },
    "retires_with": "P1.4"
   },
@@ -809,7 +826,8 @@
    "phase": "error",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -817,7 +835,8 @@
    "phase": "error",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -843,7 +862,8 @@
    "phase": "error",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -851,7 +871,8 @@
    "phase": "error",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -859,7 +880,8 @@
    "phase": "error",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -2001,7 +2023,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -2090,7 +2113,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -2098,7 +2122,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -2682,7 +2707,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 409 == 200"
+    "signature": "assert 409 == 200",
+    "exception": "AssertionError"
    }
   },
   {
@@ -2690,7 +2716,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "KeyError: 'work_item'"
+    "signature": "KeyError: 'work_item'",
+    "exception": "KeyError"
    }
   },
   {
@@ -2698,7 +2725,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "KeyError: 'work_item'"
+    "signature": "KeyError: 'work_item'",
+    "exception": "KeyError"
    }
   },
   {
@@ -3282,7 +3310,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -3956,7 +3985,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "assert 0 > 0"
+    "signature": "assert 0 > 0",
+    "exception": "AssertionError"
    }
   },
   {
@@ -4549,7 +4579,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -4692,7 +4723,8 @@
    "phase": "failure",
    "cause": "indirect",
    "expected": {
-    "signature": "GENESIS_REQUIRED"
+    "signature": "GENESIS_REQUIRED",
+    "exception": "AssertionError"
    }
   },
   {
@@ -5054,6 +5086,36 @@
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
    }
+  },
+  {
+   "node_id": "tests/test_property_conformance.py::TestPropertyBasedConformance::test_claim_contention_sequence",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
+  },
+  {
+   "node_id": "tests/test_property_conformance.py::TestPropertyBasedConformance::test_escalation_equivalence",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
+  },
+  {
+   "node_id": "tests/test_property_conformance.py::TestPropertyBasedConformance::test_transition_sequence_equivalence",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
   },
   {
    "node_id": "tests/test_read_events_conformance.py::TestReadEventsOrderingConformance::test_before_seq_at_boundary[in_memory]",
@@ -5711,6 +5773,46 @@
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
    }
+  },
+  {
+   "node_id": "tests/test_scale.py::TestHookThroughputBenchmark::test_hook_drain_throughput",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
+  },
+  {
+   "node_id": "tests/test_scale.py::TestLinkQueryBenchmark::test_link_query_at_scale",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
+  },
+  {
+   "node_id": "tests/test_scale.py::TestReplayBenchmark::test_replay_at_scale",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
+  },
+  {
+   "node_id": "tests/test_scale.py::TestReplayBenchmark::test_replay_long_history",
+   "phase": "failure",
+   "cause": "direct",
+   "expected": {
+    "exception": "RegistaError",
+    "error_code": "GENESIS_REQUIRED"
+   },
+   "tier": "slow"
   },
   {
    "node_id": "tests/test_session13_regression.py::TestBeforeSeqOrdering::test_before_seq_excludes_at_and_above",

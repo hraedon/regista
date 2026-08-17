@@ -87,12 +87,22 @@ jobs:
       - name: Test + coverage
         run: pytest tests/ -v --cov=regista --cov-report=term-missing --durations=10 --durations-min=1.0
 
-      # SUITE-RECONCILIATION.md §2.1: the epoch-blocked manifest may only
-      # shrink (bootstrap: exactly 874 when the base has no manifest). Also
-      # publishes the debt figure to the step summary — a manifest-bearing
-      # green is green-with-epoch-debt(N), not "suite green".
+      # SUITE-RECONCILIATION.md §2.1: the epoch-blocked manifest node set may
+      # only shrink (bootstrap: the ratified manifest digest when the base has
+      # no manifest). Publishes the debt figure to the step summary — a
+      # manifest-bearing green is green-with-epoch-debt(N), not "suite green".
+      # Base ref: the PR's target branch for pull_request events; the
+      # pre-push tip (github.event.before) for pushes — origin/main on a push
+      # to main would compare the commit to itself and make the ratchet
+      # vacuous.
       - name: Epoch-debt ratchet
-        run: python3 scripts/check-epoch-debt.py --base "origin/${{ github.base_ref || 'main' }}"
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          python3 scripts/check-epoch-debt.py --base "$base"
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean
