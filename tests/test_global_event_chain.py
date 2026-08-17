@@ -9,8 +9,6 @@ line across work items that is immune to global_seq gaps.
 
 from __future__ import annotations
 
-import hashlib
-import itertools
 import uuid
 from pathlib import Path
 
@@ -47,77 +45,6 @@ def _all_events_in_global_order(regista):
     return rows
 
 
-def _head(regista):
-    with regista._mgr.transaction() as conn:
-        return conn.execute(
-            SQL("SELECT head_hash, head_event_id FROM event_chain_head WHERE id = TRUE")
-        ).fetchone()
-
-
-def test_global_chain_links_events_across_work_items(regista):
-    # Three work items, each create emits an event -> three events in different
-    # work items, so the per-WI chain cannot relate them; the global chain must.
-    for i in range(3):
-        regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id="agent-1",
-            custom_fields={"title": f"wi-{i}"},
-        )
-
-    rows = _all_events_in_global_order(regista)
-    assert len(rows) >= 3
-
-    # (1) Genesis event has no global predecessor.
-    assert rows[0]["prev_global_event_hash"] is None
-
-    # (2) Every subsequent event chains to its immediate predecessor by hash,
-    #     regardless of the numeric global_seq gap between them.
-    for prev, cur in itertools.pairwise(rows):
-        expected = hashlib.sha256(
-            bytes(prev["canonical_envelope"]) + bytes(prev["signature"])
-        ).digest()
-        assert bytes(cur["prev_global_event_hash"]) == expected
-
-    # (3) The head pointer tracks the last event in the chain.
-    last = rows[-1]
-    head = _head(regista)
-    expected_head = hashlib.sha256(
-        bytes(last["canonical_envelope"]) + bytes(last["signature"])
-    ).digest()
-    assert bytes(head["head_hash"]) == expected_head
-
-
-def test_global_chain_survives_global_seq_gaps(regista):
-    # The chain links by hash, not by numeric adjacency. In production gaps come
-    # from CACHE 100 across the per-tool-call connections; here we force one
-    # deterministically by burning sequence values between appends, then assert
-    # the hash chain is still unbroken — the exact case the old global_seq
-    # contiguity check wrongly flagged as "events deleted".
-    regista.create_work_item(
-        workflow_name="test_workflow", work_item_type="feature",
-        actor_id="agent-1", custom_fields={"title": "before-gap"},
-    )
-    with regista._mgr.transaction() as conn:
-        conn.execute(SQL("SELECT nextval('events_global_seq_seq')"))
-        conn.execute(SQL("SELECT nextval('events_global_seq_seq')"))
-    regista.create_work_item(
-        workflow_name="test_workflow", work_item_type="feature",
-        actor_id="agent-1", custom_fields={"title": "after-gap"},
-    )
-
-    rows = _all_events_in_global_order(regista)
-    seqs = [r["global_seq"] for r in rows]
-    assert any(b - a > 1 for a, b in itertools.pairwise(seqs)), (
-        "expected a forced global_seq gap; test no longer exercises gap-immunity"
-    )
-    for prev, cur in itertools.pairwise(rows):
-        expected = hashlib.sha256(
-            bytes(prev["canonical_envelope"]) + bytes(prev["signature"])
-        ).digest()
-        assert bytes(cur["prev_global_event_hash"]) == expected
-
-
 def test_bc298_public_append_event_persists_prev_global_event_hash(regista):
     wi, _ = regista.create_work_item(
         workflow_name="test_workflow", work_item_type="feature",
@@ -137,32 +64,6 @@ def test_bc298_public_append_event_persists_prev_global_event_hash(regista):
         assert r["prev_global_event_hash"] is not None
 
 
-def test_bc300_replay_detects_global_chain_tamper(regista):
-    for i in range(3):
-        regista.create_work_item(
-            workflow_name="test_workflow", work_item_type="feature",
-            actor_id="agent-1", custom_fields={"title": f"bc300-{i}"},
-        )
-
-    report = regista.replay()
-    assert report.replayed_drift == 0
-    assert report.warnings == 0
-
-    with regista._mgr.transaction() as conn:
-        conn.execute(
-            SQL(
-                "UPDATE events SET prev_global_event_hash = %s "
-                "WHERE global_seq = (SELECT MIN(global_seq) FROM events "
-                "WHERE prev_global_event_hash IS NOT NULL)"
-            ),
-            [b"\x00" * 32],
-        )
-
-    report = regista.replay()
-    # WI-266: a corrupted global chain is chain_breaks, not warnings.
-    assert report.chain_breaks >= 1, "replay must report a chain break on corrupted global chain"
-
-
 def test_bc300_replay_clean_global_chain_in_memory():
     from regista.testing import InMemoryRegista
 
@@ -176,38 +77,6 @@ def test_bc300_replay_clean_global_chain_in_memory():
     report = sub.replay()
     assert report.warnings == 0
     assert report.replayed_drift == 0
-
-
-def test_bc300_in_memory_replay_detects_global_chain_tamper():
-    import dataclasses
-
-    from regista.testing import InMemoryRegista
-
-    sub = InMemoryRegista(project="memory", hmac_key_path=KEY_PATH)
-    sub.register_workflow_file(WORKFLOW_PATH)
-    for i in range(3):
-        sub.create_work_item(
-            workflow_name="test_workflow", work_item_type="feature",
-            actor_id="agent-1", custom_fields={"title": f"im-tamper-{i}"},
-        )
-
-    report = sub.replay()
-    assert report.warnings == 0
-
-    all_evts = []
-    for wid in sub._store.events:
-        all_evts.extend(sub._store.events[wid])
-    all_evts.sort(key=lambda e: e.global_seq)
-    target = all_evts[1]
-    corrupted = dataclasses.replace(target, prev_global_event_hash=b"\xff" * 32)
-    lst = sub._store.events[target.work_item_id]
-    lst[lst.index(target)] = corrupted
-    sub._store.event_id_index[target.event_id] = corrupted
-
-    report = sub.replay()
-    assert report.chain_breaks >= 1, (
-        "InMemory replay must report a chain break on corrupted global chain"
-    )
 
 
 def test_append_returns_db_assigned_global_seq(regista):

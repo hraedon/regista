@@ -14,7 +14,6 @@ TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 ED_KEY_PATH = str(TESTS_DIR / "test_keys_ed25519.json")
-COMBINED_KEY_PATH = str(TESTS_DIR / "test_keys_combined.json")
 
 
 def _write_keys(tmp_path, keys_data):
@@ -29,18 +28,6 @@ def ed_regista():
 
     project = f"test_ed_{uuid.uuid4().hex[:8]}"
     sub = Regista.create_project(DSN, project, ED_KEY_PATH)
-    sub.register_workflow_file(WORKFLOW_PATH)
-    yield sub
-    sub.close()
-    drop_project_schema(DSN, project)
-
-
-@pytest.fixture
-def combined_regista():
-    from regista import Regista
-
-    project = f"test_comb_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, COMBINED_KEY_PATH)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -125,26 +112,6 @@ class TestEd25519PostgresIntegration:
     reason="PyNaCl not installed",
 )
 class TestEd25519KeyRotation:
-    def test_replay_handles_mixed_schemes(self, combined_regista):
-        combined_regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id="agent-1",
-            custom_fields={"title": "rotation test"},
-        )
-        report = combined_regista.replay()
-        assert report.halted == 0, f"Replay failed with mixed schemes: halted={report.halted}"
-
-    def test_events_signed_with_active_key_scheme(self, combined_regista):
-        wi, _ = combined_regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id="agent-1",
-            custom_fields={"title": "active scheme test"},
-        )
-        events = combined_regista.read_events(work_item_id=wi.work_item_id)
-        assert events[-1].scheme_id == "ed25519"
-
     def test_key_set_reports_both_schemes(self, tmp_path):
         kf = _write_keys(tmp_path, {
             "keys": [

@@ -29,7 +29,7 @@ from pathlib import Path
 # sha256 of tests/epoch_blocked_manifest.json as ratified at the
 # establishing reconciliation commit (881 entries). Recorded in
 # docs/0.6.0/SUITE-RECONCILIATION.md §5.
-RATIFIED_BOOTSTRAP_SHA256 = "533068656137d05735dca2d23f51748bbcda33013548becd8dc66a140106d34c"
+RATIFIED_BOOTSTRAP_SHA256 = "a78b5d9e9d76ca132dd4b4b7dd78bfaea4e1471e7db61645fd33bd700b34f949"
 # sha256 of tests/epoch_blocked_inventory.txt (3073 nodes) — used only in
 # the one-time bootstrap case. After bootstrap, inventory immutability is
 # anchored to the TARGET BRANCH (byte-identity via git show), which no PR

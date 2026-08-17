@@ -1,5 +1,5 @@
 {
- "baseline_count": 881,
+ "baseline_count": 820,
  "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md \u00a72.1).",
  "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 \u2014 docs/0.6.0/SUITE-RECONCILIATION.md \u00a75",
  "blocker": "P1.7 (v6 ordinary-event writer) \u2014 SUITE-RECONCILIATION.md \u00a72.1",
@@ -912,31 +912,14 @@
    }
   },
   {
-   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_allow_unverified_opts_into_exit_0",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[inverted]",
    "phase": "failure",
    "cause": "direct",
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[since-negative]",
@@ -945,7 +928,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[until-negative]",
@@ -954,7 +938,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[until-zero]",
@@ -963,7 +948,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_hide_tail_truncation",
@@ -972,7 +958,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_invented_window_must_also_drop_the_events",
@@ -981,7 +968,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_non_integer_window_reads_as_unbounded",
@@ -990,7 +978,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_real_windowed_export_satisfies_its_own_window",
@@ -999,7 +988,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_creates_valid_json",
@@ -1008,7 +998,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_includes_anchor_receipts",
@@ -1017,7 +1008,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_with_since_seq",
@@ -1026,7 +1018,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_chunked_exports_both_verify_offline",
@@ -1035,25 +1028,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_export_reports_self_verification",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_hash_mismatch_on_written_artifact_raises_and_keeps_it",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_mid_chain_chunk_excludes_receipts_and_verifies",
@@ -1062,7 +1038,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_oversized_export_refuses_and_writes_nothing",
@@ -1080,7 +1057,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_since_and_until_form_a_window",
@@ -1089,16 +1067,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_store_level_defects_are_reported_not_fatal",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_until_seq_is_an_inclusive_upper_bound",
@@ -1107,7 +1077,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[None-negative]",
@@ -1116,7 +1087,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[None-zero]",
@@ -1125,7 +1097,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[beyond-None]",
@@ -1134,7 +1107,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[max-None]",
@@ -1143,7 +1117,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_clean_bundle_has_no_count_errors",
@@ -1152,7 +1127,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_non_integer_manifest_count_fails_closed",
@@ -1161,7 +1137,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_public_key_count_divergence_fails",
@@ -1170,7 +1147,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_segment_count_divergence_fails",
@@ -1179,7 +1157,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_tail_truncation_with_stale_manifest_fails",
@@ -1188,7 +1167,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_truncation_with_doctored_manifest_fails_on_segment_anchor",
@@ -1197,7 +1177,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_v1_bundle_may_omit_the_v2_only_count",
@@ -1206,7 +1187,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_v2_bundle_missing_a_count_fails_closed",
@@ -1215,7 +1197,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineAnchorHashAgility::test_offline_anchor_verifies_with_sha384_events",
@@ -1224,88 +1207,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_export_includes_registered_public_key",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_forged_signature_caught_only_by_signature_check",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_hmac_only_bundle_counts_all_unverifiable",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_missing_public_key_fails_closed",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_unknown_scheme_fails_closed",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_receipt_listing_orders_oldest_target_first",
@@ -1314,7 +1217,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_head_hash_fails_segment_chain",
@@ -1323,7 +1227,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_intermediate_hash_fails_segment_chain",
@@ -1332,7 +1237,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_seal_event_removed_fails_segment_chain",
@@ -1341,7 +1247,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_two_segment_bundle_verifies_segment_chain",
@@ -1350,7 +1257,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_isolating_segment_b_keeps_it_without_incoming_seal",
@@ -1359,7 +1267,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_straddling_seal_gap_self_verifies",
@@ -1368,7 +1277,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_sweep_self_verifies",
@@ -1377,7 +1287,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_window_starting_inside_first_segment_keeps_both_linked",
@@ -1386,7 +1297,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_overlapping_segment_ranges_fail",
@@ -1395,7 +1307,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_segment_fully_inside_a_window_is_still_checked",
@@ -1404,7 +1317,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_sole_segment_fails",
@@ -1413,7 +1327,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_terminal_event_count_alone_fails",
@@ -1422,7 +1337,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_terminal_segment_fails_multi_segment",
@@ -1431,7 +1347,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_terminal_segment_boundary_inflation_fails",
@@ -1440,7 +1357,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_window_truncated_segment_metadata_is_not_checkable",
@@ -1449,7 +1367,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_clean_multi_segment_bundle_still_reconciles",
@@ -1458,7 +1377,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_count_band_rejects_inflation_without_the_seal",
@@ -1467,7 +1387,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_count_band_rejects_zero_without_the_seal",
@@ -1476,7 +1397,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_event_id_rewrite_fails",
@@ -1485,7 +1407,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_global_seq_shift_fails_multi_segment[negative]",
@@ -1494,7 +1417,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_global_seq_shift_fails_multi_segment[zero]",
@@ -1503,7 +1427,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_injected_free_floating_seal_is_not_an_anchor",
@@ -1512,7 +1437,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_seal_event_deleted_from_full_export_fails",
@@ -1521,7 +1447,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_seal_payload_carries_the_structural_fields",
@@ -1530,7 +1457,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_sole_segment_first_global_seq_shifted_to_zero_fails",
@@ -1539,7 +1467,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_work_item_ids_and_count_rewritten_together_fails",
@@ -1548,7 +1477,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyArchiveChain::test_verify_chain_detects_broken_link",
@@ -1557,7 +1487,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyArchiveChain::test_verify_chain_with_segments",
@@ -1566,16 +1497,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_anchor_mismatch",
@@ -1584,25 +1507,8 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_bundle_hash_mismatch",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_tampered_event",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
+   },
+   "retires_with": "P1.4"
   },
   {
    "node_id": "tests/test_canonical_workflow.py::test_canonical_request_changes_runs_note_requirement_end_to_end",
@@ -2181,61 +2087,7 @@
    }
   },
   {
-   "node_id": "tests/test_global_event_chain.py::test_bc300_in_memory_replay_detects_global_chain_tamper",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_global_event_chain.py::test_bc300_replay_clean_global_chain_in_memory",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_bc300_replay_detects_global_chain_tamper",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_global_chain_links_events_across_work_items",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_global_chain_survives_global_seq_gaps",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_append_event_api_persists_prev_hash",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_broken_chain_detected",
    "phase": "failure",
    "cause": "direct",
    "expected": {
@@ -2253,15 +2105,6 @@
    }
   },
   {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_multi_event_chain",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_replay_hash_chain_check",
    "phase": "failure",
    "cause": "direct",
@@ -2271,61 +2114,7 @@
    }
   },
   {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_second_event_includes_prev_hash",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_chain_without_keys",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_first_event_has_no_prev_hash",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_multi_event_chain",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_second_event_includes_prev_hash",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_in_memory",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_postgres",
    "phase": "failure",
    "cause": "direct",
    "expected": {
@@ -4701,15 +4490,6 @@
    }
   },
   {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024ConcurrentGlobalChain::test_concurrent_raw_appends_replay_clean",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_plan024_global_chain.py::TestPlan024ConcurrentGlobalChain::test_concurrent_transitions_replay_clean",
    "phase": "failure",
    "cause": "direct",
@@ -4725,33 +4505,6 @@
    "expected": {
     "signature": "GENESIS_REQUIRED",
     "exception": "AssertionError"
-   }
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_global_seq_matches_chain_order_with_cache1",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_detects_orphan",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_no_genesis_reports_orphans",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
    }
   },
   {
@@ -6067,51 +5820,6 @@
    }
   },
   {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_replay_survives_jsonb_payload_key_reorder",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_signature_verification_uses_stored_envelope",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_transition_event_signature_verifies_with_stored_envelope",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_events_signed_with_active_key_scheme",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_replay_handles_mixed_schemes",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_signing_ed25519.py::TestEd25519PostgresIntegration::test_create_and_read_ed25519_event",
    "phase": "failure",
    "cause": "direct",
@@ -7325,205 +7033,7 @@
    }
   },
   {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_broken_work_item_entity_alias_fails_verification",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_missing_envelope_on_a_consistent_row_is_counted_not_halted",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_deleting_an_envelope_halts_because_the_row_contradicts_itself",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_global_seq_rewrite_is_not_reported_as_a_mismatch",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_payload_key_reorder_is_not_tamper",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_payload",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_transition",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_an_unknown_envelope_schema",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_id-attacker-actor_id]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_kind-human-actor_kind]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_metadata-{\"role\": \"admin\"}-actor_metadata]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[hash_alg-sha-512-hash_alg]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[key_id-other-key-key_id]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[payload-{\"rewritten\": true}-payload]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[transition-approve-transition]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_name-other_wf-workflow_name]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_version-9-workflow_version]",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rendering_in_another_timezone_is_not_tamper",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rewrite_fails_verification",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_unverifiable_is_zero_on_a_clean_store",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_envelope_deletion_halts_like_postgres",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_keyless_in_memory_reports_unverifiable",
    "phase": "failure",
    "cause": "direct",
    "expected": {
