@@ -134,8 +134,23 @@ def emit() -> dict[str, object]:
 
 
 def sweep(interpreters: list[str], freeze: str | None) -> int:
-    runs: list[tuple[str, dict]] = []
+    import shutil
+
+    # Children run under a pinned minimal environment (below) so the emit is hermetic —
+    # but that means bare interpreter names must be resolved against the *caller's* PATH
+    # first. Without this, any interpreter outside /usr/bin:/bin (a uv-managed toolchain,
+    # ~/.local/bin, a virtualenv) is found by the caller and then unspawnable by the
+    # child's PATH, and the sweep dies with FileNotFoundError instead of sweeping (WI-288).
+    resolved: list[str] = []
     for interp in interpreters:
+        found = shutil.which(interp)
+        if found is None:
+            print(f"FAILED to resolve interpreter {interp!r} on the caller's PATH")
+            return 2
+        resolved.append(found)
+
+    runs: list[tuple[str, dict]] = []
+    for interp in resolved:
         for seed in ("0", "1", "random"):
             proc = subprocess.run(
                 [interp, __file__, "--emit"],
