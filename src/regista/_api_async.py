@@ -63,20 +63,13 @@ class AsyncApiMixin(_RegistaBase):
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
-        timestamp_interval: float = 3600.0,
-        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider: Any = None,
-        anchor_interval: float = 3600.0,
-        anchor_upgrade_interval: float = 600.0,
     ) -> None:
         """Start the background maintenance thread.
 
         The maintenance thread periodically sweeps expired claims and hook
-        leases, fires due recurrence rules, refreshes hook queue metrics,
-        optionally timestamps event batches via a configured TSA, delivers
-        pending witness receipts, and optionally anchors the event log to an
-        external append-only log.
+        leases, fires due recurrence rules, refreshes hook queue metrics, and
+        delivers pending witness receipts.
         It also starts the hook consumer if not already running.
 
         Args:
@@ -84,33 +77,19 @@ class AsyncApiMixin(_RegistaBase):
             recurrence_interval: Seconds between recurrence checks (default 10).
             hook_poll_interval: Hook consumer poll interval (default 2).
             partition_interval: Deprecated; kept for API compatibility.
-            timestamp_interval: Seconds between timestamping triggers (default 3600).
-            tsa_config: Optional ``TSAConfig`` for RFC 3161 timestamping.
             witness_interval: Seconds between witness receipt delivery cycles (default 30).
-            anchor_provider: Optional ``AnchorProvider`` for transparency-log anchoring.
-            anchor_interval: Seconds between anchor submission cycles (default 3600).
-            anchor_upgrade_interval: Seconds between pending-anchor upgrade polls (default 600).
         """
         from ._maintenance import MaintenanceThread
 
         if self._maintenance_thread is not None and self._maintenance_thread.is_running:
             return
-        if tsa_config is not None:
-            self.timestamping.set_config(tsa_config)
-        if anchor_provider is not None:
-            self.anchoring.set_provider(anchor_provider)
         self._maintenance_thread = MaintenanceThread(
             self,
             sweep_interval=sweep_interval,
             recurrence_interval=recurrence_interval,
             hook_poll_interval=hook_poll_interval,
             partition_interval=partition_interval,
-            timestamp_interval=timestamp_interval,
-            tsa_config=tsa_config,
             witness_interval=witness_interval,
-            anchor_provider=anchor_provider,
-            anchor_interval=anchor_interval,
-            anchor_upgrade_interval=anchor_upgrade_interval,
         )
         self._maintenance_thread.start()
         if not (self._hook_consumer is not None and self._hook_consumer.is_running):
@@ -371,7 +350,3 @@ class AsyncApiMixin(_RegistaBase):
             rule_id,
             status=status, schedule_expr=schedule_expr, template=template,
         )
-
-    def sweep_stale_timestamp_batches(self, max_age_seconds: int = 300) -> int:
-        """Mark ``pending`` timestamp batches older than the threshold as ``failed``."""
-        return self.timestamping.sweep_stale(max_age_seconds)

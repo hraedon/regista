@@ -47,7 +47,7 @@ jobs:
           # vault included so the WI-228 AppRole tests actually run: without
           # hvac they fail with ModuleNotFoundError, which is how main went
           # red the moment PR #16 merged.
-          pip install -e ".[dev,vendor-check,sidecar,ed25519,timestamping,encryption,vault]"
+          pip install -e ".[dev,vendor-check,sidecar,ed25519,encryption,vault]"
 
       # The CLI contract v1 conformance kit (Plan 018 WI-2) is now a normal
       # pinned dependency in the [dev] extra (agent-suite-conformance==1.0.0,

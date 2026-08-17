@@ -215,12 +215,7 @@ class InMemHookMixin(_InMemoryBase):
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
-        timestamp_interval: float = 3600.0,
-        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider: Any = None,
-        anchor_interval: float = 3600.0,
-        anchor_upgrade_interval: float = 600.0,
     ) -> None:
         pass
 

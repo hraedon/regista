@@ -178,5 +178,5 @@ class InMemoryRegista(
     @property
     def archive(self) -> Any:
         raise NotImplementedError(
-            "Segment sealing is not supported on the InMemory backend"
+            "Event archival is not supported on the InMemory backend"
         )

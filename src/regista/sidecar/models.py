@@ -163,7 +163,6 @@ class UpdateNotBeforeRequest(BaseModel):
 class ReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     continue_on_revoked: bool = False
-    verify_timestamps: bool = False
     verify_principal_binding: bool = False
     work_item_id: str | None = None
 

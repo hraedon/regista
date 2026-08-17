@@ -23,14 +23,13 @@ Regista is a Python library that provides durable claims, event-sourced state, v
 - **Trust hardening** — `strict_roles` enforcement, env-var key injection, vendored RFC 8785
 - **Delegation chain** — `on_behalf_of` field for agent-to-principal binding (Plan 010)
 - **Pluggable signing** — HMAC-SHA256 (default) and Ed25519 via `SigningScheme` protocol (Plan 011)
-- **RFC 3161 timestamping** — Merkle tree batching against external TSA for event integrity (Plan 012)
 - **Witness co-signing** — external witness registration, receipt creation, and HTTP delivery (Plan 013)
 - **Webhooks** — push-model event delivery with auto-pause on failure
 - **Event archival** — `archive_events` moves old events to archive table, preserving hash chain integrity
 - **Batch operations** — `create_work_items_batch` for multi-create in a single transaction
 - **HTTP sidecar** — optional FastAPI pass-through for non-Python consumers with bearer-token auth
 - **Admin CLI** — `regista` command for workflow validation, work-item CRUD, event archival, witness management, and more
-- **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations, witnesses, timestamping
+- **Prometheus metrics** — built-in counters for claims, transitions, events, hooks, escalations, witnesses
 - **In-memory backend** — full conformance backend for testing without Postgres
 
 ## Quick Start
@@ -45,11 +44,8 @@ pip install -e ".[sidecar]"
 # With Ed25519 signing support
 pip install -e ".[ed25519]"
 
-# With RFC 3161 timestamping support
-pip install -e ".[timestamping]"
-
 # Install everything
-pip install -e ".[sidecar,ed25519,timestamping]"
+pip install -e ".[sidecar,ed25519]"
 
 # Start test Postgres
 docker compose -f docker-compose.test.yml up -d
@@ -302,10 +298,6 @@ regista witness receipts --event-id <uuid>
 # Webhooks
 regista webhook register --url https://example.com/hook --transitions start,complete
 regista webhook list
-
-# Timestamping
-regista timestamp status
-regista timestamp trigger
 ```
 
 ## Architecture

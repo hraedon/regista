@@ -243,7 +243,6 @@ def _chain_link(evt: dict[str, Any]) -> dict[str, Any]:
 
 def _verify_global_hash_chain(
     events: list[dict[str, Any]],
-    segments: list[dict[str, Any]] | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     """Verify the global event hash chain by walking ``prev_global_event_hash``
     links (BC-300 / Plan 024).
@@ -262,14 +261,6 @@ def _verify_global_hash_chain(
     the same links the append path established under the
     ``event_chain_head`` row lock.
 
-    When *segments* is provided, sealed segment records are used to bridge
-    across archived ranges.  A segment whose ``first_event_prev_hash``
-    matches the current head hash lets the walk jump to
-    ``segment.head_hash`` and continue, preventing orphan warnings when
-    older events have been sealed and potentially archived.  Segments can
-    be chained iteratively, and a segment with a NULL
-    ``first_event_prev_hash`` can stand in for an archived genesis event.
-
     Returns ``(chain_breaks, chain_tail)``.  Every finding this walk can
     make is a structural chain failure (WI-266): a broken link, orphan,
     fork, multiple genesis, or cycle is a tampering verdict, not an
@@ -281,13 +272,6 @@ def _verify_global_hash_chain(
 
     if not events:
         return 0, None
-
-    seg_by_prev: dict[str, dict[str, Any]] = {}
-    if segments:
-        for seg in segments:
-            feph = seg.get("first_event_prev_hash")
-            key = bytes(feph).hex() if feph is not None else ""
-            seg_by_prev[key] = seg
 
     link_map: dict[str, list[dict[str, Any]]] = defaultdict(list[Any])
     genesis_events: list[dict[str, Any]] = []
@@ -321,59 +305,22 @@ def _verify_global_hash_chain(
                 global_seq=g.get("global_seq"),
             )
 
-    current_head_hex = ""
-    start_from_segment = False
-
     if not genesis_events:
-        genesis_seg = seg_by_prev.get("")
-        if genesis_seg is None:
-            for evt in events:
-                chain_breaks += 1
-                log.warning(
-                    "replay.global_chain_orphan",
-                    event_id=str(evt["event_id"]),
-                    global_seq=evt.get("global_seq"),
-                    detail="no genesis event and no segment bridges from genesis",
-                )
-            return chain_breaks, None
-        current_head_hex = bytes(genesis_seg["head_hash"]).hex()
-        start_from_segment = True
+        for evt in events:
+            chain_breaks += 1
+            log.warning(
+                "replay.global_chain_orphan",
+                event_id=str(evt["event_id"]),
+                global_seq=evt.get("global_seq"),
+                detail="no genesis event",
+            )
+        return chain_breaks, None
 
     visited_events: set[Any] = set[Any]()
-    visited_segments: set[Any] = set[Any]()
     last_event: dict[str, Any] | None = None
-    current: dict[str, Any] | None = genesis_events[0] if genesis_events else None
+    current: dict[str, Any] | None = genesis_events[0]
 
     while True:
-        if start_from_segment:
-            successors = link_map.get(current_head_hex, [])
-            if not successors:
-                bridging_seg = seg_by_prev.get(current_head_hex)
-                if bridging_seg is None:
-                    break
-                seg_id = bridging_seg.get("segment_id")
-                if seg_id in visited_segments:
-                    chain_breaks += 1
-                    log.warning(
-                        "replay.global_chain_segment_cycle",
-                        segment_id=str(seg_id),
-                    )
-                    break
-                visited_segments.add(seg_id)
-                current_head_hex = bytes(bridging_seg["head_hash"]).hex()
-                continue
-            start_from_segment = False
-            current = successors[0]
-            if len(successors) > 1:
-                for s in successors[1:]:
-                    chain_breaks += 1
-                    log.warning(
-                        "replay.global_chain_fork",
-                        event_id=str(s["event_id"]),
-                        global_seq=s.get("global_seq"),
-                        detail="multiple events chain from segment head",
-                    )
-
         if current is None:
             break
 
@@ -397,21 +344,7 @@ def _verify_global_hash_chain(
         successors = link_map.get(head_hash.hex(), [])
 
         if not successors:
-            bridging_seg = seg_by_prev.get(head_hash.hex())
-            if bridging_seg is None:
-                break
-            seg_id = bridging_seg.get("segment_id")
-            if seg_id in visited_segments:
-                chain_breaks += 1
-                log.warning(
-                    "replay.global_chain_segment_cycle",
-                    segment_id=str(seg_id),
-                )
-                break
-            visited_segments.add(seg_id)
-            current_head_hex = bytes(bridging_seg["head_hash"]).hex()
-            start_from_segment = True
-            continue
+            break
 
         if len(successors) > 1:
             for s in successors[1:]:
@@ -532,7 +465,6 @@ def replay(
     project: str,
     key_set: KeySet,
     continue_on_revoked: bool = False,
-    verify_timestamps: bool = False,
     verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
     read_only: bool = False,
@@ -546,7 +478,6 @@ def replay(
             key_set,
             store,
             continue_on_revoked=continue_on_revoked,
-            verify_timestamps=verify_timestamps,
             verify_principal_binding=verify_principal_binding,
             work_item_id=work_item_id,
         )
@@ -567,7 +498,6 @@ def _replay_inner(
     store: _ReplayStore,
     *,
     continue_on_revoked: bool = False,
-    verify_timestamps: bool = False,
     verify_principal_binding: bool = False,
     work_item_id: uuid.UUID | None = None,
 ) -> ReplayReport:
@@ -869,17 +799,6 @@ def _replay_inner(
         )
 
     if not scoped:
-        segment_rows: list[dict[str, Any]] = []
-        try:
-            segment_rows = conn.execute(
-                SQL(
-                    "SELECT segment_id, first_event_prev_hash, head_hash "
-                    "FROM event_segments ORDER BY first_global_seq"
-                )
-            ).fetchall()
-        except psycopg.errors.UndefinedTable:
-            pass
-
         head_row = conn.execute(
             SQL("SELECT head_hash FROM event_chain_head WHERE id = TRUE")
         ).fetchone()
@@ -904,9 +823,7 @@ def _replay_inner(
                     0,
                 )
         else:
-            chain_breaks, chain_tail = _verify_global_hash_chain(
-                chain_links, segments=segment_rows if segment_rows else None,
-            )
+            chain_breaks, chain_tail = _verify_global_hash_chain(chain_links)
             total_chain_breaks += chain_breaks
 
             if chain_tail is not None:
@@ -925,73 +842,6 @@ def _replay_inner(
                             "a tail event may have been deleted or the head tampered"
                         ),
                     )
-
-    if verify_timestamps and not scoped:
-        from ._timestamping import TSAConfig, compute_merkle_root, verify_tsa_token
-
-        batch_rows = conn.execute(
-            "SELECT first_global_seq, last_global_seq, merkle_root, tsa_token "
-            "FROM tsp_batches WHERE status = 'confirmed'"
-        ).fetchall()
-
-        event_ids_by_global_seq: dict[int, uuid.UUID] = {
-            link["global_seq"]: link["event_id"] for link in chain_links
-        }
-
-        _verify_cfg = TSAConfig(tsa_url="")
-        covered: set[int] = set[Any]()
-        for br in batch_rows:
-            first_seq = br["first_global_seq"]
-            last_seq = br["last_global_seq"]
-            for seq in range(first_seq, last_seq + 1):
-                covered.add(seq)
-
-            stored_root = bytes(br["merkle_root"]) if br["merkle_root"] else None
-            tsa_token = bytes(br["tsa_token"]) if br["tsa_token"] else None
-
-            current_leaf_ids: list[uuid.UUID] = []
-            for s in range(first_seq, last_seq + 1):
-                if s in event_ids_by_global_seq:
-                    current_leaf_ids.append(event_ids_by_global_seq[s])
-            if stored_root is not None and current_leaf_ids:
-                recomputed = compute_merkle_root(current_leaf_ids)
-                if not _hmac.compare_digest(recomputed, stored_root):
-                    total_warnings += 1
-                    log.warning(
-                        "replay.merkle_root_mismatch",
-                        first_seq=first_seq,
-                        last_seq=last_seq,
-                        recomputed=recomputed.hex(),
-                        stored=stored_root.hex(),
-                    )
-
-            if tsa_token and stored_root:
-                if not verify_tsa_token(tsa_token, stored_root, _verify_cfg):
-                    total_warnings += 1
-                    log.warning(
-                        "replay.invalid_tsa_token",
-                        first_seq=first_seq,
-                        last_seq=last_seq,
-                    )
-            else:
-                total_warnings += 1
-                log.warning(
-                    "replay.missing_tsa_token",
-                    first_seq=first_seq,
-                    last_seq=last_seq,
-                )
-        uncovered = []
-        for link in chain_links:
-            seq = link["global_seq"]
-            if seq not in covered:
-                uncovered.append(seq)
-        if uncovered:
-            total_warnings += len(uncovered)
-            log.warning(
-                "replay.uncovered_events",
-                count=len(uncovered),
-                sample=uncovered[:10],
-            )
 
     if scoped:
         log.info("replay.scoped_skips_global_verification", work_item_id=str(work_item_id))

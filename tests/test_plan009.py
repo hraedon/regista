@@ -264,52 +264,6 @@ class TestMaintenanceWitnessReceiptSweep:
         assert len(rows) >= 1
 
 
-class TestMaintenanceTimestampBatchSweep:
-    def test_sweeps_stale_pending_batches(self, regista):
-        with raw_transaction(regista) as conn:
-            conn.execute(
-                "INSERT INTO tsp_batches "
-                "(batch_id, merkle_root, first_global_seq, last_global_seq, "
-                "first_event_at, last_event_at, event_count, status, submitted_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                [
-                    uuid.uuid4(), b"\x00" * 32, 1, 1,
-                    datetime.now(UTC) - timedelta(seconds=600),
-                    datetime.now(UTC) - timedelta(seconds=600),
-                    1, "pending",
-                    datetime.now(UTC) - timedelta(seconds=600),
-                ],
-            )
-
-        count = regista.sweep_stale_timestamp_batches(max_age_seconds=300)
-        assert count == 1
-
-        with raw_transaction(regista) as conn:
-            row = conn.execute(
-                "SELECT status, error_message FROM tsp_batches "
-                "WHERE status = 'failed'"
-            ).fetchone()
-        assert row is not None
-        assert "stale" in row["error_message"]
-
-    def test_does_not_sweep_recent_pending(self, regista):
-        with raw_transaction(regista) as conn:
-            conn.execute(
-                "INSERT INTO tsp_batches "
-                "(batch_id, merkle_root, first_global_seq, last_global_seq, "
-                "first_event_at, last_event_at, event_count, status, submitted_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())",
-                [
-                    uuid.uuid4(), b"\x00" * 32, 1, 1,
-                    datetime.now(UTC), datetime.now(UTC),
-                    1, "pending",
-                ],
-            )
-
-        count = regista.sweep_stale_timestamp_batches(max_age_seconds=300)
-        assert count == 0
-
-
 class TestMaintenanceMetricsRefresh:
     def test_refresh_hook_queue_metrics(self, regista_v2):
         regista = regista_v2

@@ -554,159 +554,6 @@ def cmd_recurrence_update(args: argparse.Namespace) -> None:
         sub.close()
 
 
-def cmd_timestamp_status(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        batches = sub.timestamping.list_batches(status=args.status)
-        if args.json:
-            _dump_json(batches)
-        else:
-            for b in batches:
-                print(
-                    f"{str(b.batch_id)[:8]}  {b.status:10s}  "
-                    f"events={len(b.event_ids):>4}  "
-                    f"root={b.merkle_root.hex()[:16]}..."
-                )
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_timestamp_trigger(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        result = sub.timestamping.trigger()
-        if result is None:
-            print("No new events to timestamp")
-        else:
-            print(f"Triggered batch {result.batch_id} with {len(result.event_ids)} events")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_timestamp_verify(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        batch_id = uuid.UUID(args.id)
-    except ValueError:
-        print(f"Invalid batch ID: {args.id!r}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        ok = sub.timestamping.verify_batch(batch_id)
-        print(f"verified={ok}")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def _build_anchor_provider(args: argparse.Namespace) -> Any:
-    provider_name = args.provider
-    config: dict[str, Any] = {}
-    if args.provider_config:
-        try:
-            config = json.loads(args.provider_config)
-        except json.JSONDecodeError as e:
-            print(f"Invalid JSON for --provider-config: {e}", file=sys.stderr)
-            sys.exit(1)
-    if provider_name == "file":
-        from regista._anchoring import FileAnchorProvider
-
-        path = config.get("path", config.get("directory", "anchors"))
-        return FileAnchorProvider(directory=path)
-    elif provider_name == "rfc3161":
-        from regista._anchoring import RFC3161AnchorProvider
-        from regista._timestamping import TSAConfig
-
-        tsa_url = config.get("tsa_url")
-        if not tsa_url:
-            print("rfc3161 provider requires 'tsa_url' in --provider-config", file=sys.stderr)
-            sys.exit(2)
-        tsa_cert_path = config.get("tsa_cert_path")
-        return RFC3161AnchorProvider(TSAConfig(tsa_url=tsa_url, tsa_cert_path=tsa_cert_path))
-    elif provider_name == "opentimestamps":
-        from regista._anchoring import OpenTimestampsProvider
-
-        calendar_urls = config.get("calendar_urls")
-        return OpenTimestampsProvider(calendar_urls=calendar_urls)
-    else:
-        print(f"Unknown provider: {provider_name!r}", file=sys.stderr)
-        sys.exit(2)
-
-
-def cmd_anchor_submit(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        provider = _build_anchor_provider(args)
-        sub.anchoring.set_provider(provider)
-        receipt = sub.trigger_anchoring(batch_size=args.batch_size)
-        if receipt is None:
-            print("No new events to anchor")
-        else:
-            print(
-                f"Anchored {str(receipt.receipt_id)[:8]}... "
-                f"provider={receipt.provider} status={receipt.status}"
-            )
-            if args.json:
-                _dump_json(receipt)
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_anchor_status(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        receipts: list[Any] = sub.list_anchor_receipts(
-            status=args.status,
-            provider=args.provider,
-            limit=args.limit,
-        )
-        if args.json:
-            _dump_json(receipts)
-        else:
-            for r in receipts:
-                print(
-                    f"{str(r.receipt_id)[:8]}...  {r.provider:16s}  "
-                    f"{r.status:10s}  root={r.merkle_root.hex()[:16]}...  "
-                    f"seq={r.target_global_seq}"
-                )
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_anchor_verify(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        receipt_id = uuid.UUID(args.id)
-    except ValueError:
-        print(f"Invalid receipt ID: {args.id!r}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        provider = _build_anchor_provider(args)
-        sub.anchoring.set_provider(provider)
-        status = sub.verify_anchor_receipt(receipt_id)
-        print(f"status={status}")
-        if status == "failed":
-            sys.exit(1)
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
 def cmd_witness_list(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -795,145 +642,6 @@ def cmd_events_archive(args: argparse.Namespace) -> None:
         sub.close()
 
 
-def cmd_archive_seal(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        ts = datetime.fromisoformat(args.before_timestamp)
-    except ValueError:
-        print(f"Invalid timestamp: {args.before_timestamp!r}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        result = sub.archive.seal(
-            before_timestamp=ts,
-            dry_run=args.dry_run,
-            archive_path=args.archive_path,
-        )
-        if args.json:
-            _dump_json(result)
-        else:
-            if result.get("event_count", 0) == 0:
-                print("No events to seal.")
-            else:
-                print(f"Sealed segment {result['segment_id']}")
-                print(f"  events:          {result['event_count']}")
-                print(f"  first_global_seq: {result['first_global_seq']}")
-                print(f"  last_global_seq:  {result['last_global_seq']}")
-                print(f"  head_hash:       {result['head_hash'][:16]}...")
-                if result.get("dry_run"):
-                    print("  (dry-run — nothing written)")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_archive_verify(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        seg_id = uuid.UUID(args.segment_id)
-        result = sub.archive.verify(segment_id=seg_id)
-        if args.json:
-            _dump_json(result)
-        else:
-            status = "OK" if result.get("verified") else "FAILED"
-            print(f"Segment {args.segment_id}: {status}")
-            if result.get("event_count") is not None:
-                print(f"  events:          {result['event_count']}")
-            if result.get("head_hash"):
-                hh = result["head_hash"]
-                if isinstance(hh, (bytes, bytearray)):
-                    hh = hh.hex()
-                print(f"  head_hash:       {str(hh)[:16]}...")
-            if result.get("seal_event_id"):
-                print(f"  seal_event_id:   {result['seal_event_id']}")
-            if result.get("errors"):
-                for err in result["errors"]:
-                    print(f"  error:           {err}")
-            if result.get("warnings"):
-                for w in result["warnings"]:
-                    print(f"  warning:         {w}")
-        # Contract §2: this one exited 0 in *both* formats while printing
-        # `Segment ...: FAILED` and its errors — a report of an error on exit 0.
-        # `bundle verify` already treats a failed verification as exit 1; a
-        # segment verification is the same claim about a smaller range.
-        if not result.get("verified"):
-            print(
-                f"error: segment {args.segment_id} did not verify",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_archive_list(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        archived: bool | None = None
-        if args.archived is not None:
-            archived = args.archived.lower() in ("true", "yes", "1")
-        segments = sub.archive.list_segments(archived=archived, limit=args.limit)
-        if args.json:
-            _dump_json(segments)
-        else:
-            if not segments:
-                print("No segments found.")
-            else:
-                header = (
-                    f"{'segment_id':<38} "
-                    f"{'first_seq':>10} {'last_seq':>10} "
-                    f"{'events':>7} {'archived':>8}"
-                )
-                print(header)
-                for seg in segments:
-                    print(
-                        f"{seg['segment_id']!s:<38} "
-                        f"{seg.get('first_global_seq', '?'):>10} "
-                        f"{seg.get('last_global_seq', '?'):>10} "
-                        f"{seg.get('event_count', '?'):>7} "
-                        f"{'yes' if seg.get('archived') else 'no':>8}"
-                    )
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
-def cmd_archive_verify_chain(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        result = sub.verify_archive_chain()
-        if getattr(args, "json", False):
-            _dump_json(result)
-        else:
-            if result["verified"]:
-                print(f"Archive chain OK — {result['segment_count']} segment(s) verified.")
-            else:
-                print(f"Archive chain FAILED — {len(result['chain_breaks'])} break(s):")
-                for brk in result["chain_breaks"]:
-                    print(f"  {brk['type']} in segment {brk['segment_id']}: {brk['detail']}")
-        # Contract §2, same shape as `provision`: a broken chain is a failure in
-        # both output formats. The exit was previously reachable only from the
-        # human branch.
-        if not result["verified"]:
-            print(
-                f"error: archive chain verification failed with "
-                f"{len(result['chain_breaks'])} break(s)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
-
-
 def cmd_bundle_export(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -949,13 +657,6 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
         else:
             print(f"Bundle exported to {result['output_path']}")
             print(f"  events:           {result['event_count']}")
-            print(f"  anchor_receipts:  {result['anchor_receipt_count']}")
-            if result["anchor_receipts_excluded"]:
-                print(
-                    f"  receipts_excluded: {result['anchor_receipts_excluded']}"
-                    " (not provable in this chunk; see manifest)"
-                )
-            print(f"  segments:         {result['segment_count']}")
             print(f"  public_keys:      {result['public_key_count']}")
             print(f"  bundle_hash:      {result['bundle_hash']}")
             print(f"  bundle_bytes:     {result['bundle_bytes']}")
@@ -1004,8 +705,6 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
             if result["verified"]:
                 print(
                     f"Bundle verified — {result['event_count']} event(s), "
-                    f"{result['anchor_receipt_count']} anchor receipt(s), "
-                    f"{result['segment_count']} segment(s), "
                     f"{result['signatures_verified']} signature(s) verified, "
                     f"{result['signatures_unverifiable']} unverifiable "
                     f"(symmetric scheme) "
@@ -1032,11 +731,6 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                     print(f"  global_chain: {result['global_chain_error']}")
                 if not result["work_item_chain_ok"]:
                     print(f"  work_item_chain: {result['work_item_chain_error']}")
-                if not result["segment_chain_ok"]:
-                    print(f"  segment_chain: {result['segment_chain_error']}")
-                for av in result.get("anchor_verifications", []):
-                    if not av["verified"]:
-                        print(f"  anchor {av['receipt_id']}: {av['error']}")
                 for err in result.get("errors", []):
                     print(f"  {err}")
         # Contract §2: a bundle that does not verify is a failure whatever the
@@ -2056,34 +1750,6 @@ def main(argv: list[str] | None = None) -> None:
     ev_archive.add_argument("--dry-run", action="store_true", help="Count without archiving")
     ev_archive.set_defaults(func=cmd_events_archive)
 
-    # archive
-    arch = subs.add_parser("archive", help="Archive and segment commands")
-    arch_sub = arch.add_subparsers(dest="subcommand")
-    arch_seal = arch_sub.add_parser("seal", help="Seal a segment of the event log")
-    arch_seal.add_argument("--before-timestamp", required=True, help="ISO 8601 timestamp cutoff")
-    arch_seal.add_argument("--dry-run", action="store_true", help="Compute without writing")
-    arch_seal.add_argument("--archive-path", help="Optional archive storage path")
-    arch_seal.add_argument("--json", action="store_true", help="JSON output")
-    arch_seal.set_defaults(func=cmd_archive_seal)
-
-    arch_verify = arch_sub.add_parser("verify", help="Verify a sealed segment")
-    arch_verify.add_argument("segment_id", help="Segment UUID to verify")
-    arch_verify.add_argument("--json", action="store_true", help="JSON output")
-    arch_verify.set_defaults(func=cmd_archive_verify)
-
-    arch_list = arch_sub.add_parser("list", help="List sealed segments")
-    arch_list.add_argument("--archived", default=None, help="Filter: true/false")
-    arch_list.add_argument("--limit", type=int, default=100)
-    arch_list.add_argument("--json", action="store_true", help="JSON output")
-    arch_list.set_defaults(func=cmd_archive_list)
-
-    arch_vchain = arch_sub.add_parser(
-        "verify-chain",
-        help="Verify chain integrity across all segments",
-    )
-    arch_vchain.add_argument("--json", action="store_true", help="JSON output")
-    arch_vchain.set_defaults(func=cmd_archive_verify_chain)
-
     # bundle
     bnd = subs.add_parser("bundle", help="Audit bundle export and verification")
     bnd_sub = bnd.add_subparsers(dest="subcommand")
@@ -2196,54 +1862,6 @@ def main(argv: list[str] | None = None) -> None:
     rc_update.add_argument("--schedule-expr", help="New schedule expression")
     rc_update.add_argument("--template", help="New template (JSON string)")
     rc_update.set_defaults(func=cmd_recurrence_update)
-
-    # timestamp
-    ts = subs.add_parser("timestamp", help="Timestamping commands")
-    ts_sub = ts.add_subparsers(dest="subcommand")
-    ts_status = ts_sub.add_parser("status", help="List timestamp batches")
-    ts_status.set_defaults(func=cmd_timestamp_status)
-    ts_trigger = ts_sub.add_parser("trigger", help="Trigger a new timestamp batch")
-    ts_trigger.set_defaults(func=cmd_timestamp_trigger)
-    ts_verify = ts_sub.add_parser("verify", help="Verify a timestamp batch")
-    ts_verify.add_argument("id", help="Batch UUID")
-    ts_verify.set_defaults(func=cmd_timestamp_verify)
-
-    # anchor
-    an = subs.add_parser("anchor", help="Transparency-log anchoring commands")
-    an_sub = an.add_subparsers(dest="subcommand")
-    an_submit = an_sub.add_parser("submit", help="Trigger one anchoring cycle")
-    an_submit.add_argument(
-        "--provider",
-        default="file",
-        choices=["file", "rfc3161", "opentimestamps"],
-        help="Anchor provider (default: file)",
-    )
-    an_submit.add_argument(
-        "--provider-config",
-        default=None,
-        help='Provider config JSON (e.g. {"path": "/var/lib/regista/anchors"})',
-    )
-    an_submit.add_argument("--batch-size", type=int, default=10000)
-    an_submit.set_defaults(func=cmd_anchor_submit)
-    an_status = an_sub.add_parser("status", help="List anchor receipts")
-    an_status.add_argument("--provider", help="Filter by provider name")
-    an_status.add_argument("--status", help="Filter by status")
-    an_status.add_argument("--limit", type=int, default=100)
-    an_status.set_defaults(func=cmd_anchor_status)
-    an_verify = an_sub.add_parser("verify", help="Verify an anchor receipt")
-    an_verify.add_argument("id", help="Receipt UUID")
-    an_verify.add_argument(
-        "--provider",
-        default="file",
-        choices=["file", "rfc3161", "opentimestamps"],
-        help="Anchor provider (default: file)",
-    )
-    an_verify.add_argument(
-        "--provider-config",
-        default=None,
-        help="Provider config JSON",
-    )
-    an_verify.set_defaults(func=cmd_anchor_verify)
 
     # witness
     wt = subs.add_parser("witness", help="Witness commands")

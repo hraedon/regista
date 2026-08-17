@@ -104,10 +104,6 @@ class TestMigration021WitnessReceiptUniqueness:
 
 
 class TestMigration022AdversarialReviewFixes:
-    def test_tsp_batches_status_check(self, schema):
-        with psycopg.connect(DSN) as conn:
-            assert _constraint_exists(conn, schema, "tsp_batches", "chk_tsp_batches_status")
-
     def test_witness_registrations_status_check(self, schema):
         with psycopg.connect(DSN) as conn:
             assert _constraint_exists(

@@ -195,16 +195,9 @@ class TestPlan024VerifierHashWalk:
         e2 = mk("e2", head_a, b"env-B", b"sig-B")
         e3 = mk("e3", head_b, b"env-C", b"sig-C")
 
-        # A sealed segment standing in for an archived genesis: the walk has no
-        # genesis event and must bridge from the segment's head to e2. Segment
-        # dicts are NOT reduced by `_chain_link`, so this is the one shape where
-        # the walk mixes compact links with raw rows.
-        archived_genesis_segment = {
-            "segment_id": "seg-1",
-            "first_event_prev_hash": None,
-            "head_hash": head_a,
-        }
-
+        # P1.4 removed the archive-segment bridging cases here
+        # (segment_bridged_genesis / segment_bridges_nothing): the walk no
+        # longer takes a segments argument because the subsystem is deleted.
         cases = {
             "intact": ([e1, e2, e3], None),
             # e3 reuses e1's envelope/signature, so head(e3) == head(e1) and e2
@@ -219,30 +212,23 @@ class TestPlan024VerifierHashWalk:
             ),
             # The middle event is gone: the walk stops at e1 and e3 is orphaned.
             "missing_event": ([e1, e3], None),
-            # No genesis at all, and no segment to bridge from one.
+            # No genesis at all.
             "no_genesis": ([e2, e3], None),
             # Two events with a NULL prev link.
             "multiple_genesis": ([e1, mk("e1b", None, b"env-E", b"sig-E"), e2], None),
-            # Genesis is archived; the segment bridges to e2. Must be clean.
-            "segment_bridged_genesis": ([e2, e3], [archived_genesis_segment]),
-            # A segment that bridges nowhere leaves the events unreachable.
-            "segment_bridges_nothing": (
-                [e2, e3],
-                [{"segment_id": "seg-x", "first_event_prev_hash": None, "head_hash": b"\x00" * 32}],
-            ),
             # An event whose envelope/signature are NULL yields head_hash=None,
             # so the walk cannot compute its successor link and stops there.
             "null_envelope_tail": ([e1, mk("e2n", head_a, None, None), e3], None),
         }
 
-        clean = {"intact", "segment_bridged_genesis"}
+        clean = {"intact"}
 
-        for name, (rows, segments) in cases.items():
+        for name, (rows, _unused) in cases.items():
             with capture_logs() as row_logs:
-                from_rows, tail_rows = _verify_global_hash_chain(rows, segments=segments)
+                from_rows, tail_rows = _verify_global_hash_chain(rows)
             links = [_chain_link(r) for r in rows]
             with capture_logs() as link_logs:
-                from_links, tail_links = _verify_global_hash_chain(links, segments=segments)
+                from_links, tail_links = _verify_global_hash_chain(links)
 
             assert from_links == from_rows, (
                 f"{name}: compact links reported {from_links} chain breaks, "
@@ -265,9 +251,7 @@ class TestPlan024VerifierHashWalk:
             # starts from the lowest-global_seq genesis (tie-broken on event_id),
             # so the chosen root — and therefore the chain-break set — is stable
             # regardless of row order.
-            reversed_breaks, _ = _verify_global_hash_chain(
-                list(reversed(links)), segments=segments
-            )
+            reversed_breaks, _ = _verify_global_hash_chain(list(reversed(links)))
             assert reversed_breaks == from_links, (
                 f"{name}: verdict changed when the input order was reversed "
                 f"({reversed_breaks} vs {from_links}) — the walk is order-sensitive"

@@ -315,7 +315,6 @@ def register_routes(
         require_admin(request)
         result = regista.replay(
             continue_on_revoked=body.continue_on_revoked,
-            verify_timestamps=body.verify_timestamps,
             verify_principal_binding=body.verify_principal_binding,
             work_item_id=_parse_uuid(body.work_item_id) if body.work_item_id else None,
         )
@@ -417,25 +416,6 @@ def register_routes(
         require_admin(request)
         count = regista.sweep_expired_hook_leases()
         return {"swept": count}
-
-    @router.post("/timestamp/trigger")
-    def trigger_timestamp(request: Request) -> Any:
-        require_admin(request)
-        result = regista.timestamping.trigger()
-        return _serialize(result)
-
-    @router.get("/timestamp/batches")
-    def list_timestamp_batches(request: Request) -> Any:
-        require_admin(request)
-        status = request.query_params.get("status")
-        result = regista.timestamping.list_batches(status=status)
-        return _serialize(result)
-
-    @router.post("/timestamp/batches/{batch_id}/verify")
-    def verify_timestamp_batch(batch_id: str, request: Request) -> Any:
-        require_admin(request)
-        result = regista.timestamping.verify_batch(_parse_uuid(batch_id))
-        return {"verified": result}
 
     @router.post("/witnesses")
     def register_witness(body: RegisterWitnessRequest, request: Request) -> Any:
