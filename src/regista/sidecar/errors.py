@@ -84,6 +84,15 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.GENESIS_INVALID: 400,
     ErrorCode.GENESIS_RECOVERY_FAILED: 500,
     ErrorCode.V6_EPOCH_OPEN: 409,
+    # Trust-domain genesis (P2.1). These verbs are offline-only (the CLI never
+    # contacts a database and the sidecar exposes no trust endpoint), so the
+    # mappings exist to satisfy total coverage: every rejection is a defect in
+    # the submitted document/transition, hence 400.
+    ErrorCode.TRUST_GENESIS_SCHEMA_INVALID: 400,
+    ErrorCode.TRUST_GENESIS_GOVERNANCE_INVALID: 400,
+    ErrorCode.TRUST_GENESIS_DERIVATION_MISMATCH: 400,
+    ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID: 400,
+    ErrorCode.TRUST_GOVERNANCE_TRANSITION_INVALID: 400,
 }
 
 
