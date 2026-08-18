@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -41,6 +42,7 @@ from _trust_fixtures import (
 )
 
 from regista._errors import ErrorCode, RegistaError
+from regista._jcs import canonicalize
 from regista._principal_keys import _compute_fingerprint
 from regista._trust_domain import (
     MODE_CO_SIGNED,
@@ -247,6 +249,199 @@ def test_genesis_criterion_4_pinned_policy_sees_a_different_domain() -> None:
     assert report_b.trust_domain_id != fixture_a.trust_domain_id
 
 
+# ---------------------------------------------------------------------------
+# §9 criterion 4, narrowed by WI-292 (decided 2026-08-17; owner deferral to the
+# agreeing claude-fable and gpt-5.6-sol reviews). Custody sits outside the
+# identifier, so the interesting property is that identity and custody move
+# INDEPENDENTLY: (i) binding_core edits rotate digest+id; (ii) a custody edit
+# rotates neither but invalidates every genesis signature; (iii) pinning the
+# document digest is strictly stronger than pinning the domain; (iv) the P2.2
+# custody-change event seam; (v) corrections preserve history; (vi) strict entry
+# rules; (vii) reports label custody declared-and-unverified.
+#
+# (i) is test_genesis_criterion_4_binding_core_edit_changes_digest_and_id above.
+# ---------------------------------------------------------------------------
+
+
+def _genesis_document_digest(document: dict[str, Any]) -> str:
+    """What a policy pins when it pins the *document* rather than the domain."""
+    return "sha256:" + hashlib.sha256(canonicalize(document)).hexdigest()
+
+
+def test_genesis_criterion_4ii_custody_edit_changes_no_digest_but_invalidates_signatures() -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["initial_custody"][0]["declared_mode"] = "online-vault"
+
+    # Neither derived value moves: custody is not an input to §3.3.
+    assert derive_core_digest(doc["binding_core"]) == fixture.trust_domain_core_digest
+    assert doc["trust_domain_core_digest"] == fixture.trust_domain_core_digest
+    assert doc["trust_domain_id"] == fixture.trust_domain_id
+
+    # But initial_custody is inside document_core, so every genesis signature breaks.
+    assert genesis_signature_input(doc) != genesis_signature_input(fixture.document)
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID, "bad_signature")
+
+    # Re-signed by the same roots at the same threshold, the SAME domain verifies with
+    # the corrected declaration — a label fix costs signatures, never an epoch.
+    resigned = _resign(fixture, doc)
+    report = verify_trust_genesis(resigned)
+    assert report.trust_domain_id == fixture.trust_domain_id
+    assert report.trust_domain_core_digest == fixture.trust_domain_core_digest
+    assert "online-vault" in report.root_governance.custody_declared
+
+
+def test_genesis_criterion_4iii_pinned_document_digest_rejects_altered_custody() -> None:
+    # Pinning the DOMAIN cannot see a custody edit; pinning the DOCUMENT can. Both
+    # statements are asserted here so the difference is not left to the reader.
+    fixture = mint_co_signed()
+    pinned_document_digest = _genesis_document_digest(fixture.document)
+    pinned_core_digest = fixture.trust_domain_core_digest
+
+    altered = copy.deepcopy(fixture.document)
+    altered["initial_custody"][0]["declared_holder"] = "human:someone-else"
+    resigned = _resign(fixture, altered)  # a fully valid document...
+
+    report = verify_trust_genesis(resigned)
+    assert report.trust_domain_core_digest == pinned_core_digest  # ...same domain...
+    assert _genesis_document_digest(resigned) != pinned_document_digest  # ...different document
+
+
+def test_genesis_criterion_4iv_custody_change_event_seam_is_not_implemented_here() -> None:
+    # (iv) A valid custody-change trust-log event changes replayed custody while
+    # preserving digest+id. The EVENT CONTRACT is P2.2's catalogue (§5) and is
+    # deliberately absent from P2.1: this test pins the seam so the absence is a
+    # recorded boundary rather than an oversight, and fails if P2.1 grows a mutator.
+    import regista._trust_domain as trust_domain
+
+    mutating_verbs = ("apply", "change", "mutate", "update", "set_")
+    assert not [
+        name
+        for name in dir(trust_domain)
+        if "custody" in name.lower() and any(v in name.lower() for v in mutating_verbs)
+    ]
+    # What P2.1 does own: the replay input. Genesis custody is readable per signer,
+    # which is what a P2.2 replay starts from before applying its events.
+    fixture = mint_co_signed()
+    parsed = parse_trust_genesis(fixture.document)
+    for signer in parsed.signers:
+        assert parsed.custody_by_fingerprint(signer.fingerprint) is not None
+
+
+def test_genesis_criterion_4v_correction_preserves_the_superseded_declaration() -> None:
+    # (v) The superseded declaration survives as evidence. In P2.1 the carrier is the
+    # signed genesis document itself: the original text is still verifiable after a
+    # correction is issued, so a later denial contradicts something the roots signed.
+    # (Replay history for post-genesis corrections is P2.2's.)
+    fixture = mint_co_signed()
+    original = copy.deepcopy(fixture.document)
+    corrected = _resign(
+        fixture, _mutate(original, "initial_custody.0.declared_mode", "online-vault")
+    )
+
+    original_report = verify_trust_genesis(original)
+    corrected_report = verify_trust_genesis(corrected)
+    assert "offline-host" in original_report.root_governance.custody_declared
+    assert "online-vault" in corrected_report.root_governance.custody_declared
+    # Same domain, two verifiable custody claims, one of them superseded: the
+    # contradiction is documented rather than erased.
+    assert original_report.trust_domain_id == corrected_report.trust_domain_id
+
+
+def test_genesis_criterion_4vi_custody_block_is_mandatory() -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    del doc["initial_custody"]
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "unknown_or_missing_field")
+
+
+def test_genesis_criterion_4vi_custody_mandatory_even_when_all_unspecified() -> None:
+    # Declining to declare is a declaration, and it is written down.
+    fixture = mint_co_signed(declared_mode="unspecified", declared_holder="human:undeclared")
+    report = verify_trust_genesis(fixture.document)
+    assert report.root_governance.custody_declared == ("unspecified", "unspecified")
+    assert report.root_governance.custody_verified is False
+
+
+def test_genesis_criterion_4vi_missing_entry_invalid() -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    del doc["initial_custody"][1]
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "custody_missing_signer")
+
+
+def test_genesis_criterion_4vi_duplicate_entry_invalid() -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["initial_custody"][1] = copy.deepcopy(doc["initial_custody"][0])
+    _assert_invalid(
+        doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "duplicate_custody_fingerprint"
+    )
+
+
+def test_genesis_criterion_4vi_extraneous_entry_invalid() -> None:
+    # An entry naming a fingerprint that is not a genesis signer: custody for a key
+    # the domain never rooted.
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    stranger = dict(doc["initial_custody"][0])
+    stranger["fingerprint"] = "ed25519:sha256:" + "f" * 64  # sorts last
+    doc["initial_custody"].append(stranger)
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "custody_unknown_signer")
+
+
+def test_genesis_criterion_4vi_unsorted_entries_invalid() -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["initial_custody"] = list(reversed(doc["initial_custody"]))
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "custody_not_sorted")
+
+
+def test_genesis_criterion_4vii_reports_label_custody_declared_and_unverified() -> None:
+    # (vii) in the machine-readable channel as well as the human one; the human half
+    # is TestTrustCLI::test_sign_then_verify_roundtrip ("unverified operator claims").
+    report = verify_trust_genesis(mint_co_signed().document)
+    data = report.to_dict()
+    assert data["root_governance"]["custody_verified"] is False
+    assert data["root_governance"]["custody_declared"] == ["offline-host", "offline-host"]
+    assert data["custody_declared_holders_unverified"] == [
+        "human:test-owner",
+        "human:test-owner",
+    ]
+
+
+def test_wi292_custody_inside_binding_core_signer_rejected() -> None:
+    # WI-292 relocation guard, the mirror of test_wi280_governance_inside_binding_core_rejected:
+    # the pre-WI-292 shape (custody nested in a signer) is an unknown field now.
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["binding_core"]["signers"][0]["custody"] = {
+        "declared_mode": "offline-host",
+        "declared_holder": "human:test-owner",
+        "attestation": None,
+    }
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "unknown_or_missing_field")
+
+
+def test_wi292_custody_is_not_in_the_derivation() -> None:
+    # Two documents identical except for custody: same digest, same id. The clearest
+    # statement that an unverified claim is not part of the estate's name.
+    seeds = [bytes([i + 1]) * 32 for i in range(2)]
+    a = mint_genesis(threshold=2, signer_count=2, seeds=seeds, declared_mode="offline-airgapped")
+    b = mint_genesis(threshold=2, signer_count=2, seeds=seeds, declared_mode="online-vault")
+    assert a.trust_domain_core_digest == b.trust_domain_core_digest
+    assert a.trust_domain_id == b.trust_domain_id
+    # ...and both are independently valid, with their own declarations.
+    assert verify_trust_genesis(a.document).root_governance.custody_declared == (
+        "offline-airgapped",
+        "offline-airgapped",
+    )
+    assert verify_trust_genesis(b.document).root_governance.custody_declared == (
+        "online-vault",
+        "online-vault",
+    )
+
+
 def test_genesis_criterion_5_countersignature_and_anchor_change_nothing() -> None:
     fixture = mint_co_signed()
     doc = copy.deepcopy(fixture.document)
@@ -353,10 +548,12 @@ MUTATIONS: list[tuple[str, Any, ErrorCode, str]] = [
         "core_digest_mismatch",
     ),
     (
-        "binding_core.signers.0.custody.declared_mode",
+        # WI-292: custody is signed state OUTSIDE binding_core, so editing it does not
+        # touch the digest — it breaks the signatures over document_core instead.
+        "initial_custody.0.declared_mode",
         "online-vault",
-        ErrorCode.TRUST_GENESIS_DERIVATION_MISMATCH,
-        "core_digest_mismatch",
+        ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID,
+        "bad_signature",
     ),
     (
         "binding_core.signers.0.fingerprint",
@@ -493,11 +690,7 @@ def test_duplicate_key_material_is_invalid_not_co_signed() -> None:
 
 def test_custody_attestation_must_be_null_in_060() -> None:
     fixture = mint_solo()
-    doc = _mutate(
-        fixture.document,
-        "binding_core.signers.0.custody.attestation",
-        {"kind": "tpm-quote"},
-    )
+    doc = _mutate(fixture.document, "initial_custody.0.attestation", {"kind": "tpm-quote"})
     _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "attestation_not_null")
 
 
@@ -510,7 +703,7 @@ UNKNOWN_FIELD_SITES = [
     "",  # document top level
     "binding_core",
     "binding_core.signers.0",
-    "binding_core.signers.0.custody",
+    "initial_custody.0",
     "initial_governance",
     "trust_log",
     "publication",

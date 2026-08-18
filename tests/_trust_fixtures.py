@@ -17,6 +17,11 @@ API surface
     and by default **every** signer signs (extra valid signatures are permitted and
     reported by the verifier). ``sign_with`` restricts which signers sign.
 
+    The ``declared_mode`` / ``declared_holder`` parameters are unchanged, but per
+    **WI-292** their output is the mandatory top-level ``initial_custody`` array —
+    one entry per signer, keyed and sorted by fingerprint — not a ``custody`` block
+    inside ``binding_core.signers[]``.
+
 ``mint_solo() / mint_solo_effective(signer_count=3) / mint_co_signed(threshold=2,
 signer_count=2)``
     The three §3.4 modes: 1-of-1, 1-of-n, k-of-n.
@@ -126,6 +131,10 @@ def mint_genesis(
     public_map: dict[str, bytes] = {}
     fingerprint_map: dict[str, str] = {}
     signers: list[dict[str, Any]] = []
+    # WI-292: custody declarations are a separate top-level block, keyed by fingerprint
+    # and sorted by it. The keypairs are already fingerprint-sorted, so appending in
+    # step with the signers satisfies the ordering rule.
+    initial_custody: list[dict[str, Any]] = []
     for signer_id, (seed, public) in zip(signer_ids, keypairs, strict=True):
         fingerprint = _compute_fingerprint(public, "ed25519")
         seed_map[signer_id] = seed
@@ -137,11 +146,14 @@ def mint_genesis(
                 "scheme_id": "ed25519",
                 "public_key": base64.b64encode(public).decode("ascii"),
                 "fingerprint": fingerprint,
-                "custody": {
-                    "declared_mode": declared_mode,
-                    "declared_holder": declared_holder,
-                    "attestation": None,
-                },
+            }
+        )
+        initial_custody.append(
+            {
+                "fingerprint": fingerprint,
+                "declared_mode": declared_mode,
+                "declared_holder": declared_holder,
+                "attestation": None,
             }
         )
 
@@ -159,6 +171,7 @@ def mint_genesis(
         "type": "regista.trust-genesis",
         "version": 1,
         "binding_core": binding_core,
+        "initial_custody": initial_custody,
         "initial_governance": {
             "mode": mode,
             "threshold": threshold,

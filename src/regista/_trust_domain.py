@@ -41,9 +41,19 @@ does not verify, or whose signer is not in ``binding_core.signers``, makes the w
 document invalid — never "bad signature ignored", because silently dropping a bad
 signature is how a k-of-n check becomes a 1-of-n check (§3.4).
 
-``custody.declared_mode`` / ``custody.declared_holder`` are **unverified operator claims**
+``declared_mode`` / ``declared_holder`` are **unverified operator claims**
 (OPERATOR-FORGERY R1); every surface here that carries them labels them as declared and
-unverified. ``custody.attestation`` is null/reserved in 0.6.0.
+unverified. ``attestation`` is null/reserved in 0.6.0.
+
+**WI-292 (decided 2026-08-17)**: custody declarations are NOT in ``binding_core.signers[]``.
+They live in a mandatory top-level ``initial_custody`` array, keyed by signer fingerprint,
+exactly one entry per signer, sorted by fingerprint ascending. The block is inside
+``document_core``, so every root signature covers it — an edit changes **neither** the digest
+**nor** the id, but invalidates **every** genesis signature (§9 criterion 4 (ii)). An
+unverified operator claim has no business inside the cryptographic identifier: it buys no
+security and makes every honest correction cost a full epoch. Post-genesis corrections are
+threshold-authorized trust-log events (P2.2's catalogue), which is why nothing here mutates
+custody.
 """
 
 from __future__ import annotations
@@ -102,6 +112,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "type",
         "version",
         "binding_core",
+        "initial_custody",
         "initial_governance",
         "trust_domain_core_digest",
         "trust_domain_id",
@@ -114,8 +125,11 @@ _TOP_LEVEL_KEYS = frozenset(
 )
 # WI-280: binding_core carries NO governance fields.
 _BINDING_CORE_KEYS = frozenset({"type", "version", "signers", "created_at", "nonce"})
-_SIGNER_KEYS = frozenset({"signer_id", "scheme_id", "public_key", "fingerprint", "custody"})
-_CUSTODY_KEYS = frozenset({"declared_mode", "declared_holder", "attestation"})
+# WI-292: signers carry cryptographic identity only; custody moved to initial_custody.
+_SIGNER_KEYS = frozenset({"signer_id", "scheme_id", "public_key", "fingerprint"})
+_CUSTODY_ENTRY_KEYS = frozenset(
+    {"fingerprint", "declared_mode", "declared_holder", "attestation"}
+)
 _GOVERNANCE_KEYS = frozenset({"mode", "threshold", "signer_count"})
 _TRUST_LOG_KEYS = frozenset(
     {"project_instance_id", "project_name_hint", "initial_head_event_hash"}
@@ -429,9 +443,16 @@ def derive_governance_mode(threshold: int, signer_count: int) -> str:
 
 
 @dataclass(frozen=True)
-class SignerCustody:
-    """Unverified operator claims (OPERATOR-FORGERY R1). ``attestation`` is reserved."""
+class CustodyDeclaration:
+    """One ``initial_custody`` entry (WI-292): unverified operator claims about where a
+    genesis signer's key is kept, keyed by that signer's fingerprint.
 
+    Signed genesis state, not identity — it is inside ``document_core`` and outside
+    ``binding_core``. ``attestation`` is reserved (must be null in 0.6.0); when it lands
+    it is what closes OPERATOR-FORGERY R1.
+    """
+
+    fingerprint: str
     declared_mode: str
     declared_holder: str
     attestation: None = None
@@ -439,11 +460,12 @@ class SignerCustody:
 
 @dataclass(frozen=True)
 class GenesisSigner:
+    """Cryptographic identity only (WI-292) — this is what the derivation commits to."""
+
     signer_id: str
     scheme_id: str
     public_key: bytes
     fingerprint: str
-    custody: SignerCustody
 
 
 @dataclass(frozen=True)
@@ -507,6 +529,7 @@ class TrustGenesisDocument:
     signers: tuple[GenesisSigner, ...]
     created_at: str
     nonce: str
+    initial_custody: tuple[CustodyDeclaration, ...]
     initial_governance: InitialGovernance
     trust_domain_core_digest: str
     trust_domain_id: str
@@ -520,6 +543,14 @@ class TrustGenesisDocument:
         for signer in self.signers:
             if signer.fingerprint == fingerprint:
                 return signer
+        return None
+
+    def custody_by_fingerprint(self, fingerprint: str) -> CustodyDeclaration | None:
+        """The declared (unverified) custody for a signer. Never ``None`` for a signer
+        of a *parsed* document — the 1:1 rule is enforced at parse time (WI-292)."""
+        for declaration in self.initial_custody:
+            if declaration.fingerprint == fingerprint:
+                return declaration
         return None
 
 
@@ -560,32 +591,45 @@ def _parse_signer(entry: Any, path: str) -> GenesisSigner:
         stated=fingerprint,
         recomputed=recomputed,
     )
-    custody_raw = entry["custody"]
-    _require_keys(custody_raw, _CUSTODY_KEYS, f"{path}.custody")
-    declared_mode = _require_string(custody_raw["declared_mode"], f"{path}.custody.declared_mode")
-    _require(
-        declared_mode in _CUSTODY_DECLARED_MODES,
-        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
-        f"{path}.custody.declared_mode must be one of {sorted(_CUSTODY_DECLARED_MODES)!r}",
-        "unknown_custody_mode",
-        path=f"{path}.custody.declared_mode",
-    )
-    declared_holder = _require_string(
-        custody_raw["declared_holder"], f"{path}.custody.declared_holder"
-    )
-    _require(
-        custody_raw["attestation"] is None,
-        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
-        f"{path}.custody.attestation is reserved and must be null in 0.6.0",
-        "attestation_not_null",
-        path=f"{path}.custody.attestation",
-    )
     return GenesisSigner(
         signer_id=signer_id,
         scheme_id=scheme_id,
         public_key=public_key,
         fingerprint=fingerprint,
-        custody=SignerCustody(declared_mode=declared_mode, declared_holder=declared_holder),
+    )
+
+
+def _parse_custody_declaration(entry: Any, path: str) -> CustodyDeclaration:
+    """Parse one ``initial_custody`` entry (WI-292). The value rules are unchanged from
+    the pre-WI-292 ``signers[].custody`` block; only the location and the fingerprint key
+    are new."""
+    _require_keys(entry, _CUSTODY_ENTRY_KEYS, path)
+    fingerprint = _require_pattern(
+        entry["fingerprint"],
+        _FINGERPRINT_RE,
+        f"{path}.fingerprint",
+        "<scheme_id>:sha256:<64 lowercase hex>",
+    )
+    declared_mode = _require_string(entry["declared_mode"], f"{path}.declared_mode")
+    _require(
+        declared_mode in _CUSTODY_DECLARED_MODES,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"{path}.declared_mode must be one of {sorted(_CUSTODY_DECLARED_MODES)!r}",
+        "unknown_custody_mode",
+        path=f"{path}.declared_mode",
+    )
+    declared_holder = _require_string(entry["declared_holder"], f"{path}.declared_holder")
+    _require(
+        entry["attestation"] is None,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"{path}.attestation is reserved and must be null in 0.6.0",
+        "attestation_not_null",
+        path=f"{path}.attestation",
+    )
+    return CustodyDeclaration(
+        fingerprint=fingerprint,
+        declared_mode=declared_mode,
+        declared_holder=declared_holder,
     )
 
 
@@ -807,6 +851,61 @@ def parse_trust_genesis(
         path="binding_core.signers",
     )
 
+    # --- initial_custody (signed genesis state; NOT in binding_core, WI-292) ---
+    # Mandatory, even when every declared mode is "unspecified": an estate that declines
+    # to declare says so in the artifact, and absence is not a permitted third state. The
+    # 1:1 correspondence with the signer set is what makes "custody unknown" unreachable
+    # for a valid document — a verifier either has a declaration for a signer or the
+    # document is invalid.
+    custody_raw = document["initial_custody"]
+    _require(
+        isinstance(custody_raw, list),
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        "initial_custody must be an array",
+        "custody_not_a_list",
+        path="initial_custody",
+    )
+    initial_custody = tuple(
+        _parse_custody_declaration(entry, f"initial_custody[{i}]")
+        for i, entry in enumerate(custody_raw)
+    )
+    custody_fingerprints = [c.fingerprint for c in initial_custody]
+    _require(
+        len(set(custody_fingerprints)) == len(custody_fingerprints),
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        "initial_custody fingerprints must be pairwise distinct",
+        "duplicate_custody_fingerprint",
+        path="initial_custody",
+    )
+    # Sorted ascending, enforced and never silently sorted — same rule as the signer
+    # list, same reason: a canonical order is a diffable order.
+    _require(
+        custody_fingerprints == sorted(custody_fingerprints),
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        "initial_custody must be sorted by fingerprint ascending",
+        "custody_not_sorted",
+        path="initial_custody",
+    )
+    signer_fingerprint_set = {s.fingerprint for s in signers}
+    extraneous = sorted(set(custody_fingerprints) - signer_fingerprint_set)
+    _require(
+        not extraneous,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"initial_custody names {len(extraneous)} fingerprint(s) that are not genesis signers",
+        "custody_unknown_signer",
+        path="initial_custody",
+        fingerprints=extraneous,
+    )
+    missing = sorted(signer_fingerprint_set - set(custody_fingerprints))
+    _require(
+        not missing,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"initial_custody is missing an entry for {len(missing)} genesis signer(s)",
+        "custody_missing_signer",
+        path="initial_custody",
+        fingerprints=missing,
+    )
+
     # --- initial_governance (signed genesis state; NOT in binding_core, WI-280) ---
     governance_raw = document["initial_governance"]
     _require_keys(governance_raw, _GOVERNANCE_KEYS, "initial_governance")
@@ -956,6 +1055,7 @@ def parse_trust_genesis(
         signers=signers,
         created_at=created_at,
         nonce=nonce,
+        initial_custody=initial_custody,
         initial_governance=InitialGovernance(
             mode=stated_mode, threshold=threshold, signer_count=signer_count
         ),
@@ -1132,7 +1232,9 @@ def verify_trust_genesis(document: Mapping[str, Any]) -> TrustGenesisVerificatio
         signer_count=parsed.initial_governance.signer_count,
         signatures_seen=len(verified_fingerprints),
         signer_fingerprints_verified=tuple(verified_fingerprints),
-        custody_declared=tuple(s.custody.declared_mode for s in parsed.signers),
+        # WI-292: read from initial_custody, in binding_core signer order (both are
+        # sorted by fingerprint, and the 1:1 rule makes the lookup total).
+        custody_declared=tuple(_custody_for(parsed, s).declared_mode for s in parsed.signers),
     )
     return TrustGenesisVerification(
         trust_domain_id=parsed.trust_domain_id,
@@ -1147,9 +1249,23 @@ def verify_trust_genesis(document: Mapping[str, Any]) -> TrustGenesisVerificatio
         anchors_status="present_unverified" if parsed.anchors else "absent",
         anchor_count=len(parsed.anchors),
         custody_declared_holders_unverified=tuple(
-            s.custody.declared_holder for s in parsed.signers
+            _custody_for(parsed, s).declared_holder for s in parsed.signers
         ),
     )
+
+
+def _custody_for(parsed: TrustGenesisDocument, signer: GenesisSigner) -> CustodyDeclaration:
+    """The declared custody for a signer of an already-parsed document.
+
+    Total by construction: :func:`parse_trust_genesis` rejects any document whose
+    ``initial_custody`` is not in exact 1:1 correspondence with the signer set, so a
+    missing declaration here is an internal invariant break, not a document defect.
+    """
+    declaration = parsed.custody_by_fingerprint(signer.fingerprint)
+    assert declaration is not None, (
+        f"parsed document has no initial_custody entry for signer {signer.signer_id}"
+    )
+    return declaration
 
 
 # ---------------------------------------------------------------------------
@@ -1273,6 +1389,7 @@ __all__: Sequence[str] = [
     "TRUST_GENESIS_SIGNING_DOMAIN",
     "Anchor",
     "Countersignature",
+    "CustodyDeclaration",
     "GenesisSignature",
     "GenesisSigner",
     "GovernanceState",
@@ -1280,7 +1397,6 @@ __all__: Sequence[str] = [
     "InitialGovernance",
     "PublicationBlock",
     "RootGovernance",
-    "SignerCustody",
     "TrustGenesisDocument",
     "TrustGenesisVerification",
     "TrustLogBlock",
