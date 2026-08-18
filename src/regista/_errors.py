@@ -147,6 +147,13 @@ class ErrorCode(StrEnum):
     # an operator's response to each is different.
     KEY_ACCEPTANCE_REVOKED = "KEY_ACCEPTANCE_REVOKED"
 
+    # The in-memory v6 parity boundary (WI-287, SUITE-RECONCILIATION.md §2.3(a)).
+    # Locking, rollback, persistence and concurrency remain Postgres-only, and the
+    # in-memory backend's statement grammar is closed. Reaching for any of those
+    # through the in-memory backend is this refusal, never a fake that would let an
+    # in-memory pass satisfy a Postgres-gated acceptance criterion.
+    PARITY_BOUNDARY_POSTGRES_ONLY = "PARITY_BOUNDARY_POSTGRES_ONLY"
+
 
 class RegistaError(Exception):
     def __init__(self, code: ErrorCode, message: str, detail: dict[str, Any] | None = None) -> None:

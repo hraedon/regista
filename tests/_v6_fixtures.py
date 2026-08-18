@@ -290,83 +290,203 @@ def acceptance_payload(
     }
 
 
-def open_v6_epoch(
-    instance: Any,
-    keyset: V6TestKeyset,
-    *,
-    principals: tuple[str, ...] | None = None,
-    entity_kinds: tuple[str, ...] = ("work_item", "principal", "workflow", "project"),
-) -> Any:
-    """Open the epoch and accept every actor key, in the order the spec requires.
+# ---------------------------------------------------------------------------
+# The sequencing helpers this module's docstring has always promised (WI-287)
+#
+# Steps 2 and 3 of the sequence above named ``write_test_genesis`` and
+# ``accept_key``, but neither function existed — every caller open-coded them,
+# which is how ``tests/test_p17_v6_writer.py`` ended up with a private ``_accept``
+# that the 25 in-memory files would each have had to copy. These are deliberately
+# **backend-agnostic**: they take any handle exposing ``write_genesis``,
+# ``_mgr.transaction()`` and ``_keys``, which since WI-287 is both ``Regista``
+# and ``InMemoryRegista``. Nothing here is in-memory-specific.
+# ---------------------------------------------------------------------------
 
-    This is the one call a migrated test fixture needs. It does the three steps in
-    order — genesis, then a standalone ``principal_key_accepted`` per principal signed
-    by the bootstrap authority — because ordinary events are refused until their
-    principal has a *preceding* project-local anchor.
 
-    Also sets the process-level producer environment, since ``producer.harness`` is
-    load-bearing and the writer refuses when it is unset. Tests that want to assert the
-    refusal should call ``resolve_producer`` directly rather than unsetting it here.
+def v6_producer() -> Any:
+    """The ``producer`` block fixture-written events carry.
 
-    Returns the ``V6GenesisWrite`` so a caller can name the bootstrap anchor.
+    A function rather than a module constant so importing this module does not
+    import ``regista._v6_writer`` — several fixture consumers are pure-logic
+    tests with no interest in the writer.
     """
 
-    import os
-    import uuid as _uuid
+    from regista._v6_writer import Producer
 
-    from regista._v6_writer import (
-        PRINCIPAL_KEY_ACCEPTED,
-        PRODUCER_ENV,
-        Producer,
-        append_v6_event,
-        read_project_identity,
-    )
-
-    os.environ.setdefault(PRODUCER_ENV["harness"], TEST_HARNESS)
-    os.environ.setdefault(PRODUCER_ENV["harness_version"], TEST_HARNESS_VERSION)
-    os.environ.setdefault(PRODUCER_ENV["model"], TEST_MODEL)
-    os.environ.setdefault(PRODUCER_ENV["model_lineage"], TEST_MODEL_LINEAGE)
-    producer = Producer(
+    return Producer(
         harness=TEST_HARNESS,
         harness_version=TEST_HARNESS_VERSION,
         model=TEST_MODEL,
         model_lineage=TEST_MODEL_LINEAGE,
     )
 
-    genesis = instance.write_genesis(genesis_envelope(keyset), gate_passed=True)
-    anchor = genesis.to_dict()["event_hash"]
+
+def write_test_genesis(instance: Any, keyset: V6TestKeyset, **kwargs: Any) -> Any:
+    """Step 2: open the epoch with the bootstrap principal.
+
+    ``gate_passed=True`` is correct for a test root and is not a shortcut: the
+    first-write gate exists to stop an *operator* opening an epoch over legacy
+    history, and a fixture-built project has none. The genesis envelope still
+    comes from the committed conformance vector.
+    """
+
+    return instance.write_genesis(genesis_envelope(keyset, **kwargs), gate_passed=True)
+
+
+def project_identity_of(instance: Any) -> Any:
+    """The ``project_identity`` singleton, through whichever backend ``instance`` is."""
+
+    from regista._v6_writer import read_project_identity
 
     with instance._mgr.transaction() as conn:
         identity = read_project_identity(conn)
-    assert identity is not None
+    assert identity is not None, "no v6 epoch is open on this instance"
+    return identity
 
-    wanted = principals if principals is not None else tuple(
-        p for p in keyset.keys if p != BOOTSTRAP_PRINCIPAL
+
+def accept_key(
+    instance: Any,
+    keyset: V6TestKeyset,
+    genesis: Any,
+    principal_id: str,
+    **scopes: Any,
+) -> Any:
+    """Step 3: append the standalone ``principal_key_accepted`` for ``principal_id``.
+
+    Signed by the bootstrap principal, anchored on the genesis event — never on
+    itself. Until this runs, ``resolve_key_binding_anchor`` refuses
+    ``principal_id`` with ``KEY_BINDING_UNRESOLVED``, and that refusal is correct:
+    a key file is not a project-local acceptance.
+    """
+
+    from regista._v6_writer import PRINCIPAL_KEY_ACCEPTED, append_v6_event
+
+    identity = project_identity_of(instance)
+    payload = acceptance_payload(
+        keyset,
+        principal_id=principal_id,
+        accepted_by=BOOTSTRAP_PRINCIPAL,
+        accepted_by_anchor=genesis.to_dict()["event_hash"],
+        project_instance_id=str(identity.project_instance_id),
+        trust_domain_id=str(identity.trust_domain_id),
+        **scopes,
     )
-    for principal_id in wanted:
-        payload = acceptance_payload(
-            keyset,
-            principal_id=principal_id,
-            accepted_by=BOOTSTRAP_PRINCIPAL,
-            accepted_by_anchor=anchor,
-            project_instance_id=str(identity.project_instance_id),
-            trust_domain_id=str(identity.trust_domain_id),
-            entity_kinds=entity_kinds,
+    with instance._mgr.transaction() as conn:
+        return append_v6_event(
+            conn,
+            instance._keys,
+            entity_kind="principal",
+            entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal_id),
+            transition=PRINCIPAL_KEY_ACCEPTED,
+            actor_id=BOOTSTRAP_PRINCIPAL,
+            actor_kind="system",
+            producer=v6_producer(),
+            payload=payload,
         )
-        with instance._mgr.transaction() as conn:
-            append_v6_event(
-                conn,
-                instance._keys,
-                entity_kind="principal",
-                entity_id=_uuid.uuid5(
-                    _uuid.NAMESPACE_OID, "regista.principal:" + principal_id
-                ),
-                transition=PRINCIPAL_KEY_ACCEPTED,
-                actor_id=BOOTSTRAP_PRINCIPAL,
-                actor_kind="system",
-                producer=producer,
-                payload=payload,
-            )
+
+
+def register_test_workflow(
+    instance: Any,
+    name: str,
+    version: int,
+    definition: dict[str, Any],
+) -> Any:
+    """Append the signed ``workflow_registered`` event admission gate 1 requires.
+
+    A ``workflow_registry`` row is **not** a registration (``V6-ENVELOPE.md`` §1.9),
+    so a migrated fixture that only calls ``register_workflow`` will still be
+    refused. This is the missing half.
+    """
+
+    from regista._v6_writer import append_v6_event, workflow_definition_hash
+
+    identity = project_identity_of(instance)
+    workflow_id = uuid.uuid5(
+        uuid.NAMESPACE_OID,
+        f"regista.workflow:{identity.project_instance_id}:{name}:{version}",
+    )
+    payload = {
+        "type": "regista.workflow-registration",
+        "version": 1,
+        "name": name,
+        "workflow_version": version,
+        "definition": definition,
+        "definition_hash": workflow_definition_hash(definition),
+        "supersedes_registration_event_hash": None,
+    }
+    with instance._mgr.transaction() as conn:
+        return append_v6_event(
+            conn,
+            instance._keys,
+            entity_kind="workflow",
+            entity_id=workflow_id,
+            transition="workflow_registered",
+            actor_id=BOOTSTRAP_PRINCIPAL,
+            actor_kind="system",
+            producer=v6_producer(),
+            payload=payload,
+        )
+
+
+def set_v6_producer_env() -> None:
+    """Publish the process-level producer identity the writer refuses without.
+
+    ``producer.harness`` is load-bearing (``_genesis._REQUIRED_NONEMPTY_PATHS``), and
+    the legacy funnel resolves the producer from the environment rather than from a
+    per-append argument — the harness that produces events is a property of the
+    running process. ``setdefault`` so a test that has already set its own producer
+    (or one asserting ``resolve_producer``'s refusal after ``delenv``) is not
+    overridden by a fixture running later.
+    """
+
+    import os
+
+    from regista._v6_writer import PRODUCER_ENV
+
+    os.environ.setdefault(PRODUCER_ENV["harness"], TEST_HARNESS)
+    os.environ.setdefault(PRODUCER_ENV["harness_version"], TEST_HARNESS_VERSION)
+    os.environ.setdefault(PRODUCER_ENV["model"], TEST_MODEL)
+    os.environ.setdefault(PRODUCER_ENV["model_lineage"], TEST_MODEL_LINEAGE)
+
+
+def open_v6_epoch(
+    instance: Any,
+    keyset: V6TestKeyset,
+    *,
+    principals: tuple[str, ...] = ACTOR_PRINCIPALS,
+    project_instance_id: str | None = None,
+    trust_domain_id: str | None = None,
+    **scopes: Any,
+) -> Any:
+    """Steps 2+3 in one call: open the epoch and accept every actor principal.
+
+    This is the shape the epoch-blocked fixture migration needs — one line per
+    fixture instead of the ~25 lines each of the 25 in-memory files (and their
+    Postgres siblings) would otherwise open-code. Returns the genesis write.
+
+    ``principals`` deliberately defaults to ``ACTOR_PRINCIPALS`` rather than "every
+    key in the keyset": a helper that accepted every key on file would be blanket
+    authorisation, which is the §5.11 property the writer exists to enforce. WI-287's
+    ``test_an_unaccepted_principal_is_still_refused_after_open_v6_epoch`` pins that.
+
+    ``trust_domain_id`` is passed through for the case where the project's chain has
+    to agree with an *external* trust-log chain on the domain (``TRUST-DOMAIN.md``
+    §5.2 — the trust log is a separate project chain, so the two only agree by
+    reference). Also sets the process-level producer environment, because the legacy
+    funnel reads it from there.
+    """
+
+    set_v6_producer_env()
+    genesis = write_test_genesis(
+        instance,
+        keyset,
+        project_instance_id=project_instance_id,
+        trust_domain_id=trust_domain_id,
+    )
+    for principal_id in principals:
+        if principal_id == BOOTSTRAP_PRINCIPAL:
+            continue
+        accept_key(instance, keyset, genesis, principal_id, **scopes)
     return genesis
 
 
@@ -380,8 +500,14 @@ __all__ = [
     "VECTOR_PATH",
     "TestKey",
     "V6TestKeyset",
+    "accept_key",
     "acceptance_payload",
     "genesis_envelope",
     "make_v6_keyset",
     "open_v6_epoch",
+    "project_identity_of",
+    "register_test_workflow",
+    "set_v6_producer_env",
+    "v6_producer",
+    "write_test_genesis",
 ]

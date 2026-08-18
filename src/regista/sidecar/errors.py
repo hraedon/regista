@@ -143,6 +143,11 @@ _STATUS_MAP: dict[str, int] = {
     # 403: the key's acceptance was revoked. An authorization decision, not a
     # missing referent — which is why it is not 409 like KEY_BINDING_UNRESOLVED.
     ErrorCode.KEY_ACCEPTANCE_REVOKED: 403,
+    # 500: the in-memory v6 parity boundary (WI-287). A sidecar never runs on the
+    # in-memory backend, so reaching this through HTTP means the deployment is
+    # misconfigured — a server fault the caller cannot fix by reformatting, and
+    # emphatically not a 409 the caller might retry into existence.
+    ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY: 500,
 }
 
 

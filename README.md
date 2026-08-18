@@ -75,8 +75,14 @@ sub = Regista.create_project(
 genesis = sub.write_genesis(genesis_envelope, gate_passed=True)
 assert sub.read_genesis().event_hash == genesis.event_hash
 
-# InMemoryRegista remains a legacy-only test backend and fails closed in the
-# clean epoch until it gains an equivalent v6 genesis implementation.
+# InMemoryRegista now has that equivalent v6 genesis implementation (WI-287):
+# it opens an epoch with the same code path, so `write_genesis` / `read_genesis`
+# work in memory too. What it does NOT provide is the Postgres-only half —
+# locking, rollback, persistence and concurrency (SUITE-RECONCILIATION.md
+# §2.3(a)) — and reaching for those is refused by name
+# (PARITY_BOUNDARY_POSTGRES_ONLY), never faked. An in-memory pass therefore
+# never satisfies a Postgres-gated acceptance criterion. Its *legacy* append
+# APIs stay refused on both sides of genesis, exactly as Postgres's are.
 
 # The legacy operation examples below document the historical API; legacy
 # writers are refused on the clean baseline before and after genesis.

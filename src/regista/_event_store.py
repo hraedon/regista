@@ -4,7 +4,7 @@ import dataclasses
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, runtime_checkable
 
 from ._connection import DictConn
 from ._contract import (
@@ -23,6 +23,9 @@ from ._keys import KeySet
 from ._signing import sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._in_memory_v6 import InMemoryV6ConnectionManager, InMemoryV6Rows
 
 _DUMMY_KEY_ID = "in-memory"
 _DUMMY_SIG = b"\x00" * 32
@@ -303,6 +306,15 @@ class InMemoryEventStore:
     `_global_chain_head` / `_next_global_seq`. Concurrent use from multiple
     threads can therefore still produce the genesis race that migration 035
     closes for Postgres. Do not use InMemoryRegista from multiple threads.
+
+    Since WI-287 this store also backs a real v6 epoch: `v6_rows` holds
+    `project_identity` and the chain-head sentinel, and `_in_memory_v6` exposes
+    them through a connection-shaped facade so `_genesis` and `_v6_writer` run
+    unmodified over them. The single-threaded contract above is exactly the half
+    of `SUITE-RECONCILIATION.md` §2.3(a) that stays Postgres-only — locking,
+    rollback, persistence and concurrency are refused by name
+    (`PARITY_BOUNDARY_POSTGRES_ONLY`) rather than faked, so an in-memory pass
+    cannot satisfy a Postgres-gated acceptance criterion.
     """
 
     def __init__(self) -> None:
@@ -313,39 +325,198 @@ class InMemoryEventStore:
         self._next_global_seq: int = 1
         self._global_seq_by_event_id: dict[uuid.UUID, int] = {}
         self._global_chain_head: bytes | None = None
+        self._v6_rows: InMemoryV6Rows | None = None
+        self._key_set: KeySet | None = None
 
     def bind(self, work_items: dict[uuid.UUID, dict[str, Any]]) -> None:
         self._work_items = work_items
 
+    # -- v6 epoch (WI-287 / SUITE-RECONCILIATION.md §2.3(a)) ----------------
+
+    @property
+    def v6_rows(self) -> InMemoryV6Rows:
+        """The v6 relations (``project_identity``, ``event_chain_head``).
+
+        Created on first use rather than in ``__init__`` so a legacy-only
+        in-memory store carries no v6 state at all, and so importing the v6
+        facade stays lazy.
+        """
+        if self._v6_rows is None:
+            from ._in_memory_v6 import InMemoryV6Rows
+
+            self._v6_rows = InMemoryV6Rows(self)
+        return self._v6_rows
+
+    def v6_epoch_open(self) -> bool:
+        """True once an in-memory v6 genesis has recorded ``project_identity``.
+
+        A **method**, not a property, because ``EventStore`` declares it as one and
+        the legacy funnel calls ``store.v6_epoch_open()``. The two branches of this
+        work were written independently — P1.7 declared the protocol member, WI-287
+        implemented the state behind it as a property — and a property under a
+        method-shaped protocol is not a type error at either call site: the funnel's
+        ``store.v6_epoch_open()`` would call the *bool*, and the internal
+        ``if self.v6_epoch_open`` would test a bound method for truthiness, which is
+        always true. Both were observed on the merge. One shape, asserted by
+        ``TestInMemoryGenesis`` and ``TestParityBoundary``.
+        """
+        return self._v6_rows is not None and self._v6_rows.project_identity is not None
+
+    @property
+    def v6_manager(self) -> InMemoryV6ConnectionManager:
+        """A connection manager over this store's v6 relations.
+
+        Stateless over ``v6_rows`` (the state lives there), so the handle's ``_mgr``
+        and this one are interchangeable views of the same relations rather than two
+        competing transaction scopes.
+        """
+        from ._in_memory_v6 import InMemoryV6ConnectionManager
+
+        return InMemoryV6ConnectionManager(self.v6_rows)
+
+    def all_events(self) -> list[Event]:
+        """Every stored event, for the v6 row projection."""
+        return [event for bucket in self.events.values() for event in bucket]
+
+    def append_v6_row(self, event: Event) -> int:
+        """Store one v6 event and return its assigned ``global_seq``.
+
+        Deliberately separate from :meth:`append`, which advances the global
+        chain head with the **v5** ``sha256(envelope || signature)`` formula. A v6
+        append's head is ``compute_v6_event_hash`` and is advanced explicitly by
+        the writer through ``_advance_global_chain_head``; reusing :meth:`append`
+        would silently fork the chain at event 2 while every row still looked
+        well-formed — the exact failure ``TestPostgresOnly`` pins for Postgres.
+        """
+        seq = self._next_global_seq
+        self._next_global_seq += 1
+        event = dataclasses.replace(event, global_seq=seq)
+        self.events.setdefault(event.work_item_id, []).append(event)
+        self.event_id_index[event.event_id] = event
+        self._global_seq_by_event_id[event.event_id] = seq
+        wi = self._work_items.get(event.work_item_id)
+        if wi is not None:
+            wi["last_event_seq"] = event.event_seq
+            wi["last_event_at"] = event.timestamp
+            wi["next_event_seq"] = event.event_seq + 1
+        else:
+            ent = self._entity_seqs.setdefault(
+                (event.entity_kind, event.work_item_id),
+                {"next_event_seq": 1, "last_event_seq": 0},
+            )
+            ent["last_event_seq"] = event.event_seq
+            ent["next_event_seq"] = event.event_seq + 1
+        return seq
+
     def lock_global_chain_head(self) -> bytes | None:
         return self._global_chain_head
 
-    def admit_legacy_append(self) -> bytes | None:
+    def _refuse_legacy_append(self) -> NoReturn:
+        """Mirror ``_genesis.check_legacy_append``: refuse on BOTH sides of genesis.
+
+        The two doors are exclusive on this backend for the same reason they are
+        on Postgres (``EPOCH-RESET.md`` §5.1): before genesis a legacy append has
+        no epoch to belong to, and after genesis it would create a silent v5/v6
+        mixed region. The pre-genesis code and message are unchanged from the
+        original unconditional refusal, because the epoch-blocked manifest pins
+        that exact refusal form for 217 nodes (``SUITE-RECONCILIATION.md`` §2.1;
+        217 is the causally-measured figure — see NOTES-WI287.md §4)
+        and a changed form must be a triage, not a quiet swap.
+        """
+        if self.v6_epoch_open():
+            raise RegistaError(
+                ErrorCode.V6_EPOCH_OPEN,
+                "in-memory legacy append refused: legacy event writers cannot "
+                "extend the opened v6 epoch",
+                detail={"writer": "in_memory_event_store.append"},
+            )
         raise RegistaError(
             ErrorCode.GENESIS_REQUIRED,
             "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
         )
+
+    def admit_legacy_append(self) -> bytes | None:
+        self._refuse_legacy_append()
 
     def check_legacy_append(self) -> None:
-        raise RegistaError(
-            ErrorCode.GENESIS_REQUIRED,
-            "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
-        )
+        self._refuse_legacy_append()
 
-    def v6_epoch_open(self) -> bool:
-        # Always False, so the append falls through to check_legacy_append's
-        # GENESIS_REQUIRED — the recorded failure form for every in-memory manifest
-        # node. In-memory v6 parity is WI-287 (SUITE-RECONCILIATION.md §2.3 D2), and
-        # returning True here without it would claim a capability this backend does
-        # not have.
-        return False
+    def bind_keys(self, key_set: KeySet | None) -> None:
+        """Publish the handle's keyset to the store, as the Postgres store carries one.
+
+        A v6 append must be signed, and :meth:`append_v6` is reached through the
+        backend-agnostic funnel, which passes ``key_set`` to the *legacy* path only.
+        Rather than widen the ``EventStore.append_v6`` signature (and hand Postgres a
+        keyset it would ignore in favour of its own), the in-memory store holds the
+        same reference its handle does — which is also what makes
+        ``instance._keys`` and the store agree by construction rather than by luck.
+        """
+        self._key_set = key_set
 
     def append_v6(self, request: V6AppendRequest) -> Event:
-        raise RegistaError(
-            ErrorCode.GENESIS_REQUIRED,
-            "in-memory v6 append refused: this backend has no v6 implementation yet "
-            "(WI-287 / SUITE-RECONCILIATION.md §2.3 decision D2)",
+        """Route a legacy-shaped append through the real v6 writer, in memory.
+
+        Mirrors ``PostgresEventStore.append_v6`` step for step, and for the same
+        reasons: the idempotency and ``expected_event_seq`` preflights run *before*
+        any key material is touched, so a duplicate append is answered identically
+        on both backends. The writer itself is the shared
+        ``_v6_writer.append_v6_event`` over the ``_in_memory_v6`` facade — there is
+        no second implementation of any admission gate, key binding or chain link.
+        """
+        from ._in_mem_genesis import _as_conn
+        from ._v6_writer import append_v6_event, resolve_producer
+
+        if self._key_set is None:
+            raise RegistaError(
+                ErrorCode.GENESIS_INVALID,
+                "in-memory v6 append refused: this store has no keyset, and a v6 "
+                "event must be signed by an Ed25519 actor-role key bound to "
+                "actor.principal_id (construct InMemoryRegista with a key path)",
+            )
+
+        existing_evt = self.find_by_event_id(request.event_id)
+        _idem_payload = None if request.transition in _RESERVED_TRANSITIONS else request.payload
+        existing = check_idempotency(
+            existing_evt,
+            request.actor_id,
+            request.transition,
+            request.work_item_id,
+            payload=_idem_payload,
         )
+        if existing is not None:
+            return existing
+        if request.expected_event_seq is not None:
+            check_expected_seq(
+                self.allocate_seq(request.work_item_id, entity_kind=request.entity_kind),
+                request.expected_event_seq,
+            )
+        validate_actor_metadata(request.actor_metadata)
+        validate_entity_kind(request.entity_kind)
+
+        with self.v6_manager.transaction() as conn:
+            append_v6_event(
+                _as_conn(conn),
+                self._key_set,
+                entity_kind=request.entity_kind,
+                entity_id=request.work_item_id,
+                transition=request.transition,
+                actor_id=request.actor_id,
+                actor_kind=request.actor_kind,
+                producer=resolve_producer(),
+                payload=request.payload,
+                actor_metadata=request.actor_metadata,
+                event_id=request.event_id,
+                key_id=request.key_id,
+                workflow_name=request.workflow_name,
+                workflow_version=request.workflow_version,
+            )
+        appended = self.find_by_event_id(request.event_id)
+        if appended is None:
+            raise RegistaError(
+                ErrorCode.GENESIS_INVALID,
+                "the in-memory v6 append did not produce a readable event row",
+            )
+        return appended
 
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
         if entity_kind == "work_item":

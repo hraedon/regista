@@ -1248,7 +1248,15 @@ class TestLegacyFunnelRouting:
         assert count["n"] == 1
 
     def test_the_in_memory_backend_still_reports_the_epoch_closed(self):
-        """WI-287's tranche stays honest: no v6 claim without a v6 implementation."""
+        """A store with no genesis has no epoch, on the in-memory backend too.
+
+        Originally this pinned "no v6 claim without a v6 implementation" while D2 was
+        unimplemented. WI-287 implemented it, so the *reason* changed but the
+        assertion did not: a bare ``InMemoryEventStore`` has written no genesis, so
+        ``v6_epoch_open()`` is False and the legacy door refuses with the manifest's
+        recorded ``GENESIS_REQUIRED`` form — which is what keeps the 217 in-memory
+        manifest entries true until their fixture is migrated.
+        """
 
         from regista._event_store import InMemoryEventStore
 
