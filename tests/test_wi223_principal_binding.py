@@ -333,7 +333,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223prov{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223prov{uuid.uuid4().hex[:8]}"
         project_a = f"wi223_pa_{uuid.uuid4().hex[:8]}"
         project_b = f"wi223_pb_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
@@ -383,7 +383,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223reuse{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223reuse{uuid.uuid4().hex[:8]}"
         project_a = f"wi223_ra_{uuid.uuid4().hex[:8]}"
         project_b = f"wi223_rb_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
@@ -450,7 +450,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223idem{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223idem{uuid.uuid4().hex[:8]}"
         project = f"wi223_pi_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
         key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
@@ -593,7 +593,7 @@ class TestDoctorSeesTheCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223dr{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223dr{uuid.uuid4().hex[:8]}"
         project = f"wi223_dr_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
         key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))

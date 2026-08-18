@@ -232,19 +232,28 @@ def _provision_one(
 
 
 def _validate_principal_id(principal_id: str) -> str:
-    import re
-    if not re.match(r"^[a-zA-Z0-9._-]+$", principal_id):
-        raise RegistaError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"Invalid principal_id {principal_id!r}: must be alphanumeric, "
-            "dot, hyphen, or underscore only",
-        )
-    if len(principal_id) > 256:
-        raise RegistaError(
-            ErrorCode.INVALID_ARGUMENT,
-            "principal_id must be at most 256 characters",
-        )
-    return principal_id
+    """Enforce the canonical §2.1 grammar at enrolment. **The 0.6.0 inversion.**
+
+    Before P2.3 this function was regista's *only* principal-id validator and it accepted
+    only the ASCII alphanumeric-dot-hyphen-underscore class — rejecting the colon — so the
+    canonical `kind:subject` grammar could not be enrolled at all while `append` took
+    `actor_id` unvalidated. That is the mechanical crux WI-055 identified; the exact
+    superseded pattern is quoted in `TRUST-DOMAIN.md` §2.4 convention 2, deliberately not
+    repeated here so that `regista._principals` remains the only place in the package where
+    a principal-id pattern is written down. 0.6.0 inverts it: canonical ids are
+    accepted here, and the legacy bare name is refused with a named error that points at
+    the §2.5 alias path.
+
+    Enrolment is in the §2.7 **always-strict** column, not the cutover-gated one: a
+    project's cutover does not change who may be *created*, and under the epoch reset
+    every new store is v6-from-genesis anyway. Legacy principals stay eligible for
+    rotation and revocation after enrolment goes strict (§2.7) — those paths do not call
+    this function, deliberately, because "a legacy principal that can no longer be revoked
+    is a worse outcome than a legacy principal that exists".
+    """
+    from ._principals import validate_principal_id
+
+    return validate_principal_id(principal_id)
 
 
 def _asymmetric_schemes() -> frozenset[str]:

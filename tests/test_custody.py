@@ -319,7 +319,7 @@ class TestProvisionPrincipalBackendAware:
         project, key_file = project_with_keys
         principals_dir = tmp_path / "principals"
         result = provision_principal(
-            DSN, project, "alice",
+            DSN, project, "agent:alice",
             hmac_key_path=str(key_file),
             private_key_dir=str(principals_dir),
             secret_backend="file",
@@ -331,12 +331,12 @@ class TestProvisionPrincipalBackendAware:
         key_data = json.loads(key_file.read_text())
         entry = next(
             k for k in key_data["keys"]
-            if k.get("principal_id") == "alice"
+            if k.get("principal_id") == "agent:alice"
         )
         assert entry["secret_ref"].startswith("file:")
         assert "encoding" not in entry
 
-        priv_path = principals_dir / "alice_ed25519.key"
+        priv_path = principals_dir / "agent:alice_ed25519.key"
         priv_bytes = priv_path.read_bytes()
         pub_b64 = entry["public_key"]
         pub_bytes = base64.b64decode(pub_b64)
@@ -350,7 +350,7 @@ class TestProvisionPrincipalBackendAware:
         principals_dir.mkdir()
 
         result = provision_principal(
-            DSN, project, "bob",
+            DSN, project, "agent:bob",
             hmac_key_path=str(key_file),
             private_key_dir=str(principals_dir),
             secret_backend="vault",
@@ -367,7 +367,7 @@ class TestProvisionPrincipalBackendAware:
         key_data = json.loads(key_file.read_text())
         entry = next(
             k for k in key_data["keys"]
-            if k.get("principal_id") == "bob"
+            if k.get("principal_id") == "agent:bob"
         )
         assert entry["secret_ref"].startswith("vault:")
         assert entry.get("encoding") == "base64"
@@ -386,7 +386,7 @@ class TestProvisionPrincipalBackendAware:
 
         with pytest.raises(RegistaError) as exc:
             provision_principal(
-                DSN, project, "carol",
+                DSN, project, "agent:carol",
                 hmac_key_path=str(key_file),
                 private_key_dir=str(principals_dir),
                 secret_backend="operator",
@@ -399,7 +399,7 @@ class TestProvisionPrincipalBackendAware:
     def test_dry_run_reports_backend(self, project_with_keys, tmp_path):
         project, key_file = project_with_keys
         result = provision_principal(
-            DSN, project, "dave",
+            DSN, project, "agent:dave",
             hmac_key_path=str(key_file),
             secret_backend="vault",
             dry_run=True,

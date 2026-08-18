@@ -337,6 +337,15 @@ class TestKeyRotationHistoricalVerification:
 
 class TestPathTraversal:
     def test_provision_principal_rejects_path_traversal(self, tmp_path):
+        """A principal id may never become a path that escapes the custody directory.
+
+        The refusal *code* changed with P2.3 (WI-294): the pre-0.6.0 validator answered
+        ``INVALID_ARGUMENT`` for anything outside the ASCII
+        alphanumeric-dot-hyphen-underscore class, and the canonical §2.1 grammar answers
+        ``PRINCIPAL_ID_UNGRAMMATICAL`` for the same input (no ``kind:`` prefix, and ``/`` is
+        not a bare-name character). The *security property* is unchanged and is asserted
+        below; the second case is new coverage the inversion made necessary.
+        """
         from regista._provision import provision_principal
         project = f"prov_{uuid.uuid4().hex[:8]}"
         from regista.testing import drop_project_schema
@@ -348,12 +357,128 @@ class TestPathTraversal:
                     DSN, project, "../../../etc/cron.d/evil",
                     hmac_key_path=str(tmp_path / "keys.json"),
                 )
-            assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+            assert exc_info.value.code == ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL
+            assert exc_info.value.detail["reason"] == "not_kind_colon_subject"
         finally:
             drop_project_schema(DSN, project)
             import psycopg
             with psycopg.connect(DSN, autocommit=True) as conn:
                 conn.execute(f'DROP ROLE IF EXISTS "regista_{project}"')
+
+    def test_a_canonical_principal_id_can_never_escape_the_custody_directory(self, tmp_path):
+        """The vector the enrolment inversion newly reaches.
+
+        ``TRUST-DOMAIN.md`` §2.1's subject class includes ``/`` (``service:idp:tenant-a/svc-7``
+        is a stated legal example), so ``agent:a/../../../etc/cron.d/evil`` is a *grammatically
+        canonical* principal id. Before the inversion the validator rejected the colon, so no
+        id containing ``/`` could reach ``_custody.build_ref`` and its
+        ``key_dir / f"{principal_id}_ed25519.key"`` was safe by accident. It is now safe on
+        purpose: a path-bearing id falls back to the §2.2 derived ``rp-<32 hex>`` name.
+        """
+        from regista._custody import build_ref
+
+        key_dir = tmp_path / "principals"
+        for principal_id in (
+            "agent:a/../../../etc/cron.d/evil",
+            "service:idp:tenant-a/svc-7",
+            "agent:x/../../y",
+        ):
+            ref = build_ref("file", principal_id, private_key_dir=str(key_dir))
+            written = Path(ref.removeprefix("file:")).resolve()
+            assert written.parent == key_dir.resolve(), (
+                f"{principal_id!r} escaped the custody directory: {written}"
+            )
+            assert written.name.startswith("rp-"), written.name
+
+        # A legacy bare name keeps its historical filename, so no existing secret_ref is
+        # invalidated by the guard.
+        legacy = build_ref("file", "mvmcc03-agent", private_key_dir=str(key_dir))
+        assert legacy == f"file:{key_dir / 'mvmcc03-agent_ed25519.key'}"
+
+        # The derived name is reversible through the §2.2 lookup verb, so the KV/disk tree
+        # stays auditable by hand.
+        from regista._principals import resolve_backend_name
+
+        ref = build_ref("file", "service:idp:tenant-a/svc-7", private_key_dir=str(key_dir))
+        derived = Path(ref.removeprefix("file:")).name.removesuffix("_ed25519.key")
+        assert resolve_backend_name(derived, ["service:idp:tenant-a/svc-7"]) == (
+            "service:idp:tenant-a/svc-7"
+        )
+
+    def test_a_maximum_length_canonical_id_enrolls_instead_of_raising_oserror(self, tmp_path):
+        """``service:`` + a 247-character subject is the *longest legal* §2.1 principal id.
+
+        Its direct filename is 267 bytes, over ``NAME_MAX`` (255), and
+        ``_secrets.FileProvider.store`` opens ``<name>.tmp`` — 271 bytes. Before the length
+        condition in ``_custody._contained_key_path``, that surfaced as a bare
+        ``OSError: [Errno 36] File name too long`` propagating **untyped** out of
+        ``store_private_key`` and therefore out of ``provision_principal`` /
+        ``enroll_principal``: an always-strict boundary answering a legal input with an
+        unhandled OS exception. It now routes to the §2.2 derived name and simply works.
+        """
+        from regista._custody import store_private_key
+        from regista._principals import backend_name, resolve_backend_name
+
+        principal_id = "service:" + "a" * 247
+        assert len(principal_id) == 255  # §2.1's maximum
+        assert len(f"{principal_id}_ed25519.key".encode()) == 267  # over NAME_MAX
+
+        key_dir = tmp_path / "principals"
+        result = store_private_key(
+            backend="file", principal_id=principal_id, private_key_dir=str(key_dir)
+        )
+        written = Path(result.secret_ref.removeprefix("file:"))
+        assert written.is_file()
+        assert written.parent == key_dir
+        assert written.name == f"{backend_name(principal_id)}_ed25519.key"
+        assert len(written.name.encode()) < 255
+
+        # And it is reversible, so the operator can still tell whose key this is.
+        derived = written.name.removesuffix("_ed25519.key")
+        assert resolve_backend_name(derived, [principal_id]) == principal_id
+
+    def test_the_length_cutover_matches_what_was_ever_writable(self, tmp_path):
+        """The length condition orphans no existing secret.
+
+        Its budget is exactly the one ``FileProvider`` has always been bound by —
+        ``NAME_MAX`` minus the ``.tmp`` reserve — so an id that now routes to the derived
+        name is precisely an id whose direct write would previously have failed with
+        ``ENAMETOOLONG``. There is no id that used to get a writable direct filename and
+        now gets a different one.
+        """
+        import os
+
+        from regista._custody import (
+            _FILENAME_SUFFIX_RESERVE,
+            _MAX_FILENAME_BYTES,
+            build_ref,
+        )
+
+        key_dir = tmp_path / "principals"
+        key_dir.mkdir()
+        assert _MAX_FILENAME_BYTES == 255
+        assert _FILENAME_SUFFIX_RESERVE == len(".tmp")
+        assert os.pathconf(str(key_dir), "PC_NAME_MAX") == _MAX_FILENAME_BYTES
+
+        budget = _MAX_FILENAME_BYTES - _FILENAME_SUFFIX_RESERVE
+        suffix = len("_ed25519.key")
+        longest_direct = "a" * (budget - suffix)  # a legacy bare name, path-safe
+        assert len(f"{longest_direct}_ed25519.key".encode()) == budget
+
+        # At the budget: still the historical direct name, and genuinely creatable.
+        ref = build_ref("file", longest_direct, private_key_dir=str(key_dir))
+        assert Path(ref.removeprefix("file:")).name == f"{longest_direct}_ed25519.key"
+        probe = key_dir / f"{longest_direct}_ed25519.key.tmp"
+        probe.write_bytes(b"x")  # proves the kernel accepts the tmp name too
+        probe.unlink()
+
+        # One byte over: routes to the derived name, and the direct name it declined would
+        # in fact have been unwritable.
+        one_over = longest_direct + "a"
+        ref = build_ref("file", one_over, private_key_dir=str(key_dir))
+        assert Path(ref.removeprefix("file:")).name.startswith("rp-")
+        with pytest.raises(OSError, match="File name too long"):
+            (key_dir / f"{one_over}_ed25519.key.tmp").write_bytes(b"x")
 
 
 class TestReplayPrincipalBinding:

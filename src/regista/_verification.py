@@ -45,7 +45,7 @@ import math
 import re
 import struct
 import uuid as _uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -54,6 +54,22 @@ from uuid import UUID
 
 from ._jcs import canonicalize
 from ._lineage import MODEL_LINEAGE_FAMILIES
+
+# TRUST-DOMAIN.md §2.6 reporting vocabulary and the single canonical-grammar
+# implementation. `_principals` is pure (hashlib/re/unicodedata) and imports nothing from
+# regista but `_errors`, so this is safe at module scope. Note what is *absent*:
+# `_principal_alias` is never imported here or anywhere a binding check can reach — §2.5
+# requires that "no verifier code path may load aliases before the binding check", and
+# criterion 21 is proven structurally by that absence
+# (`tests/test_p23_principal_binding_isolation.py`).
+from ._principals import (
+    IdentityConsistency,
+    MappingStatus,
+    classify_principal_id,
+    identity_consistency,
+    mapping_status,
+    principal_id_kind,
+)
 
 __all__ = [
     "V6_ACTOR_KEYS",
@@ -221,7 +237,9 @@ _V6_BOOTSTRAP_TRANSITIONS = frozenset(
         "project_initialized",
     }
 )
-_V6_PRINCIPAL_RE = re.compile(r"^(?:human|agent|service):[A-Za-z0-9._~:/-]+$")
+# The canonical principal grammar formerly had a second copy here. It now lives in
+# `regista._principals` (TRUST-DOMAIN.md §2.1) and `_v6_require_principal_id` delegates —
+# two implementations of a grammar are two grammars.
 _V6_OCCURRED_AT_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
 )
@@ -296,22 +314,26 @@ def _v6_require_digest(value: Any, path: str, *, nullable: bool = False) -> None
 
 
 def _v6_require_principal_id(value: Any) -> None:
+    """Enforce the §2.1 canonical grammar on a v6 envelope's ``actor.principal_id``.
+
+    P2.3 replaced a second, hand-rolled copy of the grammar here with a delegation to
+    ``regista._principals``, which is now the single implementation. The rules checked are
+    identical (closed lowercase kinds, subject = everything after the first colon, 1..247
+    subject chars from the §2.1 class, no ``:.-_/`` at either edge, ASCII, ≤ 256 bytes) plus
+    two the local copy omitted: the NFC assertion, and the named ``key:*`` refusal.
+
+    This is *not* a §2.7 "Verification … Never" violation. It is v6 **schema** validation:
+    a v6 envelope exists only post-cutover, so its actor is held to the post-cutover
+    standard. Legacy (v1-v5) rows never reach this function — they are reconciled through
+    ``_reconcile``, which compares strings and validates no grammar.
+    """
     _v6_require_string(value, "actor.principal_id", non_empty=True, max_length=255)
+    classification = classify_principal_id(value)
     _v6_require(
-        _V6_PRINCIPAL_RE.fullmatch(value) is not None,
-        "actor.principal_id must use the canonical kind:subject grammar",
+        classification.canonical,
+        f"actor.principal_id must use the canonical kind:subject grammar "
+        f"(TRUST-DOMAIN.md §2.1): {classification.reason}",
     )
-    subject = value.split(":", 1)[1]
-    _v6_require(
-        1 <= len(subject) <= 247
-        and subject[0] not in ":.-_/"
-        and subject[-1] not in ":.-_/",
-        "actor.principal_id subject has invalid length or boundary characters",
-    )
-    try:
-        value.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise _v6_error("actor.principal_id must be ASCII") from exc
 
 
 def _v6_validate_json_value(value: Any, path: str, depth: int) -> None:
@@ -1018,6 +1040,31 @@ class VerificationResult:
     principal_id: str | None = None
     principal_binding_verified: bool = False
 
+    # --- identity consistency (TRUST-DOMAIN.md §2.6) ---------------------
+    # Reporting only. §2.6 requires the conflict state be *computed and surfaced*, and
+    # §2.7's last row forbids verification from refusing on grammar, so none of these four
+    # fields participates in any verdict. `actor_kind` is in `unsigned_fields` for every
+    # envelope below v5 (see `_VERSION_UNSIGNED`), which is what makes it a reporting label
+    # there and never security-relevant evidence; a consumer reading `actor_kind` for a
+    # security decision must assert `"actor_kind" in result.authenticated_fields`.
+    #: The canonical kind prefix, or ``None`` for a bare legacy id (§2.6).
+    actor_id_kind: str | None = None
+    #: The row/envelope ``actor_kind`` field, echoed for the comparison's sake (§2.6).
+    actor_kind: str | None = None
+    identity_consistency: IdentityConsistency = IdentityConsistency.CONSISTENT
+    #: Whether a deliberate ``actor_id → principal_id`` assignment exists for this writer.
+    #: ``not_evaluated`` unless the caller supplied a mapping population.
+    actor_principal_mapping: MappingStatus = MappingStatus.NOT_EVALUATED
+
+    @property
+    def actor_kind_authenticated(self) -> bool:
+        """§2.6 ``actor_kind_authenticated``: ``False`` for every pre-v5 envelope.
+
+        Derived from the authoritative source — ``unsigned_fields`` — rather than stored,
+        so the two can never disagree.
+        """
+        return "actor_kind" in self.authenticated_fields
+
     # --- reconciliation -------------------------------------------------
     row_reconciled: bool = False
     mismatched_fields: tuple[FieldMismatch, ...] = ()
@@ -1099,6 +1146,12 @@ class VerificationResult:
             "trusted_key_id": self.trusted_key_id,
             "principal_id": self.principal_id,
             "principal_binding_verified": self.principal_binding_verified,
+            # TRUST-DOMAIN.md §2.6 — computed, not merely defined.
+            "actor_id_kind": self.actor_id_kind,
+            "actor_kind": self.actor_kind,
+            "identity_consistency": str(self.identity_consistency),
+            "actor_kind_authenticated": self.actor_kind_authenticated,
+            "actor_principal_mapping": str(self.actor_principal_mapping),
             "row_reconciled": self.row_reconciled,
             "mismatched_fields": [
                 {
@@ -2112,13 +2165,29 @@ def probe_absent_envelope(
     return AbsentEnvelopeProbe.INCONSISTENT
 
 
-def _base_kwargs(row: EventRow) -> dict[str, Any]:
+def _base_kwargs(
+    row: EventRow, *, mapped_actor_ids: Iterable[str] | None = None
+) -> dict[str, Any]:
+    """Fields present in *every* outcome, including the ones that authenticate nothing.
+
+    The §2.6 identity trio is computed here rather than at each construction site so no
+    outcome can be missing it — an ``UNVERIFIABLE`` keyless row still reports its actor's
+    grammar, which is exactly the case an operator most needs the label for.
+    """
     return {
         "event_id": row.event_id,
         "entity_kind": row.entity_kind,
         "entity_id": row.effective_entity_id,
         "global_seq": row.global_seq,
         "row_scheme_id": row.row_scheme_id,
+        "actor_id_kind": principal_id_kind(row.actor_id),
+        "actor_kind": row.actor_kind,
+        "identity_consistency": identity_consistency(
+            row.actor_id, row.actor_kind, mapped_actor_ids=mapped_actor_ids
+        ),
+        "actor_principal_mapping": mapping_status(
+            row.actor_id, mapped_actor_ids=mapped_actor_ids
+        ),
     }
 
 
@@ -2127,8 +2196,9 @@ def _verify_v6_row(
     envelope: Mapping[str, Any],
     *,
     keys: TrustedKeyResolver,
+    mapped_actor_ids: Iterable[str] | None = None,
 ) -> VerificationResult:
-    base = _base_kwargs(row)
+    base = _base_kwargs(row, mapped_actor_ids=mapped_actor_ids)
     signing = envelope["signing"]
     chain = envelope["chain"]
     unsigned = frozenset({"global_seq", "on_behalf_of", "work_item_id"})
@@ -2259,15 +2329,23 @@ def verify_event_strict(
     *,
     keys: TrustedKeyResolver,
     policy: VerificationPolicy = DEFAULT_POLICY,
+    mapped_actor_ids: Iterable[str] | None = None,
 ) -> VerificationResult:
     """Verify the stored envelope bytes, then reconcile the row against them.
 
     This is the only function in the tree that decides whether an event is
     authenticated. Any path that reimplements part of it is a bug.
+
+    ``mapped_actor_ids`` is the deliberate ``actor_id -> principal_id`` assignment
+    population (TRUST-DOMAIN.md §2 consequence 2), supplied by a caller that holds a
+    validated ``regista.actor-principal-mapping/v1`` document. It affects **reporting
+    only** — ``identity_consistency`` / ``actor_principal_mapping`` — and never a verdict.
+    Omit it and those fields say ``not_evaluated`` rather than claiming a mapping is
+    missing.
     """
     from ._signing_scheme import get_scheme, resolve_hash_function
 
-    base = _base_kwargs(row)
+    base = _base_kwargs(row, mapped_actor_ids=mapped_actor_ids)
 
     # (1) Never-signed row columns are reported unsigned in every outcome.
     unsigned: set[str] = set(_NEVER_SIGNED)
@@ -2387,7 +2465,9 @@ def verify_event_strict(
         )
 
     if version is EnvelopeVersion.V6:
-        return _verify_v6_row(row, envelope, keys=keys)
+        return _verify_v6_row(
+            row, envelope, keys=keys, mapped_actor_ids=mapped_actor_ids
+        )
 
     version_unsigned = unsigned | _VERSION_UNSIGNED[version]
 

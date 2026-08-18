@@ -135,7 +135,7 @@ class TestProvisionPrincipal:
         try:
             provision(DSN, [project])
             result = provision_principal(
-                DSN, project, "alice",
+                DSN, project, "agent:alice",
                 hmac_key_path=str(key_file),
                 private_key_dir=str(tmp_path / "principals"),
             )
@@ -146,13 +146,13 @@ class TestProvisionPrincipal:
             assert result.key_id.startswith("pk_")
             assert result.fingerprint.startswith("ed25519:sha256:")
 
-            priv_key_path = tmp_path / "principals" / "alice_ed25519.key"
+            priv_key_path = tmp_path / "principals" / "agent:alice_ed25519.key"
             assert priv_key_path.exists()
 
             key_data = json.loads(key_file.read_text())
             ed25519_entries = [
                 k for k in key_data["keys"]
-                if k.get("scheme") == "ed25519" and k.get("principal_id") == "alice"
+                if k.get("scheme") == "ed25519" and k.get("principal_id") == "agent:alice"
             ]
             assert len(ed25519_entries) == 1
             assert ed25519_entries[0]["status"] == "active"
@@ -173,12 +173,12 @@ class TestProvisionPrincipal:
         try:
             provision(DSN, [project])
             result1 = provision_principal(
-                DSN, project, "bob",
+                DSN, project, "agent:bob",
                 hmac_key_path=str(key_file),
                 private_key_dir=str(tmp_path / "principals"),
             )
             result2 = provision_principal(
-                DSN, project, "bob",
+                DSN, project, "agent:bob",
                 hmac_key_path=str(key_file),
                 private_key_dir=str(tmp_path / "principals"),
             )
@@ -199,7 +199,7 @@ class TestProvisionPrincipal:
         try:
             provision(DSN, [project])
             result = provision_principal(
-                DSN, project, "carol",
+                DSN, project, "agent:carol",
                 hmac_key_path=str(key_file),
                 dry_run=True,
             )

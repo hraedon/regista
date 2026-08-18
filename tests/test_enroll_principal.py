@@ -50,7 +50,7 @@ def enroll_instance(tmp_path):
 class TestEnrollPrincipal:
     def test_new_enrollment_issues_keypair_and_emits_event(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.test.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.test.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         result = sub.enroll_principal(
@@ -102,7 +102,7 @@ class TestEnrollPrincipal:
 
     def test_idempotent_re_enroll_no_duplicate_event(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.idem.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.idem.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         result1 = sub.enroll_principal(
@@ -130,7 +130,7 @@ class TestEnrollPrincipal:
         from regista._testing import raw_transaction
 
         sub = enroll_instance
-        principal_id = f"enroll.heal.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.heal.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         result1 = sub.enroll_principal(principal_id, private_key_dir=private_key_dir)
@@ -152,7 +152,7 @@ class TestEnrollPrincipal:
 
     def test_does_not_break_replay(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.replay.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.replay.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         sub.enroll_principal(principal_id, private_key_dir=private_key_dir)
@@ -163,7 +163,7 @@ class TestEnrollPrincipal:
 
     def test_enroll_principal_entity_id_stable(self, enroll_instance):
         sub = enroll_instance
-        principal_id = f"enroll.entity.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.entity.{uuid.uuid4().hex[:8]}"
         entity_id = principal_entity_id(principal_id)
 
         sub.enroll_principal(principal_id)
@@ -176,7 +176,7 @@ class TestEnrollPrincipal:
 class TestEnrollPrincipalCLI:
     def test_cli_enroll_principal(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.cli.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.cli.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         result = _run_cli(
@@ -200,7 +200,7 @@ class TestEnrollPrincipalCLI:
 
     def test_cli_enroll_idempotent(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.cli.idem.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll.cli.idem.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         _run_cli(
@@ -230,7 +230,7 @@ class TestEnrollPrincipalCLI:
 class TestProvisionPrincipalScheme:
     def test_provision_principal_returns_scheme(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"provision.scheme.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:provision.scheme.{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         result = provision_principal(
