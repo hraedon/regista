@@ -750,15 +750,17 @@ class TestRebuildAndTheSanctionedWriterIntersect:
         finally:
             sub.close()
 
-    def test_a_ceremony_written_row_would_be_reproduced_not_deleted(
+    def test_a_row_written_as_the_rebuild_derives_it_is_reproduced_not_deleted(
         self, trust_store,
     ):
-        """The destruction property, driven through the rebuild's real machinery.
+        """Applier-level: a §5.5-sourced row survives an applied rebuild.
 
-        Stores a §5.5 event of the kind the ceremony now emits, applies the row the
-        ceremony's applier would write, and asserts an applied rebuild reproduces it.
-        Before the fix the equivalent event carried a Plan-026 transition, the
-        rebuild replayed nothing, and this DELETE removed the row.
+        Honest scope (P2.2 review B1-prime): this hand-crafts the applier call with the
+        values the rebuild derives, so it proves "a row written the way the rebuild
+        derives it reproduces" — NOT "a row written by PrincipalLifecycle
+        reproduces". The latter is
+        ``test_the_ceremony_path_round_trips_byte_for_byte`` below, which drives
+        commit() itself and is the acceptance evidence.
         """
         from regista._principal_keys import (
             _apply_enrollment_projection,
@@ -892,3 +894,250 @@ class TestSourceEventHashShapeIsValidated:
                 )
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["reason"] == "source_event_hash_malformed"
+
+
+class TestCeremonyPathRoundTrip:
+    """The acceptance evidence for B1/B1-prime: drive ``commit()`` and rebuild it.
+
+    Regression for the P2.2 review's B1-prime finding. The round-trip test in the class
+    above hand-crafts the applier call, so it could not catch ``_commit_key`` reading
+    per-row values from different sources than the rebuild derives:
+
+    * ``trust_domain_id`` was never passed (row NULL vs the payload's real UUID),
+    * ``valid_from`` came from a second, later clock read than the payload's
+      ``not_before``,
+    * a revocation used the raw ``operation.reason`` while the payload carried one
+      mapped into the closed §5.7 set.
+
+    Each was a permanent ``field_mismatch``. This test drives the ceremony's actual
+    code path and asserts every compared column reproduces byte-for-byte.
+
+    **The append gate is bypassed deliberately, and only the gate.** ``commit()``
+    appends through the legacy writer, which P1.2 refuses on both sides of genesis
+    (``GENESIS_REQUIRED`` / ``V6_EPOCH_OPEN``) — that is P1.7's package. Stubbing the
+    two admission checks simulates the post-P1.7 writer so the writer/rebuild
+    contract is testable now, before P1.7 depends on it. Everything else — payload
+    construction, validation, the append, the appliers, the rebuild — is the real
+    code path.
+    """
+
+    def _project_with_identity(self, trust_store):
+        from regista import Regista
+
+        sub = Regista(DSN, trust_store.project, KEY_PATH)
+        with sub._mgr.transaction() as conn:
+            conn.execute(
+                "INSERT INTO project_identity (id, project_instance_id, "
+                "trust_domain_id, genesis_event_id, genesis_event_hash, "
+                "principal_id, key_id, scheme_id, key_fingerprint) "
+                "VALUES (TRUE, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [
+                    trust_store.project_instance_id,
+                    trust_store.trust_domain_id,
+                    str(uuid.uuid4()),
+                    b"\x00" * 32,
+                    "agent:genesis",
+                    "pk-genesis",
+                    "ed25519",
+                    "ed25519:sha256:" + "0" * 64,
+                ],
+            )
+        return sub
+
+    def _run_ceremony(self, sub, monkeypatch, *, reason="policy"):
+        """Full commit() with ONLY the P1.7 append gate stubbed out."""
+        import nacl.signing
+
+        from regista import _genesis as genesis_mod
+        from regista._event_store import PostgresEventStore
+        from regista.principal_lifecycle import (
+            Approval,
+            CustodyMode,
+            EnrollmentRequest,
+            PossessionProof,
+            PrincipalKind,
+            PrincipalLifecycle,
+            ProofFormat,
+        )
+
+        # Simulate the post-P1.7 writer: admission passes, chain head stays null.
+        monkeypatch.setattr(PostgresEventStore, "check_legacy_append", lambda self: None)
+        monkeypatch.setattr(
+            PostgresEventStore, "admit_legacy_append", lambda self: None
+        )
+        monkeypatch.setattr(genesis_mod, "check_legacy_append", lambda conn, *, writer: None)
+        monkeypatch.setattr(
+            genesis_mod, "admit_legacy_append", lambda conn, *, writer: None
+        )
+
+        private_key = nacl.signing.SigningKey.generate()
+        public_key = bytes(private_key.verify_key)
+        lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
+        request = EnrollmentRequest(
+            principal_id="agent:ceremony",
+            principal_kind=PrincipalKind.AGENT,
+            actor_id="human:requester",
+            public_key=public_key,
+            scheme="ed25519",
+            custody_mode=CustodyMode.FILE,
+            reason=reason,
+            requested_authority="root",
+            policy_version="v1",
+        )
+        operation = lifecycle.prepare_enrollment(request, idempotency_key="idem-rt")
+        challenge = lifecycle.issue_possession_challenge(operation.operation_id)
+        lifecycle.submit_possession(
+            operation.operation_id,
+            PossessionProof(
+                format=ProofFormat.SIGNATURE_V1,
+                challenge_id=challenge.challenge_id,
+                operation_id=challenge.operation_id,
+                operation_digest=operation.digest.value,
+                signature=private_key.sign(challenge.signing_bytes()).signature,
+            ),
+        )
+        lifecycle.record_approval(
+            operation.operation_id,
+            Approval(
+                approver_id="human:approver",
+                approver_kind="human",
+                approval_digest=operation.digest.value,
+            ),
+        )
+        receipt = lifecycle.commit(
+            operation.operation_id, expected_digest=operation.digest.value
+        )
+        return receipt, public_key
+
+    def test_the_ceremony_path_round_trips_byte_for_byte(
+        self, trust_store, monkeypatch,
+    ):
+        sub = self._project_with_identity(trust_store)
+        try:
+            receipt, public_key = self._run_ceremony(sub, monkeypatch)
+
+            before = _snapshot(trust_store)
+            assert len(before) == 1, "the ceremony must have written exactly one row"
+
+            # No divergence: the ceremony's row is what the rebuild derives.
+            report = check_projection_consistent(sub._mgr, project=sub.project)
+            assert report.consistent is True, (
+                "the ceremony's own row diverges from a rebuild of its own event: "
+                f"{[(d.kind, d.fields) for d in report.differences]}"
+            )
+            assert report.events_replayed == 1
+
+            # ...and an applied rebuild reproduces every compared column exactly.
+            rebuild_projection(sub._mgr, project=sub.project)
+            after = _snapshot(trust_store)
+            assert after == before, "an applied rebuild rewrote the ceremony's row"
+            assert receipt.key_id
+            assert before[0][3] == public_key  # public_key column
+        finally:
+            sub.close()
+
+    def test_the_ceremony_row_records_the_trust_domain(self, trust_store, monkeypatch):
+        """The column that was silently NULL while the payload carried the UUID."""
+        from regista._principal_keys import get_active_key
+
+        sub = self._project_with_identity(trust_store)
+        try:
+            self._run_ceremony(sub, monkeypatch)
+            entry = get_active_key(sub._mgr, "agent:ceremony")
+            assert entry.trust_domain_id == trust_store.trust_domain_id
+            assert entry.source_event_hash is not None
+            assert entry.provenance == "v6_sourced"
+        finally:
+            sub.close()
+
+    def test_the_ceremony_row_and_its_event_agree_on_valid_from(
+        self, trust_store, monkeypatch,
+    ):
+        """One clock read, not two: the row's valid_from IS the payload's not_before."""
+        import json as _json
+
+        from regista._principal_keys import get_active_key
+
+        sub = self._project_with_identity(trust_store)
+        try:
+            self._run_ceremony(sub, monkeypatch)
+            entry = get_active_key(sub._mgr, "agent:ceremony")
+            with psycopg.connect(trust_store.dsn, autocommit=True) as conn:
+                conn.execute(f'SET search_path TO "{trust_store.project}"')
+                row = conn.execute(
+                    "SELECT payload FROM events WHERE transition = %s",
+                    [PRINCIPAL_KEY_ENROLLED],
+                ).fetchone()
+            payload = row[0] if not isinstance(row[0], str) else _json.loads(row[0])
+            from regista._trust_log import parse_principal_key_enrolled
+
+            parsed = parse_principal_key_enrolled(payload)
+            assert entry.valid_from == parsed.not_before
+            assert entry.key_id == parsed.key.key_id
+            assert entry.registered_by == parsed.authorized_by.principal_id
+        finally:
+            sub.close()
+
+    def test_a_revocation_with_an_out_of_set_reason_round_trips(
+        self, trust_store, monkeypatch,
+    ):
+        """B1-prime item 3: the write path used the RAW reason, the payload a mapped one.
+
+        §5.7 closes the reason set, so ``_trust_log_payload`` maps anything outside
+        it to ``"unspecified"``. The write path used ``operation.reason`` verbatim, so
+        any out-of-set reason diverged on ``revoked_reason`` forever. Both sides now
+        take the mapped value from the payload.
+        """
+        from regista.principal_lifecycle import (
+            Approval,
+            PrincipalKind,
+            PrincipalLifecycle,
+            RevocationRequest,
+        )
+
+        sub = self._project_with_identity(trust_store)
+        try:
+            receipt, _public_key = self._run_ceremony(sub, monkeypatch)
+
+            lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
+            request = RevocationRequest(
+                principal_id="agent:ceremony",
+                principal_kind=PrincipalKind.AGENT,
+                actor_id="human:requester",
+                key_id=receipt.key_id,
+                # Deliberately NOT in the closed §5.7 set.
+                reason="operator-said-so",
+                requested_authority="root",
+                policy_version="v1",
+            )
+            operation = lifecycle.prepare_revocation(
+                request, idempotency_key="idem-rev"
+            )
+            lifecycle.record_approval(
+                operation.operation_id,
+                Approval(
+                    approver_id="human:approver",
+                    approver_kind="human",
+                    approval_digest=operation.digest.value,
+                ),
+            )
+            lifecycle.commit(
+                operation.operation_id, expected_digest=operation.digest.value
+            )
+
+            from regista._principal_keys import list_principal_keys
+
+            rows = list_principal_keys(sub._mgr, "agent:ceremony")
+            assert [r.status for r in rows] == ["revoked"]
+            # Mapped, on BOTH sides — not the raw "operator-said-so".
+            assert rows[0].revoked_reason == "unspecified"
+
+            before = _snapshot(trust_store)
+            report = check_projection_consistent(sub._mgr, project=sub.project)
+            assert report.consistent is True, (
+                f"{[(d.kind, d.fields) for d in report.differences]}"
+            )
+            rebuild_projection(sub._mgr, project=sub.project)
+            assert _snapshot(trust_store) == before
+        finally:
+            sub.close()

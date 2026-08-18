@@ -14,6 +14,13 @@
 -- Nullable: challenges issued before this migration have neither value, and a
 -- pre-genesis project has no trust domain at all. Null is "not recorded", never
 -- "empty string" — the JCS body distinguishes them.
+--
+-- IN-FLIGHT CHALLENGES ARE INVALIDATED, NOT DEGRADED. A challenge issued under v1
+-- framing and answered after this migration will fail possession verification: the
+-- client signed v1 bytes and the verifier now computes v2 bytes over an object with
+-- two additional fields. That is the correct outcome — a possession proof that
+-- verifies under either framing would mean the framing is not binding. Callers
+-- re-issue the challenge; nothing is silently accepted.
 
 ALTER TABLE lifecycle_challenges
     ADD COLUMN IF NOT EXISTS trust_domain_id uuid;

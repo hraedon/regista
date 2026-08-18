@@ -161,6 +161,13 @@ def _require_projection_schema(conn: DictConn, project: str) -> None:
         )
 
 
+def _is_v6_scheme(scheme_id: Any) -> bool:
+    """Whether ``scheme_id`` names an asymmetric (v6-epoch) signing scheme."""
+    from ._signing_scheme import asymmetric_scheme_ids
+
+    return isinstance(scheme_id, str) and scheme_id in set(asymmetric_scheme_ids())
+
+
 def _event_hash_text(row: Mapping[str, Any]) -> str | None:
     """``"sha256:" + hex`` of the event hash, or ``None`` when it cannot be computed.
 
@@ -171,17 +178,21 @@ def _event_hash_text(row: Mapping[str, Any]) -> str | None:
     an applied rebuild — be replaced by a row carrying a different provenance hash.
     That is the "invents rows" direction §5.9 warns about.
 
-    An Ed25519 event uses the domain-separated v6 construction. Anything else (an
-    HMAC-schemed lifecycle event in a pre-cutover store) uses the legacy
-    ``sha256(canonical_envelope || signature)`` head-hash form. Labelling a
+    An **asymmetric-schemed** event uses the domain-separated v6 construction;
+    anything else (an HMAC-schemed lifecycle event in a pre-cutover store) uses the
+    legacy ``sha256(canonical_envelope || signature)`` head-hash form. Labelling a
     legacy event with a v6-domain hash would be a false claim about which epoch
     produced it.
+
+    NB3 (P2.2 review): the test is scheme-class membership, not the ``"ed25519"``
+    literal, so the next asymmetric scheme added to the registry is classified v6
+    automatically instead of being silently mislabelled legacy.
     """
     envelope = row.get("canonical_envelope")
     signature = row.get("signature")
     if envelope is None or signature is None:
         return None
-    if row.get("scheme_id") == "ed25519":
+    if _is_v6_scheme(row.get("scheme_id")):
         from ._signing import compute_v6_event_hash
 
         return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()

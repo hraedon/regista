@@ -948,6 +948,7 @@ class PrincipalLifecycle:
                 operation,
                 source_event_hash=_lifecycle_event_hash(appended),
                 occurred_at=appended.timestamp,
+                payload=payload,
                 key_id=new_key_id,
             )
             now = self._now()
@@ -1431,6 +1432,14 @@ class PrincipalLifecycle:
             # threshold (Resolution 5 / D-8), which the online ceremony cannot
             # supply — so root_signatures is empty and a verifier will refuse it
             # until the ceremony collects them. Left visible rather than faked.
+            #
+            # NB4 (P2.2 review) — KNOWN WORKING STATE, recorded not hidden: a
+            # rotation emitted here is parse-valid but NOT verifiable. It will
+            # satisfy parse_principal_key_rotated and the §5.9 rebuild, and it will
+            # fail classify_rotation_authority (root_threshold_not_met) because no
+            # root signature is present. Collecting root signatures for a rotation
+            # is P1.7/Gate-2 wiring; until then a ceremony rotation must be treated
+            # as unauthorised for verification purposes.
             payload["dual_authorization"] = {
                 "old_key_signature": None,
                 "mode": "recovery",
@@ -1512,8 +1521,21 @@ class PrincipalLifecycle:
                 row = conn.execute(
                     "SELECT trust_domain_id FROM project_identity WHERE id IS TRUE"
                 ).fetchone()
-        except Exception:
+        except psycopg.errors.UndefinedTable:
+            # No project_identity relation at all: a pre-genesis schema. "Absent"
+            # is a real answer, and the append refuses right afterwards anyway.
             return None
+        except psycopg.Error as exc:
+            # NB1 (P2.2 review): a transient read FAILURE must not be swallowed into
+            # "no trust domain", because that silently skips §5.5 payload validation
+            # and would let an unvalidated event through once P1.7 permits the
+            # append. Absence and failure are different facts.
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_OPERATION_STATE,
+                "could not read project_identity to resolve the trust domain; "
+                "refusing rather than proceeding with an unvalidated payload "
+                f"({type(exc).__name__})",
+            ) from exc
         if row is None or row["trust_domain_id"] is None:
             return None
         return str(row["trust_domain_id"])
@@ -1545,56 +1567,76 @@ class PrincipalLifecycle:
         *,
         source_event_hash: str,
         occurred_at: datetime,
+        payload: Mapping[str, Any],
         key_id: str | None = None,
     ) -> PrincipalKeyEntry:
         """Apply the committed operation to the ``principal_keys`` projection.
-
-        ``key_id`` is the id minted in ``commit()`` and named in the appended event,
-        so the row and its source event agree on which key was created. Letting the
-        applier mint its own would make the row unreproducible from the event.
 
         ``source_event_hash`` is the hash of the signed lifecycle event appended
         immediately before this call, in the same transaction. The appliers require
         it (§5.9 rule 2), which is what makes the ordering — event first, then
         projection — structural rather than conventional.
+
+        **Every per-row value is single-sourced from ``payload``, parsed with the
+        same functions §5.9's rebuild uses** (P2.2 review B1-prime). Previously this
+        method read its own values: ``trust_domain_id`` was never passed (so the row
+        stored NULL while the payload carried the real UUID), ``valid_from`` came
+        from a second, later clock read than the payload's ``not_before``, and the
+        revocation used the raw ``operation.reason`` while the payload carried one
+        mapped into the closed §5.7 set. Each was a permanent ``field_mismatch``
+        against the rebuild — the same class B1 set out to close, displaced from
+        transitions to values.
+
+        The one column deliberately NOT taken from the payload is ``registered_at``,
+        which is the event's own ``occurred_at``. The rebuild reads it from the
+        stored row's ``timestamp``, so both sides take it from the event, not from
+        the payload — and the append is what assigns it.
         """
+        from ._trust_log import (
+            parse_principal_key_enrolled,
+            parse_principal_key_revoked,
+            parse_principal_key_rotated,
+        )
+
         if operation.operation_type is LifecycleOperationType.ENROLLMENT:
-            assert operation.public_key is not None
-            assert operation.scheme is not None
+            parsed = parse_principal_key_enrolled(payload)
             return _apply_enrollment_projection(
                 conn,
-                operation.principal_id,
-                operation.public_key,
-                operation.scheme,
+                parsed.principal_id,
+                parsed.key.public_key,
+                parsed.key.scheme_id,
                 source_event_hash=source_event_hash,
-                valid_from=occurred_at,
+                valid_from=parsed.not_before,
+                valid_to=parsed.not_after,
                 registered_at=occurred_at,
-                key_id=key_id,
-                registered_by=operation.actor_id,
+                key_id=parsed.key.key_id,
+                registered_by=parsed.authorized_by.principal_id,
+                trust_domain_id=parsed.trust_domain_id,
             )
         if operation.operation_type is LifecycleOperationType.ROTATION:
-            assert operation.public_key is not None
-            assert operation.scheme is not None
+            rotated = parse_principal_key_rotated(payload)
             return _apply_rotation_projection(
                 conn,
-                operation.principal_id,
-                operation.public_key,
-                operation.scheme,
+                rotated.principal_id,
+                rotated.key.public_key,
+                rotated.key.scheme_id,
                 source_event_hash=source_event_hash,
-                valid_from=occurred_at,
+                valid_from=rotated.not_before,
+                valid_to=rotated.not_after,
                 registered_at=occurred_at,
-                key_id=key_id,
-                registered_by=operation.actor_id,
+                key_id=rotated.key.key_id,
+                registered_by=rotated.authorized_by.principal_id,
+                trust_domain_id=rotated.trust_domain_id,
             )
         if operation.operation_type is LifecycleOperationType.REVOCATION:
-            assert operation.old_key_id is not None
+            revoked = parse_principal_key_revoked(payload)
             return _apply_revocation_projection(
                 conn,
-                operation.principal_id,
-                operation.old_key_id,
+                revoked.principal_id,
+                revoked.key_id,
                 source_event_hash=source_event_hash,
-                revoked_at=occurred_at,
-                reason=operation.reason,
+                revoked_at=revoked.revoked_at,
+                reason=revoked.reason,
             )
         assert_never(operation.operation_type)
 
@@ -2204,7 +2246,12 @@ def _lifecycle_event_hash(event: Any) -> str:
             "committed lifecycle event has no canonical envelope or signature, so the "
             "projection row would have no source event to name",
         )
-    if getattr(event, "scheme_id", None) == "ed25519":
+    # Scheme-class membership, matching _trust_projection._is_v6_scheme exactly
+    # (NB3). The two constructions must never diverge; keying both off the same
+    # predicate is what guarantees it.
+    from ._trust_projection import _is_v6_scheme
+
+    if _is_v6_scheme(getattr(event, "scheme_id", None)):
         from ._signing import compute_v6_event_hash
 
         return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
