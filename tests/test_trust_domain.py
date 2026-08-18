@@ -571,6 +571,96 @@ def test_countersignature_over_restricted_to_core_digest() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Unverified-section SHAPE is contract (P2.1 review adoption 2)
+#
+# 0.6.0 verifies neither countersignatures nor anchors cryptographically (§3.5),
+# and reports them as ``present_unverified``. That report is only meaningful over
+# entries that are *shaped* like the thing they claim to be: "present_unverified"
+# over a signature field holding "not base64" and a timestamp holding "whenever"
+# asserts the existence of a countersignature that is not one. The check deferred
+# in 0.6.0 is the cryptographic one, never the parse.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("signed_at", "sometime last tuesday", "malformed_value"),
+        ("signed_at", "2026-08-21T00:00:00Z", "malformed_value"),  # no microseconds
+        ("signed_at", "2026-08-21 00:00:00.000000Z", "malformed_value"),  # space, not T
+        ("signed_at", "2026-02-30T00:00:00.000000Z", "impossible_timestamp"),
+        ("signature", "this is not base64 at all!!", "malformed_base64"),
+        ("signature", base64.b64encode(b"\x01" * 63).decode("ascii"), "wrong_signature_length"),
+        ("scheme_id", "rsa-pkcs1", "unsupported_scheme"),
+        ("fingerprint", "ed448:sha256:" + "ab" * 32, "fingerprint_scheme_mismatch"),
+        ("fingerprint", "ed25519:sha256:NOTHEX" + "ab" * 29, "malformed_value"),
+        ("custodian_id", "", "empty_string"),
+        ("statement", "   ", "empty_string"),
+    ],
+)
+def test_malformed_countersignature_field_rejected(field: str, value: str, reason: str) -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    entry = _countersignature_entry()
+    entry[field] = value
+    doc["countersignatures"].append(entry)
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, reason)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("obtained_at", "whenever", "malformed_value"),
+        ("obtained_at", "2026-08-21T00:00:00Z", "malformed_value"),
+        ("obtained_at", "2026-08-32T00:00:00.000000Z", "impossible_timestamp"),
+        ("obtained_at", "2026-13-01T00:00:00.000000Z", "impossible_timestamp"),
+        ("evidence", [], "not_an_object"),
+        ("evidence", {"receipt": {1: "x"}}, "non_string_key"),
+        ("evidence", {"receipt": {"": "x"}}, "non_string_key"),
+        ("evidence", {"receipt": {"nested": b"\x00"}}, "not_a_json_value"),
+    ],
+)
+def test_malformed_anchor_field_rejected(field: str, value: Any, reason: str) -> None:
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    entry = _anchor_entry()
+    entry[field] = value
+    doc["anchors"].append(entry)
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, reason)
+
+
+def test_well_shaped_unverified_entries_still_report_present_unverified() -> None:
+    # The tightening rejects junk, not the sections themselves: a well-shaped entry
+    # keeps its 0.6.0 status, including a nested free-form evidence object.
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["countersignatures"].append(_countersignature_entry())
+    anchor = _anchor_entry()
+    anchor["evidence"] = {
+        "tag": "trust-genesis-v1",
+        "depth": 3,
+        "signed": True,
+        "receipt": None,
+        "witnesses": ["a", {"b": 1.5}],
+    }
+    doc["anchors"].append(anchor)
+    report = verify_trust_genesis(doc)
+    assert report.countersignatures_status == "present_unverified"
+    assert report.anchors_status == "present_unverified"
+
+
+def test_impossible_timestamp_rejected_in_verified_sections() -> None:
+    # The same calendar check applies to the fields that ARE signed.
+    fixture = mint_co_signed()
+    doc = copy.deepcopy(fixture.document)
+    doc["signatures"][0]["signed_at"] = "2026-04-31T00:00:00.000000Z"
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "impossible_timestamp")
+    doc = copy.deepcopy(fixture.document)
+    doc["binding_core"]["created_at"] = "2026-08-20T25:00:00.000000Z"
+    _assert_invalid(doc, ErrorCode.TRUST_GENESIS_SCHEMA_INVALID, "impossible_timestamp")
+
+
+# ---------------------------------------------------------------------------
 # Governance monotonicity primitive (WI-280) — for P2.2's replay
 # ---------------------------------------------------------------------------
 
@@ -839,3 +929,169 @@ class TestTrustCLI:
             )
         assert excinfo.value.code == 1
         assert not sig_path.exists()
+
+    # -----------------------------------------------------------------------
+    # P2.1 review adoption 1: --signed-at is validated at SIGNING time.
+    # The tool must never mint an artifact its own verifier rejects — an offline
+    # ceremony finds out only after the keys are back in the safe.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "signed_at",
+        [
+            "2026-08-21 00:00:00",  # the pre-fix reproduction: space, no microseconds
+            "2026-08-21T00:00:00Z",  # no microseconds
+            "2026-08-21T00:00:00.000000+00:00",  # offset spelling, not Z
+            "2026-08-21T00:00:00.000Z",  # milliseconds
+            "yesterday",
+            "2026-02-30T00:00:00.000000Z",  # lexically fine, not a real date
+        ],
+    )
+    def test_sign_genesis_refuses_malformed_signed_at(
+        self, tmp_path: Path, capsys: Any, signed_at: str
+    ) -> None:
+        from regista._cli import main as cli_main
+
+        fixture = mint_solo()
+        doc_path = self._write_unsigned(tmp_path, fixture)
+        key_path = tmp_path / "root-a.seed"
+        key_path.write_text(fixture.seeds["root-a"].hex(), encoding="utf-8")
+        sig_path = tmp_path / "never-written.sig.json"
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main(
+                [
+                    "trust",
+                    "sign-genesis",
+                    "--core",
+                    str(doc_path),
+                    "--key",
+                    str(key_path),
+                    "--out",
+                    str(sig_path),
+                    "--signed-at",
+                    signed_at,
+                ]
+            )
+        assert excinfo.value.code == 1
+        # Named refusal, and nothing was produced.
+        assert "TRUST_GENESIS_SCHEMA_INVALID" in capsys.readouterr().err
+        assert not sig_path.exists()
+
+    def test_sign_genesis_signed_at_override_survives_its_own_verifier(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        # The positive half of the same invariant: any --signed-at the signer accepts
+        # must verify. Round-trips the accepted value through verify-genesis.
+        from regista._cli import main as cli_main
+
+        fixture = mint_solo()
+        doc_path = self._write_unsigned(tmp_path, fixture)
+        key_path = tmp_path / "root-a.seed"
+        key_path.write_text(fixture.seeds["root-a"].hex(), encoding="utf-8")
+        sig_path = tmp_path / "root-a.sig.json"
+        cli_main(
+            [
+                "trust",
+                "sign-genesis",
+                "--core",
+                str(doc_path),
+                "--key",
+                str(key_path),
+                "--out",
+                str(sig_path),
+                "--signed-at",
+                "2026-08-21T00:01:02.000003Z",
+            ]
+        )
+        capsys.readouterr()
+        entry = json.loads(sig_path.read_text(encoding="utf-8"))
+        assert entry["signed_at"] == "2026-08-21T00:01:02.000003Z"
+        signed = copy.deepcopy(fixture.document)
+        signed["signatures"] = [entry]
+        signed_path = tmp_path / "genesis-signed.json"
+        signed_path.write_text(json.dumps(signed), encoding="utf-8")
+        cli_main(["trust", "verify-genesis", str(signed_path)])
+        assert "verdict: VALID" in capsys.readouterr().out
+
+    def test_default_signed_at_is_accepted_by_the_verifier(self, tmp_path: Path) -> None:
+        # The minted default must satisfy the same rule as an override.
+        from regista._trust_domain import require_genesis_timestamp
+
+        fixture = mint_solo()
+        doc_path = self._write_unsigned(tmp_path, fixture)
+        key_path = tmp_path / "root-a.seed"
+        key_path.write_text(fixture.seeds["root-a"].hex(), encoding="utf-8")
+        sig_path = tmp_path / "root-a.sig.json"
+        from regista._cli import main as cli_main
+
+        cli_main(
+            [
+                "trust",
+                "sign-genesis",
+                "--core",
+                str(doc_path),
+                "--key",
+                str(key_path),
+                "--out",
+                str(sig_path),
+            ]
+        )
+        entry = json.loads(sig_path.read_text(encoding="utf-8"))
+        require_genesis_timestamp(entry["signed_at"], "signed_at")
+
+    # -----------------------------------------------------------------------
+    # P2.1 review adoption 3: --out never silently clobbers a collected signature.
+    # -----------------------------------------------------------------------
+
+    def test_sign_genesis_refuses_to_overwrite_out(self, tmp_path: Path, capsys: Any) -> None:
+        from regista._cli import main as cli_main
+
+        fixture = mint_solo()
+        doc_path = self._write_unsigned(tmp_path, fixture)
+        key_path = tmp_path / "root-a.seed"
+        key_path.write_text(fixture.seeds["root-a"].hex(), encoding="utf-8")
+        sig_path = tmp_path / "root-a.sig.json"
+        # Stand in for a signature already collected from another signer.
+        existing = '{"already": "collected"}\n'
+        sig_path.write_text(existing, encoding="utf-8")
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main(
+                [
+                    "trust",
+                    "sign-genesis",
+                    "--core",
+                    str(doc_path),
+                    "--key",
+                    str(key_path),
+                    "--out",
+                    str(sig_path),
+                ]
+            )
+        assert excinfo.value.code == 1
+        assert "INVALID_ARGUMENT" in capsys.readouterr().err
+        assert sig_path.read_text(encoding="utf-8") == existing
+
+    def test_sign_genesis_force_overwrites_out(self, tmp_path: Path, capsys: Any) -> None:
+        from regista._cli import main as cli_main
+
+        fixture = mint_solo()
+        doc_path = self._write_unsigned(tmp_path, fixture)
+        key_path = tmp_path / "root-a.seed"
+        key_path.write_text(fixture.seeds["root-a"].hex(), encoding="utf-8")
+        sig_path = tmp_path / "root-a.sig.json"
+        sig_path.write_text('{"already": "collected"}\n', encoding="utf-8")
+        cli_main(
+            [
+                "trust",
+                "sign-genesis",
+                "--core",
+                str(doc_path),
+                "--key",
+                str(key_path),
+                "--out",
+                str(sig_path),
+                "--force",
+            ]
+        )
+        capsys.readouterr()
+        assert json.loads(sig_path.read_text(encoding="utf-8"))["signer_id"] == "root-a"

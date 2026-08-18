@@ -1663,7 +1663,32 @@ def cmd_trust_sign_genesis(args: argparse.Namespace) -> None:
     import nacl.signing
 
     from regista._principal_keys import _compute_fingerprint
-    from regista._trust_domain import genesis_signature_input, parse_trust_genesis
+    from regista._trust_domain import (
+        genesis_signature_input,
+        parse_trust_genesis,
+        require_genesis_timestamp,
+    )
+
+    # Validate --signed-at BEFORE signing anything. The verifier requires the exact
+    # microsecond UTC "Z" form (TRUST-DOMAIN.md §3.2), and a malformed override was
+    # previously caught only when the assembled document was parsed — i.e. after this
+    # tool had already minted a detached signature entry that its own verifier
+    # rejects. An offline ceremony discovers that with the keys already back in the
+    # safe, so the refusal has to happen at production time.
+    if args.signed_at is not None:
+        require_genesis_timestamp(args.signed_at, "--signed-at")
+
+    # Refuse to clobber an existing detached signature: in a k-of-n ceremony the
+    # obvious operator slip is reusing one --out path across signers, which silently
+    # destroys an already-collected signature that may be unreproducible (the key is
+    # back offline). --force is the deliberate escape hatch.
+    if os.path.exists(args.out) and not args.force:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"refusing to overwrite existing signature file {args.out}; "
+            "choose another --out path or pass --force",
+            {"reason": "output_exists", "path": args.out},
+        )
 
     with open(args.core, encoding="utf-8") as f:
         document = json.load(f)
@@ -2277,6 +2302,11 @@ def main(argv: list[str] | None = None) -> None:
     trust_sign.add_argument(
         "--signed-at",
         help="Override the signed_at claim (microsecond UTC Z form); default: now",
+    )
+    trust_sign.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing --out file (refused by default)",
     )
     trust_sign.set_defaults(func=cmd_trust_sign_genesis)
     trust_verify = trust_sub.add_parser(

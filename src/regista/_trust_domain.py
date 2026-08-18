@@ -56,6 +56,7 @@ import struct
 import uuid as _uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, NoReturn
 
 from ._errors import ErrorCode, RegistaError
@@ -132,6 +133,8 @@ _FINGERPRINT_RE = re.compile(r"[a-z0-9-]+:sha256:[0-9a-f]{64}")
 _NONCE_RE = re.compile(r"[0-9a-f]{64}")
 # Microsecond-precision UTC "Z" lexical form used throughout the genesis document.
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+_TIMESTAMP_STRPTIME = "%Y-%m-%dT%H:%M:%S.%fZ"
+_TIMESTAMP_WHAT = "a microsecond-precision UTC Z timestamp (YYYY-MM-DDTHH:MM:SS.ffffffZ)"
 
 _ED25519_PUBLIC_KEY_LEN = 32
 _ED25519_SIGNATURE_LEN = 64
@@ -219,6 +222,27 @@ def _require_pattern(value: Any, pattern: re.Pattern[str], path: str, what: str)
     return text
 
 
+def require_genesis_timestamp(value: Any, path: str) -> str:
+    """Validate a genesis-document timestamp: microsecond-precision UTC ``Z``, real instant.
+
+    Public (in a private module) because the offline signing helper must apply the
+    *verifier's* rule at production time: a tool that mints an artifact its own
+    verifier rejects has failed at the only moment the ceremony can still be fixed.
+    The lexical check is the §3.2 form; the calendar check rejects lexically-valid
+    impossibilities like ``2026-02-30T00:00:00.000000Z``.
+    """
+    text = _require_pattern(value, _TIMESTAMP_RE, path, _TIMESTAMP_WHAT)
+    try:
+        datetime.strptime(text, _TIMESTAMP_STRPTIME)
+    except ValueError as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+            f"{path} must name a real calendar instant",
+            {"reason": "impossible_timestamp", "path": path},
+        ) from exc
+    return text
+
+
 def _require_uuid(value: Any, path: str) -> str:
     text = _require_string(value, path)
     try:
@@ -266,6 +290,45 @@ def _require_base64(value: Any, path: str, *, expected_len: int) -> bytes:
         path=path,
     )
     return raw
+
+
+def _require_json_object(value: Mapping[str, Any], path: str) -> None:
+    """Require a mapping to be JSON-native throughout: string keys, and values drawn
+    only from object/array/string/number/bool/null."""
+    for key, item in value.items():
+        _require(
+            isinstance(key, str) and bool(key),
+            ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+            f"{path} keys must be non-empty strings",
+            "non_string_key",
+            path=path,
+        )
+        _require_json_value(item, f"{path}.{key}")
+
+
+def _require_json_value(value: Any, path: str) -> None:
+    if isinstance(value, dict):
+        _require_json_object(value, path)
+        return
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            _require_json_value(item, f"{path}[{i}]")
+        return
+    _require(
+        value is None or isinstance(value, str | bool | int | float),
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"{path} must be a JSON value (object, array, string, number, boolean or null)",
+        "not_a_json_value",
+        path=path,
+        type=type(value).__name__,
+    )
+
+
+def _require_base64_text(value: Any, path: str, *, expected_len: int) -> str:
+    """Same validation as :func:`_require_base64`, returning the canonical text —
+    for fields carried through as their wire spelling rather than as bytes."""
+    _require_base64(value, path, expected_len=expected_len)
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -537,12 +600,7 @@ def _parse_signature_entry(entry: Any, path: str) -> GenesisSignature:
             "<scheme_id>:sha256:<64 lowercase hex>",
         ),
         scheme_id=_require_string(entry["scheme_id"], f"{path}.scheme_id"),
-        signed_at=_require_pattern(
-            entry["signed_at"],
-            _TIMESTAMP_RE,
-            f"{path}.signed_at",
-            "a microsecond-precision UTC Z timestamp",
-        ),
+        signed_at=require_genesis_timestamp(entry["signed_at"], f"{path}.signed_at"),
         signature=_require_base64(
             entry["signature"], f"{path}.signature", expected_len=_ED25519_SIGNATURE_LEN
         ),
@@ -550,6 +608,11 @@ def _parse_signature_entry(entry: Any, path: str) -> GenesisSignature:
 
 
 def _parse_countersignature(entry: Any, path: str) -> Countersignature:
+    """Parse a countersignature. 0.6.0 verifies no countersignature cryptographically
+    (§3.5) — but its *shape* is contract, and ``present_unverified`` over a garbage
+    entry is a report that says "there is something here" about a field that is not a
+    countersignature at all. Every field is therefore held to its stated format; only
+    the signature *check* is deferred, never the parse."""
     _require_keys(entry, _COUNTERSIGNATURE_KEYS, path)
     over = _require_string(entry["over"], f"{path}.over")
     _require(
@@ -559,18 +622,44 @@ def _parse_countersignature(entry: Any, path: str) -> Countersignature:
         "invalid_over_target",
         path=f"{path}.over",
     )
+    scheme_id = _require_string(entry["scheme_id"], f"{path}.scheme_id")
+    # Closed set, like binding_core.signers: 0.6.0 produces no countersignatures, so
+    # widening this later breaks no existing artifact, whereas accepting an unknown
+    # scheme now means the eventual verifier inherits entries it cannot check.
+    _require(
+        scheme_id in _SIGNER_SCHEME_IDS,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"{path}.scheme_id must be one of {sorted(_SIGNER_SCHEME_IDS)!r}",
+        "unsupported_scheme",
+        path=f"{path}.scheme_id",
+    )
+    fingerprint = _require_pattern(
+        entry["fingerprint"],
+        _FINGERPRINT_RE,
+        f"{path}.fingerprint",
+        "<scheme_id>:sha256:<64 lowercase hex>",
+    )
+    # The fingerprint names the scheme in its own prefix; disagreement means one of
+    # the two is wrong and there is no rule for choosing which.
+    _require(
+        fingerprint.split(":", 1)[0] == scheme_id,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        f"{path}.fingerprint scheme prefix must equal {path}.scheme_id",
+        "fingerprint_scheme_mismatch",
+        path=f"{path}.fingerprint",
+        scheme_id=scheme_id,
+    )
     return Countersignature(
         custodian_id=_require_string(entry["custodian_id"], f"{path}.custodian_id"),
-        scheme_id=_require_string(entry["scheme_id"], f"{path}.scheme_id"),
-        fingerprint=_require_pattern(
-            entry["fingerprint"],
-            _FINGERPRINT_RE,
-            f"{path}.fingerprint",
-            "<scheme_id>:sha256:<64 lowercase hex>",
-        ),
+        scheme_id=scheme_id,
+        fingerprint=fingerprint,
         over=over,
-        signature=_require_string(entry["signature"], f"{path}.signature"),
-        signed_at=_require_string(entry["signed_at"], f"{path}.signed_at"),
+        # Canonical base64 of an Ed25519-length signature: a value that cannot be a
+        # signature is rejected now rather than at whatever future release verifies it.
+        signature=_require_base64_text(
+            entry["signature"], f"{path}.signature", expected_len=_ED25519_SIGNATURE_LEN
+        ),
+        signed_at=require_genesis_timestamp(entry["signed_at"], f"{path}.signed_at"),
         statement=_require_string(entry["statement"], f"{path}.statement"),
     )
 
@@ -601,10 +690,15 @@ def _parse_anchor(entry: Any, path: str) -> Anchor:
         "not_an_object",
         path=f"{path}.evidence",
     )
+    # `evidence` is deliberately free-form (the shape depends on the anchoring
+    # provider), but it must still be a JSON object: string keys, JSON values. An
+    # anchor carrying something that cannot be serialised back out is not evidence
+    # of anything.
+    _require_json_object(evidence, f"{path}.evidence")
     return Anchor(
         kind=kind,
         over=over,
-        obtained_at=_require_string(entry["obtained_at"], f"{path}.obtained_at"),
+        obtained_at=require_genesis_timestamp(entry["obtained_at"], f"{path}.obtained_at"),
         evidence=evidence,
     )
 
@@ -670,12 +764,7 @@ def parse_trust_genesis(
         "wrong_version",
         path="binding_core.version",
     )
-    created_at = _require_pattern(
-        binding_core["created_at"],
-        _TIMESTAMP_RE,
-        "binding_core.created_at",
-        "a microsecond-precision UTC Z timestamp",
-    )
+    created_at = require_genesis_timestamp(binding_core["created_at"], "binding_core.created_at")
     nonce = _require_pattern(
         binding_core["nonce"], _NONCE_RE, "binding_core.nonce", "64 lowercase hex characters"
     )
