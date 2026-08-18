@@ -19,14 +19,19 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 
 | Phase | State |
 |---|---|
-| **1 — writer + admission checks** | **Landed.** `src/regista/_v6_writer.py`, `tests/_v6_fixtures.py`, `tests/test_p17_v6_writer.py` (36 tests), 5 new error codes. |
-| **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4 below. |
-| **3 — empty the manifest** | **Not started.** Manifest still 694. **Read §2 first: it cannot reach zero as P1.7 is scoped.** |
-| **4 — full validation** | Partial: default lane green, ruff/mypy clean on new files. Slow lane, docs checkers, `check-epoch-debt` not run since nothing changed for them. |
+| **1 — writer + admission checks** | **Landed** (`653e1c6`). `_v6_writer.py`, `tests/_v6_fixtures.py`, `tests/test_p17_v6_writer.py` (36 tests), 5 error codes. |
+| **1b — contracts + partial wiring** | **Landed.** The §5.8 acceptance/revocation contracts, the accepter/signer cross-checks, `register_workflow`'s signed event, the process-level producer identity, the §2.3 timestamp helper. `tests/test_p17_key_acceptance.py` (45 tests). |
+| **1c — the rest of the wiring** | **Not started.** `_event_store.append_event` / `_events.*` still legacy; `provision_principal` still refuses; `PrincipalLifecycle.commit()` still sentinel-passing; fixtures not migrated. §3 has the sequencing. |
+| **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4. |
+| **3 — empty the manifest** | **Not started.** Manifest still 694. **Read §2: the target is 167, not 0.** |
+| **4 — full validation** | Both lanes green + all guards at each checkpoint; not re-run against a changed manifest because the manifest has not changed. |
 
-Nothing was wired into the existing writers yet: `PrincipalLifecycle.commit()` still appends
-through `_event_store.append_event`, and `TestCeremonyPathRoundTrip` still stubs the admission
-gates. That wiring is the first task for the successor (§3).
+Phase 1b deliberately stopped short of routing `_event_store.append_event` to the writer. Doing
+that before the fixtures are migrated reddens all 694 manifest nodes with a *changed* failure
+form (`KEY_BINDING_UNRESOLVED` instead of `GENESIS_REQUIRED`), which the §2.1 form validator
+correctly converts to honest red. **The wiring and the fixture migration must land in one
+change, file by file.** Everything 1b added is either pre-genesis-inert (`register_workflow`) or
+new surface no existing caller touches, which is why it lands green on its own.
 
 ---
 
@@ -128,6 +133,29 @@ Suggested order for the successor:
 5. Only then start on the manifest, file by file, in descending node count.
 
 ---
+
+## 3b. FINDING 3 — a surviving mutant, and the hole it exposed
+
+Mutation **M14** (delete the `and not revoked_matches` clause in
+`resolve_key_binding_anchor`) left the suite **green**. Reporting it rather than quietly
+patching, because the analysis matters more than the clause:
+
+The branch is **unreachable today**. Reaching it needs one principal/key to hold both a live
+bootstrap anchor *and* a separately revoked standalone acceptance. That state cannot be built:
+a standalone acceptance confers `may_accept_keys=False` (§5.8's object has no such member), the
+bootstrap principal cannot accept its own key (the `self_authorisation` refusal), and no other
+principal can accept at all. It becomes reachable the moment §5.8's **registrar** path lands
+("…or by the registrar"), so the clause is kept, and the code says in a comment that it is
+uncovered rather than implying otherwise.
+
+Chasing M14's reachability surfaced a real hole, now fixed: **`accepted_by` was never
+cross-checked against the actual signer.** An acceptance could name any authority it liked while
+being signed by someone else — a free-text claim wearing a structured field's clothes, which is
+the failure mode 0.6.0 exists to remove. The payload validator structurally cannot catch it (it
+sees only the document), so the check lives in the writer:
+`_require_authority_matches_signer` (→ `ACTOR_SIGNER_MISMATCH`) and
+`_require_authority_may_accept` (→ `PRODUCER_NOT_AUTHORIZED`, reason
+`may_accept_keys_not_held`). Mutations M18/M19 confirm both are load-bearing.
 
 ## 4. Phase 2 design notes (the verifier boundary)
 

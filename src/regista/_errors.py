@@ -133,6 +133,19 @@ class ErrorCode(StrEnum):
     # A v6 entity chain may not skip a link: the predecessor at entity_seq - 1 must
     # exist and be signed, or the append is refused rather than writing a fork.
     V6_CHAIN_LINK_MISSING = "V6_CHAIN_LINK_MISSING"
+    # The two project-local acceptance transitions _trust_log.DEFERRED_TRANSITIONS
+    # assigns to P1.7 (TRUST-DOMAIN.md §5.8). Both carry a machine-readable `reason`.
+    #
+    # A malformed regista.key-acceptance/v1 or key-acceptance-revocation/v1 payload.
+    # Kept distinct from TRUST_LOG_PAYLOAD_INVALID because these are *project-local*
+    # events, not trust-log ones, and conflating them would hide which chain is at
+    # fault.
+    KEY_ACCEPTANCE_PAYLOAD_INVALID = "KEY_ACCEPTANCE_PAYLOAD_INVALID"
+    # Every project-local acceptance of this key has been revoked. §5.10 step 4's
+    # reason code, spelled exactly as the spec spells it, and deliberately NOT
+    # KEY_BINDING_UNRESOLVED: "revoked" and "never accepted" are different facts and
+    # an operator's response to each is different.
+    KEY_ACCEPTANCE_REVOKED = "KEY_ACCEPTANCE_REVOKED"
 
 
 class RegistaError(Exception):

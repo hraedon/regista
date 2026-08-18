@@ -31,6 +31,54 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   never consulted for a v6 event, §5.11), `V6_ENVELOPE_INVALID`, and
   `V6_CHAIN_LINK_MISSING`.
 
+- **The two project-local acceptance contracts (`TRUST-DOMAIN.md` §5.8).**
+  `_trust_log.DEFERRED_TRANSITIONS` assigned `principal_key_accepted` and
+  `principal_key_acceptance_revoked` to P1.7 and neither had a parser anywhere: P2.2's
+  §5.5 family covers *trust-log* enrolment, not *project-local* acceptance. Without the
+  revocation contract, §5.10 step 4 ("no `principal_key_acceptance_revoked` for `A` lies
+  between `A` and `E`") had no event shape to look for.
+
+  `validate_key_acceptance_payload` enforces `regista.key-acceptance/v1` exactly,
+  including the two cross-field facts that make it evidence: `fingerprint` must match
+  the `public_key` bytes it ships beside (§5.8 calls a mismatch "**invalid**, not a
+  preference"), and `accepted_by.key_binding_event_hash` may not be null — that field is
+  precisely what the withdrawn self-referential first acceptance nulled.
+  `validate_key_acceptance_revocation_payload` enforces
+  `regista.key-acceptance-revocation/v1`, whose `reason` shares the closed §5.7
+  vocabulary rather than growing a second one. New code
+  `KEY_ACCEPTANCE_PAYLOAD_INVALID`.
+
+  A revoked acceptance stops being a usable anchor, with §5.10 step 4's own reason code
+  `KEY_ACCEPTANCE_REVOKED` — deliberately not `KEY_BINDING_UNRESOLVED`, since "revoked"
+  and "never accepted" are different facts. It never falls back to an earlier, broader
+  anchor: that would make revocation a privilege escalation.
+
+  The writer additionally cross-checks what the payload validators structurally cannot:
+  `accepted_by` / `revoked_by` must **be** the signer (`ACTOR_SIGNER_MISMATCH`), and the
+  signing key's anchor must grant `may_accept_keys` (`PRODUCER_NOT_AUTHORIZED`).
+  Acceptance authority therefore does not propagate — a standalone acceptance never
+  grants it, which is what stops one compromised agent key from minting a population of
+  trusted keys.
+
+- **`register_workflow` now appends a signed `workflow_registered` event** once genesis
+  has opened the epoch, in the same transaction as the `workflow_registry` INSERT, so
+  the row and the signed registration cannot diverge and admission gate 1 has something
+  to resolve. Before genesis the behaviour is unchanged. `definition` excludes
+  `raw_yaml`, per `RECONCILIATION.md` Resolution 2.
+
+- **A process-level producer identity**, `_v6_writer.resolve_producer`, resolved from
+  `REGISTA_PRODUCER_HARNESS` / `_HARNESS_VERSION` / `_MODEL` / `_MODEL_LINEAGE`. The
+  producer is a property of the running process, not a per-append argument — making it a
+  parameter would invite the self-asserted-string pattern §1.8 exists to remove. Unset
+  harness/version is `LOAD_BEARING_FIELD_MISSING` naming the variables; there is no
+  default, because an invented harness name would be a signed falsehood.
+
+- **`_datetime_utils.v6_occurred_at` / `parse_v6_occurred_at`** — the single §2.3 lexical
+  form, centralised. `datetime.isoformat()` renders **three** fractional digits whenever
+  the microseconds land on a whole millisecond and the strict parser rejects it, so the
+  defect appears for roughly one instant in a thousand: absent from any hand-picked test
+  value, present in production.
+
 - **The shared Ed25519 actor-role test keyset and v6 genesis fixture**,
   `tests/_v6_fixtures.py`. The committed `tests/test_keys.json` is a single HMAC key with
   no `principal_id`, no `role` and no public key, so it cannot satisfy any v6 append;

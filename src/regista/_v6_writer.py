@@ -38,6 +38,8 @@ registry is a refusal.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import struct
 from collections.abc import Mapping, Sequence
@@ -50,6 +52,7 @@ import psycopg.types.json
 from psycopg.sql import SQL
 
 from ._connection import DictConn
+from ._datetime_utils import parse_v6_occurred_at, v6_occurred_at
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._keys import KeyEntry, KeySet
@@ -83,8 +86,6 @@ _ANCHOR_TRANSITIONS: Final[frozenset[str]] = frozenset(
 _V6_ENTITY_KINDS: Final[frozenset[str]] = frozenset(
     {"work_item", "project", "principal", "trust_domain", "project_instance", "workflow"}
 )
-
-_OCCURRED_AT_FORMAT: Final[str] = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 _EVENT_COLUMNS: Final[str] = (
     "event_id, work_item_id, entity_kind, entity_id, hash_alg, event_seq, actor_id, "
@@ -190,6 +191,62 @@ class Producer:
             "model": self.model,
             "model_lineage": self.model_lineage,
         }
+
+
+#: Environment names the process-level producer identity resolves from.
+PRODUCER_ENV: Final[dict[str, str]] = {
+    "harness": "REGISTA_PRODUCER_HARNESS",
+    "harness_version": "REGISTA_PRODUCER_HARNESS_VERSION",
+    "model": "REGISTA_PRODUCER_MODEL",
+    "model_lineage": "REGISTA_PRODUCER_MODEL_LINEAGE",
+}
+
+
+def resolve_producer(explicit: Producer | None = None) -> Producer:
+    """Resolve the producer identity for this *process*, or refuse.
+
+    The producer is deliberately **not** a per-append argument. ``V6-ENVELOPE.md``
+    §1.8's whole argument is that a model holds nothing and signs nothing, while a
+    harness/host does — so "which harness and model produced this event" is a
+    property of the running process, resolved once, not something a business call
+    site is asked to assert each time. Making it a parameter would invite exactly the
+    self-asserted-string pattern §1.8 exists to remove.
+
+    ``producer.harness`` and ``producer.harness_version`` are load-bearing
+    (``_genesis._REQUIRED_NONEMPTY_PATHS``), so an unset environment is a refusal with
+    ``LOAD_BEARING_FIELD_MISSING`` naming the variables — never a default like
+    ``"unknown"``, which would sign a falsehood.
+
+    ``model``/``model_lineage`` may legitimately both be absent: that is the "no model
+    producer" case, and it is distinct from "undeclared". Setting exactly one is a
+    refusal, caught downstream by admission gate 2.
+    """
+
+    import os
+
+    if explicit is not None:
+        return explicit
+    harness = os.environ.get(PRODUCER_ENV["harness"], "").strip()
+    harness_version = os.environ.get(PRODUCER_ENV["harness_version"], "").strip()
+    missing = [
+        PRODUCER_ENV[name]
+        for name, value in (("harness", harness), ("harness_version", harness_version))
+        if not value
+    ]
+    if missing:
+        raise RegistaError(
+            ErrorCode.LOAD_BEARING_FIELD_MISSING,
+            "the v6 writer needs a process-level producer identity: set "
+            + ", ".join(missing)
+            + " (V6-ENVELOPE.md §1.8). There is no default — an invented harness name "
+            "would be a signed falsehood.",
+            detail={"fields": missing},
+        )
+    model = os.environ.get(PRODUCER_ENV["model"], "").strip() or None
+    lineage = os.environ.get(PRODUCER_ENV["model_lineage"], "").strip() or None
+    return Producer(
+        harness=harness, harness_version=harness_version, model=model, model_lineage=lineage
+    )
 
 
 @dataclass(frozen=True)
@@ -432,17 +489,51 @@ def resolve_key_binding_anchor(
     """
 
     candidates = _anchor_candidate_rows(conn)
+    revoked = find_acceptance_revocations(conn)
     bootstrap: KeyBindingAnchor | None = None
+    revoked_matches: list[str] = []
     for row in candidates:
         anchor = _anchor_from_row(row)
         if anchor.principal_id != principal_id or anchor.key_id != key_id:
+            continue
+        if anchor.event_hash in revoked:
+            revoked_matches.append(anchor.event_hash)
             continue
         if anchor.kind == "acceptance":
             return anchor
         if bootstrap is None:
             bootstrap = anchor
-    if bootstrap is not None:
+    # A revoked acceptance must not fall through to an EARLIER live anchor. Falling
+    # back would turn a revocation into a *privilege escalation*: the operator's most
+    # recent word about this key was "no longer usable", and the older bootstrap
+    # anchor is typically the BROADER scope (it carries may_accept_keys). So a
+    # revocation anywhere for this principal/key refuses, even if an unrevoked
+    # bootstrap anchor is still present.
+    #
+    # HONESTY NOTE — this `not revoked_matches` clause is currently UNREACHABLE, and
+    # mutation M14 (deleting it) left the suite green, which is how that was found.
+    # Reaching it needs one principal/key to hold both a live bootstrap anchor and a
+    # separately revoked standalone acceptance. Today it cannot: a standalone
+    # acceptance confers may_accept_keys=False (§5.8's object has no such member), the
+    # bootstrap principal cannot accept its own key (the self_authorisation refusal),
+    # and no other principal can accept at all. It becomes reachable the moment
+    # §5.8's registrar path lands ("Subsequent acceptances are still signed by an
+    # already-accepted key holding scopes.may_accept_keys, **or by the registrar**"),
+    # which is why the clause is kept rather than deleted as dead code. It is
+    # deliberately NOT presented as covered.
+    if bootstrap is not None and not revoked_matches:
         return bootstrap
+    if revoked_matches:
+        raise RegistaError(
+            ErrorCode.KEY_ACCEPTANCE_REVOKED,
+            f"every project-local acceptance of key {key_id!r} for principal "
+            f"{principal_id!r} has been revoked (TRUST-DOMAIN.md §5.8/§5.10 step 4)",
+            detail={
+                "principal_id": principal_id,
+                "key_id": key_id,
+                "revoked_acceptances": revoked_matches,
+            },
+        )
     raise RegistaError(
         ErrorCode.KEY_BINDING_UNRESOLVED,
         f"no preceding project key-binding anchor accepts key {key_id!r} for "
@@ -451,6 +542,453 @@ def resolve_key_binding_anchor(
         "for a v6 event (§5.11).",
         detail={"principal_id": principal_id, "key_id": key_id},
     )
+
+
+# ---------------------------------------------------------------------------
+# The two payload contracts _trust_log.DEFERRED_TRANSITIONS assigns to P1.7
+# ---------------------------------------------------------------------------
+#
+# `principal_key_accepted` and `principal_key_acceptance_revoked` are listed in
+# `_trust_log.DEFERRED_TRANSITIONS` as "P1.7 (§5.8 project-local acceptance)", and
+# until now had no parser anywhere — the §5.5 family in `_trust_log.py` covers the
+# *trust-log* enrolment events, not the *project-local* acceptance ones. These two
+# validators close that gap. They follow the §5.5 parsers' shape deliberately: a
+# closed key set (extra keys are a rejection, not forward compatibility), a
+# machine-readable `reason` in `detail` so callers assert the named rule rather than
+# message text, and no coercion anywhere.
+
+#: ``TRUST-DOMAIN.md`` §5.8's ``regista.key-acceptance/v1``.
+KEY_ACCEPTANCE_TYPE: Final[str] = "regista.key-acceptance"
+_ACCEPTANCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "type",
+        "version",
+        "trust_domain_id",
+        "project_instance_id",
+        "principal_id",
+        "key_id",
+        "fingerprint",
+        "public_key",
+        "trust_event_hash",
+        "trust_log_checkpoint",
+        "scopes",
+        "accepted_by",
+    }
+)
+_ACCEPTANCE_SCOPE_KEYS: Final[frozenset[str]] = frozenset(
+    {"entity_kinds", "transitions", "may_sign_checkpoints", "may_sign_bundles"}
+)
+_ACCEPTED_BY_KEYS: Final[frozenset[str]] = frozenset(
+    {"principal_id", "key_id", "key_binding_event_hash"}
+)
+_CHECKPOINT_KEYS: Final[frozenset[str]] = frozenset(
+    {"checkpoint_seq", "head_event_hash", "document_digest"}
+)
+
+#: The project-local counterpart to a trust-log revocation. §5.10 step 4 requires it
+#: — "no ``principal_key_acceptance_revoked`` for ``A`` lies between ``A`` and ``E``"
+#: is unimplementable without a contract for the event it looks for.
+KEY_ACCEPTANCE_REVOCATION_TYPE: Final[str] = "regista.key-acceptance-revocation"
+_REVOCATION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "type",
+        "version",
+        "trust_domain_id",
+        "project_instance_id",
+        "principal_id",
+        "key_id",
+        "acceptance_event_hash",
+        "reason",
+        "revoked_by",
+    }
+)
+#: Reused verbatim from ``_trust_log._REVOCATION_REASONS``: a project-local
+#: revocation and a trust-log revocation answer the same question ("why is this key
+#: no longer usable") and must not drift into two vocabularies.
+_ACCEPTANCE_REVOCATION_REASONS: Final[frozenset[str]] = frozenset(
+    {"compromised", "superseded", "decommissioned", "policy", "unspecified"}
+)
+
+_DIGEST_LEN: Final[int] = 71
+
+
+def _acceptance_fail(rule: str, message: str, **detail: Any) -> Any:
+    # The parameter is `rule`, not `reason`, precisely so a payload field *named*
+    # `reason` can be reported in `detail` without colliding with it. mypy caught
+    # the collision; the rename is the fix, not a `# type: ignore`.
+    raise RegistaError(
+        ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID,
+        message,
+        detail={"reason": rule, **detail},
+    )
+
+
+def _acceptance_require(condition: bool, rule: str, message: str, **detail: Any) -> None:
+    if not condition:
+        _acceptance_fail(rule, message, **detail)
+
+
+def _is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _DIGEST_LEN
+        and value.startswith("sha256:")
+        and all(char in "0123456789abcdef" for char in value[7:])
+    )
+
+
+def _is_uuid_text(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 36:
+        return False
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def validate_key_acceptance_payload(payload: object) -> AcceptanceScopes:
+    """Validate a ``regista.key-acceptance/v1`` payload; return its scopes.
+
+    Enforces §5.8's object exactly, plus the two cross-field facts that make the
+    payload evidence rather than decoration:
+
+    * ``fingerprint`` must be the SHA-256 of the ``public_key`` bytes it ships beside.
+      §5.8 repeats ``public_key`` on purpose so a bundle is self-sufficient for key
+      material; a fingerprint that does not match those bytes makes the repetition a
+      liability instead of an asset, and §5.8 calls that case "**invalid**, not a
+      preference".
+    * ``accepted_by.key_binding_event_hash`` must be non-null. This is where Bootstrap
+      B's replacement of the self-referential first acceptance actually bites: the
+      withdrawn rule nulled exactly this field, so permitting a null here would
+      quietly restore it.
+    """
+
+    _acceptance_require(
+        isinstance(payload, Mapping), "payload_not_object",
+        "a key-acceptance payload must be a JSON object",
+    )
+    assert isinstance(payload, Mapping)
+    extra = sorted(set(payload) - _ACCEPTANCE_KEYS)
+    missing = sorted(_ACCEPTANCE_KEYS - set(payload))
+    _acceptance_require(
+        not extra and not missing, "payload_key_set",
+        f"a key-acceptance payload has exactly {sorted(_ACCEPTANCE_KEYS)}",
+        extra=extra, missing=missing,
+    )
+    _acceptance_require(
+        payload["type"] == KEY_ACCEPTANCE_TYPE, "payload_type",
+        f"payload.type must equal {KEY_ACCEPTANCE_TYPE!r}", type=payload["type"],
+    )
+    _acceptance_require(
+        payload["version"] == 1 and isinstance(payload["version"], int)
+        and not isinstance(payload["version"], bool),
+        "payload_version", "payload.version must be integer 1",
+    )
+    for field in ("trust_domain_id", "project_instance_id"):
+        _acceptance_require(
+            _is_uuid_text(payload[field]), f"{field}_not_uuid",
+            f"payload.{field} must be lowercase canonical UUID text",
+        )
+    from ._principals import validate_principal_id
+
+    # §2.7 puts principal_key_accepted in the always-strict column, so the subject
+    # goes through the canonical grammar rather than a local string check.
+    validate_principal_id(payload["principal_id"], path="payload.principal_id")
+    _acceptance_require(
+        isinstance(payload["key_id"], str) and bool(payload["key_id"].strip()),
+        "key_id_empty", "payload.key_id must be a non-empty string",
+    )
+
+    public_key = payload["public_key"]
+    _acceptance_require(
+        isinstance(public_key, str), "public_key_not_text",
+        "payload.public_key must be base64 text for 32 raw bytes",
+    )
+    assert isinstance(public_key, str)
+    try:
+        raw = base64.b64decode(public_key, validate=True)
+    except (binascii.Error, ValueError):
+        raw = b""
+    _acceptance_require(
+        len(raw) == 32 and base64.b64encode(raw).decode("ascii") == public_key,
+        "public_key_not_canonical_base64_32",
+        "payload.public_key must be canonical base64 for exactly 32 raw bytes",
+    )
+    expected_fingerprint = "ed25519:sha256:" + hashlib.sha256(raw).hexdigest()
+    _acceptance_require(
+        payload["fingerprint"] == expected_fingerprint, "fingerprint_mismatch",
+        "payload.fingerprint does not match payload.public_key; §5.8 makes a "
+        "disagreement between the repeated key material and its fingerprint invalid, "
+        "not a preference",
+        fingerprint=payload["fingerprint"], expected=expected_fingerprint,
+    )
+    _acceptance_require(
+        _is_digest(payload["trust_event_hash"]), "trust_event_hash_malformed",
+        "payload.trust_event_hash must be sha256:<64 lowercase hex>",
+    )
+
+    checkpoint = payload["trust_log_checkpoint"]
+    _acceptance_require(
+        isinstance(checkpoint, Mapping) and set(checkpoint) == _CHECKPOINT_KEYS,
+        "checkpoint_key_set",
+        f"payload.trust_log_checkpoint has exactly {sorted(_CHECKPOINT_KEYS)}",
+    )
+    assert isinstance(checkpoint, Mapping)
+    _acceptance_require(
+        isinstance(checkpoint["checkpoint_seq"], int)
+        and not isinstance(checkpoint["checkpoint_seq"], bool)
+        and checkpoint["checkpoint_seq"] >= 1,
+        "checkpoint_seq_invalid",
+        "payload.trust_log_checkpoint.checkpoint_seq must be an integer >= 1",
+    )
+    for field in ("head_event_hash", "document_digest"):
+        _acceptance_require(
+            _is_digest(checkpoint[field]), f"checkpoint_{field}_malformed",
+            f"payload.trust_log_checkpoint.{field} must be sha256:<64 lowercase hex>",
+        )
+
+    scopes_raw = payload["scopes"]
+    _acceptance_require(
+        isinstance(scopes_raw, Mapping) and set(scopes_raw) == _ACCEPTANCE_SCOPE_KEYS,
+        "scopes_key_set",
+        f"payload.scopes has exactly {sorted(_ACCEPTANCE_SCOPE_KEYS)}",
+    )
+    assert isinstance(scopes_raw, Mapping)
+    entity_kinds = scopes_raw["entity_kinds"]
+    _acceptance_require(
+        isinstance(entity_kinds, list) and bool(entity_kinds)
+        and all(isinstance(k, str) and k in _V6_ENTITY_KINDS for k in entity_kinds)
+        and len(entity_kinds) == len(set(entity_kinds)),
+        "scopes_entity_kinds_invalid",
+        "payload.scopes.entity_kinds must be a unique, non-empty set of v6 entity "
+        "kinds; there is no wildcard for entity kind",
+    )
+    transitions = scopes_raw["transitions"]
+    _acceptance_require(
+        transitions is None or (
+            isinstance(transitions, list)
+            and all(isinstance(t, str) and t.strip() for t in transitions)
+            and len(transitions) == len(set(transitions))
+        ),
+        "scopes_transitions_invalid",
+        'payload.scopes.transitions must be null (meaning "any") or a unique list of '
+        "non-empty names. An empty list is legal and authorises nothing — it is NOT "
+        "a spelling of null.",
+    )
+    for flag in ("may_sign_checkpoints", "may_sign_bundles"):
+        _acceptance_require(
+            isinstance(scopes_raw[flag], bool), f"scopes_{flag}_not_bool",
+            f"payload.scopes.{flag} must be a boolean",
+        )
+
+    accepted_by = payload["accepted_by"]
+    _acceptance_require(
+        isinstance(accepted_by, Mapping) and set(accepted_by) == _ACCEPTED_BY_KEYS,
+        "accepted_by_key_set",
+        f"payload.accepted_by has exactly {sorted(_ACCEPTED_BY_KEYS)}",
+    )
+    assert isinstance(accepted_by, Mapping)
+    validate_principal_id(
+        accepted_by["principal_id"], path="payload.accepted_by.principal_id"
+    )
+    _acceptance_require(
+        isinstance(accepted_by["key_id"], str) and bool(accepted_by["key_id"].strip()),
+        "accepted_by_key_id_empty",
+        "payload.accepted_by.key_id must be a non-empty string",
+    )
+    _acceptance_require(
+        _is_digest(accepted_by["key_binding_event_hash"]),
+        "accepted_by_anchor_null_or_malformed",
+        "payload.accepted_by.key_binding_event_hash must be sha256:<64 lowercase "
+        "hex> and may NOT be null: the withdrawn self-referential first acceptance "
+        "(TRUST-DOMAIN.md §5.8, superseded by RECONCILIATION.md Resolution 1) is "
+        "exactly the case that nulled this field",
+    )
+    _acceptance_require(
+        accepted_by["principal_id"] != payload["principal_id"]
+        or accepted_by["key_id"] != payload["key_id"],
+        "self_authorisation",
+        "a key may not accept itself: ordinary acceptance runs with no exceptions and "
+        "no self-authorisation anywhere (RECONCILIATION.md Resolution 1)",
+        principal_id=payload["principal_id"], key_id=payload["key_id"],
+    )
+
+    return AcceptanceScopes(
+        entity_kinds=frozenset(entity_kinds),
+        transitions=None if transitions is None else frozenset(transitions),
+        # §5.8's standalone acceptance object has no `may_accept_keys` member — only
+        # the bootstrap object does (Resolution 1). An accepted key therefore cannot
+        # accept further keys unless the bootstrap authority or the registrar does it,
+        # which is the narrower reading and the correct one.
+        may_accept_keys=False,
+        may_sign_checkpoints=bool(scopes_raw["may_sign_checkpoints"]),
+        may_sign_bundles=bool(scopes_raw["may_sign_bundles"]),
+    )
+
+
+def validate_key_acceptance_revocation_payload(payload: object) -> None:
+    """Validate a ``regista.key-acceptance-revocation/v1`` payload.
+
+    §5.10 step 4 says "no ``principal_key_acceptance_revoked`` for ``A`` lies between
+    ``A`` and ``E`` in ``P``'s chain. Otherwise **INVALID**, reason
+    ``KEY_ACCEPTANCE_REVOKED``." That step cannot be implemented against an event
+    with no contract, which is why this lands with the writer rather than with the
+    verifier that consumes it.
+    """
+
+    _acceptance_require(
+        isinstance(payload, Mapping), "payload_not_object",
+        "a key-acceptance-revocation payload must be a JSON object",
+    )
+    assert isinstance(payload, Mapping)
+    extra = sorted(set(payload) - _REVOCATION_KEYS)
+    missing = sorted(_REVOCATION_KEYS - set(payload))
+    _acceptance_require(
+        not extra and not missing, "payload_key_set",
+        f"a key-acceptance-revocation payload has exactly {sorted(_REVOCATION_KEYS)}",
+        extra=extra, missing=missing,
+    )
+    _acceptance_require(
+        payload["type"] == KEY_ACCEPTANCE_REVOCATION_TYPE, "payload_type",
+        f"payload.type must equal {KEY_ACCEPTANCE_REVOCATION_TYPE!r}",
+        type=payload["type"],
+    )
+    _acceptance_require(
+        payload["version"] == 1 and isinstance(payload["version"], int)
+        and not isinstance(payload["version"], bool),
+        "payload_version", "payload.version must be integer 1",
+    )
+    for field in ("trust_domain_id", "project_instance_id"):
+        _acceptance_require(
+            _is_uuid_text(payload[field]), f"{field}_not_uuid",
+            f"payload.{field} must be lowercase canonical UUID text",
+        )
+    from ._principals import validate_principal_id
+
+    validate_principal_id(payload["principal_id"], path="payload.principal_id")
+    _acceptance_require(
+        isinstance(payload["key_id"], str) and bool(payload["key_id"].strip()),
+        "key_id_empty", "payload.key_id must be a non-empty string",
+    )
+    _acceptance_require(
+        _is_digest(payload["acceptance_event_hash"]), "acceptance_event_hash_malformed",
+        "payload.acceptance_event_hash must be sha256:<64 lowercase hex>: a revocation "
+        "names the exact acceptance it revokes, so §5.10 step 4 can decide by hash "
+        "rather than by guessing which acceptance was meant",
+    )
+    _acceptance_require(
+        payload["reason"] in _ACCEPTANCE_REVOCATION_REASONS, "reason_not_in_closed_set",
+        "payload.reason must come from the closed §5.7 revocation vocabulary",
+        declared_reason=payload["reason"],
+        allowed=sorted(_ACCEPTANCE_REVOCATION_REASONS),
+    )
+    revoked_by = payload["revoked_by"]
+    _acceptance_require(
+        isinstance(revoked_by, Mapping) and set(revoked_by) == _ACCEPTED_BY_KEYS,
+        "revoked_by_key_set",
+        f"payload.revoked_by has exactly {sorted(_ACCEPTED_BY_KEYS)}",
+    )
+    assert isinstance(revoked_by, Mapping)
+    validate_principal_id(
+        revoked_by["principal_id"], path="payload.revoked_by.principal_id"
+    )
+    _acceptance_require(
+        isinstance(revoked_by["key_id"], str) and bool(revoked_by["key_id"].strip()),
+        "revoked_by_key_id_empty",
+        "payload.revoked_by.key_id must be a non-empty string",
+    )
+    _acceptance_require(
+        _is_digest(revoked_by["key_binding_event_hash"]),
+        "revoked_by_anchor_malformed",
+        "payload.revoked_by.key_binding_event_hash must be sha256:<64 lowercase hex>",
+    )
+
+
+def _require_authority_matches_signer(
+    payload: object, *, field: str, actor_id: str, key_id: str
+) -> None:
+    """The ``accepted_by`` / ``revoked_by`` block must BE the signer.
+
+    A document is evidence only where its claims are constrained by something the
+    claimant cannot forge. ``accepted_by`` names who exercised the authority; the
+    envelope's ``actor.principal_id`` / ``signing.key_id`` name who actually signed.
+    If those may differ, the payload asserts an authority that never touched the
+    event — a free-text claim wearing a structured field's clothes.
+    """
+
+    assert isinstance(payload, Mapping)
+    block = payload[field]
+    assert isinstance(block, Mapping)
+    if block["principal_id"] != actor_id or block["key_id"] != key_id:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"payload.{field} names {block['principal_id']!r}/{block['key_id']!r} but "
+            f"the event is signed by {actor_id!r}/{key_id!r}; the block records who "
+            "exercised the authority and must be the signer",
+            detail={
+                "reason": f"{field}_is_not_the_signer",
+                "declared_principal_id": block["principal_id"],
+                "declared_key_id": block["key_id"],
+                "signer_principal_id": actor_id,
+                "signer_key_id": key_id,
+            },
+        )
+
+
+def _require_authority_may_accept(anchor: KeyBindingAnchor, *, actor_id: str) -> None:
+    """Only a key whose anchor grants ``may_accept_keys`` may accept or revoke.
+
+    §5.8: "Subsequent acceptances are still signed by an already-accepted key holding
+    ``scopes.may_accept_keys``, or by the registrar." Standalone acceptances never
+    grant it (their §5.8 object has no such member), so in practice this is the
+    bootstrap authority until the registrar path lands — which is the intended
+    narrowness, not an accident.
+    """
+
+    if not anchor.scopes.may_accept_keys:
+        raise RegistaError(
+            ErrorCode.PRODUCER_NOT_AUTHORIZED,
+            f"{actor_id!r} signs with a key whose acceptance does not grant "
+            "may_accept_keys, so it may not accept or revoke another key "
+            "(TRUST-DOMAIN.md §5.8)",
+            detail={
+                "reason": "may_accept_keys_not_held",
+                "principal_id": actor_id,
+                "anchor_kind": anchor.kind,
+            },
+        )
+
+
+def find_acceptance_revocations(conn: DictConn) -> dict[str, int]:
+    """Map ``acceptance_event_hash`` -> the ``global_seq`` that revoked it.
+
+    Read by :func:`resolve_key_binding_anchor` so a revoked acceptance stops being a
+    usable anchor at write time, and available to the verifier for §5.10 step 4's
+    "between ``A`` and ``E``" question, which needs positions rather than a boolean.
+    """
+
+    rows = conn.execute(
+        SQL(
+            "SELECT canonical_envelope, global_seq FROM events WHERE transition = %s "
+            "ORDER BY global_seq ASC"
+        ),
+        [PRINCIPAL_KEY_ACCEPTANCE_REVOKED],
+    ).fetchall()
+    revoked: dict[str, int] = {}
+    for row in rows:
+        if not row["canonical_envelope"]:
+            continue
+        try:
+            envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
+        except (V6EnvelopeError, TypeError, ValueError):
+            continue
+        payload = envelope["payload"]
+        if not isinstance(payload, Mapping):
+            continue
+        target = payload.get("acceptance_event_hash")
+        if isinstance(target, str) and target not in revoked:
+            revoked[target] = int(row["global_seq"])
+    return revoked
 
 
 # ---------------------------------------------------------------------------
@@ -717,16 +1255,6 @@ def _allocate_entity_seq(conn: DictConn, *, entity_kind: str, entity_id: UUID) -
 # ---------------------------------------------------------------------------
 
 
-def _format_occurred_at(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    # §2.3 is a SINGLE lexical form: exactly six fractional digits and a literal Z.
-    # `%f` already renders six, so no truncation or padding is correct here — a
-    # three-digit rendering (isoformat's default for whole milliseconds) is refused
-    # by the strict parser, which is how this was caught.
-    return value.astimezone(UTC).strftime(_OCCURRED_AT_FORMAT)
-
-
 def _writer_key(key_set: KeySet, *, principal_id: str, key_id: str | None) -> KeyEntry:
     entry = key_set.resolve_signing_key(principal_id, key_id=key_id)
     if entry.scheme != "ed25519":
@@ -800,7 +1328,7 @@ def build_v6_envelope(
         },
         "authorization": {"mode": "direct", "credentials": []},
         "workflow": None if workflow is None else workflow.as_envelope_member(),
-        "occurred_at": _format_occurred_at(occurred_at),
+        "occurred_at": v6_occurred_at(occurred_at),
         "transition": transition,
         "payload": dict(payload) if payload is not None else None,
         "chain": {
@@ -890,6 +1418,28 @@ def append_v6_event(
         conn, principal_id=actor_id, key_id=key_entry.key_id
     )
 
+    # The two transitions this module owns get their payloads validated here, so an
+    # unparseable acceptance can never become an anchor a later event depends on.
+    #
+    # The payload validators check the DOCUMENT; only the writer can check the
+    # document against the ENVELOPE, so the accepter/revoker cross-check lives here.
+    # Without it an acceptance could name any `accepted_by` it liked while being
+    # signed by someone else entirely — the document would claim an authority that
+    # never touched it, which is the self-asserted-string failure the whole release
+    # exists to remove. Found by mutation M14's survival prompting a re-read.
+    if transition == PRINCIPAL_KEY_ACCEPTED:
+        validate_key_acceptance_payload(payload)
+        _require_authority_matches_signer(
+            payload, field="accepted_by", actor_id=actor_id, key_id=key_entry.key_id
+        )
+        _require_authority_may_accept(anchor, actor_id=actor_id)
+    elif transition == PRINCIPAL_KEY_ACCEPTANCE_REVOKED:
+        validate_key_acceptance_revocation_payload(payload)
+        _require_authority_matches_signer(
+            payload, field="revoked_by", actor_id=actor_id, key_id=key_entry.key_id
+        )
+        _require_authority_may_accept(anchor, actor_id=actor_id)
+
     workflow: WorkflowBinding | None = None
     if workflow_name is not None and workflow_version is not None:
         workflow = resolve_workflow_registration(
@@ -971,9 +1521,7 @@ def append_v6_event(
             detail={"errors": list(verification.errors)},
         )
 
-    stored_time = datetime.strptime(envelope["occurred_at"], _OCCURRED_AT_FORMAT).replace(
-        tzinfo=UTC
-    )
+    stored_time = parse_v6_occurred_at(envelope["occurred_at"])
     inserted = conn.execute(
         SQL(
             f"INSERT INTO events ({_EVENT_COLUMNS}) VALUES "
@@ -1034,8 +1582,11 @@ def append_v6_event(
 
 
 __all__ = [
+    "KEY_ACCEPTANCE_REVOCATION_TYPE",
+    "KEY_ACCEPTANCE_TYPE",
     "PRINCIPAL_KEY_ACCEPTANCE_REVOKED",
     "PRINCIPAL_KEY_ACCEPTED",
+    "PRODUCER_ENV",
     "WORKFLOW_REGISTERED",
     "WORKFLOW_RETIRED",
     "AcceptanceScopes",
@@ -1048,9 +1599,13 @@ __all__ = [
     "append_v6_event",
     "build_v6_envelope",
     "check_producer_authorization",
+    "find_acceptance_revocations",
     "read_project_identity",
     "require_v6_epoch",
     "resolve_key_binding_anchor",
+    "resolve_producer",
     "resolve_workflow_registration",
+    "validate_key_acceptance_payload",
+    "validate_key_acceptance_revocation_payload",
     "workflow_definition_hash",
 ]

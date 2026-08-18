@@ -137,6 +137,12 @@ _STATUS_MAP: dict[str, int] = {
     # 500: the store's own entity chain is missing a link the writer must build on.
     # That is a server-side integrity fault, not something the caller can fix.
     ErrorCode.V6_CHAIN_LINK_MISSING: 500,
+    # 400: a malformed project-local acceptance payload is a defect in what was
+    # submitted, matching TRUST_LOG_PAYLOAD_INVALID's reasoning for the trust log.
+    ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID: 400,
+    # 403: the key's acceptance was revoked. An authorization decision, not a
+    # missing referent — which is why it is not 409 like KEY_BINDING_UNRESOLVED.
+    ErrorCode.KEY_ACCEPTANCE_REVOKED: 403,
 }
 
 

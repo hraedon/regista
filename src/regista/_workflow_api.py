@@ -13,11 +13,77 @@ from ._types import WorkflowDefinition, WorkflowVersion
 from ._workflow import parse_and_validate
 
 
+def _append_workflow_registration_event(
+    conn: Any,
+    key_set: Any,
+    wf: Any,
+) -> None:
+    """Append the signed ``workflow_registered`` event admission gate 1 resolves.
+
+    No-op before genesis: the v6 writer refuses pre-epoch by design, and a project
+    that never opens an epoch keeps the legacy row-only behaviour. Once the epoch is
+    open this runs in the caller's transaction, beside the registry INSERT, so the row
+    and the signed event cannot diverge.
+
+    ``definition`` is ``wf.to_dict()`` minus ``raw_yaml`` — ``RECONCILIATION.md``
+    Resolution 2 requires "the complete semantic definition and must not contain
+    ``raw_yaml``", and the v6 payload validator rejects it outright.
+    """
+    import uuid as _uuid
+
+    from ._v6_writer import (
+        WORKFLOW_REGISTERED,
+        append_v6_event,
+        read_project_identity,
+        resolve_producer,
+        workflow_definition_hash,
+    )
+
+    identity = read_project_identity(conn)
+    if identity is None:
+        return
+    if key_set is None:
+        raise RegistaError(
+            ErrorCode.LOAD_BEARING_FIELD_MISSING,
+            "registering a workflow in an opened v6 epoch requires a key set: the "
+            "registration is a signed event, not a row (V6-ENVELOPE.md §1.9)",
+            detail={"fields": ["key_set"]},
+        )
+    definition = {k: v for k, v in wf.to_dict().items() if k != "raw_yaml"}
+    workflow_id = _uuid.uuid5(
+        _uuid.NAMESPACE_OID,
+        "regista.workflow:"
+        + str(identity.project_instance_id)
+        + f":{wf.name}:{wf.version}",
+    )
+    append_v6_event(
+        conn,
+        key_set,
+        entity_kind="workflow",
+        entity_id=workflow_id,
+        transition=WORKFLOW_REGISTERED,
+        actor_id=identity.principal_id,
+        actor_kind="system",
+        producer=resolve_producer(),
+        payload={
+            "type": "regista.workflow-registration",
+            "version": 1,
+            "name": wf.name,
+            "workflow_version": wf.version,
+            "definition": definition,
+            "definition_hash": workflow_definition_hash(definition),
+            "supersedes_registration_event_hash": None,
+        },
+    )
+
+
 def register_workflow(
     mgr: ConnectionManager,
     metrics: Metrics,
     project: str,
     yaml_content: str,
+    *,
+    key_set: Any = None,
 ) -> WorkflowVersion:
     from ._workflow import compute_content_hash, compute_content_hash_from_dict
 
@@ -76,6 +142,16 @@ def register_workflow(
                     ],
                 ).fetchone(),
             )
+            # P1.7 admission gate 1: in the v6 epoch a registry ROW is not a
+            # registration. Once genesis has opened the epoch, the row is
+            # accompanied by a signed `workflow_registered` event in the SAME
+            # transaction — so the two cannot diverge, and an event naming this
+            # workflow has something to point `registration_event_hash` at.
+            #
+            # Gated on genesis rather than unconditional: before genesis the v6
+            # writer refuses by design, and a project that never opens an epoch
+            # keeps the legacy row-only behaviour.
+            _append_workflow_registration_event(conn, key_set, wf)
 
         metrics.inc("workflows_registered", project)
         timer.log("ok", detail=wf.name)
@@ -97,6 +173,8 @@ def register_workflow_file(
     parse_workflow_yaml: Any,
     yaml_dump: Any,
     path: str | Path,
+    *,
+    key_set: Any = None,
 ) -> WorkflowVersion:
     from ._workflow_compose import resolve_includes
 
@@ -108,7 +186,7 @@ def register_workflow_file(
         composed_yaml = yaml_dump(composed, default_flow_style=False, sort_keys=False)
     else:
         composed_yaml = raw_text
-    return register_workflow(mgr, metrics, project, composed_yaml)
+    return register_workflow(mgr, metrics, project, composed_yaml, key_set=key_set)
 
 
 def get_workflow(
