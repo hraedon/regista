@@ -1,11 +1,141 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
-> **Session 5 (2026-08-18) is PHASE 4 — the four-item fix round §0a-2 records; it
-> discharges escalations 8 and 9 and two of the reported-not-fixed items, and takes
-> the manifest 129 -> 126. Then §0a (PHASE 3, the manifest march; it corrects
-> Finding 14 and records the migration recipe as measured), then §0b (the Phase 2
-> verifier boundary, which supersedes §4 entirely and records findings 10-15), then
-> §0 (session 2), which supersedes parts of §1-§3.**
+> **Session 5 (2026-08-18) is PHASE 4. Read §0a-3 first — the cross-lineage
+> ceremony's REQUEST-CHANGES round, one blocking finding and six non-blocking, all
+> adopted. Then §0a-2 (the four-item fix round; discharges escalations 8 and 9 and
+> two reported-not-fixed items, manifest 129 -> 126), then §0a (PHASE 3, the
+> manifest march; it corrects Finding 14 and records the migration recipe as
+> measured), then §0b (the Phase 2 verifier boundary, which supersedes §4 entirely
+> and records findings 10-15), then §0 (session 2), which supersedes parts of
+> §1-§3.**
+
+---
+
+## 0a-3. Session 5 (2026-08-18): the ceremony's REQUEST-CHANGES round
+
+The cross-lineage branch ceremony (deepseek) returned **REQUEST-CHANGES**: one blocking
+finding, six non-blocking. All seven adopted. Manifest **unchanged at 126** — nothing
+here unblocked a node, which is the expected shape for a review round.
+
+**Validation, final state:**
+
+| Check | Result |
+|---|---|
+| default lane (`-m 'not slow'`, all extras, dedicated DB) | **3448 passed, 0 failed, 126 xfailed, 17 skipped** |
+| slow lane (`-m slow`) | **11 passed, 0 failed, 0 xfailed** |
+| `scripts/check-epoch-debt.py --base main` | OK — 126, shrink-only node set vs main (694) |
+| `tests/epoch_blocked_inventory.txt` | byte-identical to main (`8696641a…`) — **never touched** |
+| ruff / mypy (103 files) / both docs checkers | clean |
+
+### B1 (blocking) — a revocation was undone by an older acceptance
+
+`resolve_key_binding_anchor` returned from inside its candidate loop, so a **revoked
+newer acceptance fell through to an older live one** for the same (principal, key) and
+that anchor was returned; the `KEY_ACCEPTANCE_REVOKED` refusal fired only when the
+surviving fallback happened to be the bootstrap anchor. The comment above it has always
+stated the policy the code did not implement ("a revocation anywhere for this
+principal/key refuses").
+
+Reachable, and measured as **admitted** before the fix — bootstrap signs A1(P,K), signs
+A2(P,K), revokes A2, and an ordinary event by P/K is written:
+
+```
+FAILED ...::test_a_revoked_newer_acceptance_does_not_fall_back_to_an_older_one
+E   Failed: DID NOT RAISE <class 'regista._errors.RegistaError'>
+FAILED ...::test_an_ordinary_append_is_refused_after_the_newer_acceptance_is_revoked
+E   Failed: DID NOT RAISE <class 'regista._errors.RegistaError'>
+```
+
+Fixed per the coordinator's direction: nothing returns from the loop, and any revoked
+acceptance for the pair refuses. The refusal's detail now also names
+`superseded_live_anchors` — what was *not* fallen back to — so it reads as a decision
+rather than as "nothing was found". §3b's M14 unreachability analysis is corrected in
+place; the writer/verifier asymmetry (writer stricter, deliberately) is documented at the
+refusal itself and in that correction. **Re-accepting the same `key_id` after a revocation
+no longer restores appendability** — that is the intended consequence, not a side effect.
+
+### NB2 — a pinned `key_fingerprints` set was skippable by omission
+
+`entry.key_fingerprints and key_fingerprint is not None and …` — a caller that passed no
+fingerprint skipped the pin entirely and the entry **matched**. Latent only because the one
+production caller always passes `key_entry.fingerprint()`. An unknown fingerprint is now a
+non-match either way, and the refusal is named separately
+(`key_fingerprint_not_pinned`) because "this harness may not sign" sends the reader to a
+different half of the policy than "this key may not".
+
+### NB3 — the fifth hand-copy of the head formula, and a sixth
+
+`_bundle._hash_event` now delegates to `_signing.compute_chain_head_hash` (finding 16's
+centralisation). Grepping for a sixth found **five more** unconditional legacy copies —
+`_events` ×2, `_event_store` ×3 — of which the one at `_event_store.py:232` is a genuine
+sixth *version-dispatch* site: it links the **entity** chain for the legacy in-memory
+append. All delegated. For legacy envelopes the delegated dispatch returns the same bytes,
+so this is a no-op behaviourally and a hardening structurally: a hand-copy that is
+currently only reached with legacy envelopes is still a hand-copy, and both previous ones
+were bugs.
+
+### NB4 — the facade's two NULL divergences, refused rather than modelled
+
+`_same(None, None)` was `True` (SQL: `NULL = NULL` is NULL, so the row does not match), and
+`ORDER BY` sorted NULLs last in **both** directions via `row.get(column) or 0` (Postgres
+defaults to NULLS LAST for ASC and NULLS **FIRST** for DESC, and `or 0` additionally
+flattened `0`/`""`/`False`). No statement in the closed grammar reaches either today.
+Both are now `PARITY_BOUNDARY_POSTGRES_ONLY` refusals naming the column, so the first
+statement that needs NULL semantics fails at its own call site instead of answering
+plausibly — and a third test asserts the grammar the v6 paths *do* issue still works, so
+the refusals cannot be satisfied by a facade that refuses everything.
+
+### NB5 — `claim_expired` is a system action, and one claim must not take the batch
+
+Two fixes in one place. The sweep attributed `claim_expired` to the **claim holder** — who
+by definition did not act — so in the open epoch a holder with a revoked acceptance or
+insufficient scopes made `append_event` raise *inside the sweep's transaction*: the
+operator's expiry sweep stopped working entirely, and the projection change had already
+been issued. Now attributed through `resolve_system_actor_id` (the epoch-aware bootstrap
+principal, exactly like `escalated`), with the holder still named in the payload — which is
+where "whose claim expired" belongs — and `legacy_actor_id` keeping pre-genesis attribution
+byte for byte.
+
+Second, each claim is processed in its **own savepoint**, so a refusal rolls that claim's
+`DELETE` and projection `UPDATE` back and leaves it exactly as it was, and the rest of the
+batch still expires. Fail-closed per claim rather than a committed projection change with
+no event, which is what replay reports as drift. Refusals are named
+(`claims.sweep_claim_refused` + a `claims.sweep_incomplete` summary) and the return value
+counts successes only. The in-memory twin gets the same guarantee by **ordering** — the
+append first, the mutation after — because rollback is Postgres-only; that is the better
+mechanism anyway, since there is nothing to undo. Control (both reverted): 3 of 4 nodes
+fail, and the Postgres isolation node fails by the injected refusal *escaping*
+`sweep_expired_claims`.
+
+### NB6 — `supersedes_registration_event_hash` was a signed constant
+
+Hardcoded `None`, so every replacement registration signed the claim that it replaced
+nothing. Now resolved from signed events by `_v6_writer.find_previous_workflow_registration`
+— the **highest prior version of the same name**, tie-broken on chain position. A *lower*
+version registered later supersedes nothing (registering v1 after v3 is not a replacement),
+and the answer is a function of `workflow_registered` events rather than of the mutable
+`workflow_registry` row §1.9 exists to stop being the referent. One implementation covers
+both backends: the in-memory path routes through the same
+`_workflow_api._append_workflow_registration_event` over the facade. Retirement is
+deliberately not consulted — `workflow_retired` has no writer in this release, and §1.9's
+retirement rule constrains events that *refer to* a registration, not one recording what it
+replaced.
+
+### NB7 — two bookkeeping corrections
+
+`BundleReferents.from_bundle` computed `event_count=len(list(events))` **after** the
+indexing loop had already consumed `events`, so a generator argument reported `0` while the
+index held everything — and `event_count` is what `describe()` puts in the verdict detail
+naming this material's scope, so the number an auditor reads was the wrong one. Counted in
+the same pass now.
+
+§0a's blocker table summed to **139** against a **129** manifest. Recounted in place: it is
+blocker 3 that was wrong (26, not 36), and with that correction the table reconciles
+exactly — 129 at phase 3, 126 after phase 4. A measured per-file table is now beside it,
+with the caveat that the per-file *counts* are exact while the blocker *attribution* for
+the smaller files is inherited from phase 3 rather than re-derived (all 126 fail with the
+same `GENESIS_REQUIRED` clamp — re-measured, 94 refusals across seven files, one error
+code).
 
 ---
 
@@ -359,11 +489,45 @@ And five remained at the end of phase 3; **two of the five were discharged in
 | Blocker | Nodes | Owner |
 |---|---|---|
 | **2. reviewer lineage has no v6 vehicle** | 60 | **owner/coordinator design call** |
-| **3. WI-008** — `on_behalf_of` / delegated events | 36 | WI-008 |
+| **3. WI-008** — `on_behalf_of` / delegated events | ~~36~~ **26** | WI-008 |
 | **4. `entity_kind = "spec"`** is not in the closed §1.2 registry | 14 | **owner decision** |
 | **5. HMAC-signed ordinary events** (subject died with v5) | 26 | RETIRE — **listed, not executed** |
 | **8. WI-217's memory bound vs `StoreReferents`** | 2 | **DISCHARGED in §0a-2 (phase 4)** |
 | **9. in-memory `_global_chain_head` never advances** | 1 | **DISCHARGED in §0a-2 (phase 4)** |
+
+**The arithmetic, recounted (phase-4 ceremony NB7).** As published this table summed to
+**139** against a **129** manifest, which nobody checked. Blocker 3 was the wrong number:
+it is **26**, not 36. With that correction the table sums to `60 + 26 + 14 + 26 + 2 + 1 =
+129` at phase 3, and to **126** after phase 4 discharged blockers 8 and 9 — which is the
+manifest, exactly.
+
+The per-file counts are measured from `tests/epoch_blocked_manifest.json` rather than
+attributed, and they are the figure to trust:
+
+| Nodes | File | Blocker |
+|---|---|---|
+| 22 | `test_validator_context_enrichment.py` | 2 |
+| 16 | `test_assurance.py` | 2 |
+| 14 | `test_signer_binding.py` | 5 |
+| 14 | `test_spec_entity.py` | 4 |
+| 13 | `test_plan023_review_validators.py` | 2 |
+| 12 | `test_wi223_principal_binding.py` | 5 |
+| 11 | `test_plan010_integration.py` | 3 |
+| 9 | `test_wi224_claim_lineage.py` | 2 |
+| 6 | `test_canonical_workflow.py` | 3 |
+| 4 | `test_lineage.py` | 3 |
+| 3 | `test_wi262_principal_kind_ingress.py` | 3 |
+| 1 | `test_bc215_219_220_221.py` | 3 |
+| 1 | `test_replay_coverage.py` | 3 |
+| **126** | | |
+
+One caveat stated rather than hidden: the **blocker column is a claim about what each
+file's migration needs**, carried forward from phase 3's reading, not something the
+failure form can confirm. All 126 nodes fail with the *same* `GENESIS_REQUIRED` clamp —
+re-measured in phase 4 by dropping seven files' entries and running them (94 refusals, one
+error code). So the per-file counts are exact and the blocker attribution for the smaller
+files (2 vs 3 in particular) is inherited, not re-derived. `test_lineage.py` under blocker
+3 rather than 2 is the most likely place for that inheritance to be wrong.
 
 ### The four fixes, and the judgment calls in them
 
@@ -1217,13 +1381,40 @@ Mutation **M14** (delete the `and not revoked_matches` clause in
 `resolve_key_binding_anchor`) left the suite **green**. Reporting it rather than quietly
 patching, because the analysis matters more than the clause:
 
-The branch is **unreachable today**. Reaching it needs one principal/key to hold both a live
-bootstrap anchor *and* a separately revoked standalone acceptance. That state cannot be built:
-a standalone acceptance confers `may_accept_keys=False` (§5.8's object has no such member), the
-bootstrap principal cannot accept its own key (the `self_authorisation` refusal), and no other
-principal can accept at all. It becomes reachable the moment §5.8's **registrar** path lands
-("…or by the registrar"), so the clause is kept, and the code says in a comment that it is
-uncovered rather than implying otherwise.
+> **CORRECTED by the phase-4 ceremony (B1). The analysis below was wrong, and its
+> wrongness is the interesting part.** The clause was described as unreachable because
+> reaching it was thought to need a live *bootstrap* anchor beside a revoked standalone
+> acceptance. That framing came from the code's shape rather than from the policy the
+> comment stated: the refusal was reachable through a much more ordinary state — **two
+> standalone acceptances of the same (principal, key), the newer one revoked** — and in
+> that state the loop `continue`d past the revoked candidate and *returned the older
+> acceptance*, so the append was **admitted**. Measured as admitted, not reasoned about.
+> A revocation was therefore silently undone by any older acceptance still in the chain.
+>
+> The writer now refuses whenever *any* acceptance of this principal/key is revoked,
+> which is what its comment always claimed. Two consequences on the record: re-accepting
+> the **same** `key_id` after a revocation no longer restores appendability (a
+> replacement key is a new key), and the writer is deliberately **stricter than the
+> verifier** — §5.10 step 4 is a rule about one acceptance hash and `_verification`
+> keeps it to the letter so historical material verifies by the spec, while the writer
+> is deciding whether to *create* new evidence under a revoked key. Refusing more than
+> the verifier costs a caller a new `key_id` and cannot be wrong in the other direction.
+> Pinned by `test_a_revoked_newer_acceptance_does_not_fall_back_to_an_older_one` and
+> `test_an_ordinary_append_is_refused_after_the_newer_acceptance_is_revoked`.
+>
+> The lesson is the same one Finding 14 taught: "unreachable" derived from reading the
+> code is a hypothesis, and a mutation surviving is evidence about the *tests*, not proof
+> about the state space. M14 survived because nothing built the two-acceptance state —
+> not because the state was unbuildable.
+
+The original analysis, kept for the record: the branch is **unreachable today**. Reaching it
+needs one principal/key to hold both a live bootstrap anchor *and* a separately revoked
+standalone acceptance. That state cannot be built: a standalone acceptance confers
+`may_accept_keys=False` (§5.8's object has no such member), the bootstrap principal cannot
+accept its own key (the `self_authorisation` refusal), and no other principal can accept at
+all. It becomes reachable the moment §5.8's **registrar** path lands ("…or by the
+registrar"), so the clause is kept, and the code says in a comment that it is uncovered
+rather than implying otherwise.
 
 Chasing M14's reachability surfaced a real hole, now fixed: **`accepted_by` was never
 cross-checked against the actual signer.** An acceptance could name any authority it liked while

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, runtime_checkable
@@ -20,8 +19,8 @@ from ._contract import (
 )
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
-from ._signing import sign_event
-from ._signing_scheme import get_scheme, resolve_hash_function
+from ._signing import compute_chain_head_hash, sign_event
+from ._signing_scheme import get_scheme
 from ._types import Event
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -229,10 +228,15 @@ def append_event(
         if prev_evts:
             prev_evt = prev_evts[0]
             if prev_evt.canonical_envelope and prev_evt.signature:
-                chain_hash_fn = resolve_hash_function("sha-256")
-                prev_event_hash = chain_hash_fn(
-                    prev_evt.canonical_envelope + prev_evt.signature
-                ).digest()
+                # The SIXTH hand-copy of the head formula, found by grepping for the
+                # fifth (the phase-4 ceremony's NB3). This one links the *entity*
+                # chain rather than the global one, but it is the same construction —
+                # `_in_memory_replay`'s per-entity check delegates to
+                # `compute_chain_head_hash` too, and a link written under one formula
+                # and verified under another is finding 16 in a third place.
+                prev_event_hash = compute_chain_head_hash(
+                    bytes(prev_evt.canonical_envelope), bytes(prev_evt.signature)
+                )
 
     if key_set is not None:
         key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
@@ -550,9 +554,9 @@ class InMemoryEventStore:
             wi["last_event_at"] = event.timestamp
             wi["next_event_seq"] = event.event_seq + 1
             if event.canonical_envelope and event.signature:
-                self._global_chain_head = hashlib.sha256(
-                    bytes(event.canonical_envelope) + bytes(event.signature)
-                ).digest()
+                self._global_chain_head = compute_chain_head_hash(
+                    bytes(event.canonical_envelope), bytes(event.signature)
+                )
             return event
         ent_key = (getattr(event, "entity_kind", "work_item"), wid)
         ent = self._entity_seqs.setdefault(
@@ -568,9 +572,9 @@ class InMemoryEventStore:
         ent["last_event_seq"] = event.event_seq
         ent["next_event_seq"] = event.event_seq + 1
         if event.canonical_envelope and event.signature:
-            self._global_chain_head = hashlib.sha256(
-                bytes(event.canonical_envelope) + bytes(event.signature)
-            ).digest()
+            self._global_chain_head = compute_chain_head_hash(
+                bytes(event.canonical_envelope), bytes(event.signature)
+            )
         return event
 
     def read(
@@ -864,9 +868,9 @@ class PostgresEventStore:
         from ._events import _advance_global_chain_head
 
         if event.canonical_envelope and event.signature:
-            new_head = resolve_hash_function("sha-256")(
-                bytes(event.canonical_envelope) + bytes(event.signature)
-            ).digest()
+            new_head = compute_chain_head_hash(
+                bytes(event.canonical_envelope), bytes(event.signature)
+            )
             _advance_global_chain_head(self._conn, event.event_id, new_head)
 
         if event.entity_kind == "work_item":

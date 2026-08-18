@@ -592,7 +592,17 @@ class BundleReferents:
             or manifest.get("until_seq") is not None
         )
         indexed: dict[str, ReferentEvent] = {}
+        # Counted in the same pass, deliberately. `event_count=len(list(events))`
+        # iterated `events` a SECOND time after the loop above had already consumed it,
+        # so a generator argument reported `event_count=0` — and `event_count` is what
+        # `describe()` puts in every verdict detail naming this material's scope, so the
+        # bundle's own size was misreported to an auditor while the index was correct
+        # (phase-4 ceremony NB7). The annotation says `Sequence`, but a caller holding a
+        # cursor or a comprehension satisfies it structurally, which is precisely the
+        # kind of "works until it doesn't" the result model exists to remove.
+        counted = 0
         for event in events:
+            counted += 1
             if isinstance(event, Mapping):
                 envelope = event.get("canonical_envelope")
                 signature = event.get("signature")
@@ -609,7 +619,7 @@ class BundleReferents:
                 if windowed
                 else MaterialCompleteness.COMPLETE_STORE
             ),
-            event_count=len(list(events)),
+            event_count=counted,
         )
 
 

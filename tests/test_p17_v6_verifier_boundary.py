@@ -2561,6 +2561,76 @@ class TestTheTwoResolverLessCallSites:
         assert object_result == dict_result
 
 
+class TestBundleReferentsCountsWhatItIndexed:
+    """NB7 (phase-4 ceremony): ``event_count`` was computed by a second iteration.
+
+    ``from_bundle`` indexed ``events`` in a loop and then did ``len(list(events))``. For
+    a list that is merely wasteful; for anything consumed once — a generator, a
+    comprehension passed lazily, a cursor — the second pass sees nothing and the bundle
+    reports ``0 events`` while holding all of them. ``event_count`` is not decorative:
+    ``describe()`` puts it in the verdict detail that names this material's scope, so the
+    number an auditor reads was the one that was wrong.
+    """
+
+    def test_a_generator_of_events_is_counted_not_recounted(self, healthy) -> None:
+        from regista._v6_referents import BundleReferents
+
+        corpus, _genesis, _ordinary = healthy
+        pairs = [
+            {
+                "canonical_envelope": event.canonical_envelope,
+                "signature": event.signature,
+            }
+            for event in corpus.events
+        ]
+
+        material = BundleReferents.from_bundle({}, (row for row in pairs))
+
+        assert material.event_count == len(pairs)
+        assert len(material.events) == len(pairs)
+        assert f"{len(pairs)} events" in material.describe()
+
+    def test_a_list_of_events_is_unchanged(self, healthy) -> None:
+        """The list case must keep counting the same way, or the fix is a regression
+        wearing a bug report."""
+
+        from regista._v6_referents import BundleReferents
+
+        corpus, _genesis, _ordinary = healthy
+        rows = [
+            {
+                "canonical_envelope": event.canonical_envelope,
+                "signature": event.signature,
+            }
+            for event in corpus.events
+        ]
+        material = BundleReferents.from_bundle({}, rows)
+        assert material.event_count == len(rows)
+        assert material.completeness is MaterialCompleteness.COMPLETE_STORE
+
+    def test_events_that_are_not_v6_are_counted_but_not_indexed(self, healthy) -> None:
+        """The count is "what the bundle carries", the index is "what is addressable" —
+        a v1-v5 row is legitimately the first and not the second, and conflating them
+        would make a mixed-era bundle look truncated."""
+
+        from regista._v6_referents import BundleReferents
+
+        corpus, _genesis, _ordinary = healthy
+        rows: list[Any] = [
+            {
+                "canonical_envelope": event.canonical_envelope,
+                "signature": event.signature,
+            }
+            for event in corpus.events
+        ]
+        rows.append({"canonical_envelope": b"{}", "signature": b"\x00"})
+
+        material = BundleReferents.from_bundle({}, (row for row in rows))
+        assert material.event_count == len(rows)
+        assert len(material.events) == len(rows) - 1
+        assert "v6-addressable" in material.describe()
+
+
 class TestTheNulledEnvelopeReading:
     """``UPDATE events SET canonical_envelope = NULL`` — one reading, two callers.
 

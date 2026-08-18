@@ -56,6 +56,8 @@ from regista._v6_writer import (
     workflow_definition_hash,
 )
 
+WORKFLOW_PATH = str(Path(__file__).parent / "test_workflow.yaml")
+
 WORKER = "agent:worker"
 PRODUCER = Producer(
     harness=TEST_HARNESS,
@@ -510,6 +512,130 @@ class TestWorkflowRegistrationGate:
 # ---------------------------------------------------------------------------
 
 
+class TestRegistrationProvenance:
+    """NB6 (phase-4 ceremony): ``supersedes_registration_event_hash`` was a constant.
+
+    §1.9's payload carries the link from a replacement registration to the one it
+    replaces, and the writer hardcoded ``None`` — so every replacement in every project
+    signed the claim that it replaced nothing. The field is optional per spec ("**may**
+    name"), which is exactly why a hardcoded null is worse than an absent member: it is
+    a signed statement, and it was never true.
+    """
+
+    @pytest.fixture(autouse=True)
+    def producer_env(self, monkeypatch):
+        """The production ``register_workflow`` path resolves the producer from the
+        process environment (it takes no per-append argument), so these tests must
+        publish it — the writer refuses rather than inventing a harness name."""
+
+        from _v6_fixtures import (
+            TEST_HARNESS,
+            TEST_HARNESS_VERSION,
+            TEST_MODEL,
+            TEST_MODEL_LINEAGE,
+        )
+
+        from regista._v6_writer import PRODUCER_ENV
+
+        monkeypatch.setenv(PRODUCER_ENV["harness"], TEST_HARNESS)
+        monkeypatch.setenv(PRODUCER_ENV["harness_version"], TEST_HARNESS_VERSION)
+        monkeypatch.setenv(PRODUCER_ENV["model"], TEST_MODEL)
+        monkeypatch.setenv(PRODUCER_ENV["model_lineage"], TEST_MODEL_LINEAGE)
+
+    def _registration_payloads(self, project) -> list[dict[str, Any]]:
+        from regista._signing import compute_v6_event_hash
+        from regista._verification import parse_v6_envelope_strict
+
+        with project._mgr.transaction() as conn:
+            rows = conn.execute(
+                "SELECT canonical_envelope, signature, global_seq FROM events "
+                "WHERE transition = 'workflow_registered' ORDER BY global_seq ASC"
+            ).fetchall()
+        out = []
+        for row in rows:
+            envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
+            out.append(
+                {
+                    "payload": envelope["payload"],
+                    "event_hash": "sha256:"
+                    + compute_v6_event_hash(
+                        bytes(row["canonical_envelope"]), bytes(row["signature"])
+                    ).hex(),
+                }
+            )
+        return out
+
+    def test_the_first_registration_supersedes_nothing_and_v2_names_it(
+        self, project, keyset, genesis
+    ):
+        yaml_v1 = Path(WORKFLOW_PATH).read_text()
+        assert "\nversion: 1\n" in yaml_v1
+        yaml_v2 = yaml_v1.replace("\nversion: 1\n", "\nversion: 2\n", 1)
+
+        project.register_workflow(yaml_v1)
+        project.register_workflow(yaml_v2)
+
+        registrations = self._registration_payloads(project)
+        by_version = {r["payload"]["workflow_version"]: r for r in registrations}
+        assert set(by_version) == {1, 2}, [r["payload"] for r in registrations]
+
+        # First registration: nothing to supersede, and the null is the truth.
+        assert by_version[1]["payload"]["supersedes_registration_event_hash"] is None
+        # The replacement names the registration it replaces, by v6 event hash — so the
+        # provenance is resolvable from signed material rather than from the mutable
+        # `workflow_registry` row §1.9 exists to stop being the referent.
+        assert (
+            by_version[2]["payload"]["supersedes_registration_event_hash"]
+            == by_version[1]["event_hash"]
+        )
+
+    def test_a_lower_version_registered_later_supersedes_nothing(
+        self, project, keyset, genesis
+    ):
+        """Registering v1 after v2 is not a replacement of v2, and must not claim to be.
+
+        The candidate set is versions *below* this one, so "later on the chain" alone is
+        never enough — which is the difference between recording provenance and
+        recording chain order.
+        """
+
+        yaml_v1 = Path(WORKFLOW_PATH).read_text()
+        yaml_v2 = yaml_v1.replace("\nversion: 1\n", "\nversion: 2\n", 1)
+
+        project.register_workflow(yaml_v2)
+        project.register_workflow(yaml_v1)
+
+        by_version = {
+            r["payload"]["workflow_version"]: r
+            for r in self._registration_payloads(project)
+        }
+        assert by_version[2]["payload"]["supersedes_registration_event_hash"] is None
+        assert by_version[1]["payload"]["supersedes_registration_event_hash"] is None
+
+    def test_a_third_version_names_the_second_not_the_first(
+        self, project, keyset, genesis
+    ):
+        """The link is to the *highest* prior version, not to the oldest one."""
+
+        yaml_v1 = Path(WORKFLOW_PATH).read_text()
+        project.register_workflow(yaml_v1)
+        project.register_workflow(yaml_v1.replace("\nversion: 1\n", "\nversion: 2\n", 1))
+        project.register_workflow(yaml_v1.replace("\nversion: 1\n", "\nversion: 3\n", 1))
+
+        by_version = {
+            r["payload"]["workflow_version"]: r
+            for r in self._registration_payloads(project)
+        }
+        assert (
+            by_version[3]["payload"]["supersedes_registration_event_hash"]
+            == by_version[2]["event_hash"]
+        )
+        assert (
+            by_version[2]["payload"]["supersedes_registration_event_hash"]
+            == by_version[1]["event_hash"]
+        )
+
+
 class TestProducerAuthorizationGate:
     def _anchor(self, project, keyset, genesis, principal_id=BOOTSTRAP_PRINCIPAL):
         with project._mgr.transaction() as conn:
@@ -595,6 +721,89 @@ class TestProducerAuthorizationGate:
             )
         assert exc.value.code is ErrorCode.PRODUCER_NOT_AUTHORIZED
         assert exc.value.detail["reason"] == "principal_absent_from_policy"
+
+    def test_a_pinned_fingerprint_is_not_satisfied_by_an_unnamed_key(
+        self, project, keyset, genesis
+    ):
+        """NB2 (phase-4 ceremony): the pin must not be skippable by omission.
+
+        The condition was ``entry.key_fingerprints and key_fingerprint is not None
+        and key_fingerprint not in entry.key_fingerprints`` — so a caller that passed
+        no fingerprint skipped the pin entirely and the entry MATCHED. Latent only
+        because the one production caller always passes one; a gate whose strictness
+        depends on an optional argument being remembered is not a gate.
+        """
+
+        with pytest.raises(RegistaError) as exc:
+            check_producer_authorization(
+                PRODUCER,
+                principal_id=BOOTSTRAP_PRINCIPAL,
+                entity_kind="work_item",
+                transition="created",
+                anchor=self._anchor(project, keyset, genesis),
+                policy=[
+                    ProducerPolicyEntry(
+                        principal_id=BOOTSTRAP_PRINCIPAL,
+                        allowed_harnesses=frozenset({TEST_HARNESS}),
+                        key_fingerprints=frozenset({"ed25519:sha256:" + "ab" * 32}),
+                    )
+                ],
+                key_fingerprint=None,
+            )
+        assert exc.value.code is ErrorCode.PRODUCER_NOT_AUTHORIZED
+        assert exc.value.detail["reason"] == "key_fingerprint_not_pinned"
+        assert exc.value.detail["key_fingerprint"] is None
+
+    def test_a_pinned_fingerprint_refuses_a_different_key_and_names_the_pin(
+        self, project, keyset, genesis
+    ):
+        """The already-working half, asserted beside the fixed one so the refusal
+        reason is pinned for both inputs rather than only for the new one."""
+
+        with pytest.raises(RegistaError) as exc:
+            check_producer_authorization(
+                PRODUCER,
+                principal_id=BOOTSTRAP_PRINCIPAL,
+                entity_kind="work_item",
+                transition="created",
+                anchor=self._anchor(project, keyset, genesis),
+                policy=[
+                    ProducerPolicyEntry(
+                        principal_id=BOOTSTRAP_PRINCIPAL,
+                        allowed_harnesses=frozenset({TEST_HARNESS}),
+                        key_fingerprints=frozenset({"ed25519:sha256:" + "ab" * 32}),
+                    )
+                ],
+                key_fingerprint="ed25519:sha256:" + "cd" * 32,
+            )
+        assert exc.value.code is ErrorCode.PRODUCER_NOT_AUTHORIZED
+        assert exc.value.detail["reason"] == "key_fingerprint_not_pinned"
+        assert exc.value.detail["pinned_fingerprints"] == [
+            "ed25519:sha256:" + "ab" * 32
+        ]
+
+    def test_a_pinned_fingerprint_that_matches_still_matches(
+        self, project, keyset, genesis
+    ):
+        """And the pin must not become unsatisfiable: the real key still passes."""
+
+        fingerprint = keyset.bootstrap.fingerprint
+        verdict = check_producer_authorization(
+            PRODUCER,
+            principal_id=BOOTSTRAP_PRINCIPAL,
+            entity_kind="work_item",
+            transition="created",
+            anchor=self._anchor(project, keyset, genesis),
+            policy=[
+                ProducerPolicyEntry(
+                    principal_id=BOOTSTRAP_PRINCIPAL,
+                    allowed_harnesses=frozenset({TEST_HARNESS}),
+                    key_fingerprints=frozenset({fingerprint}),
+                )
+            ],
+            key_fingerprint=fingerprint,
+        )
+        assert verdict == "matches_published_policy"
 
     def test_a_lineage_outside_the_closed_registry_is_refused(
         self, project, keyset, genesis

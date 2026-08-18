@@ -21,7 +21,7 @@ from ._contract import (
 )
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
-from ._signing import sign_event
+from ._signing import compute_chain_head_hash, sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
 
@@ -543,10 +543,16 @@ def append_event(
             f"event_id {event_id} already exists",
         ) from exc
 
+    # The formula lives once, at `_signing.compute_chain_head_hash` (finding 16). This
+    # is a legacy-only writer — post-genesis the funnel routes through the v6 writer,
+    # so the envelope here is v1-v5 and the delegated dispatch returns the same bytes
+    # the hand-copied `sha256(envelope || signature)` did. Delegating anyway is the
+    # point of centralising it: a hand-copy that is *currently* only reached with
+    # legacy envelopes is still a hand-copy, and the fifth one was found by a ceremony.
     _advance_global_chain_head(
         conn,
         event_id,
-        resolve_hash_function("sha-256")(bytes(canonical_envelope) + bytes(signature)).digest(),
+        compute_chain_head_hash(bytes(canonical_envelope), bytes(signature)),
     )
 
     if entity_kind == "work_item":
@@ -878,10 +884,16 @@ def append_transition_event(
             f"event_id {event_id} already exists",
         ) from exc
 
+    # The formula lives once, at `_signing.compute_chain_head_hash` (finding 16). This
+    # is a legacy-only writer — post-genesis the funnel routes through the v6 writer,
+    # so the envelope here is v1-v5 and the delegated dispatch returns the same bytes
+    # the hand-copied `sha256(envelope || signature)` did. Delegating anyway is the
+    # point of centralising it: a hand-copy that is *currently* only reached with
+    # legacy envelopes is still a hand-copy, and the fifth one was found by a ceremony.
     _advance_global_chain_head(
         conn,
         event_id,
-        resolve_hash_function("sha-256")(bytes(canonical_envelope) + bytes(signature)).digest(),
+        compute_chain_head_hash(bytes(canonical_envelope), bytes(signature)),
     )
 
     merged_fields = wi_row["custom_fields"]

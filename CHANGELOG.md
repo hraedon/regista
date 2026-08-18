@@ -248,6 +248,72 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   than a second advance: nothing is copied, so there is no window in which they disagree.
   This is the second parity hole measured after the chain-formula one above.
 
+- **A revoked key acceptance was undone by an older one (P1.7 phase 4, cross-lineage
+  ceremony B1).** `_v6_writer.resolve_key_binding_anchor` returned from inside its
+  candidate loop, so a **revoked newer acceptance fell through to an older live
+  acceptance** of the same (principal, key) and that anchor was returned; the
+  `KEY_ACCEPTANCE_REVOKED` refusal fired only when the surviving fallback happened to be
+  the bootstrap anchor, which is the one case a test covered. Reachable and measured as
+  *admitted*: bootstrap accepts a key twice and revokes the second acceptance, and an
+  ordinary event by that principal was still signed and written — silently undoing the
+  operator's most recent word about the key. Any revoked acceptance for the pair now
+  refuses, which is the policy the code's own comment had always stated, and the refusal
+  names `superseded_live_anchors` so it reads as a decision rather than as "nothing was
+  found". Two deliberate consequences: **re-accepting the same `key_id` after a revocation
+  no longer restores appendability** (a replacement key is a new key), and the **writer is
+  stricter than the verifier** — `TRUST-DOMAIN.md` §5.10 step 4 is a rule about one
+  acceptance hash and the verifier keeps it to the letter so historical material verifies
+  by the spec, while the writer is deciding whether to *create* evidence under a revoked
+  key.
+
+- **A pinned producer-policy `key_fingerprints` set was skippable by omission** (NB2).
+  `check_producer_authorization` tested `entry.key_fingerprints and key_fingerprint is not
+  None and …`, so a caller that presented no fingerprint skipped the pin entirely and the
+  entry matched. An unknown fingerprint — including an absent one — is now a non-match,
+  refused as `key_fingerprint_not_pinned` rather than reported as a harness failure.
+
+- **The chain-head formula had five more hand-copies, one of them a sixth version
+  dispatch** (NB3). `_bundle._hash_event` now delegates to
+  `_signing.compute_chain_head_hash`, as do the legacy head-advance sites in `_events`
+  (×2) and `_event_store` (×3) — including the **entity**-chain link at
+  `_event_store.py:232`. Behaviourally a no-op for legacy envelopes and a hardening
+  structurally: both previous hand-copies of this formula were bugs (mutation M20, and
+  `_in_memory_replay`'s two chain walks).
+
+- **The in-memory v6 facade answered SQL's NULL semantics wrongly in two places** (NB4).
+  `_same(None, None)` was `True` where `NULL = NULL` is NULL, and `ORDER BY` sorted NULLs
+  last in *both* directions where Postgres defaults to NULLS LAST/FIRST by direction (the
+  `or 0` also flattened `0`/`""`/`False`). No statement in the closed grammar reaches
+  either today, so both are now `PARITY_BOUNDARY_POSTGRES_ONLY` refusals naming the
+  column — the first statement that needs NULL semantics fails at its own call site
+  instead of quietly answering something production would not.
+
+- **`claim_expired` was attributed to the claim holder, and one bad claim aborted the whole
+  sweep** (NB5). The holder did not act — a lease lapsed — so in an open v6 epoch a holder
+  whose acceptance had been revoked (or whose scopes do not cover `claim_expired`) made
+  `append_event` raise *inside the sweep's transaction*, and the operator's expiry sweep
+  stopped working. It is now attributed to the project's bootstrap principal through
+  `resolve_system_actor_id`, exactly like `escalated`, with the holder still named in the
+  payload and pre-genesis attribution unchanged. Each claim is also processed in its own
+  savepoint, so a refusal rolls that claim back and leaves it intact while the rest of the
+  batch expires — reported as `claims.sweep_claim_refused` plus a `claims.sweep_incomplete`
+  summary, with the return value counting successes only. The in-memory twin gets the same
+  guarantee by appending before mutating, since rollback is Postgres-only.
+
+- **`supersedes_registration_event_hash` was a signed constant** (NB6). Every
+  `workflow_registered` payload carried `null`, so every replacement registration signed
+  the claim that it replaced nothing. It is now resolved from signed events by
+  `_v6_writer.find_previous_workflow_registration` — the highest prior version of the same
+  name, tie-broken on chain position — so the provenance chain between workflow versions
+  exists in the record rather than in the mutable `workflow_registry` row §1.9 exists to
+  stop being the referent. A lower version registered later still supersedes nothing.
+
+- **`BundleReferents.from_bundle` reported `event_count=0` for a generator** (NB7).
+  The count was `len(list(events))` computed *after* the indexing loop had consumed the
+  iterable, and `event_count` is what `describe()` puts in the verdict detail naming the
+  material's scope — so the bundle's own size was misreported to an auditor while the
+  index was correct. Counted in the same pass now.
+
 - **`_verification` and `_replay` disagreed about a nulled `canonical_envelope`, and now
   agree — fail-closed (P1.7 phase 4).** `verify_event_strict` reported
   `UNVERIFIABLE`/`ENVELOPE_ABSENT` ("nothing failed, there is nothing to check") while

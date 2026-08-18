@@ -579,6 +579,79 @@ class TestRevocationAtWriteTime:
             )
         assert bootstrap_anchor.kind == "bootstrap"
 
+    def test_a_revoked_newer_acceptance_does_not_fall_back_to_an_older_one(
+        self, project, keyset, genesis
+    ):
+        """B1: the reachable half of the fall-through, which the bootstrap case hid.
+
+        Two standalone acceptances of the SAME (principal, key) — the second carrying
+        the current scopes — then a revocation of the second. Before this fix the
+        resolver's loop ``continue``d past the revoked A2 and *returned* A1, because
+        the ``KEY_ACCEPTANCE_REVOKED`` refusal was reached only when the surviving
+        fallback happened to be the bootstrap anchor. So the operator's most recent
+        word about the key — "no longer usable" — was silently undone by an older
+        acceptance still sitting in the chain, which is the fail-open shape the sibling
+        test above claims is closed.
+
+        The writer's policy is the one its comment always stated: a revocation
+        *anywhere* for this principal/key refuses. That is deliberately STRICTER than
+        the verifier, which keeps §5.10 step 4's per-acceptance-hash rule to the
+        letter so historical material verifies by the spec — see
+        ``resolve_key_binding_anchor``'s note on the asymmetry.
+        """
+
+        first = self._accept(project, keyset, genesis)
+        second = self._accept(project, keyset, genesis)
+        assert second.event_hash_text != first.event_hash_text
+
+        with project._mgr.transaction() as conn:
+            anchor = resolve_key_binding_anchor(
+                conn, principal_id=WORKER, key_id=keyset.key_for(WORKER).key_id
+            )
+        assert anchor.event_hash == second.event_hash_text, (
+            "the newest acceptance is the one carrying current scopes"
+        )
+
+        self._revoke(project, keyset, genesis, second)
+
+        with pytest.raises(RegistaError) as exc:
+            with project._mgr.transaction() as conn:
+                resolve_key_binding_anchor(
+                    conn, principal_id=WORKER, key_id=keyset.key_for(WORKER).key_id
+                )
+        assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_REVOKED
+        assert exc.value.detail["revoked_acceptances"] == [second.event_hash_text]
+        # The older acceptance is named as what was NOT fallen back to, so the refusal
+        # is legible as "a revocation is not a downgrade".
+        assert first.event_hash_text in exc.value.detail["superseded_live_anchors"]
+
+    def test_an_ordinary_append_is_refused_after_the_newer_acceptance_is_revoked(
+        self, project, keyset, genesis
+    ):
+        """The same reachable case at the production boundary rather than the helper.
+
+        Pre-fix this append was **admitted**: it resolved the older acceptance and
+        wrote a signed event under a key whose acceptance the operator had revoked.
+        """
+
+        self._accept(project, keyset, genesis)
+        second = self._accept(project, keyset, genesis)
+        self._revoke(project, keyset, genesis, second)
+
+        with pytest.raises(RegistaError) as exc:
+            with project._mgr.transaction() as conn:
+                append_v6_event(
+                    conn,
+                    project._keys,
+                    entity_kind="work_item",
+                    entity_id=uuid.uuid4(),
+                    transition="created",
+                    actor_id=WORKER,
+                    actor_kind="agent",
+                    producer=PRODUCER,
+                )
+        assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_REVOKED
+
 
 # ---------------------------------------------------------------------------
 # The process-level producer identity, and the §2.3 timestamp form

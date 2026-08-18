@@ -4,6 +4,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+
 from ._contract import (
     Jsonb,
     compute_coalesce_threshold,
@@ -14,11 +16,14 @@ from ._contract import (
     validate_release,
     validate_work_item_exists,
 )
+from ._errors import RegistaError
 from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
 from ._events import resolve_system_actor_id_in_memory
 from ._keys import KeySet
 from ._types import Claim
+
+log = structlog.get_logger()
 
 
 def in_memory_acquire_claim(
@@ -220,28 +225,64 @@ def in_memory_sweep_expired_claims(
         (wid, c) for wid, c in list(claims.items())
         if c["expires_at"] < now
     ]
+    swept = 0
+    refused = 0
     for wid, claim in expired:
         current = claims.get(wid)
         if current is None:
             continue
         if current["expires_at"] != claim["expires_at"]:
             continue
-        del claims[wid]
         wi = work_items.get(wid)
-        if wi is not None:
-            if (
-                wi.get("claimed_by") == claim["actor_id"]
-                and wi.get("claim_expires_at") == claim["expires_at"]
-            ):
-                wi["claimed_by"] = None
-                wi["claim_expires_at"] = None
+        holds_claim = wi is not None and (
+            wi.get("claimed_by") == claim["actor_id"]
+            and wi.get("claim_expires_at") == claim["expires_at"]
+        )
+        if wi is not None and holds_claim:
+            # The append FIRST, the mutation after — the in-memory shape of the
+            # Postgres path's per-claim savepoint (NB5). Rollback is
+            # PARITY_BOUNDARY_POSTGRES_ONLY, so ordering is the only mechanism this
+            # backend has for "a refusal leaves the claim exactly as it was", and it
+            # is the better mechanism anyway: there is nothing to undo.
+            try:
                 _in_memory_append_claim_event(
                     store, wi, key_set, uuid.uuid4(), "claim_expired",
                     {"actor_id": claim["actor_id"], "expired_at": now.isoformat()},
-                    actor_id=claim["actor_id"]
-                    or resolve_system_actor_id_in_memory(store, legacy_actor_id="system"),
+                    # `claim_expired` is a SYSTEM action: the holder did not act, a
+                    # lease lapsed. Attributing it to the holder made the sweep
+                    # depend on the holder still being appendable. The payload above
+                    # keeps naming the holder, which is where that belongs.
+                    actor_id=resolve_system_actor_id_in_memory(
+                        store, legacy_actor_id=claim["actor_id"] or "system"
+                    ),
                 )
-    return len(expired)
+            except RegistaError as exc:
+                refused += 1
+                log.error(
+                    "claims.sweep_claim_refused",
+                    work_item_id=str(wid),
+                    actor_id=claim["actor_id"],
+                    error_code=getattr(exc.code, "value", str(exc.code)),
+                    error=str(exc)[:500],
+                    detail=(
+                        "this claim was left intact and the sweep continued; a "
+                        "refusal here must not stop the other claims from expiring"
+                    ),
+                )
+                continue
+            wi["claimed_by"] = None
+            wi["claim_expires_at"] = None
+        del claims[wid]
+        swept += 1
+
+    if refused:
+        log.error(
+            "claims.sweep_incomplete",
+            expired=len(expired),
+            swept=swept,
+            refused=refused,
+        )
+    return swept
 
 
 def _in_memory_check_escalation(

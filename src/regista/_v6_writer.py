@@ -487,12 +487,23 @@ def resolve_key_binding_anchor(
     consults ``principal_keys``: §5.11's last row makes that the S6 defect, and
     the discipline is "no fallback", so an unresolvable binding is a refusal with
     ``KEY_BINDING_UNRESOLVED`` rather than a guess.
+
+    A revocation of **any** acceptance of this principal/key refuses the whole
+    resolution with ``KEY_ACCEPTANCE_REVOKED`` — it is not superseded by an older
+    surviving anchor, and it is stricter than what the verifier decides. Both halves
+    of that are explained at the refusal itself.
     """
 
     candidates = _anchor_candidate_rows(conn)
     revoked = find_acceptance_revocations(conn)
+    acceptance: KeyBindingAnchor | None = None
     bootstrap: KeyBindingAnchor | None = None
     revoked_matches: list[str] = []
+    live_matches: list[str] = []
+    # Candidates arrive newest-first, so the FIRST live acceptance seen is the newest
+    # one — the one carrying current scopes. Nothing returns from inside this loop:
+    # the revocation question is about the whole set for this principal/key, and
+    # answering it early is precisely the bug B1 named (see below).
     for row in candidates:
         anchor = _anchor_from_row(row)
         if anchor.principal_id != principal_id or anchor.key_id != key_id:
@@ -500,41 +511,60 @@ def resolve_key_binding_anchor(
         if anchor.event_hash in revoked:
             revoked_matches.append(anchor.event_hash)
             continue
+        live_matches.append(anchor.event_hash)
         if anchor.kind == "acceptance":
-            return anchor
-        if bootstrap is None:
+            if acceptance is None:
+                acceptance = anchor
+        elif bootstrap is None:
             bootstrap = anchor
-    # A revoked acceptance must not fall through to an EARLIER live anchor. Falling
-    # back would turn a revocation into a *privilege escalation*: the operator's most
-    # recent word about this key was "no longer usable", and the older bootstrap
-    # anchor is typically the BROADER scope (it carries may_accept_keys). So a
-    # revocation anywhere for this principal/key refuses, even if an unrevoked
-    # bootstrap anchor is still present.
+
+    # A revocation ANYWHERE for this principal/key refuses, whatever else survives.
+    # Falling back turns a revocation into a *privilege escalation*: the operator's
+    # most recent word about this key was "no longer usable", and what remains is
+    # either an older acceptance (whose scopes the newer one superseded) or the
+    # bootstrap anchor (typically the BROADER scope — it carries may_accept_keys).
     #
-    # HONESTY NOTE — this `not revoked_matches` clause is currently UNREACHABLE, and
-    # mutation M14 (deleting it) left the suite green, which is how that was found.
-    # Reaching it needs one principal/key to hold both a live bootstrap anchor and a
-    # separately revoked standalone acceptance. Today it cannot: a standalone
-    # acceptance confers may_accept_keys=False (§5.8's object has no such member), the
-    # bootstrap principal cannot accept its own key (the self_authorisation refusal),
-    # and no other principal can accept at all. It becomes reachable the moment
-    # §5.8's registrar path lands ("Subsequent acceptances are still signed by an
-    # already-accepted key holding scopes.may_accept_keys, **or by the registrar**"),
-    # which is why the clause is kept rather than deleted as dead code. It is
-    # deliberately NOT presented as covered.
-    if bootstrap is not None and not revoked_matches:
-        return bootstrap
+    # B1 (cross-lineage ceremony, phase 4): this policy is what the comment here has
+    # always said, and until now the code delivered it only for the bootstrap case.
+    # The loop above used to `continue` past a revoked candidate and RETURN an older
+    # live acceptance, so the refusal fired only when the surviving fallback happened
+    # to be a bootstrap anchor. The reachable case: the bootstrap principal signs
+    # A1(P,K), signs A2(P,K), then revokes A2 — and an ordinary event by P/K resolved
+    # A1 and was admitted, silently undoing the latest revocation. Measured as
+    # admitted before the fix; pinned by
+    # `test_a_revoked_newer_acceptance_does_not_fall_back_to_an_older_one`.
+    #
+    # THE WRITER IS DELIBERATELY STRICTER THAN THE VERIFIER HERE, and the asymmetry is
+    # the point rather than an oversight. `TRUST-DOMAIN.md` §5.10 step 4 is a rule
+    # about ONE acceptance hash — "no `principal_key_acceptance_revoked` for `A` lies
+    # between `A` and `E`" — and `_verification` implements exactly that, because a
+    # verifier must be able to reproduce a verdict over material written years ago by
+    # the spec's letter. The writer is deciding something else: whether to *create*
+    # new evidence under a key an operator has revoked. Refusing more than the
+    # verifier costs a caller nothing but a new `key_id`, and it is the direction that
+    # cannot be wrong. One consequence, stated: re-accepting the SAME `key_id` after a
+    # revocation no longer restores appendability. A revoked key stays revoked; a
+    # replacement key is a new key.
     if revoked_matches:
         raise RegistaError(
             ErrorCode.KEY_ACCEPTANCE_REVOKED,
-            f"every project-local acceptance of key {key_id!r} for principal "
-            f"{principal_id!r} has been revoked (TRUST-DOMAIN.md §5.8/§5.10 step 4)",
+            f"key {key_id!r} for principal {principal_id!r} has a revoked "
+            f"project-local acceptance, so no anchor for it may be used — a "
+            f"revocation is not superseded by an older acceptance "
+            f"(TRUST-DOMAIN.md §5.8/§5.10 step 4)",
             detail={
                 "principal_id": principal_id,
                 "key_id": key_id,
                 "revoked_acceptances": revoked_matches,
+                # What was NOT fallen back to, so the refusal reads as a decision
+                # rather than as "nothing was found".
+                "superseded_live_anchors": live_matches,
             },
         )
+    if acceptance is not None:
+        return acceptance
+    if bootstrap is not None:
+        return bootstrap
     raise RegistaError(
         ErrorCode.KEY_BINDING_UNRESOLVED,
         f"no preceding project key-binding anchor accepts key {key_id!r} for "
@@ -992,6 +1022,73 @@ def find_acceptance_revocations(conn: DictConn) -> dict[str, int]:
     return revoked
 
 
+def find_previous_workflow_registration(
+    conn: DictConn, *, name: str, workflow_version: int
+) -> str | None:
+    """The registration this one replaces, as a v6 event hash, or ``None``.
+
+    ``V6-ENVELOPE.md`` §1.9 / ``RECONCILIATION.md`` Resolution 2: "Exactly one
+    registration may introduce ``(name, workflow_version)`` in a project … A
+    replacement uses a new version and **may** name
+    ``supersedes_registration_event_hash``." The writer used to hardcode ``None``
+    there, so the field was a signed constant: every replacement claimed to replace
+    nothing, and the provenance chain between versions of a workflow did not exist in
+    the signed record at all (phase-4 ceremony NB6).
+
+    "The registration this one replaces" is the **highest prior version of the same
+    name**, tie-broken on chain position. Two properties make that the right answer
+    rather than a convenient one:
+
+    * A *lower* version registered later is not a replacement of a higher one, so
+      registering v1 after v3 correctly supersedes nothing. Only versions below this
+      one are candidates.
+    * The answer is a function of signed events, not of the ``workflow_registry`` row,
+      which is mutable and is precisely what §1.9 exists to stop being the referent.
+
+    Retirement is deliberately not consulted: ``workflow_retired`` has no writer in
+    this release, and §1.9's rule about retirement constrains events that *refer to* a
+    registration through ``workflow.registration_event_hash``, not a later registration
+    recording what it replaced.
+    """
+
+    from ._signing import compute_v6_event_hash
+
+    rows = conn.execute(
+        SQL(
+            "SELECT canonical_envelope, signature, global_seq FROM events "
+            "WHERE transition = %s ORDER BY global_seq ASC"
+        ),
+        [WORKFLOW_REGISTERED],
+    ).fetchall()
+
+    best: tuple[int, int] | None = None
+    best_hash: str | None = None
+    for row in rows:
+        if not row["canonical_envelope"] or not row["signature"]:
+            continue
+        try:
+            envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
+        except (V6EnvelopeError, TypeError, ValueError):
+            continue
+        payload = envelope["payload"]
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("name") != name:
+            continue
+        prior_version = payload.get("workflow_version")
+        if not isinstance(prior_version, int) or isinstance(prior_version, bool):
+            continue
+        if prior_version >= workflow_version:
+            continue
+        position = (prior_version, int(row["global_seq"]))
+        if best is None or position > best:
+            best = position
+            best_hash = "sha256:" + compute_v6_event_hash(
+                bytes(row["canonical_envelope"]), bytes(row["signature"])
+            ).hex()
+    return best_hash
+
+
 # ---------------------------------------------------------------------------
 # Admission gate 1: workflow registration (owned by P1.7)
 # ---------------------------------------------------------------------------
@@ -1176,14 +1273,46 @@ def check_producer_authorization(
             "the event rather than being silent about it (V6-ENVELOPE.md §1.8)",
             detail={"reason": "principal_absent_from_policy", "principal_id": principal_id},
         )
+    # A pinned `key_fingerprints` set is a *restriction*, so an unknown fingerprint is
+    # a NON-MATCH — including the "no fingerprint presented" case. The old condition
+    # was `entry.key_fingerprints and key_fingerprint is not None and ...`, which
+    # skipped the pin entirely when the caller passed nothing: an entry pinned to one
+    # key matched an event whose key was never named. That is fail-open by omission,
+    # and it was latent rather than exploited only because the one production caller
+    # (`append_v6_event`) always passes `key_entry.fingerprint()`. A gate whose
+    # strictness depends on a caller remembering an optional argument is not a gate
+    # (phase-4 ceremony NB2).
+    fingerprint_rejected = False
     for entry in entries:
         if producer.harness not in entry.allowed_harnesses:
             continue
-        if entry.key_fingerprints and key_fingerprint is not None and (
-            key_fingerprint not in entry.key_fingerprints
+        if entry.key_fingerprints and (
+            key_fingerprint is None or key_fingerprint not in entry.key_fingerprints
         ):
+            fingerprint_rejected = True
             continue
         return "matches_published_policy"
+    if fingerprint_rejected:
+        # Named separately from the harness refusal because the operator response is
+        # different: one is "this harness may not sign for this principal", the other
+        # is "this KEY may not", and reporting the first for the second sends the
+        # reader to the wrong half of the policy.
+        raise RegistaError(
+            ErrorCode.PRODUCER_NOT_AUTHORIZED,
+            f"key fingerprint {key_fingerprint!r} is not pinned for principal "
+            f"{principal_id!r} under the supplied producer policy; a pinned "
+            "key_fingerprints set is a restriction, and an unnamed key does not "
+            "satisfy it (V6-ENVELOPE.md §1.8, TRUST-DOMAIN.md §4.3)",
+            detail={
+                "reason": "key_fingerprint_not_pinned",
+                "key_fingerprint": key_fingerprint,
+                "principal_id": principal_id,
+                "harness": producer.harness,
+                "pinned_fingerprints": sorted(
+                    {f for entry in entries for f in entry.key_fingerprints}
+                ),
+            },
+        )
     raise RegistaError(
         ErrorCode.PRODUCER_NOT_AUTHORIZED,
         f"producer.harness {producer.harness!r} is not an allowed harness for "

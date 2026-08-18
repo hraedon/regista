@@ -467,6 +467,69 @@ class TestParityBoundary:
         assert exc.value.code is ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY
         assert "UPDATE events" in exc.value.detail["statement"]
 
+    def test_a_comparison_that_touches_null_is_refused_not_answered(
+        self, in_memory_project, keyset, in_memory_genesis
+    ) -> None:
+        """NB4 (phase-4 ceremony): ``NULL = NULL`` was ``True`` in memory.
+
+        Postgres three-valued logic makes ``workflow_name = NULL`` match nothing; the
+        facade's ``_same`` answered ``True`` when both sides were ``None``, so a
+        statement of this shape would have returned the trust-plane events (whose
+        ``workflow`` is null by §1.9) where production returned none. No statement in
+        the closed grammar reaches it today, which is exactly why it is refused rather
+        than modelled: the divergence must fail loudly the first time something needs
+        it, not answer plausibly.
+        """
+
+        with in_memory_project._mgr.transaction() as conn:
+            with pytest.raises(RegistaError) as exc:
+                conn.execute(
+                    "SELECT event_id FROM events WHERE workflow_name = %s", [None]
+                )
+        assert exc.value.code is ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY
+        assert "touches NULL" in exc.value.detail["reason"]
+        assert "workflow_name" in exc.value.detail["reason"]
+
+    def test_an_order_by_over_a_null_is_refused_not_answered(
+        self, in_memory_project, keyset, in_memory_genesis
+    ) -> None:
+        """The second half of the same divergence, and the subtler one.
+
+        ``ORDER BY`` sorted NULLs last in BOTH directions (``row.get(column) or 0``),
+        where Postgres defaults to NULLS LAST for ASC and NULLS **FIRST** for DESC —
+        and the ``or 0`` also flattened ``0``/``""``/``False`` into one key. A
+        v6 epoch's trust-plane events carry ``workflow_version = NULL``, so this is
+        reachable the moment any statement orders by a nullable column.
+        """
+
+        with in_memory_project._mgr.transaction() as conn:
+            with pytest.raises(RegistaError) as exc:
+                conn.execute(
+                    "SELECT event_id FROM events ORDER BY workflow_version DESC"
+                )
+        assert exc.value.code is ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY
+        assert "an ORDER BY" in exc.value.detail["reason"]
+
+    def test_the_statements_the_v6_paths_actually_issue_still_work(
+        self, in_memory_project, keyset, in_memory_genesis
+    ) -> None:
+        """And the refusals must not have closed the grammar on itself: the
+        genesis/writer read paths order by ``global_seq`` and compare non-null
+        columns, so they keep working. Without this the two tests above would be
+        satisfied by a facade that refuses everything."""
+
+        _appendable(in_memory_project, keyset, in_memory_genesis)
+        appended = _append(in_memory_project, entity_id=uuid.uuid4(), transition="created")
+        with in_memory_project._mgr.transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_id, global_seq FROM events ORDER BY global_seq DESC"
+            ).fetchall()
+            assert rows[0]["event_id"] == appended.event_id
+            found = conn.execute(
+                "SELECT transition FROM events WHERE event_id = %s", [appended.event_id]
+            ).fetchone()
+        assert found is not None and found["transition"] == "created"
+
     def test_a_read_only_connection_refuses_writes(self, in_memory_project) -> None:
         """``read_genesis``'s read-only contract is enforced, not annotated.
 

@@ -364,7 +364,7 @@ class InMemoryV6Connection:
                 wanted = values[cursor]
                 cursor += 1
                 column = param.group("column").lower()
-                rows = [r for r in rows if _same(r.get(column), wanted)]
+                rows = [r for r in rows if self._compare(text, column, r.get(column), wanted)]
                 continue
             member = _ATOM_ANY_RE.match(atom)
             if member is not None:
@@ -373,7 +373,11 @@ class InMemoryV6Connection:
                 wanted_any = values[cursor]
                 cursor += 1
                 column = member.group("column").lower()
-                rows = [r for r in rows if any(_same(r.get(column), w) for w in wanted_any)]
+                rows = [
+                    r
+                    for r in rows
+                    if any(self._compare(text, column, r.get(column), w) for w in wanted_any)
+                ]
                 continue
             truthy = _ATOM_TRUE_RE.match(atom)
             if truthy is not None:
@@ -384,10 +388,24 @@ class InMemoryV6Connection:
             if literal is not None:
                 column = literal.group("column").lower()
                 wanted_text = literal.group("value")
-                rows = [r for r in rows if _same(r.get(column), wanted_text)]
+                rows = [
+                    r for r in rows if self._compare(text, column, r.get(column), wanted_text)
+                ]
                 continue
             raise _refuse(text, f"unmodelled WHERE atom {atom!r}")
         return rows
+
+    @staticmethod
+    def _compare(text: str, column: str, left: Any, right: Any) -> bool:
+        """``column = value`` for a modelled statement, refusing on NULL.
+
+        See :func:`_refuse_null_comparison`: ``NULL = NULL`` is NULL in Postgres and
+        was ``True`` here, so this is a refusal rather than a coercion.
+        """
+
+        if left is None or right is None:
+            raise _refuse_null_comparison(text, column, "an equality comparison")
+        return _same(left, right)
 
     def _order(self, text: str, rows: list[dict[str, Any]], order: str) -> list[dict[str, Any]]:
         for clause in reversed([c.strip() for c in order.split(",")]):
@@ -396,9 +414,14 @@ class InMemoryV6Connection:
                 raise _refuse(text, f"unmodelled ORDER BY clause {clause!r}")
             column = spec.group("column").lower()
             descending = (spec.group("direction") or "ASC").upper() == "DESC"
+            if any(row.get(column) is None for row in rows):
+                # NULLS LAST for ASC and NULLS FIRST for DESC is Postgres's default,
+                # and `or 0` delivered neither (it also flattened 0/""/False). Refused
+                # rather than modelled — see _refuse_null_comparison.
+                raise _refuse_null_comparison(text, column, "an ORDER BY")
             rows = sorted(
                 rows,
-                key=lambda row: (row.get(column) is None, row.get(column) or 0),
+                key=lambda row: row[column],
                 reverse=descending,
             )
         return rows
@@ -532,8 +555,43 @@ def _as_optional_bytes(value: Any) -> bytes | None:
     return None if value is None else bytes(value)
 
 
+def _refuse_null_comparison(text: str, column: str, what: str) -> RegistaError:
+    """A modelled statement touched NULL, where this facade would have to guess.
+
+    Postgres three-valued logic and this facade's Python semantics differ in exactly
+    two places, and both were latent (no statement in the closed grammar reaches them
+    today — the phase-4 ceremony's NB4 found them by reading):
+
+    * ``_same(None, None)`` returned ``True``. In SQL ``NULL = NULL`` is NULL, so the
+      row does **not** match. A facade that answers ``TRUE`` there makes an in-memory
+      pass mean something the Postgres path would not.
+    * ``ORDER BY`` sorted NULLs last in both directions, via ``row.get(column) or 0``.
+      Postgres defaults to NULLS LAST for ASC and NULLS **FIRST** for DESC, and the
+      ``or 0`` additionally flattens ``0``/``""``/``False`` into the same key.
+
+    Rather than model either — modelling is how a facade grows into a second database
+    with its own bugs — the statement is refused by name, exactly as an unmodelled
+    relation or WHERE atom is. A future statement that legitimately needs NULL
+    semantics therefore fails loudly at its own call site and gets added to the
+    grammar deliberately, instead of quietly returning a different answer than
+    production.
+    """
+
+    return _refuse(
+        text,
+        f"{what} on column {column!r} touches NULL, and SQL's three-valued logic is "
+        "not modelled in memory",
+    )
+
+
 def _same(left: Any, right: Any) -> bool:
-    """Equality with the coercions a real column comparison would perform."""
+    """Equality with the coercions a real column comparison would perform.
+
+    NULL-free by contract: callers inside a modelled statement must route through
+    :meth:`InMemoryV6Connection._compare`, which refuses first. This retains the
+    ``left is right`` answer only so a direct caller outside statement handling is not
+    handed a crash.
+    """
 
     if left is None or right is None:
         return left is right

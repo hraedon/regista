@@ -202,6 +202,205 @@ class TestSweepExpiredClaims:
         assert swept == 0
 
 
+class TestSweepIsASystemActionAndIsolatesFailures:
+    """NB5 (phase-4 ceremony): the expiry sweep attributed a system act to the holder.
+
+    ``claim_expired`` records that a *lease lapsed*. Nobody acted — least of all the
+    holder, whose absence is the whole reason the event exists. Attributing it to the
+    holder made the sweep depend on the holder still being appendable in the open epoch:
+    a holder whose key acceptance has been revoked, or whose acceptance scopes do not
+    cover ``claim_expired``, made ``append_event`` raise *inside the sweep's
+    transaction* — so the operator's expiry sweep stopped working entirely, and one bad
+    claim took the whole batch with it.
+    """
+
+    def _expire(self, regista, work_item_id):
+        with raw_transaction(regista) as conn:
+            conn.execute(
+                "UPDATE claims SET expires_at = now() - interval '1 second' "
+                "WHERE work_item_id = %s",
+                [work_item_id],
+            )
+
+    def _claimed_item(self, regista, title):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=WORKER,
+            custom_fields={"title": title},
+        )
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        self._expire(regista, wi.work_item_id)
+        return wi
+
+    def test_claim_expired_is_attributed_to_the_system_principal(self, regista):
+        """The project's own bootstrap principal signs it, exactly as ``escalated``,
+        hook dead-lettering and recurrence firing do — and the payload keeps naming the
+        holder, which is where "whose claim expired" belongs."""
+
+        from regista._v6_writer import read_project_identity
+
+        wi = self._claimed_item(regista, "sweep attribution")
+        with raw_transaction(regista) as conn:
+            identity = read_project_identity(conn)
+        assert identity is not None
+
+        assert regista.sweep_expired_claims() == 1
+
+        expired = [
+            e
+            for e in regista.read_events(work_item_id=wi.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+        assert len(expired) == 1
+        assert expired[0].actor_id == identity.principal_id
+        assert expired[0].actor_id != WORKER
+        assert expired[0].actor_kind == "system"
+        # No information is lost: the holder is in the payload.
+        assert expired[0].payload["actor_id"] == WORKER
+
+    def test_one_refused_claim_does_not_abort_the_batch(self, regista, monkeypatch):
+        """Per-claim savepoints, so a refusal is fail-closed for THAT claim only.
+
+        Pre-fix the whole sweep ran in one transaction with no savepoints, so a refusal
+        propagated out of ``sweep_expired_claims`` — the remaining claims never expired,
+        and the caller got an exception instead of a count. Worse, the refused claim's
+        ``DELETE`` and projection ``UPDATE`` had already been issued, so the only thing
+        that saved the store from a projection change with no event was the whole
+        transaction being abandoned.
+        """
+
+        from regista import _events
+
+        first = self._claimed_item(regista, "sweep isolation A")
+        second = self._claimed_item(regista, "sweep isolation B")
+
+        real_append = _events.append_event
+        doomed = first.work_item_id
+
+        def _refusing_append(**kwargs):
+            if (
+                kwargs.get("work_item_id") == doomed
+                and kwargs.get("transition") == "claim_expired"
+            ):
+                raise RegistaError(
+                    ErrorCode.KEY_ACCEPTANCE_REVOKED,
+                    "injected: this holder's acceptance was revoked",
+                )
+            return real_append(**kwargs)
+
+        monkeypatch.setattr(_events, "append_event", _refusing_append)
+
+        swept = regista.sweep_expired_claims()
+
+        # The healthy claim expired; the count reports successes only.
+        assert swept == 1
+        assert regista.get_work_item(second.work_item_id).claimed_by is None
+
+        # And the refused claim is EXACTLY as it was — no projection change without an
+        # event, which is what replay would otherwise report as drift.
+        refused = regista.get_work_item(first.work_item_id)
+        assert refused.claimed_by == WORKER
+        with raw_transaction(regista) as conn:
+            row = conn.execute(
+                "SELECT actor_id FROM claims WHERE work_item_id = %s",
+                [first.work_item_id],
+            ).fetchone()
+        assert row is not None and row["actor_id"] == WORKER
+        assert not [
+            e
+            for e in regista.read_events(work_item_id=first.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+
+
+class TestInMemorySweepParity:
+    """The same two properties on the in-memory backend (WI-287 shared semantics).
+
+    Rollback is ``PARITY_BOUNDARY_POSTGRES_ONLY``, so the in-memory path cannot use a
+    savepoint. It gets the same guarantee by ordering instead — the append first, the
+    projection mutation only after it succeeds — which is the better mechanism anyway:
+    there is nothing to undo.
+    """
+
+    @pytest.fixture
+    def in_memory(self, tmp_path):
+        from regista.testing import InMemoryRegista
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        instance = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(instance, keyset)
+        instance.register_workflow_file(WORKFLOW_PATH)
+        return instance
+
+    def _claimed_item(self, instance, title):
+        wi, _ = instance.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=WORKER,
+            custom_fields={"title": title},
+        )
+        instance.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        instance._claims[wi.work_item_id]["expires_at"] = datetime.now(UTC) - timedelta(
+            seconds=10
+        )
+        instance._work_items[wi.work_item_id]["claim_expires_at"] = instance._claims[
+            wi.work_item_id
+        ]["expires_at"]
+        return wi
+
+    def test_claim_expired_is_attributed_to_the_system_principal(self, in_memory):
+        wi = self._claimed_item(in_memory, "in-memory attribution")
+        identity = in_memory._store.v6_rows.project_identity
+        assert identity is not None
+
+        assert in_memory.sweep_expired_claims() == 1
+
+        expired = [
+            e
+            for e in in_memory.read_events(work_item_id=wi.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+        assert len(expired) == 1
+        assert expired[0].actor_id == identity["principal_id"]
+        assert expired[0].actor_id != WORKER
+        assert expired[0].payload["actor_id"] == WORKER
+
+    def test_one_refused_claim_leaves_that_claim_intact(self, in_memory, monkeypatch):
+        from regista import _in_memory_claims
+
+        first = self._claimed_item(in_memory, "in-memory isolation A")
+        second = self._claimed_item(in_memory, "in-memory isolation B")
+
+        real_append = _in_memory_claims._store_append
+        doomed = first.work_item_id
+
+        def _refusing_append(store, **kwargs):
+            if (
+                kwargs.get("work_item_id") == doomed
+                and kwargs.get("transition") == "claim_expired"
+            ):
+                raise RegistaError(
+                    ErrorCode.KEY_ACCEPTANCE_REVOKED,
+                    "injected: this holder's acceptance was revoked",
+                )
+            return real_append(store, **kwargs)
+
+        monkeypatch.setattr(_in_memory_claims, "_store_append", _refusing_append)
+
+        assert in_memory.sweep_expired_claims() == 1
+        assert in_memory.get_work_item(second.work_item_id).claimed_by is None
+
+        assert in_memory.get_work_item(first.work_item_id).claimed_by == WORKER
+        assert first.work_item_id in in_memory._claims
+        assert not [
+            e
+            for e in in_memory.read_events(work_item_id=first.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+
+
 class TestWorkflowSemanticErrors:
     def test_no_initial_state_rejected(self, regista):
         yaml_content = """\

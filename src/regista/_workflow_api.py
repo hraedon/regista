@@ -34,6 +34,7 @@ def _append_workflow_registration_event(
     from ._v6_writer import (
         WORKFLOW_REGISTERED,
         append_v6_event,
+        find_previous_workflow_registration,
         read_project_identity,
         resolve_producer,
         workflow_definition_hash,
@@ -72,7 +73,12 @@ def _append_workflow_registration_event(
             "workflow_version": wf.version,
             "definition": definition,
             "definition_hash": workflow_definition_hash(definition),
-            "supersedes_registration_event_hash": None,
+            # §1.9's provenance link between versions of a workflow. Hardcoded `None`
+            # until the phase-4 ceremony (NB6), which made every replacement sign the
+            # claim that it replaced nothing.
+            "supersedes_registration_event_hash": find_previous_workflow_registration(
+                conn, name=wf.name, workflow_version=wf.version
+            ),
         },
     )
 

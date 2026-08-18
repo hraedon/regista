@@ -17,7 +17,7 @@ import structlog
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
-from ._signing_scheme import get_scheme, resolve_hash_function
+from ._signing_scheme import get_scheme
 from ._types import Event
 from ._v6_referents import BundleReferents
 from ._verification import (
@@ -747,26 +747,26 @@ def _verify_event_signatures(
 def _hash_event(event: Event) -> bytes | None:
     """The chain head hash this event contributes, in ITS OWN version's formula.
 
-    v1-v5 chain on ``sha256(envelope || signature)``. v6 chains on the
-    domain-tagged ``compute_v6_event_hash`` (``V6-ENVELOPE.md`` §6.1), and the two
-    are different values for the same bytes on purpose. Using the v5 formula for a
-    v6 event reported "chain break" on every multi-event v6 bundle — a false
-    finding, and one that would have made a healthy v6-era export unverifiable for
-    a reason that has nothing to do with the export.
+    Delegates to :func:`regista._signing.compute_chain_head_hash`, which is where the
+    formula lives for the whole tree. This function used to hand-copy the version
+    dispatch, which made it the **fifth** copy — and the copies have a history:
+    mutation M20 reverted this one to the legacy formula and the suite stayed green
+    (NOTES-P17 finding 15), and ``_in_memory_replay`` carried the legacy formula in
+    both its chain walks, which made a healthy in-memory v6 epoch report five chain
+    breaks (finding 16). Finding 16 centralised the formula; this is that
+    centralisation finishing the job it started, found by the phase-4 ceremony.
+
+    ``None`` when the event carries no bytes to chain on — a bundle may legitimately
+    contain pre-002 rows, and "no envelope" is not "a zero hash".
     """
 
     if event.canonical_envelope is None or event.signature is None:
         return None
-    envelope = bytes(event.canonical_envelope)
-    signature = bytes(event.signature)
-    from ._verification import EnvelopeVersion, classify_envelope_bytes
+    from ._signing import compute_chain_head_hash
 
-    if classify_envelope_bytes(envelope) is EnvelopeVersion.V6:
-        from ._signing import compute_v6_event_hash
-
-        return compute_v6_event_hash(envelope, signature)
-    hash_fn = resolve_hash_function("sha-256")
-    return hash_fn(envelope + signature).digest()
+    return compute_chain_head_hash(
+        bytes(event.canonical_envelope), bytes(event.signature)
+    )
 
 
 def _verify_global_chain(
