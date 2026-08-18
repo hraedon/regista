@@ -311,39 +311,11 @@
    "carry_forward": "clean v3 bundle verifies offline (statement signature model)"
   },
   {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_tampered_event",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a tampered event inside the bundle fails offline verification",
-   "carry_forward": "v3 offline tamper detection (membership root / chain / signature axes)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_bundle_hash_mismatch",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a doctored bundle integrity binding is detected",
-   "carry_forward": "v3 statement signature replaces the unkeyed bundle_hash (the audit's 'unkeyed bundle hash' gap); doctored statements fail signature"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_export_includes_registered_public_key",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "the bundle carries the registered principal public key (id, principal binding, scheme)",
-   "carry_forward": "v3 bundles carry key material as evidence (BUNDLE-V3 §4.3), verified against an external trust root"
-  },
-  {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "offline verification verifies ed25519 signatures and counts HMAC events unverifiable in one bundle",
    "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_forged_signature_caught_only_by_signature_check",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a forged tail signature (invisible to chain checks) is caught by the signature check",
-   "carry_forward": "v3: forged event signature → axis A4 invalid; chain checks alone must not pass it"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_hmac_only_bundle_counts_all_unverifiable",
@@ -356,13 +328,6 @@
    "work_item": "WI-289",
    "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
    "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_missing_public_key_fails_closed",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "an asymmetric event whose key is absent from the bundle registry fails closed",
-   "carry_forward": "v3: missing key evidence → fail closed (A2/A5)"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
@@ -384,27 +349,6 @@
    "work_item": "WI-289",
    "invariant": "export records an absent key registry; offline verification of asymmetric events then fails closed",
    "carry_forward": "v3: absent key evidence recorded, never a silent pass"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_export_reports_self_verification",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "export reports its own self-verification — asserted with HMAC-specific verified=False / signatures_verified==0",
-   "carry_forward": "v3 export self-verification report (a clean v6 store self-verifies True)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_hash_mismatch_on_written_artifact_raises_and_keeps_it",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "an export whose written artifact fails self-verification raises (artifact kept for inspection)",
-   "carry_forward": "v3: write .partial → self-verify → replace only on success; failed self-verification must never publish to the destination"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_store_level_defects_are_reported_not_fatal",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "store-level verification defects are reported in the export result, not fatal",
-   "carry_forward": "v3: unverifiable store defects reported; INVALID corpus refused at export (§9.1) — the reported/fatal boundary moves"
   },
   {
    "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
@@ -1035,34 +979,6 @@
    "work_item": "WI-289",
    "invariant": "until_seq is an inclusive upper bound on the exported window",
    "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[None-negative]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a window that selects zero events is an export refusal, not a trivially-verifiable bundle",
-   "carry_forward": "empty-bundle refusal is retained (BUNDLE-V3.md §8 Retained) and strengthened under v3 (no membership root to sign); re-covered at P3.3"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[None-zero]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a window that selects zero events is an export refusal, not a trivially-verifiable bundle",
-   "carry_forward": "empty-bundle refusal is retained (BUNDLE-V3.md §8 Retained) and strengthened under v3 (no membership root to sign); re-covered at P3.3"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[beyond-None]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a window that selects zero events is an export refusal, not a trivially-verifiable bundle",
-   "carry_forward": "empty-bundle refusal is retained (BUNDLE-V3.md §8 Retained) and strengthened under v3 (no membership root to sign); re-covered at P3.3"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestExportBounds::test_window_selecting_no_events_is_rejected[max-None]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a window that selects zero events is an export refusal, not a trivially-verifiable bundle",
-   "carry_forward": "empty-bundle refusal is retained (BUNDLE-V3.md §8 Retained) and strengthened under v3 (no membership root to sign); re-covered at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_clean_bundle_has_no_count_errors",

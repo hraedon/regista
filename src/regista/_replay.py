@@ -226,8 +226,9 @@ def _chain_link(evt: dict[str, Any]) -> dict[str, Any]:
     of being pinned until the whole project has been replayed (WI-217).
 
     The walk needs exactly four things per event: its identity (for cycle
-    and reachability bookkeeping), its ``global_seq`` (warning detail and
-    the timestamp-coverage cross-check), the link it claims to chain from,
+    and reachability bookkeeping), its ``global_seq`` (warning detail, and
+    the deterministic genesis tie-break in ``_verify_global_hash_chain``),
+    the link it claims to chain from,
     and the link its successor must claim.  Everything else in the row —
     envelope, payload, signature, actor metadata — is per-work-item state
     that the group loop has already consumed by the time this returns.

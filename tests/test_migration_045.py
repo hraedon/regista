@@ -9,6 +9,7 @@ refusal on a nonempty table.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -21,9 +22,24 @@ from regista._testing import drop_project_schema
 
 KEY_PATH = "tests/test_keys.json"
 
-MIGRATION_045 = (
-    Path(__file__).parent.parent / "migrations" / "045_drop_dead_subsystem_tables.sql"
-)
+MIGRATIONS = Path(__file__).parent.parent / "migrations"
+MIGRATION_045 = MIGRATIONS / "045_drop_dead_subsystem_tables.sql"
+MIGRATION_016 = MIGRATIONS / "016_tsp_batches.sql"
+
+
+def _real_tsp_batches_ddl() -> str:
+    """The `tsp_batches` CREATE TABLE from migration 016, verbatim.
+
+    The deny case must refuse the shape that actually exists in an estate
+    store, not a two-column stand-in — a guard proven only against a
+    simplified table proves little about the table it guards. Read from the
+    migration itself so the fixture cannot drift from it.
+    """
+    match = re.search(
+        r"CREATE TABLE tsp_batches\s*\(.*?\n\);", MIGRATION_016.read_text(), re.DOTALL
+    )
+    assert match, "migration 016 no longer declares CREATE TABLE tsp_batches"
+    return match.group(0)
 
 
 @pytest.fixture(scope="module")
@@ -64,12 +80,12 @@ class TestMigration045DropsDeadSubsystemTables:
         # roll back only the drop attempt, never the evidence.
         with psycopg.connect(DSN) as conn:
             conn.execute(f'SET search_path TO "{project}"')
+            conn.execute(_real_tsp_batches_ddl())
             conn.execute(
-                "CREATE TABLE tsp_batches (batch_id UUID PRIMARY KEY, note TEXT)"
-            )
-            conn.execute(
-                "INSERT INTO tsp_batches (batch_id, note) VALUES (%s, 'evidence')",
-                [uuid.uuid4()],
+                "INSERT INTO tsp_batches (batch_id, merkle_root, first_event_seq, "
+                "last_event_seq, first_event_at, last_event_at, event_count, status) "
+                "VALUES (%s, %s, 1, 10, now(), now(), 10, 'confirmed')",
+                [uuid.uuid4(), b"\x00" * 32],
             )
             conn.commit()
         with psycopg.connect(DSN) as conn:

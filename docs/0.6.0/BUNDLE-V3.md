@@ -583,6 +583,25 @@ Plus their CLI verbs, sidecar routes, maintenance jobs and README/spec claims. *
 - The self-verify-after-write discipline (`:381-402`) — **strengthened**, see §9.
 - Post-S1 delegation to `verify_event_strict` (`:832-836`) — this is the keystone and is retained wholesale.
 
+*(Successor note, 2026-08-17, P1.4 as landed — an interim weakening for
+**pre-P1.4 bundles**, stated so an auditor is not misled about what a clean
+verdict on an old artifact now means. `_canonical_bundle_bytes` still folds a
+bundle's `anchor_receipts` and `segments` sections into the unkeyed bundle
+hash — that is deliberate, so a v1/v2 artifact exported before P1.4 stays
+hash-recomputable — but the checks that read those sections are deleted. The
+consequence: an old bundle whose receipt or segment records were rewritten and
+whose bundle hash was then recomputed verifies clean. The unkeyed hash was
+never adversarial evidence (an editor can always restore agreement), so
+nothing that was cryptographic is lost; what is lost is the structural
+cross-checking that used to catch such an edit anyway — receipt/segment
+anchoring, seal reconciliation and the segment chain walk. An auditor holding a
+pre-P1.4 bundle should treat its receipt and segment sections as unverified
+carried data and take the event-level findings — chain walk, key registry,
+`verify_event_strict` — as the whole of the verdict. Zero receipts and zero
+segments existed estate-wide, so no bundle regista actually exported carries
+such a section. Closed at P3.3, where the signed statement replaces the
+unkeyed hash and a v2 artifact is no longer accepted at all.)*
+
 ### `tests/test_bundle.py` (2,334 lines)
 
 WI-269 flagged the real cost: 38 `assert not verified` sites, of which ~33 sit on HMAC fixtures where `verified=False` is now trivially true, so they prove "the tamper was detected" rather than "the signature check detected it". With the axis model, **each must be re-pointed at the specific axis that should have caught its tamper.** A membership tamper asserts A3 = `mismatch`; a key-swap asserts A2/A5; a legacy-event tamper asserts A4 = `invalid`. This is the majority of the implementation effort in this area and it should be scheduled as such, not treated as test churn.
