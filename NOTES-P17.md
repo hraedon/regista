@@ -1,7 +1,7 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
 > **Session 2 (2026-08-18) starts at §0. Read §0 first — it supersedes parts of
-> §1-§4 and records three findings the earlier notes did not have.**
+> §1-§4 and records five findings (5-9) the earlier notes did not have.**
 
 Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).
@@ -18,7 +18,7 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 
 ---
 
-## 0. Session 2 (2026-08-18): what landed, and three findings
+## 0. Session 2 (2026-08-18): what landed, and five findings
 
 Commits, in order:
 
@@ -26,7 +26,8 @@ Commits, in order:
 |---|---|
 | `ce19e06` | Merge of `agent/wi287-inmem-parity`, + the `v6_epoch_open` shape unification and a real in-memory `append_v6` |
 | `6ed569b` | §3c items 1-3: the ceremony round-trip on a real epoch, all three stubs deleted |
-| (this slice) | The **remaining three legacy funnels** wired to the v6 route + the first migrated file (`test_idempotency.py`) |
+| `378a9a1` | The **remaining legacy funnels** wired to the v6 route + the first migrated file (`test_idempotency.py`); manifest 694 → 688 |
+| (last slice) | In-memory signed workflow registration (Finding 9) + `test_hash_chain.py`; manifest 688 → **686** |
 
 ### FINDING 5 — the merge had a semantic conflict the text merge did not show
 
@@ -74,9 +75,9 @@ is fine) **and an approval**, and who approves a provisioning run is a policy de
 implementation detail. Auto-approving would be a bypass with extra steps. **Left for the owner
 / coordinator to decide; WI-299 is not closed and its positive clause is not restored.**
 
-### FINDING 7 — the wiring was one funnel short of three, which is what actually gated Phase 3
+### FINDING 7 — the wiring was three funnels short, which is what actually gated Phase 3
 
-`d3cce8f` wired `_event_store.append_event`. Three more refuse post-genesis, and
+`d3cce8f` wired `_event_store.append_event`. Three more refused post-genesis, and
 `_work_items.create_work_item` — the entry point almost every migrated fixture needs — goes
 through the second, not the first:
 
@@ -125,13 +126,56 @@ Three costs per file, in descending order:
 1. **Canonical actor ids.** `"agent-1"` → `"agent:idem-one"`, at *every* occurrence including
    assertions. This is the bulk of the diff and it is per-file textual work.
 2. The fixture rewrite above (mechanical, ~10 lines).
-3. `register_workflow_file` needs no change — `_workflow_api` already appends the signed
-   `workflow_registered` event post-genesis, so admission gate 1 is satisfied for free.
+3. `register_workflow_file` needs no change on **either** backend — `_workflow_api` appends the
+   signed `workflow_registered` event post-genesis, and since Finding 9 the in-memory backend
+   calls the same function, so admission gate 1 is satisfied for free.
 
-Measured result: **6 XPASS(strict) → 6 passed**, manifest **694 → 688**. Use
+Measured result: **6 XPASS(strict) → 6 passed**, manifest **694 → 688**; then
+`tests/test_hash_chain.py` took it to **686** (2 of 3 nodes — see Finding 8). Use
 `/tmp/.../shrink.py`-style surgery on the manifest (`json.dump(..., indent=1)` + trailing
 newline, and **update `baseline_count`** — the debt checker asserts
 `baseline_count == len(entries)`).
+
+### FINDING 8 — **Phase 3 is NOT independent of Phase 2.** Migrate verifying files LAST.
+
+`_replay` verifies every event through `verify_event_strict`, and the Phase 2 clamp returns
+`INVALID` / `envelope_schema_incomplete` for **every** v6 row. So a *correctly* migrated fixture
+makes `replay()` report `halted=1` on a perfectly good chain:
+
+```
+[REPLAY_HALTED] Signature verification failed for event ... at seq 1:
+applicability=invalid; envelope=v6; reasons=envelope_schema_incomplete
+```
+
+Measured on `tests/test_hash_chain.py::TestBC233HashChain::test_replay_hash_chain_check`. The
+consequence is a **sequencing constraint the brief's Phase 2 → Phase 3 order gets right and
+which is worth stating explicitly**: any manifest file whose nodes call `replay()`, `verify_*`,
+or the assurance/bundle paths **cannot be migrated before Phase 2**, because migrating it
+changes the node's recorded failure form from `GENESIS_REQUIRED` to a clamp assertion — and
+§2.1's form validator correctly refuses to absorb that, while rewriting the recorded form to
+match would be exactly the "changed failure mode absorbed as XFAIL" the validator exists to
+stop. Affected files include at least `test_replay_coverage.py` (29 nodes),
+`test_replay_scoped.py` (12), `test_replay.py` (4), `test_bc310_replay_isolation.py` (3),
+`test_wi217_replay_memory.py` (2), `test_global_event_chain.py`, `test_hash_chain.py`,
+`test_wi267_row_authentication.py`.
+
+**Last-resort pattern, used once and flagged as such:** where a file mixes verifying and
+non-verifying nodes, the non-verifying ones can be migrated now if the verifying one is kept on
+a *separate, unmigrated* fixture, which preserves its recorded form. `test_hash_chain.py` does
+this (`unmigrated_regista`, with the reason in its docstring) and shrank the manifest by 2 of
+its 3 nodes. Do **not** propagate this widely — after Phase 2 each file migrates in one pass.
+
+### FINDING 9 — the in-memory backend never emitted its signed workflow registration
+
+`InMemoryRegista.register_workflow` wrote only the in-memory registry dict, so an in-memory
+project with an open epoch refused **every** ordinary append with
+`WORKFLOW_REGISTRATION_UNRESOLVED` — a `workflow_registry` row is not a registration
+(`V6-ENVELOPE.md` §1.9) and that is enforced identically on both backends. Fixed by calling
+`_workflow_api._append_workflow_registration_event` — **the same function** the Postgres path
+uses — over the `_in_memory_v6` facade, so the payload shape, the `raw_yaml` exclusion, the
+definition hash and the workflow entity id stay one piece of code. No-op before genesis, as on
+Postgres. WI-287 shipped `register_test_workflow` as a *test* helper; this is the production
+half it stood in for, and nothing had exercised it because no in-memory fixture had an epoch.
 
 ### Phase 2 (verifier boundary) — NOT started, and the notes understated it by a lot
 

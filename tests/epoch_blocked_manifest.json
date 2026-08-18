@@ -1,5 +1,5 @@
 {
- "baseline_count": 688,
+ "baseline_count": 686,
  "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md \u00a72.1).",
  "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 \u2014 docs/0.6.0/SUITE-RECONCILIATION.md \u00a75",
  "blocker": "P1.7 (v6 ordinary-event writer) \u2014 SUITE-RECONCILIATION.md \u00a72.1",
@@ -1013,25 +1013,7 @@
    }
   },
   {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_first_event_has_no_prev_hash",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_replay_hash_chain_check",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_first_event_has_no_prev_hash",
    "phase": "failure",
    "cause": "direct",
    "expected": {
