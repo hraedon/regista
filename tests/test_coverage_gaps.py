@@ -16,13 +16,50 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+#: A second, distinct agent, so the actor filter below has something to exclude.
+OTHER_AGENT = "agent:reviewer"
+OPERATOR = "human:operator"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_gaps_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
+    yield sub
+    sub.close()
+    drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def eventless_regista():
+    """A project with **no events at all** — no v6 epoch, no workflow registration.
+
+    Exactly one test needs this, and it needs it for its subject rather than as a
+    workaround: an open v6 epoch is itself seven events (``project_initialized``,
+    one ``principal_key_accepted`` per accepted principal, ``workflow_registered``),
+    they live in the same ``events`` table, and ``read_events()`` with no filters
+    applies no entity-kind predicate — so on a migrated project an unfiltered read
+    is *correctly* non-empty and "no filters returns empty" has no subject left.
+
+    Whether an unfiltered ``read_events()`` should surface trust-plane rows to a
+    work-item event reader at all is a separate production question; this fixture
+    does not prejudge it, it just gives the test the eventless store it describes.
+    """
+    from regista import Regista
+
+    project = f"test_gaps_empty_{uuid.uuid4().hex[:8]}"
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -33,13 +70,13 @@ class TestTransitionViaAppendBlocked:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Blocked append"},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.append_event(
                 work_item_id=wi.work_item_id,
-                actor_id="agent-1",
+                actor_id=WORKER,
                 transition="start",
             )
         assert exc_info.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
@@ -48,12 +85,12 @@ class TestTransitionViaAppendBlocked:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Custom event"},
         )
         evt = regista.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id=WORKER,
             transition="custom_note",
         )
         assert evt.transition == "custom_note"
@@ -65,7 +102,7 @@ class TestWorkItemNotFound:
             regista.transition(
                 work_item_id=uuid.uuid4(),
                 transition_name="start",
-                actor_id="agent-1",
+                actor_id=WORKER,
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
@@ -73,7 +110,7 @@ class TestWorkItemNotFound:
         with pytest.raises(RegistaError) as exc_info:
             regista.append_event(
                 work_item_id=uuid.uuid4(),
-                actor_id="agent-1",
+                actor_id=WORKER,
                 transition="note",
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
@@ -82,12 +119,12 @@ class TestWorkItemNotFound:
 class TestWorkItemNotFoundClaims:
     def test_heartbeat_on_nonexistent_work_item(self, regista):
         with pytest.raises(RegistaError) as exc_info:
-            regista.heartbeat_claim(uuid.uuid4(), "agent-1", ttl_seconds=300)
+            regista.heartbeat_claim(uuid.uuid4(), WORKER, ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
     def test_release_on_nonexistent_work_item(self, regista):
         with pytest.raises(RegistaError) as exc_info:
-            regista.release_claim(uuid.uuid4(), "agent-1")
+            regista.release_claim(uuid.uuid4(), WORKER)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
 
@@ -96,22 +133,22 @@ class TestClaimNotFound:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "No claim heartbeat"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+            regista.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
     def test_release_on_unclaimed_work_item(self, regista):
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "No claim release"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            regista.release_claim(wi.work_item_id, "agent-1")
+            regista.release_claim(wi.work_item_id, WORKER)
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
 
@@ -120,10 +157,10 @@ class TestSweepExpiredClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Sweep test"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with raw_transaction(regista) as conn:
             conn.execute(
@@ -142,10 +179,10 @@ class TestSweepExpiredClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Sweep events"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with raw_transaction(regista) as conn:
             conn.execute(
@@ -280,14 +317,14 @@ class TestExpectedAttemptNumber:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Stale attempt"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with pytest.raises(RegistaError) as exc_info:
             regista.heartbeat_claim(
-                wi.work_item_id, "agent-1", ttl_seconds=300,
+                wi.work_item_id, WORKER, ttl_seconds=300,
                 expected_attempt_number=99,
             )
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
@@ -296,13 +333,13 @@ class TestExpectedAttemptNumber:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Correct attempt"},
         )
-        claim = regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        claim = regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         renewed = regista.heartbeat_claim(
-            wi.work_item_id, "agent-1", ttl_seconds=600,
+            wi.work_item_id, WORKER, ttl_seconds=600,
             expected_attempt_number=claim.attempt_number,
         )
         assert renewed.expires_at > claim.expires_at
@@ -313,19 +350,19 @@ class TestReadEventsFilters:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="unique-filter-agent",
+            actor_id=OTHER_AGENT,
             custom_fields={"title": "Actor filter"},
         )
 
-        events = regista.read_events(actor_id="unique-filter-agent")
+        events = regista.read_events(actor_id=OTHER_AGENT)
         assert len(events) >= 1
-        assert all(e.actor_id == "unique-filter-agent" for e in events)
+        assert all(e.actor_id == OTHER_AGENT for e in events)
 
     def test_read_events_by_transition(self, regista):
         _wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Transition filter"},
         )
 
@@ -341,8 +378,9 @@ class TestReadEventsFilters:
         events = regista.read_events(start=start, end=end)
         assert isinstance(events, list)
 
-    def test_read_events_no_filters_returns_empty(self, regista):
-        events = regista.read_events()
+    def test_read_events_no_filters_returns_empty(self, eventless_regista):
+        # `eventless_regista`, not `regista`: an open v6 epoch is itself events.
+        events = eventless_regista.read_events()
         assert events == []
 
     def test_read_events_before_seq_requires_work_item_id(self, regista):
@@ -382,7 +420,7 @@ class TestQueryWorkItemsFilters:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Type filter test"},
         )
 
@@ -399,13 +437,13 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "alpha"},
         )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "beta"},
         )
 
@@ -420,13 +458,13 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "gamma", "priority": "high"},
         )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "gamma", "priority": "low"},
         )
 
@@ -442,7 +480,7 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "delta"},
         )
 
@@ -457,13 +495,13 @@ class TestCustomFieldFilterQuery:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "paged", "priority": "high"},
             )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "other"},
         )
 
@@ -500,11 +538,11 @@ class TestHeartbeatActorKind:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="human-1",
+            actor_id=OPERATOR,
             custom_fields={"title": "Actor kind test"},
         )
-        regista.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
-        regista.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        regista.acquire_claim(wi.work_item_id, OPERATOR, ttl_seconds=300, actor_kind="human")
+        regista.heartbeat_claim(wi.work_item_id, OPERATOR, ttl_seconds=300, actor_kind="human")
         events = regista.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
         assert len(heartbeat_events) == 1
@@ -514,11 +552,11 @@ class TestHeartbeatActorKind:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Default kind"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        regista.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         events = regista.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
         assert len(heartbeat_events) == 1

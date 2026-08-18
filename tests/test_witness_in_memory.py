@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+from _v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, open_v6_epoch
+
 from regista._in_memory import InMemoryRegista, TransportResult
 
-KEY_PATH = os.path.join(os.path.dirname(__file__), "test_keys.json")
+#: The five canonical actor ids the fixture keyset carries (``TRUST-DOMAIN.md`` §2.1).
+#: The legacy bare spellings these replace are ungrammatical and the v6 ingress
+#: refuses them; every test here only needs "distinct principals", which these are.
+#: Five is also the most any one test needs, which is why no extra principal is passed
+#: to ``make_v6_keyset`` / ``open_v6_epoch``.
+ACTORS = ACTOR_PRINCIPALS
 
 WF_YAML = """
 name: test
@@ -33,21 +40,30 @@ roles: []
 """
 
 
-def _make_sub(transport=None) -> InMemoryRegista:
-    sub = InMemoryRegista(hmac_key_path=KEY_PATH, witness_transport=transport)
+@pytest.fixture(scope="module")
+def keyset(tmp_path_factory):
+    return make_v6_keyset(tmp_path_factory.mktemp("witness_keys"))
+
+
+def _make_sub(keyset, transport=None) -> InMemoryRegista:
+    sub = InMemoryRegista(hmac_key_path=keyset.path, witness_transport=transport)
+    # The clean v6 epoch before the registration: `register_workflow` emits the
+    # signed `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WF_YAML)
     return sub
 
 
 class TestDeliverNoTransport:
-    def test_no_transport_returns_zero(self):
-        sub = _make_sub()
+    def test_no_transport_returns_zero(self, keyset):
+        sub = _make_sub(keyset)
         assert sub.deliver_pending_witness_receipts() == 0
 
-    def test_no_transport_with_receipts_returns_zero(self):
-        sub = _make_sub()
+    def test_no_transport_with_receipts_returns_zero(self, keyset):
+        sub = _make_sub(keyset)
         sub.register_witness("https://example.com/hook")
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
         assert sub.deliver_pending_witness_receipts() == 0
         receipts = sub.list_witness_receipts()
         assert len(receipts) == 1
@@ -55,16 +71,16 @@ class TestDeliverNoTransport:
 
 
 class TestDeliverSuccess:
-    def test_successful_delivery_confirms_receipt(self):
+    def test_successful_delivery_confirms_receipt(self, keyset):
         calls: list[tuple[str, dict, dict]] = []
 
         def transport(url, headers, payload):
             calls.append((url, headers, payload))
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         wid = sub.register_witness("https://example.com/hook")
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         count = sub.deliver_pending_witness_receipts()
         assert count == 1
@@ -87,16 +103,16 @@ class TestDeliverSuccess:
         assert "event" in payload
         assert payload["event"]["event_id"] == str(evt.event_id)
 
-    def test_successful_delivery_stores_witness_signature(self):
+    def test_successful_delivery_stores_witness_signature(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(
                 status_code=200,
                 body={"witness_signature": "deadbeef"},
             )
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
 
@@ -104,7 +120,7 @@ class TestDeliverSuccess:
         assert receipts[0]["status"] == "confirmed"
         assert receipts[0]["witness_signature"] == "deadbeef"
 
-    def test_delivery_resets_consecutive_failures(self):
+    def test_delivery_resets_consecutive_failures(self, keyset):
         state = {"calls": 0}
 
         def transport(url, headers, payload):
@@ -113,13 +129,13 @@ class TestDeliverSuccess:
                 return TransportResult(status_code=500, error="boom")
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_failures=10,
             max_retries=5,
         )
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         assert sub.list_witnesses()[0]["consecutive_failures"] == 1
@@ -131,15 +147,15 @@ class TestDeliverSuccess:
         assert sub.list_witnesses()[0]["consecutive_failures"] == 0
         assert sub.list_witnesses()[0]["status"] == "active"
 
-    def test_multiple_receipts_delivered(self):
+    def test_multiple_receipts_delivered(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
-        sub.create_work_item("test", "task", "actor-1")
-        sub.create_work_item("test", "task", "actor-2")
-        sub.create_work_item("test", "task", "actor-3")
+        sub.create_work_item("test", "task", ACTORS[0])
+        sub.create_work_item("test", "task", ACTORS[1])
+        sub.create_work_item("test", "task", ACTORS[2])
 
         count = sub.deliver_pending_witness_receipts()
         assert count == 3
@@ -147,17 +163,17 @@ class TestDeliverSuccess:
 
 
 class TestDeliverFailure:
-    def test_failure_increments_retry_count(self):
+    def test_failure_increments_retry_count(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=500, error="server error")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_retries=3,
             max_failures=10,
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         receipts = sub.list_witness_receipts(event_id=evt.event_id)
@@ -170,17 +186,17 @@ class TestDeliverFailure:
         assert receipts[0]["status"] == "pending"
         assert receipts[0]["retry_count"] == 2
 
-    def test_receipt_paused_after_max_retries(self):
+    def test_receipt_paused_after_max_retries(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=500, error="server error")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_retries=2,
             max_failures=10,
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         assert sub.list_witness_receipts(event_id=evt.event_id)[0]["status"] == "pending"
@@ -190,17 +206,17 @@ class TestDeliverFailure:
         assert receipt["status"] == "paused"
         assert receipt["retry_count"] == 2
 
-    def test_paused_receipt_not_redelivered(self):
+    def test_paused_receipt_not_redelivered(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=500, error="server error")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_retries=1,
             max_failures=10,
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         assert sub.list_witness_receipts(event_id=evt.event_id)[0]["status"] == "paused"
@@ -208,17 +224,17 @@ class TestDeliverFailure:
         count = sub.deliver_pending_witness_receipts()
         assert count == 0
 
-    def test_transport_exception_treated_as_failure(self):
+    def test_transport_exception_treated_as_failure(self, keyset):
         def transport(url, headers, payload):
             raise ConnectionError("network unreachable")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_retries=3,
             max_failures=10,
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         count = sub.deliver_pending_witness_receipts()
         assert count == 0
@@ -227,17 +243,17 @@ class TestDeliverFailure:
         assert receipt["retry_count"] == 1
         assert "network unreachable" in receipt["error_message"]
 
-    def test_http_error_code_without_error_field(self):
+    def test_http_error_code_without_error_field(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=503)
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_retries=5,
             max_failures=10,
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         receipt = sub.list_witness_receipts(event_id=evt.event_id)[0]
@@ -246,26 +262,26 @@ class TestDeliverFailure:
 
 
 class TestAutoPause:
-    def test_witness_auto_paused_after_max_failures(self):
+    def test_witness_auto_paused_after_max_failures(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=500, error="server error")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_failures=3,
             max_retries=10,
         )
-        sub.create_work_item("test", "task", "actor-1")
-        sub.create_work_item("test", "task", "actor-2")
-        sub.create_work_item("test", "task", "actor-3")
+        sub.create_work_item("test", "task", ACTORS[0])
+        sub.create_work_item("test", "task", ACTORS[1])
+        sub.create_work_item("test", "task", ACTORS[2])
 
         sub.deliver_pending_witness_receipts()
         witnesses = sub.list_witnesses()
         assert witnesses[0]["status"] == "paused"
         assert witnesses[0]["consecutive_failures"] == 3
 
-    def test_paused_witness_not_processed(self):
+    def test_paused_witness_not_processed(self, keyset):
         call_count = 0
 
         def transport(url, headers, payload):
@@ -273,38 +289,38 @@ class TestAutoPause:
             call_count += 1
             return TransportResult(status_code=500, error="server error")
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             max_failures=1,
             max_retries=10,
         )
-        sub.create_work_item("test", "task", "actor-1")
-        sub.create_work_item("test", "task", "actor-2")
+        sub.create_work_item("test", "task", ACTORS[0])
+        sub.create_work_item("test", "task", ACTORS[1])
 
         sub.deliver_pending_witness_receipts()
         assert sub.list_witnesses()[0]["status"] == "paused"
 
-        sub.create_work_item("test", "task", "actor-3")
+        sub.create_work_item("test", "task", ACTORS[2])
         count = sub.deliver_pending_witness_receipts()
         assert count == 0
 
 
 class TestSignSecret:
-    def test_signature_header_set_when_sign_secret_provided(self):
+    def test_signature_header_set_when_sign_secret_provided(self, keyset):
         captured_headers: dict = {}
 
         def transport(url, headers, payload):
             captured_headers.update(headers)
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         secret = b"super-secret-key"
         sub.register_witness(
             "https://example.com/hook",
             sign_secret=secret,
         )
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
 
@@ -312,49 +328,49 @@ class TestSignSecret:
         sig_header = captured_headers["X-Regista-Signature"]
         assert sig_header.startswith("sha256=")
 
-    def test_no_signature_header_without_sign_secret(self):
+    def test_no_signature_header_without_sign_secret(self, keyset):
         captured_headers: dict = {}
 
         def transport(url, headers, payload):
             captured_headers.update(headers)
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         assert "X-Regista-Signature" not in captured_headers
 
-    def test_custom_headers_passed_through(self):
+    def test_custom_headers_passed_through(self, keyset):
         captured_headers: dict = {}
 
         def transport(url, headers, payload):
             captured_headers.update(headers)
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             headers={"Authorization": "Bearer token123"},
         )
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         assert captured_headers["Authorization"] == "Bearer token123"
 
 
 class TestEventPayload:
-    def test_payload_contains_event_data(self):
+    def test_payload_contains_event_data(self, keyset):
         captured_payload: dict = {}
 
         def transport(url, headers, payload):
             captured_payload.update(payload)
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
 
@@ -367,16 +383,16 @@ class TestEventPayload:
         assert "signature" in event
         assert "timestamp" in event
 
-    def test_witness_scheme_stored_on_receipt(self):
+    def test_witness_scheme_stored_on_receipt(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness(
             "https://example.com/hook",
             key_scheme="hmac-sha256",
         )
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", ACTORS[0])
 
         sub.deliver_pending_witness_receipts()
         receipt = sub.list_witness_receipts(event_id=evt.event_id)[0]
@@ -384,24 +400,25 @@ class TestEventPayload:
 
 
 class TestCreateProjectWithTransport:
-    def test_create_project_accepts_witness_transport(self):
+    def test_create_project_accepts_witness_transport(self, keyset):
         def transport(url, headers, payload):
             return TransportResult(status_code=200, body={"ok": True})
 
         sub = InMemoryRegista.create_project(
-            hmac_key_path=KEY_PATH,
+            hmac_key_path=keyset.path,
             witness_transport=transport,
         )
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(WF_YAML)
         sub.register_witness("https://example.com/hook")
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         count = sub.deliver_pending_witness_receipts()
         assert count == 1
 
 
 class TestConcurrentDelivery:
-    def test_concurrent_delivery_no_double_delivery(self):
+    def test_concurrent_delivery_no_double_delivery(self, keyset):
         import time
 
         delivery_count = 0
@@ -414,9 +431,9 @@ class TestConcurrentDelivery:
                 delivery_count += 1
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
-        sub.create_work_item("test", "task", "actor-1")
+        sub.create_work_item("test", "task", ACTORS[0])
 
         errors: list[Exception] = []
 
@@ -439,7 +456,7 @@ class TestConcurrentDelivery:
         assert len(receipts) == 1
         assert receipts[0]["status"] == "confirmed"
 
-    def test_concurrent_delivery_multiple_receipts_no_double(self):
+    def test_concurrent_delivery_multiple_receipts_no_double(self, keyset):
         import time
 
         delivered_payloads: list[str] = []
@@ -451,10 +468,10 @@ class TestConcurrentDelivery:
                 delivered_payloads.append(payload["receipt_id"])
             return TransportResult(status_code=200, body={"ok": True})
 
-        sub = _make_sub(transport)
+        sub = _make_sub(keyset, transport)
         sub.register_witness("https://example.com/hook")
         for i in range(5):
-            sub.create_work_item("test", "task", f"actor-{i}")
+            sub.create_work_item("test", "task", ACTORS[i])
 
         errors: list[Exception] = []
 

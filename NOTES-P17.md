@@ -1,8 +1,313 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
-> **Session 3 (2026-08-18, later) landed PHASE 2 — the v6 verifier boundary. Read §0b
-> first; it supersedes §4 entirely and records findings 10-15. Then §0 (session 2),
-> which supersedes parts of §1-§3.**
+> **Session 4 (2026-08-18) is PHASE 3 — the manifest march. Read §0a first; it
+> corrects Finding 14 and records the migration recipe as measured. Then §0b (the
+> Phase 2 verifier boundary, which supersedes §4 entirely and records findings
+> 10-15), then §0 (session 2), which supersedes parts of §1-§3.**
+
+---
+
+## 0a. Session 4 (2026-08-18): PHASE 3 — the manifest march
+
+### FINDING 14 WAS WRONG, and the remedy landed anyway
+
+Finding 14 (§0b) recorded that `_replay._process_group` "files every non-work-item
+entity group as an orphan halt". **Re-measured on this branch: `halted == 0`.** The
+groups surfaced as **`warnings`** — `_handle_orphan_group` has had a non-work-item
+early return since WI-266 (`dcf2b77`), which the finding's author did not see. A
+healthy clean-epoch replay reported *seven warnings*, which is a different defect
+with the same consequence for Phase 3: a migrated fixture cannot assert a clean
+report.
+
+Read this as a lesson about the finding, not only about the code. The finding says
+"measured" and was not; what was measured was the *symptom under the clamp*
+(a verification halt), and the halt was then attributed to the wrong branch.
+
+The corrected semantics, implemented per the coordinator's strict-defaults call:
+
+| Group | Before | Now |
+|---|---|---|
+| `work_item`, projection row present | replayed | unchanged |
+| `work_item`, projection row missing | halt | unchanged |
+| the five other CLOSED-registry kinds | `warnings += 1` | counted in `ReplayReport.non_work_item_groups_verified`; no halt, **no warning** |
+| a kind outside the closed registry | `warnings += 1` | **halt**, fail-closed, detail names the kind |
+| one entity id carrying several kinds | `warnings += 1` | **halt** |
+
+`non_work_item_groups_verified`'s docstring states exactly what "verified" covers:
+the events were carried into the **global hash-chain** verification and their kind
+was checked against the registry. It deliberately does **not** claim a per-event
+`verify_event_strict` verdict — the project-genesis event in this population is
+legitimately `UNVERIFIABLE` without an external trust pin (Finding 11), so folding
+these groups into the signature counters would make every healthy epoch report an
+evidentiary gap it does not have. Read that before renaming the field.
+
+**The mixed-kind branch is unreachable on Postgres** (groups are keyed by
+`(entity_kind, entity_id)`, so a group carries one kind by construction) and IS
+reachable in memory (groups key on `work_item_id` alone). It is kept in both, tested
+in memory, and `test_the_mixed_kind_branch_is_unreachable_on_postgres_by_construction`
+states the absence so nobody reads the in-memory coverage as Postgres coverage.
+
+### FINDING 16 — both in-memory chain walks used the v5 head formula, so a HEALTHY in-memory v6 epoch reported five chain breaks
+
+Found while writing Finding 14's falsifiers, and worse than Finding 14.
+`_in_memory_replay` hardcoded `sha256(envelope || signature)` in **three** places:
+the per-entity chain check, the global chain walk, and the head-mismatch check. The
+Postgres path has used the version-aware `_event_head_hash` throughout. So no v6
+event was reachable from genesis in memory, every post-genesis event was reported an
+orphan, and **WI-287's parity claim was measurably false for the chain** — nothing
+had asserted it, because no in-memory fixture had an epoch when WI-287 shipped.
+
+This is mutation **M20** / Finding 15 in a second place, so the fix is structural
+rather than local: the formula now lives once, at
+`_signing.compute_chain_head_hash`, and `_replay._event_head_hash`, all three
+in-memory sites and the head-mismatch check delegate to it. Its docstring names both
+bugs, because "a version-aware formula that exists in four places is a formula that
+is version-aware in three".
+
+Adjacent cleanup with the same motive: the CLOSED six-value entity-kind registry
+(`V6-ENVELOPE.md` §1.2) was hand-copied in `_verification`, `_genesis` and
+`_v6_writer`. It is now `_verification.V6_ENTITY_KINDS`, imported by all four
+consumers, and `test_the_closed_registry_is_one_registry` asserts object identity —
+a halt on "not in the registry" is only as trustworthy as the registry being
+singular.
+
+Falsifiers: `tests/test_p17_replay_entity_kinds.py` (12 nodes, both backends).
+Fail-then-pass with the two replay modules reverted and the tests kept:
+**6 failed, 3 passed -> 12 passed**.
+
+### The migration recipe, corrected by measurement (supersedes §0's version)
+
+Two costs §0's recipe did not name, both of which cost a red run:
+
+1. **A producer field inside `actor_metadata` is refused at ingress.**
+   `actor_metadata={"role": "agent", "model": "gpt-4"}` fails with "producer fields
+   must not appear in actor.metadata" — `harness`, `harness_version`, `model` and
+   `model_lineage` belong to the process-level `producer` block. Drop them; keep
+   `role`.
+2. **`open_v6_epoch` must precede `register_workflow_file`.** The registration emits
+   a signed `workflow_registered` event and is a silent no-op before genesis, so the
+   wrong order surfaces much later as `WORKFLOW_REGISTRATION_UNRESOLVED` on the
+   first ordinary append.
+
+And the signal to work from: a migrated node reports **`[XPASS(strict)]`**, which
+pytest prints as a FAILURE. That is the success condition, and it is what makes the
+migration verifiable file-by-file without touching the manifest first.
+
+### How the manifest surgery was derived, and why that is the trustworthy way
+
+Not from the migrating agents' claimed node lists. From a full two-lane run with the
+manifest still in place, then **intersecting the FAILED set with the manifest**:
+
+```
+FAILED lines: 215      failed & manifest: 215      failed NOT in manifest: 0
+```
+
+Zero failures outside the manifest means every failure *is* a strict-XPASS, which
+means the removable set is exactly the intersection — and it means the migration
+caused no collateral regression, measured rather than asserted. A claimed list can be
+wrong in two directions; this is wrong in neither. Re-running after the surgery is the
+second half of the check: any node removed that does not actually pass comes back as
+a plain FAILED, and any node left in that now passes reds the suite as a strict-XPASS.
+
+### What Phase 3 could NOT migrate, and why — the exact accounting
+
+**Every one of these is a production gap, not a fixture problem.** That is the finding
+of the march: with the wiring in place a fixture migration is mechanical, so what
+remains is the set of places where the v6 route broke something real.
+
+Four of the nine were P1.7's own and were **fixed** this session, which is what took
+the manifest from 192 to 129:
+
+| Fixed | Nodes recovered | The defect |
+|---|---|---|
+| the bare `"system"` producer identity | 36 | escalation, hook dead-lettering and recurrence firing were **impossible** in a clean v6 epoch |
+| the witness receipt hash | 13 | every Ed25519 witness receipt over a v6 event failed verification, silently |
+| `_api_meta`'s public-key branch | — | the public independent-verification API returned `UNVERIFIABLE` for every v6 event |
+| `_in_mem_ops`' public-key branch | 14 | the in-memory twin of the same omission |
+
+And five remain:
+
+| Blocker | Nodes | Owner |
+|---|---|---|
+| **2. reviewer lineage has no v6 vehicle** | 60 | **owner/coordinator design call** |
+| **3. WI-008** — `on_behalf_of` / delegated events | 36 | WI-008 |
+| **4. `entity_kind = "spec"`** is not in the closed §1.2 registry | 14 | **owner decision** |
+| **5. HMAC-signed ordinary events** (subject died with v5) | 26 | RETIRE — **listed, not executed** |
+| **8. WI-217's memory bound vs `StoreReferents`** | 2 | **escalated — a live production property** |
+| **9. in-memory `_global_chain_head` never advances** | 1 | **escalated — a fail-open gap** |
+
+### The four fixes, and the judgment calls in them
+
+**The system actor.** A system-authored event is now attributed to the project's own
+bootstrap principal — `read_project_identity(conn).principal_id`, resolved by one
+helper (`_events.resolve_system_actor_id` + its in-memory twin, which routes through
+the *same* body rather than reading `project_identity` twice). This is not an invented
+convention: `_workflow_api.py:59-67` already attributes `workflow_registered` exactly
+this way, which is why that one call site worked while six others did not. It is
+**epoch-aware** — a legacy project keeps the literal `"system"` / `"system:scheduler"`
+byte for byte, because changing a legacy path would redden the still-blocked nodes
+with a *changed* failure form.
+
+The judgment call, stated plainly: this changes the actor attribution of production
+events, and I made it mid-migration rather than escalating it. The reason is that not
+making it means shipping a substrate where auto-escalation cannot happen — P1.7's own
+wiring broke a live feature — and the correct pattern was already in the tree, put
+there by P1.7. A reviewer who thinks "which principal authors a system event" is an
+owner call would escalate instead; the change is one helper and eight call sites, so
+reverting it is cheap.
+
+**The witness hash.** `_witness.py` passed the row's `payload_canonical_hash` as
+`Ed25519Scheme.verify`'s `envelope_hash` while passing the bare envelope as
+`envelope`. For v1-v5 those coincide; under v6 the column hashes the *domain-tagged
+signature input* (`V6-ENVELOPE.md` §5.3), so `compare_digest` failed on every v6 event
+and every receipt over one was rejected as a bad signature. Measured:
+`sha256(canonical_envelope)` = `c4fdd6bd…` vs the column's `36a808c7…`.
+
+Two things worth reading twice. First, **the negative tests all kept passing**, because
+`sig_verified` was unconditionally `False` — a test that cannot tell "bad signature"
+from "we compared the wrong two hashes" tests nothing, and the control run proves it
+(with the defect restored, 3 positive nodes fail and all 4 negative nodes still pass).
+Second, the fix deliberately did **not** take the easier route of feeding the v6
+signature input to the scheme: that would silently redefine what an external witness
+must sign, and would make a witness countersignature cover byte-identical input to the
+*author's* signature over the same event. §6.1's hash-domain registry has no witness
+tag, and handing the witness the author's tag is the one thing domain separation exists
+to prevent. **A `regista.witness.receipt.v1` tag is the principled design and is a
+wire-format change — it was stopped at, not made.** Also on the record: the delivery
+body never tells the witness what to sign; the protocol is convention established
+solely by what two test doubles do.
+
+**The two public-key branches.** Phase 2 threaded the referent resolver through eleven
+production call sites. There were thirteen. `_api_meta.verify_event_result` and
+`_in_mem_ops.verify_event_result` both omitted it on their caller-supplied-public-key
+path — and `_in_mem_ops` *built* the resolver two lines above and then did not pass it.
+The lesson is about the omission's shape: substituting the KEY resolver does not change
+what CHAIN material a v6 verdict needs, and nothing exercised either branch against a
+v6 row, so both returned `UNVERIFIABLE` for every v6 event. Worse than a false
+negative: a wrong-key test passed for the *wrong reason* (`unverifiable`, not
+`SIGNATURE_INVALID`).
+
+**Two un-referented sites are LEFT, reported not fixed:**
+`_signing.verify_event_with_public_key` (the bool shim) has **no `referents`
+parameter at all**, so it returns `False` for every v6 event; and
+`_signing.verify_event_principal_binding`'s `_verify_with_key` calls that shim, so
+`verify_event_principal_binding` should report `verified=False` for every v6 event.
+Nothing in the suite asserts either, which is why they are untested rather than
+merely unfixed. Adding the parameter is small; deciding what a *principal-binding*
+probe should present is not, given §5.9 rule 1 makes registry resolution for a v6
+event a raise.
+
+Blockers 2, 4, 5, 8 and 9 in detail, because each is a decision rather than a task:
+
+**2 — the reviewer's lineage has no v6 vehicle.** `_review_validators.py:301` and
+`_assurance.review_lineage_relation` resolve the *acting reviewer's* lineage from
+`ctx.actor_metadata["model_lineage"]`. The v6 envelope **refuses** producer fields
+inside `actor.metadata`, and `ValidatorContext` carries no `producer`. So a pre-append
+validator cannot see the in-flight reviewer's lineage at all. Worse, the two halves of
+the system now disagree: `_lineage.raw_event_model_lineage` already reads *stored* v6
+events' lineage from the `producer` block, so authors' lineages resolve and the
+reviewer's cannot. And `producer` is **process-level** — one value per process — so
+per-actor cross-lineage distinctness has no v6 vehicle even in principle. Deciding
+whether `ValidatorContext` gains a producer, or whether the cross-lineage gate moves
+to a different input, is a design call. **Not invented mid-migration.**
+
+**4 — `entity_kind = "spec"`.** `sign_spec` / `read_spec_events` are still live in
+`_api_meta.py` and `_cli.py`, and `spec` is not one of the six closed kinds, so they
+cannot write to a v6 epoch at all. Either `V6-ENVELOPE.md` §1.2 gains a seventh kind
+or the feature is cut. Both are owner calls; the closed registry is exactly the thing
+`prefer-strict-defaults` says not to widen unilaterally.
+
+**5 — 26 RETIRE candidates, listed rather than executed**, per the brief's "more than
+a handful → list for the coordinator first". `test_signer_binding.py` (14) and
+`test_wi223_principal_binding.py` (12) drive HMAC-signed *ordinary* events and
+unaccepted-key chains — states the clean epoch cannot produce (`_v6_writer._SCHEME_IDS
+== {"ed25519"}`; a key with no project-local acceptance is refused at append). The
+mechanical cost is the reason to pause: `tests/test_retired_tests_ledger.py:87`
+asserts `node_id not in full_collection`, so a ledger entry **requires deleting the
+test**, and deleting 26 live tests is the D1-rejected "blanket deletion,
+unaccountable" wearing a ledger's hat (NOTES §2 option 2). Several invariants clearly
+survive and would carry forward — "replay counts a binding failure when a key has no
+active row in *this* project" survives as §5.10 step 3's anchor-reachability walk;
+`principal_binding_failures == 0` meaning *checked* survives as
+`ReplayReport.principal_binding_verified` — but `open_v6_epoch` writes no
+`principal_keys` rows at all, so whether `principal_binding_verified` is even `True`
+on a v6 project is itself unsettled. That question has to be answered before the
+retirements, not by them.
+
+**8 — Phase 2 defeated WI-217's streaming space bound, and this is a production
+property, not a test.** `_replay.py` builds one `store_referents(conn)` for the whole
+replay; `StoreReferents._build()` indexes every v6 event in the store and caches it
+for the resolver's lifetime, so replay's peak now tracks the log size. Measured: an 8x
+larger log grew replay's tracemalloc peak 5.5x against a 3.0x budget. Phase 2 noted
+the per-resolver cache as a deliberate trade (per-event construction would make an
+O(n) replay O(n²)) and noted that an `event_hash` generated column would remove the
+indexing pass — but it did not notice that the *cache* is what WI-217 exists to
+prevent. The two constraints are in genuine tension and the resolution is a migration
+(the generated column) plus a bounded or streaming resolver. Neither is a
+mid-migration change.
+
+**9 — the in-memory backend cannot detect a log emptied under a live head.**
+`InMemoryEventStore.append_v6_row` deliberately does not advance
+`_global_chain_head` (its docstring defers that to the writer's explicit
+`_advance_global_chain_head`, which the in-memory v6 path never calls), so after
+`open_v6_epoch` plus eight v6 events the head is still `None`. The state WI-266's
+fail-closed check looks for — head set, log empty — is therefore unreachable in
+memory, while Postgres detects it correctly. A fail-open gap of exactly the class
+WI-266 closed, and a second measured hole in WI-287's parity claim after Finding 16.
+
+### Other measured findings the march turned up (not blockers)
+
+* **`read_events()` with no filters returns trust-plane rows.** `read_events_composite`
+  applies no entity-kind predicate, so an unfiltered read on a migrated project
+  returns the epoch's own `project_initialized` / `principal_key_accepted` /
+  `workflow_registered` events. Whether the reader should be scoped is a real
+  question; one test now uses a documented event-free fixture rather than have the
+  question decided by a weakened assertion.
+* **`archive_events` silently breaks the v6 project chain** and reports it only as a
+  bare `chain_breaks` counter with no `ReplayReportEntry` naming it —
+  `_archive.py` does not update `event_chain_head`, so the head still names an
+  archived event. `CUTOVER-CLASSIFICATION.md` §5.3 documents the hole as an artifact
+  of the read, but `replay()` gives an operator no way to tell it from tampering.
+* **`_verification` and `_replay` disagree about a nulled `canonical_envelope`.** The
+  verifier says `UNVERIFIABLE` / `ENVELOPE_ABSENT` (its `AbsentEnvelopeProbe` is a
+  v1-v5 reconstruction path and does not run for v6); `_replay` decides the stronger
+  claim, that the row contradicts its own retained signature. Both fail closed, but a
+  caller using `verify_event_result` gets the weaker of the two. Both halves are now
+  pinned by tests.
+* **Most test files hardcode `DSN = "postgresql://…/regista_test"`** and ignore
+  `REGISTA_TEST_DSN`, so the WI-243 leak guard watches a database the tests do not
+  write to. Pre-existing, and it means the dedicated-DSN hygiene the notes claim is
+  largely notional. Four files were reading `TEST_DSN` instead; two are fixed.
+
+### WI-289: clusters 1/2/3/5 discharged — 39 of 39
+
+`tests/test_wi289_v6_counterparts.py` (40 nodes). 37 new counterparts, 2 mapped to
+pre-existing tests (`test_p17_v6_writer.py::TestSemanticConformance::test_the_entity_chain_links_by_signed_v6_event_hash`
+and `test_p17_v6_verifier_boundary.py::TestAgainstARealEpoch::test_a_real_row_rewrite_is_still_caught_by_reconciliation`).
+The node→test mapping is recorded machine-checked in `tests/retired_tests_ledger.json`
+(`covered_by`/`covered_in` per entry) with a self-check test asserting every pointer
+still resolves, so a rename cannot rot the closure note.
+
+Because Phase 2 landed, these assert an `applicability` **verdict** — which is what
+cluster 6 could not do and had to be re-tightened for. Detection evidence: 11 tamper
+mutations, 11 killed (19 node-runs pass with the tamper, the same 19 fail without it).
+
+**Cluster 5 was NOT WI-301-blocked** — checked rather than assumed. Active-key
+selection is `KeySet.resolve_signing_key`'s status filter and rotation is a
+`principal_key_accepted` event the writer already writes; both are project-local.
+WI-301 still blocks *trust-log* enrolment and rotation writes.
+
+Ledger now: 56 WI-289 entries, **45 discharged**, 11 undischarged — all cluster 4, all
+in `tests/test_bundle.py`, blocker **P3.3**.
+
+### WI-301-blocked: nothing, as it turns out
+
+No file's migration needed the trust-log append path. The one place it was expected —
+`test_principal_lifecycle_durable.py` (27 nodes) — migrated cleanly by using
+`requested_authority="root"`, the same shape the already-passing
+`test_trust_projection.py` ceremony uses; anything else maps onto §5.4 registrar
+authority, which needs a `delegation_event_hash` the ceremony cannot name. Registrar
+delegation remains unwired and is documented as Gate 2's.
 
 Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).

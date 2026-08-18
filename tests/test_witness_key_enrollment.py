@@ -19,19 +19,13 @@ the doctor check still describes a pre-cut ed25519 registration correctly.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 import pytest
-from _helpers import seed_precut_ed25519_witness
+from _helpers import DSN, KEY_PATH, WORKFLOW_PATH, seed_precut_ed25519_witness
 
 from regista._errors import ErrorCode, RegistaError
 from regista._witness import witness_principal_id
 from regista.testing import drop_project_schema
-
-TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
-WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 def _ed25519_keypair():
@@ -46,10 +40,43 @@ def _ed25519_keypair():
 
 @pytest.fixture
 def regista():
+    """A project with **no** v6 epoch open, on purpose.
+
+    Every node using this fixture is about a *refusal* or about how the doctor
+    describes a **pre-cut** row, and several assert on the absence of state that an
+    open epoch necessarily creates — ``test_the_refusal_enrols_no_registry_key``
+    asserts ``principals.list() == []``, and genesis plus the five
+    ``principal_key_accepted`` events an epoch needs would populate exactly that
+    projection. Opening an epoch here would force those assertions to be rewritten
+    into weaker before/after comparisons to say the same thing, so the epoch is
+    opened only where a signed event is genuinely required: see ``v6_regista``.
+    """
     from regista import Regista
 
     project = f"test_wke_{uuid.uuid4().hex[:8]}"
     sub = Regista.create_project(DSN, project, KEY_PATH)
+    sub.register_workflow_file(WORKFLOW_PATH)
+    yield sub
+    sub.close()
+    drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def v6_regista(tmp_path):
+    """A project with an open v6 epoch, for the nodes that must append a real event.
+
+    `open_v6_epoch` must precede `register_workflow_file`: the registration emits a
+    signed `workflow_registered` event and there is no chain to append it to before
+    genesis (before which it is a silent no-op, surfacing later as
+    WORKFLOW_REGISTRATION_UNRESOLVED on the first ordinary append).
+    """
+    from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    project = f"test_wke_v6_{uuid.uuid4().hex[:8]}"
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -255,7 +282,8 @@ class TestDoctorCheck:
 
 
 class TestDeliveryStillVerifies:
-    def test_enrolled_witness_delivery_succeeds(self, regista):
+    def test_enrolled_witness_delivery_succeeds(self, v6_regista):
+        regista = v6_regista
         try:
             import nacl.signing
         except ImportError:
@@ -273,7 +301,7 @@ class TestDeliveryStillVerifies:
         seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pub)
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "wke-delivery"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)

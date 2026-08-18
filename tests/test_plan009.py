@@ -6,14 +6,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from _helpers import DSN
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista import Regista
 from regista._testing import raw_transaction
 from regista.testing import drop_project_schema
 
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(Path(__file__).parent / "test_keys.json")
 WORKFLOW_PATH = str(Path(__file__).parent / "test_workflow.yaml")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spellings are refused at the
+#: v6 ingress.
+ACTOR = "agent:worker"
 
 WORKFLOW_V2 = """\
 name: test_workflow
@@ -63,9 +67,14 @@ attempt_threshold: 3
 
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     project_name = f"plan009_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project_name, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project_name, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow_file` emits the
+    # signed `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -73,9 +82,11 @@ def regista():
 
 
 @pytest.fixture
-def regista_v2():
+def regista_v2(tmp_path):
     project_name = f"plan009v2_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project_name, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project_name, keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     sub.register_workflow(WORKFLOW_V2)
     yield sub
@@ -108,11 +119,11 @@ class TestMaintenanceStartStop:
 
 class TestMaintenanceSweeps:
     def test_sweeps_expired_claims(self, regista):
-        wi, _ = regista.create_work_item("test_workflow", "feature", "actor-a",
+        wi, _ = regista.create_work_item("test_workflow", "feature", ACTOR,
                                            custom_fields={"title": "t", "priority": "low"})
-        regista.acquire_claim(wi.work_item_id, "actor-a", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, ACTOR, ttl_seconds=1)
         claim = regista.get_work_item(wi.work_item_id)
-        assert claim.claimed_by == "actor-a"
+        assert claim.claimed_by == ACTOR
 
         regista.start_maintenance(sweep_interval=1)
         time.sleep(3)
@@ -150,12 +161,12 @@ class TestMaintenanceHookLeaseSweep:
         regista.register_validator("validate_start", lambda ctx: None)
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "hook lease sweep"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", ACTOR,
                             actor_metadata={"role": "agent"})
-        regista.transition(wi.work_item_id, "submit_review", "agent-1",
+        regista.transition(wi.work_item_id, "submit_review", ACTOR,
                             actor_metadata={"role": "agent"})
 
         hooks = regista.claim_hooks(max_batch=10, lease_seconds=1)
@@ -210,10 +221,10 @@ class TestMaintenanceWitnessReceiptSweep:
         )
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "witness sweep test"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", ACTOR,
                             actor_metadata={"role": "agent"})
 
         with raw_transaction(regista) as conn:
@@ -240,10 +251,10 @@ class TestMaintenanceWitnessReceiptSweep:
         )
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "witness maint sweep"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", ACTOR,
                             actor_metadata={"role": "agent"})
 
         with raw_transaction(regista) as conn:
@@ -270,12 +281,12 @@ class TestMaintenanceMetricsRefresh:
         regista.register_validator("validate_start", lambda ctx: None)
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "metrics refresh"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", ACTOR,
                             actor_metadata={"role": "agent"})
-        regista.transition(wi.work_item_id, "submit_review", "agent-1",
+        regista.transition(wi.work_item_id, "submit_review", ACTOR,
                             actor_metadata={"role": "agent"})
 
         regista.start_maintenance(sweep_interval=1, hook_poll_interval=1)

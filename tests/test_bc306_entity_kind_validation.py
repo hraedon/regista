@@ -7,22 +7,28 @@ import tempfile
 import uuid
 
 import pytest
+from _helpers import DSN as _HELPER_DSN
 
 pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
 
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 from fastapi.testclient import TestClient
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
 from regista.testing import InMemoryRegista, drop_project_schema
 
-DSN = os.environ.get(
-    "TEST_DSN",
-    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
-)
-TEST_KEYS = os.environ.get("TEST_KEYS", "tests/test_keys.json")
+#: ``_helpers.DSN`` rather than a local ``TEST_DSN`` read: every other file in the suite
+#: honours ``REGISTA_TEST_DSN``, and the WI-243 schema-leak guard snapshots *that* DSN —
+#: a project created against a different default was invisible to it.
+DSN = _HELPER_DSN
 TEST_WORKFLOW = os.environ.get("TEST_WORKFLOW", "tests/test_workflow.yaml")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1. The sidecar resolves the *event* actor from
+#: the bearer token, so the token's ``actor_id`` has to be canonical too — the bare
+#: spelling it replaces is refused at the v6 ingress.
+ACTOR = "agent:worker"
 
 
 def _make_token_file():
@@ -32,7 +38,7 @@ def _make_token_file():
         "tokens": [
             {
                 "token_sha256": token_sha256,
-                "actor_id": "test-agent",
+                "actor_id": ACTOR,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent", "coder", "reviewer", "admin"],
             },
@@ -54,9 +60,14 @@ def token_file():
 
 
 @pytest.fixture(scope="module")
-def regista_instance():
+def regista_instance(tmp_path_factory):
     project = f"bc306_test_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, TEST_KEYS)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("bc306_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no epoch to
+    # append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     yaml_content = open(TEST_WORKFLOW).read()
     sub.register_workflow(yaml_content)
     yield sub
@@ -138,7 +149,7 @@ class TestCoreApiEntityKindValidation:
         with pytest.raises(RegistaError) as exc_info:
             regista_instance.append_event(
                 work_item_id=uuid.UUID(work_item_id),
-                actor_id="test-agent",
+                actor_id=ACTOR,
                 transition="note",
                 entity_kind="bogus_kind",
             )
@@ -147,7 +158,7 @@ class TestCoreApiEntityKindValidation:
     def test_core_api_accepts_work_item_entity_kind(self, regista_instance, work_item_id):
         evt = regista_instance.append_event(
             work_item_id=uuid.UUID(work_item_id),
-            actor_id="test-agent",
+            actor_id=ACTOR,
             transition="note",
             entity_kind="work_item",
         )
@@ -155,34 +166,38 @@ class TestCoreApiEntityKindValidation:
 
 
 class TestInMemoryEntityKindValidation:
-    def test_in_memory_rejects_unknown_entity_kind(self):
-        sub = InMemoryRegista(project="test_bc306", hmac_key_path=TEST_KEYS)
+    def test_in_memory_rejects_unknown_entity_kind(self, tmp_path):
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(project="test_bc306", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         yaml_content = open(TEST_WORKFLOW).read()
         sub.register_workflow(yaml_content)
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "test-agent",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "bc306 mem test"},
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.append_event(
                 work_item_id=wi.work_item_id,
-                actor_id="test-agent",
+                actor_id=ACTOR,
                 transition="note",
                 entity_kind="bogus_kind",
             )
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
-    def test_in_memory_accepts_work_item_entity_kind(self):
-        sub = InMemoryRegista(project="test_bc306_ok", hmac_key_path=TEST_KEYS)
+    def test_in_memory_accepts_work_item_entity_kind(self, tmp_path):
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(project="test_bc306_ok", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         yaml_content = open(TEST_WORKFLOW).read()
         sub.register_workflow(yaml_content)
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "test-agent",
+            "test_workflow", "feature", ACTOR,
             custom_fields={"title": "bc306 mem ok"},
         )
         evt = sub.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="test-agent",
+            actor_id=ACTOR,
             transition="note",
             entity_kind="work_item",
         )

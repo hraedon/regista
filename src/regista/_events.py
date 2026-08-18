@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import psycopg
 import psycopg.types.json
@@ -24,6 +24,9 @@ from ._keys import KeySet
 from ._signing import sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._event_store import InMemoryEventStore
 
 _EVENT_FIELDS = (
     "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
@@ -158,6 +161,67 @@ def _v6_epoch_open(conn: DictConn) -> bool:
     from ._v6_writer import read_project_identity
 
     return read_project_identity(conn) is not None
+
+
+def resolve_system_actor_id(conn: DictConn, *, legacy_actor_id: str) -> str:
+    """The principal a *system-authored* event is attributed to.
+
+    Auto-escalation (``escalated``), claim expiry, hook dead-lettering and
+    recurrence firing all append events nobody asked for: there is no calling
+    actor, so the legacy writers used a bare literal (``"system"``,
+    ``"system:scheduler"``). Neither is a canonical ``(human|agent|service):<subject>``
+    principal per ``TRUST-DOMAIN.md`` §2.1, and — the part that actually breaks —
+    neither can hold a key-binding anchor, so the v6 writer refuses the append with
+    ``ACTOR_SIGNER_MISMATCH``. Those three features were therefore *impossible* in a
+    clean v6 epoch, not merely awkward to set up in a test.
+
+    In the open epoch a system-authored event is attributed to the project's own
+    bootstrap principal — the ``service:`` id named by genesis, whose key-binding
+    anchor is the genesis event itself. That is not a new convention: it is exactly
+    what ``_workflow_api._append_workflow_registration_event`` already does for
+    ``workflow_registered``, which is why that call site works today.
+
+    Epoch-aware on purpose, and the ``None`` branch is load-bearing. A legacy
+    (pre-genesis) project has no ``project_identity`` row, and the epoch-blocked
+    manifest pins the exact pre-genesis refusal form for every node still inside it;
+    a legacy path that started resolving a *different* actor id would redden those
+    nodes with a **changed** failure form, which the manifest validator turns into
+    honest red. So before genesis this returns ``legacy_actor_id`` byte for byte.
+
+    One helper rather than the branch repeated at six call sites: a duplicated epoch
+    check across two backends is how the Postgres and in-memory writers drift into
+    disagreeing about the same project, and the shared conformance suite compares
+    them.
+    """
+    from ._v6_writer import read_project_identity
+
+    identity = read_project_identity(conn)
+    if identity is None:
+        return legacy_actor_id
+    return identity.principal_id
+
+
+def resolve_system_actor_id_in_memory(
+    store: InMemoryEventStore, *, legacy_actor_id: str
+) -> str:
+    """:func:`resolve_system_actor_id` for the in-memory backend.
+
+    Deliberately routes through the *same* :func:`resolve_system_actor_id` over the
+    ``InMemoryV6Connection`` facade rather than reading
+    ``store.v6_rows.project_identity`` directly, so the two backends cannot resolve
+    different ids for the same project — a second reader of the same row is a second
+    chance to disagree about it.
+
+    The ``v6_epoch_open()`` pre-check is not just a fast path: it avoids
+    materialising ``v6_rows`` on a store that has no v6 state at all, which is the
+    property ``InMemoryEventStore.v6_rows`` documents.
+    """
+    if not store.v6_epoch_open():
+        return legacy_actor_id
+    with store.v6_manager.read_only_transaction() as conn:
+        return resolve_system_actor_id(
+            cast("DictConn", conn), legacy_actor_id=legacy_actor_id
+        )
 
 
 def _read_event_by_id(conn: DictConn, event_id: uuid.UUID) -> Event | None:

@@ -154,7 +154,7 @@ def _check_escalation(
     attempt_number: int,
     key_set: KeySet,
 ) -> bool:
-    from ._events import append_event
+    from ._events import append_event, resolve_system_actor_id
 
     wf_row = conn.execute(
         SQL("SELECT definition FROM workflow_registry WHERE workflow_name = %s AND version = %s"),
@@ -180,7 +180,7 @@ def _check_escalation(
     append_event(
         conn=conn,
         work_item_id=wi["work_item_id"],
-        actor_id="system",
+        actor_id=resolve_system_actor_id(conn, legacy_actor_id="system"),
         actor_kind="system",
         actor_metadata=None,
         key_set=key_set,
@@ -349,7 +349,7 @@ def release_claim(
 
 
 def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
-    from ._events import append_event, lock_work_item
+    from ._events import append_event, lock_work_item, resolve_system_actor_id
 
     now = datetime.now(UTC)
     expired = conn.execute(
@@ -391,7 +391,8 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
             append_event(
                 conn=conn,
                 work_item_id=wi_id,
-                actor_id=prior_actor_id or "system",
+                actor_id=prior_actor_id
+                or resolve_system_actor_id(conn, legacy_actor_id="system"),
                 actor_kind="system",
                 actor_metadata=None,
                 key_set=key_set,

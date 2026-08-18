@@ -5,22 +5,32 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from _helpers import DSN
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista._errors import ErrorCode, RegistaError
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
 
     project = f"test_rec_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Genesis before the workflow: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires.
+    #
+    # No actor ids appear in this file at all — a recurrence rule is a row, and the
+    # work item a firing creates is authored by *the scheduler*, not by a caller.
+    # That is exactly the actor `_events.resolve_system_actor_id` supplies: the
+    # bare "system:scheduler" literal has no key-binding anchor and is refused with
+    # ACTOR_SIGNER_MISMATCH, which is why every fire_* node here was epoch-blocked.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()

@@ -322,17 +322,21 @@ class TestBC220ClientTimestamp:
     def test_postgres_appends_client_timestamp(self, tmp_path: Path) -> None:
         from regista import Regista
         from regista._testing import drop_project_schema
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
-        kf = _write_key_file(tmp_path / "keys.json", [
-            {"key_id": "k1", "secret": SECRET, "status": "active"},
-        ])
+        # A v6 keyset, not the single HMAC key this test used to write: the clean
+        # epoch requires one Ed25519 actor-role key per principal, and a bare
+        # `{"key_id": ..., "secret": ...}` entry satisfies none of that.
+        keyset = make_v6_keyset(tmp_path)
         dsn = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
         project_name = f"ts_test_{uuid.uuid4().hex[:12]}"
-        sub = Regista.create_project(dsn, project_name, hmac_key_path=str(kf))
-        # try/finally from creation: the epoch admission gate refuses the
-        # writes below mid-body (absorbed as XFAIL), and unguarded inline
-        # cleanup would leak the schema — the WI-243 guard fails CI on that.
+        sub = Regista.create_project(dsn, project_name, hmac_key_path=keyset.path)
+        # try/finally from creation: unguarded inline cleanup would leak the
+        # schema on any mid-body failure — the WI-243 guard fails CI on that.
         try:
+            # The epoch first: `register_workflow` emits the signed
+            # `workflow_registered` event admission gate 1 requires.
+            open_v6_epoch(sub, keyset)
             sub.register_workflow(
             "name: wf\n"
             "version: 1\n"
@@ -354,10 +358,13 @@ class TestBC220ClientTimestamp:
                 "    custom_fields: []\n"
                 "link_types: []\n"
             )
-            _wi, _event = sub.create_work_item("wf", "t", "actor", actor_kind="agent")
+            # Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses "actor".
+            _wi, _event = sub.create_work_item(
+                "wf", "t", "agent:worker", actor_kind="agent",
+            )
             client_before = datetime.now(UTC)
             evt = sub.append_event(
-                _wi.work_item_id, "actor", actor_kind="agent",
+                _wi.work_item_id, "agent:worker", actor_kind="agent",
                 transition="note", payload={"k": "v"},
             )
             client_after = datetime.now(UTC)

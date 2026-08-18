@@ -180,12 +180,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+BUNDLE_WORKER = "agent:worker"
+BUNDLE_REVIEWER = "human:reviewer"
+
+
 def _drive_to_terminal(sub, wi):
     agent = {"role": "agent"}
     reviewer = {"role": "reviewer"}
-    sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "submit_review", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "approve", "reviewer-1", actor_metadata=reviewer)
+    sub.transition(wi.work_item_id, "start", BUNDLE_WORKER, actor_metadata=agent)
+    sub.transition(wi.work_item_id, "submit_review", BUNDLE_WORKER, actor_metadata=agent)
+    sub.transition(wi.work_item_id, "approve", BUNDLE_REVIEWER, actor_metadata=reviewer)
 
 
 @pytest.fixture
@@ -728,14 +733,36 @@ class TestExportBounds:
             sub.export_audit_bundle(str(output))
         assert not output.exists()
 
+    @pytest.fixture
+    def v6_sub(self, project, tmp_path_factory):
+        """A store on a clean v6 epoch, workflow registered.
+
+        A fixture of its own rather than a migrated ``sub``, because ``sub`` is also
+        what ``test_export_of_event_free_store_is_rejected`` (two tests up) uses —
+        and an open v6 epoch is itself events, so migrating ``sub`` would take that
+        test's subject away rather than move it forward.
+        """
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path_factory.mktemp("bundle_bounds_keys"))
+        s = Regista.create_project(DSN, project, keyset.path)
+        # The epoch first: `register_workflow` emits the signed
+        # `workflow_registered` event admission gate 1 requires.
+        open_v6_epoch(s, keyset)
+        with open(WORKFLOW_PATH) as f:
+            s.register_workflow(f.read())
+        yield s
+        s.close()
+
     def test_oversized_export_refuses_and_writes_nothing(
-        self, sub, project, tmp_path, monkeypatch
+        self, v6_sub, project, tmp_path, monkeypatch
     ):
         from regista import _bundle
         from regista._errors import RegistaError
 
+        sub = v6_sub
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "oversize",
+            "test_workflow", "feature", BUNDLE_WORKER,
             custom_fields={"title": "oversize"},
         )
         _drive_to_terminal(sub, wi)

@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista._errors import ErrorCode, RegistaError
 from regista._hooks import run_validator
@@ -21,7 +22,11 @@ from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spelling is refused at the
+#: v6 ingress. ``_make_ctx`` keeps using it deliberately — a ``ValidatorContext`` is a
+#: pure value the validator sees, never an ingress, so nothing there is canonicalised.
+ACTOR = "agent:worker"
 
 WORKFLOW_WITH_VALIDATOR = """\
 name: validator_test
@@ -108,11 +113,16 @@ class TestRunValidator:
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_bc192_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("bc192_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no epoch to
+    # append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WORKFLOW_WITH_VALIDATOR)
     yield sub
     sub.close()
@@ -126,13 +136,13 @@ class TestValidatorTransactionRollback:
         wi, _ = regista.create_work_item(
             workflow_name="validator_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
         assert evt.transition == "finish"
 
@@ -145,14 +155,14 @@ class TestValidatorTransactionRollback:
         wi, _ = regista.create_work_item(
             workflow_name="validator_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         with pytest.raises(RegistaError, match="VALIDATOR_FAILED"):
             regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="finish",
-                actor_id="agent-1",
+                actor_id=ACTOR,
             )
 
         refreshed = regista.get_work_item(wi.work_item_id)

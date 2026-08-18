@@ -18,6 +18,11 @@ DSN = os.environ.get(
 )
 KEY_PATH = os.environ.get("TEST_KEYS", "tests/test_keys.json")
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+#: A privileged transition's actor is infrastructure, so it gets a `service:` id.
+SYSTEM_ACTOR = "service:hooks"
+WORKER = "agent:worker"
+
 PRIVILEGED_WORKFLOW = """\
 name: privileged_test
 version: 1
@@ -141,46 +146,54 @@ class TestWorkflowSchemaPrivileged:
 
 class TestPostgresPrivilegedTransition:
     @pytest.fixture()
-    def sub(self):
+    def sub(self, tmp_path):
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
         proj = f"test_priv_{uuid.uuid4().hex[:8]}"
-        s = Regista.create_project(DSN, proj, hmac_key_path=KEY_PATH)
+        keyset = make_v6_keyset(tmp_path)
+        s = Regista.create_project(DSN, proj, hmac_key_path=keyset.path)
+        # The epoch first: `register_workflow` emits the signed
+        # `workflow_registered` event admission gate 1 requires, and there is no
+        # epoch to append it to before `open_v6_epoch` returns.
+        open_v6_epoch(s, keyset)
         s.register_workflow(PRIVILEGED_WORKFLOW)
         yield s
+        s.close()
         drop_project_schema(DSN, proj)
 
     def test_system_actor_can_transition(self, sub):
         wi, _ = sub.create_work_item(
-            "privileged_test", "task", "system-actor",
+            "privileged_test", "task", SYSTEM_ACTOR,
             actor_kind="system",
             custom_fields={"title": "test"},
         )
         evt = sub.transition(
-            wi.work_item_id, "scope_attestation", "system-actor",
+            wi.work_item_id, "scope_attestation", SYSTEM_ACTOR,
             actor_kind="system",
         )
         assert evt.transition == "scope_attestation"
 
     def test_agent_actor_rejected(self, sub):
         wi, _ = sub.create_work_item(
-            "privileged_test", "task", "agent-1",
+            "privileged_test", "task", WORKER,
             actor_kind="agent",
             custom_fields={"title": "test"},
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.transition(
-                wi.work_item_id, "scope_attestation", "agent-1",
+                wi.work_item_id, "scope_attestation", WORKER,
                 actor_kind="agent",
             )
         assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED
 
     def test_non_privileged_transition_works_normally(self, sub):
         wi, _ = sub.create_work_item(
-            "privileged_test", "task", "agent-1",
+            "privileged_test", "task", WORKER,
             actor_kind="agent",
             custom_fields={"title": "test"},
         )
         evt = sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", WORKER,
             actor_kind="agent",
             actor_metadata={"role": "agent"},
         )
@@ -189,21 +202,27 @@ class TestPostgresPrivilegedTransition:
 
 class TestInMemoryPrivilegedTransition:
     @pytest.fixture()
-    def sub(self):
-        return InMemoryRegista(
+    def sub(self, tmp_path):
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        s = InMemoryRegista(
             project="test_priv_mem",
-            hmac_key_path=KEY_PATH,
+            hmac_key_path=keyset.path,
         )
+        # Before the tests' own `register_workflow`, which appends a signed event.
+        open_v6_epoch(s, keyset)
+        return s
 
     def test_system_actor_can_transition(self, sub):
         sub.register_workflow(PRIVILEGED_WORKFLOW)
         wi, _ = sub.create_work_item(
-            "privileged_test", "task", "system-actor",
+            "privileged_test", "task", SYSTEM_ACTOR,
             actor_kind="system",
             custom_fields={"title": "test"},
         )
         evt = sub.transition(
-            wi.work_item_id, "scope_attestation", "system-actor",
+            wi.work_item_id, "scope_attestation", SYSTEM_ACTOR,
             actor_kind="system",
         )
         assert evt.transition == "scope_attestation"
@@ -211,13 +230,13 @@ class TestInMemoryPrivilegedTransition:
     def test_agent_actor_rejected(self, sub):
         sub.register_workflow(PRIVILEGED_WORKFLOW)
         wi, _ = sub.create_work_item(
-            "privileged_test", "task", "agent-1",
+            "privileged_test", "task", WORKER,
             actor_kind="agent",
             custom_fields={"title": "test"},
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.transition(
-                wi.work_item_id, "scope_attestation", "agent-1",
+                wi.work_item_id, "scope_attestation", WORKER,
                 actor_kind="agent",
             )
         assert exc_info.value.code == ErrorCode.PRIVILEGED_TRANSITION_REQUIRED

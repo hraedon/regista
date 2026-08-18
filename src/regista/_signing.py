@@ -582,6 +582,40 @@ def compute_chain_head_hash(canonical_envelope: bytes, signature: bytes) -> byte
     return hashlib.sha256(canonical_envelope + signature).digest()
 
 
+def compute_payload_canonical_hash(
+    canonical_envelope: bytes, hash_alg: str = "sha-256"
+) -> bytes:
+    r"""The ``payload_canonical_hash`` column an event carries, under ITS OWN version.
+
+    This is **not** ``H(canonical_envelope)`` for a v6 row, and that is the trap. Per
+    ``V6-ENVELOPE.md`` §5.3 the v6 pipeline is::
+
+        signature_input        := b"regista.event.v6\x00" || canonical_envelope
+        payload_canonical_hash := SHA256(signature_input)
+
+    so the column hashes the *domain-tagged signature input*, not the envelope bytes,
+    and ``hash_alg`` does not select its digest — v6 is SHA-256 by specification
+    (§6.1's domain registry owns the tag; the scheme owns nothing about it). v1-v5
+    hash the stored envelope bytes directly, under the row's own ``hash_alg``.
+
+    Measured divergence on a real v6 ``work_item_created`` row: ``H(envelope)`` =
+    ``c4fdd6bd…`` against a stored column of ``36a808c7…``. Anything that treats the
+    column as ``H(envelope)`` therefore fails closed on **every** v6 event, and a
+    ``compare_digest`` that always returns ``False`` is indistinguishable from a
+    working check whose input happens to be bad — which is how this survived.
+
+    Lives beside :func:`compute_chain_head_hash` for exactly the reason that function
+    documents: a version-aware hash formula that exists in several places is a formula
+    that is version-aware in all but one of them. ``_witness`` was that one.
+    """
+
+    if classify_envelope_version(canonical_envelope) == 6:
+        return compute_v6_payload_canonical_hash(canonical_envelope)
+    from ._signing_scheme import resolve_hash_function
+
+    return resolve_hash_function(hash_alg)(canonical_envelope).digest()
+
+
 def verify_event(
     event_id: UUID,
     work_item_id: UUID,

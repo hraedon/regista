@@ -156,6 +156,66 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `genesis_envelope` / `acceptance_payload` build the genesis and acceptance events in
   the order Bootstrap A → Bootstrap B → ordinary acceptance requires.
 
+### Fixed
+
+- **System-authored events could not be written in a clean v6 epoch at all.**
+  Auto-escalation (`escalated`), hook dead-lettering (`hook_dead_lettered`) and
+  recurrence firing were appended with a bare `actor_id="system"` /
+  `"system:scheduler"`. Neither is a canonical `(human|agent|service):<subject>`
+  principal (`TRUST-DOMAIN.md` §2.1) and neither can hold a key-binding anchor, so the
+  v6 writer refused them with `ACTOR_SIGNER_MISMATCH` — three live features broken by
+  the v6 route. A system event is now attributed to the project's own bootstrap
+  principal, resolved by `_events.resolve_system_actor_id` (and its in-memory twin,
+  which shares the same body). This is the attribution `_workflow_api` already used for
+  `workflow_registered`, which is why that one call site worked. **Epoch-aware:** a
+  legacy project keeps the literal unchanged.
+
+- **Every Ed25519 witness receipt over a v6 event failed verification, silently.**
+  `_witness` passed the row's `payload_canonical_hash` as `Ed25519Scheme.verify`'s
+  `envelope_hash` while passing the bare envelope as `envelope`. Those coincide for
+  v1-v5; under v6 the column hashes the *domain-tagged signature input*
+  (`V6-ENVELOPE.md` §5.3), so `compare_digest` failed on every v6 event. The failure was
+  invisible because `sig_verified` was unconditionally `False` — which also made the
+  negative delivery tests pass vacuously. `verify_witness_countersignature` now
+  establishes the two facts separately: that the row's hash column really is the hash of
+  its own envelope column (under that envelope's version, via the new
+  `_signing.compute_payload_canonical_hash`, which also fixes a second latent bug where
+  the row's `hash_alg` was ignored), and that the witness's signature is valid over the
+  bytes the delivery body actually carries. **No persisted format changed**; the
+  alternative fix would have silently redefined what an external witness must sign, and
+  would have given the witness the author's own hash domain tag.
+
+- **The v6 referent resolver was missing from two of thirteen call sites**, both on the
+  caller-supplied-public-key path: `_api_meta.verify_event_result` and
+  `_in_mem_ops.verify_event_result` (which *built* the resolver and then did not pass
+  it). Substituting the key resolver does not change what chain material a v6 verdict
+  needs, so both returned `UNVERIFIABLE` for every v6 event — the public
+  independent-verification API answering "nothing was checked" while looking like a
+  verdict, and a wrong-key negative passing for the wrong reason. Still outstanding and
+  recorded rather than fixed: `_signing.verify_event_with_public_key` has no `referents`
+  parameter at all, so it and `verify_event_principal_binding` report `False` for every
+  v6 event.
+
+- **Both in-memory hash-chain walks used the v1-v5 head formula**, so no v6 event was
+  reachable from genesis and a *healthy* in-memory v6 epoch reported one chain break per
+  post-genesis event. The chain half of WI-287's parity claim was measurably false and
+  nothing had asserted it. The formula now lives once, at
+  `_signing.compute_chain_head_hash`, with `_replay` and all three in-memory sites
+  delegating — the third recurrence of "a version-aware formula hand-copied per call
+  site is version-aware at some of them" (mutation M20 was the second).
+
+### Changed
+
+- **`replay()` no longer reports a healthy clean-epoch chain as seven warnings.** The
+  five spec-legal non-`work_item` entity kinds from the CLOSED §1.2 registry are counted
+  in the new `ReplayReport.non_work_item_groups_verified` — a v6 chain necessarily
+  carries `project`, `principal` and `workflow` groups, so their presence is the
+  ordinary case and is neither a halt nor a warning. An entity kind **outside** the
+  closed registry now **halts**, fail-closed: previously "not a work item" bought the
+  tolerance, now five named values do. One entity id carrying several kinds also halts
+  rather than being read as either. The closed registry itself was hand-copied in three
+  modules and is now `_verification.V6_ENTITY_KINDS`, imported.
+
 ### Changed — BREAKING
 
 - **Clean v6 project genesis:** fresh schemas now carry nullable workflow identity

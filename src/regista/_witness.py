@@ -21,6 +21,69 @@ def witness_principal_id(witness_id: uuid.UUID | str) -> str:
     return f"{_WITNESS_PRINCIPAL_PREFIX}{witness_id}"
 
 
+def verify_witness_countersignature(
+    *,
+    canonical_envelope: bytes,
+    row_payload_canonical_hash: bytes,
+    hash_alg: str,
+    witness_signature: bytes,
+    witness_public_key: bytes,
+) -> bool:
+    """Whether an ed25519 witness countersigned this event's stored envelope bytes.
+
+    Two independent facts, both required, previously conflated into one call that
+    could not establish either for a v6 event:
+
+    1. **The row is self-consistent** — its ``payload_canonical_hash`` column really
+       is the hash of its ``canonical_envelope`` column, under that envelope's own
+       version (:func:`regista._signing.compute_payload_canonical_hash`). Two columns
+       compared against each other, so this is a real check, not a tautology.
+    2. **The witness's signature is valid over the envelope bytes it was sent.** The
+       delivery body carries ``event.canonical_envelope`` verbatim, so those bare
+       bytes are what a witness signs. ``Ed25519Scheme.verify``'s contract requires
+       ``envelope_hash == H(envelope)`` for whatever ``envelope`` it is handed, so
+       the digest passed here is ``H(canonical_envelope)``.
+
+    The defect this replaces passed the *row's* ``payload_canonical_hash`` as that
+    ``envelope_hash`` while passing the *bare envelope* as ``envelope``. For v1-v5
+    those coincide; for v6 they do not (``V6-ENVELOPE.md`` §5.3 — the column hashes
+    the domain-tagged signature input), so ``compare_digest`` failed on every v6
+    event and every ed25519 receipt over one was rejected as a bad signature.
+
+    Deliberately **not** fixed by feeding the v6 signature input to the scheme
+    instead. That would silently redefine what an external witness must sign, and it
+    would make a witness countersignature cover byte-identical input to the *author's*
+    signature over the same event — §6.1's domain registry has no witness tag, and
+    giving the witness the author's tag is the one thing domain separation exists to
+    prevent. Countersigning the untagged stored bytes keeps the two structurally
+    distinct. A dedicated ``regista.witness.*`` domain tag would be the principled
+    design, but it is a wire-format change and is not one to make from inside a
+    verification bug fix.
+    """
+
+    from ._signing import compute_payload_canonical_hash
+    from ._signing_scheme import Ed25519Scheme, resolve_hash_function
+
+    try:
+        expected_row_hash = compute_payload_canonical_hash(canonical_envelope, hash_alg)
+        envelope_digest = resolve_hash_function(hash_alg)(canonical_envelope).digest()
+    except RegistaError:
+        # An unknown hash_alg on the row: unverifiable, not verified.
+        return False
+
+    import hmac as _hmac
+
+    if not _hmac.compare_digest(expected_row_hash, row_payload_canonical_hash):
+        return False
+    return Ed25519Scheme().verify(
+        canonical_envelope,
+        witness_signature,
+        envelope_digest,
+        witness_public_key,
+        hash_alg=hash_alg,
+    )
+
+
 def _refuse_witness_key_lifecycle(operation: str, *, extra: str = "") -> None:
     """Refuse a witness key-lifecycle write. Always raises.
 
@@ -642,6 +705,7 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                     bytes(raw_row["payload_canonical_hash"])
                     if raw_row["payload_canonical_hash"] else None
                 )
+                raw_alg = str(raw_row["hash_alg"] or "sha-256")
                 evt = dict(raw_row)
                 evt["event_id"] = str(evt["event_id"])
                 evt["work_item_id"] = str(evt["work_item_id"])
@@ -746,10 +810,12 @@ def deliver_pending_receipts(mgr: ConnectionManager, project: str) -> int:
                         and raw_env is not None
                         and raw_hash is not None
                     ):
-                        from ._signing_scheme import Ed25519Scheme
-
-                        sig_verified = Ed25519Scheme().verify(
-                            raw_env, witness_sig, raw_hash, witness_pubkey,
+                        sig_verified = verify_witness_countersignature(
+                            canonical_envelope=raw_env,
+                            row_payload_canonical_hash=raw_hash,
+                            hash_alg=raw_alg,
+                            witness_signature=witness_sig,
+                            witness_public_key=witness_pubkey,
                         )
                     else:
                         sig_verified = False

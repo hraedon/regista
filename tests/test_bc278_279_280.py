@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import pytest
+
 from regista.testing import InMemoryRegista
 
 TESTS_DIR = Path(__file__).parent
@@ -11,20 +13,41 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+
+
+@pytest.fixture
+def keyset(tmp_path):
+    from tests._v6_fixtures import make_v6_keyset
+
+    return make_v6_keyset(tmp_path)
+
+
+def _in_memory(keyset):
+    """An ``InMemoryRegista`` on a clean v6 epoch, workflow registered."""
+    from tests._v6_fixtures import open_v6_epoch
+
+    sub = InMemoryRegista(project="test_bc278", hmac_key_path=keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires.
+    open_v6_epoch(sub, keyset)
+    sub.register_workflow_file(WORKFLOW_PATH)
+    return sub
+
 
 class TestBC278HeartbeatCoalescingParity:
-    def test_in_memory_uses_wall_clock_not_expiry_for_coalesce(self):
-        sub = InMemoryRegista(hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        wi, _ = sub.create_work_item("test_workflow", "feature", "agent-1",
+    def test_in_memory_uses_wall_clock_not_expiry_for_coalesce(self, keyset):
+        sub = _in_memory(keyset)
+        wi, _ = sub.create_work_item("test_workflow", "feature", WORKER,
                                      custom_fields={"title": "bc-278"})
 
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=600)
+        sub.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=600)
 
         import time
         time.sleep(0.1)
 
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=600, coalesce_threshold=0.01)
+        sub.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=600, coalesce_threshold=0.01)
 
         events = sub.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
@@ -32,20 +55,22 @@ class TestBC278HeartbeatCoalescingParity:
 
 
 class TestBC279ReplayWarnsOnUnknownTransitions:
-    def test_postgres_replay_warns_on_unknown_transition(self):
+    def test_postgres_replay_warns_on_unknown_transition(self, keyset):
         from regista import Regista
         from regista.testing import drop_project_schema
+        from tests._v6_fixtures import open_v6_epoch
 
         project = f"test_bc279_{uuid.uuid4().hex[:8]}"
-        sub = Regista.create_project(DSN, project, KEY_PATH)
+        sub = Regista.create_project(DSN, project, keyset.path)
         try:
+            open_v6_epoch(sub, keyset)
             sub.register_workflow_file(WORKFLOW_PATH)
-            wi, _ = sub.create_work_item("test_workflow", "feature", "agent-1",
+            wi, _ = sub.create_work_item("test_workflow", "feature", WORKER,
                                          custom_fields={"title": "bc-279-pg"})
 
             sub.append_event(
                 work_item_id=wi.work_item_id,
-                actor_id="agent-1",
+                actor_id=WORKER,
                 transition="unknown_transition_xyz",
                 payload={"note": "manually appended"},
             )
@@ -56,15 +81,14 @@ class TestBC279ReplayWarnsOnUnknownTransitions:
             sub.close()
             drop_project_schema(DSN, project)
 
-    def test_in_memory_replay_warns_on_unknown_transition(self):
-        sub = InMemoryRegista(hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        wi, _ = sub.create_work_item("test_workflow", "feature", "agent-1",
+    def test_in_memory_replay_warns_on_unknown_transition(self, keyset):
+        sub = _in_memory(keyset)
+        wi, _ = sub.create_work_item("test_workflow", "feature", WORKER,
                                      custom_fields={"title": "bc-279-im"})
 
         sub.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id=WORKER,
             transition="unknown_transition_abc",
             payload={"note": "manually appended"},
         )

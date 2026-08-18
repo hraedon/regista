@@ -377,13 +377,28 @@ class InMemWitnessMixin(_InMemoryBase):
                                 and event.payload_canonical_hash is not None
                             ):
                                 try:
-                                    from ._signing_scheme import Ed25519Scheme
+                                    # The SAME function the Postgres path calls. This
+                                    # branch used to inline the defective argument
+                                    # pairing (bare envelope as `envelope`, the row's
+                                    # `payload_canonical_hash` as `envelope_hash`), so
+                                    # every ed25519 receipt over a v6 event was
+                                    # rejected as a bad signature — see
+                                    # `_witness.verify_witness_countersignature` for
+                                    # why the two differ under v6. It was invisible
+                                    # because no in-memory test reaches the ed25519
+                                    # branch with a real signature.
+                                    from ._witness import (
+                                        verify_witness_countersignature,
+                                    )
 
-                                    sig_verified = Ed25519Scheme().verify(
-                                        event.canonical_envelope,
-                                        witness_sig,
-                                        event.payload_canonical_hash,
-                                        witness_pubkey,
+                                    sig_verified = verify_witness_countersignature(
+                                        canonical_envelope=event.canonical_envelope,
+                                        row_payload_canonical_hash=(
+                                            event.payload_canonical_hash
+                                        ),
+                                        hash_alg=event.hash_alg or "sha-256",
+                                        witness_signature=witness_sig,
+                                        witness_public_key=witness_pubkey,
                                     )
                                 except Exception:
                                     sig_verified = False

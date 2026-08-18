@@ -72,8 +72,22 @@ class InMemOpsMixin(_InMemoryBase):
                     scheme_id = self._key_set.get_key(event.key_id).scheme
                 except RegistaError:
                     scheme_id = None
+            # `referents` is built above and MUST be presented here too. Omitting it
+            # was the in-memory twin of the `_api_meta` defect `23975c0` fixed: a
+            # supplied public key decides the SIGNATURE, and the presented chain
+            # decides the key binding, the workflow registration and the epoch
+            # position (§5.10 steps 1-4). Without the chain this branch returned
+            # `UNVERIFIABLE` / `KEY_BINDING_UNRESOLVED, WORKFLOW_REGISTRATION_UNRESOLVED,
+            # EPOCH_VIOLATION` for every v6 event — and, worse, made a wrong-key
+            # negative pass for the wrong reason (`unverifiable`, not
+            # `SIGNATURE_INVALID`). This method's own docstring promises the two
+            # backends cannot disagree about what "verified" means; until now they did.
             return verify_event_result_with_public_key(
-                event, public_key, scheme_id=scheme_id, backend=Backend.IN_MEMORY,
+                event,
+                public_key,
+                scheme_id=scheme_id,
+                backend=Backend.IN_MEMORY,
+                referents=referents,
             )
         if self._key_set is None:
             return verify_event_strict(
@@ -178,6 +192,7 @@ class InMemOpsMixin(_InMemoryBase):
             self._recurrence_rules,
             lambda **kw: self._create_work_item(**kw),
             rule_id,
+            store=self._store,
         )
 
     def cancel_recurrence_rule(self, rule_id: uuid.UUID) -> None:

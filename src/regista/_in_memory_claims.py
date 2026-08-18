@@ -16,6 +16,7 @@ from ._contract import (
 )
 from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
+from ._events import resolve_system_actor_id_in_memory
 from ._keys import KeySet
 from ._types import Claim
 
@@ -237,7 +238,8 @@ def in_memory_sweep_expired_claims(
                 _in_memory_append_claim_event(
                     store, wi, key_set, uuid.uuid4(), "claim_expired",
                     {"actor_id": claim["actor_id"], "expired_at": now.isoformat()},
-                    actor_id=claim["actor_id"] or "system",
+                    actor_id=claim["actor_id"]
+                    or resolve_system_actor_id_in_memory(store, legacy_actor_id="system"),
                 )
     return len(expired)
 
@@ -274,10 +276,18 @@ def _in_memory_append_claim_event(
     transition: str,
     payload: dict[str, Any],
     *,
-    actor_id: str = "system",
+    actor_id: str | None = None,
     actor_kind: str = "system",
     actor_metadata: dict[str, Any] | None = None,
 ) -> None:
+    # ``actor_id=None`` means *system-authored* — escalation and hook dead-lettering
+    # have no calling actor. The literal that used to be the default here
+    # ("system") is not a canonical §2.1 principal and cannot hold a key-binding
+    # anchor, so the v6 writer refuses it; resolve_system_actor_id_in_memory
+    # attributes the event to the project's bootstrap principal once the epoch is
+    # open, and returns the old literal unchanged before genesis.
+    if actor_id is None:
+        actor_id = resolve_system_actor_id_in_memory(store, legacy_actor_id="system")
     _store_append(
         store,
         work_item_id=wi["work_item_id"],

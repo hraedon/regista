@@ -25,12 +25,24 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+#: Only the `regista` fixture below is on the clean epoch; the envelope-version unit
+#: tests in this file drive `_signing` directly and keep their legacy actor strings.
+WORKER = "agent:worker"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_sign_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -42,7 +54,7 @@ class TestAC26JsonbDriftSurvival:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "AC-26 envelope"},
         )
 
@@ -55,12 +67,12 @@ class TestAC26JsonbDriftSurvival:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "AC-26 replay"},
         )
         regista.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id=WORKER,
             transition="custom_event",
             payload={"nested": {"key": "value"}},
         )

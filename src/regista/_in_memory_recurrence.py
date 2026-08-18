@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ._errors import ErrorCode, RegistaError
+from ._event_store import InMemoryEventStore
+from ._events import resolve_system_actor_id_in_memory
 from ._recurrence import (
     _find_next_future_slot,
     compute_next_fire,
@@ -100,7 +102,19 @@ def in_memory_fire_recurrence(
     recurrence_rules: dict[uuid.UUID, dict[str, Any]],
     create_work_item_fn: Callable[..., Any],
     rule_id: uuid.UUID,
+    *,
+    store: InMemoryEventStore,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Fire one due recurrence rule, creating its work item.
+
+    ``store`` is required rather than optional on purpose: it is only here so the
+    scheduler-authored ``work_item_created`` can be attributed to the project's
+    bootstrap principal in an open v6 epoch (the bare ``"system:scheduler"``
+    literal has no key-binding anchor and is refused with
+    ``ACTOR_SIGNER_MISMATCH``). A defaulted ``store=None`` would let a future
+    caller silently keep the un-appendable literal, which is the failure mode
+    ``_events.resolve_system_actor_id`` exists to remove.
+    """
     rule = recurrence_rules.get(rule_id)
     if rule is None:
         raise RegistaError(
@@ -173,7 +187,9 @@ def in_memory_fire_recurrence(
     wi, _evt = create_work_item_fn(
         workflow_name=rule["workflow_name"],
         work_item_type=rule["work_item_type"],
-        actor_id="system:scheduler",
+        actor_id=resolve_system_actor_id_in_memory(
+            store, legacy_actor_id="system:scheduler"
+        ),
         actor_kind="system",
         actor_metadata={
             "recurrence_rule_id": str(rule_id),
