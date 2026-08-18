@@ -559,6 +559,29 @@ def classify_envelope_version(envelope: bytes) -> int:
     return _VERSION_NUMBERS.get(str(classify_envelope_bytes(envelope)), 0)
 
 
+def compute_chain_head_hash(canonical_envelope: bytes, signature: bytes) -> bytes:
+    """The hash-chain head an event contributes, under ITS OWN envelope version.
+
+    v6 uses the domain-separated, length-framed :func:`compute_v6_event_hash`;
+    v1-v5 use SHA-256 over the envelope/signature concatenation. ``hash_alg`` is
+    not consulted: it selects a digest *inside* legacy signing envelopes, not the
+    chain-link construction.
+
+    This lives here, at the bottom of the import graph, because it is the formula
+    the *whole tree* chains with and every hand-copy of it has been a bug. Two
+    are on the record: mutation M20 (NOTES-P17 finding 15) reverted
+    ``_bundle._hash_event`` to the legacy formula and the suite stayed green, and
+    ``_in_memory_replay`` had the legacy formula hardcoded in both its chain
+    walks — which made a healthy in-memory v6 epoch report five chain breaks. A
+    version-aware formula that exists in four places is a formula that is
+    version-aware in three.
+    """
+
+    if classify_envelope_version(canonical_envelope) == 6:
+        return compute_v6_event_hash(canonical_envelope, signature)
+    return hashlib.sha256(canonical_envelope + signature).digest()
+
+
 def verify_event(
     event_id: UUID,
     work_item_id: UUID,

@@ -2180,13 +2180,20 @@ class TestAgainstARealEpoch:
         ]
         assert verification_halts == [], verification_halts
 
-        # NOT asserted: `halted == 0`. A v6 epoch's chain also carries `project`,
-        # `principal` and `workflow` entity events, and `_replay._process_group` files
-        # every non-`work_item` entity group as an orphan halt ("Orphaned events with
-        # no work_item and no created event"). That predates this change, has nothing
-        # to do with the verifier, and is recorded in NOTES-P17 as a Phase-3 blocker —
-        # asserting `halted == 0` here would either fail for an unrelated reason or
-        # tempt someone to weaken this test to make it pass.
+        # The Finding-14 half, which IS assertable here: the `project`, `principal`
+        # and `workflow` entity groups a v6 epoch necessarily carries are counted by
+        # name and are NOT warnings. (Finding 14's diagnosis — "filed as an orphan
+        # halt" — was wrong when re-measured in Phase 3; they were warnings. Its
+        # remedy landed regardless: tests/test_p17_replay_entity_kinds.py.)
+        assert report.warnings == 0
+        assert report.non_work_item_groups_verified >= 3
+
+        # STILL not asserted: `halted == 0` — and the reason is now this class's
+        # fixture rather than replay's contract. `epoch` is class-scoped and the
+        # sibling tests above append work-item events with `append_v6_event`
+        # directly, which writes no `work_items_current` row. Those ARE orphans and
+        # halting on them is correct. The clean-epoch `halted == 0` claim lives in
+        # test_p17_replay_entity_kinds.py, on a fixture nothing has polluted.
         known_orphan_forms = (
             "Orphaned events with no work_item and no created event",
             "events exist but projection row missing from work_items_current",
@@ -2197,6 +2204,6 @@ class TestAgainstARealEpoch:
             if e.category == "halted" and (e.detail or "") in known_orphan_forms
         ]
         assert len(orphan_halts) == report.halted, (
-            "every remaining halt must be the known non-work-item-entity orphan case; "
+            "every remaining halt must be a genuine missing-projection orphan; "
             f"got {[e.detail for e in report.entries if e.category == 'halted']}"
         )

@@ -59,6 +59,7 @@ from ._keys import KeyEntry, KeySet
 from ._lineage import MODEL_LINEAGE_FAMILIES
 from ._signing import sign_v6_envelope
 from ._verification import (
+    V6_ENTITY_KINDS,
     V6EnvelopeError,
     parse_v6_envelope_strict,
     validate_v6_envelope,
@@ -83,9 +84,9 @@ _ANCHOR_TRANSITIONS: Final[frozenset[str]] = frozenset(
     {"project_initialized", "project_cryptographic_epoch_started", PRINCIPAL_KEY_ACCEPTED}
 )
 
-_V6_ENTITY_KINDS: Final[frozenset[str]] = frozenset(
-    {"work_item", "project", "principal", "trust_domain", "project_instance", "workflow"}
-)
+#: The closed six-value registry, imported rather than restated — see
+#: ``_verification.V6_ENTITY_KINDS``.
+_V6_ENTITY_KINDS: Final[frozenset[str]] = V6_ENTITY_KINDS
 
 _EVENT_COLUMNS: Final[str] = (
     "event_id, work_item_id, entity_kind, entity_id, hash_alg, event_seq, actor_id, "

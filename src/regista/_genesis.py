@@ -20,6 +20,7 @@ from ._keys import KeyEntry, KeySet
 from ._signing import compute_v6_event_hash, sign_v6_envelope
 from ._v6_referents import store_referents
 from ._verification import (
+    V6_ENTITY_KINDS,
     EventRow,
     KeySetResolver,
     V6EnvelopeError,
@@ -34,9 +35,9 @@ GENESIS_ENTITY_KIND = "project"
 # Compatibility spelling used by early v6 conformance fixtures.
 _GENESIS_TRANSITION = GENESIS_TRANSITION
 _MISSING = object()
-_V6_ENTITY_KINDS = frozenset(
-    {"work_item", "project", "principal", "trust_domain", "project_instance", "workflow"}
-)
+#: The closed six-value registry, imported rather than restated — see
+#: ``_verification.V6_ENTITY_KINDS``.
+_V6_ENTITY_KINDS = V6_ENTITY_KINDS
 
 _REQUIRED_LOAD_BEARING_PATHS: tuple[tuple[str, ...], ...] = (
     ("type",),

@@ -382,7 +382,13 @@ V6_PRODUCER_KEYS = frozenset(
     {"harness", "harness_version", "model", "model_lineage"}
 )
 
-_V6_ENTITY_KINDS = frozenset(
+#: The CLOSED v6 entity-kind registry (``V6-ENVELOPE.md`` §1.2). Exactly six
+#: values, and "closed" is the load-bearing word: a kind outside this set is not
+#: an unrecognised extension to be tolerated, it is a refusal. This is the single
+#: definition — ``_genesis``, ``_v6_writer`` and ``_replay`` all import it rather
+#: than restating it, because three hand-copied frozensets are three chances for
+#: the registry to stop being one registry.
+V6_ENTITY_KINDS: frozenset[str] = frozenset(
     {
         "work_item",
         "project",
@@ -392,6 +398,7 @@ _V6_ENTITY_KINDS = frozenset(
         "workflow",
     }
 )
+_V6_ENTITY_KINDS = V6_ENTITY_KINDS
 _V6_ACTOR_KINDS = frozenset({"agent", "human", "system"})
 _V6_AUTHORIZATION_MODES = frozenset({"direct", "delegated"})
 _V6_PRODUCER_METADATA_KEYS = frozenset(
