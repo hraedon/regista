@@ -1284,64 +1284,48 @@ def cmd_principal_list(args: argparse.Namespace) -> None:
         sub.close()
 
 
+#: Shared refusal text for the three CLI subcommands that used to write the
+#: `principal_keys` projection directly (TRUST-DOMAIN.md §5.9, §5.1's bypass list).
+_CLI_PROJECTION_REFUSAL = (
+    "principal_keys is a projection of signed trust-log events (TRUST-DOMAIN.md "
+    "§5.9), and this subcommand wrote it directly with no event — one of the three "
+    "bypass paths the 0.6.0 cutover closes.\n\n"
+    "The event-driven path is regista.principal_lifecycle.PrincipalLifecycle:\n"
+    "  1. prepare_enrollment / prepare_rotation / prepare_revocation\n"
+    "  2. issue_possession_challenge + submit_possession  (enrol/rotate: proves the\n"
+    "     holder has the private half of the key being enrolled)\n"
+    "  3. record_approval  (a distinct approver — separation of duties)\n"
+    "  4. commit  (appends the signed event and applies the projection atomically)\n\n"
+    "That ceremony is deliberately multi-step and needs material a single "
+    "non-interactive CLI invocation does not have: the enrolling private key for the "
+    "possession proof, and a second principal's approval. Driving it from the CLI is "
+    "not wired up in 0.6.0 — see `regista trust rebuild-projection` for the read/"
+    "repair side."
+)
+
+
+def _refuse_principal_write(args: argparse.Namespace, operation: str, extra: str = "") -> None:
+    error = RegistaError(
+        ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+        f"`regista principal {operation}` is refused. {_CLI_PROJECTION_REFUSAL}"
+        + (f"\n\n{extra}" if extra else ""),
+        {"reason": "direct_projection_write", "operation": operation},
+    )
+    _handle_error(error, json_mode=getattr(args, "json", False))
+
+
 def cmd_principal_register(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    import base64
-
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        from regista._principal_keys import register_principal_key
-
-        pub_key = base64.b64decode(args.public_key)
-        entry = register_principal_key(
-            sub._mgr,
-            args.principal,
-            pub_key,
-            args.scheme,
-            key_id=args.key_id,
-            registered_by=args.registered_by or "cli",
-        )
-        if args.json:
-            _dump_json(entry)
-        else:
-            print(f"Registered key {entry.key_id} for principal {entry.principal_id}")
-            print(f"  scheme:      {entry.scheme}")
-            print(f"  fingerprint: {entry.fingerprint}")
-            print(f"  status:      {entry.status}")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
+    _refuse_principal_write(args, "register")
 
 
 def cmd_principal_rotate(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    import base64
-
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        from regista._principal_keys import rotate_principal_key
-
-        pub_key = base64.b64decode(args.public_key)
-        entry = rotate_principal_key(
-            sub._mgr,
-            args.principal,
-            pub_key,
-            args.scheme,
-            registered_by=args.registered_by or "cli",
-        )
-        if args.json:
-            _dump_json(entry)
-        else:
-            print(f"Rotated key for principal {entry.principal_id}:")
-            print(f"  new key_id:  {entry.key_id}")
-            print(f"  scheme:      {entry.scheme}")
-            print(f"  fingerprint: {entry.fingerprint}")
-            print(f"  status:      {entry.status}")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
+    _refuse_principal_write(
+        args,
+        "rotate",
+        "A rotation additionally requires dual authorization: a signature by the "
+        "superseded key, or the current root threshold when mode is recovery "
+        "(§5.6, Resolution 5 / D-8). A --public-key argument cannot supply either.",
+    )
 
 
 def cmd_principal_enroll(args: argparse.Namespace) -> None:
@@ -1459,27 +1443,14 @@ def cmd_principal_resolve_backend_name(args: argparse.Namespace) -> None:
 
 
 def cmd_principal_revoke(args: argparse.Namespace) -> None:
-    dsn, project, hmac_key_path = _require_config(args)
-    sub = Regista(dsn, project, hmac_key_path)
-    try:
-        from regista._principal_keys import revoke_principal_key
-
-        entry = revoke_principal_key(
-            sub._mgr,
-            args.principal,
-            args.key_id,
-            reason=args.reason or "unspecified",
-        )
-        if args.json:
-            _dump_json(entry)
-        else:
-            print(f"Revoked key {entry.key_id} for principal {entry.principal_id}")
-            print(f"  reason:      {entry.revoked_reason}")
-            print(f"  revoked_at:  {entry.revoked_at}")
-    except RegistaError as e:
-        _handle_error(e, json_mode=getattr(args, "json", False))
-    finally:
-        sub.close()
+    _refuse_principal_write(
+        args,
+        "revoke",
+        "Note also what flipping this row would not achieve: it changes no "
+        "verification outcome for any v6 event. Revocation binds at the revocation "
+        "event's position in the trust-log chain (§5.7), never at a table row — the "
+        "table is a projection and is never consulted for a v6 event (§5.9 rule 1).",
+    )
 
 
 def cmd_provision(args: argparse.Namespace) -> None:
@@ -1853,6 +1824,54 @@ def cmd_trust_verify_genesis(args: argparse.Namespace) -> None:
     print(f"countersignatures: {report.countersignatures_status} ({report.countersignature_count})")
     print(f"anchors: {report.anchors_status} ({report.anchor_count})")
     print("verdict: VALID")
+
+
+def cmd_trust_rebuild_projection(args: argparse.Namespace) -> None:
+    """Rebuild ``principal_keys`` from signed events alone (§5.9 rule 4).
+
+    "If the table can be rebuilt on demand, the temptation to hand-fix a row
+    disappears." ``--dry-run`` writes nothing and reports the diff; exit is non-zero
+    when a dry run finds divergence, so it is usable as a check in a pipeline.
+    """
+    dsn, project, hmac_key_path = _require_config(args)
+    from regista._trust_projection import rebuild_projection
+
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        report = rebuild_projection(sub._mgr, project=project, dry_run=args.dry_run)
+    except RegistaError as e:
+        _handle_error(e, json_mode=getattr(args, "json", False))
+        return
+    finally:
+        sub.close()
+
+    if getattr(args, "json", False):
+        _dump_json(report.to_dict())
+    else:
+        mode = "dry-run (nothing written)" if report.dry_run else "applied"
+        print(f"rebuild-projection: {mode}")
+        print(f"  project:                     {report.project}")
+        print(f"  events replayed:             {report.events_replayed}")
+        for transition, count in sorted(report.events_by_transition.items()):
+            print(f"    {transition}: {count}")
+        print(f"  v6 rows rebuilt:             {report.rows_rebuilt}")
+        print(f"  legacy_unsourced preserved:  {report.legacy_unsourced_preserved}")
+        print(f"  ordering basis:              {report.ordering_basis}")
+        if report.skipped_events:
+            print(f"  skipped events:              {len(report.skipped_events)}")
+            for skipped in report.skipped_events:
+                print(f"    {skipped.get('event_id')}: {skipped.get('reason')}")
+        if report.differences:
+            print(f"  DIVERGENCE: {len(report.differences)} row(s)")
+            for diff in report.differences:
+                fields = ", ".join(diff.fields)
+                suffix = f" [{fields}]" if fields else ""
+                print(f"    {diff.kind}: {diff.principal_id}/{diff.key_id}{suffix}")
+        else:
+            print("  divergence:                  none")
+    # A dry run that found divergence is a failed check, not a successful report.
+    if report.dry_run and report.differences:
+        sys.exit(1)
 
 
 def cmd_spec_sign(args: argparse.Namespace) -> None:
@@ -2420,6 +2439,35 @@ def main(argv: list[str] | None = None) -> None:
     trust_verify.add_argument("file", help="Path to the genesis document JSON")
     trust_verify.add_argument("--json", action="store_true", help="JSON output")
     trust_verify.set_defaults(func=cmd_trust_verify_genesis)
+    # §5.9 rule 4: the rebuild is a first-class command, so hand-fixing a row is
+    # never the easier option. This one DOES touch the database, unlike its two
+    # offline siblings above.
+    trust_rebuild = trust_sub.add_parser(
+        "rebuild-projection",
+        help="Rebuild principal_keys from signed trust-log events (§5.9)",
+    )
+    # SUPPRESS, not a plain default: a subparser option with a None default
+    # overwrites the global --project/--dsn the top-level parser already set, so the
+    # command would silently lose its configuration. The contract names
+    # `--project` here (§5.9 rule 4), so it is accepted and simply defers to the
+    # global value when omitted.
+    trust_rebuild.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Project (schema) to rebuild; defaults to the global --project",
+    )
+    trust_rebuild.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Rebuild into a temp table and report the diff; write nothing. "
+        "Exits non-zero if the live projection has diverged.",
+    )
+    # Also SUPPRESS: `regista --json trust rebuild-projection` must stay JSON.
+    # A store_true default of False here would silently override the global flag.
+    trust_rebuild.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
+    )
+    trust_rebuild.set_defaults(func=cmd_trust_rebuild_projection)
 
     # spec (Plan 025 WI-4.3)
     spec_parser = subs.add_parser("spec", help="Spec entity commands")

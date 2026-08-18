@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ._connection import DictConn
+from ._errors import ErrorCode, RegistaError
 from ._version_info import SCHEMA_VERSION, versions
 
 _check_status_values = frozenset({"ok", "warn", "fail", "skip"})
@@ -614,6 +615,96 @@ def _check_principal_registration(
     )
 
 
+# ---------------------------------------------------------------------------
+# P2.2 / TRUST-DOMAIN.md §5.9 rule 3 — trust:projection_consistent:<project>
+#
+# Deliberately self-contained: it owns its own connection handling and shares no
+# helper with the neighbouring checks, so it rebases cleanly against the concurrent
+# P1.4 branch (which deletes the anchoring checks from this module).
+# ---------------------------------------------------------------------------
+
+
+def _check_projection_consistent(
+    dsn: str, project: str, require_ssl: bool
+) -> DoctorCheck:
+    """Rebuild ``principal_keys`` into a temp table and diff it against the live rows.
+
+    Any divergence is a **failure**, not a warning (§5.9 rule 3): the projection is
+    supposed to be a function of the signed event log, so a difference means either
+    the table was hand-edited or the log and the table disagree — and in both cases
+    the table is no longer evidence of anything. Criterion 13 rides on this check
+    failing after an ``UPDATE principal_keys SET status='active'``.
+
+    Nothing is written: the rebuild runs with ``dry_run=True``.
+    """
+    name = f"trust:projection_consistent:{project}"
+    from ._connection import validate_project_name
+
+    try:
+        validate_project_name(project)
+    except ValueError as e:
+        return DoctorCheck(name=name, status="fail", detail=f"Invalid project name: {e}")
+
+    mgr = None
+    try:
+        from ._connection import ConnectionManager
+        from ._trust_projection import check_projection_consistent
+
+        mgr = ConnectionManager(dsn, project, require_ssl=require_ssl)
+        mgr.open()
+        report = check_projection_consistent(mgr, project=project)
+    except RegistaError as e:
+        # Migration 046 not applied yet is a "cannot check", not a "diverged".
+        # Reporting it as a failure would make an un-upgraded store look corrupt.
+        if e.code is ErrorCode.MIGRATION_REQUIRED:
+            return DoctorCheck(
+                name=name,
+                status="skip",
+                detail=(
+                    "principal_keys has no projection columns yet (migration 046 "
+                    "pending); nothing to check"
+                ),
+            )
+        return DoctorCheck(name=name, status="fail", detail=f"{e.code}")
+    except Exception as e:
+        return DoctorCheck(name=name, status="fail", detail=_sanitize_error(e))
+    finally:
+        if mgr is not None:
+            try:
+                mgr.close()
+            except Exception:  # pragma: no cover - close is best-effort
+                pass
+
+    if report.differences:
+        kinds: dict[str, int] = {}
+        for diff in report.differences:
+            kinds[diff.kind] = kinds.get(diff.kind, 0) + 1
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(kinds.items()))
+        first = report.differences[0]
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=(
+                f"principal_keys diverges from a rebuild of its {report.events_replayed} "
+                f"signed lifecycle event(s): {len(report.differences)} row(s) differ "
+                f"({summary}); first: {first.principal_id}/{first.key_id} "
+                f"{first.kind}"
+                + (f" [{', '.join(first.fields)}]" if first.fields else "")
+                + ". Run `regista trust rebuild-projection --project "
+                f"{project}` to restore it from the events."
+            ),
+        )
+    return DoctorCheck(
+        name=name,
+        status="ok",
+        detail=(
+            f"principal_keys reproduces exactly from {report.events_replayed} signed "
+            f"lifecycle event(s): {report.rows_rebuilt} v6 row(s), "
+            f"{report.legacy_unsourced_preserved} legacy_unsourced row(s) untouched"
+        ),
+    )
+
+
 def run_doctor(
     dsn: str | None = None,
     *,
@@ -668,6 +759,7 @@ def run_doctor(
                 checks.append(
                     _check_witness_key_enrollment(dsn, project, require_ssl)
                 )
+                checks.append(_check_projection_consistent(dsn, project, require_ssl))
             elif not projects_list:
                 checks.append(DoctorCheck(
                     name="projects",
@@ -692,6 +784,9 @@ def run_doctor(
                     checks.append(_check_schema_version(dsn, name, require_ssl))
                     checks.append(
                         _check_witness_key_enrollment(dsn, name, require_ssl)
+                    )
+                    checks.append(
+                        _check_projection_consistent(dsn, name, require_ssl)
                     )
 
     checks.append(DoctorCheck(

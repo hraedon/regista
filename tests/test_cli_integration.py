@@ -250,7 +250,15 @@ class TestHooksDeadLetterList:
         assert result.returncode == 0
 
 
-class TestPrincipalRotate:
+class TestPrincipalWriteSubcommandsAreRefused:
+    """`regista principal register/rotate/revoke` wrote the projection directly.
+
+    TRUST-DOMAIN.md §5.1 names `principal rotate` (_cli.py:1594) and
+    `principal revoke` (:1648) as two of the three bypass paths; §5.9 rule 2 closes
+    them. They now exit non-zero with a named error that points at the event-driven
+    ceremony, instead of writing an unsourced `principal_keys` row.
+    """
+
     def _keypairs(self, n):
         import base64
 
@@ -262,59 +270,114 @@ class TestPrincipalRotate:
             pairs.append((base64.b64encode(bytes(sk.verify_key)).decode("ascii"), bytes(sk)))
         return pairs
 
-    def test_rotate_supersedes_with_validity_window(self, initialized_project):
+    def test_register_exits_nonzero_with_the_named_error(self, initialized_project):
+        project = initialized_project
+        principal = f"reg-cli-{uuid.uuid4().hex[:8]}"
+        (vk1, _sk1), = self._keypairs(1)
+
+        result = _run(
+            * _project_args(project), "--json", "principal", "register",
+            "--principal", principal, "--public-key", vk1,
+        )
+        assert result.returncode != 0
+        assert "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED" in (
+            result.stdout + result.stderr
+        )
+
+    def test_rotate_exits_nonzero_and_names_dual_authorization(
+        self, initialized_project,
+    ):
         project = initialized_project
         principal = f"rotate-cli-{uuid.uuid4().hex[:8]}"
-        (vk1, _sk1), (vk2, _sk2) = self._keypairs(2)
-
-        result = _run(
-            * _project_args(project), "--json", "principal", "register",
-            "--principal", principal, "--public-key", vk1,
-        )
-        assert result.returncode == 0, result.stderr
-        old_key_id = _extract_json(result.stdout)["key_id"]
+        (vk2, _sk2), = self._keypairs(1)
 
         result = _run(
             * _project_args(project), "--json", "principal", "rotate",
             "--principal", principal, "--public-key", vk2,
         )
-        assert result.returncode == 0, result.stderr
-        new_key_id = _extract_json(result.stdout)["key_id"]
-        assert new_key_id != old_key_id
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED" in combined
 
+    def test_revoke_exits_nonzero(self, initialized_project):
+        project = initialized_project
+        principal = f"revoke-cli-{uuid.uuid4().hex[:8]}"
+
+        result = _run(
+            * _project_args(project), "--json", "principal", "revoke",
+            "--principal", principal, "--key-id", "pk_whatever",
+        )
+        assert result.returncode != 0
+        assert "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED" in (
+            result.stdout + result.stderr
+        )
+
+    def test_principal_list_still_works(self, initialized_project):
+        """The read path is untouched — the table is still readable as a projection."""
+        project = initialized_project
         result = _run(
             * _project_args(project), "--json", "principal", "list",
-            "--principal", principal,
         )
         assert result.returncode == 0, result.stderr
-        keys = _extract_json(result.stdout)
-        old = next(k for k in keys if k["key_id"] == old_key_id)
-        new = next(k for k in keys if k["key_id"] == new_key_id)
-        assert old["status"] == "superseded"
-        assert old["valid_to"] is not None
-        assert new["status"] == "active"
 
-    def test_rotate_json_shape(self, initialized_project):
+
+class TestTrustRebuildProjectionCLI:
+    """§5.9 rule 4: the rebuild is a first-class command."""
+
+    def test_rebuild_projection_dry_run_on_an_empty_store(self, initialized_project):
         project = initialized_project
-        principal = f"rotate-cli-json-{uuid.uuid4().hex[:8]}"
-        (vk1, _sk1), (vk2, _sk2) = self._keypairs(2)
-
-        _run(
-            * _project_args(project), "--json", "principal", "register",
-            "--principal", principal, "--public-key", vk1,
-        )
         result = _run(
-            * _project_args(project), "--json", "principal", "rotate",
-            "--principal", principal, "--public-key", vk2,
-            "--registered-by", "cli-test",
+            * _project_args(project), "--json", "trust", "rebuild-projection",
+            "--project", project, "--dry-run",
         )
         assert result.returncode == 0, result.stderr
         data = _extract_json(result.stdout)
-        assert data["principal_id"] == principal
-        assert data["status"] == "active"
-        assert data["scheme"] == "ed25519"
-        assert data["registered_by"] == "cli-test"
-        assert data["valid_to"] is None
+        assert data["dry_run"] is True
+        assert data["applied"] is False
+        assert data["consistent"] is True
+        assert data["events_replayed"] == 0
+        assert data["legacy_unsourced_preserved"] == 0
+
+    def test_rebuild_projection_applies_and_reports(self, initialized_project):
+        project = initialized_project
+        result = _run(
+            * _project_args(project), "--json", "trust", "rebuild-projection",
+            "--project", project,
+        )
+        assert result.returncode == 0, result.stderr
+        data = _extract_json(result.stdout)
+        assert data["applied"] is True
+        assert data["ordering_basis"]
+
+    def test_dry_run_reports_divergence_and_exits_nonzero(self, initialized_project):
+        """A legacy row is NOT divergence; an unsourced-looking v6 row is.
+
+        Seeding a row with a source_event_hash that no stored event produces is the
+        hand-fixed-row case §5.9 rule 4 exists to make pointless.
+        """
+        import psycopg
+
+        project = initialized_project
+        with psycopg.connect(DSN, autocommit=True) as conn:
+            conn.execute(f'SET search_path TO "{project}"')
+            conn.execute(
+                "INSERT INTO principal_keys (principal_id, key_id, scheme, "
+                "public_key, fingerprint, status, registered_by, source_event_hash, "
+                "projection_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [
+                    "agent:phantom", "pk_phantom", "ed25519", b"\x01" * 32,
+                    "ed25519:sha256:" + "0" * 64, "active", "hand-edit",
+                    "sha256:" + "e" * 64, 1,
+                ],
+            )
+        result = _run(
+            * _project_args(project), "--json", "trust", "rebuild-projection",
+            "--project", project, "--dry-run",
+        )
+        assert result.returncode != 0
+        data = _extract_json(result.stdout)
+        assert data["consistent"] is False
+        assert any(d["kind"] == "only_live" for d in data["differences"])
 
 
 class TestEnvVarConfig:

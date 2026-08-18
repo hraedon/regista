@@ -41,21 +41,15 @@ from ._keys import KeySet
 from ._observability import Metrics
 from ._principal_keys import (
     PrincipalKeyEntry,
+    _apply_enrollment_projection,
+    _apply_revocation_projection,
+    _apply_rotation_projection,
 )
 from ._principal_keys import (
     list_principal_keys_for_conn as _list_principal_keys_for_conn,
 )
 from ._principal_keys import (
     principal_entity_id as _principal_entity_id,
-)
-from ._principal_keys import (
-    register_principal_key_conn as _register_principal_key_conn,
-)
-from ._principal_keys import (
-    revoke_principal_key_conn as _revoke_principal_key_conn,
-)
-from ._principal_keys import (
-    rotate_principal_key_conn as _rotate_principal_key_conn,
 )
 from ._signing_scheme import asymmetric_scheme_ids, get_scheme
 
@@ -875,7 +869,6 @@ class PrincipalLifecycle:
                     LifecycleErrorCode.INVALID_OPERATION_STATE,
                     f"Operation {operation_id!r} is not approved",
                 )
-            entry = self._commit_key(conn, operation)
             _validate_entity_kind("principal")
             _validate_mutation_params(
                 actor_id=operation.actor_id,
@@ -884,7 +877,11 @@ class PrincipalLifecycle:
             )
             _check_reserved_transition(transition)
             store = _PostgresEventStore(conn, self._keys)
-            _store_append_event(
+            # The event is appended FIRST: its hash is what the projection applier
+            # requires (§5.9 rule 2), so the registry row cannot exist without the
+            # signed event it projects. Before P2.2 the row was written first and the
+            # event second, which is why three callers could skip the event entirely.
+            appended = _store_append_event(
                 store,
                 work_item_id=entity_id,
                 actor_id=operation.actor_id,
@@ -897,6 +894,12 @@ class PrincipalLifecycle:
                 event_id=event_id,
                 key_set=self._keys,
                 entity_kind="principal",
+            )
+            entry = self._commit_key(
+                conn,
+                operation,
+                source_event_hash=_lifecycle_event_hash(appended),
+                occurred_at=appended.timestamp,
             )
             now = self._now()
             conn.execute(
@@ -1278,34 +1281,54 @@ class PrincipalLifecycle:
         assert_never(op_type)
 
     def _commit_key(
-        self, conn: DictConn, operation: LifecycleOperation
+        self,
+        conn: DictConn,
+        operation: LifecycleOperation,
+        *,
+        source_event_hash: str,
+        occurred_at: datetime,
     ) -> PrincipalKeyEntry:
+        """Apply the committed operation to the ``principal_keys`` projection.
+
+        ``source_event_hash`` is the hash of the signed lifecycle event appended
+        immediately before this call, in the same transaction. The appliers require
+        it (§5.9 rule 2), which is what makes the ordering — event first, then
+        projection — structural rather than conventional.
+        """
         if operation.operation_type is LifecycleOperationType.ENROLLMENT:
             assert operation.public_key is not None
             assert operation.scheme is not None
-            return _register_principal_key_conn(
+            return _apply_enrollment_projection(
                 conn,
                 operation.principal_id,
                 operation.public_key,
                 operation.scheme,
+                source_event_hash=source_event_hash,
+                valid_from=occurred_at,
+                registered_at=occurred_at,
                 registered_by=operation.actor_id,
             )
         if operation.operation_type is LifecycleOperationType.ROTATION:
             assert operation.public_key is not None
             assert operation.scheme is not None
-            return _rotate_principal_key_conn(
+            return _apply_rotation_projection(
                 conn,
                 operation.principal_id,
                 operation.public_key,
                 operation.scheme,
+                source_event_hash=source_event_hash,
+                valid_from=occurred_at,
+                registered_at=occurred_at,
                 registered_by=operation.actor_id,
             )
         if operation.operation_type is LifecycleOperationType.REVOCATION:
             assert operation.old_key_id is not None
-            return _revoke_principal_key_conn(
+            return _apply_revocation_projection(
                 conn,
                 operation.principal_id,
                 operation.old_key_id,
+                source_event_hash=source_event_hash,
+                revoked_at=occurred_at,
                 reason=operation.reason,
             )
         assert_never(operation.operation_type)
@@ -1875,6 +1898,29 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.INVALID_REQUEST, "clock must return a timezone-aware datetime"
             )
         return value.astimezone(UTC)
+
+
+def _lifecycle_event_hash(event: Any) -> str:
+    """``"sha256:" + hex`` of the appended lifecycle event, for the projection row.
+
+    Uses the v6 construction when the event carries a v6 envelope, and the legacy
+    ``sha256(canonical_envelope || signature)`` head-hash construction otherwise, so
+    an estate still on HMAC signing gets a stable, honest provenance value rather
+    than a fabricated one. Either way, the row names the event it came from.
+    """
+    envelope = getattr(event, "canonical_envelope", None)
+    signature = getattr(event, "signature", None)
+    if envelope is None or signature is None:
+        raise LifecycleContractError(
+            LifecycleErrorCode.INVALID_OPERATION_STATE,
+            "committed lifecycle event has no canonical envelope or signature, so the "
+            "projection row would have no source event to name",
+        )
+    if getattr(event, "scheme_id", None) == "ed25519":
+        from ._signing import compute_v6_event_hash
+
+        return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
+    return "sha256:" + hashlib.sha256(bytes(envelope) + bytes(signature)).hexdigest()
 
 
 def canonical_lifecycle_digest(fields: Mapping[str, object]) -> LifecycleDigest:

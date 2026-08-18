@@ -95,6 +95,20 @@ class ErrorCode(StrEnum):
     PRINCIPAL_ID_NOT_CANONICAL = "PRINCIPAL_ID_NOT_CANONICAL"
     PRINCIPAL_ALIAS_INVALID = "PRINCIPAL_ALIAS_INVALID"
     PRINCIPAL_MAPPING_INVALID = "PRINCIPAL_MAPPING_INVALID"
+    # Trust-domain log and the principal_keys projection (P2.2, TRUST-DOMAIN.md §5).
+    # Each error carries a machine-readable `reason` in detail naming the exact
+    # rule violated, so a caller asserts the named failure rather than a message.
+    TRUST_LOG_PAYLOAD_INVALID = "TRUST_LOG_PAYLOAD_INVALID"
+    TRUST_LOG_AUTHORITY_INVALID = "TRUST_LOG_AUTHORITY_INVALID"
+    TRUST_LOG_BOOTSTRAP_NOT_PERMITTED = "TRUST_LOG_BOOTSTRAP_NOT_PERMITTED"
+    # §5.9 rule 2: principal_keys is a projection. A write that is not driven by a
+    # signed trust-log event is refused by name, not by review.
+    PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED = "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED"
+    # §5.9 rule 3: a rebuild-into-temp diff that finds any divergence.
+    PRINCIPAL_KEYS_PROJECTION_DIVERGED = "PRINCIPAL_KEYS_PROJECTION_DIVERGED"
+    # D-7 / §7 CUT marker: witness lifecycle is not a 0.6.0 trust mechanism, so the
+    # witness key-lifecycle write paths refuse instead of silently bypassing §5.9.
+    WITNESS_LIFECYCLE_CUT = "WITNESS_LIFECYCLE_CUT"
 
 
 class RegistaError(Exception):

@@ -410,8 +410,43 @@ def provision_principal(
         )
 
     from ._connection import ConnectionManager
-    from ._custody import store_private_key
-    from ._principal_keys import get_active_key, register_principal_key
+    from ._principal_keys import get_active_key
+
+    # ------------------------------------------------------------------
+    # P2.2 / TRUST-DOMAIN.md §5.9: this ceremony wrote `principal_keys`
+    # directly, with no signed event — a FOURTH bypass path, not in §5.1's list of
+    # three. It is refused here rather than left alive, because the acceptance
+    # criterion is that *every* previously-bypassing caller breaks, and a bypass
+    # that survives because it went unnamed is the exact failure mode D-6
+    # describes.
+    #
+    # Sequencing makes the refusal coherent rather than merely strict:
+    # IMPLEMENTATION-PLAN.md puts per-host key provisioning in **Gate 2**, after
+    # Gate 1's trust bootstrap, and RECONCILIATION.md §7 is explicit that "project
+    # cutover is never a way to discover or create keys". Provisioning a key before
+    # a trust log exists to enrol it in is out of order by design.
+    #
+    # The replacement is a trust-log `principal_key_enrolled` event (§5.5) applied
+    # through _principal_keys._apply_enrollment_projection. That needs the ordinary
+    # v6 append path, which is P1.7's package.
+    # ------------------------------------------------------------------
+    def _refuse_provision_key_write(stage: str) -> None:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            f"provision_principal ({stage}) is refused: it wrote the principal_keys "
+            "projection with no signed trust-log event, which TRUST-DOMAIN.md §5.9 "
+            "rule 2 closes. Key provisioning is Gate 2 and requires the trust log "
+            "from Gate 1 plus the v6 append path from P1.7; enrolment must go through "
+            "a signed principal_key_enrolled event (§5.5), which carries the public "
+            "key bytes and a possession proof.",
+            detail={
+                "reason": "direct_projection_write",
+                "stage": stage,
+                "principal_id": principal_id,
+                "project": project,
+                "blocked_on": "P1.7 (v6 append path) + trust-log enrolment (§5.5)",
+            },
+        )
 
     mgr = ConnectionManager(dsn, project, require_ssl=require_ssl)
     try:
@@ -438,92 +473,21 @@ def provision_principal(
         # make sure doing so would not corrupt another project that shares this
         # key file (WI-223).
         if reuse_existing_key:
-            reuse_key_id, reuse_public_key = _reuse_key_file_entry(
-                hmac_key_path, principal_id, project,
-            )
-            entry = register_principal_key(
-                mgr,
-                principal_id,
-                reuse_public_key,
-                "ed25519",
-                key_id=reuse_key_id,
-                registered_by="provision-principal(reuse)",
-            )
-            log.info(
-                "provision.principal_key_reused",
-                principal_id=principal_id,
-                project=project,
-                key_id=entry.key_id,
-                fingerprint=entry.fingerprint,
-            )
-            return PrincipalProvisionResult(
-                principal_id=principal_id,
-                project=project,
-                key_id=entry.key_id,
-                fingerprint=entry.fingerprint,
-                scheme=entry.scheme,
-                private_key_stored=False,
-                public_key_registered=True,
-                secret_backend=resolved_backend,
-            )
+            # Validate the reuse selection first, so the refusal names a real key
+            # rather than firing before the caller's arguments are even checked.
+            _reuse_key_file_entry(hmac_key_path, principal_id, project)
+            _refuse_provision_key_write("reuse_existing_key")
 
         _guard_shared_key_file(hmac_key_path, principal_id, project)
 
-        key_dir = _resolve_key_dir(
-            private_key_dir, hmac_key_path, resolved_backend,
-        )
-
-        custody = store_private_key(
-            backend=resolved_backend,
-            principal_id=principal_id,
-            project=project,
-            private_key_dir=key_dir,
-        )
-
-        try:
-            entry = register_principal_key(
-                mgr,
-                principal_id,
-                custody.public_key,
-                "ed25519",
-                registered_by="provision-principal",
-            )
-        except Exception:
-            log.error(
-                "provision.principal_orphaned_secret",
-                principal_id=principal_id,
-                project=project,
-                secret_ref=custody.secret_ref,
-                backend=custody.backend,
-            )
-            raise
-
-        _update_key_file(
-            hmac_key_path,
-            principal_id,
-            entry.key_id,
-            custody.public_key,
-            custody.secret_ref,
-            encoding=custody.encoding,
-        )
-
-        log.info(
-            "provision.principal_completed",
-            principal_id=principal_id,
-            project=project,
-            key_id=entry.key_id,
-            fingerprint=entry.fingerprint,
-            secret_backend=custody.backend,
-        )
-        return PrincipalProvisionResult(
-            principal_id=principal_id,
-            project=project,
-            key_id=entry.key_id,
-            fingerprint=entry.fingerprint,
-            scheme=entry.scheme,
-            private_key_stored=True,
-            public_key_registered=True,
-            secret_backend=custody.backend,
+        # Refuse BEFORE minting. store_private_key() would otherwise write a private
+        # key to the custody backend that nothing could ever enrol — the
+        # "provision.principal_orphaned_secret" path this ceremony already had to log
+        # about. A refusal that leaves key material behind is worse than no refusal.
+        _resolve_key_dir(private_key_dir, hmac_key_path, resolved_backend)
+        _refuse_provision_key_write("mint_new_key")
+        raise AssertionError(  # pragma: no cover - the refusal above always raises
+            "unreachable: _refuse_provision_key_write raises"
         )
     finally:
         mgr.close()

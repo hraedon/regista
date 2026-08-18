@@ -104,9 +104,9 @@ def principal_setup(tmp_path):
     sub = Regista(DSN, project, key_path)
     try:
         sub.register_workflow_file(WORKFLOW_PATH)
-        from regista._principal_keys import register_principal_key
+        from regista.testing import seed_legacy_principal_key
         key_id = f"ed25519-{principal_id}"
-        entry = register_principal_key(
+        entry = seed_legacy_principal_key(
             sub._mgr, principal_id, vk, "ed25519", key_id=key_id,
         )
         yield sub, principal_id, entry.key_id, sk, vk
@@ -127,9 +127,9 @@ def multi_key_setup(tmp_path):
     sub = Regista(DSN, project, key_path)
     try:
         sub.register_workflow_file(WORKFLOW_PATH)
-        from regista._principal_keys import register_principal_key
+        from regista.testing import seed_legacy_principal_key
         key_id = f"ed25519-{principal_id}"
-        entry = register_principal_key(
+        entry = seed_legacy_principal_key(
             sub._mgr, principal_id, vk1, "ed25519", key_id=key_id,
         )
         yield sub, principal_id, entry.key_id, sk1, vk1, sk2, vk2
@@ -179,8 +179,8 @@ def rotated_key_setup(tmp_path):
     sub = Regista(DSN, project, str(key_file))
     try:
         sub.register_workflow_file(WORKFLOW_PATH)
-        from regista._principal_keys import register_principal_key
-        register_principal_key(
+        from regista.testing import seed_legacy_principal_key
+        seed_legacy_principal_key(
             sub._mgr, principal_id, vk1, "ed25519", key_id=old_key_id,
         )
         import time
@@ -239,8 +239,8 @@ class TestVerifyEventPrincipalBinding:
         assert len(events) > 0
         assert events[0].scheme_id == "hmac-sha256"
 
-        from regista._principal_keys import register_principal_key
-        register_principal_key(sub._mgr, "hmac-actor", vk, "ed25519")
+        from regista.testing import seed_legacy_principal_key
+        seed_legacy_principal_key(sub._mgr, "hmac-actor", vk, "ed25519")
 
         result = sub.verify_event_principal_binding(events[0])
         assert result["verified"] is False
@@ -326,9 +326,9 @@ class TestKeyRotationHistoricalVerification:
         result_before = sub.verify_event_principal_binding(old_event)
         assert result_before["verified"] is True
 
-        from regista._principal_keys import rotate_principal_key
+        from regista.testing import seed_legacy_principal_key_rotation
         _new_sk, new_vk = _generate_ed25519_keypair()
-        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, new_vk, "ed25519")
 
         result_after = sub.verify_event_principal_binding(old_event)
         assert result_after["verified"] is True
@@ -516,8 +516,8 @@ class TestReplayPrincipalBinding:
         events = sub.read_events(work_item_id=wi.work_item_id)
         assert events[0].scheme_id == "hmac-sha256"
 
-        from regista._principal_keys import register_principal_key
-        register_principal_key(sub._mgr, "hmac-forger", vk, "ed25519")
+        from regista.testing import seed_legacy_principal_key
+        seed_legacy_principal_key(sub._mgr, "hmac-forger", vk, "ed25519")
 
         baseline = sub.replay(verify_principal_binding=False)
         report = sub.replay(verify_principal_binding=True)
@@ -603,8 +603,8 @@ class TestReplayPrincipalBinding:
         events = sub.read_events(work_item_id=wi.work_item_id)
         assert events[0].scheme_id == "ed25519"
 
-        from regista._principal_keys import revoke_principal_key
-        revoke_principal_key(sub._mgr, principal_id, key_id, reason="compromised")
+        from regista.testing import seed_legacy_principal_key_revocation
+        seed_legacy_principal_key_revocation(sub._mgr, principal_id, key_id, reason="compromised")
 
         baseline = sub.replay(verify_principal_binding=False, continue_on_revoked=True)
         report = sub.replay(verify_principal_binding=True, continue_on_revoked=True)
@@ -624,9 +624,9 @@ class TestReplayPrincipalBinding:
         events = sub.read_events(work_item_id=wi.work_item_id)
         assert events[0].scheme_id == "ed25519"
 
-        from regista._principal_keys import rotate_principal_key
+        from regista.testing import seed_legacy_principal_key_rotation
         _new_sk, new_vk = _generate_ed25519_keypair()
-        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, new_vk, "ed25519")
 
         baseline = sub.replay(verify_principal_binding=False)
         report = sub.replay(verify_principal_binding=True)
@@ -637,9 +637,9 @@ class TestReplayPrincipalBinding:
     def test_rotated_key_old_event_still_verifies(self, multi_key_setup):
         sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
 
-        from regista._principal_keys import register_principal_key
+        from regista.testing import seed_legacy_principal_key
         v2_key_id = f"ed25519-{principal_id}-v2"
-        register_principal_key(
+        seed_legacy_principal_key(
             sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
         )
 
@@ -653,8 +653,8 @@ class TestReplayPrincipalBinding:
         old_event = events[0]
         assert old_event.key_id in (key_id, v2_key_id)
 
-        from regista._principal_keys import rotate_principal_key
-        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        from regista.testing import seed_legacy_principal_key_rotation
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, vk2, "ed25519")
 
         result = sub.verify_event_principal_binding(old_event)
         assert result["verified"] is True
@@ -665,9 +665,9 @@ class TestReplayPrincipalBinding:
 
         sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
 
-        from regista._principal_keys import register_principal_key, rotate_principal_key
+        from regista.testing import seed_legacy_principal_key, seed_legacy_principal_key_rotation
         v2_key_id = f"ed25519-{principal_id}-v2"
-        register_principal_key(
+        seed_legacy_principal_key(
             sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
         )
 
@@ -686,11 +686,11 @@ class TestReplayPrincipalBinding:
         assert old_result["key_id"] == signed_key_id
 
         time.sleep(0.05)
-        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, vk2, "ed25519")
         # Rotate again so that the active key_id matches the v2 secret in the
         # key set and a new event can be signed successfully.
         time.sleep(0.05)
-        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, vk2, "ed25519")
 
         time.sleep(0.05)
         wi2, _evt2 = sub.create_work_item(
@@ -721,14 +721,15 @@ class TestReplayPrincipalBinding:
         from datetime import timedelta
         from types import SimpleNamespace
 
-        from regista._principal_keys import list_principal_keys, register_principal_key
+        from regista._principal_keys import list_principal_keys
         from regista._signing import sign_event as _sign_event
         from regista._signing_scheme import get_scheme
+        from regista.testing import seed_legacy_principal_key
 
         sub, principal_id, old_key_id, sk1, _vk1, _sk2, vk2 = multi_key_setup
 
         time.sleep(0.05)
-        register_principal_key(
+        seed_legacy_principal_key(
             sub._mgr, principal_id, vk2, "ed25519",
             key_id=f"ed25519-{principal_id}-v2",
         )
@@ -816,17 +817,17 @@ class TestReplayPrincipalBinding:
 
         sub, principal_id, key_id, _sk1, _vk1, _sk2, vk2 = multi_key_setup
 
-        from regista._principal_keys import register_principal_key, rotate_principal_key
+        from regista.testing import seed_legacy_principal_key, seed_legacy_principal_key_rotation
         v2_key_id = f"ed25519-{principal_id}-v2"
-        register_principal_key(
+        seed_legacy_principal_key(
             sub._mgr, principal_id, vk2, "ed25519", key_id=v2_key_id,
         )
 
         time.sleep(0.05)
-        rotate_principal_key(sub._mgr, principal_id, vk2, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, vk2, "ed25519")
         time.sleep(0.05)
         _new_sk, new_vk = _generate_ed25519_keypair()
-        rotate_principal_key(sub._mgr, principal_id, new_vk, "ed25519")
+        seed_legacy_principal_key_rotation(sub._mgr, principal_id, new_vk, "ed25519")
 
         wi, _evt = sub.create_work_item(
             workflow_name="test_workflow",
@@ -847,7 +848,7 @@ class TestReplayPrincipalBinding:
         )
 
     def test_revoked_key_error_distinguished(self, principal_setup):
-        from regista._principal_keys import revoke_principal_key
+        from regista.testing import seed_legacy_principal_key_revocation
 
         sub, principal_id, key_id, _sk, _vk = principal_setup
 
@@ -860,7 +861,7 @@ class TestReplayPrincipalBinding:
         events = sub.read_events(work_item_id=wi.work_item_id)
         evt = events[0]
 
-        revoke_principal_key(
+        seed_legacy_principal_key_revocation(
             sub._mgr, principal_id, key_id, reason="compromised",
         )
 

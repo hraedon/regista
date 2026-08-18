@@ -936,8 +936,26 @@ class WebhookOps:
         _impl(self._mgr, webhook_id)
 
 
+_PROJECTION_WRITE_REFUSAL = (
+    "principal_keys is a projection of signed trust-log events, not a table to write "
+    "(TRUST-DOMAIN.md §5.9). This facade method wrote it directly and emitted no "
+    "event, which is the S6 defect the 0.6.0 cutover exists to close. Use the "
+    "event-driven ceremony in regista.principal_lifecycle.PrincipalLifecycle: "
+    "prepare_{enrollment,rotation,revocation} -> issue_possession_challenge -> "
+    "submit_possession -> record_approval -> commit. commit() appends the signed "
+    "lifecycle event and applies the projection in one transaction."
+)
+
+
 class PrincipalKeyOps:
-    """Facade for principal key registry operations (Plan 026)."""
+    """Read facade for the ``principal_keys`` **projection** (Plan 026, §5.9).
+
+    The three mutating methods (``register``/``rotate``/``revoke``) are retained as
+    **named refusals**, not removed: they were part of the public ``Regista`` surface,
+    and a caller who upgrades deserves a message that names the replacement path
+    rather than an ``AttributeError``. The underlying public mutators are gone from
+    ``_principal_keys`` entirely, so there is no bypass left to reach (§9 criterion 17).
+    """
 
     def __init__(
         self,
@@ -960,14 +978,11 @@ class PrincipalKeyOps:
         key_id: str | None = None,
         registered_by: str = "system",
     ) -> dict[str, Any]:
-        from ._principal_keys import register_principal_key as _impl
-
-        entry = _impl(
-            self._mgr, principal_id, public_key, scheme,
-            key_id=key_id, registered_by=registered_by,
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            f"principal_keys.register is refused. {_PROJECTION_WRITE_REFUSAL}",
+            {"reason": "direct_projection_write", "operation": "register"},
         )
-        self._metrics.inc("principal_key_registered", self._project)
-        return entry.to_dict()
 
     def list(
         self,
@@ -994,14 +1009,14 @@ class PrincipalKeyOps:
         *,
         registered_by: str = "system",
     ) -> dict[str, Any]:
-        from ._principal_keys import rotate_principal_key as _impl
-
-        entry = _impl(
-            self._mgr, principal_id, new_public_key, scheme,
-            registered_by=registered_by,
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            f"principal_keys.rotate is refused. {_PROJECTION_WRITE_REFUSAL} "
+            "A rotation additionally requires dual authorization — an outgoing-key "
+            "signature, or the current root threshold for recovery (§5.6, D-8) — "
+            "which a public-key argument alone cannot supply.",
+            {"reason": "direct_projection_write", "operation": "rotate"},
         )
-        self._metrics.inc("principal_key_rotated", self._project)
-        return entry.to_dict()
 
     def revoke(
         self,
@@ -1010,11 +1025,31 @@ class PrincipalKeyOps:
         *,
         reason: str = "unspecified",
     ) -> dict[str, Any]:
-        from ._principal_keys import revoke_principal_key as _impl
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            f"principal_keys.revoke is refused. {_PROJECTION_WRITE_REFUSAL} "
+            "Note also that flipping this row's status changes no verification "
+            "outcome for any v6 event: revocation binds at the event's position in "
+            "the trust-log chain (§5.7), never at a table row.",
+            {"reason": "direct_projection_write", "operation": "revoke"},
+        )
 
-        entry = _impl(self._mgr, principal_id, key_id, reason=reason)
-        self._metrics.inc("principal_key_revoked", self._project)
-        return entry.to_dict()
+    def rebuild_projection(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Rebuild the v6 rows from signed events alone (§5.9 rule 4).
+
+        ``legacy_unsourced`` rows are left untouched. With ``dry_run`` the rebuild
+        happens in a temp table and only the diff is reported.
+        """
+        from ._trust_projection import rebuild_projection as _impl
+
+        report = _impl(self._mgr, project=self._project, dry_run=dry_run)
+        return report.to_dict()
+
+    def projection_summary(self) -> dict[str, int]:
+        """Row counts by provenance: ``v6_sourced`` vs ``legacy_unsourced``."""
+        from ._trust_projection import projection_summary as _impl
+
+        return _impl(self._mgr)
 
     def verify_binding(
         self,

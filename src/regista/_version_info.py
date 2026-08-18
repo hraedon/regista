@@ -7,7 +7,10 @@ from typing import Any
 
 from ._integrity import REGISTA_VERSION
 
-SCHEMA_VERSION: int = 45
+# 46: migration 045 drops the dead subsystem tables (P1.4, on main); 046 adds the
+# §5.9 projection columns to principal_keys (P2.2). Schema version is the highest
+# migration number, so the P1.4/P2.2 merge resolves to max(both).
+SCHEMA_VERSION: int = 46
 ENVELOPE_VERSION: int = 5
 
 

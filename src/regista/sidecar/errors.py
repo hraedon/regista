@@ -99,6 +99,26 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.PRINCIPAL_ID_NOT_CANONICAL: 400,
     ErrorCode.PRINCIPAL_ALIAS_INVALID: 400,
     ErrorCode.PRINCIPAL_MAPPING_INVALID: 400,
+    # Trust-domain log and the principal_keys projection (P2.2, TRUST-DOMAIN.md §5).
+    # A malformed payload or a failed authority check is a defect in what was
+    # submitted, hence 400.
+    ErrorCode.TRUST_LOG_PAYLOAD_INVALID: 400,
+    ErrorCode.TRUST_LOG_AUTHORITY_INVALID: 403,
+    ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED: 400,
+    # 409: the caller asked for a write that this deployment structurally does not
+    # perform any more (§5.9 rule 2). Not 400 — the request is well-formed; not 500
+    # — nothing is broken. The state of the system conflicts with the request.
+    ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED: 409,
+    # 500: the store disagrees with its own event log. That is a server-side
+    # integrity fault, not a client error.
+    ErrorCode.PRINCIPAL_KEYS_PROJECTION_DIVERGED: 500,
+    # 409, matching the projection-write refusal above and for the same reason:
+    # the request is well-formed and nothing is broken, but this deployment
+    # structurally does not perform the operation. 501 would read better as
+    # "not implemented", but the sidecar's status map is deliberately restricted
+    # to a small sanctioned set (tests/sidecar/test_sidecar.py
+    # ::test_status_map_values_are_valid_http_codes) and 501 is not in it.
+    ErrorCode.WITNESS_LIFECYCLE_CUT: 409,
 }
 
 

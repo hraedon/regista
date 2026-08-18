@@ -2,367 +2,6 @@
  "description": "Retired-test ledger (SUITE-RECONCILIATION.md §2.2). Every test node deleted from the suite after the epoch reconciliation must be recorded here, keyed by its exact former node ID, with a disposition: 'dies_with_v5' (the invariant is v5/HMAC mechanics the epoch reset deletes), 'deleted_by: P1.4' (the subsystem is deleted outright), or 'coverage_owed: <work item>' (the invariant reappears in v6; coverage is owed there). tests/test_retired_tests_ledger.py enforces this against the committed pre-reconciliation inventory: a node cannot vanish without an entry.",
  "entries": [
   {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_replay_survives_jsonb_payload_key_reorder",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a jsonb payload key-reorder in the row is not drift/tamper (stored envelope is authoritative)",
-   "carry_forward": "v6 row reconciliation compares payload as canonical JCS bytes (V6-ENVELOPE §9.2) — key reorder is not a mismatch"
-  },
-  {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_signature_verification_uses_stored_envelope",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "signature verification verifies the exact stored envelope bytes, with every signed field reconciled against the row",
-   "carry_forward": "v6 verification over stored canonical bytes (JCS fixed point, §5.4) + full row agreement (§9.1)"
-  },
-  {
-   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_transition_event_signature_verifies_with_stored_envelope",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "transition events' signatures verify against the stored envelope (incl. entity_kind/hash_alg row fields)",
-   "carry_forward": "same as above, for workflow-transition events"
-  },
-  {
-   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_replay_handles_mixed_schemes",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "replay stays clean across key rotation (deprecated HMAC key present in keyset)",
-   "carry_forward": "replay verifies events across rotated keys under the v6 signed key lifecycle (P2.2); HMAC coexistence dies"
-  },
-  {
-   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_events_signed_with_active_key_scheme",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "new events are signed with the active key's scheme, not a deprecated key's",
-   "carry_forward": "active-key selection under the v6 trust-log key lifecycle (P2.2)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_second_event_includes_prev_hash",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "event N's prev link equals the predecessor's hash — asserted as sha256(envelope||signature), the v5 formula",
-   "carry_forward": "entity-chain link commits to the predecessor's v6 event_hash (domain-tagged formula, §5.3)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_broken_chain_detected",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a rewritten entity-chain row link is both a verification halt and a structural chain break",
-   "carry_forward": "v6: prev link is inside the signed envelope; row rewrite → reconciliation halt + chain break"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_append_event_api_persists_prev_hash",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "the public append API persists the entity-chain link — asserted via the v5 hash formula",
-   "carry_forward": "P1.7 writer persists v6 entity-chain links on append"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_multi_event_chain",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "every event in a multi-event chain links to its predecessor — v5 formula asserted per link",
-   "carry_forward": "multi-event v6 entity chain integrity"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_second_event_includes_prev_hash",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory: prev link equals v5 sha256(envelope||signature)",
-   "carry_forward": "in-memory v6 entity-chain link (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_multi_event_chain",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory multi-event chain, v5 formula per link",
-   "carry_forward": "in-memory v6 entity chain (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_chain_without_keys",
-   "disposition": "dies_with_v5",
-   "invariant": "the hash chain is maintained even with no signing keys (keyless mode)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_postgres",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "nulling canonical_envelope on a signed row halts replay (the row contradicts its own crypto material)",
-   "carry_forward": "envelope deletion on a v6 row is detected and halts (stored bytes are the artifact, §9.2)"
-  },
-  {
-   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_in_memory",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory parity: envelope deletion halts",
-   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_bc300_replay_detects_global_chain_tamper",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a rewritten project-chain row link is reported as a chain break by replay",
-   "carry_forward": "v6 project-chain tamper detection (link is signed; row rewrite reconciles INVALID)"
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_bc300_in_memory_replay_detects_global_chain_tamper",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory parity: corrupted project-chain link reports a chain break",
-   "carry_forward": "in-memory v6 project-chain tamper detection (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_global_chain_links_events_across_work_items",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "one project-wide chain links events across work items; head pointer tracks the tail — asserted via v5 sha256(env||sig) and event_chain_head",
-   "carry_forward": "v6 previous_project_event_hash chain across entities + global-chain head sentinel"
-  },
-  {
-   "node_id": "tests/test_global_event_chain.py::test_global_chain_survives_global_seq_gaps",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "the chain links by hash, immune to global_seq gaps — asserted via the v5 formula",
-   "carry_forward": "v6: order/completeness come only from hash links, never global_seq contiguity (§4.1)"
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024ConcurrentGlobalChain::test_concurrent_raw_appends_replay_clean",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "concurrent raw appends produce an unbroken project chain — verified by a local walk hardcoding the v5 hash formula",
-   "carry_forward": "concurrent v6 appends serialize onto one unbroken project chain"
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_global_seq_matches_chain_order_with_cache1",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "with CACHE 1, global_seq order matches chain-link order — checked by a helper hardcoding the v5 formula",
-   "carry_forward": "global_seq allocation order consistent with v6 project-chain order (operational, CACHE 1)"
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_detects_orphan",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a forged project-chain row link halts verification and is reported as an orphan chain break",
-   "carry_forward": "v6 hash-walk orphan detection + signed-link reconciliation"
-  },
-  {
-   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_no_genesis_reports_orphans",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "corrupting the genesis link leaves no root and every event is reported orphaned",
-   "carry_forward": "v6: genesis is a signed claim; a store with no reachable genesis fails verification loudly"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[transition-approve-transition]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting the transition row column fails verification with a named mismatch",
-   "carry_forward": "v6 row reconciliation: transition (§9.2)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[payload-{\"rewritten\": true}-payload]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting the payload row column fails verification",
-   "carry_forward": "v6 row reconciliation: payload as canonical JCS bytes"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_id-attacker-actor_id]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting actor_id fails verification",
-   "carry_forward": "v6 row reconciliation: actor.principal_id ↔ actor_id"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_kind-human-actor_kind]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting actor_kind fails verification",
-   "carry_forward": "v6 row reconciliation: actor.kind"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_metadata-{\"role\": \"admin\"}-actor_metadata]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting actor_metadata fails verification",
-   "carry_forward": "v6 row reconciliation: actor.metadata (JCS bytes)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_name-other_wf-workflow_name]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting workflow_name fails verification",
-   "carry_forward": "v6 row reconciliation: workflow.name"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_version-9-workflow_version]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting workflow_version fails verification",
-   "carry_forward": "v6 row reconciliation: workflow.version"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[key_id-other-key-key_id]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting key_id fails verification (key resolution uses the envelope value)",
-   "carry_forward": "v6 row reconciliation: signing.key_id; resolution from envelope only"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[hash_alg-sha-512-hash_alg]",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "rewriting hash_alg fails verification",
-   "carry_forward": "v6 row reconciliation: chain.hash_algorithm"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rewrite_fails_verification",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a +1s timestamp rewrite fails verification",
-   "carry_forward": "v6 row reconciliation: occurred_at ↔ timestamp (instant equality)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rendering_in_another_timezone_is_not_tamper",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "timezone re-rendering of the same instant is not tamper",
-   "carry_forward": "v6 timestamp comparison is instant-based, not text-based (§2.3/§9.2)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_payload_key_reorder_is_not_tamper",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "jsonb key reorder of payload is not tamper",
-   "carry_forward": "v6 payload reconciliation via canonical JCS bytes"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_global_seq_rewrite_is_not_reported_as_a_mismatch",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "global_seq rewrite is never a verification mismatch",
-   "carry_forward": "v6: global_seq is never compared and never authenticated (§4.1/§9.2)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_transition",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "replay halts when a row transition was rewritten",
-   "carry_forward": "v6 replay halts on row/envelope disagreement"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_payload",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "replay halts when a row payload was rewritten",
-   "carry_forward": "v6 replay halts on payload mismatch"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_broken_work_item_entity_alias_fails_verification",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "repointing the unsigned work_item_id column away from entity_id fails verification (ENTITY_ALIAS_MISMATCH)",
-   "carry_forward": "v6 keeps work_item_id constrained == entity.id, unsigned (§7.3/§9.2)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_an_unknown_envelope_schema",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "an unrecognizable stored envelope shape halts replay",
-   "carry_forward": "v6 strict parsing rejects unknown envelope shapes (§8) and replay halts"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_deleting_an_envelope_halts_because_the_row_contradicts_itself",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "nulling canonical_envelope on a signed row halts (row contradicts its own signature/hash)",
-   "carry_forward": "v6 envelope-deletion detection"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_missing_envelope_on_a_consistent_row_is_counted_not_halted",
-   "disposition": "dies_with_v5",
-   "invariant": "a legitimately envelopeless pre-002 row (v1-shape, re-signed) is UNVERIFIABLE — counted, not halted"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory parity: row rewrite halts replay",
-   "carry_forward": "in-memory v6 row-reconciliation halt (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_envelope_deletion_halts_like_postgres",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "in-memory parity: envelope deletion halts",
-   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
-  },
-  {
-   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_keyless_in_memory_reports_unverifiable",
-   "disposition": "dies_with_v5",
-   "invariant": "keyless in-memory events are UNVERIFIABLE / UNSIGNED_EVENT / KEYLESS_DUMMY and replay reports them"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a clean exported bundle verifies offline with no findings",
-   "carry_forward": "clean v3 bundle verifies offline (statement signature model)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "offline verification verifies ed25519 signatures and counts HMAC events unverifiable in one bundle",
-   "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_hmac_only_bundle_counts_all_unverifiable",
-   "disposition": "dies_with_v5",
-   "invariant": "an HMAC-only bundle is not 'verified': all signatures unverifiable, enforced_none_verified"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
-   "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "actor↔signer binding mismatch fails closed",
-   "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_unknown_scheme_fails_closed",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "relabelling an event's scheme_id is a scheme_mismatch against the trusted key, not a verifier selector",
-   "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "export records an absent key registry; offline verification of asymmetric events then fails closed",
-   "carry_forward": "v3: absent key evidence recorded, never a silent pass"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
-   "disposition": "coverage_owed",
-   "work_item": "WI-289",
-   "invariant": "CLI export exit 0 means exported AND verifiable; an unverifiable store exits 3 (artifact still written)",
-   "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)"
-  },
-  {
-   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_allow_unverified_opts_into_exit_0",
-   "disposition": "dies_with_v5",
-   "invariant": "--allow-unverified opts an unverifiable export into exit 0"
-  },
-  {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_list_batches_empty",
    "disposition": "deleted_by: P1.4",
    "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
@@ -893,6 +532,18 @@
    "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
   },
   {
+   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_allow_unverified_opts_into_exit_0",
+   "disposition": "dies_with_v5",
+   "invariant": "--allow-unverified opts an unverifiable export into exit 0"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "CLI export exit 0 means exported AND verifiable; an unverifiable store exits 3 (artifact still written)",
+   "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)"
+  },
+  {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[inverted]",
    "disposition": "deleted_by: P1.4",
    "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
@@ -1024,6 +675,46 @@
    "node_id": "tests/test_bundle.py::TestOfflineAnchorHashAgility::test_offline_anchor_verifies_with_sha384_events",
    "disposition": "deleted_by: P1.4",
    "invariant": "offline anchor verification (_verify_anchor_offline) — anchors deleted"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "actor↔signer binding mismatch fails closed",
+   "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "offline verification verifies ed25519 signatures and counts HMAC events unverifiable in one bundle",
+   "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_hmac_only_bundle_counts_all_unverifiable",
+   "disposition": "dies_with_v5",
+   "invariant": "an HMAC-only bundle is not 'verified': all signatures unverifiable, enforced_none_verified"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "export records an absent key registry; offline verification of asymmetric events then fails closed",
+   "carry_forward": "v3: absent key evidence recorded, never a silent pass"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_unknown_scheme_fails_closed",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "relabelling an event's scheme_id is a scheme_mismatch against the trusted key, not a verifier selector",
+   "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)"
+  },
+  {
+   "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
+   "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_receipt_listing_orders_oldest_target_first",
@@ -1186,9 +877,51 @@
    "invariant": "archive segment chain verification (verify_archive_chain) — subsystem deleted"
   },
   {
+   "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a clean exported bundle verifies offline with no findings",
+   "carry_forward": "clean v3 bundle verifies offline (statement signature model)"
+  },
+  {
    "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_anchor_mismatch",
    "disposition": "deleted_by: P1.4",
    "invariant": "offline anchor verification (_verify_anchor_offline) — anchors deleted"
+  },
+  {
+   "node_id": "tests/test_cli_integration.py::TestPrincipalRotate::test_rotate_json_shape",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "`regista principal rotate` reports the new key and leaves valid_to null",
+   "carry_forward": "the CLI write subcommands now refuse by name (TestPrincipalWriteSubcommandsAreRefused); rotation reporting returns with the event-driven ceremony under P1.7"
+  },
+  {
+   "node_id": "tests/test_cli_integration.py::TestPrincipalRotate::test_rotate_supersedes_with_validity_window",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "rotation supersedes the old key and closes its validity window",
+   "carry_forward": "asserted directly on the applier (test_principal_keys.TestRotatePrincipalKey) and on the rebuild (test_trust_projection.test_rotation_supersedes_the_named_key_and_closes_its_window)"
+  },
+  {
+   "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_file_backend_provision_round_trip",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "file backend writes a 0600 private key that matches the registered public key",
+   "carry_forward": "asserted directly against store_private_key (TestProvisionPrincipalBackendAware.test_file_backend_round_trip); provisioning is refused pending P1.7"
+  },
+  {
+   "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_operator_backend_provision_raises_loud",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "the operator backend fails loudly with SECRET_WRITE_EXTERNAL and writes nothing",
+   "carry_forward": "asserted directly against store_private_key (test_operator_backend_raises_loud)"
+  },
+  {
+   "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_vault_backend_provision_writes_no_plaintext_key",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "a non-file backend never writes a plaintext key to local disk",
+   "carry_forward": "asserted directly against store_private_key (test_vault_backend_writes_no_plaintext_key)"
   },
   {
    "node_id": "tests/test_doctor.py::TestAnchoringStaleReceipts::test_ok_when_no_stale_receipts",
@@ -1211,6 +944,151 @@
    "invariant": "doctor stale-anchor-receipt check — doctor no longer reports on subsystems that do not exist"
   },
   {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_does_not_break_replay",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "enrolment leaves replay drift-free",
+   "carry_forward": "asserted for the refusal path now (test_replay_is_unaffected_by_a_refused_enrolment); re-asserted for the signed path under P1.7"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_enroll_principal_entity_id_stable",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "the principal entity id is uuid5(NAMESPACE_OID, 'principal:' + id) and stays stable",
+   "carry_forward": "asserted directly on the derivation (test_the_principal_entity_id_derivation_is_unchanged) — TRUST-DOMAIN §5.2 requires keeping the v1 derivation"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_idempotent_re_enroll_no_duplicate_event",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "re-enrolling an already-enrolled principal emits no duplicate event",
+   "carry_forward": "idempotency moves onto the signed enrolment path under P1.7"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_new_enrollment_issues_keypair_and_emits_event",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "enrolment issues a keypair, registers the public key, and emits a signed enrolment event",
+   "carry_forward": "returns as a signed principal_key_enrolled event carrying public_key bytes (TRUST-DOMAIN §5.5) once P1.7 provides the v6 append path; the refusal is asserted now"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_self_heal_re_emits_event_after_gap",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "a registry row with no enrolment event is repaired by re-emitting the event",
+   "carry_forward": "structurally impossible after §5.9 rule 2: the applier requires source_event_hash, so a row cannot exist without its event — the gap this healed cannot form"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_idempotent",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "a second CLI enrolment reports already_existed and emits no second event",
+   "carry_forward": "returns with the signed enrolment path under P1.7"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_principal",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "`regista principal enroll` reports the enrolled key as JSON and emits one event",
+   "carry_forward": "the CLI path refuses by name now (TestEnrollPrincipalCLIIsRefused); reporting returns with P1.7"
+  },
+  {
+   "node_id": "tests/test_enroll_principal.py::TestProvisionPrincipalScheme::test_provision_principal_returns_scheme",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "provision_principal reports scheme 'ed25519'",
+   "carry_forward": "asserted on the dry-run path (test_dry_run_still_reports_the_scheme_without_writing); the writing path is refused pending P1.7"
+  },
+  {
+   "node_id": "tests/test_global_event_chain.py::test_bc300_in_memory_replay_detects_global_chain_tamper",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory parity: corrupted project-chain link reports a chain break",
+   "carry_forward": "in-memory v6 project-chain tamper detection (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_global_event_chain.py::test_bc300_replay_detects_global_chain_tamper",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a rewritten project-chain row link is reported as a chain break by replay",
+   "carry_forward": "v6 project-chain tamper detection (link is signed; row rewrite reconciles INVALID)"
+  },
+  {
+   "node_id": "tests/test_global_event_chain.py::test_global_chain_links_events_across_work_items",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "one project-wide chain links events across work items; head pointer tracks the tail — asserted via v5 sha256(env||sig) and event_chain_head",
+   "carry_forward": "v6 previous_project_event_hash chain across entities + global-chain head sentinel"
+  },
+  {
+   "node_id": "tests/test_global_event_chain.py::test_global_chain_survives_global_seq_gaps",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "the chain links by hash, immune to global_seq gaps — asserted via the v5 formula",
+   "carry_forward": "v6: order/completeness come only from hash links, never global_seq contiguity (§4.1)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_append_event_api_persists_prev_hash",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "the public append API persists the entity-chain link — asserted via the v5 hash formula",
+   "carry_forward": "P1.7 writer persists v6 entity-chain links on append"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_broken_chain_detected",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a rewritten entity-chain row link is both a verification halt and a structural chain break",
+   "carry_forward": "v6: prev link is inside the signed envelope; row rewrite → reconciliation halt + chain break"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_multi_event_chain",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "every event in a multi-event chain links to its predecessor — v5 formula asserted per link",
+   "carry_forward": "multi-event v6 entity chain integrity"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_second_event_includes_prev_hash",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "event N's prev link equals the predecessor's hash — asserted as sha256(envelope||signature), the v5 formula",
+   "carry_forward": "entity-chain link commits to the predecessor's v6 event_hash (domain-tagged formula, §5.3)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_chain_without_keys",
+   "disposition": "dies_with_v5",
+   "invariant": "the hash chain is maintained even with no signing keys (keyless mode)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_multi_event_chain",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory multi-event chain, v5 formula per link",
+   "carry_forward": "in-memory v6 entity chain (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_second_event_includes_prev_hash",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory: prev link equals v5 sha256(envelope||signature)",
+   "carry_forward": "in-memory v6 entity-chain link (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_in_memory",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory parity: envelope deletion halts",
+   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_postgres",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "nulling canonical_envelope on a signed row halts replay (the row contradicts its own crypto material)",
+   "carry_forward": "envelope deletion on a v6 row is detected and halts (stored bytes are the artifact, §9.2)"
+  },
+  {
    "node_id": "tests/test_migrations_021_026.py::TestMigration022AdversarialReviewFixes::test_tsp_batches_status_check",
    "disposition": "deleted_by: P1.4",
    "invariant": "tsp_batches status CHECK constraint — table dropped by migration 045"
@@ -1224,6 +1102,104 @@
    "node_id": "tests/test_plan009.py::TestMaintenanceTimestampBatchSweep::test_sweeps_stale_pending_batches",
    "disposition": "deleted_by: P1.4",
    "invariant": "maintenance stale-timestamp-batch sweep — deleted with the timestamping subsystem"
+  },
+  {
+   "node_id": "tests/test_plan024_global_chain.py::TestPlan024ConcurrentGlobalChain::test_concurrent_raw_appends_replay_clean",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "concurrent raw appends produce an unbroken project chain — verified by a local walk hardcoding the v5 hash formula",
+   "carry_forward": "concurrent v6 appends serialize onto one unbroken project chain"
+  },
+  {
+   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_global_seq_matches_chain_order_with_cache1",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "with CACHE 1, global_seq order matches chain-link order — checked by a helper hardcoding the v5 formula",
+   "carry_forward": "global_seq allocation order consistent with v6 project-chain order (operational, CACHE 1)"
+  },
+  {
+   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_detects_orphan",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a forged project-chain row link halts verification and is reported as an orphan chain break",
+   "carry_forward": "v6 hash-walk orphan detection + signed-link reconciliation"
+  },
+  {
+   "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_no_genesis_reports_orphans",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "corrupting the genesis link leaves no root and every event is reported orphaned",
+   "carry_forward": "v6: genesis is a signed claim; a store with no reachable genesis fails verification loudly"
+  },
+  {
+   "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_register_via_facade",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "Regista.principals.register returns an active entry",
+   "carry_forward": "the facade write methods refuse by name (TestFacadeAPI.test_register_via_facade_is_refused); enrolment returns as a signed event under P1.7"
+  },
+  {
+   "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_revoke_via_facade",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "Regista.principals.revoke returns a revoked entry",
+   "carry_forward": "refusal asserted (test_revoke_via_facade_is_refused); revocation semantics asserted on the applier and the rebuild"
+  },
+  {
+   "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_rotate_via_facade",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "Regista.principals.rotate returns an active entry",
+   "carry_forward": "refusal asserted (test_rotate_via_facade_is_refused); rotation semantics asserted on the applier and the rebuild"
+  },
+  {
+   "node_id": "tests/test_provision.py::TestProvisionPrincipal::test_provision_principal_idempotent",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "re-provisioning an existing principal is idempotent and stores no second key",
+   "carry_forward": "the already-existing short-circuit is asserted (test_already_existing_key_is_still_reported_without_a_write)"
+  },
+  {
+   "node_id": "tests/test_provision.py::TestProvisionPrincipal::test_provision_principal_issues_keypair",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "provisioning mints a keypair, registers the public key, and updates the key file",
+   "carry_forward": "refusal asserted (test_provision_principal_is_refused_post_cutover); the capability returns as Gate 2 key provisioning over a signed enrolment event"
+  },
+  {
+   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_replay_survives_jsonb_payload_key_reorder",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a jsonb payload key-reorder in the row is not drift/tamper (stored envelope is authoritative)",
+   "carry_forward": "v6 row reconciliation compares payload as canonical JCS bytes (V6-ENVELOPE §9.2) — key reorder is not a mismatch"
+  },
+  {
+   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_signature_verification_uses_stored_envelope",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "signature verification verifies the exact stored envelope bytes, with every signed field reconciled against the row",
+   "carry_forward": "v6 verification over stored canonical bytes (JCS fixed point, §5.4) + full row agreement (§9.1)"
+  },
+  {
+   "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_transition_event_signature_verifies_with_stored_envelope",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "transition events' signatures verify against the stored envelope (incl. entity_kind/hash_alg row fields)",
+   "carry_forward": "same as above, for workflow-transition events"
+  },
+  {
+   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_events_signed_with_active_key_scheme",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "new events are signed with the active key's scheme, not a deprecated key's",
+   "carry_forward": "active-key selection under the v6 trust-log key lifecycle (P2.2)"
+  },
+  {
+   "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_replay_handles_mixed_schemes",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "replay stays clean across key rotation (deprecated HMAC key present in keyset)",
+   "carry_forward": "replay verifies events across rotated keys under the v6 signed key lifecycle (P2.2); HMAC coexistence dies"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBC228UTCTimestamps::test_trigger_timestamping_confirmed_branch_tz_aware",
@@ -1429,6 +1405,27 @@
    "carry_forward": "archive_events is retained; re-cover on the v6 writer (P1.7)"
   },
   {
+   "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_reprovisioning_same_project_is_still_idempotent",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "re-provisioning the same principal in the same project stays idempotent",
+   "carry_forward": "the already-existing short-circuit is asserted in test_provision.py"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_reuse_existing_key_registers_the_same_public_key",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "--reuse-existing-key registers the same public key in the second project",
+   "carry_forward": "the reuse path resolves the key then refuses the write (test_reuse_existing_key_is_also_refused_but_validates_first); registration returns with P1.7"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_second_project_provisioning_is_refused",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "provisioning a principal into a second project that shares a key file is refused",
+   "carry_forward": "the WI-223 guard is asserted directly and shown to fire BEFORE the projection refusal (test_the_wi223_guard_still_fires_before_the_projection_refusal)"
+  },
+  {
    "node_id": "tests/test_wi229_cli_contract.py::TestJsonExitCodeAudit::test_exit_is_decided_outside_the_format_branch[archive verify-chain-cmd_archive_verify_chain]",
    "disposition": "deleted_by: P1.4",
    "invariant": "CLI json-exit-code audit of `archive verify`/`verify-chain` — verbs deleted with archive segments"
@@ -1452,6 +1449,240 @@
    "node_id": "tests/test_wi229_cli_contract.py::TestVerifyVerbsJsonExitCode::test_archive_verify_still_zero_when_verified",
    "disposition": "deleted_by: P1.4",
    "invariant": "CLI `archive verify` exit-code contract — verb deleted with archive segments"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_broken_work_item_entity_alias_fails_verification",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "repointing the unsigned work_item_id column away from entity_id fails verification (ENTITY_ALIAS_MISMATCH)",
+   "carry_forward": "v6 keeps work_item_id constrained == entity.id, unsigned (§7.3/§9.2)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_missing_envelope_on_a_consistent_row_is_counted_not_halted",
+   "disposition": "dies_with_v5",
+   "invariant": "a legitimately envelopeless pre-002 row (v1-shape, re-signed) is UNVERIFIABLE — counted, not halted"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_deleting_an_envelope_halts_because_the_row_contradicts_itself",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "nulling canonical_envelope on a signed row halts (row contradicts its own signature/hash)",
+   "carry_forward": "v6 envelope-deletion detection"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_global_seq_rewrite_is_not_reported_as_a_mismatch",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "global_seq rewrite is never a verification mismatch",
+   "carry_forward": "v6: global_seq is never compared and never authenticated (§4.1/§9.2)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_payload_key_reorder_is_not_tamper",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "jsonb key reorder of payload is not tamper",
+   "carry_forward": "v6 payload reconciliation via canonical JCS bytes"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_payload",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "replay halts when a row payload was rewritten",
+   "carry_forward": "v6 replay halts on payload mismatch"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_transition",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "replay halts when a row transition was rewritten",
+   "carry_forward": "v6 replay halts on row/envelope disagreement"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_an_unknown_envelope_schema",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "an unrecognizable stored envelope shape halts replay",
+   "carry_forward": "v6 strict parsing rejects unknown envelope shapes (§8) and replay halts"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_id-attacker-actor_id]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting actor_id fails verification",
+   "carry_forward": "v6 row reconciliation: actor.principal_id ↔ actor_id"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_kind-human-actor_kind]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting actor_kind fails verification",
+   "carry_forward": "v6 row reconciliation: actor.kind"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_metadata-{\"role\": \"admin\"}-actor_metadata]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting actor_metadata fails verification",
+   "carry_forward": "v6 row reconciliation: actor.metadata (JCS bytes)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[hash_alg-sha-512-hash_alg]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting hash_alg fails verification",
+   "carry_forward": "v6 row reconciliation: chain.hash_algorithm"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[key_id-other-key-key_id]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting key_id fails verification (key resolution uses the envelope value)",
+   "carry_forward": "v6 row reconciliation: signing.key_id; resolution from envelope only"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[payload-{\"rewritten\": true}-payload]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting the payload row column fails verification",
+   "carry_forward": "v6 row reconciliation: payload as canonical JCS bytes"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[transition-approve-transition]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting the transition row column fails verification with a named mismatch",
+   "carry_forward": "v6 row reconciliation: transition (§9.2)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_name-other_wf-workflow_name]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting workflow_name fails verification",
+   "carry_forward": "v6 row reconciliation: workflow.name"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_version-9-workflow_version]",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "rewriting workflow_version fails verification",
+   "carry_forward": "v6 row reconciliation: workflow.version"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rendering_in_another_timezone_is_not_tamper",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "timezone re-rendering of the same instant is not tamper",
+   "carry_forward": "v6 timestamp comparison is instant-based, not text-based (§2.3/§9.2)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rewrite_fails_verification",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "a +1s timestamp rewrite fails verification",
+   "carry_forward": "v6 row reconciliation: occurred_at ↔ timestamp (instant equality)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_envelope_deletion_halts_like_postgres",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory parity: envelope deletion halts",
+   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay",
+   "disposition": "coverage_owed",
+   "work_item": "WI-289",
+   "invariant": "in-memory parity: row rewrite halts replay",
+   "carry_forward": "in-memory v6 row-reconciliation halt (D2 parity suite)"
+  },
+  {
+   "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_keyless_in_memory_reports_unverifiable",
+   "disposition": "dies_with_v5",
+   "invariant": "keyless in-memory events are UNVERIFIABLE / UNSIGNED_EVENT / KEYLESS_DUMMY and replay reports them"
+  },
+  {
+   "node_id": "tests/test_witness_integration.py::TestBC297AsymmetricWitnessKeys::test_register_witness_with_ed25519_public_key",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "registering an ed25519 witness records key_scheme='ed25519'",
+   "carry_forward": "witness lifecycle is CUT from 0.6.0; the refusal is asserted (test_register_witness_with_ed25519_public_key_is_cut) and the capability returns only in a release that has an actual external witness"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_ed25519_witness_enrolls_into_registry",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "registering an ed25519 witness enrols its key into principal_keys",
+   "carry_forward": "CUT from 0.6.0 (§7/D-7): the enrolment was an unsourced projection write; refusal asserted in TestRegisterEd25519WitnessIsRefused"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_enrolled_key_discoverable_via_principals_facade",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "an enrolled witness key is discoverable through Regista.principals",
+   "carry_forward": "CUT from 0.6.0: there is no enrolled witness key to discover"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_enrolled_key_fingerprint_matches",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "the enrolled witness key's fingerprint matches sha256 of its public key",
+   "carry_forward": "CUT from 0.6.0; fingerprint derivation itself is asserted in test_principal_keys.TestFingerprint"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_hmac_witness_not_enrolled",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "an hmac witness enrols no principal key",
+   "carry_forward": "retained as TestRegisterEd25519WitnessIsRefused.test_hmac_witness_registration_still_works — webhook delivery is preserved as non-evidentiary transport"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRevokeOnUnregister::test_unregister_hmac_witness_no_principal_change",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "unregistering an hmac witness changes no principal keys",
+   "carry_forward": "retained under the same assertion in TestUnregisterWithActiveKeyRows"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRevokeOnUnregister::test_unregister_revokes_enrolled_key",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "unregistering a witness revokes its enrolled key",
+   "carry_forward": "CUT from 0.6.0: revocation needs a signed principal_key_revoked event the cut lifecycle cannot produce, so unregister refuses when active rows exist (TestUnregisterWithActiveKeyRows)"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_hmac_witness_rejected",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "rotating an hmac witness key is an INVALID_ARGUMENT",
+   "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_nonexistent_raises",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "rotating an unknown witness raises WITNESS_NOT_FOUND",
+   "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_supersedes_old_key",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "rotating a witness key supersedes the old registry entry",
+   "carry_forward": "CUT from 0.6.0; refusal asserted in TestRotateWitnessKeyIsRefused"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_updates_witness_registration_pubkey",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "rotation updates witness_registrations.public_key",
+   "carry_forward": "CUT from 0.6.0; the refusal is shown to leave the registration unchanged (test_the_refusal_does_not_update_the_registration)"
+  },
+  {
+   "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_wrong_length_rejected",
+   "disposition": "coverage_owed",
+   "work_item": "WI-293",
+   "invariant": "a wrong-length ed25519 key is an INVALID_ARGUMENT, checked before capability",
+   "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
   }
  ]
 }

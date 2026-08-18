@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import pathlib
 import sys
 import uuid
 
@@ -315,85 +316,90 @@ class TestCustodyHelper:
 
 
 class TestProvisionPrincipalBackendAware:
-    def test_file_backend_provision_round_trip(self, project_with_keys, tmp_path):
-        project, key_file = project_with_keys
+    """Backend-aware custody, exercised directly against ``store_private_key``.
+
+    Rewritten for P2.2: ``provision_principal`` refuses **before** minting
+    (TRUST-DOMAIN.md §5.9 rule 2 — it wrote ``principal_keys`` with no signed
+    event), so it can no longer be the vehicle for testing custody backends. The
+    backend assertions are unchanged; they now call the unit they were always about.
+    """
+
+    def test_file_backend_round_trip(self, tmp_path):
         principals_dir = tmp_path / "principals"
-        result = provision_principal(
-            DSN, project, "agent:alice",
-            hmac_key_path=str(key_file),
+        custody = store_private_key(
+            backend="file",
+            principal_id="agent:alice",
+            project="p",
             private_key_dir=str(principals_dir),
-            secret_backend="file",
         )
-        assert result.secret_backend == "file"
-        assert result.private_key_stored is True
-        assert "private_key" not in result.to_dict()
+        assert custody.backend == "file"
+        assert custody.secret_ref.startswith("file:")
+        assert custody.encoding is None
 
-        key_data = json.loads(key_file.read_text())
-        entry = next(
-            k for k in key_data["keys"]
-            if k.get("principal_id") == "agent:alice"
-        )
-        assert entry["secret_ref"].startswith("file:")
-        assert "encoding" not in entry
-
-        priv_path = principals_dir / "agent:alice_ed25519.key"
+        # Read the key back through the secret_ref the caller was handed, rather
+        # than re-deriving _custody's filename rule in the test. That rule has two
+        # branches (direct name vs the §2.2 derived backend-safe name, depending on
+        # whether "<id>_ed25519.key" is a safe single path component), and a test
+        # that hardcodes one of them pins a name the contract does not promise.
+        assert custody.secret_ref.startswith("file:")
+        priv_path = pathlib.Path(custody.secret_ref.removeprefix("file:"))
+        assert priv_path.parent == principals_dir
         priv_bytes = priv_path.read_bytes()
-        pub_b64 = entry["public_key"]
-        pub_bytes = base64.b64decode(pub_b64)
-        _assert_keypair_verifies(priv_bytes, pub_bytes)
+        _assert_keypair_verifies(priv_bytes, custody.public_key)
 
-    def test_vault_backend_provision_writes_no_plaintext_key(
-        self, project_with_keys, tmp_path, fake_vault,
-    ):
-        project, key_file = project_with_keys
+    def test_vault_backend_writes_no_plaintext_key(self, tmp_path, fake_vault):
         principals_dir = tmp_path / "principals"
         principals_dir.mkdir()
-
-        result = provision_principal(
-            DSN, project, "agent:bob",
-            hmac_key_path=str(key_file),
+        custody = store_private_key(
+            backend="vault",
+            principal_id="agent:bob",
+            project="p",
             private_key_dir=str(principals_dir),
-            secret_backend="vault",
         )
-        assert result.secret_backend == "vault"
-        assert result.private_key_stored is True
-        assert "private_key" not in result.to_dict()
-
+        assert custody.backend == "vault"
         assert not any(principals_dir.iterdir()), (
             "the gap-catching test: a non-file backend must not write a "
             "plaintext .key file to local disk"
         )
+        assert custody.secret_ref.startswith("vault:")
+        assert custody.encoding == "base64"
 
-        key_data = json.loads(key_file.read_text())
-        entry = next(
-            k for k in key_data["keys"]
-            if k.get("principal_id") == "agent:bob"
-        )
-        assert entry["secret_ref"].startswith("vault:")
-        assert entry.get("encoding") == "base64"
-
-        resolved = resolve_secret(entry["secret_ref"])
+        resolved = resolve_secret(custody.secret_ref)
         priv_bytes = base64.b64decode(resolved)
-        pub_bytes = base64.b64decode(entry["public_key"])
-        _assert_keypair_verifies(priv_bytes, pub_bytes)
+        _assert_keypair_verifies(priv_bytes, custody.public_key)
 
-    def test_operator_backend_provision_raises_loud(
-        self, project_with_keys, tmp_path,
-    ):
-        project, key_file = project_with_keys
+    def test_operator_backend_raises_loud(self, tmp_path):
         principals_dir = tmp_path / "principals"
         principals_dir.mkdir()
-
         with pytest.raises(RegistaError) as exc:
-            provision_principal(
-                DSN, project, "agent:carol",
-                hmac_key_path=str(key_file),
+            store_private_key(
+                backend="operator",
+                principal_id="agent:carol",
+                project="p",
                 private_key_dir=str(principals_dir),
-                secret_backend="operator",
             )
         assert exc.value.code == ErrorCode.SECRET_WRITE_EXTERNAL
         assert not any(principals_dir.iterdir()), (
             "operator backend must not write any key file"
+        )
+
+    def test_provision_refuses_before_touching_custody(
+        self, project_with_keys, tmp_path,
+    ):
+        """The refusal is upstream of key minting, so no orphaned secret is left."""
+        project, key_file = project_with_keys
+        principals_dir = tmp_path / "principals"
+        principals_dir.mkdir()
+        with pytest.raises(RegistaError) as exc:
+            provision_principal(
+                DSN, project, "agent:alice",
+                hmac_key_path=str(key_file),
+                private_key_dir=str(principals_dir),
+                secret_backend="file",
+            )
+        assert exc.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+        assert not any(principals_dir.iterdir()), (
+            "a refused provisioning must not leave private key material behind"
         )
 
     def test_dry_run_reports_backend(self, project_with_keys, tmp_path):
