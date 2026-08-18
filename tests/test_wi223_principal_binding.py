@@ -373,7 +373,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223prov{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223prov-{uuid.uuid4().hex[:8]}"
         project_b = f"wi223_pb_{uuid.uuid4().hex[:8]}"
         key_file = self._key_file_with_existing_entry(tmp_path, principal_id)
 
@@ -408,7 +408,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223clean{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223clean-{uuid.uuid4().hex[:8]}"
         project = f"wi223_pc_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
         key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
@@ -442,7 +442,7 @@ class TestProvisionPrincipalRefusesCollision:
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"wi223reuse{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223reuse-{uuid.uuid4().hex[:8]}"
         project_b = f"wi223_rb_{uuid.uuid4().hex[:8]}"
         key_file = self._key_file_with_existing_entry(tmp_path, principal_id)
 
@@ -462,7 +462,7 @@ class TestProvisionPrincipalRefusesCollision:
             assert exc.value.detail["stage"] == "reuse_existing_key"
 
             # And with no reusable entry, the reuse path still says so by name.
-            other = f"wi223none{uuid.uuid4().hex[:8]}"
+            other = f"agent:wi223none-{uuid.uuid4().hex[:8]}"
             with pytest.raises(RegistaError) as missing:
                 provision_principal(
                     DSN,
@@ -600,7 +600,7 @@ class TestDoctorSeesTheCollision:
         from regista._doctor import run_doctor
         from regista.testing import drop_project_schema, seed_legacy_principal_key
 
-        principal_id = f"wi223dr{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223dr-{uuid.uuid4().hex[:8]}"
         project = f"wi223_dr_{uuid.uuid4().hex[:8]}"
         sk = nacl.signing.SigningKey.generate()
         priv = tmp_path / "aligned_ed25519.key"

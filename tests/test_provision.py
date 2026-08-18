@@ -176,7 +176,7 @@ class TestProvisionPrincipal:
             {"key_id": "bootstrap", "secret": "dGVzdA==", "encoding": "base64",
              "status": "active"},
             {"key_id": "pk_reuse", "scheme": "ed25519", "status": "active",
-             "principal_id": "carol",
+             "principal_id": "agent:carol",
              "public_key": base64.b64encode(b"\x01" * 32).decode()},
         ]}))
         try:

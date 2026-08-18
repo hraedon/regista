@@ -36,6 +36,7 @@ from psycopg.sql import SQL, Identifier
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
+from ._principals import validate_principal_id
 
 #: The only accepted ``source_event_hash`` spelling (matches the event-hash text
 #: form produced by _signing.compute_v6_event_hash and the legacy head hash).
@@ -191,6 +192,12 @@ def _apply_enrollment_projection(
     structurally).
     """
     _require_source_event_hash(source_event_hash, "_apply_enrollment_projection")
+    # §2.7 always-strict: this is a key-acceptance entry point, so the grammar is
+    # enforced here in its own right and not only via the caller's payload
+    # validation. Called directly, not via a helper — the seam pinch in
+    # tests/test_p23_enrolment_inversion.py is a source-text control, and routing
+    # this through an indirection would defeat it by construction.
+    validate_principal_id(principal_id)
     tbl = _table_identifier(_table)
     if not principal_id:
         raise RegistaError(
@@ -467,6 +474,12 @@ def _apply_rotation_projection(
     criterion 12).
     """
     _require_source_event_hash(source_event_hash, "_apply_rotation_projection")
+    # §2.7 always-strict: this is a key-acceptance entry point, so the grammar is
+    # enforced here in its own right and not only via the caller's payload
+    # validation. Called directly, not via a helper — the seam pinch in
+    # tests/test_p23_enrolment_inversion.py is a source-text control, and routing
+    # this through an indirection would defeat it by construction.
+    validate_principal_id(principal_id)
     tbl = _table_identifier(_table)
     if not principal_id:
         raise RegistaError(

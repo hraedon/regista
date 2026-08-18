@@ -1865,14 +1865,18 @@ def parse_principal_registered(payload: Mapping[str, Any]) -> PrincipalRegistere
 
 
 def check_principal_grammar(principal_id: str, *, path: str = "principal_id") -> None:
-    """Seam for P2.3's canonical `kind:subject` grammar (§2.1, §2.7).
+    """Enforce P2.3's canonical ``kind:subject`` grammar (§2.1, §2.7).
 
-    Intentionally a **no-op beyond emptiness** in P2.2. A concurrent package owns
-    `_provision.py`'s validation and the grammar sweep; duplicating the rule here
-    would create a second, drifting definition of what a canonical principal id is.
-    When P2.3 lands, this function body is the single place to delegate.
+    §2.7 puts key enrolment and project acceptance in the **always-strict** column,
+    so every §5.5/§5.6/§5.7 payload's ``principal_id`` goes through P2.3's
+    :func:`regista._principals.validate_principal_id` — the single definition of what
+    a canonical principal id is. This was a deliberate no-op seam while P2.3 was in
+    flight; it is now filled rather than duplicated, so there is exactly one grammar.
     """
+    from ._principals import validate_principal_id
+
     _require(bool(principal_id.strip()), f"{path} must be non-empty", "empty_string", path=path)
+    validate_principal_id(principal_id, path=path)
 
 
 _ENROLLED_KEYS = frozenset(

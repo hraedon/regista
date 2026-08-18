@@ -122,21 +122,21 @@ class TestAppliersRequireASourceEvent:
     def test_enrollment_without_source_event_hash_is_refused(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
-            _enroll(principal_keys, "no-source", bytes(vk), source="")
+            _enroll(principal_keys, "agent:no-source", bytes(vk), source="")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["reason"] == "source_event_hash_required"
 
     def test_rotation_without_source_event_hash_is_refused(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
-            _rotate(principal_keys, "no-source-rot", bytes(vk), source="   ")
+            _rotate(principal_keys, "agent:no-source-rot", bytes(vk), source="   ")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
 
     def test_revocation_without_source_event_hash_is_refused(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "no-source-rev", bytes(vk))
+        entry = _enroll(principal_keys, "agent:no-source-rev", bytes(vk))
         with pytest.raises(RegistaError) as exc_info:
-            _revoke(principal_keys, "no-source-rev", entry.key_id, source="")
+            _revoke(principal_keys, "agent:no-source-rev", entry.key_id, source="")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
 
     def test_applier_refuses_an_arbitrary_table(self, principal_keys):
@@ -145,7 +145,7 @@ class TestAppliersRequireASourceEvent:
             with principal_keys._mgr.transaction() as conn:
                 _apply_enrollment_projection(
                     conn,
-                    "table-injection",
+                    "agent:table-injection",
                     bytes(vk),
                     "ed25519",
                     source_event_hash=_hash("t"),
@@ -161,9 +161,9 @@ class TestRegisterPrincipalKey:
     def test_register_returns_entry(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         entry = _enroll(
-            principal_keys, "alice@example.com", bytes(vk), registered_by="admin",
+            principal_keys, "human:alice", bytes(vk), registered_by="admin",
         )
-        assert entry.principal_id == "alice@example.com"
+        assert entry.principal_id == "human:alice"
         assert entry.scheme == "ed25519"
         assert entry.status == "active"
         assert entry.registered_by == "admin"
@@ -175,7 +175,7 @@ class TestRegisterPrincipalKey:
         source = _hash("provenance")
         entry = _enroll(
             principal_keys,
-            "provenance@example.com",
+            "agent:provenance",
             bytes(vk),
             source=source,
             trust_domain_id="6ba7b810-9dad-11d1-80b4-00c04fd430c8",
@@ -193,7 +193,7 @@ class TestRegisterPrincipalKey:
         not_after = datetime(2027, 1, 2, 3, 4, 5, 123456, tzinfo=UTC)
         entry = _enroll(
             principal_keys,
-            "clockless@example.com",
+            "agent:clockless",
             bytes(vk),
             valid_from=not_before,
             valid_to=not_after,
@@ -207,31 +207,31 @@ class TestRegisterPrincipalKey:
     def test_register_idempotent_same_key_id(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         entry1 = _enroll(
-            principal_keys, "bob@example.com", bytes(vk), key_id="key-001",
+            principal_keys, "human:bob", bytes(vk), key_id="key-001",
         )
         entry2 = _enroll(
-            principal_keys, "bob@example.com", bytes(vk), key_id="key-001",
+            principal_keys, "human:bob", bytes(vk), key_id="key-001",
         )
         assert entry1.key_id == entry2.key_id
         assert entry2.status == "active"
 
     def test_register_new_key_supersedes_old(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
-        entry1 = _enroll(principal_keys, "carol@example.com", bytes(vk1))
+        entry1 = _enroll(principal_keys, "human:carol", bytes(vk1))
         assert entry1.status == "active"
 
         _sk2, vk2 = _generate_ed25519_keypair()
         later = datetime(2026, 9, 1, tzinfo=UTC)
         entry2 = _enroll(
-            principal_keys, "carol@example.com", bytes(vk2), key_id="carol-2",
+            principal_keys, "human:carol", bytes(vk2), key_id="carol-2",
             valid_from=later,
         )
         assert entry2.status == "active"
 
-        old = get_active_key(principal_keys._mgr, "carol@example.com")
+        old = get_active_key(principal_keys._mgr, "human:carol")
         assert old.key_id == entry2.key_id
 
-        all_keys = list_principal_keys(principal_keys._mgr, "carol@example.com")
+        all_keys = list_principal_keys(principal_keys._mgr, "human:carol")
         statuses = {k.key_id: k.status for k in all_keys}
         assert statuses[entry1.key_id] == "superseded"
         assert statuses[entry2.key_id] == "active"
@@ -243,43 +243,45 @@ class TestRegisterPrincipalKey:
         assert valid_tos[entry1.key_id] == later
 
     def test_register_empty_principal_raises(self, principal_keys):
+        """Now refused by the §2.1 grammar (P2.3), which subsumes the old emptiness
+        check — the applier validates the id before it validates anything else."""
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
             _enroll(principal_keys, "", bytes(vk))
-        assert "INVALID_ARGUMENT" in str(exc_info.value)
+        assert exc_info.value.code is ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL
 
     def test_register_empty_pubkey_raises(self, principal_keys):
         with pytest.raises(RegistaError) as exc_info:
-            _enroll(principal_keys, "dave@example.com", b"")
-        assert "INVALID_ARGUMENT" in str(exc_info.value)
+            _enroll(principal_keys, "human:dave", b"")
+        assert exc_info.value.code is ErrorCode.INVALID_ARGUMENT
 
 
 class TestListPrincipalKeys:
     def test_list_all(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
         _sk2, vk2 = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p1", bytes(vk1))
-        _enroll(principal_keys, "p2", bytes(vk2))
+        _enroll(principal_keys, "agent:p1", bytes(vk1))
+        _enroll(principal_keys, "agent:p2", bytes(vk2))
         all_keys = list_principal_keys(principal_keys._mgr)
         principals = {k.principal_id for k in all_keys}
-        assert "p1" in principals
-        assert "p2" in principals
+        assert "agent:p1" in principals
+        assert "agent:p2" in principals
 
     def test_list_by_principal(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
         _sk2, vk2 = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p3", bytes(vk1))
-        _enroll(principal_keys, "p4", bytes(vk2))
-        keys = list_principal_keys(principal_keys._mgr, "p3")
-        assert all(k.principal_id == "p3" for k in keys)
+        _enroll(principal_keys, "agent:p3", bytes(vk1))
+        _enroll(principal_keys, "agent:p4", bytes(vk2))
+        keys = list_principal_keys(principal_keys._mgr, "agent:p3")
+        assert all(k.principal_id == "agent:p3" for k in keys)
 
     def test_list_by_status(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
         _sk2, vk2 = _generate_ed25519_keypair()
-        entry1 = _enroll(principal_keys, "p5", bytes(vk1), key_id="p5-a")
-        entry2 = _enroll(principal_keys, "p5", bytes(vk2), key_id="p5-b")
-        active = list_principal_keys(principal_keys._mgr, "p5", status="active")
-        superseded = list_principal_keys(principal_keys._mgr, "p5", status="superseded")
+        entry1 = _enroll(principal_keys, "agent:p5", bytes(vk1), key_id="p5-a")
+        entry2 = _enroll(principal_keys, "agent:p5", bytes(vk2), key_id="p5-b")
+        active = list_principal_keys(principal_keys._mgr, "agent:p5", status="active")
+        superseded = list_principal_keys(principal_keys._mgr, "agent:p5", status="superseded")
         assert len(active) == 1
         assert active[0].key_id == entry2.key_id
         assert len(superseded) == 1
@@ -289,46 +291,46 @@ class TestListPrincipalKeys:
 class TestGetActiveKey:
     def test_returns_active_key(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p6", bytes(vk))
-        active = get_active_key(principal_keys._mgr, "p6")
-        assert active.principal_id == "p6"
+        _enroll(principal_keys, "agent:p6", bytes(vk))
+        active = get_active_key(principal_keys._mgr, "agent:p6")
+        assert active.principal_id == "agent:p6"
         assert active.status == "active"
 
     def test_raises_when_no_active_key(self, principal_keys):
         with pytest.raises(RegistaError) as exc_info:
-            get_active_key(principal_keys._mgr, "nonexistent")
+            get_active_key(principal_keys._mgr, "agent:nonexistent")
         assert exc_info.value.code == ErrorCode.UNREGISTERED_SIGNER
 
 
 class TestRotatePrincipalKey:
     def test_rotation_supersedes_old(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
-        entry1 = _enroll(principal_keys, "p7", bytes(vk1), key_id="p7-a")
+        entry1 = _enroll(principal_keys, "agent:p7", bytes(vk1), key_id="p7-a")
         _sk2, vk2 = _generate_ed25519_keypair()
-        entry2 = _rotate(principal_keys, "p7", bytes(vk2), key_id="p7-b")
+        entry2 = _rotate(principal_keys, "agent:p7", bytes(vk2), key_id="p7-b")
         assert entry2.status == "active"
         assert entry2.key_id != entry1.key_id
 
-        all_keys = list_principal_keys(principal_keys._mgr, "p7")
+        all_keys = list_principal_keys(principal_keys._mgr, "agent:p7")
         old = next(k for k in all_keys if k.key_id == entry1.key_id)
         assert old.status == "superseded"
         assert old.valid_to is not None
 
     def test_rotation_keeps_old_key_for_history(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p8", bytes(vk1), key_id="p8-a")
+        _enroll(principal_keys, "agent:p8", bytes(vk1), key_id="p8-a")
         _sk2, vk2 = _generate_ed25519_keypair()
-        _rotate(principal_keys, "p8", bytes(vk2), key_id="p8-b")
-        all_keys = list_principal_keys(principal_keys._mgr, "p8")
+        _rotate(principal_keys, "agent:p8", bytes(vk2), key_id="p8-b")
+        all_keys = list_principal_keys(principal_keys._mgr, "agent:p8")
         assert len(all_keys) == 2
 
     def test_rotation_row_names_the_rotation_event(self, principal_keys):
         _sk1, vk1 = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p8b", bytes(vk1), key_id="p8b-a")
+        _enroll(principal_keys, "agent:p8b", bytes(vk1), key_id="p8b-a")
         _sk2, vk2 = _generate_ed25519_keypair()
-        source = _hash("p8b-rotation")
+        source = _hash("agent:p8b-rotation")
         rotated = _rotate(
-            principal_keys, "p8b", bytes(vk2), key_id="p8b-b", source=source,
+            principal_keys, "agent:p8b", bytes(vk2), key_id="p8b-b", source=source,
         )
         assert rotated.source_event_hash == source
 
@@ -336,9 +338,9 @@ class TestRotatePrincipalKey:
 class TestRevokePrincipalKey:
     def test_revoke_sets_status(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "p9", bytes(vk))
+        entry = _enroll(principal_keys, "agent:p9", bytes(vk))
         revoked = _revoke(
-            principal_keys, "p9", entry.key_id, reason="compromised",
+            principal_keys, "agent:p9", entry.key_id, reason="compromised",
         )
         assert revoked.status == "revoked"
         assert revoked.revoked_reason == "compromised"
@@ -353,45 +355,45 @@ class TestRevokePrincipalKey:
         key. Overwriting it would make the row unreproducible by a rebuild.
         """
         _sk, vk = _generate_ed25519_keypair()
-        enrol_source = _hash("p9b-enrol")
-        entry = _enroll(principal_keys, "p9b", bytes(vk), source=enrol_source)
+        enrol_source = _hash("agent:p9b-enrol")
+        entry = _enroll(principal_keys, "agent:p9b", bytes(vk), source=enrol_source)
         revoked = _revoke(
-            principal_keys, "p9b", entry.key_id, source=_hash("p9b-revoke"),
+            principal_keys, "agent:p9b", entry.key_id, source=_hash("agent:p9b-revoke"),
         )
         assert revoked.source_event_hash == enrol_source
 
     def test_revoked_at_comes_from_the_event(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "p9c", bytes(vk))
+        entry = _enroll(principal_keys, "agent:p9c", bytes(vk))
         claimed = datetime(2026, 11, 5, 6, 7, 8, 90123, tzinfo=UTC)
-        revoked = _revoke(principal_keys, "p9c", entry.key_id, revoked_at=claimed)
+        revoked = _revoke(principal_keys, "agent:p9c", entry.key_id, revoked_at=claimed)
         assert revoked.revoked_at == claimed
 
     def test_revoke_idempotent(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "p10", bytes(vk))
-        _revoke(principal_keys, "p10", entry.key_id)
-        revoked2 = _revoke(principal_keys, "p10", entry.key_id)
+        entry = _enroll(principal_keys, "agent:p10", bytes(vk))
+        _revoke(principal_keys, "agent:p10", entry.key_id)
+        revoked2 = _revoke(principal_keys, "agent:p10", entry.key_id)
         assert revoked2.status == "revoked"
 
     def test_revoke_nonexistent_raises(self, principal_keys):
         with pytest.raises(RegistaError) as exc_info:
-            _revoke(principal_keys, "nonexistent", "fake-key-id")
+            _revoke(principal_keys, "agent:nonexistent", "fake-key-id")
         assert exc_info.value.code == ErrorCode.PRINCIPAL_KEY_NOT_FOUND
 
 
 class TestVerifyPrincipalBinding:
     def test_matching_principal_succeeds(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p11", bytes(vk))
-        entry = verify_principal_binding(principal_keys._mgr, "p11", "p11")
+        _enroll(principal_keys, "agent:p11", bytes(vk))
+        entry = verify_principal_binding(principal_keys._mgr, "agent:p11", "agent:p11")
         assert entry.status == "active"
 
     def test_mismatch_raises(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p12", bytes(vk))
+        _enroll(principal_keys, "agent:p12", bytes(vk))
         with pytest.raises(RegistaError) as exc_info:
-            verify_principal_binding(principal_keys._mgr, "p12", "impostor")
+            verify_principal_binding(principal_keys._mgr, "agent:p12", "agent:impostor")
         assert exc_info.value.code == ErrorCode.ACTOR_SIGNER_MISMATCH
 
 
@@ -399,7 +401,7 @@ class TestFingerprint:
     def test_fingerprint_matches_sha256(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         pub = bytes(vk)
-        entry = _enroll(principal_keys, "p13", pub)
+        entry = _enroll(principal_keys, "agent:p13", pub)
         expected = f"ed25519:sha256:{hashlib.sha256(pub).hexdigest()}"
         assert entry.fingerprint == expected
 
@@ -407,9 +409,9 @@ class TestFingerprint:
 class TestToDict:
     def test_to_dict_shape(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "p14", bytes(vk))
+        entry = _enroll(principal_keys, "agent:p14", bytes(vk))
         d = entry.to_dict()
-        assert d["principal_id"] == "p14"
+        assert d["principal_id"] == "agent:p14"
         assert d["scheme"] == "ed25519"
         assert d["status"] == "active"
         assert "public_key" in d
@@ -432,7 +434,7 @@ class TestLegacyUnsourcedRows:
         from regista.testing import seed_legacy_principal_key
 
         _sk, vk = _generate_ed25519_keypair()
-        entry = seed_legacy_principal_key(principal_keys._mgr, "legacy-1", bytes(vk))
+        entry = seed_legacy_principal_key(principal_keys._mgr, "agent:legacy-1", bytes(vk))
         assert entry.source_event_hash is None
         assert entry.provenance == "legacy_unsourced"
         assert entry.to_dict()["provenance"] == "legacy_unsourced"
@@ -441,10 +443,10 @@ class TestLegacyUnsourcedRows:
         from regista.testing import seed_legacy_principal_key_revocation
 
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "legacy-2", bytes(vk))
+        entry = _enroll(principal_keys, "agent:legacy-2", bytes(vk))
         with pytest.raises(RegistaError) as exc_info:
             seed_legacy_principal_key_revocation(
-                principal_keys._mgr, "legacy-2", entry.key_id,
+                principal_keys._mgr, "agent:legacy-2", entry.key_id,
             )
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["reason"] == "row_is_v6_sourced"
@@ -463,41 +465,41 @@ class TestFacadeAPI:
         from regista.testing import seed_legacy_principal_key
 
         _sk, vk = _generate_ed25519_keypair()
-        seed_legacy_principal_key(principal_keys._mgr, "p16", bytes(vk), "ed25519")
+        seed_legacy_principal_key(principal_keys._mgr, "agent:p16", bytes(vk), "ed25519")
         result = principal_keys.principals.list()
-        assert any(r["principal_id"] == "p16" for r in result)
+        assert any(r["principal_id"] == "agent:p16" for r in result)
 
     def test_get_active_via_facade(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        entry = _enroll(principal_keys, "p16b", bytes(vk))
-        result = principal_keys.principals.get_active("p16b")
+        entry = _enroll(principal_keys, "agent:p16b", bytes(vk))
+        result = principal_keys.principals.get_active("agent:p16b")
         assert result["key_id"] == entry.key_id
         assert result["status"] == "active"
         assert result["provenance"] == "v6_sourced"
 
     def test_verify_binding_via_facade(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
-        _enroll(principal_keys, "p19", bytes(vk))
-        result = principal_keys.principals.verify_binding("p19", "p19")
+        _enroll(principal_keys, "agent:p19", bytes(vk))
+        result = principal_keys.principals.verify_binding("agent:p19", "agent:p19")
         assert result["status"] == "active"
 
     def test_register_via_facade_is_refused(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
-            principal_keys.principals.register("p15", bytes(vk), "ed25519")
+            principal_keys.principals.register("agent:p15", bytes(vk), "ed25519")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["operation"] == "register"
 
     def test_rotate_via_facade_is_refused(self, principal_keys):
         _sk, vk = _generate_ed25519_keypair()
         with pytest.raises(RegistaError) as exc_info:
-            principal_keys.principals.rotate("p17", bytes(vk), "ed25519")
+            principal_keys.principals.rotate("agent:p17", bytes(vk), "ed25519")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["operation"] == "rotate"
 
     def test_revoke_via_facade_is_refused(self, principal_keys):
         with pytest.raises(RegistaError) as exc_info:
-            principal_keys.principals.revoke("p18", "pk_whatever")
+            principal_keys.principals.revoke("agent:p18", "pk_whatever")
         assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
         assert exc_info.value.detail["operation"] == "revoke"
 

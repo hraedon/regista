@@ -65,7 +65,7 @@ class TestEnrollPrincipalIsRefusedPendingSignedEnrolment:
 
     def test_enrolment_is_refused_by_name(self, enroll_instance, tmp_path):
         sub = enroll_instance
-        principal_id = f"enroll.test.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll-test-{uuid.uuid4().hex[:8]}"
 
         with pytest.raises(RegistaError) as exc_info:
             sub.enroll_principal(
@@ -84,7 +84,7 @@ class TestEnrollPrincipalIsRefusedPendingSignedEnrolment:
         neither a row nor an event nor a private key.
         """
         sub = enroll_instance
-        principal_id = f"enroll.none.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll-none-{uuid.uuid4().hex[:8]}"
         private_key_dir = tmp_path / "principals"
 
         with pytest.raises(RegistaError):
@@ -102,7 +102,7 @@ class TestEnrollPrincipalIsRefusedPendingSignedEnrolment:
         This is the one part of the old enrolment surface that must not move, so it
         is asserted directly rather than through an enrolment that now refuses.
         """
-        principal_id = f"enroll.entity.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll-entity-{uuid.uuid4().hex[:8]}"
         import uuid as _uuid
 
         assert principal_entity_id(principal_id) == _uuid.uuid5(
@@ -118,7 +118,7 @@ class TestEnrollPrincipalIsRefusedPendingSignedEnrolment:
         self, enroll_instance, tmp_path,
     ):
         sub = enroll_instance
-        principal_id = f"enroll.replay.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll-replay-{uuid.uuid4().hex[:8]}"
         with pytest.raises(RegistaError):
             sub.enroll_principal(
                 principal_id, private_key_dir=str(tmp_path / "principals"),
@@ -133,7 +133,7 @@ class TestEnrollPrincipalCLIIsRefused:
         self, enroll_instance, tmp_path,
     ):
         sub = enroll_instance
-        principal_id = f"enroll.cli.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:enroll-cli-{uuid.uuid4().hex[:8]}"
 
         result = _run_cli(
             "--project", sub.project,
@@ -161,7 +161,7 @@ class TestProvisionPrincipalScheme:
         signed `principal_key_enrolled` event, this test is what must change.
         """
         sub = enroll_instance
-        principal_id = f"provision.scheme.{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:provision-scheme-{uuid.uuid4().hex[:8]}"
         private_key_dir = str(tmp_path / "principals")
 
         with pytest.raises(RegistaError) as exc_info:
@@ -183,7 +183,7 @@ class TestProvisionPrincipalScheme:
         result = provision_principal(
             DSN,
             sub.project,
-            f"provision.dry.{uuid.uuid4().hex[:8]}",
+            f"agent:provision-dry-{uuid.uuid4().hex[:8]}",
             hmac_key_path=sub._hmac_key_path,
             private_key_dir=str(tmp_path / "principals"),
             dry_run=True,
