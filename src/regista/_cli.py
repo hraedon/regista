@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, NoReturn
 
 import structlog
@@ -1630,6 +1630,143 @@ def _parse_iso(value: object) -> datetime:
     return dt.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _read_ed25519_seed(path: str) -> bytes:
+    """Read a 32-byte Ed25519 seed from a file holding 64 hex chars or base64."""
+    try:
+        text = open(path, encoding="utf-8").read().strip()
+    except OSError as e:
+        raise RegistaError(ErrorCode.KEY_LOAD_ERROR, f"cannot read key file: {e}") from e
+    if len(text) == 64:
+        try:
+            return bytes.fromhex(text)
+        except ValueError:
+            pass
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception as e:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            "key file must contain a 32-byte Ed25519 seed as 64 hex chars or base64",
+        ) from e
+    if len(raw) != 32:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"key file must decode to 32 seed bytes, got {len(raw)}",
+        )
+    return raw
+
+
+def cmd_trust_sign_genesis(args: argparse.Namespace) -> None:
+    """Offline ceremony helper (TRUST-DOMAIN.md §5.4): read a genesis document, print
+    the exact bytes it will sign, write a detached signature. NEVER contacts a
+    database and never writes to the publication repo."""
+    import nacl.signing
+
+    from regista._principal_keys import _compute_fingerprint
+    from regista._trust_domain import (
+        genesis_signature_input,
+        parse_trust_genesis,
+        require_genesis_timestamp,
+    )
+
+    # Validate --signed-at BEFORE signing anything. The verifier requires the exact
+    # microsecond UTC "Z" form (TRUST-DOMAIN.md §3.2), and a malformed override was
+    # previously caught only when the assembled document was parsed — i.e. after this
+    # tool had already minted a detached signature entry that its own verifier
+    # rejects. An offline ceremony discovers that with the keys already back in the
+    # safe, so the refusal has to happen at production time.
+    if args.signed_at is not None:
+        require_genesis_timestamp(args.signed_at, "--signed-at")
+
+    # Refuse to clobber an existing detached signature: in a k-of-n ceremony the
+    # obvious operator slip is reusing one --out path across signers, which silently
+    # destroys an already-collected signature that may be unreproducible (the key is
+    # back offline). --force is the deliberate escape hatch.
+    if os.path.exists(args.out) and not args.force:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"refusing to overwrite existing signature file {args.out}; "
+            "choose another --out path or pass --force",
+            {"reason": "output_exists", "path": args.out},
+        )
+
+    with open(args.core, encoding="utf-8") as f:
+        document = json.load(f)
+    # Strict parse (signatures optional at signing time): never sign a document whose
+    # stated digest/id disagree with the recomputed derivation.
+    parsed = parse_trust_genesis(document, for_signing=True)
+
+    seed = _read_ed25519_seed(args.key)
+    signing_key = nacl.signing.SigningKey(seed)
+    fingerprint = _compute_fingerprint(bytes(signing_key.verify_key), "ed25519")
+    signer = parsed.signer_by_fingerprint(fingerprint)
+    if signer is None:
+        raise RegistaError(
+            ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID,
+            f"key with fingerprint {fingerprint} is not a signer in binding_core",
+            {"reason": "unknown_signer", "fingerprint": fingerprint},
+        )
+
+    sig_input = genesis_signature_input(document)
+    signature = signing_key.sign(sig_input).signature
+    signed_at = args.signed_at or (
+        datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    )
+    entry = {
+        "signer_id": signer.signer_id,
+        "fingerprint": fingerprint,
+        "scheme_id": "ed25519",
+        "signed_at": signed_at,
+        "signature": base64.b64encode(signature).decode("ascii"),
+    }
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(entry, f, indent=2, sort_keys=True)
+        f.write("\n")
+    # Print the exact bytes being signed so an offline ceremony participant can
+    # compare them against an independently computed value before trusting the file.
+    print(f"signing_input_hex: {sig_input.hex()}")
+    print(f"trust_domain_core_digest: {parsed.trust_domain_core_digest}")
+    print(f"trust_domain_id: {parsed.trust_domain_id}")
+    print(f"signer_id: {signer.signer_id}")
+    print(f"fingerprint: {fingerprint}")
+    print(f"detached signature written: {args.out}")
+
+
+def cmd_trust_verify_genesis(args: argparse.Namespace) -> None:
+    """Full genesis verification (TRUST-DOMAIN.md §3.5/§3.6); exit nonzero on invalid.
+    Offline: reads only the named file."""
+    from regista._trust_domain import verify_trust_genesis
+
+    with open(args.file, encoding="utf-8") as f:
+        document = json.load(f)
+    report = verify_trust_genesis(document)  # raises RegistaError -> exit 1
+    if getattr(args, "json", False):
+        _dump_json(report.to_dict())
+        return
+    governance = report.root_governance
+    # §3.7 report obligation: a human-facing report MUST display the mode when it
+    # is solo or solo_effective. It is printed unconditionally here.
+    print(f"root_governance.mode: {governance.mode}")
+    print(f"threshold: {governance.threshold}")
+    print(f"signer_count: {governance.signer_count}")
+    print(f"trust_domain_core_digest: {report.trust_domain_core_digest}")
+    print(f"trust_domain_id: {report.trust_domain_id}")
+    print(f"signatures_verified: {report.signatures_verified}")
+    print(f"extra_signatures: {report.extra_signatures}")
+    print(f"independence: {governance.independence}")
+    print(
+        "custody_declared (unverified operator claims): "
+        + ", ".join(governance.custody_declared)
+    )
+    print(
+        "custody_declared_holders (unverified operator claims): "
+        + ", ".join(report.custody_declared_holders_unverified)
+    )
+    print(f"countersignatures: {report.countersignatures_status} ({report.countersignature_count})")
+    print(f"anchors: {report.anchors_status} ({report.anchor_count})")
+    print("verdict: VALID")
+
+
 def cmd_spec_sign(args: argparse.Namespace) -> None:
     import hashlib
 
@@ -2149,6 +2286,36 @@ def main(argv: list[str] | None = None) -> None:
     )
     prov_princ_parser.add_argument("--json", action="store_true", help="JSON output")
     prov_princ_parser.set_defaults(func=cmd_provision_principal)
+
+    # trust (0.6.0 P2.1 — offline trust-domain genesis helpers; no database)
+    trust_parser = subs.add_parser("trust", help="Trust-domain genesis commands (offline)")
+    trust_sub = trust_parser.add_subparsers(dest="subcommand")
+    trust_sign = trust_sub.add_parser(
+        "sign-genesis",
+        help="Offline: sign a trust-genesis document and write a detached signature",
+    )
+    trust_sign.add_argument("--core", required=True, help="Path to the genesis document JSON")
+    trust_sign.add_argument(
+        "--key", required=True, help="Path to a 32-byte Ed25519 seed (64 hex chars or base64)"
+    )
+    trust_sign.add_argument("--out", required=True, help="Detached signature output path")
+    trust_sign.add_argument(
+        "--signed-at",
+        help="Override the signed_at claim (microsecond UTC Z form); default: now",
+    )
+    trust_sign.add_argument(
+        "--force",
+        action="store_true",
+        help="Silently replace an existing --out file (refused by default)",
+    )
+    trust_sign.set_defaults(func=cmd_trust_sign_genesis)
+    trust_verify = trust_sub.add_parser(
+        "verify-genesis",
+        help="Verify a trust-genesis document; nonzero exit on invalid",
+    )
+    trust_verify.add_argument("file", help="Path to the genesis document JSON")
+    trust_verify.add_argument("--json", action="store_true", help="JSON output")
+    trust_verify.set_defaults(func=cmd_trust_verify_genesis)
 
     # spec (Plan 025 WI-4.3)
     spec_parser = subs.add_parser("spec", help="Spec entity commands")

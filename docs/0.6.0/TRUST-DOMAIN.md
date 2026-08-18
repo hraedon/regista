@@ -34,6 +34,7 @@ choice to make.
 | Clause | Superseded by | Replacement |
 |---|---|---|
 | §3.3 consequence 1 — governance derived into `trust_domain_id` | WI-280 (`ARCHITECTURE-FINAL.md` §3 decision 1) | §3.3 — governance is a **monotone signed log inside** the domain; threshold may never decrease, signers are replaceable at the current threshold |
+| §3.2 — `binding_core.signers[].custody` | WI-292 (owner deferral to agreeing `claude-fable` + `gpt-5.6-sol` reviews, 2026-08-17) | §3.2 — signers carry identity only; a mandatory top-level `initial_custody` block (keyed by fingerprint, one per signer, sorted, strict) is signed genesis state outside the derivation; §9 criterion 4 narrowed |
 | §3.4/§3.6/§4.3/§4.6 — `co_signed` / `solo_effective` wire spellings | Resolution 4 | `co_signed`, `solo`, `solo_effective` everywhere; `single_signer_lab` retired |
 | §4.3 — published document set | collisions 19, 20, 21, 22 | §4.3 — adds `producer-policy.json`, `attestations/`, `catalog_kind: project_heads`; `index.json` never lists its own digest; one signer block shape |
 | §4.4 — `publish` has no signed-document input | collision 17 | §4.4 — `regista trust publish --kind <kind> --input <signed.json> --repo <clone> [--push]` |
@@ -329,24 +330,33 @@ unverifiable configuration flag, and an estate cannot lower its threshold inside
         "signer_id": "root-a",
         "scheme_id": "ed25519",
         "public_key": "base64-raw-32",
-        "fingerprint": "ed25519:sha256:3f9a...",
-        "custody": {
-          "declared_mode": "offline-airgapped | offline-host | online-vault | unspecified",
-          "declared_holder": "human:...",
-          "attestation": null
-        }
+        "fingerprint": "ed25519:sha256:3f9a..."
       },
       {
         "signer_id": "root-b",
         "scheme_id": "ed25519",
         "public_key": "base64-raw-32",
-        "fingerprint": "ed25519:sha256:c114...",
-        "custody": { "declared_mode": "offline-host", "declared_holder": "human:...", "attestation": null }
+        "fingerprint": "ed25519:sha256:c114..."
       }
     ],
     "created_at": "2026-08-20T00:00:00.000000Z",
     "nonce": "64-hex-chars"
   },
+
+  "initial_custody": [
+    {
+      "fingerprint": "ed25519:sha256:3f9a...",
+      "declared_mode": "offline-airgapped | offline-host | online-vault | unspecified",
+      "declared_holder": "human:...",
+      "attestation": null
+    },
+    {
+      "fingerprint": "ed25519:sha256:c114...",
+      "declared_mode": "offline-host",
+      "declared_holder": "human:...",
+      "attestation": null
+    }
+  ],
 
   "initial_governance": {
     "mode": "co_signed",
@@ -393,6 +403,46 @@ is an unverified operator claim and every report that displays it must label it 
 (OPERATOR-FORGERY R1). It exists in the artifact anyway, because a claim that is written down
 and later contradicted is evidence, and a claim that was never written down is not.
 
+> **AMENDED — WI-292, decided 2026-08-17.** Custody declarations are **not** inside
+> `binding_core.signers[]`. The owner deferred the choice to a two-reviewer agreement
+> ("I guess I don't have a strong preference on the decision. Please review using sol and if the
+> two of you agree I will defer to your preferences"); `claude-fable` and `gpt-5.6-sol`
+> (opencode `ses_fed45f166ffecvMeQGiCgCpJ5G`) reached the same conclusion independently.
+>
+> **`binding_core.signers[]` is exactly `{signer_id, scheme_id, public_key, fingerprint}`.** The
+> identifier commits to stable cryptographic identity and nothing else. The paragraph above still
+> governs what a custody declaration *means*; only its location changes.
+>
+> **A mandatory top-level `initial_custody` array replaces it**, with exactly these rules:
+>
+> - Each entry is `{fingerprint, declared_mode, declared_holder, attestation}`. `declared_mode` is
+>   one of `offline-airgapped | offline-host | online-vault | unspecified`; `declared_holder` is a
+>   non-empty principal-ish string; `attestation` is `null` and reserved, exactly as before.
+> - **Entries are keyed by signer fingerprint**, and there is **exactly one entry per
+>   `binding_core.signers[]` entry**. A missing entry, a duplicate fingerprint, or an entry whose
+>   fingerprint names no genesis signer makes the document **INVALID** — not "custody unknown".
+> - **Entries are sorted by `fingerprint` ascending**, enforced and never silently sorted, for the
+>   same reason the signer list is: a canonical order is a diffable order.
+> - The block is **mandatory even when every declared mode is `unspecified`**. An estate that
+>   declines to declare says so in the artifact; absence is not a permitted third state.
+> - `initial_custody` sits **inside `document_core`** (§3.5), so every root signature covers it and
+>   a policy pinning `genesis_document_digest` pins the exact custody text. It is therefore still
+>   contradiction-evidence: a later denial contradicts something the roots signed.
+>
+> **Why the move.** An unverified operator claim inside the cryptographic identifier buys zero
+> security while making every honest correction — a custodian changing employer, a key migrating
+> from a host to a vault — cost a full epoch rotation. The WI-280 precedent applies a fortiori:
+> *expensive in both directions is worse than impossible in one*. Post-genesis custody
+> corrections are threshold-authorized append-only trust-log events that preserve the superseded
+> declaration in replay history (§5, event contract owned by P2.2), so a label fix costs an event,
+> not an epoch.
+>
+> **Posture unchanged, arguably improved.** OPERATOR-FORGERY R1/R2 are exactly as strong: custody
+> was never verified and is not verified now. What is removed is the invited inference that
+> *digest-bound implies verified*. R1's eventual remedy field is
+> `initial_custody[].attestation` (was `signers[].custody.attestation`); R2's `independence` is
+> still the literal `"unverifiable"`.
+
 ### 3.3 `trust_domain_id` derivation — stable genesis identity only
 
 ```
@@ -406,6 +456,21 @@ trust_domain_id          = UUIDv5( NAMESPACE_OID, "regista.trust-domain:" || low
 creation nonce are fixed for the life of the trust domain. `initial_governance` is signed genesis
 state, but `threshold`, `signer_count` and `mode` are deliberately **not** inputs to `binding_core`
 and do not enter `trust_domain_id` derivation.
+
+> **AMENDED — WI-292, decided 2026-08-17** (owner deferral to the agreeing reviews of
+> `claude-fable` and `gpt-5.6-sol`, opencode `ses_fed45f166ffecvMeQGiCgCpJ5G`; see the §3.2
+> block). **Custody declarations are NOT an input to this derivation either.** `initial_custody`
+> is top-level and outside `binding_core`, so:
+>
+> - Correcting a custody declaration changes **neither** `trust_domain_core_digest` **nor**
+>   `trust_domain_id`. The domain survives the correction; only the genesis signatures over the
+>   old text stop matching (§9 criterion 4).
+> - What the derivation commits to is exactly what a verifier can check: signer key material,
+>   the creation nonce, type and version. An unverifiable claim about where a key is kept is not
+>   part of the estate's name.
+>
+> The mechanics of the derivation are unchanged — `binding_core` simply carries fewer keys, so
+> `JCS(binding_core)` is shorter. The framing (domain tag, `uint64be` length, JCS) is untouched.
 
 Consequences:
 
@@ -527,6 +592,18 @@ and a verifier that reports them as `present_unverified`. Verifying an anchor re
 anchoring work that `ARCHITECTURE-0.6.0.md` §7 deliberately deletes from this release, and
 claiming otherwise would repeat exactly the S7 defect.
 
+> **AMENDED — WI-292, decided 2026-08-17** (see the §3.2 block for provenance). **A
+> countersignature over `trust_domain_core_digest` must never be rendered as acknowledging
+> custody.** Since WI-292 the core digest does not cover `initial_custody` at all, so a custodian
+> who signs that digest has attested to the signer *key set* and nothing about where those keys
+> are kept — and even before WI-292 the inference was unsound, because a digest binds text, not
+> facts. A renderer that turns "custodian countersigned this domain" into "custody is confirmed"
+> is contradicting the artifact in exactly the way OPERATOR-FORGERY R1 warns about.
+>
+> Custody attestation, when it lands, gets its **own separately typed schema** — a distinct
+> `type`, its own `over` target naming the custody text it covers, and its own verification rule.
+> It is not this field with a longer `statement` string.
+
 ### 3.6 How a verifier distinguishes `co_signed` from solo-rooted
 
 The verifier does not read a mutable `governance.mode` field and report it. It:
@@ -551,7 +628,7 @@ The verifier does not read a mutable `governance.mode` field and report it. It:
   "signatures_seen": 2,
   "signer_fingerprints_verified": ["ed25519:sha256:3f9a...", "ed25519:sha256:c114..."],
   "independence": "unverifiable",
-  "custody_declared": ["offline-airgapped", "offline-host"],
+  "custody_declared": ["offline-airgapped", "offline-host"],   // from initial_custody — WI-292 §3.2 block
   "custody_verified": false
 }
 ```
@@ -1815,6 +1892,26 @@ frozen. They are listed here so an implementer cannot satisfy the prose and miss
    document invalid (mode/threshold disagreement).
 4. Editing `binding_core` at all changes `trust_domain_core_digest` and `trust_domain_id`; a
    pinned policy rejects the result as a *different domain*.
+
+> **AMENDED — WI-292, decided 2026-08-17** (see the §3.2 block for provenance). Criterion 4
+> narrows to seven checks, because custody now sits outside the identifier and the interesting
+> property is that the two move independently:
+>
+> - **(i)** Any `binding_core` edit changes **both** `trust_domain_core_digest` and
+>   `trust_domain_id`; a pinned policy rejects the result as a *different domain*.
+> - **(ii)** An `initial_custody` edit changes **neither** digest **nor** id, and invalidates
+>   **every** genesis signature. Custody is signed state, not identity.
+> - **(iii)** A policy pinning the genesis *document* digest rejects altered initial custody —
+>   pinning the document is strictly stronger than pinning the domain.
+> - **(iv)** A valid custody-change trust-log event changes the **replayed** custody while
+>   preserving `trust_domain_core_digest` and `trust_domain_id`. *(Seam: the event contract itself
+>   is P2.2's catalogue, §5; this criterion names the boundary P2.1 must not implement.)*
+> - **(v)** A correction preserves the **superseded declaration** in replay history. The old claim
+>   remains readable — that is what makes a contradicted claim evidence.
+> - **(vi)** A **missing**, **duplicate**, **extraneous** (naming a non-signer) or **unsorted**
+>   `initial_custody` entry makes the genesis document **invalid**, never "custody unknown".
+> - **(vii)** Every report that surfaces custody labels it **declared and unverified**
+>   (OPERATOR-FORGERY R1), in machine-readable output as well as human output.
 5. Adding a countersignature or an anchor changes neither digest and invalidates no signature.
 6. A `solo` genesis produces bundles whose signed membership statement contains
    `"mode": "solo"`; a renderer test asserts the string reaches the report.
