@@ -71,8 +71,24 @@ def _metadata_of_size(total_bytes: int) -> dict:
 OVERSIZED = _metadata_of_size(MAX_ACTOR_METADATA_BYTES + 1)
 
 
-def _sub() -> InMemoryRegista:
-    sub = InMemoryRegista(project="test_wi234", hmac_key_path=KEY_PATH)
+AGENT = "agent:worker"
+CLAIMANT = "agent:reviewer"
+
+
+def _sub(tmp_path) -> InMemoryRegista:
+    """An in-memory project over a clean v6 epoch.
+
+    `open_v6_epoch` must precede `register_workflow`: the registration emits the
+    signed `workflow_registered` event admission gate 1 requires and is a silent
+    no-op before genesis. The keyset is written under the caller's `tmp_path`,
+    never into the tracked `test_keys.json`.
+    """
+
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    keyset = make_v6_keyset(tmp_path)
+    sub = InMemoryRegista(project="test_wi234", hmac_key_path=keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WORKFLOW)
     return sub
 
@@ -99,96 +115,100 @@ class TestValidateActorMetadata:
 
 
 class TestLimitEnforcedAtMutationEntryPoints:
-    def test_create_work_item_rejects_oversized_metadata(self):
-        sub = _sub()
+    def test_create_work_item_rejects_oversized_metadata(self, tmp_path):
+        sub = _sub(tmp_path)
         with pytest.raises(RegistaError) as exc_info:
             sub.create_work_item(
                 workflow_name="wi234_limit",
                 work_item_type="issue",
-                actor_id="agent-1",
+                actor_id=AGENT,
                 actor_kind="agent",
                 actor_metadata=OVERSIZED,
             )
         _assert_rejected(exc_info)
 
-    def test_transition_rejects_oversized_metadata(self):
-        sub = _sub()
+    def test_transition_rejects_oversized_metadata(self, tmp_path):
+        sub = _sub(tmp_path)
         wi, _ = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.transition(
-                wi.work_item_id, "close", "agent-1",
+                wi.work_item_id, "close", AGENT,
                 actor_kind="agent",
                 actor_metadata=OVERSIZED,
             )
         _assert_rejected(exc_info)
 
-    def test_create_link_rejects_oversized_metadata(self):
-        sub = _sub()
+    def test_create_link_rejects_oversized_metadata(self, tmp_path):
+        sub = _sub(tmp_path)
         wi1, _ = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
         )
         wi2, _ = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.create_link(
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="blocks",
-                actor_id="agent-1",
+                actor_id=AGENT,
                 actor_metadata=OVERSIZED,
             )
         _assert_rejected(exc_info)
 
-    def test_update_not_before_rejects_oversized_metadata(self):
-        sub = _sub()
+    def test_update_not_before_rejects_oversized_metadata(self, tmp_path):
+        sub = _sub(tmp_path)
         wi, _ = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.update_not_before(
-                wi.work_item_id, None, "agent-1",
+                wi.work_item_id, None, AGENT,
                 actor_kind="agent",
                 actor_metadata=OVERSIZED,
             )
         _assert_rejected(exc_info)
 
-    def test_metadata_between_64kb_and_1mib_is_now_rejected(self):
+    def test_metadata_between_64kb_and_1mib_is_now_rejected(self, tmp_path):
         """Pins the intended behavior change: sizes the old 1 MiB Jsonb
         bound would have admitted are rejected at the 64 KB contract."""
-        sub = _sub()
+        sub = _sub(tmp_path)
         with pytest.raises(RegistaError) as exc_info:
             sub.create_work_item(
                 workflow_name="wi234_limit",
                 work_item_type="issue",
-                actor_id="agent-1",
+                actor_id=AGENT,
                 actor_metadata=_metadata_of_size(100 * 1024),
             )
         _assert_rejected(exc_info)
 
-    def test_metadata_under_limit_still_accepted(self):
-        sub = _sub()
+    def test_metadata_under_limit_still_accepted(self, tmp_path):
+        sub = _sub(tmp_path)
         wi, evt = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
             actor_metadata=_metadata_of_size(32 * 1024),
         )
         assert evt.actor_metadata is not None
+        # Not `model_lineage`: `_validate_v6_object` refuses a producer field inside
+        # `actor.metadata` (the producer is process-level, `V6-ENVELOPE.md` §1.8).
+        # This test is about the 64 KB cap admitting a small dict, not about which
+        # key the dict holds.
         sub.transition(
-            wi.work_item_id, "close", "agent-1",
+            wi.work_item_id, "close", AGENT,
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude-opus"},
+            actor_metadata={"role": "agent"},
         )
 
 
@@ -201,29 +221,31 @@ class TestClaimPathHonoursTheLimit:
         wi, _ = sub.create_work_item(
             workflow_name="wi234_limit",
             work_item_type="issue",
-            actor_id="agent-1",
+            actor_id=AGENT,
         )
         return wi
 
-    def test_oversized_claim_metadata_rejected(self):
-        sub = _sub()
+    def test_oversized_claim_metadata_rejected(self, tmp_path):
+        sub = _sub(tmp_path)
         wi = self._item(sub)
         with pytest.raises(RegistaError) as exc_info:
             sub.acquire_claim(
                 wi.work_item_id,
-                actor_id="agent-2",
+                actor_id=CLAIMANT,
                 actor_kind="agent",
                 actor_metadata=_metadata_of_size(100 * 1024),
             )
         _assert_rejected(exc_info)
 
-    def test_claim_metadata_under_limit_accepted(self):
-        sub = _sub()
+    def test_claim_metadata_under_limit_accepted(self, tmp_path):
+        sub = _sub(tmp_path)
         wi = self._item(sub)
+        # See the note in test_metadata_under_limit_still_accepted: a producer field
+        # in `actor.metadata` is refused at ingress, and the cap is what is under test.
         claim = sub.acquire_claim(
             wi.work_item_id,
-            actor_id="agent-2",
+            actor_id=CLAIMANT,
             actor_kind="agent",
-            actor_metadata={"model_lineage": "claude-opus"},
+            actor_metadata={"role": "agent"},
         )
         assert claim is not None

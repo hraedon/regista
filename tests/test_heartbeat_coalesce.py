@@ -31,18 +31,26 @@ class TestComputeCoalesceThreshold:
 
 
 @pytest.fixture(params=["real", "in_memory"])
-def sub(request):
+def sub(request, tmp_path):
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    # The Ed25519 actor-role keyset replaces `tests/test_keys.json` (one HMAC key,
+    # no `principal_id`), and the epoch opens before the workflow registration —
+    # registration emits a signed `workflow_registered` event that needs one.
+    keyset = make_v6_keyset(tmp_path)
     if request.param == "real":
         from regista import Regista
 
         project = f"test_hbc_{uuid.uuid4().hex[:8]}"
-        s = Regista.create_project(DSN, project, KEY_PATH)
+        s = Regista.create_project(DSN, project, keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
         drop_project_schema(DSN, project)
     else:
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
+        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow(WORKFLOW_YAML)
         yield s
 
@@ -57,39 +65,39 @@ class TestHeartbeatCoalescing:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "First heartbeat"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         assert _count_heartbeat_events(sub, wi.work_item_id) == 1
 
     def test_two_rapid_heartbeats_produce_one_event(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Rapid coalesce"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         assert _count_heartbeat_events(sub, wi.work_item_id) == 1
 
     def test_past_threshold_produces_second_event(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Threshold"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         sub.heartbeat_claim(
-            wi.work_item_id, "agent-1", ttl_seconds=300,
+            wi.work_item_id, "agent:worker", ttl_seconds=300,
             coalesce_threshold=0.0,
         )
         sub.heartbeat_claim(
-            wi.work_item_id, "agent-1", ttl_seconds=300,
+            wi.work_item_id, "agent:worker", ttl_seconds=300,
             coalesce_threshold=0.0,
         )
         assert _count_heartbeat_events(sub, wi.work_item_id) == 2
@@ -98,13 +106,13 @@ class TestHeartbeatCoalescing:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Zero threshold"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         for _ in range(5):
             sub.heartbeat_claim(
-                wi.work_item_id, "agent-1", ttl_seconds=300,
+                wi.work_item_id, "agent:worker", ttl_seconds=300,
                 coalesce_threshold=0.0,
             )
         assert _count_heartbeat_events(sub, wi.work_item_id) == 5
@@ -113,25 +121,25 @@ class TestHeartbeatCoalescing:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Default 60s"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
         assert _count_heartbeat_events(sub, wi.work_item_id) == 1
 
     def test_coalesced_heartbeat_still_extends_claim(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Extend coalesced"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        c1 = sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        c2 = sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        c1 = sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        c2 = sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         assert c2.expires_at > c1.expires_at
         assert _count_heartbeat_events(sub, wi.work_item_id) == 1
 
@@ -141,12 +149,12 @@ class TestHeartbeatEventPayload:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Payload check"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         sub.heartbeat_claim(
-            wi.work_item_id, "agent-1", ttl_seconds=300,
+            wi.work_item_id, "agent:worker", ttl_seconds=300,
             coalesce_threshold=42.0,
         )
         events = sub.read_events(work_item_id=wi.work_item_id)

@@ -74,12 +74,21 @@ WF_V2 = (
 )
 
 
+ACTOR = "agent:worker"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_ac12_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Genesis before registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires and is a silent no-op
+    # before genesis.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WF_V1)
     yield sub
     sub.close()
@@ -91,7 +100,7 @@ class TestAC12PinnedVersionIsolation:
         wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         with raw_transaction(regista) as conn:
@@ -107,7 +116,7 @@ class TestAC12PinnedVersionIsolation:
             regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="shortcut",
-                actor_id="agent-1",
+                actor_id=ACTOR,
                 actor_metadata={"role": "agent"},
             )
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
@@ -119,7 +128,7 @@ class TestAC12PinnedVersionIsolation:
         wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         with raw_transaction(regista) as conn:
@@ -132,7 +141,7 @@ class TestAC12PinnedVersionIsolation:
         evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="shortcut",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             actor_metadata={"role": "agent"},
         )
         assert evt.transition == "shortcut"
@@ -144,7 +153,7 @@ class TestAC12PinnedVersionIsolation:
         wi, _ = regista.create_work_item(
             workflow_name="versioned_wf",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         regista.register_workflow(WF_V2)
@@ -152,7 +161,7 @@ class TestAC12PinnedVersionIsolation:
         evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             actor_metadata={"role": "agent"},
         )
         assert evt.transition == "finish"

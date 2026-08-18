@@ -178,18 +178,17 @@ class TestInMemoryWitness:
         assert len(active) == 1
         assert active[0]["witness_id"] == str(wid1)
 
-    def test_witness_receipts_created_on_event(self):
+    def test_witness_receipts_created_on_event(self, tmp_path):
         from regista._in_memory import InMemoryRegista
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
-        sub = InMemoryRegista()
-
-
-        import os
-
-        key_path = os.path.join(
-            os.path.dirname(__file__), "test_keys.json"
-        )
-        sub = InMemoryRegista(hmac_key_path=key_path)
+        # An Ed25519 actor-role keyset and an open epoch: `tests/test_keys.json` is
+        # one HMAC key with no `principal_id`, which the clean epoch cannot use. The
+        # epoch opens before the witness is registered so no genesis-side event can
+        # be mistaken for the receipt under test.
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         wid = sub.register_witness(
             "https://example.com/webhook",
             event_filter={"transitions": ["created"]},
@@ -218,21 +217,19 @@ work_item_types:
 roles: []
 """
         sub.register_workflow(wf_yaml)
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", "agent:worker")
         receipts = sub.list_witness_receipts(event_id=evt.event_id)
         assert len(receipts) == 1
         assert receipts[0]["witness_id"] == str(wid)
         assert receipts[0]["status"] == "pending"
 
-    def test_filter_skips_event(self):
-        import os
-
+    def test_filter_skips_event(self, tmp_path):
         from regista._in_memory import InMemoryRegista
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
-        key_path = os.path.join(
-            os.path.dirname(__file__), "test_keys.json"
-        )
-        sub = InMemoryRegista(hmac_key_path=key_path)
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_witness(
             "https://example.com/webhook",
             event_filter={"transitions": ["close"]},
@@ -261,7 +258,7 @@ work_item_types:
 roles: []
 """
         sub.register_workflow(wf_yaml)
-        _wi, evt = sub.create_work_item("test", "task", "actor-1")
+        _wi, evt = sub.create_work_item("test", "task", "agent:worker")
         receipts = sub.list_witness_receipts(event_id=evt.event_id)
         assert len(receipts) == 0
 

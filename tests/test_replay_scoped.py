@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -18,36 +19,53 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+AGENT = "agent:worker"
+REVIEWER = "human:reviewer"
+
+
 @contextmanager
 def backend(backend_name: str) -> Generator[Regista | InMemoryRegista, None, None]:
-    if backend_name == "postgres":
-        project = f"test_scoped_{uuid.uuid4().hex[:8]}"
-        sub = Regista.create_project(DSN, project, KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        try:
+    # The keyset lives in a throwaway directory rather than in `tests/`: this is a
+    # context manager, not a fixture, so it has no `tmp_path` — and `test_keys.json`
+    # must never be written to (a mutated tracked fixture is what made the next run
+    # fail with PRINCIPAL_KEY_ALREADY_EXISTS in P2.3's observed case).
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    with tempfile.TemporaryDirectory() as keydir:
+        keyset = make_v6_keyset(keydir)
+        if backend_name == "postgres":
+            project = f"test_scoped_{uuid.uuid4().hex[:8]}"
+            sub = Regista.create_project(DSN, project, keyset.path)
+            # Genesis before registration: `register_workflow_file` emits the signed
+            # `workflow_registered` event and has no epoch to append it to before
+            # `open_v6_epoch` returns.
+            open_v6_epoch(sub, keyset)
+            sub.register_workflow_file(WORKFLOW_PATH)
+            try:
+                yield sub
+            finally:
+                sub.close()
+                drop_project_schema(DSN, project)
+        else:
+            sub = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+            open_v6_epoch(sub, keyset)
+            sub.register_workflow_file(WORKFLOW_PATH)
             yield sub
-        finally:
-            sub.close()
-            drop_project_schema(DSN, project)
-    else:
-        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
-        yield sub
 
 
 def _create_and_transition(sub: Regista | InMemoryRegista) -> uuid.UUID:
-    sub.register_actor_role("agent-1", "agent")
-    sub.register_actor_role("reviewer-1", "reviewer")
+    sub.register_actor_role(AGENT, "agent")
+    sub.register_actor_role(REVIEWER, "reviewer")
     wi, _ = sub.create_work_item(
-        "test_workflow", "feature", "agent-1",
+        "test_workflow", "feature", AGENT,
         custom_fields={"title": "scoped replay"},
     )
     sub.transition(
-        wi.work_item_id, "start", "agent-1",
+        wi.work_item_id, "start", AGENT,
         actor_metadata={"role": "agent"},
     )
     sub.transition(
-        wi.work_item_id, "submit_review", "agent-1",
+        wi.work_item_id, "submit_review", AGENT,
         actor_metadata={"role": "agent"},
     )
     return wi.work_item_id
@@ -97,7 +115,7 @@ def test_scoped_replay_skips_global_verification(backend_name):
     with backend(backend_name) as sub:
         wid = _create_and_transition(sub)
         sub.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", AGENT,
             custom_fields={"title": "second"},
         )
         full_report = sub.replay()
@@ -134,7 +152,7 @@ def test_full_replay_unchanged_when_work_item_id_none():
     with backend("postgres") as sub:
         _create_and_transition(sub)
         sub.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", AGENT,
             custom_fields={"title": "full replay regression"},
         )
         report = sub.replay()

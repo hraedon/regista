@@ -16,11 +16,17 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_p007_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("p007_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no epoch
+    # to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -87,7 +93,7 @@ class TestWorkflowOpsFacade:
 class TestWorkItemOpsFacade:
     def test_create_via_facade(self, regista):
         wi, evt = regista.work_items.create(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "facade-test"},
         )
         assert isinstance(wi, WorkItem)
@@ -97,7 +103,7 @@ class TestWorkItemOpsFacade:
 
     def test_get_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "bug", "actor-2",
+            "test_workflow", "bug", "agent:worker",
             custom_fields={"severity": "major"},
         )
         found = regista.work_items.get(wi.work_item_id)
@@ -106,7 +112,7 @@ class TestWorkItemOpsFacade:
 
     def test_query_via_facade(self, regista):
         regista.work_items.create(
-            "test_workflow", "feature", "actor-3",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "query-test"},
         )
         page = regista.work_items.query(
@@ -119,12 +125,12 @@ class TestWorkItemOpsFacade:
 
     def test_update_not_before_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-4",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "nb-test"},
         )
         future = datetime(2027, 1, 1, tzinfo=UTC)
         evt = regista.work_items.update_not_before(
-            wi.work_item_id, future, "actor-4",
+            wi.work_item_id, future, "agent:worker",
         )
         assert isinstance(evt, Event)
         assert evt.transition == "not_before_set"
@@ -133,11 +139,11 @@ class TestWorkItemOpsFacade:
 class TestEventOpsFacade:
     def test_append_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-5",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "evt-test"},
         )
         evt = regista.events.append(
-            wi.work_item_id, "actor-5",
+            wi.work_item_id, "agent:worker",
             transition="note", payload={"msg": "hello"},
         )
         assert isinstance(evt, Event)
@@ -145,11 +151,11 @@ class TestEventOpsFacade:
 
     def test_read_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-6",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "read-test"},
         )
         regista.events.append(
-            wi.work_item_id, "actor-6",
+            wi.work_item_id, "agent:worker",
             transition="log", payload={"k": "v"},
         )
         events = regista.events.read(work_item_id=wi.work_item_id)
@@ -157,12 +163,12 @@ class TestEventOpsFacade:
 
     def test_read_since_via_facade(self, regista):
         wi, create_evt = regista.work_items.create(
-            "test_workflow", "feature", "actor-7",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "since-test"},
         )
         after = create_evt.event_seq
         regista.events.append(
-            wi.work_item_id, "actor-7",
+            wi.work_item_id, "agent:worker",
             transition="log2", payload={"k": "v2"},
         )
         events = regista.events.read_since(wi.work_item_id, after)
@@ -172,29 +178,29 @@ class TestEventOpsFacade:
 class TestClaimOpsFacade:
     def test_acquire_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-8",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "claim-test"},
         )
-        claim = regista.claims.acquire(wi.work_item_id, "actor-8")
+        claim = regista.claims.acquire(wi.work_item_id, "agent:worker")
         assert isinstance(claim, Claim)
-        assert claim.actor_id == "actor-8"
+        assert claim.actor_id == "agent:worker"
 
     def test_heartbeat_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-9",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "hb-test"},
         )
-        regista.claims.acquire(wi.work_item_id, "actor-9")
-        claim = regista.claims.heartbeat(wi.work_item_id, "actor-9")
+        regista.claims.acquire(wi.work_item_id, "agent:worker")
+        claim = regista.claims.heartbeat(wi.work_item_id, "agent:worker")
         assert isinstance(claim, Claim)
 
     def test_release_via_facade(self, regista):
         wi, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-10",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "rel-test"},
         )
-        regista.claims.acquire(wi.work_item_id, "actor-10")
-        regista.claims.release(wi.work_item_id, "actor-10")
+        regista.claims.acquire(wi.work_item_id, "agent:worker")
+        regista.claims.release(wi.work_item_id, "agent:worker")
         found = regista.work_items.get(wi.work_item_id)
         assert found.claimed_by is None
 
@@ -206,62 +212,62 @@ class TestClaimOpsFacade:
 class TestLinkOpsFacade:
     def test_create_and_remove_via_facade(self, regista):
         wi1, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-11",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "link-src"},
         )
         wi2, _ = regista.work_items.create(
-            "test_workflow", "feature", "actor-11",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "link-dst"},
         )
         link = regista.links.create(
-            wi1.work_item_id, wi2.work_item_id, "blocks", "actor-11",
+            wi1.work_item_id, wi2.work_item_id, "blocks", "agent:worker",
         )
         assert isinstance(link, Link)
         assert link.link_type == "blocks"
 
         regista.links.remove(
-            wi1.work_item_id, wi2.work_item_id, "blocks", "actor-11",
+            wi1.work_item_id, wi2.work_item_id, "blocks", "agent:worker",
         )
 
 
 class TestBackwardCompatibility:
     def test_old_create_work_item(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-test"},
         )
         assert isinstance(wi, WorkItem)
 
     def test_old_append_event(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-evt"},
         )
         evt = regista.append_event(
-            wi.work_item_id, "compat-actor",
+            wi.work_item_id, "agent:worker",
             transition="note", payload={"x": 1},
         )
         assert isinstance(evt, Event)
 
     def test_old_acquire_claim(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-claim"},
         )
-        claim = regista.acquire_claim(wi.work_item_id, "compat-actor")
+        claim = regista.acquire_claim(wi.work_item_id, "agent:worker")
         assert isinstance(claim, Claim)
 
     def test_old_create_link(self, regista):
         wi1, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-link1"},
         )
         wi2, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-link2"},
         )
         link = regista.create_link(
-            wi1.work_item_id, wi2.work_item_id, "blocks", "compat-actor",
+            wi1.work_item_id, wi2.work_item_id, "blocks", "agent:worker",
         )
         assert isinstance(link, Link)
 
@@ -279,7 +285,7 @@ class TestBackwardCompatibility:
 
     def test_old_read_events(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "compat-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "compat-rev"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -287,7 +293,7 @@ class TestBackwardCompatibility:
 
     def test_facade_equals_old_api(self, regista):
         wi, _create_evt = regista.create_work_item(
-            "test_workflow", "feature", "eq-actor",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "eq-test"},
         )
         evts_old = regista.read_events(work_item_id=wi.work_item_id)

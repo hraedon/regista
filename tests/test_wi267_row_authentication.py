@@ -73,13 +73,18 @@ _LEGACY_ALL = VerificationPolicy(
 
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_wi267_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # `register_workflow_file` emits a signed `workflow_registered` event, so the
+    # epoch has to be open first.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
-    sub.register_actor_role("agent-1", "agent")
+    sub.register_actor_role("agent:worker", "agent")
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -1106,11 +1111,11 @@ class TestEndToEndPostgres:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "wi267"},
         )
         sub.transition(
-            wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"},
+            wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"},
         )
         events = sub.read_events(work_item_id=wi.work_item_id)
         return wi, events[-1]

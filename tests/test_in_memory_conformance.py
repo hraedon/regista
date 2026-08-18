@@ -17,18 +17,26 @@ WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
 
 
 @pytest.fixture(params=["real", "in_memory"])
-def sub(request):
+def sub(request, tmp_path):
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    keyset = make_v6_keyset(tmp_path)
     if request.param == "real":
         from regista import Regista
 
         project = f"test_conf_{uuid.uuid4().hex[:8]}"
-        s = Regista.create_project(DSN, project, KEY_PATH)
+        s = Regista.create_project(DSN, project, keyset.path)
+        # The clean v6 epoch first: `register_workflow_file` emits the signed
+        # `workflow_registered` event admission gate 1 requires, and there is no
+        # epoch to append it to until `open_v6_epoch` returns.
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
         drop_project_schema(DSN, project)
     else:
-        s = InMemoryRegista(project="test")
+        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
@@ -55,7 +63,7 @@ class TestConformanceWorkItem:
         wi, evt = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         assert wi.work_item_type == "feature"
@@ -71,7 +79,7 @@ class TestConformanceWorkItem:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 custom_fields={},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -81,7 +89,7 @@ class TestConformanceWorkItem:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="nonexistent",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_TYPE_NOT_DECLARED
 
@@ -91,11 +99,11 @@ class TestConformanceTransition:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         evt = sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         assert evt.transition == "start"
@@ -106,28 +114,28 @@ class TestConformanceTransition:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            sub.transition(wi.work_item_id, "approve", "agent-1")
+            sub.transition(wi.work_item_id, "approve", "agent:worker")
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
 
     def test_role_not_permitted(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+        sub.transition(wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"})
         sub.transition(
-            wi.work_item_id, "submit_review", "agent-1",
+            wi.work_item_id, "submit_review", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.transition(
-                wi.work_item_id, "approve", "agent-1",
+                wi.work_item_id, "approve", "agent:worker",
                 actor_metadata={"role": "agent"},
             )
         assert exc_info.value.code == ErrorCode.ROLE_NOT_PERMITTED
@@ -136,22 +144,22 @@ class TestConformanceTransition:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            sub.append_event(wi.work_item_id, "agent-1", transition="start")
+            sub.append_event(wi.work_item_id, "agent:worker", transition="start")
         assert exc_info.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
 
     def test_custom_fields_update_on_transition(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
             custom_fields={"priority": "high"},
         )
@@ -165,7 +173,7 @@ class TestConformanceEvents:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         evts = sub.read_events(work_item_id=wi.work_item_id)
@@ -176,10 +184,10 @@ class TestConformanceEvents:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="unique-agent-x",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        evts = sub.read_events(actor_id="unique-agent-x")
+        evts = sub.read_events(actor_id="agent:worker")
         assert len(evts) >= 1
 
     def test_event_idempotency(self, sub):
@@ -187,7 +195,7 @@ class TestConformanceEvents:
         _wi1, evt1 = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
             event_id=eid,
         )
@@ -197,11 +205,11 @@ class TestConformanceEvents:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "composite"},
         )
         sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         evts = sub.read_events(
@@ -220,15 +228,15 @@ class TestConformanceEvents:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="composite-agent",
+            actor_id="agent:worker",
             custom_fields={"title": "composite actor"},
         )
         evts = sub.read_events(
-            actor_id="composite-agent", transition="created",
+            actor_id="agent:worker", transition="created",
         )
         assert len(evts) == 1
         assert all(
-            e.actor_id == "composite-agent" and e.transition == "created"
+            e.actor_id == "agent:worker" and e.transition == "created"
             for e in evts
         )
 
@@ -238,17 +246,17 @@ class TestConformanceClaims:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        claim = sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        assert claim.actor_id == "agent-1"
+        claim = sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        assert claim.actor_id == "agent:worker"
         assert claim.attempt_number == 1
 
         updated = sub.get_work_item(wi.work_item_id)
-        assert updated.claimed_by == "agent-1"
+        assert updated.claimed_by == "agent:worker"
 
-        sub.release_claim(wi.work_item_id, "agent-1")
+        sub.release_claim(wi.work_item_id, "agent:worker")
         updated = sub.get_work_item(wi.work_item_id)
         assert updated.claimed_by is None
 
@@ -256,35 +264,35 @@ class TestConformanceClaims:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         with pytest.raises(RegistaError) as exc_info:
-            sub.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+            sub.acquire_claim(wi.work_item_id, "agent:reviewer", ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.CLAIM_CONTESTED
 
     def test_heartbeat(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        claim1 = sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        claim2 = sub.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=120)
+        claim1 = sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        claim2 = sub.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=120)
         assert claim2.expires_at > claim1.expires_at
 
     def test_claim_releases_on_transition(self, sub):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         updated = sub.get_work_item(wi.work_item_id)
@@ -296,18 +304,18 @@ class TestConformanceLinks:
         wi1, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "a"},
         )
         wi2, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "b"},
         )
         link = sub.create_link(
             wi1.work_item_id, wi2.work_item_id, "blocks",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
         assert link.link_type == "blocks"
 
@@ -318,31 +326,31 @@ class TestConformanceLinks:
 
 class TestConformanceActorRoles:
     def test_register_and_enforce(self, sub):
-        sub.register_actor_role("agent-1", "agent")
+        sub.register_actor_role("agent:worker", "agent")
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         updated = sub.get_work_item(wi.work_item_id)
         assert updated.current_state == "in_progress"
 
     def test_role_rejects_unauthorized(self, sub):
-        sub.register_actor_role("agent-1", "reviewer")
+        sub.register_actor_role("agent:worker", "reviewer")
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         with pytest.raises(RegistaError) as exc_info:
             sub.transition(
-                wi.work_item_id, "start", "agent-1",
+                wi.work_item_id, "start", "agent:worker",
                 actor_metadata={"role": "agent"},
             )
         assert exc_info.value.code == ErrorCode.ACTOR_ROLE_NOT_AUTHORIZED
@@ -353,7 +361,7 @@ class TestConformanceQuery:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "a"},
         )
         page = sub.query_work_items(current_states=["new"])
@@ -363,7 +371,7 @@ class TestConformanceQuery:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "a"},
         )
         page = sub.query_work_items(workflow_name="test_workflow")
@@ -374,7 +382,7 @@ class TestConformanceQuery:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 custom_fields={"title": f"item-{i}"},
             )
         page1 = sub.query_work_items(page_size=2)
@@ -389,11 +397,11 @@ class TestConformanceReplay:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         sub.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         report = sub.replay()
@@ -407,10 +415,10 @@ class TestConformanceReplay:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "claim-replay"},
         )
-        sub.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         report = sub.replay()
         assert report.replayed_drift == 0
         assert report.replayed_ok >= 1
@@ -423,15 +431,15 @@ class TestConformanceUpdateNotBefore:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "test"},
         )
         future = datetime.now(UTC) + timedelta(hours=1)
-        sub.update_not_before(wi.work_item_id, future, "agent-1")
+        sub.update_not_before(wi.work_item_id, future, "agent:worker")
         updated = sub.get_work_item(wi.work_item_id)
         assert updated.not_before is not None
 
-        sub.update_not_before(wi.work_item_id, None, "agent-1")
+        sub.update_not_before(wi.work_item_id, None, "agent:worker")
         updated = sub.get_work_item(wi.work_item_id)
         assert updated.not_before is None
 
@@ -441,19 +449,19 @@ class TestConformanceCustomFieldFilter:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "cf-query", "priority": "high"},
         )
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "cf-query", "priority": "low"},
         )
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "other"},
         )
 
@@ -468,7 +476,7 @@ class TestConformanceCustomFieldFilter:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "exists"},
         )
         page = sub.query_work_items(
@@ -480,7 +488,7 @@ class TestConformanceCustomFieldFilter:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={
                 "title": "nested-test",
                 "metadata": {"env": "prod", "region": "us-east", "tags": ["a", "b"]},
@@ -489,7 +497,7 @@ class TestConformanceCustomFieldFilter:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={
                 "title": "other-nested",
                 "metadata": {"env": "staging", "region": "eu-west"},
@@ -498,7 +506,7 @@ class TestConformanceCustomFieldFilter:
         sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "no-metadata"},
         )
 
@@ -608,28 +616,36 @@ class TestHeartbeatActorKindConformance:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="human-1",
+            actor_id="human:operator",
             custom_fields={"title": "actor_kind conformance"},
         )
-        sub.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
-        sub.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        sub.acquire_claim(wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human")
+        sub.heartbeat_claim(wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human")
         events = sub.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
         assert len(heartbeat_events) == 1
         assert heartbeat_events[0].actor_kind == "human"
 
-    def test_heartbeat_actor_kind_emitted_in_memory_with_keys(self):
-        s = InMemoryRegista(project="test_im_keys", hmac_key_path=KEY_PATH)
+    def test_heartbeat_actor_kind_emitted_in_memory_with_keys(self, tmp_path):
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        s = InMemoryRegista(project="test_im_keys", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         try:
             wi, _ = s.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="human-1",
+                actor_id="human:operator",
                 custom_fields={"title": "actor_kind im conformance"},
             )
-            s.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
-            s.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+            s.acquire_claim(
+                wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human"
+            )
+            s.heartbeat_claim(
+                wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human"
+            )
             events = s.read_events(work_item_id=wi.work_item_id)
             heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
             assert len(heartbeat_events) == 1

@@ -22,12 +22,22 @@ def _write_keys(tmp_path, keys_data):
     return str(p)
 
 
-@pytest.fixture
-def ed_regista():
-    from regista import Regista
+ACTOR = "agent:worker"
 
+
+@pytest.fixture
+def ed_regista(tmp_path):
+    from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    # `make_v6_keyset` is itself an Ed25519 keyset — one actor-role key per
+    # principal — so it replaces `test_keys_ed25519.json` without weakening what
+    # this module is about. That file's single key has no `principal_id`, which the
+    # v6 writer refuses (ACTOR_SIGNER_MISMATCH).
     project = f"test_ed_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, ED_KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -43,7 +53,7 @@ class TestEd25519PostgresIntegration:
         wi, _ = ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "ed25519 test"},
         )
         events = ed_regista.read_events(work_item_id=wi.work_item_id)
@@ -55,11 +65,11 @@ class TestEd25519PostgresIntegration:
         wi, _ = ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "ed25519 transition"},
         )
         ed_regista.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", ACTOR,
             actor_metadata={"role": "agent"},
         )
         events = ed_regista.read_events(work_item_id=wi.work_item_id)
@@ -69,7 +79,7 @@ class TestEd25519PostgresIntegration:
         ed_regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "ed25519 replay"},
         )
         report = ed_regista.replay()
@@ -92,13 +102,17 @@ class TestEd25519PostgresIntegration:
         scheme = get_scheme("ed25519")
         assert scheme.scheme_id == "ed25519"
 
-    def test_in_memory_ed25519_lifecycle(self):
-        sub = InMemoryRegista(project="test", hmac_key_path=ED_KEY_PATH)
+    def test_in_memory_ed25519_lifecycle(self, tmp_path):
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_workflow_file(WORKFLOW_PATH)
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "ed25519 in-mem"},
         )
         events = sub.read_events(work_item_id=wi.work_item_id)
