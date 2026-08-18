@@ -95,6 +95,18 @@ def asymmetric_scheme_ids() -> frozenset[str]:
     )
 
 
+def is_v6_scheme(scheme_id: object) -> bool:
+    """Whether ``scheme_id`` names an asymmetric (v6-epoch) signing scheme.
+
+    Lives beside the registry it consults so the *one* classification both the v6
+    write path and §5.9's projection rebuild use cannot drift apart, and so adding
+    an asymmetric scheme to the registry classifies it correctly with no second
+    edit. Keying off the ``"ed25519"`` literal instead would silently mislabel the
+    next asymmetric scheme as legacy.
+    """
+    return isinstance(scheme_id, str) and scheme_id in asymmetric_scheme_ids()
+
+
 @register_scheme
 class HMACSHA256Scheme:
     scheme_id: str = "hmac-sha256"

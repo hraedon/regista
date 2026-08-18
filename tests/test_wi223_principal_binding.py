@@ -121,12 +121,12 @@ def cross_project_collision(tmp_path):
     sub_b = Regista(DSN, project_b, str(key_file))
     try:
         sub_a.register_workflow_file(WORKFLOW_PATH)
-        from regista._principal_keys import register_principal_key
+        from regista.testing import seed_legacy_principal_key
 
-        register_principal_key(
+        seed_legacy_principal_key(
             sub_a._mgr, principal_id, vk_a, "ed25519", key_id=key_id_a,
         )
-        register_principal_key(
+        seed_legacy_principal_key(
             sub_b._mgr, principal_id, vk_b, "ed25519", key_id=key_id_b,
         )
         yield sub_a, principal_id, key_id_a, key_id_b
@@ -327,31 +327,58 @@ class TestHmacOnlyDeploymentStaysGreen:
 
 
 class TestProvisionPrincipalRefusesCollision:
-    """Fix 1: don't silently mint a colliding second keypair."""
+    """Fix 1: don't silently mint a colliding second keypair.
 
-    def test_second_project_provisioning_is_refused(self, tmp_path):
+    Rewritten for P2.2. ``provision_principal`` no longer writes ``principal_keys``
+    at all — it wrote the projection with no signed event (TRUST-DOMAIN.md §5.9 rule
+    2), so it is refused pending Gate 2 + P1.7. WI-223's guard is upstream of that
+    refusal and still fires first, which is the property these tests protect: the
+    collision is caught by the guard, not incidentally by the new refusal.
+    """
+
+    def _key_file_with_existing_entry(self, tmp_path, principal_id):
+        """A key file that already carries a signable ed25519 entry.
+
+        Stands in for "project A provisioned this principal before the cutover" —
+        the exact WI-223 precondition. The private key is real (an ephemeral test
+        key) so the key set loads; only the guard's behaviour is under test.
+        """
+        import nacl.signing
+
+        sk = nacl.signing.SigningKey.generate()
+        priv = tmp_path / "existing_ed25519.key"
+        priv.write_bytes(base64.b64encode(bytes(sk)))
+        key_file = tmp_path / "keys.json"
+        key_file.write_text(json.dumps({"keys": [
+            _bootstrap_hmac_entry(),
+            {
+                "key_id": "pk_from_project_a",
+                "scheme": "ed25519",
+                "status": "active",
+                "principal_id": principal_id,
+                "public_key": base64.b64encode(bytes(sk.verify_key)).decode(),
+                "secret_ref": f"file:{priv}",
+                "encoding": "base64",
+            },
+        ]}))
+        return key_file
+
+    def test_the_wi223_guard_still_fires_before_the_projection_refusal(self, tmp_path):
+        """The collision is still caught *by name*, not masked by the new refusal.
+
+        If the projection refusal were placed earlier, this would come back as
+        PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED and WI-223's guard would be dead code
+        that nothing exercised.
+        """
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"agent:wi223prov{uuid.uuid4().hex[:8]}"
-        project_a = f"wi223_pa_{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223prov-{uuid.uuid4().hex[:8]}"
         project_b = f"wi223_pb_{uuid.uuid4().hex[:8]}"
-        key_file = tmp_path / "keys.json"
-        key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
+        key_file = self._key_file_with_existing_entry(tmp_path, principal_id)
 
-        Regista.create_project(DSN, project_a, str(key_file))
         Regista.create_project(DSN, project_b, str(key_file))
         try:
-            first = provision_principal(
-                DSN,
-                project_a,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-            )
-            assert first.public_key_registered is True
-
             with pytest.raises(RegistaError) as exc:
                 provision_principal(
                     DSN,
@@ -362,121 +389,93 @@ class TestProvisionPrincipalRefusesCollision:
                     secret_backend="file",
                 )
             assert exc.value.code == ErrorCode.PRINCIPAL_KEY_ALREADY_EXISTS
-            assert first.key_id in str(exc.value)
+            assert "pk_from_project_a" in str(exc.value)
+            # agent-suite classifies this step by scanning stderr and treats
+            # "already"/"exists" as success unless "refuse" appears first.
+            assert str(exc.value).index("Refusing to") < str(exc.value).index("already")
 
-            # The key file must be unchanged: one active Ed25519 entry.
-            data = json.loads(key_file.read_text())
-            ed = [
-                k for k in data["keys"]
-                if k.get("principal_id") == principal_id
-            ]
-            assert len(ed) == 1, f"key file gained a colliding entry: {ed}"
-            assert ed[0]["status"] == "active"
-            assert ed[0]["key_id"] == first.key_id
-        finally:
-            drop_project_schema(DSN, project_a)
-            drop_project_schema(DSN, project_b)
-
-    def test_reuse_existing_key_registers_the_same_public_key(self, tmp_path):
-        """The supported way for one principal to act in two projects."""
-        from regista._principal_keys import get_active_key
-        from regista._provision import provision_principal
-        from regista.testing import drop_project_schema
-
-        principal_id = f"agent:wi223reuse{uuid.uuid4().hex[:8]}"
-        project_a = f"wi223_ra_{uuid.uuid4().hex[:8]}"
-        project_b = f"wi223_rb_{uuid.uuid4().hex[:8]}"
-        key_file = tmp_path / "keys.json"
-        key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
-
-        Regista.create_project(DSN, project_a, str(key_file))
-        Regista.create_project(DSN, project_b, str(key_file))
-        try:
-            first = provision_principal(
-                DSN,
-                project_a,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-            )
-            second = provision_principal(
-                DSN,
-                project_b,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-                reuse_existing_key=True,
-            )
-            assert second.key_id == first.key_id
-            assert second.private_key_stored is False
-            assert second.public_key_registered is True
-
-            # Both projects now register the key the signer will actually use.
-            sub_a = Regista(DSN, project_a, str(key_file))
-            sub_b = Regista(DSN, project_b, str(key_file))
-            try:
-                assert get_active_key(sub_a._mgr, principal_id).key_id == first.key_id
-                assert get_active_key(sub_b._mgr, principal_id).key_id == first.key_id
-                assert (
-                    get_active_key(sub_a._mgr, principal_id).fingerprint
-                    == get_active_key(sub_b._mgr, principal_id).fingerprint
-                )
-            finally:
-                sub_a.close()
-                sub_b.close()
-
-            # And the key file still has exactly one entry for the principal.
+            # The key file must be unchanged: one Ed25519 entry, still active.
             data = json.loads(key_file.read_text())
             ed = [k for k in data["keys"] if k.get("principal_id") == principal_id]
-            assert len(ed) == 1
-
-            # A chain written to the second project verifies its binding.
-            sub_b = Regista(DSN, project_b, str(key_file))
-            try:
-                sub_b.register_workflow_file(WORKFLOW_PATH)
-                _drive_chain(sub_b, principal_id)
-                report = sub_b.replay(verify_principal_binding=True)
-                assert report.principal_binding_failures == 0
-                assert report.principal_binding_verified is True
-            finally:
-                sub_b.close()
+            assert len(ed) == 1, f"key file gained a colliding entry: {ed}"
+            assert ed[0]["key_id"] == "pk_from_project_a"
         finally:
-            drop_project_schema(DSN, project_a)
             drop_project_schema(DSN, project_b)
 
-    def test_reprovisioning_same_project_is_still_idempotent(self, tmp_path):
+    def test_provisioning_a_clean_principal_is_refused_as_a_projection_write(
+        self, tmp_path,
+    ):
         from regista._provision import provision_principal
         from regista.testing import drop_project_schema
 
-        principal_id = f"agent:wi223idem{uuid.uuid4().hex[:8]}"
-        project = f"wi223_pi_{uuid.uuid4().hex[:8]}"
+        principal_id = f"agent:wi223clean-{uuid.uuid4().hex[:8]}"
+        project = f"wi223_pc_{uuid.uuid4().hex[:8]}"
         key_file = tmp_path / "keys.json"
         key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
 
         Regista.create_project(DSN, project, str(key_file))
         try:
-            first = provision_principal(
-                DSN,
-                project,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-            )
-            second = provision_principal(
-                DSN,
-                project,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-            )
-            assert second.already_existed is True
-            assert second.key_id == first.key_id
+            with pytest.raises(RegistaError) as exc:
+                provision_principal(
+                    DSN,
+                    project,
+                    principal_id,
+                    hmac_key_path=str(key_file),
+                    private_key_dir=str(tmp_path / "principals"),
+                    secret_backend="file",
+                )
+            assert exc.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+            # No private key minted, no key-file entry appended.
+            data = json.loads(key_file.read_text())
+            assert [
+                k for k in data["keys"] if k.get("principal_id") == principal_id
+            ] == []
         finally:
             drop_project_schema(DSN, project)
+
+    def test_reuse_existing_key_is_also_refused_but_validates_first(self, tmp_path):
+        """``--reuse-existing-key`` still resolves the key before refusing.
+
+        The refusal names ``reuse_existing_key``, so an operator learns which path
+        they were on; a missing reusable key is still reported as such.
+        """
+        from regista._provision import provision_principal
+        from regista.testing import drop_project_schema
+
+        principal_id = f"agent:wi223reuse-{uuid.uuid4().hex[:8]}"
+        project_b = f"wi223_rb_{uuid.uuid4().hex[:8]}"
+        key_file = self._key_file_with_existing_entry(tmp_path, principal_id)
+
+        Regista.create_project(DSN, project_b, str(key_file))
+        try:
+            with pytest.raises(RegistaError) as exc:
+                provision_principal(
+                    DSN,
+                    project_b,
+                    principal_id,
+                    hmac_key_path=str(key_file),
+                    private_key_dir=str(tmp_path / "principals"),
+                    secret_backend="file",
+                    reuse_existing_key=True,
+                )
+            assert exc.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+            assert exc.value.detail["stage"] == "reuse_existing_key"
+
+            # And with no reusable entry, the reuse path still says so by name.
+            other = f"agent:wi223none-{uuid.uuid4().hex[:8]}"
+            with pytest.raises(RegistaError) as missing:
+                provision_principal(
+                    DSN,
+                    project_b,
+                    other,
+                    hmac_key_path=str(key_file),
+                    private_key_dir=str(tmp_path / "principals"),
+                    secret_backend="file",
+                    reuse_existing_key=True,
+                )
+            assert missing.value.code == ErrorCode.PRINCIPAL_KEY_NOT_FOUND
+        finally:
+            drop_project_schema(DSN, project_b)
 
 
 class TestReportNeverClaimsAnUncheckedZero:
@@ -589,25 +588,48 @@ class TestDoctorSeesTheCollision:
         assert report.to_dict()["ok"] is False
 
     def test_registration_check_passes_when_aligned(self, tmp_path):
-        from regista._doctor import run_doctor
-        from regista._provision import provision_principal
-        from regista.testing import drop_project_schema
+        """The doctor's alignment check, against a pre-cutover (legacy) registry.
 
-        principal_id = f"agent:wi223dr{uuid.uuid4().hex[:8]}"
+        ``provision_principal`` no longer writes the projection (P2.2), so the
+        aligned state is seeded as the legacy rows it actually is. What is under
+        test is the doctor's comparison of key file to registry, unchanged.
+        """
+        import nacl.signing
+
+        from regista._connection import ConnectionManager
+        from regista._doctor import run_doctor
+        from regista.testing import drop_project_schema, seed_legacy_principal_key
+
+        principal_id = f"agent:wi223dr-{uuid.uuid4().hex[:8]}"
         project = f"wi223_dr_{uuid.uuid4().hex[:8]}"
+        sk = nacl.signing.SigningKey.generate()
+        priv = tmp_path / "aligned_ed25519.key"
+        priv.write_bytes(base64.b64encode(bytes(sk)))
         key_file = tmp_path / "keys.json"
-        key_file.write_text(json.dumps({"keys": [_bootstrap_hmac_entry()]}))
+        key_file.write_text(json.dumps({"keys": [
+            _bootstrap_hmac_entry(),
+            {
+                "key_id": "pk_aligned",
+                "scheme": "ed25519",
+                "status": "active",
+                "principal_id": principal_id,
+                "public_key": base64.b64encode(bytes(sk.verify_key)).decode(),
+                "secret_ref": f"file:{priv}",
+                "encoding": "base64",
+            },
+        ]}))
 
         Regista.create_project(DSN, project, str(key_file))
         try:
-            provision_principal(
-                DSN,
-                project,
-                principal_id,
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-                secret_backend="file",
-            )
+            mgr = ConnectionManager(DSN, project)
+            mgr.open()
+            try:
+                seed_legacy_principal_key(
+                    mgr, principal_id, bytes(sk.verify_key), "ed25519",
+                    key_id="pk_aligned",
+                )
+            finally:
+                mgr.close()
             report = run_doctor(
                 DSN,
                 project=project,

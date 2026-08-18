@@ -21,6 +21,48 @@ def witness_principal_id(witness_id: uuid.UUID | str) -> str:
     return f"{_WITNESS_PRINCIPAL_PREFIX}{witness_id}"
 
 
+def _refuse_witness_key_lifecycle(operation: str, *, extra: str = "") -> None:
+    """Refuse a witness key-lifecycle write. Always raises.
+
+    Witness lifecycle is **cut from 0.6.0** (``TRUST-DOMAIN.md`` §7 CUT marker,
+    D-7): positive witness-independence work does not ship in this release, the
+    signed witness lifecycle (``witness_registered``, ``witness_key_rotated``,
+    ``witness_paused``, ``witness_resumed``, ``witness_revoked``) is struck from the
+    §5.3 catalogue, and preflight measured **zero** ``witness_registrations`` and
+    **zero** ``witness_receipts`` estate-wide — nothing to migrate, no deployed
+    evidence to preserve.
+
+    So there is no signed event for these paths to project from. Three options
+    existed and only one is honest:
+
+    * keep writing ``principal_keys`` with no event — that *is* the §5.1 bypass, and
+      it is what happened last time;
+    * skip the registry write silently — leaves ``witness_registrations`` claiming a
+      key that the registry never recorded, i.e. a quieter version of the same lie;
+    * **refuse by name** — this. The caller learns the capability is cut rather than
+      discovering later that its key was never enrolled.
+
+    Webhook *delivery* is unaffected: it is preserved as non-evidentiary transport
+    (§7 CUT marker), which is why ``register_witness`` still works for
+    ``key_scheme='hmac-sha256'``. Only the asymmetric key-lifecycle paths refuse.
+    """
+    raise RegistaError(
+        ErrorCode.WITNESS_LIFECYCLE_CUT,
+        f"{operation} is refused: witness key lifecycle is cut from 0.6.0 "
+        "(TRUST-DOMAIN.md §7 CUT marker, D-7). There is no signed witness_registered "
+        "or witness_key_rotated event in this release, so enrolling or rotating a "
+        "witness key in principal_keys would be an unsourced projection write "
+        "(§5.9 rule 2). Webhook delivery remains available as non-evidentiary "
+        "transport via key_scheme='hmac-sha256'."
+        + (f" {extra}" if extra else ""),
+        {
+            "reason": "witness_lifecycle_cut_from_0_6_0",
+            "operation": operation,
+            "see": "docs/0.6.0/TRUST-DOMAIN.md §7",
+        },
+    )
+
+
 def _validate_url(url: str) -> None:
     if not url or not url.startswith(("http://", "https://")):
         raise RegistaError(
@@ -129,6 +171,7 @@ def register_witness(
                 "ed25519 public_key must be exactly 32 bytes, "
                 f"got {len(public_key)}",
             )
+        _refuse_witness_key_lifecycle("register_witness(key_scheme='ed25519')")
     witness_id = uuid.uuid4()
     with mgr.transaction() as conn:
         conn.execute(
@@ -151,16 +194,13 @@ def register_witness(
                 key_scheme,
             ],
         )
-        if key_scheme == "ed25519" and public_key is not None:
-            from ._principal_keys import register_principal_key_conn
-
-            register_principal_key_conn(
-                conn,
-                witness_principal_id(witness_id),
-                public_key,
-                "ed25519",
-                registered_by="witness-enrollment",
-            )
+        # Witness key enrolment used to call register_principal_key_conn here — a
+        # plain INSERT into principal_keys with no event emitted anywhere
+        # (TRUST-DOMAIN.md §7.1, one of the three §5.1 bypass paths). Witness
+        # lifecycle is CUT from 0.6.0 (§7 CUT marker, D-7), so there is no signed
+        # witness_registered event to project from and the write is refused rather
+        # than quietly kept. See _refuse_witness_key_lifecycle above for why this is
+        # a refusal and not a silent skip.
     log.info(
         "witness.registered",
         project=project,
@@ -199,15 +239,20 @@ def unregister_witness(
             [witness_principal_id(witness_id)],
         ).fetchall()
         if active_rows:
-            from ._principal_keys import revoke_principal_key_conn
-
-            for row in active_rows:
-                revoke_principal_key_conn(
-                    conn,
-                    witness_principal_id(witness_id),
-                    row["key_id"],
-                    reason="witness unregistered",
-                )
+            # Reached only for a witness whose ed25519 key predates the 0.6.0 cut.
+            # Preflight measured ZERO witness_registrations estate-wide, so this is
+            # unreachable in the deployed estate — but silently leaving the key
+            # active while deleting the registration would be worse than refusing,
+            # and revoking it without a signed event is exactly the §5.9 bypass.
+            _refuse_witness_key_lifecycle(
+                "unregister_witness (witness has active principal_keys rows)",
+                extra=(
+                    f"{len(active_rows)} active key row(s) exist for "
+                    f"{witness_principal_id(witness_id)}. Revoking them requires a "
+                    "signed principal_key_revoked event, which the cut witness "
+                    "lifecycle cannot produce."
+                ),
+            )
     log.info("witness.unregistered", project=project, witness_id=str(witness_id))
 
 
@@ -243,30 +288,17 @@ def rotate_witness_key(
                 "witness key rotation requires key_scheme='ed25519' "
                 f"(witness is {row['key_scheme']!r})",
             )
-        conn.execute(
-            SQL(
-                "UPDATE witness_registrations "
-                "SET public_key = %s, updated_at = now() "
-                "WHERE witness_id = %s"
-            ),
-            [new_public_key, witness_id],
+        # Rotating the witness's registry key was the third §5.1 bypass
+        # (_witness.py:256): an UPDATE plus rotate_principal_key_conn, no event.
+        # Witness key rotation is `witness_key_rotated`, struck from the §5.3
+        # catalogue and cut from 0.6.0, so it is refused here — before the
+        # witness_registrations UPDATE, so a refused rotation leaves no partial
+        # state behind.
+        _refuse_witness_key_lifecycle(
+            "rotate_witness_key",
+            extra=f"witness principal is {principal_id}",
         )
-        from ._principal_keys import rotate_principal_key_conn
-
-        entry = rotate_principal_key_conn(
-            conn,
-            principal_id,
-            new_public_key,
-            "ed25519",
-            registered_by="witness-enrollment",
-        )
-    log.info(
-        "witness.key_rotated",
-        project=project,
-        witness_id=str(witness_id),
-        key_id=entry.key_id,
-    )
-    return entry.to_dict()
+        raise AssertionError("unreachable: _refuse_witness_key_lifecycle always raises")
 
 
 def enrolled_witness_key(

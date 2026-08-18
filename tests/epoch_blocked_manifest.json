@@ -1,8 +1,8 @@
 {
- "baseline_count": 702,
- "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md \u00a72.1).",
- "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 \u2014 docs/0.6.0/SUITE-RECONCILIATION.md \u00a75",
- "blocker": "P1.7 (v6 ordinary-event writer) \u2014 SUITE-RECONCILIATION.md \u00a72.1",
+ "baseline_count": 694,
+ "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md §2.1).",
+ "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 — docs/0.6.0/SUITE-RECONCILIATION.md §5",
+ "blocker": "P1.7 (v6 ordinary-event writer) — SUITE-RECONCILIATION.md §2.1",
  "entries": [
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestBatchRoutes::test_create_work_items_batch",
@@ -947,69 +947,6 @@
    "expected": {
     "exception": "RegistaError",
     "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_does_not_break_replay",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_enroll_principal_entity_id_stable",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_idempotent_re_enroll_no_duplicate_event",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_new_enrollment_issues_keypair_and_emits_event",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_self_heal_re_emits_event_after_gap",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_idempotent",
-   "phase": "failure",
-   "cause": "indirect",
-   "expected": {
-    "signature": "GENESIS_REQUIRED",
-    "exception": "AssertionError"
-   }
-  },
-  {
-   "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_principal",
-   "phase": "failure",
-   "cause": "indirect",
-   "expected": {
-    "signature": "GENESIS_REQUIRED",
-    "exception": "AssertionError"
    }
   },
   {
@@ -5413,15 +5350,6 @@
   },
   {
    "node_id": "tests/test_wi223_principal_binding.py::TestHmacOnlyDeploymentStaysGreen::test_unregistered_actor_alongside_registered_one_is_skipped",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_reuse_existing_key_registers_the_same_public_key",
    "phase": "failure",
    "cause": "direct",
    "expected": {

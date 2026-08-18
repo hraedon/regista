@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _helpers import seed_precut_ed25519_witness
 
 from regista._errors import RegistaError
 from regista.testing import drop_project_schema
@@ -186,15 +187,22 @@ class TestWitnessReceipts:
 
 
 class TestBC297AsymmetricWitnessKeys:
-    def test_register_witness_with_ed25519_public_key(self, regista):
+    def test_register_witness_with_ed25519_public_key_is_cut(self, regista):
+        """Witness key lifecycle is CUT from 0.6.0 (§7 CUT marker, D-7).
+
+        Registering an ed25519 witness used to enrol a key into principal_keys with
+        no signed event — the third §5.1 bypass. It now refuses by name; a pre-cut
+        registration can still be described (see seed_precut_ed25519_witness).
+        """
         pubkey = b"\x01" * 32
-        regista.register_witness(
-            "https://example.com/witness",
-            public_key=pubkey,
-            key_scheme="ed25519",
-        )
-        witnesses = regista.list_witnesses()
-        assert witnesses[0]["key_scheme"] == "ed25519"
+        with pytest.raises(RegistaError) as exc_info:
+            regista.register_witness(
+                "https://example.com/witness",
+                public_key=pubkey,
+                key_scheme="ed25519",
+            )
+        assert exc_info.value.code.value == "WITNESS_LIFECYCLE_CUT"
+        assert regista.list_witnesses() == []
 
     def test_ed25519_public_key_wrong_length_rejected(self, regista):
         with pytest.raises(RegistaError) as exc_info:
@@ -240,11 +248,10 @@ class TestBC297AsymmetricWitnessKeys:
         sk = nacl.signing.SigningKey.generate()
         pk = bytes(sk.verify_key)
 
-        regista.register_witness(
-            "http://localhost:19999/witness",
-            public_key=pk,
-            key_scheme="ed25519",
-        )
+        # Witness key lifecycle is cut (§7/D-7), so the registration is seeded as a
+        # pre-cut row. Webhook DELIVERY is explicitly preserved as non-evidentiary
+        # transport, which is what this test still exercises.
+        seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         wi, _ = regista.create_work_item(
             "test_workflow", "feature", "actor-1",
             custom_fields={"title": "bc297"},
@@ -281,11 +288,10 @@ class TestBC297AsymmetricWitnessKeys:
         sk = nacl.signing.SigningKey.generate()
         pk = bytes(sk.verify_key)
 
-        regista.register_witness(
-            "http://localhost:19999/witness",
-            public_key=pk,
-            key_scheme="ed25519",
-        )
+        # Witness key lifecycle is cut (§7/D-7), so the registration is seeded as a
+        # pre-cut row. Webhook DELIVERY is explicitly preserved as non-evidentiary
+        # transport, which is what this test still exercises.
+        seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         _wi, _ = regista.create_work_item(
             "test_workflow", "feature", "actor-1",
             custom_fields={"title": "bc297-missing"},
@@ -317,11 +323,10 @@ class TestBC297AsymmetricWitnessKeys:
         sk = nacl.signing.SigningKey.generate()
         pk = bytes(sk.verify_key)
 
-        regista.register_witness(
-            "http://localhost:19999/witness",
-            public_key=pk,
-            key_scheme="ed25519",
-        )
+        # Witness key lifecycle is cut (§7/D-7), so the registration is seeded as a
+        # pre-cut row. Webhook DELIVERY is explicitly preserved as non-evidentiary
+        # transport, which is what this test still exercises.
+        seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         _wi, _ = regista.create_work_item(
             "test_workflow", "feature", "actor-1",
             custom_fields={"title": "bc297-bad"},
@@ -355,13 +360,16 @@ class TestBC297AsymmetricWitnessKeys:
         sk = nacl.signing.SigningKey.generate()
         pk = bytes(sk.verify_key)
 
-        regista.register_witness(
-            "http://localhost:19999/witness",
-            public_key=pk,
-            key_scheme="ed25519",
-            max_failures=2,
-            max_retries=2,
+        wid = seed_precut_ed25519_witness(
+            regista, "http://localhost:19999/witness", pk,
         )
+        with regista._mgr.connect() as conn:
+            conn.execute(
+                "UPDATE witness_registrations SET max_failures = 2, max_retries = 2 "
+                "WHERE witness_id = %s",
+                [wid],
+            )
+            conn.commit()
         _wi, _ = regista.create_work_item(
             "test_workflow", "feature", "actor-1",
             custom_fields={"title": "bc297-retries"},

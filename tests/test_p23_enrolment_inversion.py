@@ -135,8 +135,25 @@ def private_key_file(tmp_path):
 def test_enroll_principal_refuses_a_bare_name_and_accepts_a_canonical_one(
     project, tmp_path, private_key_file
 ):
-    """Criterion 19 verbatim, through ``provision_principal`` — the function
-    ``Regista.enroll_principal`` and both CLI verbs delegate to."""
+    """Criterion 19 through ``provision_principal`` — the function
+    ``Regista.enroll_principal`` and both CLI verbs delegate to.
+
+    **Adapted deliberately by P2.2 (WI-299).** Criterion 19's second clause reads
+    "``enroll_principal("agent:...")`` succeeds". It cannot succeed yet: P2.2 made
+    ``principal_keys`` a projection of signed trust-log events and refuses any write
+    that is not driven by one (``TRUST-DOMAIN.md`` §5.9 rule 2), and
+    ``provision_principal`` wrote it with no event. Real enrolment becomes a signed
+    ``principal_key_enrolled`` event (§5.5) once P1.7 supplies the v6 append path;
+    key provisioning is Gate 2, after Gate 1's trust bootstrap.
+
+    What criterion 19 is *about* — the grammar inversion — is fully preserved and is
+    what this test still pins: a bare legacy name is refused **by the grammar**
+    (``PRINCIPAL_ID_NOT_CANONICAL``), and a canonical id **passes the grammar** and
+    then fails only for the sanctioned downstream reason
+    (``PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED``). The two failures are different
+    codes on purpose: that is the whole assertion. If the canonical id ever came
+    back with a grammar error, the inversion would have regressed.
+    """
     from regista._provision import provision
 
     provision(DSN, [project])
@@ -147,15 +164,26 @@ def test_enroll_principal_refuses_a_bare_name_and_accepts_a_canonical_one(
         )
     assert exc.value.code == ErrorCode.PRINCIPAL_ID_NOT_CANONICAL
 
-    result = provision_principal(
-        DSN,
-        project,
-        "agent:mvmcc03",
-        hmac_key_path=private_key_file,
-        private_key_dir=str(tmp_path / "principals"),
+    with pytest.raises(RegistaError) as canonical:
+        provision_principal(
+            DSN,
+            project,
+            "agent:mvmcc03",
+            hmac_key_path=private_key_file,
+            private_key_dir=str(tmp_path / "principals"),
+        )
+    # Past the grammar gate: refused for the projection reason, not the id.
+    assert canonical.value.code == ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+    assert canonical.value.code != ErrorCode.PRINCIPAL_ID_NOT_CANONICAL
+    assert canonical.value.detail["principal_id"] == "agent:mvmcc03"
+    assert canonical.value.detail["blocked_on"]
+
+    # And the dry run — which writes nothing, so P2.2 does not refuse it — still
+    # shows the canonical id being accepted end-to-end by the grammar.
+    dry = provision_principal(
+        DSN, project, "agent:mvmcc03", hmac_key_path=private_key_file, dry_run=True
     )
-    assert result.principal_id == "agent:mvmcc03"
-    assert result.public_key_registered is True
+    assert dry.principal_id == "agent:mvmcc03"
 
 
 def test_the_refusal_happens_before_any_key_material_is_generated(
@@ -246,7 +274,12 @@ def test_key_acceptance_is_either_deleted_or_strict():
 
     # Entry points that write into the acceptance surface. Matched by name shape so a
     # renamed successor is still in scope.
-    prefixes = ("register_", "accept_", "enrol", "enroll")
+    #
+    # WIDENED by P2.2: the successor appliers are named `_apply_*_projection`
+    # (§5.9 rule 2), which the original prefix list did not reach — so they would have
+    # escaped this pinch on a technicality. `_apply_` is added rather than left out,
+    # and the enrolment/rotation appliers now call validate_principal_id.
+    prefixes = ("register_", "accept_", "enrol", "enroll", "_apply_")
     entry_points = {
         name: obj
         for name, obj in vars(pk).items()
@@ -265,6 +298,10 @@ def test_key_acceptance_is_either_deleted_or_strict():
     # functions (criterion 17) or by making them call the validator. Any NEW name showing
     # up here fails immediately, which is the point of deriving the population.
     known_pending_deletion = {"register_principal_key", "register_principal_key_conn"}
+    # §2.7 exempts nothing that *creates* a binding, but revocation acts on a row that
+    # already exists: refusing to revoke a historically bare id would strand exactly
+    # the keys most likely to need revoking. Named here rather than silently excluded.
+    known_pending_deletion |= {"_apply_revocation_projection"}
     surprises = sorted(set(unguarded) - known_pending_deletion)
     assert surprises == [], (
         "new unguarded key-acceptance entry point(s) in regista._principal_keys: "

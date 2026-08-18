@@ -19,8 +19,7 @@ from regista._bundle import (
     verify_audit_bundle_offline,
 )
 from regista._errors import ErrorCode, RegistaError
-from regista._principal_keys import register_principal_key
-from regista._testing import drop_project_schema
+from regista._testing import drop_project_schema, seed_legacy_principal_key
 
 DSN = os.environ.get(
     "REGISTA_TEST_DSN",
@@ -73,7 +72,7 @@ def _genesis_envelope(public_key: bytes) -> dict[str, Any]:
     envelope["trust_domain_id"] = str(uuid.uuid4())
     # The vector's occurred_at is a fixed instant in the past. The offline
     # verifier refuses an event signed before its key's validity window, and
-    # register_principal_key stamps valid_from at the registration instant, so
+    # the legacy seeder stamps valid_from at the registration instant, so
     # the genesis event has to be stamped now. v6 requires the exact
     # YYYY-MM-DDThh:mm:ss.ffffffZ spelling — isoformat() is rejected.
     envelope["occurred_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -137,7 +136,11 @@ def genesis_store(tmp_path_factory):
     try:
         # Registered BEFORE the genesis write: valid_from is the registration
         # instant, and an event signed before it is rejected as out-of-window.
-        register_principal_key(
+        # P2.2 §5.9 rule 2 removed the public mutators; this bundle fixture seeds a
+        # pre-cutover `legacy_unsourced` row, which is what the v4/v5 offline
+        # verifier resolves through. It is deliberately NOT a v6-sourced row: there
+        # is no signed trust-log enrolment event here to project from.
+        seed_legacy_principal_key(
             store._mgr, _GENESIS_PRINCIPAL, public_key, "ed25519", key_id=_GENESIS_KEY_ID
         )
         written = store.write_genesis(_genesis_envelope(public_key), gate_passed=True)

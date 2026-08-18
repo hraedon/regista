@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 
+import pytest
 from _helpers import DSN
 
+from regista._errors import ErrorCode, RegistaError
 from regista._provision import (
     provision,
     provision_principal,
@@ -124,7 +127,13 @@ class TestProvision:
 
 
 class TestProvisionPrincipal:
-    def test_provision_principal_issues_keypair(self, tmp_path):
+    def test_provision_principal_is_refused_post_cutover(self, tmp_path):
+        """P2.2 / §5.9: provisioning wrote principal_keys with no signed event.
+
+        That was a fourth bypass path, unnamed in §5.1's list of three. Key
+        provisioning is Gate 2 and needs Gate 1's trust log plus P1.7's v6 append
+        path; enrolment must be a signed `principal_key_enrolled` event (§5.5).
+        """
         project = f"prov_{uuid.uuid4().hex[:8]}"
         _drop_schema(project)
         _drop_role(f"regista_{project}")
@@ -134,35 +143,64 @@ class TestProvisionPrincipal:
         ]}))
         try:
             provision(DSN, [project])
-            result = provision_principal(
-                DSN, project, "agent:alice",
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
+            with pytest.raises(RegistaError) as exc_info:
+                provision_principal(
+                    DSN, project, "agent:alice",
+                    hmac_key_path=str(key_file),
+                    private_key_dir=str(tmp_path / "principals"),
+                )
+            assert exc_info.value.code is (
+                ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
             )
-            assert result.error is None
-            assert result.already_existed is False
-            assert result.private_key_stored is True
-            assert result.public_key_registered is True
-            assert result.key_id.startswith("pk_")
-            assert result.fingerprint.startswith("ed25519:sha256:")
+            assert exc_info.value.detail["stage"] == "mint_new_key"
+            assert exc_info.value.detail["blocked_on"]
 
+            # It refuses BEFORE minting: no orphaned private key is left behind.
             priv_key_path = tmp_path / "principals" / "agent:alice_ed25519.key"
-            assert priv_key_path.exists()
-
+            assert not priv_key_path.exists()
+            # ...and the key file was not amended with an entry nothing can enrol.
             key_data = json.loads(key_file.read_text())
-            ed25519_entries = [
-                k for k in key_data["keys"]
-                if k.get("scheme") == "ed25519" and k.get("principal_id") == "agent:alice"
-            ]
-            assert len(ed25519_entries) == 1
-            assert ed25519_entries[0]["status"] == "active"
-            assert "secret_ref" in ed25519_entries[0]
-            assert "public_key" in ed25519_entries[0]
+            assert [
+                k for k in key_data["keys"] if k.get("principal_id") == "agent:alice"
+            ] == []
         finally:
             _drop_schema(project)
             _drop_role(f"regista_{project}")
 
-    def test_provision_principal_idempotent(self, tmp_path):
+    def test_provision_principal_reuse_path_is_refused_too(self, tmp_path):
+        project = f"prov_{uuid.uuid4().hex[:8]}"
+        _drop_schema(project)
+        _drop_role(f"regista_{project}")
+        key_file = tmp_path / "keys.json"
+        key_file.write_text(json.dumps({"keys": [
+            {"key_id": "bootstrap", "secret": "dGVzdA==", "encoding": "base64",
+             "status": "active"},
+            {"key_id": "pk_reuse", "scheme": "ed25519", "status": "active",
+             "principal_id": "agent:carol",
+             "public_key": base64.b64encode(b"\x01" * 32).decode()},
+        ]}))
+        try:
+            provision(DSN, [project])
+            with pytest.raises(RegistaError) as exc_info:
+                provision_principal(
+                    DSN, project, "agent:carol",
+                    hmac_key_path=str(key_file),
+                    private_key_dir=str(tmp_path / "principals"),
+                    reuse_existing_key=True,
+                )
+            assert exc_info.value.code is (
+                ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+            )
+            assert exc_info.value.detail["stage"] == "reuse_existing_key"
+        finally:
+            _drop_schema(project)
+            _drop_role(f"regista_{project}")
+
+    def test_already_existing_key_is_still_reported_without_a_write(self, tmp_path):
+        """The read path survives: an existing active key short-circuits before the
+        refusal, because reporting an existing enrolment writes nothing."""
+        from regista.testing import seed_legacy_principal_key
+
         project = f"prov_{uuid.uuid4().hex[:8]}"
         _drop_schema(project)
         _drop_role(f"regista_{project}")
@@ -172,20 +210,24 @@ class TestProvisionPrincipal:
         ]}))
         try:
             provision(DSN, [project])
-            result1 = provision_principal(
+            from regista._connection import ConnectionManager
+
+            mgr = ConnectionManager(DSN, project)
+            mgr.open()
+            try:
+                entry = seed_legacy_principal_key(mgr, "agent:bob", b"\x02" * 32, "ed25519")
+            finally:
+                mgr.close()
+
+            result = provision_principal(
                 DSN, project, "agent:bob",
                 hmac_key_path=str(key_file),
                 private_key_dir=str(tmp_path / "principals"),
             )
-            result2 = provision_principal(
-                DSN, project, "agent:bob",
-                hmac_key_path=str(key_file),
-                private_key_dir=str(tmp_path / "principals"),
-            )
-            assert result2.already_existed is True
-            assert result2.key_id == result1.key_id
-            assert result2.fingerprint == result1.fingerprint
-            assert result2.private_key_stored is False
+            assert result.already_existed is True
+            assert result.key_id == entry.key_id
+            assert result.private_key_stored is False
+            assert result.public_key_registered is False
         finally:
             _drop_schema(project)
             _drop_role(f"regista_{project}")
