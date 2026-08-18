@@ -24,7 +24,7 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 | SHA | Slice |
 |---|---|
 | `906ed88` | The boundary: `_v6_referents.py` (new), §5.10/§5.11 in `_verification.py`, the resolver threaded through 11 production call sites, `RESULT-MODEL.md` §10.1's result surface, WI-296's two halves, WI-287 cluster-6 tightened, `tests/test_p17_v6_verifier_boundary.py` (new, 66 test functions / 78 collected nodes) |
-| `df05aa6` | Mutation M20's survivor fix (the fixture had no multi-event entity; see finding 15), the cross-backend `store_referents` parity test, notes + CHANGELOG |
+| `768994e` | Mutation M20's survivor fix (the fixture had no multi-event entity; see finding 15), the cross-backend `store_referents` parity test, notes + CHANGELOG |
 
 **Fail-then-pass:** with the clamp temporarily restored and the new tests kept —
 **61 failed, 54 passed**. With the boundary — **115 passed** (boundary + bundle).
