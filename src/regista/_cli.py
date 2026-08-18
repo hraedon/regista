@@ -1370,6 +1370,94 @@ def cmd_principal_enroll(args: argparse.Namespace) -> None:
         sub.close()
 
 
+def cmd_principal_resolve_backend_name(args: argparse.Namespace) -> None:
+    """``regista principal resolve-backend-name <backend_name>`` — TRUST-DOMAIN.md §2.2.
+
+    §2.2 derives a backend-safe name one-way
+    (``"rp-" + hex(SHA256(domain || utf8(principal_id))[0:16])``) precisely so that
+    ``:``→``-`` substitution collisions are impossible. That makes the KV tree
+    unreadable by hand unless a lookup verb exists, "which the migration posture depends
+    on" — this is that verb.
+
+    Two modes:
+
+    * with ``--principal-id``: confirm one candidate. No database needed, no secret read.
+    * without: derive-and-compare over the ``principal_keys`` registry of this project.
+
+    It never reads a secret. §2.2 stores the canonical id *inside* the secret as a field,
+    but resolving from the registry needs no such read, so the resolver deliberately uses
+    the non-secret registry instead of touching custody at all. The projection is a
+    **cache** (§5.9 / D-6), so a ``None`` means "not among the principals this project's
+    registry names", never "not a principal".
+    """
+    from regista._principals import backend_name, is_backend_name, resolve_backend_name
+
+    name = args.backend_name
+    if not is_backend_name(name):
+        _handle_error(
+            RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"{name!r} is not a regista backend name "
+                f"(expected 'rp-' + 32 lowercase hex characters)",
+                {"reason": "malformed_backend_name", "backend_name": name},
+            ),
+            json_mode=getattr(args, "json", False),
+        )
+
+    if args.principal_id:
+        derived = backend_name(args.principal_id)
+        matched = derived == name
+        result = {
+            "backend_name": name,
+            "principal_id": args.principal_id if matched else None,
+            "confirmed": matched,
+            "derived_backend_name": derived,
+            "source": "candidate",
+            "candidates_considered": 1,
+        }
+        if args.json:
+            _dump_json(result)
+        elif matched:
+            print(f"{name} -> {args.principal_id}")
+        else:
+            print(f"{name} does not derive from {args.principal_id!r} (derived {derived})")
+        if not matched:
+            sys.exit(1)
+        return
+
+    dsn, project, hmac_key_path = _require_config(args)
+    sub = Regista(dsn, project, hmac_key_path)
+    try:
+        from regista._principal_keys import list_principal_keys
+
+        # Non-secret field allowlist: only principal_id leaves the registry row here.
+        candidates = sorted({e.principal_id for e in list_principal_keys(sub._mgr)})
+        resolved = resolve_backend_name(name, candidates)
+        result = {
+            "backend_name": name,
+            "principal_id": resolved,
+            "confirmed": resolved is not None,
+            "derived_backend_name": name if resolved is not None else None,
+            "source": "principal_keys",
+            "candidates_considered": len(candidates),
+        }
+        if args.json:
+            _dump_json(result)
+        elif resolved is not None:
+            print(f"{name} -> {resolved}")
+        else:
+            print(
+                f"{name} matched none of the {len(candidates)} principal(s) in "
+                f"project {project!r}'s registry"
+            )
+        if resolved is None:
+            sys.exit(1)
+    except RegistaError as e:
+        _handle_error(e, json_mode=getattr(args, "json", False))
+    finally:
+        sub.close()
+
+
 def cmd_principal_revoke(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
@@ -2191,6 +2279,22 @@ def main(argv: list[str] | None = None) -> None:
         "(or REGISTA_SECRET_BACKEND)",
     )
     pr_enroll.set_defaults(func=cmd_principal_enroll)
+    # TRUST-DOMAIN.md §2.2 — the mandated lookup verb for the one-way backend-safe name.
+    pr_resolve = pr_sub.add_parser(
+        "resolve-backend-name",
+        help="Reverse a §2.2 backend-safe secret name (rp-<32 hex>) to its principal_id",
+    )
+    pr_resolve.add_argument(
+        "backend_name",
+        metavar="BACKEND_NAME",
+        help="The derived name as it appears in the secret backend, e.g. rp-ef29a698...",
+    )
+    pr_resolve.add_argument(
+        "--principal-id",
+        help="Confirm one candidate instead of searching the registry (needs no database)",
+    )
+    pr_resolve.add_argument("--json", action="store_true", help="JSON output")
+    pr_resolve.set_defaults(func=cmd_principal_resolve_backend_name)
     pr_revoke = pr_sub.add_parser("revoke", help="Revoke a principal key")
     pr_revoke.add_argument("--principal", required=True, help="Principal ID")
     pr_revoke.add_argument("--key-id", required=True, help="Key ID to revoke")

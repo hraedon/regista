@@ -87,6 +87,14 @@ class ErrorCode(StrEnum):
     TRUST_GENESIS_DERIVATION_MISMATCH = "TRUST_GENESIS_DERIVATION_MISMATCH"
     TRUST_GENESIS_SIGNATURE_INVALID = "TRUST_GENESIS_SIGNATURE_INVALID"
     TRUST_GOVERNANCE_TRANSITION_INVALID = "TRUST_GOVERNANCE_TRANSITION_INVALID"
+    # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Each error carries a
+    # machine-readable `reason` in detail naming the exact rule violated.
+    # NOT_CANONICAL is kept distinct from UNGRAMMATICAL so a legacy bare name (§2.4
+    # convention 2) gets a refusal that points at the §2.5 alias path, while junk does not.
+    PRINCIPAL_ID_UNGRAMMATICAL = "PRINCIPAL_ID_UNGRAMMATICAL"
+    PRINCIPAL_ID_NOT_CANONICAL = "PRINCIPAL_ID_NOT_CANONICAL"
+    PRINCIPAL_ALIAS_INVALID = "PRINCIPAL_ALIAS_INVALID"
+    PRINCIPAL_MAPPING_INVALID = "PRINCIPAL_MAPPING_INVALID"
 
 
 class RegistaError(Exception):

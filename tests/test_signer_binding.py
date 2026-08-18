@@ -337,6 +337,15 @@ class TestKeyRotationHistoricalVerification:
 
 class TestPathTraversal:
     def test_provision_principal_rejects_path_traversal(self, tmp_path):
+        """A principal id may never become a path that escapes the custody directory.
+
+        The refusal *code* changed with P2.3 (WI-294): the pre-0.6.0 validator answered
+        ``INVALID_ARGUMENT`` for anything outside the ASCII
+        alphanumeric-dot-hyphen-underscore class, and the canonical §2.1 grammar answers
+        ``PRINCIPAL_ID_UNGRAMMATICAL`` for the same input (no ``kind:`` prefix, and ``/`` is
+        not a bare-name character). The *security property* is unchanged and is asserted
+        below; the second case is new coverage the inversion made necessary.
+        """
         from regista._provision import provision_principal
         project = f"prov_{uuid.uuid4().hex[:8]}"
         from regista.testing import drop_project_schema
@@ -348,12 +357,53 @@ class TestPathTraversal:
                     DSN, project, "../../../etc/cron.d/evil",
                     hmac_key_path=str(tmp_path / "keys.json"),
                 )
-            assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+            assert exc_info.value.code == ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL
+            assert exc_info.value.detail["reason"] == "not_kind_colon_subject"
         finally:
             drop_project_schema(DSN, project)
             import psycopg
             with psycopg.connect(DSN, autocommit=True) as conn:
                 conn.execute(f'DROP ROLE IF EXISTS "regista_{project}"')
+
+    def test_a_canonical_principal_id_can_never_escape_the_custody_directory(self, tmp_path):
+        """The vector the enrolment inversion newly reaches.
+
+        ``TRUST-DOMAIN.md`` §2.1's subject class includes ``/`` (``service:idp:tenant-a/svc-7``
+        is a stated legal example), so ``agent:a/../../../etc/cron.d/evil`` is a *grammatically
+        canonical* principal id. Before the inversion the validator rejected the colon, so no
+        id containing ``/`` could reach ``_custody.build_ref`` and its
+        ``key_dir / f"{principal_id}_ed25519.key"`` was safe by accident. It is now safe on
+        purpose: a path-bearing id falls back to the §2.2 derived ``rp-<32 hex>`` name.
+        """
+        from regista._custody import build_ref
+
+        key_dir = tmp_path / "principals"
+        for principal_id in (
+            "agent:a/../../../etc/cron.d/evil",
+            "service:idp:tenant-a/svc-7",
+            "agent:x/../../y",
+        ):
+            ref = build_ref("file", principal_id, private_key_dir=str(key_dir))
+            written = Path(ref.removeprefix("file:")).resolve()
+            assert written.parent == key_dir.resolve(), (
+                f"{principal_id!r} escaped the custody directory: {written}"
+            )
+            assert written.name.startswith("rp-"), written.name
+
+        # A legacy bare name keeps its historical filename, so no existing secret_ref is
+        # invalidated by the guard.
+        legacy = build_ref("file", "mvmcc03-agent", private_key_dir=str(key_dir))
+        assert legacy == f"file:{key_dir / 'mvmcc03-agent_ed25519.key'}"
+
+        # The derived name is reversible through the §2.2 lookup verb, so the KV/disk tree
+        # stays auditable by hand.
+        from regista._principals import resolve_backend_name
+
+        ref = build_ref("file", "service:idp:tenant-a/svc-7", private_key_dir=str(key_dir))
+        derived = Path(ref.removeprefix("file:")).name.removesuffix("_ed25519.key")
+        assert resolve_backend_name(derived, ["service:idp:tenant-a/svc-7"]) == (
+            "service:idp:tenant-a/svc-7"
+        )
 
 
 class TestReplayPrincipalBinding:

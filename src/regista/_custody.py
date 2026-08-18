@@ -56,6 +56,60 @@ def _sanitize_azure_name(project: str, principal_id: str) -> str:
     return f"{head}-{digest}"
 
 
+def _contained_key_path(key_dir: Path, principal_id: str) -> Path:
+    """A file-backend key path for ``principal_id`` that is always inside ``key_dir``.
+
+    **Security-relevant, added with P2.3 (WI-294).** Before the enrolment inversion,
+    ``_provision._validate_principal_id`` accepted only the ASCII
+    alphanumeric-dot-hyphen-underscore class, so a principal id could not contain a path
+    separator and ``key_dir / f"{principal_id}_ed25519.key"`` was safe by accident.
+    ``TRUST-DOMAIN.md`` §2.1's subject class legitimately includes ``/`` —
+    ``service:idp:tenant-a/svc-7`` is a stated legal example — so a *grammatically
+    canonical* id such as ``agent:a/../../../etc/cron.d/evil`` now reaches here and would
+    otherwise write outside the custody directory.
+
+    Resolution rule, in order:
+
+    1. if ``<principal_id>_ed25519.key`` is a single path component that stays inside
+       ``key_dir``, use it — every ``secret_ref`` ever written by an older release keeps
+       resolving, because every legacy principal id is a bare name and therefore path-safe;
+    2. otherwise fall back to ``<backend_name>_ed25519.key``, the §2.2 derived name, which
+       is ``rp-`` plus 32 hex characters and so is path-safe by construction.
+
+    Two filename conventions is a cost, and it is the smaller cost: refusing case 2 would
+    make a legal canonical identity un-enrollable on the file backend, and rewriting case 1
+    would invalidate existing refs. The derived form stays auditable by hand through
+    ``regista principal resolve-backend-name``, which §2.2 requires for exactly this reason.
+    WI-297 tracks moving *every* backend to the derived name as a deliberate custody
+    migration; this is a forward-compatible step toward it, not a competing scheme.
+    """
+    base = key_dir.resolve(strict=False)
+
+    def _inside(candidate: Path) -> bool:
+        resolved = candidate.resolve(strict=False)
+        return resolved.parent == base and resolved.name == candidate.name
+
+    direct = key_dir / f"{principal_id}_ed25519.key"
+    if "/" not in principal_id and "\\" not in principal_id and _inside(direct):
+        return direct
+
+    from ._principals import backend_name
+
+    derived = key_dir / f"{backend_name(principal_id)}_ed25519.key"
+    if not _inside(derived):  # pragma: no cover - the derived name is rp-<32 hex>
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"Refusing to custody a private key outside {str(base)!r} for principal_id "
+            f"{principal_id!r}",
+            detail={
+                "reason": "custody_path_escape",
+                "principal_id": principal_id,
+                "key_dir": str(base),
+            },
+        )
+    return derived
+
+
 def build_ref(
     backend: str,
     principal_id: str,
@@ -68,7 +122,7 @@ def build_ref(
             key_dir = Path(private_key_dir)
         else:
             key_dir = Path.cwd() / "principals"
-        return f"file:{key_dir / f'{principal_id}_ed25519.key'}"
+        return f"file:{_contained_key_path(key_dir, principal_id)}"
     if backend == "windows":
         return f"windows:{principal_id}"
     if backend == "vault":
