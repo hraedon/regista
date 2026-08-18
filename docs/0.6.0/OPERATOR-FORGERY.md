@@ -101,8 +101,10 @@ honest cost. This is the roadmap.
 
 ### R1 — The "offline root" is a policy claim, not a verifiable property
 
-**Statement.** The genesis document declares `custody.declared_mode` per signer
-(`TRUST-DOMAIN.md` §3.2). Nothing in any artifact distinguishes a root key generated on an
+**Statement.** The genesis document declares `declared_mode` per signer in the signed
+top-level `initial_custody` block (`TRUST-DOMAIN.md` §3.2; relocated out of `binding_core`
+by WI-292 — signed by every root signature, but not an input to `trust_domain_id`).
+Nothing in any artifact distinguishes a root key generated on an
 air-gapped machine and stored on paper from a root key sitting in the estate's own Vault. A3
 therefore may in fact be A4.
 
@@ -112,7 +114,8 @@ excluded from 0.6.0 (`ARCHITECTURE-0.6.0.md:857`).
 
 **Closing condition.** Root keys generated on and non-exportable from an attesting device, with
 the device's attestation certificate chained to a manufacturer root, carried in
-`signers[].custody.attestation` — the field already reserved in the genesis schema.
+`initial_custody[].attestation` (WI-292 relocation; formerly `signers[].custody.attestation`)
+— the field already reserved in the genesis schema.
 
 **Evidence once closed.** A verifier validates the attestation chain and reports
 `custody_verified: true` per signer instead of `custody_declared` only.
@@ -393,7 +396,7 @@ for the root-threshold prevention rule. This closes the registrar takeover path 
 
 | ID | Residual | Adversary | Closes with | Cost | Order |
 |---|---|---|---|---|---|
-| R1 | Offline root unproven | A3→A4 | Hardware attestation in `signers[].custody.attestation` | ~$100 + validation code | **2nd** |
+| R1 | Offline root unproven | A3→A4 | Hardware attestation in `initial_custody[].attestation` (WI-292) | ~$100 + validation code | **2nd** |
 | R2 | Co-signer independence unverifiable | A6 | Custodian countersignature / distinct attested devices | A willing third party | **3rd** |
 | R3 | Publication controlled by the operator | A5 | Transparency log or public anchor in `anchors[]` | Small integration, real test cost | **1st** |
 | R4 | No trusted time | all | One correct anchoring provider | Interop testing | with R3 |
