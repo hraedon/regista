@@ -774,13 +774,35 @@ class TestGenesisKeyEvidence:
         migration uses — so this test cannot pass against a ceremony the migration
         cannot reproduce.
         """
-        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+        from regista._v6_writer import append_v6_event
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch, v6_producer
 
         name = f"bundle_pg_{uuid.uuid4().hex[:8]}"
         keyset = make_v6_keyset(tmp_path_factory.mktemp("bundle_pg_keys"))
         store = Regista.create_project(DSN, name, keyset.path)
         try:
             genesis = open_v6_epoch(store, keyset)
+            # TWO events on ONE entity, deliberately. Every event `open_v6_epoch`
+            # writes is `entity_seq == 1` for its own entity (one project event, one
+            # workflow registration, one acceptance per principal), so a store built
+            # only from it has no per-entity link for `_verify_work_item_chains` to
+            # check — and a chain check with nothing to check passes. Mutation M20
+            # (reverting `_hash_event` to the v1-v5 formula) SURVIVED against such a
+            # fixture, which is how this was found.
+            entity_id = uuid.uuid4()
+            for transition in ("created", "updated"):
+                with store._mgr.transaction() as conn:
+                    append_v6_event(
+                        conn,
+                        store._keys,
+                        entity_kind="work_item",
+                        entity_id=entity_id,
+                        transition=transition,
+                        actor_id="agent:worker",
+                        actor_kind="agent",
+                        producer=v6_producer(),
+                        payload={"initial_state": "open"},
+                    )
             yield store, name, genesis
         finally:
             store.close()
@@ -819,16 +841,28 @@ class TestGenesisKeyEvidence:
         """A found defect, fixed here rather than worked around.
 
         ``_bundle._hash_event`` computed ``sha256(envelope || signature)`` — the v1-v5
-        formula — for every event. v6 chains on the domain-tagged
-        ``compute_v6_event_hash`` (``V6-ENVELOPE.md`` §6.1), so every multi-event v6
-        bundle reported a global-chain break: a false finding, and one that would have
-        made "a healthy export verifies" unreachable for a reason with nothing to do
-        with the boundary. A single-event bundle is vacuously fine, which is why a
-        genesis-only fixture never surfaced it.
+        formula — for every event. A v6 chain links on the domain-tagged
+        ``compute_v6_event_hash`` (``V6-ENVELOPE.md`` §6.1), so for a v6 bundle **no
+        link resolved at all**.
+
+        The consequence was not a false break; it was worse. ``_verify_global_chain``
+        treats an event whose predecessor is not in the set as a legitimate *bridge
+        point* (a windowed export starts mid-chain), so when every link fails to
+        resolve, every event becomes an entry point, every entry point is immediately
+        its own tail, all events are visited, and the function returns
+        ``ok=True`` — **vacuously**. The chain was not verified and the report said it
+        was. `_verify_work_item_chains` did break loudly, but only for an entity with
+        two or more events, and the epoch-opening ceremony writes none.
+
+        So this test asserts the formula at the primitive as well as through the
+        report: a behavioural assertion alone is satisfied by a chain check that
+        checks nothing.
         """
         import hashlib as _hashlib
 
+        from regista._bundle import _hash_event
         from regista._signing import compute_v6_event_hash
+        from regista._types import Event
 
         store, _name, _genesis = post_genesis
         output = tmp_path / "chain.json"
@@ -842,11 +876,23 @@ class TestGenesisKeyEvidence:
         signature = bytes.fromhex(first["signature"])
         v6 = compute_v6_event_hash(envelope, signature)
         v5 = _hashlib.sha256(envelope + signature).digest()
+        assert v6 != v5, "the two formulas must differ, or this test proves nothing"
         assert bytes.fromhex(second["prev_global_event_hash"]) == v6
-        assert bytes.fromhex(second["prev_global_event_hash"]) != v5
+
+        # At the primitive: the head an event contributes is its OWN version's hash.
+        assert _hash_event(Event.from_dict(first)) == v6
 
         report = verify_audit_bundle_offline(str(output))
         assert report.global_chain_ok, report.global_chain_error
+        # Non-vacuous: the fixture carries an entity with two events, so this check
+        # has a real per-entity link to verify rather than nothing to verify.
+        assert report.work_item_chain_ok, report.work_item_chain_error
+        entity_counts: dict[str, int] = {}
+        for event in events:
+            entity_counts[event["entity_id"]] = entity_counts.get(event["entity_id"], 0) + 1
+        assert max(entity_counts.values()) >= 2, (
+            "a per-entity chain check with no multi-event entity checks nothing"
+        )
 
     def test_the_genesis_payload_alone_is_sufficient_key_evidence(
         self, genesis_store, tmp_path

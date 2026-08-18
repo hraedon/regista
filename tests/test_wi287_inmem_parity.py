@@ -620,6 +620,38 @@ class TestMigrationHarness:
     in-memory-specific.
     """
 
+    def test_store_referents_presents_material_over_the_in_memory_facade(
+        self, in_memory_project, keyset, in_memory_genesis
+    ) -> None:
+        """``_v6_referents.store_referents`` works on BOTH backends, asserted not assumed.
+
+        The P1.7 verifier boundary presents an open store as material by issuing
+        ``SELECT canonical_envelope, signature FROM events``. That is a **new statement**
+        on a facade whose whole design is a closed set of recognised statements — anything
+        outside the grammar is ``PARITY_BOUNDARY_POSTGRES_ONLY`` naming the statement
+        (§2 of NOTES-WI287). It happens to be inside the grammar, and
+        ``_genesis.read_genesis_from_connection`` now depends on that for the in-memory
+        backend, so the dependency is pinned here rather than left to luck: without this
+        test, narrowing the facade's column handling would break in-memory genesis
+        recovery with no test naming the cause.
+        """
+
+        from regista._in_mem_genesis import _as_conn
+        from regista._v6_referents import MaterialCompleteness, store_referents
+
+        with in_memory_project._mgr.transaction() as conn:
+            referents = store_referents(_as_conn(conn), label="in-memory facade")
+            assert referents.completeness is MaterialCompleteness.COMPLETE_STORE
+            # An absent hash resolves to None, which is the §5.11 row-1/row-2 input —
+            # and it forces the index to be built, which is what exercises the statement.
+            assert referents.resolve_referent("sha256:" + "00" * 32) is None
+            # The genesis event IS presented, addressed by its own v6 event hash.
+            genesis_hash = in_memory_genesis.to_dict()["event_hash"]
+            found = referents.resolve_referent(genesis_hash)
+        assert found is not None, genesis_hash
+        assert found.transition == "project_initialized"
+        assert found.event_hash == genesis_hash
+
     def test_open_v6_epoch_makes_every_actor_principal_appendable(
         self, in_memory_project, keyset
     ) -> None:

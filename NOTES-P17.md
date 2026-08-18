@@ -1,7 +1,8 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
-> **Session 2 (2026-08-18) starts at §0. Read §0 first — it supersedes parts of
-> §1-§4 and records five findings (5-9) the earlier notes did not have.**
+> **Session 3 (2026-08-18, later) landed PHASE 2 — the v6 verifier boundary. Read §0b
+> first; it supersedes §4 entirely and records findings 10-15. Then §0 (session 2),
+> which supersedes parts of §1-§3.**
 
 Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).
@@ -15,6 +16,349 @@ REGISTA_TEST_DSN='postgresql://regista_test:regista_test@localhost:5432/regista_
 ```
 
 Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a file, read the file.
+
+---
+
+## 0b. Session 3 (2026-08-18): PHASE 2 LANDED — the v6 verifier boundary
+
+| SHA | Slice |
+|---|---|
+| `906ed88` | The boundary: `_v6_referents.py` (new), §5.10/§5.11 in `_verification.py`, the resolver threaded through 11 production call sites, `RESULT-MODEL.md` §10.1's result surface, WI-296's two halves, WI-287 cluster-6 tightened, `tests/test_p17_v6_verifier_boundary.py` (new, 66 test functions / 78 collected nodes) |
+| `df05aa6` | Mutation M20's survivor fix (the fixture had no multi-event entity; see finding 15), the cross-backend `store_referents` parity test, notes + CHANGELOG |
+
+**Fail-then-pass:** with the clamp temporarily restored and the new tests kept —
+**61 failed, 54 passed**. With the boundary — **115 passed** (boundary + bundle).
+
+**Validation, final state:**
+
+| Check | Result |
+|---|---|
+| default lane (`-m 'not slow'`, all extras, dedicated DB) | **2787 passed, 0 failed, 679 xfailed, 18 skipped** |
+| slow lane (`-m slow`) | **4 passed, 7 xfailed, 0 failed** |
+| `scripts/check-epoch-debt.py --base main` | OK — 686, shrink-only node set vs main (694) |
+| `tests/epoch_blocked_inventory.txt` | byte-identical to main (sha `8696641a…`) — **never touched** |
+| ruff (`src/ tests/ scripts/ tools/`) | clean |
+| mypy (`src/regista`, 103 files) | clean |
+| `docs/0.6.0/check-conflicts.py` | 0 contested values |
+| `docs/0.6.0/check-crossrefs.py` | 0 unresolved references |
+| mutation battery (23 single-line mutations) | 23 killed |
+
+679 xfailed = the 686 manifest entries minus the 7 that live in the slow tier, so the
+debt figure any claim about this branch carries is still `green-with-epoch-debt(686)`.
+
+### The resolver design, because the next person will need to extend it
+
+```python
+class ReferentResolver(Protocol):                    # src/regista/_v6_referents.py
+    @property
+    def completeness(self) -> MaterialCompleteness: ...
+    def resolve_referent(self, event_hash: str) -> ReferentEvent | None: ...
+    def describe(self) -> str: ...
+```
+
+Two members and **no query surface** — no `fetch`, no `search`, no connection on the
+protocol — because §8.4's table is a list of things the verifier is *given*.
+
+Three properties are load-bearing and should not be traded away:
+
+1. **Addressing is by v6 event hash**, which covers the canonical envelope bytes *and*
+   the signature. A tampered presented anchor therefore does not resolve to something
+   else; it does not resolve at all, and §5.11 already has a verdict for that. This is
+   why the resolver never re-verifies a signature: it is sound about *content* by
+   construction, and each presented event's own *authority* is the caller's separate
+   per-event obligation (replay and bundle verification both verify everything they
+   present).
+2. **The material carries its own completeness claim.** §5.11's first two rows differ
+   only in that claim. `StoreReferents` claims `COMPLETE_STORE` (flag #4's stricter
+   reading — §5.11 names "an online store" beside `complete-store`);
+   `BundleReferents.from_bundle` *derives* the claim from the manifest's
+   `since_seq`/`until_seq` rather than being told, which is how §9 criterion 15 became
+   testable before `BUNDLE-V3.md` §3.5's explicit `scope` member exists (that is P3.3's);
+   `NO_REFERENTS` claims nothing.
+3. **`principal_keys` is not reachable from here.** Nothing in `_v6_referents` can read
+   it. The absence is structural rather than a convention.
+
+`verify_event_strict(..., referents=...)` has **no default**. That is the deliberate
+choice: a default would let a call site silently present nothing and get
+`UNVERIFIABLE`/`KEY_BINDING_UNRESOLVED` for every v6 row — a second, narrower clamp.
+`NO_REFERENTS` is a named greppable value, so "one row, no chain" appears in the call
+site instead of being the shape of a missing argument.
+
+**The 11 production call sites and what each presents:**
+
+| Call site | Material | Claim |
+|---|---|---|
+| `_replay._replay_work_item` | `store_referents(conn)`, built **once per replay** and threaded in | `COMPLETE_STORE` |
+| `_in_memory_replay.in_memory_replay` (×2: keyed and keyless) | `MappingReferents.from_pairs(store.all_events())`, once per replay | `COMPLETE_STORE` |
+| `_bundle._verify_event_signatures` | `BundleReferents.from_bundle(manifest, events)` | derived from the manifest |
+| `_genesis.read_genesis_from_connection` | `store_referents(conn)` | `COMPLETE_STORE` |
+| `_api_meta.verify_event_result` | `store_referents(conn)` on the open project | `COMPLETE_STORE` |
+| `_in_mem_ops.verify_event_result` (×2) | `MappingReferents.from_pairs(self._store.all_events())` | `COMPLETE_STORE` |
+| `_signing.verify_event_result` | `referents` parameter, default `NO_REFERENTS` | `UNDECLARED` |
+| `_signing.verify_event_result_with_public_key` | same | `UNDECLARED` |
+| `_signing.verify_event_dict_principal_binding` | `NO_REFERENTS`, **by contract** | `UNDECLARED` |
+
+The last one is worth reading twice: a principal-binding probe over the `principal_keys`
+registry is legacy-only, and §5.9 rule 1 now makes registry resolution for a v6 event a
+**raise**. Its existing `except Exception` turns that into "this entry does not bind",
+which is the correct answer.
+
+**Scoped replay presents the whole store, not the scope.** A work-item event's
+key-binding anchor is a `principal` event that no work-item scope contains, so narrowing
+the material to the scope would turn "the anchor is elsewhere in this store" into "the
+anchor is missing" — a false finding.
+
+**Cost, stated because it is real.** `events` has no `event_hash` column, so
+`StoreReferents` builds its index with one ordered pass that recomputes every v6 hash.
+It is lazy (a v1-v5-only store never pays) and cached per resolver instance, which is
+why replay builds one and reuses it — per-event construction would make an O(n) replay
+O(n²). An `event_hash` generated column would remove the pass; that is a migration and
+was deliberately not smuggled into a verifier change.
+
+### The completeness-claim policy input
+
+`VerificationPolicy.material_completeness: MaterialCompleteness | None = None`.
+
+* **Default `None` = "the material's own claim governs."** That is where completeness
+  structurally belongs: a store connection knows it is complete, a windowed bundle knows
+  it is not. The strictest resolver default is `StoreReferents`' `COMPLETE_STORE`, which
+  is what flag #4 asked for.
+* The field exists for a caller who knows *more* than the material does, and it is
+  **tighten-only**. Loosening raises (`resolve_completeness`), because softening
+  `complete_store` into `contiguous_range` converts §5.11's `INVALID` row into its
+  `UNVERIFIABLE` row on request — the no-fallback rule with extra steps.
+
+### §5.11 verdict-table coverage map (row → test)
+
+All in `tests/test_p17_v6_verifier_boundary.py`.
+
+| §5.11 row | Verdict implemented | Test |
+|---|---|---|
+| `h_A` absent, no completeness claim | `UNVERIFIABLE` / `KEY_BINDING_UNRESOLVED` | `TestSection511VerdictTable::test_row1_absent_anchor_with_no_completeness_claim_is_unverifiable` |
+| `h_A` absent, completeness claimed | `INVALID` / `KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE` | `::test_row2_absent_anchor_in_complete_material_is_invalid` |
+| `h_A` is not an acceptance | `INVALID` / `KEY_BINDING_MISMATCH` | `::test_row3_anchor_that_is_not_an_acceptance_is_invalid` |
+| `h_A` for a different principal/key | `INVALID` / `KEY_BINDING_MISMATCH` | `::test_row3_anchor_for_a_different_principal_is_invalid` |
+| `h_A` for a different project | `INVALID` / `KEY_BINDING_MISMATCH` | `::test_row3_anchor_from_a_different_project_is_invalid` |
+| `h_A` does not precede `E` | `INVALID` / `ENROLLMENT_AFTER_USE` | `::test_row4_an_anchor_that_does_not_precede_the_event_is_invalid`, `TestCriterion14::*` |
+| pre-cutover v4/v5, no key binding | **legacy path, unchanged by this work** | `::test_row5_a_pre_cutover_legacy_event_is_untouched_by_this_boundary` |
+| `legacy_key_binding_attested` covers `E` | **not implemented — see finding 13** | — |
+| a `principal_keys` row exists | **irrelevant**; resolving through it **raises** | `::test_row7_a_principal_keys_row_is_never_consulted_for_a_v6_event` |
+
+Plus, beyond the table: `KEY_ACCEPTANCE_REVOKED` (§5.10 step 4) and its prospective-only
+counterpart, the §5.8 scope checks, the Resolution 1 nulls, `EPOCH_VIOLATION`,
+`PRODUCER_POLICY_MISMATCH`, `PROJECT_BINDING_MISMATCH`, `TRUST_DOMAIN_MISMATCH`,
+`WORKFLOW_DEFINITION_MISMATCH`, `WORKFLOW_REGISTRATION_UNRESOLVED`,
+`DELEGATION_CHAIN_INVALID`.
+
+### §9 criteria 14 and 15
+
+* **14** — `TestCriterion14::test_an_acceptance_later_in_the_chain_is_invalid_with_enrollment_after_use`
+  and `::test_the_verdict_names_criterion_14s_own_section`. Read the first one's
+  docstring: an event cannot *literally* name a later acceptance (the anchor is a hash of
+  bytes that commit to their own chain position), so what the criterion is about, and what
+  the verifier decides, is **reachability**.
+* **15** — `TestCriterion15`, three tests, the third of which verifies **the same row**
+  under both completeness claims so the criterion reads as a claim about the claim rather
+  than about two artifacts. The `contiguous-range` verdict names the missing acceptance's
+  hash *and* the scope, per "with the missing acceptance named as outside scope".
+
+### Mutation battery: 23 mutations, 23 killed — after one survivor was fixed
+
+Script: `/tmp/.../scratchpad/mutate.py` (not committed; every mutation is one line and
+reproducible from the table in its source). Each §5.11 row and each §5.10 step has a
+mutation. **M20 survived on the first pass and that survival was finding 15.**
+
+The mutations, for reproduction: §5.11 rows 1/2 collapsed; step 2's principal/key/project
+check, entity-kind scope, transition scope and unscoped-acceptance refusal each disabled;
+step 3 reachability not required; step 4's revocation window ignored; step 5's
+acceptance/enrolment `public_key` cross-check dropped; Resolution 1's bootstrap **position**
+rule disabled; V6 removed from `full_authentication_versions`; the completeness override
+allowed to loosen; chain traversal truncated to one hop; the bootstrap-without-a-pin
+finding suppressed; producer-policy contradiction suppressed; workflow `definition_hash`
+not reconciled; delegated authorization treated as established; caller pins not compared;
+cutover pin mismatch not an epoch violation; §5.9 rule 1's raise removed; the bundle's v6
+hash formula reverted; bundle key evidence from v6 payloads disabled; the bundle counting
+an `UNVERIFIABLE` event as verified; the `ENVELOPE_SCHEMA_INCOMPLETE` clamp guard removed
+from the invariants.
+
+### FINDING 10 — the schema validator already enforces most of Resolution 1, so two verifier branches are unreachable
+
+`_validate_v6_object` refuses, at parse time: a null `previous_project_event_hash`
+outside a genesis transition; a null `key_binding_event_hash` outside the three bootstrap
+transitions; a `project_initialized` with non-null predecessor links; a bootstrap
+transition *with* a non-null key binding. `verify_event_strict` strict-parses before the
+boundary runs, so **`KEY_BINDING_BOOTSTRAP_NOT_PERMITTED` is not reachable for an
+ordinary event through the primitive** — such an envelope never parses.
+
+Two consequences, both handled rather than papered over:
+
+1. `TestResolution1PermittedNulls::test_a_null_binding_on_an_ordinary_transition_is_refused_at_ingress`
+   asserts **both** halves: the schema's refusal by name, and the verdict a row carrying
+   such bytes actually gets (`INVALID` / `ENVELOPE_UNKNOWN_SCHEMA`). A reader of the
+   boundary would otherwise expect the specific reason and conclude the check is dead.
+2. **The position rule had to be restated to stay correct.** My first cut tested
+   "`previous_project_event_hash is not None`" for a bootstrap event. That is wrong:
+   `project_cryptographic_epoch_started` is "the unique first v6 event in a legacy
+   project" and its predecessor link legitimately names the **legacy (v5) project head**,
+   which is non-null. Testing the link for null would have refused every real cutover
+   checkpoint. The rule is now "**no v6 event is reachable behind it**", which a v5 head
+   satisfies (it never resolves as a v6 referent) and a second bootstrap mid-epoch does
+   not. Both directions are tested
+   (`::test_a_bootstrap_null_with_a_v6_ancestor_is_not_permitted`,
+   `::test_a_real_cutover_checkpoint_keeps_its_exemption`).
+
+Related and deleted: a special case for "the event names its own hash". §5.8's withdrawn
+self-referential acceptance is a statement about hash preimages, not policy — such an
+event cannot be constructed — so the branch was unreachable and the general
+not-reachable branch already returns the right verdict. Deleted rather than kept with a
+test that cannot exist.
+
+### FINDING 11 — a genesis-only bundle CANNOT self-verify true, and saying it did would be a false claim
+
+WI-296 asks for "a healthy genesis-era export self-verifies true". Measured against
+`RESULT-MODEL.md` §10.2 invariant 5, that is only half-achievable, and the honest split
+is now what the tests assert:
+
+* **A post-genesis chain self-verifies `True`** —
+  `tests/test_bundle.py::TestGenesisKeyEvidence::test_a_healthy_post_genesis_export_self_verifies_true`.
+  Ordinary v6 events reach `FULLY_AUTHENTICATED` with `key_binding=accepted_in_project`
+  and `trust_root=bundled_only` (§5.10 step 5: without the trust log, `bundled_only` "at
+  best" — and `bundled_only` is deliberately not `absent`, so §8.3's last invariant is
+  satisfied).
+* **A genesis-only bundle does not.** Its single event is Bootstrap B with
+  `key_binding=bootstrap_external`, and invariant 5 permits `FULLY_AUTHENTICATED` only
+  with `trust_root=externally_pinned` **and** `checkpoint_binding=externally_pinned`.
+  §5.8 makes `externally_pinned` require the trust log **and** the pin — a project bundle
+  carries no trust log. Resolution 1's own words: "Bootstrap without an external pin is
+  not a bootstrap; it is an unauthenticated first event." So the verdict is
+  `UNVERIFIABLE`, reported as one unverifiable signature with its reason, and **zero
+  errors** — a materially different report from the clamp's `INVALID`.
+
+This is why `BundleVerificationReport` gained `unverifiable_details`: a count with no
+reason is how "nothing was checked" gets read as "everything checks out".
+`TestVerifyAuditBundleOffline::test_a_caller_supplied_trust_pin_reaches_the_offline_verifier`
+proves the pin is plumbed (it moves `checkpoint_binding` to `externally_pinned`), and
+`TestResolution1PermittedNulls::test_a_pinned_bootstrap_event_with_the_trust_log_is_fully_authenticated`
+proves the invariant is not a clamp: present the trust log and the pin and a bootstrap
+event authenticates.
+
+**Left for P3.3.** An end-to-end pinned *bundle* verdict needs bundle v3's trust-material
+section so an artifact can carry the trust-log events its acceptances reference. WI-296 is
+updated with exactly this split.
+
+### FINDING 12 — two things the boundary would have crashed on, found by writing the tests
+
+1. **A windowed export raised instead of returning a verdict.** The class invariant
+   forbids `FULLY_AUTHENTICATED` with `epoch_position=unknown`, and material that does
+   not present the epoch root produces exactly that. Fixed by making it an explicit
+   *finding* (`EPOCH_VIOLATION`, `UNVERIFIABLE`, `unbound_properties += {"cutover_checkpoint"}`)
+   rather than an assertion: an event whose epoch root the material does not show cannot
+   be shown to belong to the clean epoch (`EPOCH-RESET.md` §5.1). Test:
+   `::test_an_event_whose_epoch_root_is_absent_is_unverifiable`.
+2. **A found revocation was reported as `revocation_status: unknown`.** Step 4 found the
+   revocation and step 6 (which reads the trust log, absent here) concluded `unknown`, so
+   the result contradicted itself. The step-4 finding now sets `REVOKED_BEFORE_USE`. Test:
+   `::test_step4_the_reported_revocation_status_matches_what_was_found`.
+
+### FINDING 13 — what this boundary does NOT implement, stated so nobody claims it
+
+* **The legacy-epoch reclassification.** `RESULT-MODEL.md` §10.2 invariants 2, 3 and 7 —
+  post-cutover v4/v5 or HMAC is `INVALID`/`EPOCH_VIOLATION`; pre-cutover v4/v5 is never
+  `FULLY_AUTHENTICATED` once a checkpoint exists; a valid HMAC event is
+  `attribution=shared_secret`, `key_binding=legacy_unbound`, `LEGACY_PARTIAL` — is the
+  ~334,000-event story and is **cutover work, not verifier-boundary work**. The eleven new
+  fields are populated on legacy results with their honest "not established" members
+  (`epoch_position=unknown`, `trust_root=absent`, `key_binding=unresolved`) and **no
+  legacy verdict changed**. `test_row5_a_pre_cutover_legacy_event_is_untouched_by_this_boundary`
+  pins that as an absence.
+* **§5.11's `retrospective_key_binding` row** (`legacy_key_binding_attested`, §6). The
+  `KeyBinding.RETROSPECTIVE` member and its invariants exist; nothing emits it, because
+  nothing writes the attestation. §9 criterion 24 belongs with WI-241's work.
+* **§5.12's delegation chain.** An action-delegation credential is a *document*, not an
+  event, and no channel in the presented material carries one (WI-008 has not landed). A
+  `delegated` v6 event is therefore `UNVERIFIABLE` with `delegation_chain` named as
+  unbound and can never be `FULLY_AUTHENTICATED`. `DELEGATION_CHAIN_INVALID` stays defined
+  for the presented contradiction that becomes reachable when WI-008 lands.
+* **`root_governance`** is always `unknown` and named in `unbound_properties`: deciding it
+  needs the genesis *document*, which is a caller input the presented-material protocol
+  does not carry. P2.1's `GenesisDocument` is the natural home for a future
+  `governance=` input.
+* **§6.6's `indeterminate_window`.** The member and the invariant exist (it may not be
+  `FULLY_AUTHENTICATED`); emitting it needs presented trust-log **revocations** plus
+  `trust_log_checkpoint_observed` events, and nothing writes the latter (it is
+  `_trust_log.DEFERRED_TRANSITIONS`' "P2.4 / §6.6"). Reachable when P2.4 lands.
+* **The write-time anchor query** (`_v6_writer._anchor_candidate_rows`) is untouched, as
+  instructed. Its `global_seq` ordering is a documented write-time-only shortcut.
+* **WI-299's positive clause** is still not restored (approval policy, §0 Finding 6).
+* **WI-301** (the production trust-log append path) is untouched and still blocked on a
+  design round.
+
+### FINDING 14 — `replay()` files every non-work-item entity group as an orphan halt
+
+Measured while writing `TestAgainstARealEpoch::test_a_real_replay_does_not_halt_on_a_healthy_v6_chain`:
+`_replay._process_group` sends every group whose `entity_kind != "work_item"` down
+`_handle_orphan_group`, which counts a **halt** and records "Orphaned events with no
+work_item and no created event" (or "events exist but projection row missing from
+work_items_current"). A v6 epoch's chain necessarily carries `project`, `principal` and
+`workflow` entity events, so **every** migrated fixture that calls `replay()` will see
+`halted >= 2` for reasons that have nothing to do with verification.
+
+This predates phase 2 and is **not** a verifier problem. It is, however, a **Phase 3
+blocker**: a migrated fixture asserting `halted == 0` will fail, and the tempting fix
+(weakening the assertion) hides the real one. The test here asserts the precise claim
+instead — no halt is a *verification* halt, and every remaining halt matches one of the
+two known orphan forms.
+
+**What Phase 3 needs to decide:** whether `_replay` should replay non-work-item entity
+groups (they have no `work_items_current` row to rebuild, so "replay" means "verify and
+apply the projection appliers"), or report them as a distinct non-halt category. Either
+is a change to replay's contract and wants the coordinator.
+
+### FINDING 15 — the surviving mutant, and the two weaknesses it exposed (WI-302)
+
+**M20** reverted `_bundle._hash_event` to the v1-v5 `sha256(envelope || signature)` formula
+and the suite stayed green. Reporting the analysis rather than only the fix, because the
+analysis is the load-bearing part:
+
+1. **`_verify_global_chain` reports `global_chain_ok` vacuously when NO link resolves.**
+   It deliberately allows a *bridge point* — an event whose predecessor lies outside the
+   presented set — because a windowed export starts mid-chain. The allowance is
+   unconditional and per-event, so when every link fails to resolve, every event is an
+   entry point, is immediately its own tail, `len(visited) == len(events)`, and it returns
+   `ok=True`. The chain was never verified and the report said it was. **Filed as WI-302
+   and NOT fixed here** — it is `BUNDLE-V3.md`/P3.3's, and the suggested bound is on the
+   item (a `complete-store` bundle may have at most one entry point).
+2. **The v6-era fixtures could not have caught it.** `_verify_work_item_chains` *does*
+   break loudly, but only for an entity carrying two or more events — and
+   `_v6_fixtures.open_v6_epoch` writes exactly one event per entity (one project event,
+   one workflow registration, one acceptance per principal, all `entity_seq == 1`). So the
+   per-entity check had nothing to check.
+
+The fix here is to the **test**, plus the version-aware `_hash_event` that was already in
+`906ed88`: `TestGenesisKeyEvidence`'s fixture now builds a two-event entity on purpose,
+and `test_the_v6_chain_links_verify_under_the_v6_hash_formula` asserts the formula at the
+primitive (`_hash_event(event) == compute_v6_event_hash(...)`) as well as through the
+report — a behavioural assertion alone is satisfied by a chain check that checks nothing.
+M20 dies after the change. **The CHANGELOG's first draft claimed the bug caused a false
+chain break; it did not, and the entry is corrected to say what it actually caused.**
+
+A second, smaller thing the battery is worth: mutating the *facade grammar* is not in it,
+and `_genesis.read_genesis_from_connection` now depends on the in-memory facade modelling
+`SELECT canonical_envelope, signature FROM events`. That dependency was working by luck
+and is now pinned by
+`test_wi287_inmem_parity.py::TestMigrationHarness::test_store_referents_presents_material_over_the_in_memory_facade`.
+
+### Manifest: unchanged at 686, measured
+
+No node newly passes. That is expected and is Finding 8 read forwards: the manifest's
+recorded forms are `GENESIS_REQUIRED` (666), sidecar-409/`KeyError`/empty-state (24) and
+four `AssertionError` forms — all of them *pre-genesis* refusals. Phase 2 changes what a
+**verified** v6 event reports; it does not open an epoch for an unmigrated fixture, so
+nothing in the manifest moves without fixture edits, and fixture edits are Phase 3.
+Finding 8's list of verifying files (`test_replay_coverage.py` 29, `test_replay_scoped.py`
+12, `test_replay.py` 4, `test_bc310_replay_isolation.py` 3, `test_wi217_replay_memory.py`
+2, `test_global_event_chain.py`, `test_hash_chain.py`, `test_wi267_row_authentication.py`)
+is now **unblocked** — subject to Finding 14.
 
 ---
 
@@ -209,9 +553,9 @@ no v6 row can ever be `FULLY_AUTHENTICATED`**, which is easy to miss.
 | **1 — writer + admission checks** | **Landed** (`653e1c6`). `_v6_writer.py`, `tests/_v6_fixtures.py`, `tests/test_p17_v6_writer.py` (36 tests), 5 error codes. |
 | **1b — contracts + partial wiring** | **Landed.** The §5.8 acceptance/revocation contracts, the accepter/signer cross-checks, `register_workflow`'s signed event, the process-level producer identity, the §2.3 timestamp helper. `tests/test_p17_key_acceptance.py` (45 tests). |
 | **1c — the wiring** | **Partial** (`d3cce8f`). The `_event_store.append_event` epoch fork landed, gated on `project_identity` presence (§3d). Still open: the trust-log/project topology split (§3c step 1-3), `provision_principal`'s signed enrolment, `PrincipalLifecycle.commit()`. No fixture migrated, so the manifest is untouched. |
-| **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4. |
+| **2 — verifier boundary** | **LANDED** (`906ed88`). `_v6_referents.py` (new), §5.10/§5.11 in `_verification.py`, the resolver threaded through 11 production call sites, `RESULT-MODEL.md` §10.1's eleven result fields, `tests/test_p17_v6_verifier_boundary.py` (78 nodes), WI-296 both halves, WI-287 cluster 6 tightened. **§0b supersedes §4.** |
 | **1b/1c blockers** | Finding 4 **resolved 2026-08-18** — the admission rule is unchanged; it was a fixture-topology bug. §3c has the taken path and the scoped remaining work. |
-| **3 — empty the manifest** | **Started.** 694 → **686** (2 of 74 files; 8 nodes newly passing, 0 retired). **Read Finding 8 first: every verifying file must wait for Phase 2.** §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
+| **3 — empty the manifest** | **Started.** 694 → **686** (2 of 74 files; 8 nodes newly passing, 0 retired). Finding 8's Phase-2 dependency is **discharged** (§0b); read **Finding 14** before migrating any file that calls `replay()`. §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
 | **4 — full validation** | Re-run at each session-2 checkpoint; see §0. |
 
 Phase 1b deliberately stopped short of routing `_event_store.append_event` to the writer. Doing
@@ -493,9 +837,24 @@ fixture needs (genesis, then a standalone acceptance per principal, then the pro
 still refuses (WI-299's other half is blocked on Finding 4 too — enrolment is a *trust-log* event,
 so it needs the trust log, which is the state genesis forbids). Phases 2, 3 and 4 untouched.
 
-## 4. Phase 2 design notes (the verifier boundary)
+## 4. Phase 2 design notes (the verifier boundary) — SUPERSEDED BY §0b
 
-The clamp is `_verification._verify_v6_row`, final return, `_verification.py:2311-2324`:
+> **SUPERSEDED 2026-08-18 by `906ed88`.** Phase 2 landed; §0b is the record of what was
+> built, which of these notes held, and which did not. Two did not, and the corrections
+> are the interesting part:
+>
+> * the `AcceptanceScopes` / `_anchor_from_row` reuse suggested below was **not** taken —
+>   the verifier reads presented material addressed by hash, not stored rows, so it needs
+>   a different accessor. The §5.8 scope *rules* are reimplemented over the referent's
+>   parsed payload (§0b's coverage map), which is the same rule, not the same code;
+> * "the completeness claim needs a `VerificationPolicy` field, defaulting to the stricter
+>   reading" is only half right — completeness is a property of the **material**, so the
+>   resolver owns it and the policy field is a tighten-only override. See §0b.
+>
+> Kept below unedited because the reading it records is still the reading, and because the
+> two corrections only make sense beside it.
+
+The clamp was `_verification._verify_v6_row`, final return, `_verification.py:2311-2324`:
 
 ```python
         applicability=Applicability.INVALID,

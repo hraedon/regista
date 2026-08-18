@@ -400,13 +400,23 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Fixed
 
-- **Bundle chain verification used the v1-v5 hash formula for v6 events.**
+- **Bundle chain verification did not verify a v6 chain at all.**
   `_bundle._hash_event` computed `sha256(envelope || signature)` unconditionally, but a
-  v6 chain links on the domain-tagged `compute_v6_event_hash` (`V6-ENVELOPE.md` §6.1).
-  Every multi-event v6 bundle therefore reported a global-chain break — a false finding,
-  and one that would have made "a healthy v6-era export verifies" unreachable for a
-  reason with nothing to do with verification. A single-event bundle is vacuously fine,
-  which is why the genesis-only fixture never surfaced it.
+  v6 chain links on the domain-tagged `compute_v6_event_hash` (`V6-ENVELOPE.md` §6.1),
+  so for a v6 bundle **no link resolved**. The consequence was silence rather than a
+  false alarm: `_verify_global_chain` treats an event whose predecessor is absent from
+  the set as a legitimate *bridge point* (a windowed export starts mid-chain), so with
+  every link unresolvable every event became an entry point, was immediately its own
+  tail, and the function returned `ok=True` **vacuously** — the chain was not checked
+  and the report said it was. `_hash_event` is now version-aware.
+
+  Two notes for whoever picks up bundle v3 (P3.3). First, the vacuous-bridge-point
+  behaviour is *still there* and is independent of this fix: a bundle whose links are
+  all broken for any other reason still reports `global_chain_ok`. Second, the
+  genesis-era fixtures could not have caught this — the epoch-opening ceremony writes
+  one event per entity, so the per-entity chain check (which does fail loudly) had
+  nothing to check. The regression test now builds an entity with two events on purpose,
+  and asserts the hash formula at the primitive as well as through the report.
 
 - **`hvac` failures now arrive as the error envelope, not a traceback
   (WI-229b, WI-226):** `regista secrets --ref` caught only `RegistaError`, so
