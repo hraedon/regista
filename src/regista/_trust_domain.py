@@ -336,6 +336,17 @@ def _require_json_value(value: Any, path: str) -> None:
         path=path,
         type=type(value).__name__,
     )
+    # json.load happily produces inf/nan (e.g. from a literal 1e400), but neither
+    # is a JSON number (RFC 8785 requires finite), and either would break JCS
+    # canonicalization of any future full-document digest over this material.
+    if isinstance(value, float):
+        _require(
+            value == value and value not in (float("inf"), float("-inf")),
+            ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+            f"{path} must be a finite JSON number",
+            "non_finite_number",
+            path=path,
+        )
 
 
 def _require_base64_text(value: Any, path: str, *, expected_len: int) -> str:

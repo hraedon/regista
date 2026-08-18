@@ -811,6 +811,9 @@ def test_malformed_countersignature_field_rejected(field: str, value: str, reaso
         ("evidence", {"receipt": {1: "x"}}, "non_string_key"),
         ("evidence", {"receipt": {"": "x"}}, "non_string_key"),
         ("evidence", {"receipt": {"nested": b"\x00"}}, "not_a_json_value"),
+        ("evidence", {"delay": float("inf")}, "non_finite_number"),
+        ("evidence", {"delay": float("nan")}, "non_finite_number"),
+        ("evidence", {"nested": [1.0, float("-inf")]}, "non_finite_number"),
     ],
 )
 def test_malformed_anchor_field_rejected(field: str, value: Any, reason: str) -> None:

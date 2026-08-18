@@ -2306,7 +2306,7 @@ def main(argv: list[str] | None = None) -> None:
     trust_sign.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite an existing --out file (refused by default)",
+        help="Silently replace an existing --out file (refused by default)",
     )
     trust_sign.set_defaults(func=cmd_trust_sign_genesis)
     trust_verify = trust_sub.add_parser(
