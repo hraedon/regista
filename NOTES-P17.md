@@ -1,4 +1,4 @@
-# P1.7 handoff — what landed, what did not, and the two findings that change the plan
+# P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
 Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).
@@ -21,8 +21,9 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 |---|---|
 | **1 — writer + admission checks** | **Landed** (`653e1c6`). `_v6_writer.py`, `tests/_v6_fixtures.py`, `tests/test_p17_v6_writer.py` (36 tests), 5 error codes. |
 | **1b — contracts + partial wiring** | **Landed.** The §5.8 acceptance/revocation contracts, the accepter/signer cross-checks, `register_workflow`'s signed event, the process-level producer identity, the §2.3 timestamp helper. `tests/test_p17_key_acceptance.py` (45 tests). |
-| **1c — the rest of the wiring** | **Not started.** `_event_store.append_event` / `_events.*` still legacy; `provision_principal` still refuses; `PrincipalLifecycle.commit()` still sentinel-passing; fixtures not migrated. §3 has the sequencing. |
+| **1c — the wiring** | **Partial** (`d3cce8f`). The `_event_store.append_event` epoch fork landed, gated on `project_identity` presence (§3d). Still open: the trust-log/project topology split (§3c step 1-3), `provision_principal`'s signed enrolment, `PrincipalLifecycle.commit()`. No fixture migrated, so the manifest is untouched. |
 | **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4. |
+| **1b/1c blockers** | Finding 4 **resolved 2026-08-18** — the admission rule is unchanged; it was a fixture-topology bug. §3c has the taken path and the scoped remaining work. |
 | **3 — empty the manifest** | **Not started.** Manifest still 694. **Read §2: the target is 167, not 0.** |
 | **4 — full validation** | Both lanes green + all guards at each checkpoint; not re-run against a changed manifest because the manifest has not changed. |
 
@@ -157,7 +158,72 @@ sees only the document), so the check lives in the writer:
 `_require_authority_may_accept` (→ `PRODUCER_NOT_AUTHORIZED`, reason
 `may_accept_keys_not_held`). Mutations M18/M19 confirm both are load-bearing.
 
-## 3c. FINDING 4 — the genesis ordering conflict BLOCKS the rest of 1c. Resolve this first.
+## 3c. FINDING 4 — RESOLVED 2026-08-18. The admission rule is UNCHANGED; it was a fixture bug.
+
+**Decision (coordinator, on spec-conformance grounds; owner may veto): do NOT narrow
+`first_write_admission`.** My favoured resolution (1) below was wrong, and the reason is worth
+recording because I had the spec in front of me and missed it.
+
+The contradiction is resolved by **topology**, not by admission-rule scope. Verified directly:
+
+> `TRUST-DOMAIN.md` §5.2 — "The trust-domain log. One estate-wide project, with: its own
+> `project_instance_id`, named in the genesis document (`trust_log.project_instance_id`)".
+
+The trust log is **a separate project chain**, not rows in an ordinary project's `events` table.
+Bootstrap A and Bootstrap B are anchors in **different chains**: B (`project_initialized`) embeds
+`bootstrap_key_acceptance`, whose `trust_event_hash` + `trust_log_checkpoint` **reference** the
+trust-log enrolment *by hash*, so the project store never needs to contain a trust-log event for
+its genesis to verify. §6.6 ("the cross-chain ordering window") exists precisely because the two
+chains have no mutual order except through `trust_log_checkpoint_observed` — they were never
+designed to share a table.
+
+So "A precedes B" is a **cross-chain fact established by reference**, and the invariant "no
+project history predates project genesis" stays exactly as strict as P1.2 made it. My reading —
+"the invariant is about project history, so narrow the count" — reached the right *intuition* and
+then applied it to the wrong object: the fix is to stop putting trust-log events in the project's
+table, not to teach the counter to ignore them. Narrowing the rule would have permanently
+weakened a genesis admission check to accommodate a fixture that models a state production cannot
+produce (my own words, in the original write-up below).
+
+**The good news: the production topology is already right.** `_trust_log_fixtures.make_trust_log_project`
+(`tests/_trust_log_fixtures.py:690`) already creates its **own project schema**. Only
+`TestCeremonyPathRoundTrip` conflates the two, at `_project_with_identity`: it builds a `Regista`
+on `trust_store.project` — the *trust-log* project — and inserts a fake `project_identity` row
+there. That is the entire defect.
+
+### The remaining work, now precisely scoped
+
+1. `TestCeremonyPathRoundTrip._project_with_identity` provisions a **second, ordinary** project
+   and opens its epoch for real via `_v6_fixtures.open_v6_epoch`, instead of faking
+   `project_identity` in the trust-log project. The keyset must contain the ceremony's actor
+   (`human:requester`) and `agent:ceremony`. Pass the trust store's `trust_domain_id` through to
+   `genesis_envelope(..., trust_domain_id=...)` so the two chains agree on the domain.
+2. `_snapshot` (`tests/test_trust_projection.py:106`) is **already store-generic** — it only needs
+   `.dsn` and `.project` — so pointing it at the ordinary-project handle is a one-line change,
+   not a rewrite.
+3. **Delete the third stub** (`v6_epoch_open → False`) that commit `d3cce8f` added at
+   `_run_ceremony`. With the right topology the test should not need it; if it still does, that is
+   a new finding and not a reason to keep the stub.
+4. Enrolment appends (`principal_key_enrolled`, §5.5) target the **trust-log** store; acceptance
+   appends (`principal_key_accepted`, §5.8) target the **project** chain. §5.9's own column split
+   is the tell: `source_event_hash` is the *trust-log* event, `acceptance_event_hash` the *project*
+   event, so a rebuild that reads both chains is the spec's shape. If P2.2's
+   `_trust_projection.rebuild_projection` assumes one store, extend it with a trust-log store
+   reference on the call — **do not relocate events to satisfy it.**
+5. WI-299's other half unblocks with (4): `provision_principal` appends its
+   `principal_key_enrolled` to the trust-log store.
+
+### Open sub-question, flagged rather than silently decided
+
+How a **single-store dev deployment** names its trust-log schema is not specified anywhere I
+found. The strict spec-conformant option — and the one to take — is that the trust-log project is
+always a distinct `project_instance_id` with its own schema, configured explicitly, with **no
+implicit fallback to the current project**: an implicit fallback would recreate exactly the
+shared-table state that produced this finding. That means a deployment with no configured
+trust-log store cannot enrol keys, which is correct (enrolment is Gate 2, after Gate 1's trust
+bootstrap) rather than merely inconvenient.
+
+### The original write-up, kept for the record
 
 **A project that has a trust log can never write its project genesis.**
 
@@ -195,11 +261,11 @@ genesis admission rule, which is exactly the kind of thing that should not be lo
 implementer mid-migration — **`prefer-strict-defaults` cuts against me here**, so it needs the
 owner or the coordinator.
 
-**Until it is resolved:** `TestCeremonyPathRoundTrip` carries a third stub
-(`v6_epoch_open → False`) of the same character as its existing two, with the reasoning inline.
-It keeps testing its real subject (payload construction, the appliers, the rebuild). It cannot
-drop its stubs, and `PrincipalLifecycle.commit()` cannot route through the real writer, until
-Finding 4 is decided.
+**Until the restructure above lands:** `TestCeremonyPathRoundTrip` carries a third stub
+(`v6_epoch_open → False`), added by `d3cce8f` when Finding 4 was still open. It is now known to be
+a workaround for a fixture-topology bug rather than for a spec gap, so it is **debt with a
+deadline**: step 3 above deletes it. It keeps testing its real subject (payload construction, the
+appliers, the rebuild) in the meantime.
 
 ## 3d. What 1c actually landed, and what it did not
 
