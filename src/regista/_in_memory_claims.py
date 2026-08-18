@@ -244,6 +244,11 @@ def in_memory_sweep_expired_claims(
             # PARITY_BOUNDARY_POSTGRES_ONLY, so ordering is the only mechanism this
             # backend has for "a refusal leaves the claim exactly as it was", and it
             # is the better mechanism anyway: there is nothing to undo.
+            #
+            # `RegistaError` only, matching the Postgres path deliberately (R2 NB2): a
+            # refusal is this system deciding about one claim, and anything else is a
+            # defect or an infrastructure failure that must reach the caller rather than
+            # be flattened into a count.
             try:
                 _in_memory_append_claim_event(
                     store, wi, key_set, uuid.uuid4(), "claim_expired",

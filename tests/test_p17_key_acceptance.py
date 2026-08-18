@@ -274,6 +274,38 @@ class TestRevocationPayload:
             )
         assert exc.value.detail["reason"] == "acceptance_event_hash_malformed"
 
+    def test_a_revocation_anchored_on_the_acceptance_it_revokes_is_refused(self, payload):
+        """R2 NB1: the counterpart to the acceptance side's ``self_authorisation``.
+
+        If ``revoked_by.key_binding_event_hash`` IS the acceptance being revoked, the
+        authority exercised is destroyed by the event exercising it. Since the phase-4
+        B1 fix that is also **unrecoverable**: a revoked acceptance refuses every anchor
+        for its (principal, key), so a principal revoking its own anchor removes its own
+        ability to act — and for the bootstrap principal that is the project's only
+        key-accepting authority.
+        """
+
+        self_revoking = _revocation(
+            payload,
+            acceptance_event_hash=_ANCHOR,
+            revoked_by={
+                "principal_id": BOOTSTRAP_PRINCIPAL,
+                "key_id": "pk_whoever",
+                "key_binding_event_hash": _ANCHOR,
+            },
+        )
+        with pytest.raises(RegistaError) as exc:
+            validate_key_acceptance_revocation_payload(self_revoking)
+        assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID
+        assert exc.value.detail["reason"] == "self_revocation"
+        assert exc.value.detail["acceptance_event_hash"] == _ANCHOR
+
+    def test_a_revocation_anchored_elsewhere_is_still_valid(self, payload):
+        """And the rule must be about the *anchor*, not about revocation itself: the
+        ordinary case — a different authority's anchor — keeps validating."""
+
+        validate_key_acceptance_revocation_payload(_revocation(payload))
+
     def test_the_reason_comes_from_the_closed_vocabulary(self, payload):
         """Shared verbatim with ``_trust_log._REVOCATION_REASONS``, not a second set."""
 
@@ -578,6 +610,74 @@ class TestRevocationAtWriteTime:
                 key_id=keyset.bootstrap.key_id,
             )
         assert bootstrap_anchor.kind == "bootstrap"
+
+    def test_the_bootstrap_cannot_revoke_its_own_genesis_anchor(
+        self, project, keyset, genesis
+    ):
+        """R2 NB1 at the writer, where the consequence is a bricked project.
+
+        The bootstrap principal's key-binding anchor IS the genesis event, and genesis
+        carries the bootstrap key acceptance. Naming genesis as *both* the revocation's
+        ``acceptance_event_hash`` and its ``revoked_by.key_binding_event_hash`` would
+        revoke the only authority the project has for accepting keys — and after the
+        phase-4 B1 fix nothing can re-establish it, because a revoked acceptance refuses
+        every anchor for that (principal, key) including the bootstrap one. So the
+        refusal is not tidiness; it is the difference between a mistake and an
+        unrecoverable project.
+        """
+
+        genesis_hash = genesis.to_dict()["event_hash"]
+        identity = self._identity(project)
+        doc = {
+            "type": KEY_ACCEPTANCE_REVOCATION_TYPE,
+            "version": 1,
+            "trust_domain_id": str(identity.trust_domain_id),
+            "project_instance_id": str(identity.project_instance_id),
+            "principal_id": BOOTSTRAP_PRINCIPAL,
+            "key_id": keyset.bootstrap.key_id,
+            "acceptance_event_hash": genesis_hash,
+            "reason": "compromised",
+            "revoked_by": {
+                "principal_id": BOOTSTRAP_PRINCIPAL,
+                "key_id": keyset.bootstrap.key_id,
+                "key_binding_event_hash": genesis_hash,
+            },
+        }
+        with pytest.raises(RegistaError) as exc:
+            with project._mgr.transaction() as conn:
+                append_v6_event(
+                    conn,
+                    project._keys,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID,
+                        "regista.principal:" + BOOTSTRAP_PRINCIPAL,
+                    ),
+                    transition=PRINCIPAL_KEY_ACCEPTANCE_REVOKED,
+                    actor_id=BOOTSTRAP_PRINCIPAL,
+                    actor_kind="system",
+                    producer=PRODUCER,
+                    payload=doc,
+                )
+        assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID
+        assert exc.value.detail["reason"] == "self_revocation"
+
+        # The project is intact: the bootstrap authority still resolves and can still
+        # accept a key. Without this half the test would pass on a project that had
+        # already been destroyed by an earlier statement.
+        with project._mgr.transaction() as conn:
+            anchor = resolve_key_binding_anchor(
+                conn,
+                principal_id=BOOTSTRAP_PRINCIPAL,
+                key_id=keyset.bootstrap.key_id,
+            )
+        assert anchor.kind == "bootstrap"
+        accepted = self._accept(project, keyset, genesis)
+        with project._mgr.transaction() as conn:
+            worker_anchor = resolve_key_binding_anchor(
+                conn, principal_id=WORKER, key_id=keyset.key_for(WORKER).key_id
+            )
+        assert worker_anchor.event_hash == accepted.event_hash_text
 
     def test_a_revoked_newer_acceptance_does_not_fall_back_to_an_older_one(
         self, project, keyset, genesis

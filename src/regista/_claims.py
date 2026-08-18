@@ -369,15 +369,28 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
     ``legacy_actor_id`` keeps the pre-genesis attribution byte for byte, so a legacy
     project's events are unchanged.
 
-    **One claim's refusal must not abort the batch.** Each claim is processed inside its
-    own savepoint (``conn.transaction()``), so a refusal rolls that claim's ``DELETE``
-    and projection ``UPDATE`` back and leaves the claim exactly as it was — fail-closed
-    per claim rather than a committed projection change with no event, which is the
-    shape replay reports as drift. The remaining claims are then swept. Refusals are
-    reported as ``claims.sweep_claim_refused`` log lines carrying the work item and the
-    error, plus one ``claims.sweep_incomplete`` summary; the return value counts
-    successes only, so a caller that compares it against the number of expired claims
-    can see that something was refused without parsing anything.
+    **One claim's REFUSAL must not abort the batch — and only a refusal is isolated.**
+    Each claim is processed inside its own savepoint (``conn.transaction()``), so a
+    ``RegistaError`` rolls that claim's ``DELETE`` and projection ``UPDATE`` back and
+    leaves the claim exactly as it was — fail-closed per claim rather than a committed
+    projection change with no event, which is the shape replay reports as drift. The
+    remaining claims are then swept. Refusals are reported as
+    ``claims.sweep_claim_refused`` log lines carrying the work item and the error, plus
+    one ``claims.sweep_incomplete`` summary; the return value counts successes only, so a
+    caller comparing it against the number of expired claims can see that something was
+    refused without parsing anything.
+
+    The narrowness is deliberate (R2 NB2). ``RegistaError`` is this system *deciding*
+    something about one claim — a revoked acceptance, a scope it does not hold, a
+    workflow that no longer admits the transition — and a decision about one claim is
+    exactly what must not become a decision about the batch. Anything else is a defect or
+    an infrastructure failure: a ``TypeError`` in the signing path, a serialization
+    failure, a dropped connection. Those are **not** caught, so they abort the sweep and
+    reach the caller. Swallowing them would convert "the code is broken" or "the database
+    went away" into "1 of 2 claims swept", which is a truthful-looking number produced by
+    a process that has no idea what happened — and an operator who reads a count instead
+    of a stack trace does not go looking for the bug. Pinned by
+    ``test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted``.
     """
 
     from ._events import append_event, lock_work_item, resolve_system_actor_id

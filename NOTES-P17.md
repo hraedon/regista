@@ -11,21 +11,66 @@
 
 ---
 
-## 0a-3. Session 5 (2026-08-18): the ceremony's REQUEST-CHANGES round
+## 0a-3. Session 5 (2026-08-18): the cross-lineage ceremony, both rounds
 
-The cross-lineage branch ceremony (deepseek) returned **REQUEST-CHANGES**: one blocking
-finding, six non-blocking. All seven adopted. Manifest **unchanged at 126** — nothing
-here unblocked a node, which is the expected shape for a review round.
+**The formal review record for this branch** (the coordinator records the pass on the
+tracker; this is the branch-side copy):
 
-**Validation, final state:**
+| Round | Lineage | Verdict | Disposition |
+|---|---|---|---|
+| **r1** | deepseek | **REQUEST-CHANGES** — 1 blocking (B1), 6 non-blocking | all seven adopted in `0e28c9b` |
+| **r2** | deepseek | **zero blocking** — 3 non-blocking | NB1 adopted, NB2 answered, NB3 filed as **WI-304** |
+| polish | — | — | this round: r2's items, the rebase onto `main` @ `0cadaaf`, and this record |
+
+Manifest **unchanged at 126** across both rounds — nothing a review round found unblocked
+a node, which is the expected shape.
+
+**Validation, final state (on the rebased tip):**
 
 | Check | Result |
 |---|---|
-| default lane (`-m 'not slow'`, all extras, dedicated DB) | **3448 passed, 0 failed, 126 xfailed, 17 skipped** |
+| default lane (`-m 'not slow'`, all extras, dedicated DB) | **3452 passed, 0 failed, 126 xfailed, 17 skipped** |
 | slow lane (`-m slow`) | **11 passed, 0 failed, 0 xfailed** |
 | `scripts/check-epoch-debt.py --base main` | OK — 126, shrink-only node set vs main (694) |
 | `tests/epoch_blocked_inventory.txt` | byte-identical to main (`8696641a…`) — **never touched** |
 | ruff / mypy (103 files) / both docs checkers | clean |
+
+### Round 2 (zero blocking) — the three items
+
+**NB1 (adopted) — a revocation may not be anchored on the acceptance it revokes.** The
+counterpart to the acceptance side's `self_authorisation` rule, and it only became
+*consequential* because of B1: now that a revoked acceptance refuses every anchor for its
+(principal, key), a principal revoking its **own** anchor destroys its own authority
+irrecoverably — and the bootstrap principal doing it to the genesis-embedded acceptance
+bricks the project's key-acceptance path permanently. Measured before the fix: the write
+was **accepted**. One check, reason `self_revocation`, pinned at both the payload contract
+and the writer — the writer test also asserts the project still works afterwards, because
+a refusal test on an already-destroyed project would pass for the wrong reason.
+
+**NB2 (answered, not broadened) — the sweep's isolation is `RegistaError`-only, and the
+docstring now says so.** The choice, stated: a `RegistaError` is this system *deciding*
+something about one claim (a revoked acceptance, a scope it does not hold), and a decision
+about one claim must not become a decision about the batch. Anything else — a `TypeError`
+in the signing path, a serialization failure, a dropped connection — is a defect or an
+infrastructure failure, and catching it would convert "the code is broken" into "1 of 2
+claims swept": a truthful-looking number produced by a process that has no idea what
+happened, read by an operator who then does not go looking for the bug. So the narrowness
+is deliberate, the docstring's previously unconditional "one claim's refusal" wording is
+corrected, and the choice is **pinned by a test** rather than left as a comment
+(`test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted`) — a documented
+decision nothing falsifies is just a preference.
+
+**NB3 (filed, not fixed) — WI-304, bug/low.** The two projection `source_event_hash`
+helpers (`_trust_projection.py:191-197`, `principal_lifecycle.py:2271-2275`) dispatch on
+**signing scheme**, where the rest of the tree dispatches on **envelope version**. For a
+v5 envelope signed with ed25519 — producible, since `strict_asymmetric` predates v6 — they
+apply the v6 construction while chain-head hashing applies the legacy concatenation. It is
+self-consistent today (write path and rebuild import the same predicate, and the value is
+only ever compared against itself), so it is filed as a **trap**: the next person who
+notices "two more hand-copies of the version dispatch" and delegates them to
+`compute_chain_head_hash` changes every stamped value on those rows, which on an applied
+rebuild is the "invents rows" direction §5.9 warns about. Deliberately not fixed here —
+choosing the key is a decision, and one branch of it is a projection migration.
 
 ### B1 (blocking) — a revocation was undone by an older acceptance
 

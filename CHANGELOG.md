@@ -266,6 +266,15 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   by the spec, while the writer is deciding whether to *create* evidence under a revoked
   key.
 
+- **A revocation could be anchored on the acceptance it revokes** (ceremony r2 NB1). The
+  counterpart to the acceptance side's `self_authorisation` rule, and consequential only
+  because of B1 above: now that a revoked acceptance refuses every anchor for its
+  (principal, key), a principal revoking its **own** anchor destroys its own authority with
+  no way back — and the bootstrap principal doing that to the genesis-embedded acceptance
+  removes the project's only key-accepting authority permanently. Measured before the fix:
+  the write was accepted. `validate_key_acceptance_revocation_payload` now refuses it as
+  `self_revocation`.
+
 - **A pinned producer-policy `key_fingerprints` set was skippable by omission** (NB2).
   `check_producer_authorization` tested `entry.key_fingerprints and key_fingerprint is not
   None and …`, so a caller that presented no fingerprint skipped the pin entirely and the

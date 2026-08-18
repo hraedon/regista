@@ -314,6 +314,35 @@ class TestSweepIsASystemActionAndIsolatesFailures:
         ]
 
 
+    def test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted(
+        self, regista, monkeypatch
+    ):
+        """R2 NB2: the isolation is ``RegistaError``-only, and that is the honest choice.
+
+        A refusal is this system deciding something about one claim. A ``TypeError`` is a
+        defect, and a dropped connection is an infrastructure failure — neither is a
+        decision about a claim, and neither may be flattened into "1 of 2 swept". The
+        alternative (catching ``Exception``) produces a truthful-looking count from a
+        process that has no idea what happened, and an operator who reads a count instead
+        of a stack trace does not go looking for the bug.
+        """
+
+        from regista import _events
+
+        self._claimed_item(regista, "sweep unexpected A")
+        self._claimed_item(regista, "sweep unexpected B")
+
+        def _broken_append(**kwargs):
+            if kwargs.get("transition") == "claim_expired":
+                raise TypeError("injected defect in the signing path")
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(_events, "append_event", _broken_append)
+
+        with pytest.raises(TypeError, match="injected defect"):
+            regista.sweep_expired_claims()
+
+
 class TestInMemorySweepParity:
     """The same two properties on the in-memory backend (WI-287 shared semantics).
 

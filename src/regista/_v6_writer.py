@@ -933,6 +933,21 @@ def validate_key_acceptance_revocation_payload(payload: object) -> None:
         "revoked_by_anchor_malformed",
         "payload.revoked_by.key_binding_event_hash must be sha256:<64 lowercase hex>",
     )
+    _acceptance_require(
+        revoked_by["key_binding_event_hash"] != payload["acceptance_event_hash"],
+        "self_revocation",
+        "a revocation may not be anchored on the acceptance it revokes: the authority "
+        "exercised here would be destroyed by the very event that exercises it, which "
+        "is the same defect the acceptance side refuses as 'self_authorisation' "
+        "(RECONCILIATION.md Resolution 1 — no self-authorisation anywhere). It is also "
+        "unrecoverable: once an acceptance is revoked, resolve_key_binding_anchor "
+        "refuses every anchor for that (principal, key), so a principal revoking its "
+        "OWN anchor removes the project's ability to accept keys at all — and the "
+        "bootstrap principal doing it to the genesis-embedded acceptance bricks the "
+        "key-acceptance path permanently. Revoke with a different authority's key",
+        acceptance_event_hash=payload["acceptance_event_hash"],
+        revoked_by_anchor=revoked_by["key_binding_event_hash"],
+    )
 
 
 def _require_authority_matches_signer(
