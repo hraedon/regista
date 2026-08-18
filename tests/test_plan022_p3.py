@@ -398,22 +398,34 @@ class TestIndependentVerification:
 
             # WI-267: this used to assert `is True` — the verifier rebuilt a
             # candidate envelope from the row columns when the stored envelope
-            # was missing, i.e. it authenticated the row against itself. With
-            # nothing stored there is nothing to verify: the event is
-            # UNVERIFIABLE (an evidentiary gap, CUTOVER-POLICY §4), not valid
-            # and not invalid. Reconstruction is an explicit offline operator
-            # action, never a verify-path fallback.
+            # was missing, i.e. it authenticated the row against itself.
+            # Reconstruction is an explicit offline operator action, never a
+            # verify-path fallback, so there is nothing here to verify.
             #
             # The whole chain is presented to BOTH calls, so the only difference
-            # between them is the stored envelope — the point the node makes.
+            # between them is the stored envelope — the point the node makes. And
+            # because the chain IS presented, P1.7 phase 4 makes the verdict
+            # INVALID rather than the weaker UNVERIFIABLE this asserted before: the
+            # row's chain predecessor is presented as a v6 event, so this row is
+            # inside the v6 epoch, where the envelope column is written by every
+            # append (V6-ENVELOPE.md §9.2). A NULL is destruction, not migration
+            # 002's gap. Present nothing instead and it is UNVERIFIABLE again —
+            # asserted below, because the conviction must come from the material.
             with raw_transaction(sub) as conn:
                 referents = store_referents(conn, label="open project")
                 result = verify_event_result_with_public_key(
                     evt_no_env, pub_bytes, referents=referents,
                 )
-                assert result.applicability is Applicability.UNVERIFIABLE
+                assert result.applicability is Applicability.INVALID
                 assert FailureReason.ENVELOPE_ABSENT in result.reasons
                 assert not result.accepted
+
+                unpresented = verify_event_result_with_public_key(
+                    evt_no_env, pub_bytes,
+                )
+                assert unpresented.applicability is Applicability.UNVERIFIABLE
+                assert FailureReason.ENVELOPE_ABSENT in unpresented.reasons
+                assert not unpresented.accepted
 
                 # The same event WITH its envelope still verifies.
                 assert verify_event_result_with_public_key(

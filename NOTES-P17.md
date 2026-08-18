@@ -1,9 +1,208 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
-> **Session 4 (2026-08-18) is PHASE 3 — the manifest march. Read §0a first; it
-> corrects Finding 14 and records the migration recipe as measured. Then §0b (the
-> Phase 2 verifier boundary, which supersedes §4 entirely and records findings
-> 10-15), then §0 (session 2), which supersedes parts of §1-§3.**
+> **Session 5 (2026-08-18) is PHASE 4 — the four-item fix round §0a-2 records; it
+> discharges escalations 8 and 9 and two of the reported-not-fixed items, and takes
+> the manifest 129 -> 126. Then §0a (PHASE 3, the manifest march; it corrects
+> Finding 14 and records the migration recipe as measured), then §0b (the Phase 2
+> verifier boundary, which supersedes §4 entirely and records findings 10-15), then
+> §0 (session 2), which supersedes parts of §1-§3.**
+
+---
+
+## 0a-2. Session 5 (2026-08-18): PHASE 4 — the four-item fix round
+
+Scope was exactly four items, all of them from §0a's own escalation list; everything
+else there (the 129-node residue's design questions, the 26 HMAC retire candidates,
+`read_events` filtering, `archive_events` chain reporting, the DSN hardcoding sweep)
+is owner territory and was **not touched**.
+
+**Manifest: 129 -> 126.** Three nodes left it, in the same commit as the fixes that
+made them pass: the two `test_wi217_replay_memory.py` nodes and
+`test_wi266_fail_closed.py::TestUnvisitedProjectionRowsHalt::test_in_memory_empty_log_with_head_set_is_a_hard_halt`.
+
+**Validation, final state:**
+
+| Check | Result |
+|---|---|
+| default lane (`-m 'not slow'`, all extras, dedicated DB) | **3430 passed, 0 failed, 126 xfailed, 17 skipped** (552s) |
+| slow lane (`-m slow`) | **11 passed, 0 failed, 0 xfailed** |
+| `scripts/check-epoch-debt.py --base main` | OK — 126, shrink-only node set vs main (694) |
+| `tests/epoch_blocked_inventory.txt` | byte-identical to main (`8696641a…`) — **never touched** |
+| ruff (`src/ tests/ scripts/ tools/`) | clean |
+| mypy (`src/regista`, 103 files) | clean |
+| `docs/0.6.0/check-conflicts.py` | 0 contested values |
+| `docs/0.6.0/check-crossrefs.py` | 0 unresolved references |
+
+3430 = 3412 + 3 unblocked nodes + 15 new ones. The debt figure any claim about this
+branch carries is now `green-with-epoch-debt(126)`.
+
+One mechanical consequence worth knowing about before adding an `ErrorCode`:
+`tests/sidecar/test_sidecar.py::TestErrorCodeCoverage` asserts every member has an
+explicit HTTP status in `regista.sidecar.errors._STATUS_MAP`. A new code is two
+edits, and the second one is not optional.
+
+### Item 1 — the two resolver-less call sites, and what each was told to present
+
+`verify_event_with_public_key` **gained** the optional `referents` parameter
+(`NO_REFERENTS` default, identical to `verify_event_result_with_public_key`). Decided
+from its call sites: it is the documented standalone verification utility (`spec.md`
+§17.12) whose callers are offline verifiers holding a bundle or a store, and its only
+in-tree caller is the binding path below, which presents nothing by contract. So the
+parameter is offered rather than hardcoded — a shim strictly less capable than the
+function it wraps is a second clamp.
+
+`verify_event_with_principal_binding` did **not** gain one, and that is the deliberate
+conformance with §0b's `verify_event_dict_principal_binding` rationale: a probe over
+the `principal_keys` registry is legacy-only, so a `referents` parameter there would be
+a route around §5.9 rule 1. What it gained instead is an honest answer. Measured
+before, on a v6 event whose signature is valid and whose registry entry holds the very
+key that signed it:
+
+```
+OBJECT twin: verified=False, error='signature-verification-failed: signature invalid
+             under all registered public keys'
+DICT twin:   verified=False, error='signature-verification-failed: signature invalid
+             under all registered public keys'
+```
+
+Both fail closed; both say something false, by two *different* accidents (the object
+twin read `UNVERIFIABLE` as a signature failure, the dict twin tripped rule 1's raise
+and swallowed it). Now both return `V6_BINDING_NOT_DECIDED_BY_REGISTRY` naming §5.10,
+and they share one `verify_fn` body resolving through
+`TrustedKeySource.PRINCIPAL_REGISTRY` — which is where the key came from, and which the
+object twin was mislabelling as `SUPPLIED_PUBLIC_KEY` (the mislabel is *why* it
+sidestepped the raise). Falsifiers:
+`tests/test_p17_v6_verifier_boundary.py::TestTheTwoResolverLessCallSites` (6 nodes;
+control with the refusal removed: 1 failed / 5 passed, and with the parameter removed:
+3 failed / TypeError).
+
+### Item 2 — WI-217 vs `StoreReferents` (escalation 8), fixed without relaxing the budget
+
+Migrating the fixture reproduced it exactly: **growth 5.5x (3.61 -> 19.89 MiB) against
+a 3.0x budget**, and 19.89 MiB against the 5.00 MiB absolute budget. Two terms, both
+real:
+
+1. the index retained every event's **whole parsed envelope** — measured **5193 B/event**
+   on real rows, against 1023 bytes of JSON, because a parsed v6 envelope is ~15 dicts
+   and ~10 strings;
+2. `store_referents`' `rows()` did `fetchall()`, so the indexing pass itself cost the
+   whole log in peak.
+
+Fixed by (1) indexing a `ReferentSummary` — the six signed members every
+`ReferentEvent` accessor reads, interned — and re-reading the envelope only when a
+verdict reads a `payload`, and (2) streaming the scan through a **server-side** cursor.
+Measured after: **growth 1.61x, peak 3.36 MiB** (small 2.09 MiB), retention 11 KiB.
+
+Three things worth reading before changing this:
+
+* **The variant that looks obvious is not enough.** "Keep the envelope minus its
+  payload" measures **2367 B/event** — 6.3 MiB at 1280 events, still over the 5.00 MiB
+  budget. The summary measures **509 B/event**. Both were measured before choosing.
+* **A client-side cursor would have made the test pass and the machine no better.**
+  libpq buffers the whole result set in C heap, which tracemalloc cannot see and RSS
+  can. That is why the fallback branch is keyed on `conn.cursor` and why the in-memory
+  facade (which has no `cursor`, and whose rows are already resident) keeps the
+  `fetchall` — a named cursor there would be a `PARITY_BOUNDARY_POSTGRES_ONLY` refusal
+  in the middle of a shared read path that `_genesis.read_genesis_from_connection`
+  depends on.
+* **Nothing is elided and nothing lies.** `_LazyEnvelope` is all-or-nothing: it has the
+  real envelope or fetches it, so there is no subset view a consumer could read a
+  member from and conclude the envelope lacked it. `ReferentEvent.summary` is a
+  *pre-read* built from the same strict parse, asserted to agree with the bytes for
+  every event in the corpus. A row that stops being presented mid-pass **raises**
+  (`MATERIAL_CHANGED_UNDER_VERIFICATION`) rather than answering with an empty payload,
+  and the materialization memo is bounded (256) so it cannot grow back into the cache it
+  replaced.
+
+Cost accepted, stated: a payload read costs one hash-only scan of the store's envelope
+bytes. In a healthy replay that is ~2-4 distinct reads (one acceptance, one workflow
+registration) against one resolver, because the only referents whose payload a verdict
+reads are trust-plane events. An adversarial log naming a *different* ordinary event as
+every event's anchor pays a scan per distinct anchor, bounded in memory by the memo cap
+and unbounded in time — a real trade, and the strictly better half of the one it
+replaces (which was unbounded in memory).
+
+Falsifiers: the two migrated WI-217 nodes, plus
+`::TestStoreReferentsHoldsSummariesNotEnvelopes` (4 nodes; control with the eager index
+restored: 3 failed / 1 passed — the fourth is the summary-agrees-with-bytes consistency
+test, which correctly passes either way).
+
+### Item 3 — the in-memory global chain head (escalation 9)
+
+Not fixed by advancing the head in `append_v6_row`, which is what the escalation's
+wording suggests and what would have been a *second* mechanism: on Postgres the
+**writer** advances the sentinel explicitly after the insert, and the in-memory path has
+to be that shape or it is a different thing wearing the same name. Fixed by making the
+two pieces of state one — `InMemoryV6Rows.head_hash` is now a view of
+`InMemoryEventStore._global_chain_head`, so the head the v6 writer advances *is* the head
+`_in_memory_replay` reads. Nothing is copied and nothing is synchronised, so there is no
+window in which they disagree, and the two writers cannot fork it (they are mutually
+exclusive anyway — `check_legacy_append` refuses on both sides of genesis).
+
+**Two** dead checks came back, not one: "head set, log empty" (the migrated manifest
+node) and "head disagrees with the chain tail". The parity-boundary hole was
+`test_a_v6_append_never_writes_the_legacy_chain_head`, which asserted
+`store._global_chain_head is None` after a v6 append — i.e. it *pinned the fail-open
+state*, because its author read the invariant as being about a second location when it
+is about the **formula**. Renamed to
+`test_a_v6_append_advances_the_one_chain_head_with_the_v6_formula` (pointer in
+the pointer in NOTES-WI287's detection table updated) and it now asserts the formula, the identity of
+the two views, and that the head is *not* the v5 `sha256(env||sig)` over the same bytes.
+Control with the two heads restored: 2 failed / 52 passed.
+
+### Item 4 — the nulled-envelope disagreement, closed fail-closed on the material
+
+Measured: `verify_event_strict` said `UNVERIFIABLE`/`ENVELOPE_ABSENT`; `_replay` halted
+on the same row with "the row contradicts its own cryptographic material", via
+`AbsentEnvelopeProbe`, which rebuilds only the v1/v2 shapes and so returns
+`INCONSISTENT` for **any** v6 row — a conviction on a reconstruction that was never
+attempted for the version in question. §0b's own wi289 node had pinned the weak half
+with the argument "what must not be claimed is a contradiction the verifier did not
+find", which is right about the *basis* and wrong about the *conclusion*.
+
+The fail-closed reading is the conviction, and there is a sound basis for it that needs
+no reconstruction — the presented material, which is where every other v6 verdict comes
+from. `_verification._v6_epoch_neighbour_of`: if the row's chain predecessor is presented
+and **is a v6 event**, the row stands inside the v6 epoch (`check_legacy_append` refuses
+a mixed region), where the stored bytes are the artifact and every append writes them.
+A NULL is destruction. Verdict `INVALID`.
+
+Both sides now agree in both directions, and the second direction is the one that keeps
+it honest: with `NO_REFERENTS` the same row is still `UNVERIFIABLE`, and material that
+does not present the predecessor does not convict. Deliberately **not** convicted: the
+cutover event itself (its predecessor is the *legacy* head, which never resolves as a v6
+referent) and any genuinely pre-002 row (no chain columns at all).
+
+`AbsentEnvelopeProbe` stays `_replay`-only for v1-v5 rows — **a remaining asymmetry,
+named rather than closed.** Hosting the rebuild-from-row candidates inside the one
+function that decides authentication is the escape hatch WI-267 deleted, and its
+docstring's "verify_event_strict does not call it" is still literally true. So a nulled
+*v5* row is still a replay halt and a `verify_event_result` `UNVERIFIABLE`. That is
+WI-267's asymmetry, not P1.7's, and it is the one thing in item 4 left for an owner.
+
+Three existing pins flipped and were **strengthened, never weakened**:
+`test_wi289_v6_counterparts.py::…::test_deleting_the_canonical_envelope_is_invalid_and_names_the_absence`
+(renamed from `…_is_unverifiable_…`, ledger `covered_by` pointer updated),
+`…::test_deleting_the_canonical_envelope_halts_replay` (the halt detail is now the
+verifier's reading, and the two no longer split), and
+`test_plan022_p3.py::…::test_verify_without_canonical_envelope_postgres` (which now
+asserts *both* readings — presented and unpresented — in one node). Falsifiers:
+`::TestTheNulledEnvelopeReading` (4 nodes; control with the conviction disabled: 3
+failed / 23 passed).
+
+### What phase 4 deliberately did not do
+
+* No relaxation of the WI-217 budget, no manifest entry for anything that does not pass,
+  no touch of `tests/epoch_blocked_inventory.txt`.
+* The `event_hash` generated column (which would delete `StoreReferents`' indexing pass
+  outright) is still filed, not smuggled into a verifier change.
+* `MappingReferents.from_pairs(store.all_events())` — the in-memory replay's resolver —
+  still parses every event eagerly. It is not measured by WI-217's Postgres fixture and
+  the in-memory store already holds the bytes, so the duplication is parsed structure
+  only; the same `ReferentSummary` treatment would apply if a bound is ever wanted there.
+* The five remaining blockers from §0a's accounting (reviewer lineage, WI-008,
+  `entity_kind = "spec"`, the 26 HMAC retire candidates, and now nothing else) are
+  untouched.
 
 ---
 
@@ -154,7 +353,8 @@ the manifest from 192 to 129:
 | `_api_meta`'s public-key branch | — | the public independent-verification API returned `UNVERIFIABLE` for every v6 event |
 | `_in_mem_ops`' public-key branch | 14 | the in-memory twin of the same omission |
 
-And five remain:
+And five remained at the end of phase 3; **two of the five were discharged in
+§0a-2 (phase 4)**, leaving three for an owner:
 
 | Blocker | Nodes | Owner |
 |---|---|---|
@@ -162,8 +362,8 @@ And five remain:
 | **3. WI-008** — `on_behalf_of` / delegated events | 36 | WI-008 |
 | **4. `entity_kind = "spec"`** is not in the closed §1.2 registry | 14 | **owner decision** |
 | **5. HMAC-signed ordinary events** (subject died with v5) | 26 | RETIRE — **listed, not executed** |
-| **8. WI-217's memory bound vs `StoreReferents`** | 2 | **escalated — a live production property** |
-| **9. in-memory `_global_chain_head` never advances** | 1 | **escalated — a fail-open gap** |
+| **8. WI-217's memory bound vs `StoreReferents`** | 2 | **DISCHARGED in §0a-2 (phase 4)** |
+| **9. in-memory `_global_chain_head` never advances** | 1 | **DISCHARGED in §0a-2 (phase 4)** |
 
 ### The four fixes, and the judgment calls in them
 
@@ -216,7 +416,8 @@ v6 row, so both returned `UNVERIFIABLE` for every v6 event. Worse than a false
 negative: a wrong-key test passed for the *wrong reason* (`unverifiable`, not
 `SIGNATURE_INVALID`).
 
-**Two un-referented sites are LEFT, reported not fixed:**
+**Two un-referented sites are LEFT, reported not fixed** — *both FIXED in §0a-2
+(phase 4); the write-up below is the phase-3 report, kept for the record:*
 `_signing.verify_event_with_public_key` (the bool shim) has **no `referents`
 parameter at all**, so it returns `False` for every v6 event; and
 `_signing.verify_event_principal_binding`'s `_verify_with_key` calls that shim, so
@@ -297,7 +498,8 @@ WI-266 closed, and a second measured hole in WI-287's parity claim after Finding
   `_archive.py` does not update `event_chain_head`, so the head still names an
   archived event. `CUTOVER-CLASSIFICATION.md` §5.3 documents the hole as an artifact
   of the read, but `replay()` gives an operator no way to tell it from tampering.
-* **`_verification` and `_replay` disagree about a nulled `canonical_envelope`.** The
+* **`_verification` and `_replay` disagree about a nulled `canonical_envelope`.**
+  *RESOLVED in §0a-2 (phase 4), fail-closed on the presented material.* The
   verifier says `UNVERIFIABLE` / `ENVELOPE_ABSENT` (its `AbsentEnvelopeProbe` is a
   v1-v5 reconstruction path and does not run for v6); `_replay` decides the stronger
   claim, that the row contradicts its own retained signature. Both fail closed, but a

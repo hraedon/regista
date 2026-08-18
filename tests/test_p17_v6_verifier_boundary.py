@@ -152,6 +152,54 @@ class _Signed:
         mapping.update(overrides)
         return EventRow.from_mapping(mapping, backend=Backend.POSTGRES)
 
+    def event(self, **overrides: Any) -> Any:
+        """The same event as an :class:`regista._types.Event`.
+
+        The object-shaped helpers (``verify_event_with_public_key``,
+        ``verify_event_with_principal_binding``) take an event, not a row, and they
+        read ``event.scheme_id`` — which an ``EventRow`` spells ``row_scheme_id``.
+        Handing them a row therefore *looks* like it works and silently presents a
+        NULL ``scheme_id``, which the reconciler correctly convicts. So the tests for
+        those two helpers build the real dataclass.
+        """
+
+        from datetime import datetime
+
+        from regista._types import Event
+
+        env = self.envelope
+        workflow = env["workflow"]
+        fields: dict[str, Any] = {
+            "event_id": uuid.UUID(env["event_id"]),
+            "work_item_id": uuid.UUID(env["entity"]["id"]),
+            "event_seq": env["entity_seq"],
+            "actor_id": env["actor"]["principal_id"],
+            "actor_kind": env["actor"]["kind"],
+            "actor_metadata": env["actor"]["metadata"],
+            "key_id": env["signing"]["key_id"],
+            "workflow_name": workflow["name"] if workflow is not None else None,
+            "workflow_version": workflow["version"] if workflow is not None else None,
+            "timestamp": datetime.fromisoformat(
+                env["occurred_at"].replace("Z", "+00:00")
+            ),
+            "transition": env["transition"],
+            "payload": env["payload"],
+            "payload_canonical_hash": self.payload_canonical_hash,
+            "signature": self.signature,
+            "canonical_envelope": self.canonical_envelope,
+            "scheme_id": "ed25519",
+            "prev_event_hash": _digest(env["chain"]["previous_entity_event_hash"]),
+            "global_seq": self.global_seq,
+            "prev_global_event_hash": _digest(
+                env["chain"]["previous_project_event_hash"]
+            ),
+            "entity_kind": env["entity"]["kind"],
+            "entity_id": uuid.UUID(env["entity"]["id"]),
+            "hash_alg": env["chain"]["hash_algorithm"],
+        }
+        fields.update(overrides)
+        return Event(**fields)
+
     def referent(self) -> ReferentEvent:
         built = referent_from_bytes(self.canonical_envelope, self.signature)
         assert built is not None
@@ -2207,3 +2255,545 @@ class TestAgainstARealEpoch:
             "every remaining halt must be a genuine missing-projection orphan; "
             f"got {[e.detail for e in report.entries if e.category == 'halted']}"
         )
+
+
+class TestTheTwoResolverLessCallSites:
+    """The thirteenth and fourteenth call sites, reported by Phase 3 and fixed here.
+
+    Phase 2 threaded the resolver through eleven production call sites; Phase 3 found
+    two more on the caller-supplied-public-key path (``_api_meta`` and ``_in_mem_ops``)
+    and fixed those, leaving two it reported rather than fixed:
+
+    * ``_signing.verify_event_with_public_key`` — the bool shim — had **no**
+      ``referents`` parameter at all, so it presented nothing and returned ``False``
+      for every v6 event, while the ``VerificationResult`` twin it delegates to has
+      taken ``referents`` since Phase 2. A shim strictly less capable than the
+      function it wraps is a clamp with a smaller blast radius, not a simplification.
+    * ``verify_event_with_principal_binding`` inherited that through
+      ``_verify_with_key``, and its answer was worse than ``False``: the composed
+      error claimed "signature invalid under all registered public keys" about an
+      event whose signature was never checked.
+    """
+
+    def test_the_bool_shim_can_present_material_and_verify_a_v6_event(
+        self, healthy
+    ) -> None:
+        from regista._signing import verify_event_with_public_key
+
+        corpus, _genesis, ordinary = healthy
+        assert (
+            verify_event_with_public_key(
+                ordinary.event(),
+                corpus.key(WORKER).public_key,
+                scheme_id="ed25519",
+                referents=corpus.material(),
+            )
+            is True
+        )
+
+    def test_the_bool_shim_presenting_nothing_is_still_false_for_a_v6_event(
+        self, healthy
+    ) -> None:
+        """The default is unchanged and is the honest answer for one row: a v6
+        verdict needs chain material (§5.10 steps 1-4), so presenting none of it
+        yields ``UNVERIFIABLE`` and the bool is ``False``. What the parameter buys is
+        that a caller who *holds* material is no longer refused."""
+
+        from regista._signing import verify_event_with_public_key
+
+        corpus, _genesis, ordinary = healthy
+        assert (
+            verify_event_with_public_key(
+                ordinary.event(), corpus.key(WORKER).public_key, scheme_id="ed25519",
+            )
+            is False
+        )
+        assert (
+            verify_event_with_public_key(
+                ordinary.event(),
+                corpus.key(WORKER).public_key,
+                scheme_id="ed25519",
+                referents=NO_REFERENTS,
+            )
+            is False
+        )
+
+    def test_the_bool_shim_still_refuses_a_wrong_key_holding_full_material(
+        self, healthy
+    ) -> None:
+        """Threading material must not make the shim credulous: with the whole store
+        presented, a wrong key is still a refusal — and for the *signature*, which is
+        the reason a false negative here was worse than it looked."""
+
+        from regista._signing import (
+            verify_event_result_with_public_key,
+            verify_event_with_public_key,
+        )
+
+        corpus, _genesis, ordinary = healthy
+        wrong = corpus.key(OUTSIDER).public_key
+        assert (
+            verify_event_with_public_key(
+                ordinary.event(), wrong, scheme_id="ed25519",
+                referents=corpus.material(),
+            )
+            is False
+        )
+        result = verify_event_result_with_public_key(
+            ordinary.event(), wrong, scheme_id="ed25519",
+            referents=corpus.material(),
+        )
+        assert result.applicability is Applicability.INVALID, result.summary()
+        assert FailureReason.SIGNATURE_INVALID in result.reasons
+
+    # -- the principal-binding twins ---------------------------------------
+
+    @staticmethod
+    def _registry_entry(key: _Key, **overrides: Any) -> Any:
+        from datetime import UTC, datetime
+
+        from regista._principal_keys import PrincipalKeyEntry
+
+        fields: dict[str, Any] = {
+            "principal_id": key.principal_id,
+            "key_id": key.key_id,
+            "scheme": "ed25519",
+            "public_key": key.public_key,
+            "fingerprint": key.fingerprint,
+            "status": "active",
+            "valid_from": datetime(2020, 1, 1, tzinfo=UTC),
+            "valid_to": None,
+            "registered_by": "human:root",
+            "registered_at": datetime(2020, 1, 1, tzinfo=UTC),
+            "revoked_at": None,
+            "revoked_reason": None,
+        }
+        fields.update(overrides)
+        return PrincipalKeyEntry(**fields)
+
+    @staticmethod
+    def _legacy_v4_event(actor: _Key, *, signed_by: _Key | None = None) -> Any:
+        """A v4-envelope event — the legacy version ``DEFAULT_POLICY`` accepts.
+
+        ``signed_by`` defaults to *actor*; passing another key forges the signature
+        without touching the envelope, which is the one thing the registry probe
+        genuinely decides.
+        """
+
+        import uuid as _uuid
+        from datetime import UTC, datetime
+
+        from regista._signing import build_signing_envelope_v4
+        from regista._signing_scheme import Ed25519Scheme
+        from regista._types import Event
+
+        event_id, entity_id = _uuid.uuid4(), _uuid.uuid4()
+        timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+        envelope = build_signing_envelope_v4(
+            event_id=event_id,
+            entity_kind="work_item",
+            entity_id=entity_id,
+            actor_id=actor.principal_id,
+            key_id=actor.key_id,
+            event_seq=1,
+            workflow_name=WORKFLOW_NAME,
+            workflow_version=WORKFLOW_VERSION,
+            timestamp=timestamp,
+            hash_alg="sha-256",
+            transition="created",
+            payload={"initial_state": "open"},
+            on_behalf_of=None,
+        )
+        signature, canonical_hash = Ed25519Scheme().sign(
+            envelope, (signed_by or actor).seed
+        )
+        return Event(
+            event_id=event_id,
+            work_item_id=entity_id,
+            event_seq=1,
+            actor_id=actor.principal_id,
+            actor_kind="agent",
+            actor_metadata=None,
+            key_id=actor.key_id,
+            workflow_name=WORKFLOW_NAME,
+            workflow_version=WORKFLOW_VERSION,
+            timestamp=timestamp,
+            transition="created",
+            payload={"initial_state": "open"},
+            payload_canonical_hash=canonical_hash,
+            signature=signature,
+            canonical_envelope=envelope,
+            scheme_id="ed25519",
+            entity_kind="work_item",
+            entity_id=entity_id,
+        )
+
+    @staticmethod
+    def _binding_dict(event: Any) -> dict[str, Any]:
+        """The raw-row mapping the dict twin takes, derived from the same event.
+
+        Built through ``EventRow.from_event`` so the two twins are handed the same
+        values by construction — a hand-written second mapping is how a parity test
+        starts passing for the wrong reason.
+        """
+
+        row = EventRow.from_event(event)
+        mapping = {
+            name: getattr(row, name)
+            for name in (
+                "event_id", "work_item_id", "entity_kind", "entity_id", "actor_id",
+                "actor_kind", "actor_metadata", "key_id", "event_seq",
+                "workflow_name", "workflow_version", "timestamp", "hash_alg",
+                "on_behalf_of", "transition", "payload", "prev_event_hash",
+                "prev_global_event_hash", "global_seq", "canonical_envelope",
+                "signature", "payload_canonical_hash",
+            )
+        }
+        mapping["scheme_id"] = event.scheme_id
+        return mapping
+
+    def test_both_binding_twins_refuse_a_v6_event_by_name_not_by_false_claim(
+        self, healthy, monkeypatch
+    ) -> None:
+        """Measured before the fix, on a v6 event whose signature is **valid** and
+        whose registry entry holds the very key that signed it::
+
+            OBJECT twin: verified=False, error='signature-verification-failed:
+                         signature invalid under all registered public keys'
+            DICT twin:   verified=False, error='signature-verification-failed:
+                         signature invalid under all registered public keys'
+
+        Both fail closed and both say something false, by two different accidents:
+        the object twin presented no material and read the resulting
+        ``UNVERIFIABLE`` as a signature failure, while the dict twin tripped §5.9
+        rule 1's raise and swallowed it. The registry cannot decide a v6 binding at
+        all (§5.9 rule 1), so the refusal is now named — and the two twins share one
+        body, so they cannot drift apart again.
+        """
+
+        from regista import _principal_keys
+        from regista._signing import (
+            V6_BINDING_NOT_DECIDED_BY_REGISTRY,
+            verify_event_dict_principal_binding,
+            verify_event_with_principal_binding,
+        )
+
+        corpus, _genesis, ordinary = healthy
+        entry = self._registry_entry(corpus.key(WORKER))
+        monkeypatch.setattr(
+            _principal_keys,
+            "list_principal_keys",
+            lambda mgr, actor_id, status=None: [entry],
+        )
+        event = ordinary.event()
+
+        object_result = verify_event_with_principal_binding(event, object())
+        dict_result = verify_event_dict_principal_binding(
+            self._binding_dict(event), [entry]
+        )
+
+        for result in (object_result, dict_result):
+            assert result.verified is False
+            assert (result.error or "").startswith(V6_BINDING_NOT_DECIDED_BY_REGISTRY)
+            assert "§5.10" in (result.error or "")
+            assert "signature invalid" not in (result.error or "")
+        assert object_result == dict_result
+
+    def test_the_binding_twins_agree_and_still_bind_a_legacy_event(
+        self, monkeypatch
+    ) -> None:
+        """The refusal is keyed on the *envelope*, not on the caller: a legacy row
+        still runs the registry table and still binds. Without this, "refuses a v6
+        event" would be satisfied by a probe that refuses everything."""
+
+        from regista import _principal_keys
+        from regista._signing import (
+            verify_event_dict_principal_binding,
+            verify_event_with_principal_binding,
+        )
+
+        signer = _Key("agent:legacy-signer")
+        event = self._legacy_v4_event(signer)
+        entry = self._registry_entry(signer)
+        monkeypatch.setattr(
+            _principal_keys,
+            "list_principal_keys",
+            lambda mgr, actor_id, status=None: [entry],
+        )
+
+        object_result = verify_event_with_principal_binding(event, object())
+        dict_result = verify_event_dict_principal_binding(
+            self._binding_dict(event), [entry]
+        )
+
+        assert object_result.verified is True, object_result.error
+        assert object_result == dict_result
+
+    def test_a_forged_legacy_signature_is_still_a_signature_failure(
+        self, monkeypatch
+    ) -> None:
+        """The error the v6 path must stop claiming is the one the legacy path must
+        keep claiming, so the two are pinned in one place."""
+
+        from regista import _principal_keys
+        from regista._signing import (
+            verify_event_dict_principal_binding,
+            verify_event_with_principal_binding,
+        )
+
+        signer = _Key("agent:legacy-signer")
+        impostor = _Key("agent:legacy-impostor")
+        event = self._legacy_v4_event(signer, signed_by=impostor)
+        entry = self._registry_entry(signer)
+        monkeypatch.setattr(
+            _principal_keys,
+            "list_principal_keys",
+            lambda mgr, actor_id, status=None: [entry],
+        )
+
+        object_result = verify_event_with_principal_binding(event, object())
+        dict_result = verify_event_dict_principal_binding(
+            self._binding_dict(event), [entry]
+        )
+
+        assert object_result.verified is False
+        assert (object_result.error or "").startswith("signature-verification-failed")
+        assert object_result == dict_result
+
+
+class TestTheNulledEnvelopeReading:
+    """``UPDATE events SET canonical_envelope = NULL`` — one reading, two callers.
+
+    Phase 3 measured a disagreement and pinned both halves rather than resolving it:
+    ``verify_event_strict`` reported ``UNVERIFIABLE`` / ``ENVELOPE_ABSENT`` ("nothing
+    failed, there is nothing to check") while ``_replay`` — on the *same row* — halted
+    with "the row contradicts its own retained signature", reached through
+    ``AbsentEnvelopeProbe``, which rebuilds only the v1/v2 shapes and therefore never
+    matches a v6 row at all. Both fail closed, but a caller of ``verify_event_result``
+    got the weaker of the two, and the stronger one rested on a reconstruction that was
+    never attempted for the version in question.
+
+    Resolved fail-closed, and on the material rather than on reconstruction: a row
+    whose chain predecessor is **presented as a v6 event** stands inside the v6 epoch,
+    where the stored bytes are the artifact and every append writes them, so the NULL
+    is destruction. See ``_verification._v6_epoch_neighbour_of``.
+    """
+
+    def test_a_nulled_envelope_inside_the_presented_epoch_is_invalid(
+        self, healthy
+    ) -> None:
+        corpus, _genesis, ordinary = healthy
+        clean = verify(ordinary, corpus)
+        assert clean.applicability is Applicability.FULLY_AUTHENTICATED, clean.summary()
+
+        result = verify(
+            ordinary, corpus, row=ordinary.row(canonical_envelope=None)
+        )
+        assert result.applicability is Applicability.INVALID, result.summary()
+        assert result.reasons == (FailureReason.ENVELOPE_ABSENT,)
+        assert result.accepted is False
+        assert result.envelope_version is EnvelopeVersion.ABSENT
+        # The verdict names the predecessor it convicted on, so an operator can check
+        # the claim rather than take it.
+        assert corpus.events[-2].event_hash_text in (result.detail or "")
+
+    def test_the_same_row_with_nothing_presented_is_unverifiable(self, healthy) -> None:
+        """The other way, and the one that keeps the conviction honest: absence of
+        material never manufactures a contradiction. This is §5.11's row-1 discipline
+        applied to the envelope column — a caller holding one row and no chain is told
+        "nothing could be checked", which for a genuinely pre-002 row is the truth and
+        the operator response is completely different (CUTOVER-POLICY §2 vs §4)."""
+
+        corpus, _genesis, ordinary = healthy
+        result = verify_event_strict(
+            ordinary.row(canonical_envelope=None),
+            keys=corpus.resolver(),
+            referents=NO_REFERENTS,
+        )
+        assert result.applicability is Applicability.UNVERIFIABLE, result.summary()
+        assert result.reasons == (FailureReason.ENVELOPE_ABSENT,)
+        assert result.accepted is False
+
+    def test_material_that_does_not_contain_the_predecessor_does_not_convict(
+        self, healthy
+    ) -> None:
+        """Presenting *some* material is not the trigger; presenting the predecessor
+        is. A window that starts after this event's predecessor cannot show the row is
+        inside the epoch, and the verdict stays the evidentiary gap."""
+
+        corpus, _genesis, ordinary = healthy
+        result = verify(
+            ordinary,
+            corpus,
+            row=ordinary.row(canonical_envelope=None),
+            material=corpus.material(
+                completeness=MaterialCompleteness.CONTIGUOUS_RANGE,
+                omit=(corpus.events[-2],),
+            ),
+        )
+        assert result.applicability is Applicability.UNVERIFIABLE, result.summary()
+        assert result.reasons == (FailureReason.ENVELOPE_ABSENT,)
+
+    def test_a_legacy_row_is_never_convicted_by_a_v6_neighbour_test(self) -> None:
+        """A v1-v5 row's chain columns never resolve as v6 referents, so the material
+        reading is silent about it and the legacy reading is untouched: the pre-002 gap
+        stays a gap. ``AbsentEnvelopeProbe`` remains ``_replay``-only, which is where
+        WI-267 put it — hosting rebuild-from-row candidates inside the one function
+        that decides authentication is the escape hatch it deleted."""
+
+        import dataclasses
+
+        from regista._verification import AbsentEnvelopeProbe, probe_absent_envelope
+
+        corpus = Corpus()
+        genesis = corpus.genesis()
+        legacy = TestTheTwoResolverLessCallSites._legacy_v4_event(
+            corpus.key(WORKER)
+        )
+        row = dataclasses.replace(
+            EventRow.from_event(legacy), canonical_envelope=None
+        )
+        result = verify_event_strict(
+            row, keys=corpus.resolver(), referents=corpus.material()
+        )
+        assert result.applicability is Applicability.UNVERIFIABLE, result.summary()
+        assert genesis.event_hash_text not in (result.detail or "")
+        # And the reading that DOES convict a legacy row still would, in replay.
+        assert probe_absent_envelope(row, keys=corpus.resolver()) is (
+            AbsentEnvelopeProbe.INCONSISTENT
+        )
+
+
+class TestStoreReferentsHoldsSummariesNotEnvelopes:
+    """WI-217: the store resolver's index must not track the size of the log.
+
+    Phase 2 built one ``StoreReferents`` per replay and cached every indexed event's
+    whole parsed envelope in it — which is the materialization ``tests/
+    test_wi217_replay_memory.py`` exists to forbid, arriving through the verifier
+    instead of through ``_replay``. Measured on an 8x log: peak growth 5.5x against a
+    3.0x budget, 19.89 MiB against a 5.00 MiB budget. That file measures the property
+    end to end; this one pins the mechanism, so a future change that reintroduces the
+    cache fails here with a reason rather than there with a number.
+    """
+
+    @staticmethod
+    def _rows(corpus: Corpus) -> list[dict[str, Any]]:
+        return [
+            {
+                "canonical_envelope": event.canonical_envelope,
+                "signature": event.signature,
+            }
+            for event in corpus.events
+        ]
+
+    def _material(self, corpus: Corpus, rows: list[dict[str, Any]] | None = None) -> Any:
+        """A store resolver over *rows*, which the caller may mutate afterwards.
+
+        ``rows`` is deliberately a live list rather than a closure over the corpus: the
+        contract ``StoreReferents`` relies on is that ``rows()`` is re-callable, and a
+        test that could not change the material between the index pass and a re-read
+        could not exercise that contract at all.
+        """
+
+        from regista._v6_referents import StoreReferents
+
+        live = self._rows(corpus) if rows is None else rows
+        return StoreReferents(rows=lambda: iter(live), label="corpus store")
+
+    def test_the_index_holds_no_parsed_envelope_until_a_payload_is_read(
+        self, healthy
+    ) -> None:
+        corpus, genesis, _ordinary = healthy
+        store = self._material(corpus)
+
+        referent = store.resolve_referent(genesis.event_hash_text)
+        assert referent is not None
+        assert referent.summary is not None
+        assert "not loaded" in repr(referent.envelope)
+
+        # Every deciding accessor answers from the summary, so a chain walk over the
+        # whole store reads no envelope at all.
+        assert referent.transition == "project_initialized"
+        assert referent.project_instance_id == corpus.project_instance_id
+        assert referent.trust_domain_id == corpus.trust_domain_id
+        assert referent.previous_project_event_hash is None
+        assert "not loaded" in repr(referent.envelope)
+
+        # And the payload is real when asked for, not an elided ``{}``.
+        assert referent.payload == genesis.envelope["payload"]
+        assert "materialized" in repr(referent.envelope)
+
+    def test_the_summary_is_a_pre_read_and_agrees_with_the_bytes(self, healthy) -> None:
+        """A summary that could disagree with the envelope would be a second source of
+        truth. It is built from the same strict parse, and this asserts that for every
+        event in the corpus rather than for one."""
+
+        corpus, _genesis, _ordinary = healthy
+        store = self._material(corpus)
+
+        for event in corpus.events:
+            referent = store.resolve_referent(event.event_hash_text)
+            assert referent is not None
+            envelope = event.envelope
+            assert referent.transition == envelope["transition"]
+            assert referent.project_instance_id == envelope["project_instance_id"]
+            assert referent.trust_domain_id == envelope["trust_domain_id"]
+            assert referent.actor_principal_id == envelope["actor"]["principal_id"]
+            assert referent.signing_key_id == envelope["signing"]["key_id"]
+            assert referent.previous_project_event_hash == (
+                envelope["chain"]["previous_project_event_hash"]
+            )
+
+    def test_material_that_vanishes_mid_pass_raises_rather_than_reporting_no_payload(
+        self, healthy
+    ) -> None:
+        """The re-read's failure mode, chosen deliberately: an empty payload for a row
+        that has *gone* would be an absence reported as a fact, and every §5.11 verdict
+        that reads a payload would then read a false one. A store changing under the
+        pass that is reading it is not evidence."""
+
+        from regista._errors import ErrorCode, RegistaError
+
+        corpus, genesis, _ordinary = healthy
+        rows = self._rows(corpus)
+        store = self._material(corpus, rows)
+        referent = store.resolve_referent(genesis.event_hash_text)
+        assert referent is not None
+
+        # The row leaves the material after the index was built — the interleaving the
+        # raise is about, produced through the real re-read rather than by patching.
+        rows.remove(
+            next(
+                row
+                for row in rows
+                if row["canonical_envelope"] == genesis.canonical_envelope
+            )
+        )
+        with pytest.raises(RegistaError) as exc:
+            _ = referent.payload
+        assert exc.value.code is ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION
+        assert genesis.event_hash_text in str(exc.value)
+
+    def test_the_materialization_memo_is_bounded(self, healthy) -> None:
+        """The memo must not be able to grow back into the cache it replaced: past the
+        cap a payload read still answers, it just re-reads. Asserted on the budget
+        rather than on a byte count, because the byte count is the other file's job."""
+
+        from regista._v6_referents import _MATERIALIZED_ENVELOPE_LIMIT
+
+        corpus, genesis, _ordinary = healthy
+        store = self._material(corpus)
+        store._budget.remaining = 1
+
+        first = store.resolve_referent(genesis.event_hash_text)
+        second = store.resolve_referent(corpus.events[1].event_hash_text)
+        assert first is not None and second is not None
+
+        assert first.payload == genesis.envelope["payload"]
+        assert "materialized" in repr(first.envelope)
+
+        assert second.payload == corpus.events[1].envelope["payload"]
+        assert "not loaded" in repr(second.envelope), (
+            "the memo grew past its budget"
+        )
+        assert _MATERIALIZED_ENVELOPE_LIMIT > 0

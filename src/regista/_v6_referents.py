@@ -58,6 +58,7 @@ __all__ = [
     "NoReferents",
     "ReferentEvent",
     "ReferentResolver",
+    "ReferentSummary",
     "StoreReferents",
     "referent_from_bytes",
     "store_referents",
@@ -124,6 +125,47 @@ def resolve_completeness(
     return override
 
 
+@dataclass(frozen=True, slots=True)
+class ReferentSummary:
+    """The six signed members :class:`ReferentEvent`'s accessors read, held eagerly.
+
+    Every one of these is read while *deciding* about a referent — its transition, its
+    scope, its position on the chain — and none of them is the referent's content. The
+    distinction is what lets a resolver index a whole store without holding the store:
+    a summary is ~0.5 KiB per event where the parsed envelope is ~5 KiB, measured on
+    real rows, and the difference is a footprint that tracks the log (see
+    :class:`_LazyEnvelope` and WI-217).
+
+    The repeated members are interned: a project's events share one project instance,
+    one trust domain, a handful of principals and key ids, so interning makes the
+    per-event cost the two things that genuinely differ — the chain link and the
+    addressing hash.
+    """
+
+    transition: str
+    project_instance_id: str
+    trust_domain_id: str
+    actor_principal_id: str
+    signing_key_id: str
+    previous_project_event_hash: str | None
+
+    @classmethod
+    def from_envelope(cls, envelope: Mapping[str, Any]) -> ReferentSummary:
+        from sys import intern
+
+        previous = envelope["chain"]["previous_project_event_hash"]
+        return cls(
+            transition=intern(str(envelope["transition"])),
+            project_instance_id=intern(str(envelope["project_instance_id"])),
+            trust_domain_id=intern(str(envelope["trust_domain_id"])),
+            actor_principal_id=intern(str(envelope["actor"]["principal_id"])),
+            signing_key_id=intern(str(envelope["signing"]["key_id"])),
+            previous_project_event_hash=(
+                None if previous is None else str(previous)
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class ReferentEvent:
     """One event of the presented material, addressed by its v6 event hash.
@@ -133,33 +175,53 @@ class ReferentEvent:
     hash over ``canonical_envelope || signature``, which is what every referring
     field (``signing.key_binding_event_hash``, ``chain.previous_project_event_hash``,
     ``workflow.registration_event_hash``) names.
+
+    ``summary`` is an optional pre-read of the members the accessors need, supplied by
+    a resolver that indexes many events and must not hold them all parsed. When it is
+    absent every accessor reads the envelope, which is the original behaviour; when it
+    is present the envelope may be loaded lazily and only ``payload`` (or a direct
+    ``envelope[...]`` read) pays for it. It is a *pre-read*, never an override: it is
+    built from the same strict-parsed envelope, so the two can only agree.
     """
 
     event_hash: str
     envelope: Mapping[str, Any]
+    summary: ReferentSummary | None = None
 
     @property
     def transition(self) -> str:
+        if self.summary is not None:
+            return self.summary.transition
         return str(self.envelope["transition"])
 
     @property
     def project_instance_id(self) -> str:
+        if self.summary is not None:
+            return self.summary.project_instance_id
         return str(self.envelope["project_instance_id"])
 
     @property
     def trust_domain_id(self) -> str:
+        if self.summary is not None:
+            return self.summary.trust_domain_id
         return str(self.envelope["trust_domain_id"])
 
     @property
     def actor_principal_id(self) -> str:
+        if self.summary is not None:
+            return self.summary.actor_principal_id
         return str(self.envelope["actor"]["principal_id"])
 
     @property
     def signing_key_id(self) -> str:
+        if self.summary is not None:
+            return self.summary.signing_key_id
         return str(self.envelope["signing"]["key_id"])
 
     @property
     def previous_project_event_hash(self) -> str | None:
+        if self.summary is not None:
+            return self.summary.previous_project_event_hash
         value = self.envelope["chain"]["previous_project_event_hash"]
         return None if value is None else str(value)
 
@@ -289,6 +351,92 @@ class MappingReferents:
         return cls(events=events, material_completeness=completeness, label=label)
 
 
+#: How many full envelopes one store resolver may hold materialized at a time.
+#: The healthy population is the trust plane — one acceptance per principal, one
+#: workflow registration, the bootstrap event — so this is never reached in practice;
+#: it exists so an adversarial log naming a *different* ordinary event as every event's
+#: anchor cannot walk the retained set back up to the size of the log. Past the cap a
+#: payload read still answers; it just re-reads instead of being remembered.
+_MATERIALIZED_ENVELOPE_LIMIT: Final = 256
+
+
+@dataclass
+class _MaterializationBudget:
+    """Shared allowance for materialized envelopes, so the bound is per *resolver*."""
+
+    remaining: int = _MATERIALIZED_ENVELOPE_LIMIT
+
+    def take(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+class _LazyEnvelope(Mapping[str, Any]):
+    """A v6 envelope that is re-read from the store the first time it is *used*.
+
+    This exists for one measured reason (WI-217, P1.7 phase 4). ``StoreReferents``
+    indexes every v6 event in the store and retained each event's whole parsed envelope
+    for the resolver's lifetime — which, for a replay, is the whole replay. So Phase 2's
+    per-resolver cache silently defeated the streaming space bound WI-217 exists to
+    defend: measured on an 8x log, replay's tracemalloc peak grew **5.5x** against a
+    3.0x budget. A parsed envelope costs ~5 KiB per event on real rows against ~0.5 KiB
+    for the members a *decision* about the referent needs (:class:`ReferentSummary`),
+    and the difference is the term that tracks the log.
+
+    So the index holds summaries and this proxy, and the envelope proper is re-read on
+    demand — which in a healthy replay happens for the trust-plane referents alone (a
+    key acceptance, a workflow registration, an enrolment, a revocation), because those
+    are the only referents whose ``payload`` any verdict reads.
+
+    Three properties keep that sound rather than merely smaller:
+
+    * **Nothing is fabricated and nothing is partial.** This mapping either has the real
+      envelope or fetches it; there is no subset view of it, so no consumer can read a
+      member that has been quietly elided and conclude the envelope lacked it.
+    * **The re-read is addressed by v6 event hash**, recomputed over the stored bytes,
+      so it can only ever return the bytes this referent already stood for. A row edited
+      since the index was built does not resolve to something else — it stops resolving.
+    * **A vanished row is reported, not smoothed over.** ``ReferentEvent.payload``
+      returning ``{}`` for a row that has since left the material would be an absence
+      dressed as a fact, so the load raises instead.
+
+    The re-read costs one scan of the store's envelope bytes (hash only — nothing is
+    parsed until the matching row is found), which is why materializations are memoized,
+    and bounded (:data:`_MATERIALIZED_ENVELOPE_LIMIT`) so the memo cannot become the
+    cache this class replaced.
+    """
+
+    __slots__ = ("_event_hash", "_full", "_owner")
+
+    def __init__(self, owner: StoreReferents, event_hash: str) -> None:
+        self._owner = owner
+        self._event_hash = event_hash
+        self._full: Mapping[str, Any] | None = None
+
+    def _materialize(self) -> Mapping[str, Any]:
+        if self._full is not None:
+            return self._full
+        full = self._owner.load_envelope(self._event_hash)
+        if self._owner._budget.take():
+            self._full = full
+        return full
+
+    def __getitem__(self, key: str) -> Any:
+        return self._materialize()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._materialize())
+
+    def __len__(self) -> int:
+        return len(self._materialize())
+
+    def __repr__(self) -> str:
+        state = "materialized" if self._full is not None else "not loaded"
+        return f"_LazyEnvelope({self._event_hash}, {state})"
+
+
 @dataclass
 class StoreReferents:
     """Material presented as an **open project store**, indexed lazily.
@@ -299,7 +447,7 @@ class StoreReferents:
     of the two readings and is the P1.7 notes' flag #4 decision.
 
     **Cost, stated rather than hidden.** ``events`` has no ``event_hash`` column, so
-    the index is built by one ordered pass that recomputes each v6 hash. The pass is
+    the index is built by one pass that recomputes each v6 hash. The pass is
     lazy — a store whose events are all v1-v5 never pays for it, because no v6 row
     reaches referent resolution — and cached for the resolver's lifetime, so a replay
     over N events pays once rather than N times. A per-row helper that constructs a
@@ -308,19 +456,66 @@ class StoreReferents:
     it. An ``event_hash`` generated column would remove the pass entirely and is
     filed rather than smuggled in here: it is a migration, and this is a verifier.
 
-    ``rows`` is a zero-argument callable returning row mappings with at least
-    ``canonical_envelope`` and ``signature``, which is what keeps this type identical
-    for Postgres and for the in-memory backend — neither the SQL nor the facade
-    appears here.
+    **What the index may hold is bounded, and that is load bearing.** Retaining every
+    indexed event's whole parsed envelope made this resolver's footprint track the log
+    size — exactly the property WI-217's streaming replay exists to defend, and
+    measured at 5.5x peak growth on an 8x log against a 3.0x budget. The index
+    therefore holds a :class:`ReferentSummary` per event and re-reads the envelope on
+    demand (:class:`_LazyEnvelope`), which makes the retained term per-event *metadata*
+    rather than per-event *content*; and ``rows()`` is consumed as a stream so the
+    indexing pass does not materialize the log either.
+
+    ``rows`` is a zero-argument callable returning an iterable of row mappings with at
+    least ``canonical_envelope`` and ``signature``, which is what keeps this type
+    identical for Postgres and for the in-memory backend — neither the SQL nor the
+    facade appears here. It must be **re-callable**: a payload read re-reads through it.
     """
 
     rows: Any
     label: str = "open project store"
     _index: dict[str, ReferentEvent] | None = field(default=None, init=False, repr=False)
+    _budget: _MaterializationBudget = field(
+        default_factory=_MaterializationBudget, init=False, repr=False
+    )
 
     @property
     def completeness(self) -> MaterialCompleteness:
         return MaterialCompleteness.COMPLETE_STORE
+
+    def load_envelope(self, event_hash: str) -> Mapping[str, Any]:
+        """Re-read and parse the one envelope addressed by ``event_hash``.
+
+        Hash first, parse second: the scan computes ``compute_v6_event_hash`` over the
+        stored bytes, which needs no JSON parse, and only parses the row that matches.
+
+        Raises when the material no longer presents the row. That is deliberate and it
+        is the reason this is not written to return ``None``: the only caller is
+        :class:`_LazyEnvelope`, whose result feeds ``ReferentEvent.payload``, and an
+        empty payload for a row that has *gone* would be an absence reported as a fact —
+        precisely the shape §5.11 exists to keep out of verdicts.
+        """
+
+        from ._errors import ErrorCode, RegistaError
+        from ._signing import compute_v6_event_hash
+        from ._verification import parse_v6_envelope_strict
+
+        wanted = event_hash.removeprefix("sha256:")
+        for row in self.rows():
+            envelope = row.get("canonical_envelope")
+            signature = row.get("signature")
+            if not envelope or not signature:
+                continue
+            envelope_bytes = bytes(envelope)
+            if compute_v6_event_hash(envelope_bytes, bytes(signature)).hex() != wanted:
+                continue
+            return parse_v6_envelope_strict(envelope_bytes)
+        raise RegistaError(
+            ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION,
+            f"the presented material no longer contains the v6 event {event_hash}, "
+            "which it presented when this resolver indexed it; a store that changes "
+            "under a verification pass cannot be reported as evidence",
+            detail={"event_hash": event_hash, "material": self.describe()},
+        )
 
     def _build(self) -> dict[str, ReferentEvent]:
         index: dict[str, ReferentEvent] = {}
@@ -328,8 +523,13 @@ class StoreReferents:
             referent = referent_from_bytes(
                 row.get("canonical_envelope"), row.get("signature")
             )
-            if referent is not None:
-                index[referent.event_hash] = referent
+            if referent is None:
+                continue
+            index[referent.event_hash] = ReferentEvent(
+                event_hash=referent.event_hash,
+                envelope=_LazyEnvelope(self, referent.event_hash),
+                summary=ReferentSummary.from_envelope(referent.envelope),
+            )
         return index
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
@@ -413,22 +613,56 @@ class BundleReferents:
         )
 
 
+#: Rows per FETCH from the referent scan's server-side cursor (WI-217). Matches
+#: ``_replay._EVENT_STREAM_SIZE``'s reasoning and psycopg's own ServerCursor default:
+#: it bounds the block in ROWS, so on a project with very wide payloads the block's
+#: byte cost rises with the payload width.
+_REFERENT_STREAM_SIZE: Final = 100
+
+
 def store_referents(conn: Any, *, label: str = "project store") -> StoreReferents:
     """Present an open store connection as material (§8.4).
 
     Build this **once per verification pass**, not once per event: the index costs one
-    ordered scan of ``events`` (there is no ``event_hash`` column to address a referent
-    by), so paying it per event turns an O(n) replay into O(n²). Replay and the
-    single-event helpers differ only in how long the resolver lives.
+    scan of ``events`` (there is no ``event_hash`` column to address a referent by), so
+    paying it per event turns an O(n) replay into O(n²). Replay and the single-event
+    helpers differ only in how long the resolver lives.
+
+    The scan is **streamed** through a server-side cursor, for WI-217's reason and not
+    merely for tidiness: ``fetchall()`` converts every row's envelope bytes to Python at
+    once, so the pass that builds the index used to cost the whole log in peak memory
+    even though the index itself no longer keeps it. Note that iterating a *client-side*
+    cursor would not fix this — libpq buffers the whole result set in C heap, which
+    tracemalloc cannot see and RSS very much can, so the measurement would improve while
+    the machine's memory did not.
+
+    ``conn.cursor`` is the discriminator, and the fallback is a statement rather than a
+    refusal on purpose: the in-memory facade (``_in_memory_v6``) offers ``execute``
+    only, its rows are already resident objects that ``fetchall`` merely references, and
+    ``_genesis.read_genesis_from_connection`` depends on this working there (pinned by
+    ``tests/test_wi287_inmem_parity.py``). A named cursor there would be a
+    ``PARITY_BOUNDARY_POSTGRES_ONLY`` refusal in the middle of a shared read path.
     """
 
     from psycopg.sql import SQL
 
-    def rows() -> list[Mapping[str, Any]]:
-        fetched: list[Mapping[str, Any]] = conn.execute(
-            SQL("SELECT canonical_envelope, signature FROM events")
-        ).fetchall()
-        return fetched
+    statement = SQL("SELECT canonical_envelope, signature FROM events")
+
+    def rows() -> Iterator[Mapping[str, Any]]:
+        cursor_factory = getattr(conn, "cursor", None)
+        if cursor_factory is None:
+            yield from conn.execute(statement).fetchall()
+            return
+        import uuid as _uuid
+
+        # A server-side cursor needs a transaction; `conn.transaction()` opens one
+        # or takes a savepoint inside the caller's, and the scan is drained inside
+        # this block so the savepoint's lifetime is the scan's.
+        with conn.transaction():
+            with cursor_factory(name=f"referents_{_uuid.uuid4().hex[:8]}") as scan:
+                scan.itersize = _REFERENT_STREAM_SIZE
+                scan.execute(statement)
+                yield from scan
 
     return StoreReferents(rows=rows, label=label)
 

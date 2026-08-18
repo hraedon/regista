@@ -133,6 +133,13 @@ class ErrorCode(StrEnum):
     # A v6 entity chain may not skip a link: the predecessor at entity_seq - 1 must
     # exist and be signed, or the append is refused rather than writing a fork.
     V6_CHAIN_LINK_MISSING = "V6_CHAIN_LINK_MISSING"
+    # The presented material stopped presenting an event it had already presented,
+    # part-way through one verification pass (`_v6_referents.StoreReferents` indexes
+    # the store, then re-reads an envelope when a verdict needs its payload). Raised
+    # rather than answered with an empty payload: material that changes under the
+    # pass reading it cannot be reported as evidence, and an absence dressed as a
+    # fact is the one outcome §5.11 exists to keep out of verdicts.
+    MATERIAL_CHANGED_UNDER_VERIFICATION = "MATERIAL_CHANGED_UNDER_VERIFICATION"
     # The two project-local acceptance transitions _trust_log.DEFERRED_TRANSITIONS
     # assigns to P1.7 (TRUST-DOMAIN.md §5.8). Both carry a machine-readable `reason`.
     #

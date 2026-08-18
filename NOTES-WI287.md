@@ -256,7 +256,7 @@ and the script asserts that (a survivor raises rather than being reported):
 
 | Mutation | Reddens |
 |---|---|
-| v6 insert routed through legacy `append` | `test_a_v6_append_never_writes_the_legacy_chain_head` |
+| v6 insert routed through legacy `append` | `test_a_v6_append_advances_the_one_chain_head_with_the_v6_formula` (renamed in P1.7 phase 4, when the two heads became one) |
 | chain head is not the v6 hash | + `TestSemanticConformanceInMemory::test_the_project_chain_links_across_entities` |
 | post-write failure no longer refuses | `test_a_failure_after_a_write_refuses_instead_of_faking_rollback` |
 | unmodelled statement returns empty instead of refusing | `test_an_unmodelled_statement_is_refused_by_name` |

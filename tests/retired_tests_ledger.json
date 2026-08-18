@@ -1520,7 +1520,7 @@
    "work_item": "WI-289",
    "invariant": "nulling canonical_envelope on a signed row halts (row contradicts its own signature/hash)",
    "carry_forward": "v6 envelope-deletion detection",
-   "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_deleting_the_canonical_envelope_is_unverifiable_and_names_the_absence",
+   "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_deleting_the_canonical_envelope_is_invalid_and_names_the_absence",
    "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
   },
   {

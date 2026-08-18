@@ -205,8 +205,39 @@ class InMemoryV6Rows:
     def __init__(self, store: InMemoryEventStore) -> None:
         self.store = store
         self.project_identity: dict[str, Any] | None = None
-        self.head_hash: bytes | None = None
         self.head_event_id: uuid.UUID | None = None
+
+    @property
+    def head_hash(self) -> bytes | None:
+        """The global chain head — the store's ``_global_chain_head``, not a copy.
+
+        Postgres has exactly **one** ``event_chain_head`` row: the writer advances it
+        (``_events._advance_global_chain_head``) and replay reads it back to check the
+        head against the chain tail. In memory there were two: this relation, which the
+        v6 writer advanced through the facade, and ``InMemoryEventStore._global_chain_head``,
+        which only the *legacy* ``append`` ever wrote — and which is the one
+        ``_in_memory_replay`` reads. So after a v6 epoch the head replay consulted was
+        still ``None``, and WI-266's fail-closed check for "head set, log empty" — the
+        signature of a wholesale-deleted log — was **unreachable in memory** while
+        Postgres detected it correctly. A fail-open gap of exactly the class WI-266
+        closed, and the second hole measured in WI-287's parity claim after finding 16.
+
+        The fix is the parity discipline rather than a second advance: two pieces of
+        state that must agree are one piece of state. Nothing is copied and nothing is
+        synchronised, so there is no window in which they disagree, and the v6 and
+        legacy appenders cannot fork the head (they are mutually exclusive anyway —
+        ``_genesis.check_legacy_append`` refuses a legacy append on both sides of
+        genesis). Note this is deliberately NOT an advance inside
+        ``append_v6_row``: on Postgres the *writer* advances the head, explicitly,
+        after the insert, and the in-memory path must be the same shape or it is a
+        different mechanism wearing the same name.
+        """
+
+        return self.store._global_chain_head
+
+    @head_hash.setter
+    def head_hash(self, value: bytes | None) -> None:
+        self.store._global_chain_head = value
 
     # -- events ------------------------------------------------------------
     def event_rows(self) -> list[dict[str, Any]]:

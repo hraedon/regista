@@ -5,7 +5,7 @@ import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from ._jcs import canonicalize
@@ -793,6 +793,7 @@ def verify_event_with_public_key(
     scheme_id: str | None = None,
     backend: Backend | None = None,
     policy: VerificationPolicy | None = None,
+    referents: ReferentResolver = NO_REFERENTS,
 ) -> bool:
     """Verify ``event`` under caller-supplied key material.
 
@@ -801,9 +802,25 @@ def verify_event_with_public_key(
     as the caller vouched for the key: with no registry there is nothing else to
     derive it from. Callers that hold key metadata (a KeySet, the principal
     registry, a bundle registry) must pass it — that is the S2 binding.
+
+    ``referents`` is the presented material (``TRUST-DOMAIN.md`` §8.4), defaulting
+    to ``NO_REFERENTS`` exactly as :func:`verify_event_result_with_public_key`
+    does. This shim had **no such parameter** until P1.7 phase 4, which made it
+    return ``False`` for every v6 event: substituting the *key* resolver does not
+    change what *chain* material a v6 verdict needs (§5.10 steps 1-4). The
+    parameter is offered rather than hardcoded because this is the documented
+    standalone verification utility (``spec.md`` §17.12) — an offline verifier
+    holding a bundle, or a caller holding an open store, genuinely can present
+    material, and a bool shim less capable than the result function it delegates
+    to is a second clamp with a smaller blast radius.
     """
     return verify_event_result_with_public_key(
-        event, public_key, scheme_id=scheme_id, backend=backend, policy=policy,
+        event,
+        public_key,
+        scheme_id=scheme_id,
+        backend=backend,
+        policy=policy,
+        referents=referents,
     ).accepted
 
 
@@ -1091,29 +1108,128 @@ def _verify_principal_binding_core(
     )
 
 
+#: Greppable prefix for the one answer a `principal_keys` probe may give about a v6
+#: event. Named rather than inlined so a caller can branch on it without matching prose.
+V6_BINDING_NOT_DECIDED_BY_REGISTRY: Final = "v6-binding-not-decided-by-registry"
+
+
+def _v6_binding_refusal(
+    *, actor_id: str | None, key_id: str | None,
+) -> PrincipalVerificationResult:
+    """The principal-binding answer for a v6 event: refused, and said so.
+
+    ``TRUST-DOMAIN.md`` §5.9 rule 1 — the ``principal_keys`` projection is never a
+    source for a v6 event's key binding; §5.10 decides it over *presented material*,
+    which this probe has none of and (by contract) is not given any. Both twins used
+    to reach ``verified=False`` for a v6 event anyway, so the *verdict* was already
+    fail-closed — but by two different accidents, and both composed the error
+    ``"signature-verification-failed: signature invalid under all registered public
+    keys"`` over an event whose signature is valid and was never checked. A false
+    claim that happens to point the right way is still a false claim, and it is the
+    one an operator reads.
+
+    ``principal_id`` and ``key_id`` are the *row's* values, which are facts about the
+    row rather than a binding this refuses to assert.
+    """
+
+    return PrincipalVerificationResult(
+        verified=False,
+        principal_id=actor_id,
+        key_id=key_id,
+        error=(
+            f"{V6_BINDING_NOT_DECIDED_BY_REGISTRY}: this event carries a v6 envelope, "
+            "whose key binding is decided by TRUST-DOMAIN.md §5.10 over presented "
+            "material; the principal_keys projection is never a source for it (§5.9 "
+            "rule 1). Use verify_event_strict with the material presented instead"
+        ),
+    )
+
+
+def _is_v6_row(canonical_envelope: Any) -> bool:
+    """Whether these stored bytes are a v6 envelope, tolerant of the column's shapes."""
+
+    from ._verification import _as_bytes
+
+    stored = _as_bytes(canonical_envelope)
+    if not stored:
+        return False
+    try:
+        return classify_envelope_version(stored) == 6
+    except Exception:
+        return False
+
+
+def _registry_binding_verifier(row: Any) -> Callable[[Any], bool]:
+    """``verify_fn`` for a ``principal_keys`` entry, shared by both binding twins.
+
+    One body, because the two twins differ only in how they obtain the row: the
+    object-shaped one used to route through ``verify_event_with_public_key``, which
+    labelled a *registry* key ``SUPPLIED_PUBLIC_KEY`` and so slipped past §5.9 rule
+    1's raise, while the dict-shaped one labelled it ``PRINCIPAL_REGISTRY`` and
+    tripped it. Same table, same key, two different mechanisms — the shape WI-287's
+    parity discipline exists to remove.
+
+    The scheme is taken from the registry entry, never from the row's self-declared
+    ``scheme_id`` (WI-267 / S2-interim). Row reconciliation runs inside
+    ``verify_event_strict``, so a principal binding cannot be asserted over an
+    envelope whose row was rewritten.
+    """
+
+    from ._v6_referents import NO_REFERENTS
+    from ._verification import (
+        DEFAULT_POLICY,
+        StaticKeyResolver,
+        TrustedKeySource,
+        verify_event_strict,
+    )
+
+    def _verify_with_key(entry: Any) -> bool:
+        try:
+            resolver = StaticKeyResolver(
+                material=entry.public_key,
+                scheme_id=entry.scheme,
+                source=TrustedKeySource.PRINCIPAL_REGISTRY,
+                principal_id=entry.principal_id,
+            )
+            return verify_event_strict(
+                row,
+                keys=resolver,
+                # `NO_REFERENTS` **by contract**, and deliberately not a parameter: a
+                # probe over the `principal_keys` registry is legacy-only, so offering
+                # callers a way to present material here would be offering them a way
+                # to route a v6 binding through the one table §5.9 rule 1 excludes.
+                # v6 rows never reach this function (see the refusal above); if one
+                # ever did, rule 1's raise plus the `except` below still answer "this
+                # entry does not bind".
+                referents=NO_REFERENTS,
+                policy=DEFAULT_POLICY,
+            ).accepted
+        except Exception:
+            return False
+
+    return _verify_with_key
+
+
 def verify_event_with_principal_binding(
     event: Any,
     mgr: Any,
 ) -> PrincipalVerificationResult:
     from ._principal_keys import list_principal_keys
+    from ._verification import EventRow
+
+    if _is_v6_row(getattr(event, "canonical_envelope", None)):
+        return _v6_binding_refusal(
+            actor_id=getattr(event, "actor_id", None),
+            key_id=getattr(event, "key_id", None),
+        )
 
     entries = list_principal_keys(mgr, event.actor_id, status=None)
-
-    def _verify_with_key(entry: Any) -> bool:
-        # The scheme is taken from the registry entry, never from the event
-        # row's self-declared scheme_id (WI-267 / S2-interim).
-        try:
-            return verify_event_with_public_key(
-                event, entry.public_key, scheme_id=entry.scheme,
-            )
-        except Exception:
-            return False
 
     return _verify_principal_binding_core(
         entries,
         actor_id=event.actor_id,
         scheme_id=event.scheme_id,
-        verify_fn=_verify_with_key,
+        verify_fn=_registry_binding_verifier(EventRow.from_event(event)),
         event_key_id=event.key_id,
         event_timestamp=_event_timestamp_for_binding(event),
     )
@@ -1125,49 +1241,18 @@ def verify_event_dict_principal_binding(
 ) -> PrincipalVerificationResult:
     scheme_id = evt.get("scheme_id") or "hmac-sha256"
 
-    from ._v6_referents import NO_REFERENTS
-    from ._verification import (
-        DEFAULT_POLICY,
-        EventRow,
-        StaticKeyResolver,
-        TrustedKeySource,
-        verify_event_strict,
-    )
+    from ._verification import EventRow
 
-    row = EventRow.from_mapping(evt)
-
-    def _verify_with_key(entry: Any) -> bool:
-        # The scheme is taken from the registry entry, never from the row's
-        # self-declared scheme_id (WI-267 / S2-interim). Row reconciliation
-        # runs inside verify_event_strict, so a principal binding can no longer
-        # be asserted over an envelope whose row was rewritten.
-        try:
-            resolver = StaticKeyResolver(
-                material=entry.public_key,
-                scheme_id=entry.scheme,
-                source=TrustedKeySource.PRINCIPAL_REGISTRY,
-                principal_id=entry.principal_id,
-            )
-            return verify_event_strict(
-                row,
-                keys=resolver,
-                # A principal-binding probe over the `principal_keys` registry is
-                # LEGACY-ONLY by contract: §5.9 rule 1 makes registry resolution a
-                # raise for a v6 event, and `verify_event_strict` raises. The
-                # `except Exception` below is what turns that into "this entry does
-                # not bind", which is the correct answer — a v6 event's binding is
-                # decided by §5.10 over presented material, never by this table.
-                referents=NO_REFERENTS,
-                policy=DEFAULT_POLICY,
-            ).accepted
-        except Exception:
-            return False
+    if _is_v6_row(evt.get("canonical_envelope")):
+        return _v6_binding_refusal(
+            actor_id=evt.get("actor_id"), key_id=evt.get("key_id"),
+        )
 
     return _verify_principal_binding_core(
         entries,
         actor_id=evt["actor_id"],
         scheme_id=scheme_id,
-        verify_fn=_verify_with_key,
+        verify_fn=_registry_binding_verifier(EventRow.from_mapping(evt)),
         event_key_id=evt.get("key_id"),
         event_timestamp=_event_timestamp_for_binding(evt),
     )

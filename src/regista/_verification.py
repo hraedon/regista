@@ -2570,6 +2570,63 @@ def probe_absent_envelope(
     return AbsentEnvelopeProbe.INCONSISTENT
 
 
+def _v6_epoch_neighbour_of(
+    row: EventRow, referents: ReferentResolver
+) -> str | None:
+    """A presented **v6** event this row links to by chain hash, or ``None``.
+
+    This is the second reading of a NULL ``canonical_envelope``, and the one that
+    resolves a measured disagreement between this module and ``_replay`` (P1.7 phase
+    3). Both fail closed, but they were making different claims about the same row:
+
+    * ``verify_event_strict`` said ``UNVERIFIABLE`` / ``ENVELOPE_ABSENT`` — "nothing
+      failed, there is nothing to check" — because :class:`AbsentEnvelopeProbe`
+      reconstructs only the v1/v2 shapes ``CUTOVER-POLICY`` §4.1 enumerates and is
+      not called from here at all.
+    * ``_replay`` (both backends) called the probe, got ``INCONSISTENT`` for any v6
+      row — the probe cannot rebuild a v6 envelope, so it never matches — and halted
+      with "the row contradicts its own cryptographic material".
+
+    So a caller using ``verify_event_result`` got the weaker of the two, and the
+    stronger one rested on a reconstruction that was never attempted for the version
+    in question. The fail-closed reading is the conviction; the sound *basis* for it
+    is not reconstruction but the **presented material**, which is where every other
+    v6 verdict comes from (§5.10, §8.4):
+
+        If the row's chain predecessor is presented and IS a v6 event, then this row
+        stands inside the v6 epoch — ``_genesis.check_legacy_append`` refuses a mixed
+        region on both sides of genesis — and in the v6 epoch the stored bytes ARE
+        the artifact (``V6-ENVELOPE.md`` §9.2), written by every append. A NULL is
+        therefore destruction, not the migration-002 gap.
+
+    Nothing is reconstructed and no signature is re-derived: the only inputs are the
+    row's own chain columns and what the caller presented. Resolution is by v6 event
+    hash, so a hash that resolves resolves to bytes that commit to themselves, and a
+    predecessor cannot be forged into existence by editing the row (it would simply
+    stop resolving). With ``NO_REFERENTS`` this returns ``None`` and the verdict stays
+    ``UNVERIFIABLE`` — the honest answer for a caller who presented one row.
+
+    What it deliberately does NOT convict: the cutover event itself, whose predecessor
+    is the *legacy* head and therefore never resolves as a v6 referent, and any
+    genuinely pre-002 row, which carries no chain columns at all. The remaining
+    asymmetry is stated in the notes: for v1-v5 rows the probe's heuristic conviction
+    stays a ``_replay``-only reading, because hosting the rebuild-from-row candidates
+    inside the one function that decides authentication is the escape hatch WI-267
+    deleted (see :class:`AbsentEnvelopeProbe`).
+    """
+
+    for column in (row.prev_global_event_hash, row.prev_event_hash):
+        if not column:
+            continue
+        # v6 addressing is SHA-256 by specification (§6.1's domain registry), so a
+        # legacy row whose chain columns are some other digest simply does not
+        # resolve — a miss, which is the non-convicting direction.
+        addressed = "sha256:" + bytes(column).hex()
+        if referents.resolve_referent(addressed) is not None:
+            return addressed
+    return None
+
+
 def _base_kwargs(
     row: EventRow, *, mapped_actor_ids: Iterable[str] | None = None
 ) -> dict[str, Any]:
@@ -3583,8 +3640,35 @@ def verify_event_strict(
 
     # (3) No stored envelope at all (pre-002 rows). Nothing failed; there is
     #     nothing to check. UNVERIFIABLE, never INVALID — the operator response
-    #     is completely different.
+    #     is completely different. UNLESS the presented material shows the row
+    #     stands inside the v6 epoch, in which case the absence is destruction:
+    #     see _v6_epoch_neighbour_of.
     if not row.canonical_envelope:
+        neighbour = _v6_epoch_neighbour_of(row, referents)
+        if neighbour is not None:
+            return VerificationResult(
+                **base,
+                envelope_version=EnvelopeVersion.ABSENT,
+                envelope_present=False,
+                envelope_schema_valid=False,
+                signature_valid=False,
+                scheme_id=None,
+                hash_alg=None,
+                trusted_key_source=TrustedKeySource.NONE,
+                trusted_key_id=None,
+                unsigned_fields=frozenset(unsigned | _ALL_ROW_FIELDS),
+                applicability=Applicability.INVALID,
+                reasons=(FailureReason.ENVELOPE_ABSENT,),
+                detail=(
+                    "canonical_envelope is NULL on a row whose chain predecessor "
+                    f"{neighbour} IS presented as a v6 event, so this row stands "
+                    "inside the v6 epoch — where the stored bytes ARE the artifact "
+                    "(V6-ENVELOPE.md §9.2) and every append writes them. The bytes "
+                    "did not predate the column; they were removed. Offline "
+                    "reconstruction is an explicit operator action, never a "
+                    f"verify-path fallback ({referents.describe()})"
+                ),
+            )
         return VerificationResult(
             **base,
             envelope_version=EnvelopeVersion.ABSENT,

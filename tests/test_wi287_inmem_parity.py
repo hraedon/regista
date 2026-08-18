@@ -485,26 +485,49 @@ class TestParityBoundary:
                 )
         assert exc.value.code is ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY
 
-    def test_a_v6_append_never_writes_the_legacy_chain_head(
+    def test_a_v6_append_advances_the_one_chain_head_with_the_v6_formula(
         self, in_memory_project, keyset, in_memory_genesis
     ) -> None:
-        """The v6 head and the v5 head are different values and stay separate.
+        """One head, advanced by the writer, under the v6 formula.
 
-        ``InMemoryEventStore.append`` advances ``_global_chain_head`` with the v5
-        ``sha256(envelope || signature)`` formula. A v6 append routed through it
-        would leave a v5-shaped head behind every v6 event — a mixed-epoch smear
-        with no error, which is why the v6 path has its own insert and advances
-        ``event_chain_head`` with ``compute_v6_event_hash`` instead.
+        The invariant is about the **formula**, not about a second location:
+        ``InMemoryEventStore.append`` advances the head with the v5
+        ``sha256(envelope || signature)``, and a v6 append routed through it would
+        leave a v5-shaped head behind every v6 event — a mixed-epoch smear with no
+        error, which is why the v6 path has its own insert and advances the head with
+        ``compute_v6_event_hash``.
+
+        This node used to assert ``store._global_chain_head is None`` after a v6
+        append, which *is* the state P1.7 phase 3 escalated as a fail-open gap: the
+        head ``_in_memory_replay`` reads is that attribute, so WI-266's "head set, log
+        empty" check — the signature of a wholesale-deleted log — could never fire in
+        memory while Postgres detected it. Postgres has one ``event_chain_head`` row;
+        memory now has one piece of state too (``InMemoryV6Rows.head_hash`` is a view
+        of it), so the assertion is the formula and the identity, not an absence.
         """
+
+        import hashlib
 
         _appendable(in_memory_project, keyset, in_memory_genesis)
         appended = _append(in_memory_project, entity_id=uuid.uuid4(), transition="created")
         store = in_memory_project._store
-        assert store._global_chain_head is None, (
+
+        assert store._global_chain_head == appended.event_hash, (
+            "the v6 writer's head is not the head replay reads"
+        )
+        assert store.v6_rows.head_hash == store._global_chain_head
+        assert store.v6_rows.head_event_id == appended.event_id
+
+        # And it is NOT the v5 formula over the same bytes, which is the mixed-epoch
+        # smear this node has always been about.
+        event = store.find_by_event_id(appended.event_id)
+        assert event is not None
+        legacy_shaped = hashlib.sha256(
+            bytes(event.canonical_envelope) + bytes(event.signature)
+        ).digest()
+        assert store._global_chain_head != legacy_shaped, (
             "a v6 append wrote the legacy v5-formula chain head"
         )
-        assert store.v6_rows.head_hash == appended.event_hash
-        assert store.v6_rows.head_event_id == appended.event_id
 
     def test_the_legacy_writer_is_refused_on_both_sides_of_in_memory_genesis(
         self, in_memory_project, keyset

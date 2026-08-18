@@ -137,6 +137,11 @@ _STATUS_MAP: dict[str, int] = {
     # 500: the store's own entity chain is missing a link the writer must build on.
     # That is a server-side integrity fault, not something the caller can fix.
     ErrorCode.V6_CHAIN_LINK_MISSING: 500,
+    # 500: the material stopped presenting an event it had already presented, part-way
+    # through one verification pass. Server-side, and deliberately not 409: a conflict
+    # invites a retry, and a store that changes under the pass reading it is a fault to
+    # investigate rather than a race to re-run.
+    ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION: 500,
     # 400: a malformed project-local acceptance payload is a defect in what was
     # submitted, matching TRUST_LOG_PAYLOAD_INVALID's reasoning for the trust log.
     ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID: 400,

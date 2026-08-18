@@ -191,10 +191,78 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   it). Substituting the key resolver does not change what chain material a v6 verdict
   needs, so both returned `UNVERIFIABLE` for every v6 event — the public
   independent-verification API answering "nothing was checked" while looking like a
-  verdict, and a wrong-key negative passing for the wrong reason. Still outstanding and
-  recorded rather than fixed: `_signing.verify_event_with_public_key` has no `referents`
-  parameter at all, so it and `verify_event_principal_binding` report `False` for every
-  v6 event.
+  verdict, and a wrong-key negative passing for the wrong reason.
+
+- **The last two resolver-less call sites (P1.7 phase 4).**
+  `_signing.verify_event_with_public_key` — the documented standalone verification
+  utility (`spec.md` §17.12) — had **no** `referents` parameter, while the
+  `VerificationResult` twin it delegates to has taken one since phase 2, so the bool
+  shim returned `False` for every v6 event however complete the caller's material was.
+  It now takes `referents` with the same `NO_REFERENTS` default as its twin: an offline
+  verifier holding a bundle can present it, and a shim less capable than the function it
+  wraps is a clamp with a smaller blast radius.
+
+  `verify_event_with_principal_binding` inherited the omission through that shim, and
+  its answer was worse than `False`: over a v6 event whose signature is valid and whose
+  registry entry holds the very key that signed it, both binding twins reported
+  `"signature-verification-failed: signature invalid under all registered public keys"`
+  — measured, on two different mechanisms (the object twin read `UNVERIFIABLE` as a
+  signature failure; the dict twin tripped §5.9 rule 1's raise and swallowed it). A
+  `principal_keys` probe cannot decide a v6 binding at all, so it now says so:
+  `V6_BINDING_NOT_DECIDED_BY_REGISTRY`, naming §5.10 and the material as the deciding
+  procedure. `NO_REFERENTS` remains the contract for the binding path and deliberately
+  **not** a parameter — offering callers material there would offer them a route around
+  rule 1 — and the two twins now share one body, resolving through
+  `TrustedKeySource.PRINCIPAL_REGISTRY` on both, which is where the key actually came
+  from.
+
+- **The v6 verifier boundary defeated WI-217's streaming space bound (P1.7 phase 4).**
+  `_replay` builds one `StoreReferents` for the whole replay, and its index retained
+  every indexed event's *whole parsed envelope* for the resolver's lifetime — so phase
+  2's per-resolver cache was the log materialization `tests/test_wi217_replay_memory.py`
+  exists to forbid, arriving through the verifier instead of through replay. Measured on
+  an 8x log: peak growth **5.5x** against a 3.0x budget, 19.89 MiB against 5.00 MiB.
+  Fixed without relaxing the budget and without making the resolver fetch: the index now
+  holds a `ReferentSummary` (the six signed members every referent accessor reads,
+  interned, ~0.5 KiB against ~5 KiB parsed) and re-reads an envelope only when a verdict
+  reads its `payload` — which in a healthy replay is the trust-plane referents alone.
+  `store_referents` also streams its scan through a **server-side** cursor rather than
+  `fetchall()`; iterating a client-side cursor would have moved the same bytes into
+  libpq's C heap, where tracemalloc cannot see them and RSS can. Re-measured: growth
+  **1.61x**, peak **3.36 MiB**. The re-read is addressed by v6 event hash, so it can
+  only return the bytes the referent already stood for; material that stops presenting a
+  row mid-pass raises the new `MATERIAL_CHANGED_UNDER_VERIFICATION` rather than
+  reporting an empty payload, and the materialization memo is bounded so it cannot grow
+  back into the cache it replaced.
+
+- **`InMemoryEventStore` never advanced the global chain head a v6 epoch wrote, so two
+  of WI-266's fail-closed checks were dead on that backend (P1.7 phase 4).** Postgres
+  has one `event_chain_head` row: the writer advances it, replay reads it back. In
+  memory there were two — `InMemoryV6Rows.head_hash`, which the v6 writer advanced, and
+  `InMemoryEventStore._global_chain_head`, which only the *legacy* `append` ever wrote
+  and which is the one `_in_memory_replay` reads. So after `open_v6_epoch` plus real v6
+  appends the head replay consulted was still `None`, and both "head set, log empty"
+  (a wholesale-deleted log) and "head disagrees with the chain tail" (a tampered head or
+  a deleted tail event) were **unreachable in memory** while Postgres detected them
+  correctly. The two are now one piece of state, which is the parity discipline rather
+  than a second advance: nothing is copied, so there is no window in which they disagree.
+  This is the second parity hole measured after the chain-formula one above.
+
+- **`_verification` and `_replay` disagreed about a nulled `canonical_envelope`, and now
+  agree — fail-closed (P1.7 phase 4).** `verify_event_strict` reported
+  `UNVERIFIABLE`/`ENVELOPE_ABSENT` ("nothing failed, there is nothing to check") while
+  `_replay`, on the *same row*, halted with "the row contradicts its own cryptographic
+  material" — reached through `AbsentEnvelopeProbe`, which rebuilds only the v1/v2 shapes
+  `CUTOVER-POLICY` §4.1 enumerates and therefore never matches a v6 row at all. So a
+  caller of `verify_event_result` got the weaker of the two, and the stronger one rested
+  on a reconstruction never attempted for the version in question. Resolved on the
+  **presented material** instead: a row whose chain predecessor is presented as a v6
+  event stands inside the v6 epoch, where the stored bytes are the artifact
+  (`V6-ENVELOPE.md` §9.2) and every append writes them, so the NULL is destruction and
+  the verdict is `INVALID`. Nothing is reconstructed, no signature is re-derived, and
+  with `NO_REFERENTS` the verdict is still `UNVERIFIABLE` — the conviction is a property
+  of what was presented, never of the absence. `AbsentEnvelopeProbe` stays
+  `_replay`-only for v1-v5 rows, which the material cannot speak about.
 
 - **Both in-memory hash-chain walks used the v1-v5 head formula**, so no v6 event was
   reachable from genesis and a *healthy* in-memory v6 epoch reported one chain break per

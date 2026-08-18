@@ -1,5 +1,5 @@
 {
- "baseline_count": 129,
+ "baseline_count": 126,
  "bootstrap_note": "One-time ratified bootstrap: 881 entries (874 default tier + 7 slow tier); the manifest file sha256 is pinned in scripts/check-epoch-debt.py and the node set may only shrink afterwards (SUITE-RECONCILIATION.md \u00a72.1).",
  "generated_from": "guard-reverted causal criterion over the base all-extras JUnit runs (default + slow tiers) at 9e673f9 \u2014 docs/0.6.0/SUITE-RECONCILIATION.md \u00a75",
  "blocker": "P1.7 (v6 ordinary-event writer) \u2014 SUITE-RECONCILIATION.md \u00a72.1",
@@ -923,24 +923,6 @@
    }
   },
   {
-   "node_id": "tests/test_wi217_replay_memory.py::TestWI217ReplayMemory::test_replay_peak_does_not_track_log_size",
-   "phase": "error",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi217_replay_memory.py::TestWI217ReplayMemory::test_stream_plan_has_no_sort",
-   "phase": "error",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
    "node_id": "tests/test_wi223_principal_binding.py::TestCollapsedBranchIsSplit::test_asymmetric_event_from_unregistered_actor_fails",
    "phase": "failure",
    "cause": "direct",
@@ -1149,15 +1131,6 @@
   },
   {
    "node_id": "tests/test_wi262_principal_kind_ingress.py::TestIngressEndToEnd::test_transition_rejects_unknown_principal_kind",
-   "phase": "failure",
-   "cause": "direct",
-   "expected": {
-    "exception": "RegistaError",
-    "error_code": "GENESIS_REQUIRED"
-   }
-  },
-  {
-   "node_id": "tests/test_wi266_fail_closed.py::TestUnvisitedProjectionRowsHalt::test_in_memory_empty_log_with_head_set_is_a_hard_halt",
    "phase": "failure",
    "cause": "direct",
    "expected": {

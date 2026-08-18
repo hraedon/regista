@@ -38,9 +38,6 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 #: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spelling is refused at the
 #: v6 ingress.
 ACTOR = "agent:worker"
-#: The pre-epoch key file, used by exactly one node below — see its comment.
-UNMIGRATED_KEY_PATH = str(TESTS_DIR / "test_keys.json")
-
 _GARBAGE_HASH = (
     "deadbeef00000000000000000000000000000000000000000000000000000000"
 )
@@ -334,27 +331,61 @@ class TestUnvisitedProjectionRowsHalt:
         assert report.halted >= 1
         assert report.replayed_ok >= 1
 
-    def test_in_memory_empty_log_with_head_set_is_a_hard_halt(self):
-        # NOT migrated, deliberately, and this is the one node in this file that is
-        # not. `InMemoryEventStore.append_v6_row` does not advance
-        # `_global_chain_head` — its docstring defers that to the writer's explicit
-        # `_advance_global_chain_head`, which the in-memory v6 path never calls — so
-        # after a v6 epoch the in-memory head is still `None` and the precondition
-        # this test names ("head set, log empty") cannot be reached at all. Migrating
-        # it would therefore assert a halt the backend cannot produce. Keeping it on
-        # an unmigrated handle preserves the GENESIS_REQUIRED form the epoch-blocked
-        # manifest records, so the other fourteen nodes here can leave the manifest
-        # now. Filed as a v6 backend-parity gap for the owner of the in-memory writer.
-        s = InMemoryRegista(project="test", hmac_key_path=UNMIGRATED_KEY_PATH)
+    def test_in_memory_empty_log_with_head_set_is_a_hard_halt(self, keyset):
+        # Migrated in P1.7 phase 4, and the migration is the fix's falsifier.
+        #
+        # This was the one node in this file left on an unmigrated handle, because
+        # the state it names was UNREACHABLE in a v6 epoch: the head
+        # `_in_memory_replay` reads is `InMemoryEventStore._global_chain_head`, which
+        # only the *legacy* `append` ever wrote, while the v6 writer advanced a second
+        # piece of state on `InMemoryV6Rows`. So after `open_v6_epoch` plus real v6
+        # appends the head was still `None`, WI-266's fail-closed check could not
+        # fire, and Postgres detected a wholesale-deleted log where memory reported a
+        # clean replay. The two heads are now one (see `InMemoryV6Rows.head_hash`).
+        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         _create_transitioned(s)
+
+        # The precondition, asserted rather than assumed — this is the half that was
+        # false before the fix, and a halt could otherwise be reached for some other
+        # reason entirely.
+        assert s._store._global_chain_head is not None, (
+            "the v6 writer did not advance the head replay reads"
+        )
+
         # Wholesale deletion: events and projection both gone, but the in-memory
-        # chain head survives.
+        # chain head survives, which is what proves events were appended.
         s._store.events.clear()
+        s._store.event_id_index.clear()
         s._work_items.clear()
 
         report = s.replay()
         assert report.halted >= 1
+        assert s._store._global_chain_head is not None
+
+    def test_in_memory_global_chain_head_mismatch_counts_as_chain_breaks(self, keyset):
+        """The in-memory counterpart of
+        ``TestChainBreaksFailClosed::test_global_chain_head_mismatch_counts_as_chain_breaks``.
+
+        The second check that was dead in memory for the same reason as the one above:
+        replay compares the stored head with the chain tail's hash and skips the
+        comparison entirely when the stored head is ``None``. With the v6 head never
+        reaching the attribute replay reads, a tampered head — or a deleted tail
+        event — was undetectable on this backend while Postgres caught it.
+        """
+
+        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
+        s.register_workflow_file(WORKFLOW_PATH)
+        _create_transitioned(s)
+        assert s.replay().chain_breaks == 0
+
+        s._store._global_chain_head = bytes.fromhex(_GARBAGE_HASH)
+
+        report = s.replay()
+        assert report.chain_breaks >= 1
+        assert report.warnings == 0
 
     def test_in_memory_clean_replay_reports_zero_chain_breaks(self, keyset):
         s = InMemoryRegista(project="test", hmac_key_path=keyset.path)

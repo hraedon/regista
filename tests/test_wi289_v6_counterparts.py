@@ -535,7 +535,7 @@ class TestCluster1RowReconciliation:
         assert "work_item_id!=entity_id" in result.mismatched_field_names
         assert result.applicability is Applicability.INVALID
 
-    def test_deleting_the_canonical_envelope_is_unverifiable_and_names_the_absence(
+    def test_deleting_the_canonical_envelope_is_invalid_and_names_the_absence(
         self, epoch
     ) -> None:
         """Discharges ``test_deleting_an_envelope_halts_because_the_row_contradicts_itself``
@@ -546,17 +546,22 @@ class TestCluster1RowReconciliation:
         artifact (``V6-ENVELOPE.md`` §9.2), so with them gone there is nothing left
         to verify.
 
-        **The verdict is ``UNVERIFIABLE``, not ``INVALID``, and that is measured
-        rather than assumed.** The v5 original reached a *halt* through
-        ``AbsentEnvelopeProbe``: a legacy row's retained ``signature`` and
-        ``payload_canonical_hash`` could be re-derived from the row and shown to
-        contradict it, which made the verdict stricter. There is no v6
-        reconstruction — offline rebuilding is an explicit operator action, never a
-        verify-path fallback — so the probe does not run and the honest answer is
-        "nothing could be checked". The *halt* half of the invariant survives
-        intact and is asserted next door in
-        ``test_deleting_the_canonical_envelope_halts_replay``; what must not be
-        claimed is a contradiction the verifier did not find.
+        **Corrected in P1.7 phase 4, and the correction is the interesting part.**
+        This node used to assert ``UNVERIFIABLE`` on the reasoning that
+        ``AbsentEnvelopeProbe`` — a v1/v2 reconstruction path — cannot rebuild a v6
+        envelope, so no contradiction had been *found*, while ``_replay`` halted on
+        the very same row claiming one. That split was real and this file asserted
+        both halves of it. It is now closed in the fail-closed direction, without
+        either side reconstructing anything: the presented material shows the row's
+        chain predecessor IS a v6 event, so the row stands inside the v6 epoch,
+        where every append writes the envelope column. A NULL there is destruction,
+        not migration 002's gap, and that is a contradiction the verifier *does*
+        find — from the material, which is where every other v6 verdict comes from.
+
+        Present nothing (``NO_REFERENTS``) and the answer is still ``UNVERIFIABLE``;
+        the conviction is a property of what was presented, never of the absence.
+        Pinned in ``tests/test_p17_v6_verifier_boundary.py``'s
+        ``TestTheNulledEnvelopeReading``.
         """
 
         appended = epoch.append()
@@ -570,10 +575,13 @@ class TestCluster1RowReconciliation:
         assert result.signature_valid is False
         assert result.row_reconciled is False
         assert result.reasons == (FailureReason.ENVELOPE_ABSENT,)
-        assert result.applicability is Applicability.UNVERIFIABLE, result.summary()
+        assert result.applicability is Applicability.INVALID, result.summary()
+        assert result.accepted is False
         # Named, never absent-and-assumed-fine: a consumer that reads only
-        # `signature_valid` must still be told why.
+        # `signature_valid` must still be told why — and the detail must name the
+        # basis for the conviction, not merely the absence.
         assert "canonical_envelope" in (result.detail or "")
+        assert "inside the v6 epoch" in (result.detail or "")
 
     def test_deleting_the_canonical_envelope_halts_replay(self, epoch) -> None:
         """Discharges ``test_replay_succeeds_with_missing_envelope_postgres``
@@ -604,14 +612,16 @@ class TestCluster1RowReconciliation:
         report = epoch.instance.replay()
         assert report.halted == 1, [e.detail for e in report.entries]
         assert report.replayed_ok == 0
-        # `_replay` finds the CONTRADICTION the verifier could not: it probes
-        # whether any envelope this row could have carried reproduces the retained
-        # signature, and none does. `verify_event_strict` reports UNVERIFIABLE
-        # (nothing to check); replay reports the contradiction. Both are asserted
-        # so the split between them stays visible.
+        # Replay and `verify_event_strict` now halt for ONE reason, and it is the
+        # verifier's: the row's chain predecessor is presented as a v6 event, so the
+        # row is inside the epoch and its NULL envelope was removed. Before P1.7
+        # phase 4 replay reached the halt through its own `AbsentEnvelopeProbe`
+        # branch, claiming a contradiction `verify_event_result` refused to claim —
+        # the disagreement this asserts the closure of. The probe branch survives for
+        # v1-v5 rows, which the material cannot speak about.
         detail = next(e.detail for e in report.entries if e.category == "halted") or ""
-        assert "no canonical_envelope" in detail, detail
-        assert "contradicts its o" in detail, detail
+        assert "canonical_envelope is NULL" in detail, detail
+        assert "inside the v6 epoch" in detail, detail
 
     def test_an_unknown_stored_envelope_shape_halts_replay_and_is_invalid(
         self, epoch
