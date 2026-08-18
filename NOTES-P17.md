@@ -20,12 +20,41 @@ tracker; this is the branch-side copy):
 |---|---|---|---|
 | **r1** | deepseek | **REQUEST-CHANGES** — 1 blocking (B1), 6 non-blocking | all seven adopted in `0e28c9b` |
 | **r2** | deepseek | **zero blocking** — 3 non-blocking | NB1 adopted, NB2 answered, NB3 filed as **WI-304** |
-| polish | — | — | this round: r2's items, the rebase onto `main` @ `0cadaaf`, and this record |
+| polish | — | — | this round: r2's items, the move onto `main` @ `0cadaaf`, and this record |
 
 Manifest **unchanged at 126** across both rounds — nothing a review round found unblocked
 a node, which is the expected shape.
 
-**Validation, final state (on the rebased tip):**
+### Getting onto current `main`: merged forward, NOT rebased, and why
+
+`main` advanced by two docs-only commits (`cf33b04`, `0cadaaf`). The coordinator expected a
+trivial rebase; it is not trivial, and the reason is worth knowing before anyone tries
+again.
+
+This branch's history contains the **WI-287 merge `ce19e06`**, and that merge's value is
+its resolution — three additive textual conflicts *plus* one **semantic** collision the
+textual merge did not surface: P1.7 declared `EventStore.v6_epoch_open` as a **method**
+while WI-287 implemented the in-memory state behind it as a **property**, so the merged
+class carried both definitions, the stub shadowed the real one, and
+`_refuse_legacy_append`'s `if self.v6_epoch_open:` tested a *bound method* for truthiness
+— always true.
+
+* `git rebase origin/main` **linearises** that merge and replays WI-287's commit on top of
+  P1.7's, which conflicts (measured: it stops on `88339f0` with conflicts in
+  `_claims.py` and others).
+* `git rebase --rebase-merges origin/main` **re-performs** the merge and re-raises its
+  three textual conflicts for hand resolution (measured: `sidecar/errors.py`,
+  `_v6_fixtures.py`).
+
+Re-deriving by hand a resolution whose whole value was a bug it caught is the wrong thing
+to do quickly, so the branch is **merged forward** instead (`4ef2393`): the two incoming
+commits are docs-only, their single overlap with branch history
+(`SUITE-RECONCILIATION.md`, additive on both sides) merges cleanly, and `origin/main` is
+now an ancestor of the tip. If the coordinator wants a linear history for the PR, the safe
+route is a squash-merge or a rebase performed *after* WI-287 lands on `main` — at which
+point `ce19e06` becomes a no-op rather than a resolution to reproduce.
+
+**Validation, final state (on the merged tip `4ef2393`):**
 
 | Check | Result |
 |---|---|
@@ -749,9 +778,11 @@ No file's migration needed the trust-log append path. The one place it was expec
 authority, which needs a `delegation_event_hash` the ceremony cannot name. Registrar
 delegation remains unwired and is documented as Gate 2's.
 
-Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
+Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`
+(moved onto `main` @ `0cadaaf` in phase 4 — see §0a-3 for why by merge and not by rebase).
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).
-Tracker: **WI-300**.
+Tracker: **WI-300**. Filed from this branch: **WI-302** (phase 2), **WI-304** (the
+ceremony's r2 NB3 — the projection `source_event_hash` scheme-vs-version trap).
 
 Always run from the worktree root:
 
