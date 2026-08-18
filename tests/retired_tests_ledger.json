@@ -1004,7 +1004,9 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory parity: corrupted project-chain link reports a chain break",
-   "carry_forward": "in-memory v6 project-chain tamper detection (D2 parity suite)"
+   "carry_forward": "in-memory v6 project-chain tamper detection (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_an_in_memory_project_chain_rewrite_is_reported_as_a_break",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_global_event_chain.py::test_bc300_replay_detects_global_chain_tamper",
@@ -1065,21 +1067,27 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory multi-event chain, v5 formula per link",
-   "carry_forward": "in-memory v6 entity chain (D2 parity suite)"
+   "carry_forward": "in-memory v6 entity chain (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_entity_chain_links_every_event_by_v6_event_hash",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_second_event_includes_prev_hash",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory: prev link equals v5 sha256(envelope||signature)",
-   "carry_forward": "in-memory v6 entity-chain link (D2 parity suite)"
+   "carry_forward": "in-memory v6 entity-chain link (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_entity_link_uses_the_v6_formula_not_the_v5_one",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_in_memory",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory parity: envelope deletion halts",
-   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
+   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_deleting_an_in_memory_envelope_is_unverifiable_not_a_silent_pass",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_postgres",
@@ -1586,14 +1594,18 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory parity: envelope deletion halts",
-   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)"
+   "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_envelope_deletion_verdict_matches_the_postgres_one",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "in-memory parity: row rewrite halts replay",
-   "carry_forward": "in-memory v6 row-reconciliation halt (D2 parity suite)"
+   "carry_forward": "in-memory v6 row-reconciliation halt (D2 parity suite)",
+   "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_an_in_memory_row_rewrite_halts_verification",
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_keyless_in_memory_reports_unverifiable",

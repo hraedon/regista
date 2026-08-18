@@ -290,6 +290,166 @@ def acceptance_payload(
     }
 
 
+# ---------------------------------------------------------------------------
+# The sequencing helpers this module's docstring has always promised (WI-287)
+#
+# Steps 2 and 3 of the sequence above named ``write_test_genesis`` and
+# ``accept_key``, but neither function existed — every caller open-coded them,
+# which is how ``tests/test_p17_v6_writer.py`` ended up with a private ``_accept``
+# that the 25 in-memory files would each have had to copy. These are deliberately
+# **backend-agnostic**: they take any handle exposing ``write_genesis``,
+# ``_mgr.transaction()`` and ``_keys``, which since WI-287 is both ``Regista``
+# and ``InMemoryRegista``. Nothing here is in-memory-specific.
+# ---------------------------------------------------------------------------
+
+
+def v6_producer() -> Any:
+    """The ``producer`` block fixture-written events carry.
+
+    A function rather than a module constant so importing this module does not
+    import ``regista._v6_writer`` — several fixture consumers are pure-logic
+    tests with no interest in the writer.
+    """
+
+    from regista._v6_writer import Producer
+
+    return Producer(
+        harness=TEST_HARNESS,
+        harness_version=TEST_HARNESS_VERSION,
+        model=TEST_MODEL,
+        model_lineage=TEST_MODEL_LINEAGE,
+    )
+
+
+def write_test_genesis(instance: Any, keyset: V6TestKeyset, **kwargs: Any) -> Any:
+    """Step 2: open the epoch with the bootstrap principal.
+
+    ``gate_passed=True`` is correct for a test root and is not a shortcut: the
+    first-write gate exists to stop an *operator* opening an epoch over legacy
+    history, and a fixture-built project has none. The genesis envelope still
+    comes from the committed conformance vector.
+    """
+
+    return instance.write_genesis(genesis_envelope(keyset, **kwargs), gate_passed=True)
+
+
+def project_identity_of(instance: Any) -> Any:
+    """The ``project_identity`` singleton, through whichever backend ``instance`` is."""
+
+    from regista._v6_writer import read_project_identity
+
+    with instance._mgr.transaction() as conn:
+        identity = read_project_identity(conn)
+    assert identity is not None, "no v6 epoch is open on this instance"
+    return identity
+
+
+def accept_key(
+    instance: Any,
+    keyset: V6TestKeyset,
+    genesis: Any,
+    principal_id: str,
+    **scopes: Any,
+) -> Any:
+    """Step 3: append the standalone ``principal_key_accepted`` for ``principal_id``.
+
+    Signed by the bootstrap principal, anchored on the genesis event — never on
+    itself. Until this runs, ``resolve_key_binding_anchor`` refuses
+    ``principal_id`` with ``KEY_BINDING_UNRESOLVED``, and that refusal is correct:
+    a key file is not a project-local acceptance.
+    """
+
+    from regista._v6_writer import PRINCIPAL_KEY_ACCEPTED, append_v6_event
+
+    identity = project_identity_of(instance)
+    payload = acceptance_payload(
+        keyset,
+        principal_id=principal_id,
+        accepted_by=BOOTSTRAP_PRINCIPAL,
+        accepted_by_anchor=genesis.to_dict()["event_hash"],
+        project_instance_id=str(identity.project_instance_id),
+        trust_domain_id=str(identity.trust_domain_id),
+        **scopes,
+    )
+    with instance._mgr.transaction() as conn:
+        return append_v6_event(
+            conn,
+            instance._keys,
+            entity_kind="principal",
+            entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal_id),
+            transition=PRINCIPAL_KEY_ACCEPTED,
+            actor_id=BOOTSTRAP_PRINCIPAL,
+            actor_kind="system",
+            producer=v6_producer(),
+            payload=payload,
+        )
+
+
+def register_test_workflow(
+    instance: Any,
+    name: str,
+    version: int,
+    definition: dict[str, Any],
+) -> Any:
+    """Append the signed ``workflow_registered`` event admission gate 1 requires.
+
+    A ``workflow_registry`` row is **not** a registration (``V6-ENVELOPE.md`` §1.9),
+    so a migrated fixture that only calls ``register_workflow`` will still be
+    refused. This is the missing half.
+    """
+
+    from regista._v6_writer import append_v6_event, workflow_definition_hash
+
+    identity = project_identity_of(instance)
+    workflow_id = uuid.uuid5(
+        uuid.NAMESPACE_OID,
+        f"regista.workflow:{identity.project_instance_id}:{name}:{version}",
+    )
+    payload = {
+        "type": "regista.workflow-registration",
+        "version": 1,
+        "name": name,
+        "workflow_version": version,
+        "definition": definition,
+        "definition_hash": workflow_definition_hash(definition),
+        "supersedes_registration_event_hash": None,
+    }
+    with instance._mgr.transaction() as conn:
+        return append_v6_event(
+            conn,
+            instance._keys,
+            entity_kind="workflow",
+            entity_id=workflow_id,
+            transition="workflow_registered",
+            actor_id=BOOTSTRAP_PRINCIPAL,
+            actor_kind="system",
+            producer=v6_producer(),
+            payload=payload,
+        )
+
+
+def open_v6_epoch(
+    instance: Any,
+    keyset: V6TestKeyset,
+    *,
+    principals: tuple[str, ...] = ACTOR_PRINCIPALS,
+    **scopes: Any,
+) -> Any:
+    """Steps 2+3 in one call: open the epoch and accept every actor principal.
+
+    This is the shape the epoch-blocked fixture migration needs — one line per
+    fixture instead of the ~25 lines each of the 25 in-memory files (and their
+    Postgres siblings) would otherwise open-code. Returns the genesis write.
+    """
+
+    genesis = write_test_genesis(instance, keyset)
+    for principal_id in principals:
+        if principal_id == BOOTSTRAP_PRINCIPAL:
+            continue
+        accept_key(instance, keyset, genesis, principal_id, **scopes)
+    return genesis
+
+
 __all__ = [
     "ACTOR_PRINCIPALS",
     "BOOTSTRAP_PRINCIPAL",
@@ -300,7 +460,13 @@ __all__ = [
     "VECTOR_PATH",
     "TestKey",
     "V6TestKeyset",
+    "accept_key",
     "acceptance_payload",
     "genesis_envelope",
     "make_v6_keyset",
+    "open_v6_epoch",
+    "project_identity_of",
+    "register_test_workflow",
+    "v6_producer",
+    "write_test_genesis",
 ]

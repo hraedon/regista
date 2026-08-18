@@ -137,6 +137,11 @@ _STATUS_MAP: dict[str, int] = {
     # 500: the store's own entity chain is missing a link the writer must build on.
     # That is a server-side integrity fault, not something the caller can fix.
     ErrorCode.V6_CHAIN_LINK_MISSING: 500,
+    # 500: the in-memory v6 parity boundary (WI-287). A sidecar never runs on the
+    # in-memory backend, so reaching this through HTTP means the deployment is
+    # misconfigured — a server fault the caller cannot fix by reformatting, and
+    # emphatically not a 409 the caller might retry into existence.
+    ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY: 500,
 }
 
 

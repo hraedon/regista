@@ -12,6 +12,7 @@ import structlog
 
 from ._event_store import InMemoryEventStore
 from ._in_mem_claim import InMemClaimMixin
+from ._in_mem_genesis import InMemGenesisMixin
 from ._in_mem_hook import InMemHookMixin
 from ._in_mem_ops import InMemOpsMixin
 from ._in_mem_witness import InMemWitnessMixin
@@ -36,6 +37,7 @@ class TransportResult:
 class InMemoryRegista(
     InMemWorkflowMixin,
     InMemClaimMixin,
+    InMemGenesisMixin,
     InMemHookMixin,
     InMemWitnessMixin,
     InMemOpsMixin,

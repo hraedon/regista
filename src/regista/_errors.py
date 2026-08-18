@@ -133,6 +133,12 @@ class ErrorCode(StrEnum):
     # A v6 entity chain may not skip a link: the predecessor at entity_seq - 1 must
     # exist and be signed, or the append is refused rather than writing a fork.
     V6_CHAIN_LINK_MISSING = "V6_CHAIN_LINK_MISSING"
+    # The in-memory v6 parity boundary (WI-287, SUITE-RECONCILIATION.md §2.3(a)).
+    # Locking, rollback, persistence and concurrency remain Postgres-only, and the
+    # in-memory backend's statement grammar is closed. Reaching for any of those
+    # through the in-memory backend is this refusal, never a fake that would let an
+    # in-memory pass satisfy a Postgres-gated acceptance criterion.
+    PARITY_BOUNDARY_POSTGRES_ONLY = "PARITY_BOUNDARY_POSTGRES_ONLY"
 
 
 class RegistaError(Exception):

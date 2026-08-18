@@ -4,7 +4,7 @@ import dataclasses
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, runtime_checkable
 
 from ._connection import DictConn
 from ._contract import (
@@ -23,6 +23,9 @@ from ._keys import KeySet
 from ._signing import sign_event
 from ._signing_scheme import get_scheme, resolve_hash_function
 from ._types import Event
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._in_memory_v6 import InMemoryV6Rows
 
 _DUMMY_KEY_ID = "in-memory"
 _DUMMY_SIG = b"\x00" * 32
@@ -185,6 +188,15 @@ class InMemoryEventStore:
     `_global_chain_head` / `_next_global_seq`. Concurrent use from multiple
     threads can therefore still produce the genesis race that migration 035
     closes for Postgres. Do not use InMemoryRegista from multiple threads.
+
+    Since WI-287 this store also backs a real v6 epoch: `v6_rows` holds
+    `project_identity` and the chain-head sentinel, and `_in_memory_v6` exposes
+    them through a connection-shaped facade so `_genesis` and `_v6_writer` run
+    unmodified over them. The single-threaded contract above is exactly the half
+    of `SUITE-RECONCILIATION.md` §2.3(a) that stays Postgres-only — locking,
+    rollback, persistence and concurrency are refused by name
+    (`PARITY_BOUNDARY_POSTGRES_ONLY`) rather than faked, so an in-memory pass
+    cannot satisfy a Postgres-gated acceptance criterion.
     """
 
     def __init__(self) -> None:
@@ -195,24 +207,98 @@ class InMemoryEventStore:
         self._next_global_seq: int = 1
         self._global_seq_by_event_id: dict[uuid.UUID, int] = {}
         self._global_chain_head: bytes | None = None
+        self._v6_rows: InMemoryV6Rows | None = None
 
     def bind(self, work_items: dict[uuid.UUID, dict[str, Any]]) -> None:
         self._work_items = work_items
 
+    # -- v6 epoch (WI-287 / SUITE-RECONCILIATION.md §2.3(a)) ----------------
+
+    @property
+    def v6_rows(self) -> InMemoryV6Rows:
+        """The v6 relations (``project_identity``, ``event_chain_head``).
+
+        Created on first use rather than in ``__init__`` so a legacy-only
+        in-memory store carries no v6 state at all, and so importing the v6
+        facade stays lazy.
+        """
+        if self._v6_rows is None:
+            from ._in_memory_v6 import InMemoryV6Rows
+
+            self._v6_rows = InMemoryV6Rows(self)
+        return self._v6_rows
+
+    @property
+    def v6_epoch_open(self) -> bool:
+        """True once an in-memory v6 genesis has recorded ``project_identity``."""
+        return self._v6_rows is not None and self._v6_rows.project_identity is not None
+
+    def all_events(self) -> list[Event]:
+        """Every stored event, for the v6 row projection."""
+        return [event for bucket in self.events.values() for event in bucket]
+
+    def append_v6_row(self, event: Event) -> int:
+        """Store one v6 event and return its assigned ``global_seq``.
+
+        Deliberately separate from :meth:`append`, which advances the global
+        chain head with the **v5** ``sha256(envelope || signature)`` formula. A v6
+        append's head is ``compute_v6_event_hash`` and is advanced explicitly by
+        the writer through ``_advance_global_chain_head``; reusing :meth:`append`
+        would silently fork the chain at event 2 while every row still looked
+        well-formed — the exact failure ``TestPostgresOnly`` pins for Postgres.
+        """
+        seq = self._next_global_seq
+        self._next_global_seq += 1
+        event = dataclasses.replace(event, global_seq=seq)
+        self.events.setdefault(event.work_item_id, []).append(event)
+        self.event_id_index[event.event_id] = event
+        self._global_seq_by_event_id[event.event_id] = seq
+        wi = self._work_items.get(event.work_item_id)
+        if wi is not None:
+            wi["last_event_seq"] = event.event_seq
+            wi["last_event_at"] = event.timestamp
+            wi["next_event_seq"] = event.event_seq + 1
+        else:
+            ent = self._entity_seqs.setdefault(
+                (event.entity_kind, event.work_item_id),
+                {"next_event_seq": 1, "last_event_seq": 0},
+            )
+            ent["last_event_seq"] = event.event_seq
+            ent["next_event_seq"] = event.event_seq + 1
+        return seq
+
     def lock_global_chain_head(self) -> bytes | None:
         return self._global_chain_head
 
-    def admit_legacy_append(self) -> bytes | None:
+    def _refuse_legacy_append(self) -> NoReturn:
+        """Mirror ``_genesis.check_legacy_append``: refuse on BOTH sides of genesis.
+
+        The two doors are exclusive on this backend for the same reason they are
+        on Postgres (``EPOCH-RESET.md`` §5.1): before genesis a legacy append has
+        no epoch to belong to, and after genesis it would create a silent v5/v6
+        mixed region. The pre-genesis code and message are unchanged from the
+        original unconditional refusal, because the epoch-blocked manifest pins
+        that exact refusal form for 217 nodes (``SUITE-RECONCILIATION.md`` §2.1;
+        217 is the causally-measured figure — see NOTES-WI287.md §4)
+        and a changed form must be a triage, not a quiet swap.
+        """
+        if self.v6_epoch_open:
+            raise RegistaError(
+                ErrorCode.V6_EPOCH_OPEN,
+                "in-memory legacy append refused: legacy event writers cannot "
+                "extend the opened v6 epoch",
+                detail={"writer": "in_memory_event_store.append"},
+            )
         raise RegistaError(
             ErrorCode.GENESIS_REQUIRED,
             "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
         )
 
+    def admit_legacy_append(self) -> bytes | None:
+        self._refuse_legacy_append()
+
     def check_legacy_append(self) -> None:
-        raise RegistaError(
-            ErrorCode.GENESIS_REQUIRED,
-            "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
-        )
+        self._refuse_legacy_append()
 
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
         if entity_kind == "work_item":
