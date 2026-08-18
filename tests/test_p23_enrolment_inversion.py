@@ -221,6 +221,196 @@ def test_the_gate_still_applies_the_pre_existing_length_and_printability_rules()
     assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
 
+def test_key_acceptance_is_either_deleted_or_strict():
+    """SEAM PINCH for P2.2 (§2.7 "principal_key_accepted — Yes, always").
+
+    P2.3 does not validate inside ``_principal_keys``: §5.9 rule 2 / criterion 17 delete
+    those mutators, and validating a doomed function is conflict without benefit. But
+    "P2.2 will handle it" in a docstring is exactly the kind of promise that survives as a
+    comment and dies as a control, so this test enforces the disjunction instead:
+
+        every registration/acceptance entry point in ``_principal_keys`` is **either
+        absent** (P2.2 deleted it, per criterion 17) **or calls**
+        ``validate_principal_id``.
+
+    The population is derived from the module rather than hardcoded, so a *successor*
+    applier — ``accept_principal_key``, ``register_principal_key_applier``, whatever P2.2
+    names it — is caught by the same rule. Passing today would be wrong: the test asserts
+    the current state honestly, which is that no such function exists yet *and* none of
+    the survivors are strict, so the disjunction is satisfied only by the deletion arm
+    being pending. Read the assertion message before "fixing" it.
+    """
+    import inspect
+
+    import regista._principal_keys as pk
+
+    # Entry points that write into the acceptance surface. Matched by name shape so a
+    # renamed successor is still in scope.
+    prefixes = ("register_", "accept_", "enrol", "enroll")
+    entry_points = {
+        name: obj
+        for name, obj in vars(pk).items()
+        if inspect.isfunction(obj)
+        and obj.__module__ == pk.__name__
+        and name.startswith(prefixes)
+    }
+
+    unguarded = []
+    for name, func in entry_points.items():
+        source = inspect.getsource(func)
+        if "validate_principal_id" not in source:
+            unguarded.append(name)
+
+    # This list is the *current, known* debt. P2.2 must empty it — by deleting these
+    # functions (criterion 17) or by making them call the validator. Any NEW name showing
+    # up here fails immediately, which is the point of deriving the population.
+    known_pending_deletion = {"register_principal_key", "register_principal_key_conn"}
+    surprises = sorted(set(unguarded) - known_pending_deletion)
+    assert surprises == [], (
+        "new unguarded key-acceptance entry point(s) in regista._principal_keys: "
+        f"{surprises}. TRUST-DOMAIN.md §2.7 puts principal_key_accepted in the "
+        "always-strict column — call regista._principals.validate_principal_id, or delete "
+        "the mutator per §5.9 rule 2 / criterion 17."
+    )
+    resolved = sorted(known_pending_deletion - set(unguarded) - set(entry_points))
+    still_present_and_unguarded = sorted(known_pending_deletion & set(unguarded))
+    assert resolved or still_present_and_unguarded, (
+        "the known_pending_deletion set no longer describes reality — re-derive it"
+    )
+
+
+def test_every_v6_write_path_enforces_the_canonical_grammar():
+    """TRIPWIRE for §2.7 row 4 (``append_event`` actor_id), covering P1.7's future writer.
+
+    **Which form this is, and why.** The literal row-4 gate — ``require_canonical`` on
+    ``_contract.validate_actor_id`` — is dormant: no ordinary v6 writer exists on this base
+    (``check_legacy_append`` refuses every legacy append, and P1.7 has not landed). A test
+    that scanned call sites of ``validate_mutation_params`` for a missing
+    ``require_canonical_actor_id=True`` would therefore be **vacuous** — zero v6 writers
+    call it, so it could not fire, and a tripwire that cannot fire is worse than a
+    documented seam because it reads as coverage.
+
+    So the population is derived from something that *is* real today: the modules that
+    actually sign v6 envelopes (``_signing.sign_v6_envelope`` callers). Today that is
+    exactly ``_genesis.py``, and it enforces the grammar through
+    ``_validate_genesis_envelope`` → ``validate_v6_envelope`` →
+    ``_v6_require_principal_id``. The assertion is therefore non-vacuous now — breaking
+    ``_genesis`` reddens it — and it fires automatically the moment P1.7 adds a second v6
+    writer that enforces by neither named mechanism.
+
+    This is a source-level structural test, not a behavioural one; it cannot prove the
+    enforcement runs on every code path inside a writer. The behavioural anchor for the one
+    writer that exists is
+    :func:`test_the_v6_genesis_writer_refuses_a_non_canonical_actor` below.
+    """
+    import ast
+    import pathlib
+
+    import regista
+
+    src = pathlib.Path(regista.__file__).parent
+    # The mechanisms §2.7 row 4 is satisfied by. Any one is sufficient; all of them are
+    # *calls*, which is why function granularity works without a call-graph walk.
+    accepted_calls = frozenset(
+        {
+            "validate_v6_envelope",  # v6 schema validation; strict by construction
+            "_validate_genesis_envelope",
+        }
+    )
+    accepted_kwargs = frozenset({"require_canonical_actor_id", "require_canonical"})
+
+    def _called_names(node: ast.AST) -> set[str]:
+        names = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                if isinstance(func, ast.Name):
+                    names.add(func.id)
+                elif isinstance(func, ast.Attribute):
+                    names.add(func.attr)
+        return names
+
+    def _gates_on(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            for kw in child.keywords:
+                if kw.arg in accepted_kwargs and (
+                    isinstance(kw.value, ast.Constant) and kw.value.value is True
+                ):
+                    return True
+        return False
+
+    writers: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        if path.name in ("_signing.py", "_principals.py"):
+            continue  # the signer itself and the grammar module are not write paths
+        text = path.read_text(encoding="utf-8")
+        if "sign_v6_envelope" not in text:
+            continue
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            called = _called_names(node)
+            if "sign_v6_envelope" not in called:
+                continue
+            where = f"{path.name}::{node.name}"
+            writers.append(where)
+            assert (called & accepted_calls) or _gates_on(node), (
+                f"{where} signs a v6 envelope but enforces the canonical actor grammar by "
+                f"none of {sorted(accepted_calls)} and passes no "
+                f"{sorted(accepted_kwargs)}=True. TRUST-DOMAIN.md §2.7 row 4 requires "
+                f"append_event actor_id validation from a project's cutover event onward, "
+                f"and under the epoch reset every v6 store is v6-from-genesis — so the "
+                f"gate is on from its first event. Either route the envelope through "
+                f"validate_v6_envelope, or pass require_canonical_actor_id=True to "
+                f"_contract.validate_mutation_params."
+            )
+
+    # Non-vacuity: if this ever finds nothing, the test has stopped testing.
+    assert writers, "no v6 write path found — this tripwire has gone vacuous"
+    assert "_genesis.py::append_v6_genesis" in writers
+
+
+def test_the_v6_genesis_writer_refuses_a_non_canonical_actor():
+    """The behavioural anchor for the tripwire above: the one v6 write path that exists
+    today really does refuse a bare actor, at the envelope boundary, before any signing."""
+    import copy
+    import json
+    import pathlib
+
+    from regista._genesis import _validate_genesis_envelope
+
+    vector = (
+        pathlib.Path(__file__).parent / "vectors" / "v6" / "bootstrap-project-initialized.json"
+    )
+    case = json.loads(vector.read_text(encoding="utf-8"))
+    envelope = case["input"].get("envelope") or case["input"].get(
+        "envelope_declaration_order"
+    )
+    assert envelope is not None, "vector shape changed; re-point this test"
+    # The shipped vector exercises the envelope schema, not the genesis-shape rules that
+    # run after it, so its entity.id and project_instance_id differ. Align them here: this
+    # test is about the actor grammar, and a positive control that trips a *later*
+    # unrelated genesis rule would prove nothing about the grammar.
+    envelope = copy.deepcopy(envelope)
+    envelope["entity"]["id"] = envelope["project_instance_id"]
+
+    # Positive control: with a canonical actor the whole genesis validation passes.
+    _validate_genesis_envelope(copy.deepcopy(envelope))
+    assert envelope["actor"]["principal_id"].startswith("agent:")
+
+    for bad in ("mvmcc03-agent", "key:pk_1", "witness:abc"):
+        mutated = copy.deepcopy(envelope)
+        mutated["actor"]["principal_id"] = bad
+        with pytest.raises(RegistaError) as exc:
+            _validate_genesis_envelope(mutated)
+        assert exc.value.code == ErrorCode.GENESIS_INVALID, bad
+        # It failed on the *grammar*, not on some later genesis-shape rule.
+        assert "canonical kind:subject grammar" in exc.value.message, bad
+
+
 def test_v6_envelope_actor_is_unconditionally_canonical():
     """A v6 envelope is post-cutover by construction, so it needs no gate — and the check
     now delegates to the single grammar implementation rather than a local regex."""

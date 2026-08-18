@@ -33,24 +33,50 @@ classifies and validates; it never guesses which canonical principal a legacy ba
 "means". That assignment is a deliberate, signed, scoped artifact —
 ``regista._principal_alias`` owns its payload contract.
 
-Enforcement boundaries (§2.7) — stated here because the table is the contract:
+Enforcement boundaries (§2.7). The table states **what §2.7 requires** and, separately,
+**what is actually wired on this branch**. They are not everywhere the same thing yet, and a
+module docstring that claims otherwise is how a contract quietly becomes a comment.
 
-===============================================  ==========================================
-Path                                             Enforce canonical grammar?
-===============================================  ==========================================
-``principal_registered`` / key enrolment          **Yes, always** — :func:`validate_principal_id`
-``principal_key_accepted`` (project)              **Yes, always** — :func:`validate_principal_id`
-delegation credential issue/subject               **Yes, always** — :func:`validate_principal_id`
-``append_event`` actor_id                         **Yes, per project, from its cutover event
-                                                  onward** — the ``require_canonical`` gate on
-                                                  ``_contract.validate_actor_id``
-witness registration                              **No in 0.6.0** — cut (§7 is future design)
-verification / replay / bundle import /           **Never** — :func:`classify_principal_id`
-historical key lookup                             reports, and reporting is not refusal
-===============================================  ==========================================
+===========================================  ===================  =============================
+Path                                         §2.7 requires        Wired here (P2.3)
+===========================================  ===================  =============================
+``provision_principal`` / key enrolment      Yes, always          **Yes** — via
+                                                                  ``_provision._validate_principal_id``
+v6 envelope ``actor.principal_id``           Yes (post-cutover)   **Yes**, unconditionally —
+                                                                  ``_verification._v6_require_principal_id``
+``principal_registered`` (trust log)         Yes, always          **Not yet** — the event does
+                                                                  not exist on this base; P2.2
+``principal_key_accepted`` (project)         Yes, always          **Not yet** — see the SEAM below
+Delegation credential issue/subject          Yes, always          **Not yet** — sibling A, WI-008
+``append_event`` actor_id                    Yes, per project,    **Gate present, dormant** —
+                                             from cutover onward  ``require_canonical`` on
+                                                                  ``_contract.validate_actor_id``;
+                                                                  no ordinary v6 writer until P1.7
+Witness registration                         No in 0.6.0          n/a — cut (§7 is future design)
+Verification / replay / bundle import /      **Never**            **Never** —
+historical key lookup                                             :func:`classify_principal_id`
+                                                                  reports; reporting is not refusal
+===========================================  ===================  =============================
 
 The last row is why :func:`classify_principal_id` exists and never raises: a verifier must
 be able to *say* an id is non-canonical without refusing to verify a historical event.
+
+.. warning::
+
+   **SEAM — key acceptance is not strict yet, and P2.2 is what closes it.**
+   ``_principal_keys.register_principal_key_conn`` is the live key-acceptance path and it
+   checks only that ``principal_id`` is non-empty. P2.3 deliberately did not add the
+   validator there: §5.9 rule 2 / conformance criterion 17 *remove* those mutators from the
+   package surface, so validating inside a function scheduled for deletion is conflict
+   without benefit. Whichever way P2.2 goes, that path must end up **either deleted or
+   calling** :func:`validate_principal_id`.
+
+   Neither seam is left to memory. ``test_p23_enrolment_inversion.py`` pins both:
+   ``test_key_acceptance_is_either_deleted_or_strict`` scans every registration/acceptance
+   entry point in ``_principal_keys`` and goes red if one survives without the validator;
+   ``test_every_v6_write_path_enforces_the_canonical_grammar`` derives its population from
+   the modules that actually sign v6 envelopes, so P1.7's writer is covered the moment it
+   lands rather than when someone remembers this paragraph.
 
 §2.2 backend-safe naming. Secret backends (Azure Key Vault, the Windows credential store)
 forbid ``:``. The ratified decision is a collision-resistant derived name, **not** a

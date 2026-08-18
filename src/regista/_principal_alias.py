@@ -161,15 +161,32 @@ class MappingBasis(StrEnum):
     IDP_RECORD = "idp-record"
 
 
-#: Bases that are explicitly refused, with the reason they exist as a named value: a
-#: rejected spelling produces a *named* error instead of a generic "not in enum".
-_FORBIDDEN_BASES: Mapping[str, str] = {
-    "string-similarity": "string_similarity_is_never_a_basis",
-    "string_similarity": "string_similarity_is_never_a_basis",
-    "name-similarity": "string_similarity_is_never_a_basis",
-    "inferred": "inference_is_never_a_basis",
-    "guess": "inference_is_never_a_basis",
-}
+#: Substrings that make a basis a *similarity* claim however it is spelled. Matched
+#: case-insensitively against the whole basis string, so ``string-similarity``,
+#: ``fuzzy_match``, ``looks-like-the-host`` and ``nameSimilarityScore`` all land on the same
+#: named refusal. An enumerated denylist could always be spelled around, and "not in enum"
+#: would not tell an operator *why* — §2 consequence 2's rule is specifically that the
+#: mapping "is **never** inferred from string similarity", so the refusal says that.
+#: None of :class:`MappingBasis`'s members contain any of these, so there are no false
+#: positives on a legal value; ``test_the_similarity_denylist_never_catches_a_legal_basis``
+#: keeps that true if the enum grows.
+_SIMILARITY_MARKERS: tuple[str, ...] = ("similar", "fuzzy", "match", "looks")
+#: Bases that are not similarity claims but are still inference rather than assignment.
+_INFERENCE_BASES: frozenset[str] = frozenset({"inferred", "inference", "guess", "guessed"})
+
+_SIMILARITY_REASON = "string_similarity_is_never_a_basis"
+_INFERENCE_REASON = "inference_is_never_a_basis"
+
+
+def _forbidden_basis_reason(basis: str) -> str | None:
+    """The named reason ``basis`` is refused outright, or ``None`` to fall through to the
+    enum check."""
+    lowered = basis.strip().lower()
+    if any(marker in lowered for marker in _SIMILARITY_MARKERS):
+        return _SIMILARITY_REASON
+    if lowered in _INFERENCE_BASES:
+        return _INFERENCE_REASON
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +694,7 @@ def _parse_mapping_entry(
     actor_id = _require_aliasable(obj["actor_id"], f"{path}.actor_id", code)
     principal_id = _require_canonical(obj["principal_id"], f"{path}.principal_id", code)
     basis_text = _require_string(obj["basis"], f"{path}.basis", code)
-    forbidden_reason = _FORBIDDEN_BASES.get(basis_text)
+    forbidden_reason = _forbidden_basis_reason(basis_text)
     _require(
         forbidden_reason is None,
         code,

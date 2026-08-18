@@ -405,6 +405,81 @@ class TestPathTraversal:
             "service:idp:tenant-a/svc-7"
         )
 
+    def test_a_maximum_length_canonical_id_enrolls_instead_of_raising_oserror(self, tmp_path):
+        """``service:`` + a 247-character subject is the *longest legal* §2.1 principal id.
+
+        Its direct filename is 267 bytes, over ``NAME_MAX`` (255), and
+        ``_secrets.FileProvider.store`` opens ``<name>.tmp`` — 271 bytes. Before the length
+        condition in ``_custody._contained_key_path``, that surfaced as a bare
+        ``OSError: [Errno 36] File name too long`` propagating **untyped** out of
+        ``store_private_key`` and therefore out of ``provision_principal`` /
+        ``enroll_principal``: an always-strict boundary answering a legal input with an
+        unhandled OS exception. It now routes to the §2.2 derived name and simply works.
+        """
+        from regista._custody import store_private_key
+        from regista._principals import backend_name, resolve_backend_name
+
+        principal_id = "service:" + "a" * 247
+        assert len(principal_id) == 255  # §2.1's maximum
+        assert len(f"{principal_id}_ed25519.key".encode()) == 267  # over NAME_MAX
+
+        key_dir = tmp_path / "principals"
+        result = store_private_key(
+            backend="file", principal_id=principal_id, private_key_dir=str(key_dir)
+        )
+        written = Path(result.secret_ref.removeprefix("file:"))
+        assert written.is_file()
+        assert written.parent == key_dir
+        assert written.name == f"{backend_name(principal_id)}_ed25519.key"
+        assert len(written.name.encode()) < 255
+
+        # And it is reversible, so the operator can still tell whose key this is.
+        derived = written.name.removesuffix("_ed25519.key")
+        assert resolve_backend_name(derived, [principal_id]) == principal_id
+
+    def test_the_length_cutover_matches_what_was_ever_writable(self, tmp_path):
+        """The length condition orphans no existing secret.
+
+        Its budget is exactly the one ``FileProvider`` has always been bound by —
+        ``NAME_MAX`` minus the ``.tmp`` reserve — so an id that now routes to the derived
+        name is precisely an id whose direct write would previously have failed with
+        ``ENAMETOOLONG``. There is no id that used to get a writable direct filename and
+        now gets a different one.
+        """
+        import os
+
+        from regista._custody import (
+            _FILENAME_SUFFIX_RESERVE,
+            _MAX_FILENAME_BYTES,
+            build_ref,
+        )
+
+        key_dir = tmp_path / "principals"
+        key_dir.mkdir()
+        assert _MAX_FILENAME_BYTES == 255
+        assert _FILENAME_SUFFIX_RESERVE == len(".tmp")
+        assert os.pathconf(str(key_dir), "PC_NAME_MAX") == _MAX_FILENAME_BYTES
+
+        budget = _MAX_FILENAME_BYTES - _FILENAME_SUFFIX_RESERVE
+        suffix = len("_ed25519.key")
+        longest_direct = "a" * (budget - suffix)  # a legacy bare name, path-safe
+        assert len(f"{longest_direct}_ed25519.key".encode()) == budget
+
+        # At the budget: still the historical direct name, and genuinely creatable.
+        ref = build_ref("file", longest_direct, private_key_dir=str(key_dir))
+        assert Path(ref.removeprefix("file:")).name == f"{longest_direct}_ed25519.key"
+        probe = key_dir / f"{longest_direct}_ed25519.key.tmp"
+        probe.write_bytes(b"x")  # proves the kernel accepts the tmp name too
+        probe.unlink()
+
+        # One byte over: routes to the derived name, and the direct name it declined would
+        # in fact have been unwritable.
+        one_over = longest_direct + "a"
+        ref = build_ref("file", one_over, private_key_dir=str(key_dir))
+        assert Path(ref.removeprefix("file:")).name.startswith("rp-")
+        with pytest.raises(OSError, match="File name too long"):
+            (key_dir / f"{one_over}_ed25519.key.tmp").write_bytes(b"x")
+
 
 class TestReplayPrincipalBinding:
     """End-to-end tests: replay(verify_principal_binding=True) closes the

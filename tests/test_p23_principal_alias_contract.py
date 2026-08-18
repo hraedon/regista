@@ -449,20 +449,78 @@ def test_a_mapping_target_must_be_canonical():
 
 @pytest.mark.parametrize(
     "basis",
-    ["string-similarity", "string_similarity", "name-similarity", "inferred", "guess"],
+    [
+        # the spellings an enumerated denylist would have covered
+        "string-similarity",
+        "string_similarity",
+        "name-similarity",
+        # ...and the ones it would not: the refusal is on the *shape* of the claim, so it
+        # cannot be spelled around
+        "fuzzy-match",
+        "fuzzy_matching",
+        "nameSimilarityScore",
+        "looks-like-the-host",
+        "levenshtein match",
+        "STRING-SIMILARITY",
+        "  string-similarity  ",
+        "best-match-heuristic",
+    ],
 )
-def test_string_similarity_is_a_named_refusal_not_merely_absent_from_the_enum(basis):
-    """§2 consequence 2: the mapping 'is **never** inferred from string similarity'. A
-    generic "not in enum" would not tell an operator *why*."""
+def test_similarity_is_a_named_refusal_however_it_is_spelled(basis):
+    """§2 consequence 2: the mapping 'is **never** inferred from string similarity'.
+
+    An enumerated denylist can always be spelled around, and a generic "not in enum" would
+    not tell an operator *why*. Matching the shape of the claim — case-insensitively, on
+    substrings — means a new spelling lands on the same named refusal rather than on a
+    weaker one.
+    """
     payload = _mapping()
     payload["entries"][0]["basis"] = basis
     with pytest.raises(RegistaError) as exc:
         parse_actor_principal_mapping(payload)
-    assert exc.value.detail["reason"] in (
-        "string_similarity_is_never_a_basis",
-        "inference_is_never_a_basis",
-    )
+    assert exc.value.code == ErrorCode.PRINCIPAL_MAPPING_INVALID
+    assert exc.value.detail["reason"] == "string_similarity_is_never_a_basis", basis
     assert "never inferred from string similarity" in exc.value.message
+
+
+@pytest.mark.parametrize("basis", ["inferred", "inference", "guess", "guessed", "GUESS"])
+def test_inference_bases_get_their_own_named_refusal(basis):
+    """Not similarity claims, but still inference rather than deliberate assignment — a
+    distinct reason so an operator is told which rule they hit."""
+    payload = _mapping()
+    payload["entries"][0]["basis"] = basis
+    with pytest.raises(RegistaError) as exc:
+        parse_actor_principal_mapping(payload)
+    assert exc.value.detail["reason"] == "inference_is_never_a_basis", basis
+
+
+def test_an_unrecognised_basis_still_falls_through_to_unknown_basis():
+    """Closing the similarity enumeration must not swallow the ordinary enum check —
+    otherwise every typo would be reported as a similarity claim, which is a lie."""
+    payload = _mapping()
+    payload["entries"][0]["basis"] = "operator-inspecton"  # typo, not a similarity claim
+    with pytest.raises(RegistaError) as exc:
+        parse_actor_principal_mapping(payload)
+    assert exc.value.detail["reason"] == "unknown_basis"
+
+
+def test_the_similarity_denylist_never_catches_a_legal_basis():
+    """Substring matching is only safe while no legal basis contains a marker. Asserted
+    over the whole enum, so growing :class:`MappingBasis` cannot silently make a legal
+    value unusable."""
+    from regista._principal_alias import _SIMILARITY_MARKERS, _forbidden_basis_reason
+
+    for member in MappingBasis:
+        assert _forbidden_basis_reason(str(member)) is None, member
+        lowered = str(member).lower()
+        for marker in _SIMILARITY_MARKERS:
+            assert marker not in lowered, (member, marker)
+
+    # And every legal basis really does parse.
+    for member in MappingBasis:
+        payload = _mapping()
+        payload["entries"][0]["basis"] = str(member)
+        assert parse_actor_principal_mapping(payload).entries[0].basis is member
 
 
 def test_the_basis_enum_contains_no_inference_member():

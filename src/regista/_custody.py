@@ -12,6 +12,16 @@ _DEFAULT_BACKEND = "file"
 _KNOWN_BASE64_BACKENDS = frozenset({"vault", "azure"})
 _READ_ONLY_BACKENDS = frozenset({"env", "literal"})
 
+#: POSIX ``NAME_MAX`` — 255 bytes on every filesystem regista targets (ext4, xfs, btrfs,
+#: APFS) and also the per-component limit on NTFS. Deliberately a constant rather than a
+#: runtime ``os.pathconf`` lookup: the custody directory may not exist yet when a ref is
+#: built, and a ref that depends on the host's filesystem would not be reproducible.
+_MAX_FILENAME_BYTES = 255
+#: ``_secrets.FileProvider.store`` writes ``<name>.tmp`` and then renames onto ``<name>``,
+#: so the temporary name — not the final one — is what the kernel must accept. Reserving
+#: those bytes here is why a name this module approves can actually be created.
+_FILENAME_SUFFIX_RESERVE = len(".tmp")
+
 
 @dataclass(frozen=True)
 class CustodyResult:
@@ -71,10 +81,28 @@ def _contained_key_path(key_dir: Path, principal_id: str) -> Path:
     Resolution rule, in order:
 
     1. if ``<principal_id>_ed25519.key`` is a single path component that stays inside
-       ``key_dir``, use it — every ``secret_ref`` ever written by an older release keeps
-       resolving, because every legacy principal id is a bare name and therefore path-safe;
+       ``key_dir`` **and the kernel can actually create it**, use it — every ``secret_ref``
+       ever written by an older release keeps resolving, because every legacy principal id
+       is a bare name and therefore path-safe;
     2. otherwise fall back to ``<backend_name>_ed25519.key``, the §2.2 derived name, which
-       is ``rp-`` plus 32 hex characters and so is path-safe by construction.
+       is ``rp-`` plus 32 hex characters plus the suffix — 47 bytes, path-safe and
+       length-safe by construction.
+
+    The length half of condition 1 exists because ``service:`` + a 247-character subject is
+    a *legal* canonical id (§2.1's maximum) whose direct filename is 267 bytes, over
+    ``NAME_MAX``. Without it, ``FileProvider.store``'s ``os.open`` raises a bare
+    ``OSError(ENAMETOOLONG)`` that propagates untyped through ``provision_principal`` and
+    ``enroll_principal`` — an always-strict boundary answering with an unhandled OS
+    exception instead of a ``RegistaError``. Routing to the derived name makes the same
+    input simply *work*, which is better than either crashing or refusing.
+
+    **No existing secret can be orphaned by the length condition.** The budget is exactly
+    the one ``FileProvider`` has always been bound by (``NAME_MAX`` minus the ``.tmp``
+    reserve), so an id that now routes to the derived name is precisely an id whose direct
+    write would have failed with ``ENAMETOOLONG`` before this change — it has no
+    ``test_the_length_cutover_matches_what_was_ever_writable`` pins that
+    equivalence.
+    pins that equivalence.
 
     Two filename conventions is a cost, and it is the smaller cost: refusing case 2 would
     make a legal canonical identity un-enrollable on the file backend, and rewriting case 1
@@ -90,7 +118,13 @@ def _contained_key_path(key_dir: Path, principal_id: str) -> Path:
         return resolved.parent == base and resolved.name == candidate.name
 
     direct = key_dir / f"{principal_id}_ed25519.key"
-    if "/" not in principal_id and "\\" not in principal_id and _inside(direct):
+    if (
+        "/" not in principal_id
+        and "\\" not in principal_id
+        and len(direct.name.encode("utf-8")) + _FILENAME_SUFFIX_RESERVE
+        <= _MAX_FILENAME_BYTES
+        and _inside(direct)
+    ):
         return direct
 
     from ._principals import backend_name

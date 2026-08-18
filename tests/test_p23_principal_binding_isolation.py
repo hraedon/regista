@@ -24,6 +24,7 @@ The structural half is why the alias contract lives in its own module rather tha
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -40,12 +41,41 @@ _ALIAS_MODULE = "regista._principal_alias"
 # ---------------------------------------------------------------------------
 
 
+def _regista_import_closure(module: str) -> dict[str, str]:
+    """``{module name: source path}`` for every ``regista.*`` module a fresh interpreter
+    loads when importing ``module``.
+
+    Both the closure and the source paths come from the *same* subprocess: one process
+    launch instead of one per module, and the paths are the ones that interpreter actually
+    used rather than ones re-resolved afterwards.
+    """
+    code = (
+        "import sys, importlib, json;"
+        f"importlib.import_module({module!r});"
+        "print(json.dumps({m: (getattr(mod, '__file__', '') or '')"
+        " for m, mod in sorted(sys.modules.items()) if m.startswith('regista')}))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    return dict(json.loads(out.stdout))
+
+
 @pytest.mark.parametrize("module", _BINDING_MODULES)
 def test_the_binding_modules_cannot_reach_the_alias_module(module):
     """A fresh interpreter imports only the binding module; the alias module must not
     appear in ``sys.modules``, transitively or otherwise.
 
     Run in a subprocess because this process has already imported everything.
+
+    **Scope limit, stated so it is not mistaken for more than it is.** This walks
+    *module-level* imports. A function-local ``import regista._principal_alias`` inside a
+    binding module, or inside anything it transitively loads, would not appear in
+    ``sys.modules`` at import time and would slip past this check alone. Two things close
+    that: :func:`test_no_module_in_the_binding_import_closure_mentions_aliases`, which greps
+    the source of the whole transitive closure — a function-local import still has to be
+    written down somewhere in that closure — and, as the real backstop, the behavioural
+    tests below, which show the binding checks compare exact strings whatever gets imported.
     """
     code = (
         "import sys, importlib;"
@@ -84,6 +114,14 @@ def test_the_public_package_import_does_not_pull_in_the_alias_module():
     assert out.stdout.strip() == "False"
 
 
+_ALIAS_VOCABULARY = (
+    "principal_alias",
+    "principal-alias",
+    "reporting_join_only",
+    "alias_covers_actor_id",
+)
+
+
 def test_the_binding_check_sources_contain_no_alias_vocabulary():
     """Belt and braces on the import test: an inline copy of alias logic would not add an
     import. Neither binding site may mention aliasing at all."""
@@ -95,13 +133,63 @@ def test_the_binding_check_sources_contain_no_alias_vocabulary():
     for mod in (bundle_mod, pk_mod):
         source = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
         lowered = source.lower()
-        for needle in (
-            "principal_alias",
-            "principal-alias",
-            "reporting_join_only",
-            "alias_covers_actor_id",
-        ):
+        for needle in _ALIAS_VOCABULARY:
             assert needle not in lowered, f"{mod.__name__} mentions {needle!r}"
+
+
+#: Every syntactic form that would pull the alias module in, including the deferred ones a
+#: ``sys.modules`` snapshot cannot see. Deliberately import *syntax*, not vocabulary: the
+#: alias module's NAME legitimately appears in prose across the package (``_errors`` defines
+#: ``PRINCIPAL_ALIAS_INVALID``; ``_principals`` names ``regista.principal-alias`` in the
+#: refusal it hands an operator; ``_verification`` explains in a comment why it does *not*
+#: import it). Flagging those would be a false positive that trains the next reader to
+#: silence this test. What must never appear is an import.
+_ALIAS_IMPORT_FORMS = (
+    "import regista._principal_alias",
+    "from regista._principal_alias import",
+    "from ._principal_alias import",
+    "import _principal_alias",
+    'import_module("regista._principal_alias")',
+    "import_module('regista._principal_alias')",
+)
+
+
+@pytest.mark.parametrize("module", _BINDING_MODULES)
+def test_no_module_in_the_binding_import_closure_imports_the_alias_module(module):
+    """Closes the deferred-import gap the ``sys.modules`` check cannot see.
+
+    A function-local ``import regista._principal_alias`` — in a binding module or in
+    anything it transitively loads — would keep the alias module out of ``sys.modules`` at
+    import time and pass the snapshot test. But the import statement still has to be written
+    down somewhere in that closure. So: take the closure a fresh interpreter actually loads,
+    and require no module in it to contain any import form for the alias module.
+
+    ``regista._principals`` is in the closure (the verifier needs it for §2.6 reporting) and
+    is *allowed* to be — it is the grammar, not the alias contract. That separation is
+    exactly why the alias contract was put in its own module, and this test is what keeps
+    the separation load-bearing rather than stylistic.
+    """
+    import pathlib
+
+    closure = _regista_import_closure(module)
+    assert closure, "empty import closure — the probe stopped probing"
+    assert _ALIAS_MODULE not in closure
+    # Non-vacuity: the closure must actually contain the binding module and the grammar.
+    assert module in closure
+
+    offenders = []
+    for name, origin in closure.items():
+        if not origin.endswith(".py"):
+            continue
+        source = pathlib.Path(origin).read_text(encoding="utf-8")
+        for form in _ALIAS_IMPORT_FORMS:
+            if form in source:
+                offenders.append(f"{name}: {form}")
+    assert offenders == [], (
+        f"module(s) in {module}'s import closure import {_ALIAS_MODULE}, so a deferred "
+        "import could bridge the binding check that §2.5 requires stay alias-blind "
+        "(criterion 21): " + repr(offenders)
+    )
 
 
 # ---------------------------------------------------------------------------
