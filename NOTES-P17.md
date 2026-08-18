@@ -1,5 +1,8 @@
 # P1.7 handoff — what landed, what did not, and the findings that changed the plan
 
+> **Session 2 (2026-08-18) starts at §0. Read §0 first — it supersedes parts of
+> §1-§4 and records three findings the earlier notes did not have.**
+
 Branch `agent/p17-v6-writer`, worktree `~/wt/regista-p17`, base `main` @ `e19ec47`.
 Dedicated DB `regista_test_p17` (`postgresql://regista_test:regista_test@localhost:5432/regista_test_p17`).
 Tracker: **WI-300**.
@@ -15,6 +18,146 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 
 ---
 
+## 0. Session 2 (2026-08-18): what landed, and three findings
+
+Commits, in order:
+
+| SHA | Slice |
+|---|---|
+| `ce19e06` | Merge of `agent/wi287-inmem-parity`, + the `v6_epoch_open` shape unification and a real in-memory `append_v6` |
+| `6ed569b` | §3c items 1-3: the ceremony round-trip on a real epoch, all three stubs deleted |
+| (this slice) | The **remaining three legacy funnels** wired to the v6 route + the first migrated file (`test_idempotency.py`) |
+
+### FINDING 5 — the merge had a semantic conflict the text merge did not show
+
+`EventStore.v6_epoch_open` was declared by P1.7 as a **method** (the funnel calls
+`store.v6_epoch_open()`) and implemented by WI-287 as a **property**. The merge kept both
+definitions in `InMemoryEventStore`; P1.7's stub (later in the file, returning `False`)
+shadowed WI-287's real one, and `_refuse_legacy_append`'s `if self.v6_epoch_open:` tested a
+**bound method** for truthiness — always true. Three tests caught it. Unified as a method
+(the protocol's shape); the handle-level `InMemoryRegista.v6_epoch_open` stays a property,
+mirroring `Regista`. **Lesson for the next stacked merge: grep for members both branches
+added, not just for conflict markers.**
+
+`InMemoryEventStore.append_v6` is now real (same preflights as Postgres, then the shared
+writer over the `_in_memory_v6` facade), and the store carries a keyset via `bind_keys`.
+
+### FINDING 6 — §3c items 4 and 5 are blocked on a production surface that does not exist
+
+**There is no production trust-log append path.** Verified: `principal_lifecycle.py` is the
+only production writer of `principal_key_enrolled`, and it appends to the **project** chain
+through the ordinary funnel. The trust-log chain is written *only* by
+`tests/_trust_log_fixtures.store_trust_log_event` — a direct `INSERT INTO events` whose chain
+state lives in a Python object, not in the database.
+
+`append_v6_event` cannot serve the trust-log chain: it calls `require_v6_epoch`, and a
+trust-log project has **no `project_identity`** row, because its genesis is
+`trust_domain_established` (Bootstrap A), not `project_initialized` (Bootstrap B). Giving the
+trust-log project a `project_initialized` genesis as well is not a fix — RECONCILIATION.md
+Resolution 1 calls `trust_domain_established` "the trust-log genesis", so B-then-A inside the
+trust log inverts the spec's own ordering.
+
+So relocating enrolment to the trust-log chain needs a **new production trust-log writer**
+with its own admission rules (chain root = `trust_domain_established`; binding anchor = the
+trust-log genesis for root-authorised events; no `project_identity`). That is a package-sized
+gap left by P2.1/P2.2, not a §3c cleanup item, and it is **not** P1.7's to invent mid-migration.
+§3c items 1-3 landed anyway (see `6ed569b`): the ceremony now runs on a real epoch with **zero
+stubs**, appending to the project chain, which is what production does today. The debt is
+stated in `TestCeremonyPathRoundTrip`'s docstring where a reader will find it.
+
+**WI-299 consequence.** Its closing condition ("`provision_principal` appends a signed
+`principal_key_enrolled` through the writer") is now *mechanically* reachable — `6ed569b`
+proves the append path works end to end for exactly that transition — but on the project
+chain, i.e. carrying Finding 6's topology debt. And `provision_principal` is a non-interactive
+CLI: a §5.5 enrolment needs a possession proof (it holds the key it just minted, so that part
+is fine) **and an approval**, and who approves a provisioning run is a policy decision, not an
+implementation detail. Auto-approving would be a bypass with extra steps. **Left for the owner
+/ coordinator to decide; WI-299 is not closed and its positive clause is not restored.**
+
+### FINDING 7 — the wiring was one funnel short of three, which is what actually gated Phase 3
+
+`d3cce8f` wired `_event_store.append_event`. Three more refuse post-genesis, and
+`_work_items.create_work_item` — the entry point almost every migrated fixture needs — goes
+through the second, not the first:
+
+1. `_events.append_event` (direct SQL; `_work_items.create_work_item` uses it),
+2. `_events.append_transition_event` (direct SQL; every state transition),
+3. `_events_api.append_event`'s **eager pre-flight** `check_legacy_append`, which fired before
+   the store's fork could route,
+4. `PostgresEventStore.allocate_seq`'s `check_legacy_append` — reached by the v6 path itself,
+   via `append_v6`'s `expected_event_seq` evaluation, so `expected_event_seq` was unusable in
+   the clean epoch.
+
+All four are now epoch-aware. (1) and (2) reuse `_event_store._v6_request`, so the two
+legacy-vocabulary translations — the `''`/`0` workflow sentinel becoming `null`, and
+`on_behalf_of` being *refused* rather than dropped — are not duplicated and cannot drift.
+(3) and (4) are conditioned rather than deleted, so the pre-genesis `GENESIS_REQUIRED` form
+still comes from the earliest possible point, which is what keeps the remaining manifest
+entries true.
+
+**This was the real gate on Phase 3, not the fixtures.** With it in place a file's migration is
+mechanical; without it, every migrated fixture died in `create_work_item`.
+
+**One test had to be rewritten, and it is a strengthening.**
+`tests/test_genesis.py::test_postgres_genesis_is_single_and_recoverable` asserted that
+post-genesis `regista.append_event(<random uuid>, ...)` raises `V6_EPOCH_OPEN`. It now raises
+`WORK_ITEM_NOT_FOUND`, because the append gets *past* the epoch door and is refused by the v6
+path's own contract check — keeping the old assertion would be asserting that P1.7's wiring is
+absent. The invariant the test is actually about (a **legacy writer** cannot extend the opened
+epoch, `EPOCH-RESET.md` §5.1) is now pinned directly on `check_legacy_append` **and**
+`admit_legacy_append`, i.e. at the two functions that enforce it, instead of through an
+ordinary-API call whose meaning changed underneath it. Two assertions where there was one.
+
+### The Phase 3 migration recipe, measured on `tests/test_idempotency.py` (6 nodes)
+
+```python
+@pytest.fixture(scope="module")
+def regista(tmp_path_factory):                 # module scope -> tmp_path_factory
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("k"), principals=(ACTOR_1, ACTOR_2))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset, principals=(ACTOR_1, ACTOR_2))
+    sub.register_workflow_file(WORKFLOW_PATH)   # emits the signed registration itself
+    ...
+```
+
+Three costs per file, in descending order:
+
+1. **Canonical actor ids.** `"agent-1"` → `"agent:idem-one"`, at *every* occurrence including
+   assertions. This is the bulk of the diff and it is per-file textual work.
+2. The fixture rewrite above (mechanical, ~10 lines).
+3. `register_workflow_file` needs no change — `_workflow_api` already appends the signed
+   `workflow_registered` event post-genesis, so admission gate 1 is satisfied for free.
+
+Measured result: **6 XPASS(strict) → 6 passed**, manifest **694 → 688**. Use
+`/tmp/.../shrink.py`-style surgery on the manifest (`json.dump(..., indent=1)` + trailing
+newline, and **update `baseline_count`** — the debt checker asserts
+`baseline_count == len(entries)`).
+
+### Phase 2 (verifier boundary) — NOT started, and the notes understated it by a lot
+
+§4's design notes are sound but the *scope* is not a clamp swap. Measured against
+`_verification.py`: of RECONCILIATION.md Resolution 2's `VerificationResultV6` surface,
+**10 of the 11 new result fields are missing** (only `identity_consistency` exists),
+**14 of 15 failure reasons are missing** (only `ENVELOPE_UNCANONICAL` exists), and **all four
+policy inputs are missing** (`pinned_project_instance_id`, `pinned_trust_domain_id`,
+`cutover_checkpoint_event_hash`, `producer_policy`).
+
+There is also a structural blocker §4 does not mention: **`_verify_v6_row` cannot see any other
+event.** Its inputs are the row, the parsed envelope and a `TrustedKeyResolver`. §5.10 steps
+1-4 are *chain traversal over the presented material*, so the function needs a new
+referent-resolver input (hash → event, plus the completeness claim) threaded through
+`verify_event_strict` and its 12 call sites. The result fields are non-optional, so all 39
+`VerificationResult(...)` construction sites in the tree must supply them (most via
+`_base_kwargs`).
+
+**Do not land this in pieces.** A partial Phase 2 cannot flip `applicability`, so it delivers
+none of the value (WI-296's two `test_bundle` assertions stay `False`, WI-287's cluster-6
+tightening stays blocked) while leaving a second, narrower clamp behind. Note also
+`VerificationPolicy.full_authentication_versions` is `frozenset({V5})` — **V6 must be added or
+no v6 row can ever be `FULLY_AUTHENTICATED`**, which is easy to miss.
+
+---
+
 ## 1. Status by phase
 
 | Phase | State |
@@ -24,8 +167,8 @@ Never pipe pytest through `tail`/`head` — it masks the exit code. Write to a f
 | **1c — the wiring** | **Partial** (`d3cce8f`). The `_event_store.append_event` epoch fork landed, gated on `project_identity` presence (§3d). Still open: the trust-log/project topology split (§3c step 1-3), `provision_principal`'s signed enrolment, `PrincipalLifecycle.commit()`. No fixture migrated, so the manifest is untouched. |
 | **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4. |
 | **1b/1c blockers** | Finding 4 **resolved 2026-08-18** — the admission rule is unchanged; it was a fixture-topology bug. §3c has the taken path and the scoped remaining work. |
-| **3 — empty the manifest** | **Not started.** Manifest still 694. **Read §2: the target is 167, not 0.** |
-| **4 — full validation** | Both lanes green + all guards at each checkpoint; not re-run against a changed manifest because the manifest has not changed. |
+| **3 — empty the manifest** | **Started.** 694 → 688 (1 of 74 files migrated). §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
+| **4 — full validation** | Re-run at each session-2 checkpoint; see §0. |
 
 Phase 1b deliberately stopped short of routing `_event_store.append_event` to the writer. Doing
 that before the fixtures are migrated reddens all 694 manifest nodes with a *changed* failure
@@ -38,7 +181,16 @@ new surface no existing caller touches, which is why it lands green on its own.
 
 ## 2. FINDING 1 — the manifest cannot reach literally empty under P1.7's stated non-goals
 
-**Measured: 167 of the 694 manifest nodes (24.1%) are in-memory-backend nodes.**
+> **SUPERSEDED IN TWO WAYS, 2026-08-18.** (a) The **167 figure is wrong** — it came from a
+> name-based heuristic. WI-287 measured it causally at **217** in-memory / 446 Postgres / 24
+> indirect / 7 slow (NOTES-WI287.md §4); the heuristic missed 74 and wrongly claimed 30
+> `[real]` Postgres parameters. (b) The **owner ratified option 3** as an acceptance
+> amendment (main `cf33b04`, PR #48): "manifest literally empty" is judged at the *joint*
+> completion of P1.7 and WI-287. Since `ce19e06` merged WI-287 into this branch, that joint
+> point is this branch — so the target IS 0 here, and §1's old "target is 167" note was
+> already stale when written. Kept below for the reasoning, which still holds.
+
+**Measured (superseded): 167 of the 694 manifest nodes (24.1%) are in-memory-backend nodes.**
 
 ```
 python3 -c "

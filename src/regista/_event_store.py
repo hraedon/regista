@@ -737,7 +737,14 @@ class PostgresEventStore:
         return wi
 
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
-        self.check_legacy_append()
+        # Allocating a sequence is a READ, and the v6 path needs it: `append_v6`
+        # calls this to evaluate `expected_event_seq` before touching key material.
+        # The legacy refusal therefore applies only before genesis, where it is the
+        # manifest's recorded form; refusing after genesis would make
+        # `expected_event_seq` unusable in the clean epoch, which is not what
+        # EPOCH-RESET.md §5.1 closes (it closes legacy *writers*, not seq reads).
+        if not self.v6_epoch_open():
+            self.check_legacy_append()
         if entity_kind != "work_item":
             entity_bytes = work_item_id.bytes
             key = int.from_bytes(entity_bytes[:8], "big", signed=False)
