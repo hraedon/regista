@@ -27,7 +27,7 @@ Commits, in order:
 | `ce19e06` | Merge of `agent/wi287-inmem-parity`, + the `v6_epoch_open` shape unification and a real in-memory `append_v6` |
 | `6ed569b` | §3c items 1-3: the ceremony round-trip on a real epoch, all three stubs deleted |
 | `378a9a1` | The **remaining legacy funnels** wired to the v6 route + the first migrated file (`test_idempotency.py`); manifest 694 → 688 |
-| (last slice) | In-memory signed workflow registration (Finding 9) + `test_hash_chain.py`; manifest 688 → **686** |
+| `e3b18cf` | In-memory signed workflow registration (Finding 9) + `test_hash_chain.py`; manifest 688 → **686** |
 
 ### FINDING 5 — the merge had a semantic conflict the text merge did not show
 
@@ -211,7 +211,7 @@ no v6 row can ever be `FULLY_AUTHENTICATED`**, which is easy to miss.
 | **1c — the wiring** | **Partial** (`d3cce8f`). The `_event_store.append_event` epoch fork landed, gated on `project_identity` presence (§3d). Still open: the trust-log/project topology split (§3c step 1-3), `provision_principal`'s signed enrolment, `PrincipalLifecycle.commit()`. No fixture migrated, so the manifest is untouched. |
 | **2 — verifier boundary** | **Not started.** The clamp is still at `_verification.py:2311-2324`. Design notes in §4. |
 | **1b/1c blockers** | Finding 4 **resolved 2026-08-18** — the admission rule is unchanged; it was a fixture-topology bug. §3c has the taken path and the scoped remaining work. |
-| **3 — empty the manifest** | **Started.** 694 → 688 (1 of 74 files migrated). §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
+| **3 — empty the manifest** | **Started.** 694 → **686** (2 of 74 files; 8 nodes newly passing, 0 retired). **Read Finding 8 first: every verifying file must wait for Phase 2.** §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
 | **4 — full validation** | Re-run at each session-2 checkpoint; see §0. |
 
 Phase 1b deliberately stopped short of routing `_event_store.append_event` to the writer. Doing
