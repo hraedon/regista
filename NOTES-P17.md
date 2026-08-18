@@ -157,6 +157,80 @@ sees only the document), so the check lives in the writer:
 `_require_authority_may_accept` (→ `PRODUCER_NOT_AUTHORIZED`, reason
 `may_accept_keys_not_held`). Mutations M18/M19 confirm both are load-bearing.
 
+## 3c. FINDING 4 — the genesis ordering conflict BLOCKS the rest of 1c. Resolve this first.
+
+**A project that has a trust log can never write its project genesis.**
+
+- `append_v6_genesis` refuses unless the `events` table is **empty**
+  (`_genesis.first_write_admission`, `event_count != 0` → `GENESIS_ALREADY_WRITTEN`).
+- The trust log lives in the **same** `events` table — `tests/_trust_log_fixtures.py:611`
+  does `INSERT INTO events`, entity kinds `trust_domain` / `principal`.
+- `RECONCILIATION.md` Resolution 1 requires Bootstrap **A** (`trust_domain_established`,
+  the trust-log genesis) to **precede** Bootstrap **B** (`project_initialized`): "Bootstrap A
+  establishes external authority; Bootstrap B imports that authority and creates project-chain
+  order."
+
+So the required order is exactly the order the admission check forbids. This surfaced as four
+real failures in `tests/test_trust_projection.py::TestCeremonyPathRoundTrip` the moment the
+legacy funnel started routing on `project_identity` presence — the fixture has a trust log *and*
+a (fake) project identity, which is a state the writer cannot legitimately produce.
+
+Three candidate resolutions, none of which I should pick unilaterally:
+
+1. **`first_write_admission` counts only project-chain events**, ignoring trust-log entity kinds
+   (`trust_domain`, and `principal` events whose transition is in
+   `_trust_log.TRUST_LOG_TRANSITIONS`). Narrowest change; makes "empty store" mean "no project
+   events", which is what the criterion is *about*. Needs care that it cannot be widened into
+   "genesis may follow arbitrary events".
+2. **The trust log gets its own table or its own schema.** Cleanest conceptually — two chains,
+   two homes — but it is a migration plus a rewrite of `_trust_projection.rebuild_projection`'s
+   query (`_trust_projection.py:217`) and of `_trust_log_fixtures`.
+3. **Genesis is permitted to follow the trust log specifically**, by requiring that every
+   pre-existing event be a trust-log event and that the trust log's head be the value
+   `previous_project_event_hash` chains from. Effectively (1) with an explicit allow-list.
+
+My reading favours **(1)**, because the invariant the criterion protects is "no *project* history
+predates project genesis", and trust-log events are not project history. But this changes a
+genesis admission rule, which is exactly the kind of thing that should not be loosened by an
+implementer mid-migration — **`prefer-strict-defaults` cuts against me here**, so it needs the
+owner or the coordinator.
+
+**Until it is resolved:** `TestCeremonyPathRoundTrip` carries a third stub
+(`v6_epoch_open → False`) of the same character as its existing two, with the reasoning inline.
+It keeps testing its real subject (payload construction, the appliers, the rebuild). It cannot
+drop its stubs, and `PrincipalLifecycle.commit()` cannot route through the real writer, until
+Finding 4 is decided.
+
+## 3d. What 1c actually landed, and what it did not
+
+**Landed:** the epoch fork in `_event_store.append_event`, gated on `project_identity` presence,
+so a project without genesis still refuses with `GENESIS_REQUIRED` — measured against the
+manifest, whose 694 entries record exactly two forms and **no `V6_EPOCH_OPEN`**:
+
+```
+666  {"error_code": "GENESIS_REQUIRED", "exception": "RegistaError"}   (direct)
+ 18  {"exception": "AssertionError", "signature": "assert 409 == 200"} (indirect)
+  5  {"exception": "KeyError", "signature": "KeyError: 'work_item'"}
+  4  {"exception": "AssertionError", "signature": "GENESIS_REQUIRED"}
+  1  {"exception": "AssertionError", "signature": "assert 0 > 0"}
+```
+
+That is *why* the gate is on identity presence rather than a flag: every recorded form stays true
+for an unmigrated project, so the migration can proceed file by file without the form validator
+converting the whole manifest to red at once.
+
+Also landed: `V6AppendRequest` + `_v6_request`, the single place the legacy→v6 translation lives
+(the `""`/`0` workflow sentinel becomes `null`; `on_behalf_of` is **refused**, not dropped,
+because discarding it would make a delegated event read as direct action);
+`PostgresEventStore.v6_epoch_open` / `.append_v6` preserving idempotency and
+`expected_event_seq`; `InMemoryEventStore` answering `False` so WI-287's tranche keeps its
+recorded form; and `tests/_v6_fixtures.open_v6_epoch(instance, keyset)` — the one call a migrated
+fixture needs (genesis, then a standalone acceptance per principal, then the producer env).
+
+**Not landed:** no test file has been migrated, so the manifest is still 694. `provision_principal`
+still refuses (WI-299's other half is blocked on Finding 4 too — enrolment is a *trust-log* event,
+so it needs the trust log, which is the state genesis forbids). Phases 2, 3 and 4 untouched.
+
 ## 4. Phase 2 design notes (the verifier boundary)
 
 The clamp is `_verification._verify_v6_row`, final return, `_verification.py:2311-2324`:

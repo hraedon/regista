@@ -1064,3 +1064,196 @@ class TestPostgresOnly:
                 )
         assert exc.value.code is ErrorCode.V6_CHAIN_LINK_MISSING
         assert exc.value.detail["missing_event_seq"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Phase 1c: the legacy append funnel, routed through the v6 writer
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyFunnelRouting:
+    """``_event_store.append_event`` is the funnel every legacy append goes through.
+
+    Post-genesis it now routes to the v6 writer instead of refusing with
+    ``V6_EPOCH_OPEN``. The fork is gated on ``project_identity`` existing, which is
+    what keeps every ``epoch_blocked_manifest`` entry's recorded failure form true:
+    all 694 entries record ``GENESIS_REQUIRED``, and a project that has not opened an
+    epoch still takes exactly that path. Measured, not assumed — see
+    ``test_a_project_without_genesis_still_refuses_with_the_manifest_form`` below.
+    """
+
+    @pytest.fixture
+    def opened(self, project, keyset):
+        from _v6_fixtures import open_v6_epoch
+
+        return open_v6_epoch(project, keyset)
+
+    def test_a_project_without_genesis_still_refuses_with_the_manifest_form(
+        self, project, keyset
+    ):
+        """The whole reason the fork is gated. This is the manifest's recorded form.
+
+        If this ever changed code, all 694 manifest entries would become lies at once
+        and the §2.1 form validator would convert them to honest red — correctly, but
+        catastrophically. The gate exists so the migration can proceed file by file.
+        """
+
+        from regista._event_store import PostgresEventStore, append_event
+
+        with project._mgr.transaction() as conn:
+            store = PostgresEventStore(conn, project._keys)
+            assert store.v6_epoch_open() is False
+            with pytest.raises(RegistaError) as exc:
+                append_event(
+                    store,
+                    work_item_id=uuid.uuid4(),
+                    actor_id=WORKER,
+                    actor_kind="agent",
+                    actor_metadata=None,
+                    workflow_name="",
+                    workflow_version=0,
+                    transition="created",
+                    payload=None,
+                    event_id=uuid.uuid4(),
+                    key_set=project._keys,
+                )
+        assert exc.value.code is ErrorCode.GENESIS_REQUIRED
+
+    def test_the_funnel_produces_a_real_v6_event_after_genesis(self, project, opened):
+        """The legacy call signature, the v6 result. This is what 1c is for."""
+
+        from regista._event_store import PostgresEventStore, append_event
+        from regista._verification import parse_v6_envelope_strict
+
+        entity_id = uuid.uuid4()
+        with project._mgr.transaction() as conn:
+            store = PostgresEventStore(conn, project._keys)
+            assert store.v6_epoch_open() is True
+            event = append_event(
+                store,
+                work_item_id=entity_id,
+                actor_id=WORKER,
+                actor_kind="agent",
+                actor_metadata=None,
+                workflow_name="",
+                workflow_version=0,
+                transition="created",
+                payload=None,
+                event_id=uuid.uuid4(),
+                key_set=project._keys,
+            )
+        assert event.scheme_id == "ed25519"
+        envelope = parse_v6_envelope_strict(bytes(event.canonical_envelope))
+        assert envelope["version"] == 6
+        assert len(envelope) == 16
+        assert envelope["actor"]["principal_id"] == WORKER
+        assert envelope["signing"]["key_binding_event_hash"].startswith("sha256:")
+
+    def test_the_legacy_workflow_sentinel_becomes_a_null_workflow(
+        self, project, opened
+    ):
+        """``""``/``0`` translated at the ONE boundary that reads the old vocabulary.
+
+        The v6 writer keeps refusing the sentinel for direct callers
+        (``test_the_sentinel_workflow_shape_is_refused_before_anything_is_signed``);
+        translating it here is migration, and confining it to ``_v6_request`` is what
+        stops it from becoming a silent normalisation everywhere.
+        """
+
+        from regista._event_store import PostgresEventStore, append_event
+        from regista._verification import parse_v6_envelope_strict
+
+        with project._mgr.transaction() as conn:
+            event = append_event(
+                PostgresEventStore(conn, project._keys),
+                work_item_id=uuid.uuid4(),
+                actor_id=WORKER,
+                actor_kind="agent",
+                actor_metadata=None,
+                workflow_name="",
+                workflow_version=0,
+                transition="created",
+                payload=None,
+                event_id=uuid.uuid4(),
+                key_set=project._keys,
+            )
+        assert event.workflow_name is None
+        assert event.workflow_version is None
+        assert parse_v6_envelope_strict(bytes(event.canonical_envelope))["workflow"] is None
+
+    def test_on_behalf_of_is_refused_rather_than_silently_dropped(
+        self, project, opened
+    ):
+        """v6 has no ``on_behalf_of`` field, so discarding it would lose a claim.
+
+        The caller believed it was recording a delegation. Dropping it produces an
+        event that reads as direct action when the caller said otherwise — the exact
+        "reads as complete when it is not" failure ``EPOCH-RESET.md`` §4 names.
+        """
+
+        from regista._event_store import PostgresEventStore, append_event
+
+        with pytest.raises(RegistaError) as exc:
+            with project._mgr.transaction() as conn:
+                append_event(
+                    PostgresEventStore(conn, project._keys),
+                    work_item_id=uuid.uuid4(),
+                    actor_id=WORKER,
+                    actor_kind="agent",
+                    actor_metadata=None,
+                    workflow_name="",
+                    workflow_version=0,
+                    transition="created",
+                    payload=None,
+                    event_id=uuid.uuid4(),
+                    key_set=project._keys,
+                    on_behalf_of={"principal_id": "human:operator"},
+                )
+        assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+        assert exc.value.detail["reason"] == "on_behalf_of_has_no_v6_field"
+
+    def test_idempotency_survives_the_epoch_change(self, project, opened):
+        """A duplicate ``event_id`` returns the existing event, never a second signature.
+
+        Signing twice would produce two events with the same id and different bytes —
+        unfixable history, since events are never re-signed.
+        """
+
+        from regista._event_store import PostgresEventStore, append_event
+
+        event_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        kwargs: dict[str, Any] = dict(
+            work_item_id=entity_id,
+            actor_id=WORKER,
+            actor_kind="agent",
+            actor_metadata=None,
+            workflow_name="",
+            workflow_version=0,
+            transition="created",
+            payload=None,
+            event_id=event_id,
+            key_set=project._keys,
+        )
+        with project._mgr.transaction() as conn:
+            first = append_event(PostgresEventStore(conn, project._keys), **kwargs)
+        with project._mgr.transaction() as conn:
+            second = append_event(PostgresEventStore(conn, project._keys), **kwargs)
+        assert first.event_id == second.event_id
+        assert bytes(first.signature) == bytes(second.signature)
+        with project._mgr.transaction() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE event_id = %s", [event_id]
+            ).fetchone()
+        assert count["n"] == 1
+
+    def test_the_in_memory_backend_still_reports_the_epoch_closed(self):
+        """WI-287's tranche stays honest: no v6 claim without a v6 implementation."""
+
+        from regista._event_store import InMemoryEventStore
+
+        store = InMemoryEventStore()
+        assert store.v6_epoch_open() is False
+        with pytest.raises(RegistaError) as exc:
+            store.check_legacy_append()
+        assert exc.value.code is ErrorCode.GENESIS_REQUIRED

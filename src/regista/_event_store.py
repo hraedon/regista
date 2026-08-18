@@ -39,6 +39,10 @@ class EventStore(Protocol):
 
     def check_legacy_append(self) -> None: ...
 
+    def v6_epoch_open(self) -> bool: ...
+
+    def append_v6(self, request: V6AppendRequest) -> Event: ...
+
     def find_by_event_id(self, event_id: uuid.UUID) -> Event | None: ...
 
     def append(self, event: Event) -> Event: ...
@@ -54,6 +58,97 @@ class EventStore(Protocol):
         limit: int = 100,
         before_seq: int | None = None,
     ) -> list[Event]: ...
+
+
+@dataclasses.dataclass(frozen=True)
+class V6AppendRequest:
+    """What the legacy call signature carries, translated for the v6 writer.
+
+    A dataclass rather than a long kwargs list so the EventStore protocol stays
+    readable and so the legacy->v6 translation happens in exactly one place, where it
+    can be argued rather than assumed.
+    """
+
+    work_item_id: uuid.UUID
+    entity_kind: str
+    actor_id: str
+    actor_kind: str
+    actor_metadata: dict[str, Any] | None
+    transition: str
+    payload: dict[str, Any] | None
+    event_id: uuid.UUID
+    workflow_name: str | None
+    workflow_version: int | None
+    expected_event_seq: int | None
+    key_id: str | None
+
+
+def _v6_request(
+    *,
+    work_item_id: uuid.UUID,
+    entity_kind: str,
+    actor_id: str,
+    actor_kind: str,
+    actor_metadata: dict[str, Any] | None,
+    workflow_name: str,
+    workflow_version: int,
+    transition: str | None,
+    payload: dict[str, Any] | None,
+    event_id: uuid.UUID,
+    expected_event_seq: int | None,
+    on_behalf_of: dict[str, Any] | None,
+    key_id: str | None,
+) -> V6AppendRequest:
+    """Translate the legacy append signature into the v6 one, or refuse.
+
+    Two translations, both deliberate and both confined to this function:
+
+    **The ``""`` / ``0`` workflow sentinel becomes ``None``.** In the v1-v5 vocabulary
+    those columns were ``NOT NULL``, so ``""``/``0`` was the only way to spell "this
+    event is not evaluated against a workflow". In v6 that spelling is
+    ``workflow: null`` and the sentinel is refused, because the envelope would *sign*
+    the falsehood (``V6-ENVELOPE.md`` §1.6). Translating here — at the one boundary
+    where the old vocabulary is being read — is migration. The v6 writer keeps
+    refusing the sentinel for direct callers, which is what stops this from becoming a
+    silent normalisation everywhere.
+
+    **``on_behalf_of`` is refused, not dropped.** v6 has no such field at all (§1.5,
+    "Historical ``on_behalf_of`` is not authorization"). Silently discarding it would
+    lose a signed assertion the caller believed it was recording; the caller has to
+    move to ``authorization.credentials``, and a named refusal is how it finds out.
+    """
+
+    if on_behalf_of is not None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "on_behalf_of has no v6 home and is not silently dropped: v6 carries "
+            "delegation as authorization.credentials, and a historical on_behalf_of "
+            "is reported as legacy_delegation_assertion, never as verified delegation "
+            "(V6-ENVELOPE.md §1.5)",
+            detail={"reason": "on_behalf_of_has_no_v6_field"},
+        )
+    if transition is None or not str(transition).strip():
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "every v6 event carries a non-empty transition; there are no "
+            "transitionless v6 events in 0.6.0 (RECONCILIATION.md Resolution 3)",
+            detail={"reason": "transition_empty"},
+        )
+    has_workflow = bool(workflow_name) and bool(workflow_version)
+    return V6AppendRequest(
+        work_item_id=work_item_id,
+        entity_kind=entity_kind,
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        actor_metadata=actor_metadata,
+        transition=str(transition),
+        payload=payload,
+        event_id=event_id,
+        workflow_name=workflow_name if has_workflow else None,
+        workflow_version=workflow_version if has_workflow else None,
+        expected_event_seq=expected_event_seq,
+        key_id=key_id,
+    )
 
 
 def append_event(
@@ -74,6 +169,29 @@ def append_event(
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
 ) -> Event:
+    # The epoch fork. Before genesis this raises GENESIS_REQUIRED exactly as it did
+    # on main — which is what keeps every epoch_blocked manifest entry's recorded
+    # failure form true for a project that has not opened an epoch. Once genesis has
+    # opened the epoch, the append goes through the v6 writer instead of being
+    # refused with V6_EPOCH_OPEN.
+    if store.v6_epoch_open():
+        return store.append_v6(
+            _v6_request(
+                work_item_id=work_item_id,
+                entity_kind=entity_kind,
+                actor_id=actor_id,
+                actor_kind=actor_kind,
+                actor_metadata=actor_metadata.value if actor_metadata is not None else None,
+                workflow_name=workflow_name,
+                workflow_version=workflow_version,
+                transition=transition,
+                payload=payload.value if payload is not None else None,
+                event_id=event_id,
+                expected_event_seq=expected_event_seq,
+                on_behalf_of=on_behalf_of,
+                key_id=_key_id,
+            )
+        )
     store.check_legacy_append()
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
@@ -214,6 +332,21 @@ class InMemoryEventStore:
             "in-memory legacy append refused: the clean v6 epoch is not supported by this backend",
         )
 
+    def v6_epoch_open(self) -> bool:
+        # Always False, so the append falls through to check_legacy_append's
+        # GENESIS_REQUIRED — the recorded failure form for every in-memory manifest
+        # node. In-memory v6 parity is WI-287 (SUITE-RECONCILIATION.md §2.3 D2), and
+        # returning True here without it would claim a capability this backend does
+        # not have.
+        return False
+
+    def append_v6(self, request: V6AppendRequest) -> Event:
+        raise RegistaError(
+            ErrorCode.GENESIS_REQUIRED,
+            "in-memory v6 append refused: this backend has no v6 implementation yet "
+            "(WI-287 / SUITE-RECONCILIATION.md §2.3 decision D2)",
+        )
+
     def allocate_seq(self, work_item_id: uuid.UUID, entity_kind: str = "work_item") -> int:
         if entity_kind == "work_item":
             wi = self._work_items.get(work_item_id)
@@ -351,6 +484,75 @@ class PostgresEventStore:
         from ._genesis import check_legacy_append
 
         check_legacy_append(self._conn, writer="event_store.append")
+
+    def v6_epoch_open(self) -> bool:
+        from ._v6_writer import read_project_identity
+
+        return read_project_identity(self._conn) is not None
+
+    def append_v6(self, request: V6AppendRequest) -> Event:
+        """Route a legacy-shaped append through the real v6 writer.
+
+        The seq/idempotency preflight still runs here so the two epochs behave the
+        same way for a caller: a duplicate ``event_id`` returns the existing event
+        rather than signing a second one, and ``expected_event_seq`` still guards
+        optimistic concurrency. Both are decided *before* any key material is touched.
+        """
+        from ._v6_writer import append_v6_event, resolve_producer
+
+        existing_evt = self.find_by_event_id(request.event_id)
+        _idem_payload = (
+            None if request.transition in _RESERVED_TRANSITIONS else request.payload
+        )
+        existing = check_idempotency(
+            existing_evt,
+            request.actor_id,
+            request.transition,
+            request.work_item_id,
+            payload=_idem_payload,
+        )
+        if existing is not None:
+            return existing
+        if request.expected_event_seq is not None:
+            check_expected_seq(
+                self.allocate_seq(request.work_item_id, entity_kind=request.entity_kind),
+                request.expected_event_seq,
+            )
+        validate_actor_metadata(request.actor_metadata)
+        validate_entity_kind(request.entity_kind)
+
+        append_v6_event(
+            self._conn,
+            self._key_set,
+            entity_kind=request.entity_kind,
+            entity_id=request.work_item_id,
+            transition=request.transition,
+            actor_id=request.actor_id,
+            actor_kind=request.actor_kind,
+            producer=resolve_producer(),
+            payload=request.payload,
+            actor_metadata=request.actor_metadata,
+            event_id=request.event_id,
+            key_id=request.key_id,
+            workflow_name=request.workflow_name,
+            workflow_version=request.workflow_version,
+        )
+        if request.entity_kind == "work_item":
+            self._conn.execute(
+                "UPDATE work_items_current SET last_event_seq = event_seq_src.seq, "
+                "last_event_at = event_seq_src.ts, next_event_seq = event_seq_src.seq + 1 "
+                "FROM (SELECT event_seq AS seq, timestamp AS ts FROM events "
+                "WHERE event_id = %s) AS event_seq_src "
+                "WHERE work_item_id = %s",
+                [request.event_id, request.work_item_id],
+            )
+        appended = self.find_by_event_id(request.event_id)
+        if appended is None:
+            raise RegistaError(
+                ErrorCode.GENESIS_INVALID,
+                "the v6 append did not produce a readable event row",
+            )
+        return appended
 
     def prepare(
         self,

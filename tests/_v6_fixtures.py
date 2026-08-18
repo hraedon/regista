@@ -290,6 +290,86 @@ def acceptance_payload(
     }
 
 
+def open_v6_epoch(
+    instance: Any,
+    keyset: V6TestKeyset,
+    *,
+    principals: tuple[str, ...] | None = None,
+    entity_kinds: tuple[str, ...] = ("work_item", "principal", "workflow", "project"),
+) -> Any:
+    """Open the epoch and accept every actor key, in the order the spec requires.
+
+    This is the one call a migrated test fixture needs. It does the three steps in
+    order — genesis, then a standalone ``principal_key_accepted`` per principal signed
+    by the bootstrap authority — because ordinary events are refused until their
+    principal has a *preceding* project-local anchor.
+
+    Also sets the process-level producer environment, since ``producer.harness`` is
+    load-bearing and the writer refuses when it is unset. Tests that want to assert the
+    refusal should call ``resolve_producer`` directly rather than unsetting it here.
+
+    Returns the ``V6GenesisWrite`` so a caller can name the bootstrap anchor.
+    """
+
+    import os
+    import uuid as _uuid
+
+    from regista._v6_writer import (
+        PRINCIPAL_KEY_ACCEPTED,
+        PRODUCER_ENV,
+        Producer,
+        append_v6_event,
+        read_project_identity,
+    )
+
+    os.environ.setdefault(PRODUCER_ENV["harness"], TEST_HARNESS)
+    os.environ.setdefault(PRODUCER_ENV["harness_version"], TEST_HARNESS_VERSION)
+    os.environ.setdefault(PRODUCER_ENV["model"], TEST_MODEL)
+    os.environ.setdefault(PRODUCER_ENV["model_lineage"], TEST_MODEL_LINEAGE)
+    producer = Producer(
+        harness=TEST_HARNESS,
+        harness_version=TEST_HARNESS_VERSION,
+        model=TEST_MODEL,
+        model_lineage=TEST_MODEL_LINEAGE,
+    )
+
+    genesis = instance.write_genesis(genesis_envelope(keyset), gate_passed=True)
+    anchor = genesis.to_dict()["event_hash"]
+
+    with instance._mgr.transaction() as conn:
+        identity = read_project_identity(conn)
+    assert identity is not None
+
+    wanted = principals if principals is not None else tuple(
+        p for p in keyset.keys if p != BOOTSTRAP_PRINCIPAL
+    )
+    for principal_id in wanted:
+        payload = acceptance_payload(
+            keyset,
+            principal_id=principal_id,
+            accepted_by=BOOTSTRAP_PRINCIPAL,
+            accepted_by_anchor=anchor,
+            project_instance_id=str(identity.project_instance_id),
+            trust_domain_id=str(identity.trust_domain_id),
+            entity_kinds=entity_kinds,
+        )
+        with instance._mgr.transaction() as conn:
+            append_v6_event(
+                conn,
+                instance._keys,
+                entity_kind="principal",
+                entity_id=_uuid.uuid5(
+                    _uuid.NAMESPACE_OID, "regista.principal:" + principal_id
+                ),
+                transition=PRINCIPAL_KEY_ACCEPTED,
+                actor_id=BOOTSTRAP_PRINCIPAL,
+                actor_kind="system",
+                producer=producer,
+                payload=payload,
+            )
+    return genesis
+
+
 __all__ = [
     "ACTOR_PRINCIPALS",
     "BOOTSTRAP_PRINCIPAL",
@@ -303,4 +383,5 @@ __all__ = [
     "acceptance_payload",
     "genesis_envelope",
     "make_v6_keyset",
+    "open_v6_epoch",
 ]

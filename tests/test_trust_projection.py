@@ -961,6 +961,25 @@ class TestCeremonyPathRoundTrip:
         )
 
         # Simulate the post-P1.7 writer: admission passes, chain head stays null.
+        #
+        # P1.7 phase 1c note. The v6 writer now exists and the legacy funnel routes to
+        # it whenever `project_identity` is present, so this fixture's fake identity row
+        # would otherwise send the ceremony down the real v6 path. It cannot go there
+        # yet, and the reason is a genuine ordering conflict rather than missing work:
+        #
+        #   `append_v6_genesis` refuses unless `events` is EMPTY
+        #   (`_genesis.first_write_admission`, `event_count != 0`), but the trust log
+        #   lives in the SAME `events` table and Bootstrap A
+        #   (`trust_domain_established`) must PRECEDE Bootstrap B
+        #   (`project_initialized`) per RECONCILIATION.md Resolution 1. A project with
+        #   a trust log therefore can never write its project genesis.
+        #
+        # That is recorded as FINDING 4 in NOTES-P17.md and has to be resolved before
+        # this class can drop its stubs. Until then `v6_epoch_open` is stubbed False —
+        # a third stub of exactly the same character as the two below, keeping this
+        # test's actual subject (payload construction, the appliers, the rebuild)
+        # unchanged and still real.
+        monkeypatch.setattr(PostgresEventStore, "v6_epoch_open", lambda self: False)
         monkeypatch.setattr(PostgresEventStore, "check_legacy_append", lambda self: None)
         monkeypatch.setattr(
             PostgresEventStore, "admit_legacy_append", lambda self: None
