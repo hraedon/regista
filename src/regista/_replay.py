@@ -16,10 +16,11 @@ from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._signing import verify_event_dict_principal_binding
-from ._signing_scheme import resolve_hash_function
 from ._types import ReplayReport, ReplayReportEntry
+from ._v6_referents import ReferentResolver, store_referents
 from ._verification import (
     DEFAULT_POLICY,
+    V6_ENTITY_KINDS,
     AbsentEnvelopeProbe,
     Applicability,
     EventRow,
@@ -197,10 +198,9 @@ def _event_head_hash(evt: dict[str, Any]) -> bytes | None:
     driven either from link records or from full event rows (unit tests
     construct the latter directly).
 
-    v6 uses its domain-separated, length-framed event hash. Legacy envelopes
-    use SHA-256 over the envelope/signature concatenation. ``hash_alg`` is not
-    consulted: it selects a digest inside legacy signing envelopes, not the
-    chain-link construction.
+    The formula itself is ``_signing.compute_chain_head_hash`` — one definition
+    for the whole tree, because every hand-copy of it has been a bug (see that
+    function's docstring for the two on the record).
     """
     precomputed = evt.get("head_hash")
     if precomputed is not None:
@@ -209,13 +209,9 @@ def _event_head_hash(evt: dict[str, Any]) -> bytes | None:
     sig = evt.get("signature")
     if env is None or sig is None:
         return None
-    canonical_envelope = bytes(env)
-    signature = bytes(sig)
-    from ._signing import classify_envelope_version, compute_v6_event_hash
+    from ._signing import compute_chain_head_hash
 
-    if classify_envelope_version(canonical_envelope) == 6:
-        return compute_v6_event_hash(canonical_envelope, signature)
-    return resolve_hash_function("sha-256")(canonical_envelope + signature).digest()
+    return compute_chain_head_hash(bytes(env), bytes(sig))
 
 
 def _chain_link(evt: dict[str, Any]) -> dict[str, Any]:
@@ -504,6 +500,14 @@ def _replay_inner(
 ) -> ReplayReport:
     scoped = work_item_id is not None
 
+    # The presented material for every v6 verdict in this replay. It is the whole
+    # store even for a *scoped* replay: scoping selects which work items are
+    # rebuilt, not which events the verifier may see, and a key-binding anchor for a
+    # work-item event is a `principal` event that no work-item scope would contain.
+    # Narrowing the material to the scope would turn "the anchor is elsewhere in this
+    # store" into "the anchor is missing", which is a false finding.
+    referents = store_referents(conn, label=f"project store {project!r}")
+
     if scoped:
         wi_rows = conn.execute(
             SQL("SELECT work_item_id FROM work_items_current WHERE work_item_id = %s"),
@@ -527,6 +531,7 @@ def _replay_inner(
     total_chain_breaks = 0
     total_principal_binding_failures = 0
     total_unverifiable = 0
+    non_work_item_groups = 0
 
     # WI-217: the event log is streamed one entity at a time through a
     # server-side cursor, so the replay working set[Any] is bounded by the widest
@@ -541,17 +546,65 @@ def _replay_inner(
     processed_wi_ids: set[Any] = set()
 
     def _handle_orphan_group(orphan_id: Any, orphan_evts: list[dict[str, Any]]) -> None:
-        nonlocal halted_count, total_warnings
+        nonlocal halted_count, total_warnings, non_work_item_groups
 
-        is_non_work_item = any(
-            e.get("entity_kind", "work_item") != "work_item"
-            for e in orphan_evts
-        )
-        if is_non_work_item:
-            total_warnings += 1
+        kinds = {e.get("entity_kind", "work_item") for e in orphan_evts}
+        # An entity kind outside the CLOSED six-value registry (V6-ENVELOPE.md
+        # §1.2) is a refusal, not an extension point. It halts, and it halts
+        # BEFORE the spec-legal branch below so that a fabricated kind cannot
+        # ride out on the tolerance that branch grants the five legal ones.
+        unknown = sorted(kinds - V6_ENTITY_KINDS)
+        if unknown:
+            halted_count += 1
+            log.error(
+                "replay.unknown_entity_kind",
+                entity_id=str(orphan_id),
+                entity_kinds=unknown,
+                event_count=len(orphan_evts),
+            )
+            store.add_report_entry(
+                orphan_id,
+                "halted",
+                "entity kind outside the closed v6 registry: " + ", ".join(unknown),
+                0,
+            )
+            return
+        if kinds != {"work_item"}:
+            if "work_item" in kinds:
+                # One entity id carrying BOTH work-item and non-work-item events.
+                # `UNIQUE (entity_kind, entity_id, event_seq)` permits it, no
+                # append path produces it, and no reading of it is safe: it is
+                # neither a work item to rebuild nor a foreign entity to pass
+                # over. Halt rather than pick one.
+                halted_count += 1
+                log.error(
+                    "replay.mixed_entity_kind_group",
+                    entity_id=str(orphan_id),
+                    entity_kinds=sorted(kinds),
+                    event_count=len(orphan_evts),
+                )
+                store.add_report_entry(
+                    orphan_id,
+                    "halted",
+                    "one entity id carries several entity kinds: "
+                    + ", ".join(sorted(kinds)),
+                    0,
+                )
+                return
+            # A spec-legal non-work-item entity group: `project`, `principal`,
+            # `trust_domain`, `project_instance` or `workflow`. A v6 epoch's chain
+            # necessarily carries these, so this is the ORDINARY case and must be
+            # neither a halt nor a warning — it is counted, by name, in
+            # `ReplayReport.non_work_item_groups_verified`. Their chain links are
+            # already in the global hash-chain verification (every streamed event
+            # is, before it is grouped); what they have no part in is the
+            # work-item projection rebuild, because they have no
+            # `work_items_current` row.
+            non_work_item_groups += 1
             log.info(
                 "replay.non_work_item_entity",
                 entity_id=str(orphan_id),
+                entity_kinds=sorted(kinds),
                 event_count=len(orphan_evts),
             )
             return
@@ -621,6 +674,7 @@ def _replay_inner(
                 key_set,
                 continue_on_revoked,
                 verify_principal_binding=verify_principal_binding,
+                referents=referents,
             )
             total_warnings += wi_warnings
             total_chain_breaks += wi_chain_breaks
@@ -865,6 +919,7 @@ def _replay_inner(
         unverifiable=total_unverifiable,
         principal_binding_failures=total_principal_binding_failures,
         principal_binding_verified=verify_principal_binding,
+        non_work_item_groups_verified=non_work_item_groups,
         entries=store.report_entries(),
     )
 
@@ -936,6 +991,7 @@ def _replay_work_item(
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
+    referents: ReferentResolver,
 ) -> tuple[dict[str, Any], int, int, int, int]:
     """Returns ``(state, warnings, chain_breaks, principal_binding_failures,
     unverifiable)``. The last three are deliberately distinct counters — see
@@ -1021,6 +1077,7 @@ def _replay_work_item(
             verification = verify_event_strict(
                 EventRow.from_mapping(evt),
                 keys=KeySetResolver(key_set),
+                referents=referents,
                 policy=DEFAULT_POLICY,
             )
             if verification.applicability is Applicability.INVALID:

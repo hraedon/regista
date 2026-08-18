@@ -14,7 +14,7 @@ from psycopg.sql import SQL, Identifier, Literal
 from ._connection import DictConn
 from ._contract import Jsonb
 from ._errors import ErrorCode, RegistaError
-from ._events import append_event
+from ._events import append_event, resolve_system_actor_id
 from ._keys import KeySet
 from ._observability import Metrics
 from ._types import HookContext, ValidatorContext
@@ -419,7 +419,7 @@ def _move_to_dead_letter(
     append_event(
         conn=conn,
         work_item_id=work_item_id,
-        actor_id="system",
+        actor_id=resolve_system_actor_id(conn, legacy_actor_id="system"),
         actor_kind="system",
         actor_metadata=None,
         key_set=key_set,

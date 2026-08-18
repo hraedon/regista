@@ -4,21 +4,30 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spelling is refused at the
+#: v6 ingress.
+ACTOR = "agent:worker"
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_recovery_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("recovery_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow_file` emits
+    # the signed `workflow_registered` event admission gate 1 requires, and there
+    # is no epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -30,7 +39,7 @@ class TestHookMissRecovery:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "Recovery test"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -38,7 +47,7 @@ class TestHookMissRecovery:
 
         for i in range(5):
             regista.append_event(
-                wi.work_item_id, "agent-1",
+                wi.work_item_id, ACTOR,
                 transition=f"note_{i}",
                 payload={"idx": i},
             )
@@ -56,7 +65,7 @@ class TestHookMissRecovery:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "Recovery empty"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -72,7 +81,7 @@ class TestHookMissRecovery:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "Recovery page"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -80,7 +89,7 @@ class TestHookMissRecovery:
 
         for i in range(10):
             regista.append_event(
-                wi.work_item_id, "agent-1",
+                wi.work_item_id, ACTOR,
                 transition=f"note_{i}",
                 payload={"idx": i},
             )

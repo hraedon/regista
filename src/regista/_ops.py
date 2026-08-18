@@ -79,15 +79,27 @@ log = structlog.get_logger()
 
 
 class WorkflowOps:
-    def __init__(self, mgr: ConnectionManager, metrics: Metrics, project: str) -> None:
+    def __init__(
+        self,
+        mgr: ConnectionManager,
+        metrics: Metrics,
+        project: str,
+        key_set: Any = None,
+    ) -> None:
         self._mgr = mgr
         self._metrics = metrics
         self._project = project
+        # Needed only once an epoch is open: registration then becomes a signed
+        # `workflow_registered` event (P1.7 admission gate 1), not just a row.
+        self._key_set = key_set
 
     def register(self, yaml_content: str) -> WorkflowVersion:
         from ._workflow_api import register_workflow as _impl
 
-        return _impl(self._mgr, self._metrics, self._project, yaml_content)
+        return _impl(
+            self._mgr, self._metrics, self._project, yaml_content,
+            key_set=self._key_set,
+        )
 
     def register_file(self, path: str | Path) -> WorkflowVersion:
         import yaml as _yaml
@@ -98,6 +110,7 @@ class WorkflowOps:
         return _impl(
             self._mgr, self._metrics, self._project,
             parse_workflow_yaml, _yaml.dump, path,
+            key_set=self._key_set,
         )
 
     def get(self, workflow_name: str, version: int) -> WorkflowDefinition:

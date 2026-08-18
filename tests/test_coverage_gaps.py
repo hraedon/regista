@@ -16,13 +16,50 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+#: A second, distinct agent, so the actor filter below has something to exclude.
+OTHER_AGENT = "agent:reviewer"
+OPERATOR = "human:operator"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_gaps_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
+    yield sub
+    sub.close()
+    drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def eventless_regista():
+    """A project with **no events at all** — no v6 epoch, no workflow registration.
+
+    Exactly one test needs this, and it needs it for its subject rather than as a
+    workaround: an open v6 epoch is itself seven events (``project_initialized``,
+    one ``principal_key_accepted`` per accepted principal, ``workflow_registered``),
+    they live in the same ``events`` table, and ``read_events()`` with no filters
+    applies no entity-kind predicate — so on a migrated project an unfiltered read
+    is *correctly* non-empty and "no filters returns empty" has no subject left.
+
+    Whether an unfiltered ``read_events()`` should surface trust-plane rows to a
+    work-item event reader at all is a separate production question; this fixture
+    does not prejudge it, it just gives the test the eventless store it describes.
+    """
+    from regista import Regista
+
+    project = f"test_gaps_empty_{uuid.uuid4().hex[:8]}"
+    sub = Regista.create_project(DSN, project, KEY_PATH)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -33,13 +70,13 @@ class TestTransitionViaAppendBlocked:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Blocked append"},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.append_event(
                 work_item_id=wi.work_item_id,
-                actor_id="agent-1",
+                actor_id=WORKER,
                 transition="start",
             )
         assert exc_info.value.code == ErrorCode.TRANSITION_VIA_APPEND_BLOCKED
@@ -48,12 +85,12 @@ class TestTransitionViaAppendBlocked:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Custom event"},
         )
         evt = regista.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id=WORKER,
             transition="custom_note",
         )
         assert evt.transition == "custom_note"
@@ -65,7 +102,7 @@ class TestWorkItemNotFound:
             regista.transition(
                 work_item_id=uuid.uuid4(),
                 transition_name="start",
-                actor_id="agent-1",
+                actor_id=WORKER,
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
@@ -73,7 +110,7 @@ class TestWorkItemNotFound:
         with pytest.raises(RegistaError) as exc_info:
             regista.append_event(
                 work_item_id=uuid.uuid4(),
-                actor_id="agent-1",
+                actor_id=WORKER,
                 transition="note",
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
@@ -82,12 +119,12 @@ class TestWorkItemNotFound:
 class TestWorkItemNotFoundClaims:
     def test_heartbeat_on_nonexistent_work_item(self, regista):
         with pytest.raises(RegistaError) as exc_info:
-            regista.heartbeat_claim(uuid.uuid4(), "agent-1", ttl_seconds=300)
+            regista.heartbeat_claim(uuid.uuid4(), WORKER, ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
     def test_release_on_nonexistent_work_item(self, regista):
         with pytest.raises(RegistaError) as exc_info:
-            regista.release_claim(uuid.uuid4(), "agent-1")
+            regista.release_claim(uuid.uuid4(), WORKER)
         assert exc_info.value.code == ErrorCode.WORK_ITEM_NOT_FOUND
 
 
@@ -96,22 +133,22 @@ class TestClaimNotFound:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "No claim heartbeat"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+            regista.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
     def test_release_on_unclaimed_work_item(self, regista):
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "No claim release"},
         )
         with pytest.raises(RegistaError) as exc_info:
-            regista.release_claim(wi.work_item_id, "agent-1")
+            regista.release_claim(wi.work_item_id, WORKER)
         assert exc_info.value.code == ErrorCode.CLAIM_NOT_FOUND
 
 
@@ -120,10 +157,10 @@ class TestSweepExpiredClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Sweep test"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with raw_transaction(regista) as conn:
             conn.execute(
@@ -142,10 +179,10 @@ class TestSweepExpiredClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Sweep events"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with raw_transaction(regista) as conn:
             conn.execute(
@@ -163,6 +200,234 @@ class TestSweepExpiredClaims:
     def test_sweep_returns_zero_when_no_expired(self, regista):
         swept = regista.sweep_expired_claims()
         assert swept == 0
+
+
+class TestSweepIsASystemActionAndIsolatesFailures:
+    """NB5 (phase-4 ceremony): the expiry sweep attributed a system act to the holder.
+
+    ``claim_expired`` records that a *lease lapsed*. Nobody acted — least of all the
+    holder, whose absence is the whole reason the event exists. Attributing it to the
+    holder made the sweep depend on the holder still being appendable in the open epoch:
+    a holder whose key acceptance has been revoked, or whose acceptance scopes do not
+    cover ``claim_expired``, made ``append_event`` raise *inside the sweep's
+    transaction* — so the operator's expiry sweep stopped working entirely, and one bad
+    claim took the whole batch with it.
+    """
+
+    def _expire(self, regista, work_item_id):
+        with raw_transaction(regista) as conn:
+            conn.execute(
+                "UPDATE claims SET expires_at = now() - interval '1 second' "
+                "WHERE work_item_id = %s",
+                [work_item_id],
+            )
+
+    def _claimed_item(self, regista, title):
+        wi, _ = regista.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=WORKER,
+            custom_fields={"title": title},
+        )
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        self._expire(regista, wi.work_item_id)
+        return wi
+
+    def test_claim_expired_is_attributed_to_the_system_principal(self, regista):
+        """The project's own bootstrap principal signs it, exactly as ``escalated``,
+        hook dead-lettering and recurrence firing do — and the payload keeps naming the
+        holder, which is where "whose claim expired" belongs."""
+
+        from regista._v6_writer import read_project_identity
+
+        wi = self._claimed_item(regista, "sweep attribution")
+        with raw_transaction(regista) as conn:
+            identity = read_project_identity(conn)
+        assert identity is not None
+
+        assert regista.sweep_expired_claims() == 1
+
+        expired = [
+            e
+            for e in regista.read_events(work_item_id=wi.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+        assert len(expired) == 1
+        assert expired[0].actor_id == identity.principal_id
+        assert expired[0].actor_id != WORKER
+        assert expired[0].actor_kind == "system"
+        # No information is lost: the holder is in the payload.
+        assert expired[0].payload["actor_id"] == WORKER
+
+    def test_one_refused_claim_does_not_abort_the_batch(self, regista, monkeypatch):
+        """Per-claim savepoints, so a refusal is fail-closed for THAT claim only.
+
+        Pre-fix the whole sweep ran in one transaction with no savepoints, so a refusal
+        propagated out of ``sweep_expired_claims`` — the remaining claims never expired,
+        and the caller got an exception instead of a count. Worse, the refused claim's
+        ``DELETE`` and projection ``UPDATE`` had already been issued, so the only thing
+        that saved the store from a projection change with no event was the whole
+        transaction being abandoned.
+        """
+
+        from regista import _events
+
+        first = self._claimed_item(regista, "sweep isolation A")
+        second = self._claimed_item(regista, "sweep isolation B")
+
+        real_append = _events.append_event
+        doomed = first.work_item_id
+
+        def _refusing_append(**kwargs):
+            if (
+                kwargs.get("work_item_id") == doomed
+                and kwargs.get("transition") == "claim_expired"
+            ):
+                raise RegistaError(
+                    ErrorCode.KEY_ACCEPTANCE_REVOKED,
+                    "injected: this holder's acceptance was revoked",
+                )
+            return real_append(**kwargs)
+
+        monkeypatch.setattr(_events, "append_event", _refusing_append)
+
+        swept = regista.sweep_expired_claims()
+
+        # The healthy claim expired; the count reports successes only.
+        assert swept == 1
+        assert regista.get_work_item(second.work_item_id).claimed_by is None
+
+        # And the refused claim is EXACTLY as it was — no projection change without an
+        # event, which is what replay would otherwise report as drift.
+        refused = regista.get_work_item(first.work_item_id)
+        assert refused.claimed_by == WORKER
+        with raw_transaction(regista) as conn:
+            row = conn.execute(
+                "SELECT actor_id FROM claims WHERE work_item_id = %s",
+                [first.work_item_id],
+            ).fetchone()
+        assert row is not None and row["actor_id"] == WORKER
+        assert not [
+            e
+            for e in regista.read_events(work_item_id=first.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+
+
+    def test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted(
+        self, regista, monkeypatch
+    ):
+        """R2 NB2: the isolation is ``RegistaError``-only, and that is the honest choice.
+
+        A refusal is this system deciding something about one claim. A ``TypeError`` is a
+        defect, and a dropped connection is an infrastructure failure — neither is a
+        decision about a claim, and neither may be flattened into "1 of 2 swept". The
+        alternative (catching ``Exception``) produces a truthful-looking count from a
+        process that has no idea what happened, and an operator who reads a count instead
+        of a stack trace does not go looking for the bug.
+        """
+
+        from regista import _events
+
+        self._claimed_item(regista, "sweep unexpected A")
+        self._claimed_item(regista, "sweep unexpected B")
+
+        def _broken_append(**kwargs):
+            if kwargs.get("transition") == "claim_expired":
+                raise TypeError("injected defect in the signing path")
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(_events, "append_event", _broken_append)
+
+        with pytest.raises(TypeError, match="injected defect"):
+            regista.sweep_expired_claims()
+
+
+class TestInMemorySweepParity:
+    """The same two properties on the in-memory backend (WI-287 shared semantics).
+
+    Rollback is ``PARITY_BOUNDARY_POSTGRES_ONLY``, so the in-memory path cannot use a
+    savepoint. It gets the same guarantee by ordering instead — the append first, the
+    projection mutation only after it succeeds — which is the better mechanism anyway:
+    there is nothing to undo.
+    """
+
+    @pytest.fixture
+    def in_memory(self, tmp_path):
+        from regista.testing import InMemoryRegista
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        instance = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(instance, keyset)
+        instance.register_workflow_file(WORKFLOW_PATH)
+        return instance
+
+    def _claimed_item(self, instance, title):
+        wi, _ = instance.create_work_item(
+            workflow_name="test_workflow",
+            work_item_type="feature",
+            actor_id=WORKER,
+            custom_fields={"title": title},
+        )
+        instance.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        instance._claims[wi.work_item_id]["expires_at"] = datetime.now(UTC) - timedelta(
+            seconds=10
+        )
+        instance._work_items[wi.work_item_id]["claim_expires_at"] = instance._claims[
+            wi.work_item_id
+        ]["expires_at"]
+        return wi
+
+    def test_claim_expired_is_attributed_to_the_system_principal(self, in_memory):
+        wi = self._claimed_item(in_memory, "in-memory attribution")
+        identity = in_memory._store.v6_rows.project_identity
+        assert identity is not None
+
+        assert in_memory.sweep_expired_claims() == 1
+
+        expired = [
+            e
+            for e in in_memory.read_events(work_item_id=wi.work_item_id)
+            if e.transition == "claim_expired"
+        ]
+        assert len(expired) == 1
+        assert expired[0].actor_id == identity["principal_id"]
+        assert expired[0].actor_id != WORKER
+        assert expired[0].payload["actor_id"] == WORKER
+
+    def test_one_refused_claim_leaves_that_claim_intact(self, in_memory, monkeypatch):
+        from regista import _in_memory_claims
+
+        first = self._claimed_item(in_memory, "in-memory isolation A")
+        second = self._claimed_item(in_memory, "in-memory isolation B")
+
+        real_append = _in_memory_claims._store_append
+        doomed = first.work_item_id
+
+        def _refusing_append(store, **kwargs):
+            if (
+                kwargs.get("work_item_id") == doomed
+                and kwargs.get("transition") == "claim_expired"
+            ):
+                raise RegistaError(
+                    ErrorCode.KEY_ACCEPTANCE_REVOKED,
+                    "injected: this holder's acceptance was revoked",
+                )
+            return real_append(store, **kwargs)
+
+        monkeypatch.setattr(_in_memory_claims, "_store_append", _refusing_append)
+
+        assert in_memory.sweep_expired_claims() == 1
+        assert in_memory.get_work_item(second.work_item_id).claimed_by is None
+
+        assert in_memory.get_work_item(first.work_item_id).claimed_by == WORKER
+        assert first.work_item_id in in_memory._claims
+        assert not [
+            e
+            for e in in_memory.read_events(work_item_id=first.work_item_id)
+            if e.transition == "claim_expired"
+        ]
 
 
 class TestWorkflowSemanticErrors:
@@ -280,14 +545,14 @@ class TestExpectedAttemptNumber:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Stale attempt"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         with pytest.raises(RegistaError) as exc_info:
             regista.heartbeat_claim(
-                wi.work_item_id, "agent-1", ttl_seconds=300,
+                wi.work_item_id, WORKER, ttl_seconds=300,
                 expected_attempt_number=99,
             )
         assert exc_info.value.code == ErrorCode.CLAIM_LOST
@@ -296,13 +561,13 @@ class TestExpectedAttemptNumber:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Correct attempt"},
         )
-        claim = regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        claim = regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
 
         renewed = regista.heartbeat_claim(
-            wi.work_item_id, "agent-1", ttl_seconds=600,
+            wi.work_item_id, WORKER, ttl_seconds=600,
             expected_attempt_number=claim.attempt_number,
         )
         assert renewed.expires_at > claim.expires_at
@@ -313,19 +578,19 @@ class TestReadEventsFilters:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="unique-filter-agent",
+            actor_id=OTHER_AGENT,
             custom_fields={"title": "Actor filter"},
         )
 
-        events = regista.read_events(actor_id="unique-filter-agent")
+        events = regista.read_events(actor_id=OTHER_AGENT)
         assert len(events) >= 1
-        assert all(e.actor_id == "unique-filter-agent" for e in events)
+        assert all(e.actor_id == OTHER_AGENT for e in events)
 
     def test_read_events_by_transition(self, regista):
         _wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Transition filter"},
         )
 
@@ -341,8 +606,9 @@ class TestReadEventsFilters:
         events = regista.read_events(start=start, end=end)
         assert isinstance(events, list)
 
-    def test_read_events_no_filters_returns_empty(self, regista):
-        events = regista.read_events()
+    def test_read_events_no_filters_returns_empty(self, eventless_regista):
+        # `eventless_regista`, not `regista`: an open v6 epoch is itself events.
+        events = eventless_regista.read_events()
         assert events == []
 
     def test_read_events_before_seq_requires_work_item_id(self, regista):
@@ -382,7 +648,7 @@ class TestQueryWorkItemsFilters:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Type filter test"},
         )
 
@@ -399,13 +665,13 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "alpha"},
         )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "beta"},
         )
 
@@ -420,13 +686,13 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "gamma", "priority": "high"},
         )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "gamma", "priority": "low"},
         )
 
@@ -442,7 +708,7 @@ class TestCustomFieldFilterQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "delta"},
         )
 
@@ -457,13 +723,13 @@ class TestCustomFieldFilterQuery:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "paged", "priority": "high"},
             )
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "other"},
         )
 
@@ -500,11 +766,11 @@ class TestHeartbeatActorKind:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="human-1",
+            actor_id=OPERATOR,
             custom_fields={"title": "Actor kind test"},
         )
-        regista.acquire_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
-        regista.heartbeat_claim(wi.work_item_id, "human-1", ttl_seconds=300, actor_kind="human")
+        regista.acquire_claim(wi.work_item_id, OPERATOR, ttl_seconds=300, actor_kind="human")
+        regista.heartbeat_claim(wi.work_item_id, OPERATOR, ttl_seconds=300, actor_kind="human")
         events = regista.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
         assert len(heartbeat_events) == 1
@@ -514,11 +780,11 @@ class TestHeartbeatActorKind:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Default kind"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
+        regista.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         events = regista.read_events(work_item_id=wi.work_item_id)
         heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
         assert len(heartbeat_events) == 1

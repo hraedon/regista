@@ -12,6 +12,7 @@ import structlog
 
 from ._event_store import InMemoryEventStore
 from ._in_mem_claim import InMemClaimMixin
+from ._in_mem_genesis import InMemGenesisMixin
 from ._in_mem_hook import InMemHookMixin
 from ._in_mem_ops import InMemOpsMixin
 from ._in_mem_witness import InMemWitnessMixin
@@ -36,6 +37,7 @@ class TransportResult:
 class InMemoryRegista(
     InMemWorkflowMixin,
     InMemClaimMixin,
+    InMemGenesisMixin,
     InMemHookMixin,
     InMemWitnessMixin,
     InMemOpsMixin,
@@ -71,6 +73,10 @@ class InMemoryRegista(
         self._work_items: dict[uuid.UUID, dict[str, Any]] = {}
         self._store = InMemoryEventStore()
         self._store.bind(self._work_items)
+        # A v6 append must be signed, and the store reaches the writer through the
+        # backend-agnostic funnel, which carries no keyset on that branch. The
+        # Postgres store holds its own keyset for the same reason.
+        self._store.bind_keys(self._key_set)
         self._claims: dict[uuid.UUID, dict[str, Any]] = {}
         self._links: list[dict[str, Any]] = []
         self._actor_roles: set[tuple[str, str]] = set()

@@ -4,6 +4,361 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **The v6 verifier boundary (P1.7 phase 2), in `regista._verification` and the new
+  `regista._v6_referents`.** `verify_event_strict` used to return
+  `INVALID`/`envelope_schema_incomplete` for **every** v6 row — clean or tampered — so
+  `applicability` carried no information about a v6 event at all. What replaces it is
+  `TRUST-DOMAIN.md` §5.10's six-step enrolment-before-use procedure and §5.11's
+  exhaustive verdict table, over **presented material**.
+
+  - **Presented material is a new, required input.** §5.10 steps 1-4 are chain
+    traversal, so the verifier needs to see other events; §8.4 says it may never fetch
+    them. `ReferentResolver` is that input: two members (`resolve_referent`,
+    `completeness`), no query surface, no connection. Referents are addressed by **v6
+    event hash**, which covers the envelope bytes *and* the signature — so a tampered
+    anchor does not resolve to something else, it does not resolve at all.
+    Implementations: `StoreReferents` (an open store, claiming completeness),
+    `BundleReferents` (deriving its completeness claim from the manifest's
+    `since_seq`/`until_seq`), `MappingReferents`, and `NO_REFERENTS` for a caller that
+    holds one row. `verify_event_strict(..., referents=...)` has **no default**: a call
+    site that cannot say what it presents cannot get a v6 verdict.
+  - **Ordering is by chain traversal only** — `chain.previous_project_event_hash`, never
+    `occurred_at`, never `global_seq`. The writer's `global_seq` ordering is a
+    documented write-time shortcut and is not borrowed here.
+  - **§5.11's two absence rows are distinguished by the material's completeness claim.**
+    An unresolvable anchor is `UNVERIFIABLE`/`KEY_BINDING_UNRESOLVED` from a
+    `contiguous-range` export (absence of evidence, with the missing referent named as
+    out of scope) and `INVALID`/`KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE` from material
+    that claims completeness (the claim is false — a fact about the artifact). This is
+    `TRUST-DOMAIN.md` §9 criterion 15.
+  - **`VerificationResult` gains `RESULT-MODEL.md` §10.1's eleven fields** —
+    `epoch_position`, `attribution`, `checkpoint_binding`, `unbound_properties`,
+    `trust_domain_id`, `trust_root`, `root_governance`, `key_binding`,
+    `revocation_status`, `producer_consistency`, plus `key_binding_event_hash` — all
+    reported on every result, all in `to_dict()`, with §10.2's invariants enforced in
+    `__post_init__` as asserts. `EnvelopeVersion.V6` joins
+    `full_authentication_versions`; without it no v6 event could ever be
+    `FULLY_AUTHENTICATED` however completely §5.10 succeeded.
+  - **`VerificationPolicy` gains the four caller pins** `pinned_project_instance_id`,
+    `pinned_trust_domain_id`, `cutover_checkpoint_event_hash` and `producer_policy`, and
+    `material_completeness`. All default to "not supplied", and an unsupplied pin
+    produces an explicit `unbound_properties` entry rather than a skipped check (§10.2
+    invariant 9). `material_completeness` is **tighten-only**: softening a store's
+    completeness claim raises, because it would turn §5.11's `INVALID` row into its
+    `UNVERIFIABLE` row on request.
+  - **Fourteen new `FailureReason` members**, and `TrustedKeySource.TRUST_DOMAIN_LOG` /
+    `EXTERNALLY_PINNED`.
+  - **§5.9 rule 1 is enforced by raising.** Resolving a v6 event's key through
+    `TrustedKeySource.PRINCIPAL_REGISTRY` is "a programming error [that] raises", not a
+    degraded result — a degraded result is something a caller learns to tolerate.
+  - **A bootstrap event without an external pin is `UNVERIFIABLE`**, per
+    `RECONCILIATION.md` Resolution 1 ("bootstrap without an external pin is not a
+    bootstrap; it is an unauthenticated first event"). With the trust log presented and
+    a pinned domain and checkpoint it is `FULLY_AUTHENTICATED`. An ordinary
+    post-genesis event reaches `FULLY_AUTHENTICATED` with `trust_root: bundled_only`,
+    which is what unblocks replay over a v6 epoch.
+
+  Consequence for callers: `verify_event_strict`, `verify_event_result`,
+  `verify_event_result_with_public_key` and `verify_event` take a `referents` argument,
+  and `_bundle._verify_event_signatures` returns a fourth element (the reasons each
+  unverifiable signature was unverifiable).
+
+- **`verify_audit_bundle_offline(path, policy=...)`, and bundle key evidence from v6
+  acceptance payloads (WI-296).** A bundle now resolves key material from the
+  `regista.key-acceptance` / `bootstrap_key_acceptance` objects it already carries —
+  §5.8 repeats `public_key` inside them "on purpose … it makes a project bundle
+  self-sufficient for key material without making it self-sufficient for trust". The
+  rejected alternative was seeding a `principal_keys` row from the genesis payload,
+  which §5.9 rule 1 forbids. An operator-registered registry entry still wins where
+  both exist: it carries a validity window and a status the payload has no member for.
+  `BundleVerificationReport` gains `unverifiable_details`, so a count never travels
+  without its reason.
+
+- **The post-genesis v6 ordinary-event writer (P1.7), `regista._v6_writer`.** Genesis
+  opened the epoch and then every writer was refused on both sides of it; this is the
+  sanctioned path after the boundary. `append_v6_event` constructs all sixteen v6
+  members, resolves `signing.key_binding_event_hash` to a **preceding** project
+  key-binding anchor (the genesis bootstrap acceptance or a standalone
+  `principal_key_accepted`, `TRUST-DOMAIN.md` §5.8), links both the entity and project
+  chains by v6 event hash, serializes on the same global-chain sentinel as genesis, and
+  validates through `validate_v6_envelope` before any signing.
+
+  It sits behind the two admission checks P1.7 owns, both failing closed with named
+  codes and neither having a permissive default:
+
+  - **`WORKFLOW_REGISTRATION_UNRESOLVED`** — an event naming a workflow must reference a
+    signed `workflow_registered` event that precedes it and was not retired. A
+    `workflow_registry` *row* is mutable operator state and is not a registration.
+  - **`PRODUCER_NOT_AUTHORIZED`** — the `producer` block must fall inside the accepted
+    key's scopes (entity kind and transition), declare `model`/`model_lineage` null
+    together, and use a lineage family from the closed registry. A supplied producer
+    policy that contradicts the event is a refusal; an *unsupplied* one is reported
+    `policy_not_supplied` and never silently skipped.
+
+  Also new: `KEY_BINDING_UNRESOLVED` (no anchor — the `principal_keys` projection is
+  never consulted for a v6 event, §5.11), `V6_ENVELOPE_INVALID`, and
+  `V6_CHAIN_LINK_MISSING`.
+
+- **The two project-local acceptance contracts (`TRUST-DOMAIN.md` §5.8).**
+  `_trust_log.DEFERRED_TRANSITIONS` assigned `principal_key_accepted` and
+  `principal_key_acceptance_revoked` to P1.7 and neither had a parser anywhere: P2.2's
+  §5.5 family covers *trust-log* enrolment, not *project-local* acceptance. Without the
+  revocation contract, §5.10 step 4 ("no `principal_key_acceptance_revoked` for `A` lies
+  between `A` and `E`") had no event shape to look for.
+
+  `validate_key_acceptance_payload` enforces `regista.key-acceptance/v1` exactly,
+  including the two cross-field facts that make it evidence: `fingerprint` must match
+  the `public_key` bytes it ships beside (§5.8 calls a mismatch "**invalid**, not a
+  preference"), and `accepted_by.key_binding_event_hash` may not be null — that field is
+  precisely what the withdrawn self-referential first acceptance nulled.
+  `validate_key_acceptance_revocation_payload` enforces
+  `regista.key-acceptance-revocation/v1`, whose `reason` shares the closed §5.7
+  vocabulary rather than growing a second one. New code
+  `KEY_ACCEPTANCE_PAYLOAD_INVALID`.
+
+  A revoked acceptance stops being a usable anchor, with §5.10 step 4's own reason code
+  `KEY_ACCEPTANCE_REVOKED` — deliberately not `KEY_BINDING_UNRESOLVED`, since "revoked"
+  and "never accepted" are different facts. It never falls back to an earlier, broader
+  anchor: that would make revocation a privilege escalation.
+
+  The writer additionally cross-checks what the payload validators structurally cannot:
+  `accepted_by` / `revoked_by` must **be** the signer (`ACTOR_SIGNER_MISMATCH`), and the
+  signing key's anchor must grant `may_accept_keys` (`PRODUCER_NOT_AUTHORIZED`).
+  Acceptance authority therefore does not propagate — a standalone acceptance never
+  grants it, which is what stops one compromised agent key from minting a population of
+  trusted keys.
+
+- **`register_workflow` now appends a signed `workflow_registered` event** once genesis
+  has opened the epoch, in the same transaction as the `workflow_registry` INSERT, so
+  the row and the signed registration cannot diverge and admission gate 1 has something
+  to resolve. Before genesis the behaviour is unchanged. `definition` excludes
+  `raw_yaml`, per `RECONCILIATION.md` Resolution 2.
+
+- **A process-level producer identity**, `_v6_writer.resolve_producer`, resolved from
+  `REGISTA_PRODUCER_HARNESS` / `_HARNESS_VERSION` / `_MODEL` / `_MODEL_LINEAGE`. The
+  producer is a property of the running process, not a per-append argument — making it a
+  parameter would invite the self-asserted-string pattern §1.8 exists to remove. Unset
+  harness/version is `LOAD_BEARING_FIELD_MISSING` naming the variables; there is no
+  default, because an invented harness name would be a signed falsehood.
+
+- **`_datetime_utils.v6_occurred_at` / `parse_v6_occurred_at`** — the single §2.3 lexical
+  form, centralised. `datetime.isoformat()` renders **three** fractional digits whenever
+  the microseconds land on a whole millisecond and the strict parser rejects it, so the
+  defect appears for roughly one instant in a thousand: absent from any hand-picked test
+  value, present in production.
+
+- **The shared Ed25519 actor-role test keyset and v6 genesis fixture**,
+  `tests/_v6_fixtures.py`. The committed `tests/test_keys.json` is a single HMAC key with
+  no `principal_id`, no `role` and no public key, so it cannot satisfy any v6 append;
+  `make_v6_keyset` mints one actor-role Ed25519 key per principal, and
+  `genesis_envelope` / `acceptance_payload` build the genesis and acceptance events in
+  the order Bootstrap A → Bootstrap B → ordinary acceptance requires.
+
+### Fixed
+
+- **System-authored events could not be written in a clean v6 epoch at all.**
+  Auto-escalation (`escalated`), hook dead-lettering (`hook_dead_lettered`) and
+  recurrence firing were appended with a bare `actor_id="system"` /
+  `"system:scheduler"`. Neither is a canonical `(human|agent|service):<subject>`
+  principal (`TRUST-DOMAIN.md` §2.1) and neither can hold a key-binding anchor, so the
+  v6 writer refused them with `ACTOR_SIGNER_MISMATCH` — three live features broken by
+  the v6 route. A system event is now attributed to the project's own bootstrap
+  principal, resolved by `_events.resolve_system_actor_id` (and its in-memory twin,
+  which shares the same body). This is the attribution `_workflow_api` already used for
+  `workflow_registered`, which is why that one call site worked. **Epoch-aware:** a
+  legacy project keeps the literal unchanged.
+
+- **Every Ed25519 witness receipt over a v6 event failed verification, silently.**
+  `_witness` passed the row's `payload_canonical_hash` as `Ed25519Scheme.verify`'s
+  `envelope_hash` while passing the bare envelope as `envelope`. Those coincide for
+  v1-v5; under v6 the column hashes the *domain-tagged signature input*
+  (`V6-ENVELOPE.md` §5.3), so `compare_digest` failed on every v6 event. The failure was
+  invisible because `sig_verified` was unconditionally `False` — which also made the
+  negative delivery tests pass vacuously. `verify_witness_countersignature` now
+  establishes the two facts separately: that the row's hash column really is the hash of
+  its own envelope column (under that envelope's version, via the new
+  `_signing.compute_payload_canonical_hash`, which also fixes a second latent bug where
+  the row's `hash_alg` was ignored), and that the witness's signature is valid over the
+  bytes the delivery body actually carries. **No persisted format changed**; the
+  alternative fix would have silently redefined what an external witness must sign, and
+  would have given the witness the author's own hash domain tag.
+
+- **The v6 referent resolver was missing from two of thirteen call sites**, both on the
+  caller-supplied-public-key path: `_api_meta.verify_event_result` and
+  `_in_mem_ops.verify_event_result` (which *built* the resolver and then did not pass
+  it). Substituting the key resolver does not change what chain material a v6 verdict
+  needs, so both returned `UNVERIFIABLE` for every v6 event — the public
+  independent-verification API answering "nothing was checked" while looking like a
+  verdict, and a wrong-key negative passing for the wrong reason.
+
+- **The last two resolver-less call sites (P1.7 phase 4).**
+  `_signing.verify_event_with_public_key` — the documented standalone verification
+  utility (`spec.md` §17.12) — had **no** `referents` parameter, while the
+  `VerificationResult` twin it delegates to has taken one since phase 2, so the bool
+  shim returned `False` for every v6 event however complete the caller's material was.
+  It now takes `referents` with the same `NO_REFERENTS` default as its twin: an offline
+  verifier holding a bundle can present it, and a shim less capable than the function it
+  wraps is a clamp with a smaller blast radius.
+
+  `verify_event_with_principal_binding` inherited the omission through that shim, and
+  its answer was worse than `False`: over a v6 event whose signature is valid and whose
+  registry entry holds the very key that signed it, both binding twins reported
+  `"signature-verification-failed: signature invalid under all registered public keys"`
+  — measured, on two different mechanisms (the object twin read `UNVERIFIABLE` as a
+  signature failure; the dict twin tripped §5.9 rule 1's raise and swallowed it). A
+  `principal_keys` probe cannot decide a v6 binding at all, so it now says so:
+  `V6_BINDING_NOT_DECIDED_BY_REGISTRY`, naming §5.10 and the material as the deciding
+  procedure. `NO_REFERENTS` remains the contract for the binding path and deliberately
+  **not** a parameter — offering callers material there would offer them a route around
+  rule 1 — and the two twins now share one body, resolving through
+  `TrustedKeySource.PRINCIPAL_REGISTRY` on both, which is where the key actually came
+  from.
+
+- **The v6 verifier boundary defeated WI-217's streaming space bound (P1.7 phase 4).**
+  `_replay` builds one `StoreReferents` for the whole replay, and its index retained
+  every indexed event's *whole parsed envelope* for the resolver's lifetime — so phase
+  2's per-resolver cache was the log materialization `tests/test_wi217_replay_memory.py`
+  exists to forbid, arriving through the verifier instead of through replay. Measured on
+  an 8x log: peak growth **5.5x** against a 3.0x budget, 19.89 MiB against 5.00 MiB.
+  Fixed without relaxing the budget and without making the resolver fetch: the index now
+  holds a `ReferentSummary` (the six signed members every referent accessor reads,
+  interned, ~0.5 KiB against ~5 KiB parsed) and re-reads an envelope only when a verdict
+  reads its `payload` — which in a healthy replay is the trust-plane referents alone.
+  `store_referents` also streams its scan through a **server-side** cursor rather than
+  `fetchall()`; iterating a client-side cursor would have moved the same bytes into
+  libpq's C heap, where tracemalloc cannot see them and RSS can. Re-measured: growth
+  **1.61x**, peak **3.36 MiB**. The re-read is addressed by v6 event hash, so it can
+  only return the bytes the referent already stood for; material that stops presenting a
+  row mid-pass raises the new `MATERIAL_CHANGED_UNDER_VERIFICATION` rather than
+  reporting an empty payload, and the materialization memo is bounded so it cannot grow
+  back into the cache it replaced.
+
+- **`InMemoryEventStore` never advanced the global chain head a v6 epoch wrote, so two
+  of WI-266's fail-closed checks were dead on that backend (P1.7 phase 4).** Postgres
+  has one `event_chain_head` row: the writer advances it, replay reads it back. In
+  memory there were two — `InMemoryV6Rows.head_hash`, which the v6 writer advanced, and
+  `InMemoryEventStore._global_chain_head`, which only the *legacy* `append` ever wrote
+  and which is the one `_in_memory_replay` reads. So after `open_v6_epoch` plus real v6
+  appends the head replay consulted was still `None`, and both "head set, log empty"
+  (a wholesale-deleted log) and "head disagrees with the chain tail" (a tampered head or
+  a deleted tail event) were **unreachable in memory** while Postgres detected them
+  correctly. The two are now one piece of state, which is the parity discipline rather
+  than a second advance: nothing is copied, so there is no window in which they disagree.
+  This is the second parity hole measured after the chain-formula one above.
+
+- **A revoked key acceptance was undone by an older one (P1.7 phase 4, cross-lineage
+  ceremony B1).** `_v6_writer.resolve_key_binding_anchor` returned from inside its
+  candidate loop, so a **revoked newer acceptance fell through to an older live
+  acceptance** of the same (principal, key) and that anchor was returned; the
+  `KEY_ACCEPTANCE_REVOKED` refusal fired only when the surviving fallback happened to be
+  the bootstrap anchor, which is the one case a test covered. Reachable and measured as
+  *admitted*: bootstrap accepts a key twice and revokes the second acceptance, and an
+  ordinary event by that principal was still signed and written — silently undoing the
+  operator's most recent word about the key. Any revoked acceptance for the pair now
+  refuses, which is the policy the code's own comment had always stated, and the refusal
+  names `superseded_live_anchors` so it reads as a decision rather than as "nothing was
+  found". Two deliberate consequences: **re-accepting the same `key_id` after a revocation
+  no longer restores appendability** (a replacement key is a new key), and the **writer is
+  stricter than the verifier** — `TRUST-DOMAIN.md` §5.10 step 4 is a rule about one
+  acceptance hash and the verifier keeps it to the letter so historical material verifies
+  by the spec, while the writer is deciding whether to *create* evidence under a revoked
+  key.
+
+- **A revocation could be anchored on the acceptance it revokes** (ceremony r2 NB1). The
+  counterpart to the acceptance side's `self_authorisation` rule, and consequential only
+  because of B1 above: now that a revoked acceptance refuses every anchor for its
+  (principal, key), a principal revoking its **own** anchor destroys its own authority with
+  no way back — and the bootstrap principal doing that to the genesis-embedded acceptance
+  removes the project's only key-accepting authority permanently. Measured before the fix:
+  the write was accepted. `validate_key_acceptance_revocation_payload` now refuses it as
+  `self_revocation`.
+
+- **A pinned producer-policy `key_fingerprints` set was skippable by omission** (NB2).
+  `check_producer_authorization` tested `entry.key_fingerprints and key_fingerprint is not
+  None and …`, so a caller that presented no fingerprint skipped the pin entirely and the
+  entry matched. An unknown fingerprint — including an absent one — is now a non-match,
+  refused as `key_fingerprint_not_pinned` rather than reported as a harness failure.
+
+- **The chain-head formula had five more hand-copies, one of them a sixth version
+  dispatch** (NB3). `_bundle._hash_event` now delegates to
+  `_signing.compute_chain_head_hash`, as do the legacy head-advance sites in `_events`
+  (×2) and `_event_store` (×3) — including the **entity**-chain link at
+  `_event_store.py:232`. Behaviourally a no-op for legacy envelopes and a hardening
+  structurally: both previous hand-copies of this formula were bugs (mutation M20, and
+  `_in_memory_replay`'s two chain walks).
+
+- **The in-memory v6 facade answered SQL's NULL semantics wrongly in two places** (NB4).
+  `_same(None, None)` was `True` where `NULL = NULL` is NULL, and `ORDER BY` sorted NULLs
+  last in *both* directions where Postgres defaults to NULLS LAST/FIRST by direction (the
+  `or 0` also flattened `0`/`""`/`False`). No statement in the closed grammar reaches
+  either today, so both are now `PARITY_BOUNDARY_POSTGRES_ONLY` refusals naming the
+  column — the first statement that needs NULL semantics fails at its own call site
+  instead of quietly answering something production would not.
+
+- **`claim_expired` was attributed to the claim holder, and one bad claim aborted the whole
+  sweep** (NB5). The holder did not act — a lease lapsed — so in an open v6 epoch a holder
+  whose acceptance had been revoked (or whose scopes do not cover `claim_expired`) made
+  `append_event` raise *inside the sweep's transaction*, and the operator's expiry sweep
+  stopped working. It is now attributed to the project's bootstrap principal through
+  `resolve_system_actor_id`, exactly like `escalated`, with the holder still named in the
+  payload and pre-genesis attribution unchanged. Each claim is also processed in its own
+  savepoint, so a refusal rolls that claim back and leaves it intact while the rest of the
+  batch expires — reported as `claims.sweep_claim_refused` plus a `claims.sweep_incomplete`
+  summary, with the return value counting successes only. The in-memory twin gets the same
+  guarantee by appending before mutating, since rollback is Postgres-only.
+
+- **`supersedes_registration_event_hash` was a signed constant** (NB6). Every
+  `workflow_registered` payload carried `null`, so every replacement registration signed
+  the claim that it replaced nothing. It is now resolved from signed events by
+  `_v6_writer.find_previous_workflow_registration` — the highest prior version of the same
+  name, tie-broken on chain position — so the provenance chain between workflow versions
+  exists in the record rather than in the mutable `workflow_registry` row §1.9 exists to
+  stop being the referent. A lower version registered later still supersedes nothing.
+
+- **`BundleReferents.from_bundle` reported `event_count=0` for a generator** (NB7).
+  The count was `len(list(events))` computed *after* the indexing loop had consumed the
+  iterable, and `event_count` is what `describe()` puts in the verdict detail naming the
+  material's scope — so the bundle's own size was misreported to an auditor while the
+  index was correct. Counted in the same pass now.
+
+- **`_verification` and `_replay` disagreed about a nulled `canonical_envelope`, and now
+  agree — fail-closed (P1.7 phase 4).** `verify_event_strict` reported
+  `UNVERIFIABLE`/`ENVELOPE_ABSENT` ("nothing failed, there is nothing to check") while
+  `_replay`, on the *same row*, halted with "the row contradicts its own cryptographic
+  material" — reached through `AbsentEnvelopeProbe`, which rebuilds only the v1/v2 shapes
+  `CUTOVER-POLICY` §4.1 enumerates and therefore never matches a v6 row at all. So a
+  caller of `verify_event_result` got the weaker of the two, and the stronger one rested
+  on a reconstruction never attempted for the version in question. Resolved on the
+  **presented material** instead: a row whose chain predecessor is presented as a v6
+  event stands inside the v6 epoch, where the stored bytes are the artifact
+  (`V6-ENVELOPE.md` §9.2) and every append writes them, so the NULL is destruction and
+  the verdict is `INVALID`. Nothing is reconstructed, no signature is re-derived, and
+  with `NO_REFERENTS` the verdict is still `UNVERIFIABLE` — the conviction is a property
+  of what was presented, never of the absence. `AbsentEnvelopeProbe` stays
+  `_replay`-only for v1-v5 rows, which the material cannot speak about.
+
+- **Both in-memory hash-chain walks used the v1-v5 head formula**, so no v6 event was
+  reachable from genesis and a *healthy* in-memory v6 epoch reported one chain break per
+  post-genesis event. The chain half of WI-287's parity claim was measurably false and
+  nothing had asserted it. The formula now lives once, at
+  `_signing.compute_chain_head_hash`, with `_replay` and all three in-memory sites
+  delegating — the third recurrence of "a version-aware formula hand-copied per call
+  site is version-aware at some of them" (mutation M20 was the second).
+
+### Changed
+
+- **`replay()` no longer reports a healthy clean-epoch chain as seven warnings.** The
+  five spec-legal non-`work_item` entity kinds from the CLOSED §1.2 registry are counted
+  in the new `ReplayReport.non_work_item_groups_verified` — a v6 chain necessarily
+  carries `project`, `principal` and `workflow` groups, so their presence is the
+  ordinary case and is neither a halt nor a warning. An entity kind **outside** the
+  closed registry now **halts**, fail-closed: previously "not a work item" bought the
+  tolerance, now five named values do. One entity id carrying several kinds also halts
+  rather than being read as either. The closed registry itself was hand-copied in three
+  modules and is now `_verification.V6_ENTITY_KINDS`, imported.
+
 ### Changed — BREAKING
 
 - **Clean v6 project genesis:** fresh schemas now carry nullable workflow identity
@@ -247,6 +602,24 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     correctly on both sides, re-authenticating once.
 
 ### Fixed
+
+- **Bundle chain verification did not verify a v6 chain at all.**
+  `_bundle._hash_event` computed `sha256(envelope || signature)` unconditionally, but a
+  v6 chain links on the domain-tagged `compute_v6_event_hash` (`V6-ENVELOPE.md` §6.1),
+  so for a v6 bundle **no link resolved**. The consequence was silence rather than a
+  false alarm: `_verify_global_chain` treats an event whose predecessor is absent from
+  the set as a legitimate *bridge point* (a windowed export starts mid-chain), so with
+  every link unresolvable every event became an entry point, was immediately its own
+  tail, and the function returned `ok=True` **vacuously** — the chain was not checked
+  and the report said it was. `_hash_event` is now version-aware.
+
+  Two notes for whoever picks up bundle v3 (P3.3). First, the vacuous-bridge-point
+  behaviour is *still there* and is independent of this fix: a bundle whose links are
+  all broken for any other reason still reports `global_chain_ok`. Second, the
+  genesis-era fixtures could not have caught this — the epoch-opening ceremony writes
+  one event per entity, so the per-entity chain check (which does fail loudly) had
+  nothing to check. The regression test now builds an entity with two events on purpose,
+  and asserts the hash formula at the primitive as well as through the report.
 
 - **`hvac` failures now arrive as the error envelope, not a traceback
   (WI-229b, WI-226):** `regista secrets --ref` caught only `RegistaError`, so

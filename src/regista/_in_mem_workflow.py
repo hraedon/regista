@@ -58,6 +58,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         self._workflow_defs[key] = wf
         self._workflow_hashes[key] = content_hash
         self._workflow_registered_at[key] = now
+        self._append_workflow_registration_event_in_memory(wf)
 
         return WorkflowVersion(
             name=wf.name,
@@ -65,6 +66,34 @@ class InMemWorkflowMixin(_InMemoryBase):
             regista_version=wf.regista_version,
             registered_at=now,
         )
+
+    def _append_workflow_registration_event_in_memory(self, wf: Any) -> None:
+        """Admission gate 1's other half, on the in-memory backend.
+
+        A ``workflow_registry`` row is not a registration (``V6-ENVELOPE.md`` §1.9), and
+        that is enforced identically on both backends — so an in-memory project with an
+        open epoch was refusing every ordinary append with
+        ``WORKFLOW_REGISTRATION_UNRESOLVED`` because only the Postgres
+        ``register_workflow`` appended the signed event. **The same function** is called
+        here, over the ``_in_memory_v6`` connection facade, rather than a second
+        implementation: the payload shape, the ``raw_yaml`` exclusion, the definition
+        hash and the workflow entity id are exactly one piece of code.
+
+        A no-op before genesis, for the same reason as on Postgres: a project that never
+        opens an epoch keeps the legacy row-only behaviour.
+        """
+        from ._in_mem_genesis import _as_conn
+        from ._workflow_api import _append_workflow_registration_event
+
+        # `_mgr` and `_keys` come from InMemGenesisMixin, a sibling mixin on
+        # InMemoryRegista, so they are not visible on this mixin's own type.
+        store = getattr(self, "_store", None)
+        if store is None or not store.v6_epoch_open():
+            return
+        mgr = self._mgr  # type: ignore[attr-defined]
+        keys = self._keys  # type: ignore[attr-defined]
+        with mgr.transaction() as conn:
+            _append_workflow_registration_event(_as_conn(conn), keys, wf)
 
     def register_workflow_file(self, path: str | Path) -> WorkflowVersion:
         from ._workflow_compose import resolve_includes

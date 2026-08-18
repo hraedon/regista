@@ -19,10 +19,17 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 PYTHON = sys.executable
 
 
-def _run(*args, env=None):
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+
+
+def _run(*args, env=None, key_path=KEY_PATH):
     base_env = {
         "REGISTA_DSN": DSN,
-        "REGISTA_HMAC_KEY_PATH": KEY_PATH,
+        # `key_path`, not a fixed KEY_PATH: `regista replay` verifies every event
+        # against the key file it is pointed at, so a v6 project's CLI has to be
+        # pointed at that project's keyset. Commands that only read are indifferent.
+        "REGISTA_HMAC_KEY_PATH": key_path,
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     if env:
@@ -65,18 +72,24 @@ def initialized_project(project):
 
 
 @pytest.fixture
-def populated_project(initialized_project):
+def populated_project(initialized_project, tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
-    sub = Regista(DSN, initialized_project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista(DSN, initialized_project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no epoch
+    # to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     wi, _ = sub.create_work_item(
-        "test_workflow", "feature", "worker-1",
+        "test_workflow", "feature", WORKER,
         custom_fields={"title": "cli-test-item"},
     )
-    sub.register_actor_role("worker-1", "agent")
+    sub.register_actor_role(WORKER, "agent")
     sub.close()
-    return initialized_project, wi.work_item_id
+    return initialized_project, wi.work_item_id, keyset.path
 
 
 class TestSchemaInit:
@@ -128,15 +141,18 @@ class TestWorkflowValidate:
 
 class TestWorkItemShow:
     def test_show_existing_work_item(self, populated_project):
-        project, wi_id = populated_project
-        result = _run(*_project_args(project), "work-item", "show", str(wi_id))
+        project, wi_id, key_path = populated_project
+        result = _run(*_project_args(project), "work-item", "show", str(wi_id), key_path=key_path)
         assert result.returncode == 0
         assert str(wi_id) in result.stdout
         assert "test_workflow" in result.stdout
 
     def test_show_json_output(self, populated_project):
-        project, wi_id = populated_project
-        result = _run(*_project_args(project), "--json", "work-item", "show", str(wi_id))
+        project, wi_id, key_path = populated_project
+        result = _run(
+            *_project_args(project), "--json", "work-item", "show", str(wi_id),
+            key_path=key_path,
+        )
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert data["work_item_id"] == str(wi_id)
@@ -150,28 +166,34 @@ class TestWorkItemShow:
 
 class TestWorkItemList:
     def test_list_work_items(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "work-item", "list")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "work-item", "list", key_path=key_path)
         assert result.returncode == 0
         assert "test_workflow" in result.stdout
 
     def test_list_json_output(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "--json", "work-item", "list")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "--json", "work-item", "list", key_path=key_path)
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert "items" in data
         assert len(data["items"]) >= 1
 
     def test_list_filter_by_workflow(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "work-item", "list", "--workflow", "test_workflow")
+        project, _, key_path = populated_project
+        result = _run(
+            *_project_args(project), "work-item", "list", "--workflow", "test_workflow",
+            key_path=key_path,
+        )
         assert result.returncode == 0
         assert "test_workflow" in result.stdout
 
     def test_list_filter_by_state_no_match(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "work-item", "list", "--state", "completed")
+        project, _, key_path = populated_project
+        result = _run(
+            *_project_args(project), "work-item", "list", "--state", "completed",
+            key_path=key_path,
+        )
         assert result.returncode == 0
         lines = [line for line in result.stdout.strip().split("\n")
                  if line and not line.startswith("--") and not line.startswith("202")]
@@ -180,14 +202,17 @@ class TestWorkItemList:
 
 class TestEventsShow:
     def test_show_events_for_work_item(self, populated_project):
-        project, wi_id = populated_project
-        result = _run(*_project_args(project), "events", "show", str(wi_id))
+        project, wi_id, key_path = populated_project
+        result = _run(*_project_args(project), "events", "show", str(wi_id), key_path=key_path)
         assert result.returncode == 0
         assert "created" in result.stdout
 
     def test_show_events_json_output(self, populated_project):
-        project, wi_id = populated_project
-        result = _run(*_project_args(project), "--json", "events", "show", str(wi_id))
+        project, wi_id, key_path = populated_project
+        result = _run(
+            *_project_args(project), "--json", "events", "show", str(wi_id),
+            key_path=key_path,
+        )
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert isinstance(data, list)
@@ -197,14 +222,14 @@ class TestEventsShow:
 
 class TestEventsTail:
     def test_tail_events(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "events", "tail")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "events", "tail", key_path=key_path)
         assert result.returncode == 0
         assert "created" in result.stdout
 
     def test_tail_json_output(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "--json", "events", "tail")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "--json", "events", "tail", key_path=key_path)
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert isinstance(data, list)
@@ -213,14 +238,14 @@ class TestEventsTail:
 
 class TestReplay:
     def test_replay_no_drift(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "replay")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "replay", key_path=key_path)
         assert result.returncode == 0
         assert "drift=0" in result.stdout
 
     def test_replay_json_output(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "--json", "replay")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "--json", "replay", key_path=key_path)
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert data["replayed_drift"] == 0
@@ -229,24 +254,24 @@ class TestReplay:
 
 class TestActorRolesList:
     def test_list_actor_roles(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "actor-roles", "list")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "actor-roles", "list", key_path=key_path)
         assert result.returncode == 0
-        assert "worker-1" in result.stdout
+        assert WORKER in result.stdout
 
     def test_list_actor_roles_json(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "--json", "actor-roles", "list")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "--json", "actor-roles", "list", key_path=key_path)
         assert result.returncode == 0
         data = _extract_json(result.stdout)
         assert isinstance(data, list)
-        assert any(r["actor_id"] == "worker-1" for r in data)
+        assert any(r["actor_id"] == WORKER for r in data)
 
 
 class TestHooksDeadLetterList:
     def test_list_empty(self, populated_project):
-        project, _ = populated_project
-        result = _run(*_project_args(project), "hooks", "dead-letter", "list")
+        project, _, key_path = populated_project
+        result = _run(*_project_args(project), "hooks", "dead-letter", "list", key_path=key_path)
         assert result.returncode == 0
 
 

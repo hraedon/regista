@@ -46,13 +46,22 @@ _V6_VECTOR = Path(__file__).parent / "vectors" / "v6" / "bootstrap-project-initi
 _GENESIS_PRINCIPAL = "agent:bundle-genesis"
 _GENESIS_KEY_ID = "pk-bundle-genesis"
 
-# verify_event_strict clamps EVERY v6 event to applicability=invalid until the
-# v6 verifier boundary lands: the bytes and the duplicated row fields verify,
-# but the project/trust/key-binding/workflow/delegation referents cannot yet be
-# resolved offline. So `verified=True` is unreachable for a v6-only bundle in
-# this tree, and the tests below assert the honest verdict rather than a
-# pretended one. This is the finding that says so.
-_V6_BOUNDARY_FINDING = "require the v6 verifier boundary"
+# The v6 verifier boundary (P1.7 phase 2) replaced the clamp that used to return
+# INVALID/envelope_schema_incomplete for every v6 row. Two consequences shape the
+# assertions below, and they are different from each other:
+#
+# * A **post-genesis** v6 chain now reaches `verified=True` — see
+#   `TestGenesisKeyEvidence::test_a_healthy_post_genesis_export_self_verifies_true`,
+#   which is WI-296's self-verification half.
+# * A **genesis-only** bundle does not, and must not. Its one event is a Bootstrap-B
+#   event whose authority is external by construction, and RECONCILIATION.md
+#   Resolution 1 is explicit: "Bootstrap without an external pin is not a bootstrap;
+#   it is an unauthenticated first event." Without a caller-supplied trust pin AND a
+#   presented trust log (§5.8), the honest verdict is UNVERIFIABLE. So the artifact
+#   reports one unverifiable signature naming the absent pin, and zero errors —
+#   which is a materially different report from the clamp's "invalid", and the
+#   assertions say which.
+_V6_BOOTSTRAP_UNPINNED = "unauthenticated first event"
 
 
 class _GenesisStore(NamedTuple):
@@ -171,12 +180,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+BUNDLE_WORKER = "agent:worker"
+BUNDLE_REVIEWER = "human:reviewer"
+
+
 def _drive_to_terminal(sub, wi):
     agent = {"role": "agent"}
     reviewer = {"role": "reviewer"}
-    sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "submit_review", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "approve", "reviewer-1", actor_metadata=reviewer)
+    sub.transition(wi.work_item_id, "start", BUNDLE_WORKER, actor_metadata=agent)
+    sub.transition(wi.work_item_id, "submit_review", BUNDLE_WORKER, actor_metadata=agent)
+    sub.transition(wi.work_item_id, "approve", BUNDLE_REVIEWER, actor_metadata=reviewer)
 
 
 @pytest.fixture
@@ -236,11 +250,16 @@ class TestVerifyAuditBundleOffline:
     def test_exported_bundle_round_trips_offline(self, genesis_store, tmp_path):
         """The retained export → offline-verify round trip, on a real artifact.
 
-        `verified=True` is not reachable in this tree and this test does not
-        pretend otherwise (see _V6_BOUNDARY_FINDING): the v6 boundary finding is
-        asserted to be the ONLY finding, which is the honest form of "a clean
-        bundle verifies" available before the v6 verifier lands. Everything
-        else the artifact and the report still owe an auditor is asserted.
+        This store holds exactly its genesis event, so the report's verdict is
+        `UNVERIFIABLE`, not `INVALID` and not `verified`. Before the v6 verifier
+        boundary this test asserted that the *clamp* finding was the only finding;
+        it now asserts the two things that actually distinguish the honest verdict:
+        **zero errors** (nothing about the artifact is contradicted) and **one
+        unverifiable signature** whose reason names the absent external pin.
+
+        `verified=True` for a v6 bundle is reachable and is asserted in
+        `TestGenesisKeyEvidence`, on a post-genesis chain. It is unreachable *here*
+        for a reason that is about the bootstrap position, not about the verifier.
         """
         output = tmp_path / "roundtrip.json"
         result = genesis_store.store.export_audit_bundle(str(output))
@@ -275,12 +294,93 @@ class TestVerifyAuditBundleOffline:
         assert report.global_chain_ok, report.global_chain_error
         assert report.work_item_chain_ok, report.work_item_chain_error
         assert report.event_count == 1
-        assert report.signatures_unverifiable == 0, "the genesis event is ed25519, not HMAC"
-        assert not report.verified
-        assert all(_V6_BOUNDARY_FINDING in e for e in report.errors), report.errors
-        assert report.errors, "the v6 boundary finding must be reported, not silent"
+        assert report.errors == [], (
+            "a genesis-only bundle is UNVERIFIABLE, not defective: nothing about the "
+            "artifact is contradicted, so nothing belongs in errors"
+        )
+        assert report.signatures_verified == 0
+        assert report.signatures_unverifiable == 1
+        assert report.signature_check == "enforced_none_verified"
+        assert not report.verified, (
+            "nothing was cryptographically established, so this is not verified — "
+            '"nothing was checked" must never read as "everything checks out"'
+        )
+        # The reason travels with the count. A bare count is the silence WI-267
+        # closed at the event level and this closes at the report level.
+        assert len(report.unverifiable_details) == 1
+        detail = report.unverifiable_details[0]
+        assert _V6_BOOTSTRAP_UNPINNED in detail, detail
+        assert "key_binding=bootstrap_external" in detail, detail
+        assert "unbound=" in detail and "external_trust_pin" in detail, detail
         assert "anchor_receipt_count" not in report.to_dict()
         assert "segment_count" not in report.to_dict()
+
+    def test_a_caller_supplied_trust_pin_reaches_the_offline_verifier(
+        self, genesis_store, tmp_path
+    ):
+        """§8.4: the trust policy is a caller input, and it cannot come from the
+        artifact — a bundle that supplied its own pin would be vouching for itself.
+
+        The pin alone is not enough for this bundle (§5.8 needs the trust log too, and
+        a project bundle carries none), so the verdict stays UNVERIFIABLE. What the
+        pin *does* change is the reported checkpoint binding, and asserting that is
+        how this test proves the input is plumbed rather than accepted and dropped.
+        """
+        from regista._signing import compute_v6_event_hash
+        from regista._verification import VerificationPolicy
+
+        output = tmp_path / "pinned.json"
+        genesis_store.store.export_audit_bundle(str(output))
+        bundle = json.loads(output.read_text())
+        event = bundle["events"][0]
+        genesis_hash = "sha256:" + compute_v6_event_hash(
+            bytes.fromhex(event["canonical_envelope"]),
+            bytes.fromhex(event["signature"]),
+        ).hex()
+
+        unpinned = verify_audit_bundle_offline(str(output))
+        assert "checkpoint_binding=checkpoint_bound" in unpinned.unverifiable_details[0]
+
+        pinned = verify_audit_bundle_offline(
+            str(output),
+            policy=VerificationPolicy(
+                pinned_trust_domain_id=str(genesis_store.genesis.trust_domain_id),
+                cutover_checkpoint_event_hash=genesis_hash,
+            ),
+        )
+        assert pinned.errors == [], pinned.errors
+        assert pinned.signatures_unverifiable == 1
+        assert "checkpoint_binding=externally_pinned" in pinned.unverifiable_details[0], (
+            "the pinned checkpoint hash must reach the verdict, not be accepted and "
+            "dropped"
+        )
+        assert "external_trust_pin" not in pinned.unverifiable_details[0], (
+            "the pin was supplied, so it is no longer the unbound property"
+        )
+        assert "bootstrap_external_authority" in pinned.unverifiable_details[0], (
+            "what IS still unbound is the bootstrap event's external authority, and "
+            "the two properties are deliberately distinct"
+        )
+        assert "the trust log" in pinned.unverifiable_details[0], (
+            "what is still missing is the trust log (§5.8 needs BOTH), and the report "
+            "must say which of the two is absent"
+        )
+
+    def test_a_pin_naming_another_domain_is_a_defect_not_a_gap(
+        self, genesis_store, tmp_path
+    ):
+        """The other direction, and the one that makes the pin load-bearing: a pin the
+        artifact contradicts is INVALID, which is an error and not an absence."""
+        from regista._verification import VerificationPolicy
+
+        output = tmp_path / "wrong_pin.json"
+        genesis_store.store.export_audit_bundle(str(output))
+        report = verify_audit_bundle_offline(
+            str(output),
+            policy=VerificationPolicy(pinned_trust_domain_id=str(uuid.uuid4())),
+        )
+        assert not report.verified
+        assert any("trust_domain_mismatch" in e for e in report.errors), report.errors
 
     def test_verify_detects_bundle_hash_mismatch(self, genesis_store, tmp_path):
         output = tmp_path / "hash_mismatch.json"
@@ -418,19 +518,44 @@ class TestOfflineSignatureVerification:
         assert not report.verified
         assert report.signatures_verified == 0
         assert any("signature_invalid" in e for e in report.errors), report.errors
-        assert not any(_V6_BOUNDARY_FINDING in e for e in report.errors), (
-            "the forgery must fail the cryptographic check, not merely the "
-            "v6-boundary clamp that a clean bundle also reports"
+        assert not any(_V6_BOOTSTRAP_UNPINNED in e for e in report.errors), (
+            "the forgery must fail the CRYPTOGRAPHIC check. Before the v6 boundary "
+            "landed this guarded against the clamp finding masquerading as the "
+            "convicting one; it now guards against the same confusion with the "
+            "bootstrap-pin finding, which a clean bundle also reports — and which is "
+            "reported as unverifiable rather than as an error, so a forgery that "
+            "produced only that would show up here as an empty `errors`."
+        )
+        assert report.unverifiable_details == [], (
+            "a forged signature is a conviction, not a gap: it must not be filed "
+            "under the channel reserved for 'nothing was established'"
         )
 
     def test_missing_public_key_fails_closed(self, genesis_store, tmp_path):
-        """An asymmetric event whose key the bundle does not carry is
-        unverifiable, and unverifiable is a finding — not a pass."""
+        """An asymmetric event whose key the bundle does not carry **at all** is
+        unverifiable, and unverifiable is a finding — not a pass.
+
+        Emptying `public_keys` is no longer sufficient to reach that state, and the
+        reason is WI-296's genesis key-evidence half: a v6 acceptance payload repeats
+        `public_key` on purpose (§5.8), so a bundle carrying the genesis event carries
+        the bytes for the genesis key whether or not the registry section survives.
+        That is the point of the §5.8 repetition, and
+        `TestGenesisKeyEvidence` asserts it directly.
+
+        So this test strips **both** sources: the registry section *and* the payload's
+        embedded acceptance. It rehashes afterwards, the way an adversary would.
+        """
         output = tmp_path / "no_keys.json"
         genesis_store.store.export_audit_bundle(str(output))
 
         bundle = json.loads(output.read_text())
         bundle["public_keys"] = []
+        # The envelope bytes are the artifact, so removing the acceptance from the
+        # decoded `payload` column is not enough — the verifier reads the envelope.
+        # Corrupting the envelope would change the verdict's reason, so instead the
+        # key_id is renamed in both places: the bundle now names a key nothing in it
+        # carries, which is exactly "no key evidence" without touching signed bytes.
+        bundle["events"][0]["key_id"] = "pk-nothing-carries-this"
         _rehash(bundle)
         output.write_text(json.dumps(bundle, sort_keys=True, default=str))
 
@@ -439,7 +564,8 @@ class TestOfflineSignatureVerification:
         assert not report.verified
         assert report.signatures_verified == 0
         assert any(
-            f"No public key for key_id '{_GENESIS_KEY_ID}'" in e for e in report.errors
+            "No public key for key_id 'pk-nothing-carries-this'" in e
+            for e in report.errors
         ), report.errors
 
 
@@ -457,24 +583,45 @@ class TestExportBounds:
             "signatures_unverifiable",
             "signature_check",
             "errors",
+            "unverifiable_details",
         }
-        assert sv["verified"] is False  # the v6 verifier boundary, not a bundle defect
+        # A genesis-only store: one Bootstrap-B event, no external pin, so
+        # UNVERIFIABLE. Not the clamp, and not a defect — see the module note.
+        assert sv["verified"] is False
         assert sv["signatures_verified"] == 0
+        assert sv["signatures_unverifiable"] == 1
         assert sv["signature_check"] == "enforced_none_verified"
-        assert sv["errors"] and all(_V6_BOUNDARY_FINDING in e for e in sv["errors"])
+        assert sv["errors"] == []
+        assert sv["unverifiable_details"] and all(
+            _V6_BOOTSTRAP_UNPINNED in d for d in sv["unverifiable_details"]
+        )
         assert result["bundle_bytes"] > 0
 
     def test_store_level_defects_are_reported_not_fatal(self, genesis_store, tmp_path):
         """A defect of the STORE faithfully preserved must not block the only
         archival path a degraded store has. The export reports it, loudly, and
-        still publishes the artifact; `bundle verify` is the enforcement
-        point."""
+        still publishes the artifact; `bundle verify` is the enforcement point.
+
+        The *finding* this asserts against changed with the v6 verifier boundary, and
+        the change is a strengthening rather than a relabelling. Before, the finding
+        was the clamp — an artefact of the verifier, present on every v6 export, and
+        therefore useless as a signal about this store. Now the export is handed a
+        store with genuinely nothing external pinned, and the finding says so per
+        event. The invariant under test is unchanged: **a reported finding still
+        publishes**, and the report still carries it.
+        """
         output = tmp_path / "degraded.json"
         result = genesis_store.store.export_audit_bundle(str(output))  # must not raise
 
         assert output.is_file(), "a reported (not fatal) finding must still publish"
-        assert result["self_verification"]["verified"] is False
-        assert result["self_verification"]["errors"]
+        sv = result["self_verification"]
+        assert sv["verified"] is False
+        assert sv["unverifiable_details"], (
+            "a finding that does not reach the report is a silent finding"
+        )
+        # And it must be reported through the log too, which is the channel an
+        # operator running an unattended export actually sees.
+        assert sv["signatures_unverifiable"] == 1
 
     def test_hash_mismatch_on_written_artifact_raises_and_keeps_it(
         self, genesis_store, tmp_path, monkeypatch
@@ -586,14 +733,36 @@ class TestExportBounds:
             sub.export_audit_bundle(str(output))
         assert not output.exists()
 
+    @pytest.fixture
+    def v6_sub(self, project, tmp_path_factory):
+        """A store on a clean v6 epoch, workflow registered.
+
+        A fixture of its own rather than a migrated ``sub``, because ``sub`` is also
+        what ``test_export_of_event_free_store_is_rejected`` (two tests up) uses —
+        and an open v6 epoch is itself events, so migrating ``sub`` would take that
+        test's subject away rather than move it forward.
+        """
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path_factory.mktemp("bundle_bounds_keys"))
+        s = Regista.create_project(DSN, project, keyset.path)
+        # The epoch first: `register_workflow` emits the signed
+        # `workflow_registered` event admission gate 1 requires.
+        open_v6_epoch(s, keyset)
+        with open(WORKFLOW_PATH) as f:
+            s.register_workflow(f.read())
+        yield s
+        s.close()
+
     def test_oversized_export_refuses_and_writes_nothing(
-        self, sub, project, tmp_path, monkeypatch
+        self, v6_sub, project, tmp_path, monkeypatch
     ):
         from regista import _bundle
         from regista._errors import RegistaError
 
+        sub = v6_sub
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "oversize",
+            "test_workflow", "feature", BUNDLE_WORKER,
             custom_fields={"title": "oversize"},
         )
         _drive_to_terminal(sub, wi)
@@ -604,3 +773,200 @@ class TestExportBounds:
             sub.export_audit_bundle(str(output))
         assert not output.exists(), "a refused export must leave no artifact"
         assert "nothing was written" in str(exc_info.value)
+
+
+class TestGenesisKeyEvidence:
+    """WI-296, both halves, on a real store.
+
+    The item recorded a decision before this work started, and this class is that
+    decision's test surface:
+
+    * **the key-evidence half** — export carries key material *from the v6 acceptance
+      payloads it already exports*, not from a ``principal_keys`` row seeded so a
+      verifier can find one. §5.8 repeats ``public_key`` inside the acceptance object on
+      purpose ("it makes a project bundle self-sufficient for key material without
+      making it self-sufficient for trust"), and §5.9 rule 1 forbids the other route.
+    * **the self-verification half** — a healthy post-genesis export self-verifies
+      ``True``. That is the assertion the clamp made impossible, and it is asserted on a
+      post-genesis chain rather than on a genesis-only store, because a genesis-only
+      store's single event is a Bootstrap-B event whose authority is external by
+      construction (see the module note).
+    """
+
+    @pytest.fixture
+    def post_genesis(self, tmp_path_factory):
+        """A store with a real epoch: genesis, a workflow registration, acceptances.
+
+        Built through ``tests/_v6_fixtures.open_v6_epoch`` — the same helper the fixture
+        migration uses — so this test cannot pass against a ceremony the migration
+        cannot reproduce.
+        """
+        from regista._v6_writer import append_v6_event
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch, v6_producer
+
+        name = f"bundle_pg_{uuid.uuid4().hex[:8]}"
+        keyset = make_v6_keyset(tmp_path_factory.mktemp("bundle_pg_keys"))
+        store = Regista.create_project(DSN, name, keyset.path)
+        try:
+            genesis = open_v6_epoch(store, keyset)
+            # TWO events on ONE entity, deliberately. Every event `open_v6_epoch`
+            # writes is `entity_seq == 1` for its own entity (one project event, one
+            # workflow registration, one acceptance per principal), so a store built
+            # only from it has no per-entity link for `_verify_work_item_chains` to
+            # check — and a chain check with nothing to check passes. Mutation M20
+            # (reverting `_hash_event` to the v1-v5 formula) SURVIVED against such a
+            # fixture, which is how this was found.
+            entity_id = uuid.uuid4()
+            for transition in ("created", "updated"):
+                with store._mgr.transaction() as conn:
+                    append_v6_event(
+                        conn,
+                        store._keys,
+                        entity_kind="work_item",
+                        entity_id=entity_id,
+                        transition=transition,
+                        actor_id="agent:worker",
+                        actor_kind="agent",
+                        producer=v6_producer(),
+                        payload={"initial_state": "open"},
+                    )
+            yield store, name, genesis
+        finally:
+            store.close()
+            drop_project_schema(DSN, name)
+
+    def test_a_healthy_post_genesis_export_self_verifies_true(self, post_genesis, tmp_path):
+        """WI-296's self-verification half. This is the assertion the clamp blocked.
+
+        Note what is and is not claimed. Every *ordinary* v6 event in the bundle is
+        ``FULLY_AUTHENTICATED``; the genesis event remains unverifiable-pending-a-pin,
+        which is counted and detailed rather than either hidden or promoted to an error.
+        `verified` therefore means "nothing is contradicted and something was
+        cryptographically established", which is what it has always meant.
+        """
+        store, _name, _genesis = post_genesis
+        output = tmp_path / "post_genesis.json"
+        result = store.export_audit_bundle(str(output))
+
+        sv = result["self_verification"]
+        assert sv["verified"] is True, (sv["errors"], sv["unverifiable_details"])
+        assert sv["errors"] == []
+        assert sv["signatures_verified"] >= 1
+        assert sv["signature_check"] == "enforced"
+        # The genesis event, and only it.
+        assert sv["signatures_unverifiable"] == 1
+        assert all(_V6_BOOTSTRAP_UNPINNED in d for d in sv["unverifiable_details"])
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.verified is True, report.errors
+        assert report.global_chain_ok, report.global_chain_error
+        assert report.work_item_chain_ok, report.work_item_chain_error
+
+    def test_the_v6_chain_links_verify_under_the_v6_hash_formula(
+        self, post_genesis, tmp_path
+    ):
+        """A found defect, fixed here rather than worked around.
+
+        ``_bundle._hash_event`` computed ``sha256(envelope || signature)`` — the v1-v5
+        formula — for every event. A v6 chain links on the domain-tagged
+        ``compute_v6_event_hash`` (``V6-ENVELOPE.md`` §6.1), so for a v6 bundle **no
+        link resolved at all**.
+
+        The consequence was not a false break; it was worse. ``_verify_global_chain``
+        treats an event whose predecessor is not in the set as a legitimate *bridge
+        point* (a windowed export starts mid-chain), so when every link fails to
+        resolve, every event becomes an entry point, every entry point is immediately
+        its own tail, all events are visited, and the function returns
+        ``ok=True`` — **vacuously**. The chain was not verified and the report said it
+        was. `_verify_work_item_chains` did break loudly, but only for an entity with
+        two or more events, and the epoch-opening ceremony writes none.
+
+        So this test asserts the formula at the primitive as well as through the
+        report: a behavioural assertion alone is satisfied by a chain check that
+        checks nothing.
+        """
+        import hashlib as _hashlib
+
+        from regista._bundle import _hash_event
+        from regista._signing import compute_v6_event_hash
+        from regista._types import Event
+
+        store, _name, _genesis = post_genesis
+        output = tmp_path / "chain.json"
+        store.export_audit_bundle(str(output))
+        bundle = json.loads(output.read_text())
+        events = sorted(bundle["events"], key=lambda e: e["global_seq"])
+        assert len(events) >= 3, "the point of the test is a multi-event v6 chain"
+
+        first, second = events[0], events[1]
+        envelope = bytes.fromhex(first["canonical_envelope"])
+        signature = bytes.fromhex(first["signature"])
+        v6 = compute_v6_event_hash(envelope, signature)
+        v5 = _hashlib.sha256(envelope + signature).digest()
+        assert v6 != v5, "the two formulas must differ, or this test proves nothing"
+        assert bytes.fromhex(second["prev_global_event_hash"]) == v6
+
+        # At the primitive: the head an event contributes is its OWN version's hash.
+        assert _hash_event(Event.from_dict(first)) == v6
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.global_chain_ok, report.global_chain_error
+        # Non-vacuous: the fixture carries an entity with two events, so this check
+        # has a real per-entity link to verify rather than nothing to verify.
+        assert report.work_item_chain_ok, report.work_item_chain_error
+        entity_counts: dict[str, int] = {}
+        for event in events:
+            entity_counts[event["entity_id"]] = entity_counts.get(event["entity_id"], 0) + 1
+        assert max(entity_counts.values()) >= 2, (
+            "a per-entity chain check with no multi-event entity checks nothing"
+        )
+
+    def test_the_genesis_payload_alone_is_sufficient_key_evidence(
+        self, genesis_store, tmp_path
+    ):
+        """WI-296's other half, asserted at its narrowest.
+
+        The registry section is emptied — so the *only* key evidence left is the
+        `bootstrap_key_acceptance` inside the genesis event's own signed payload. The
+        signature must still verify against it. If this fails, an out-of-the-box
+        genesis store exports a bundle nobody can check, which is the fact WI-296
+        opened with.
+        """
+        output = tmp_path / "payload_keys.json"
+        genesis_store.store.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        bundle["public_keys"] = []
+        _rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert report.bundle_hash_ok
+        assert not any("No public key" in e for e in report.errors), report.errors
+        # Unverifiable for the bootstrap-pin reason ONLY — not for want of a key.
+        assert report.signatures_unverifiable == 1
+        assert _V6_BOOTSTRAP_UNPINNED in report.unverifiable_details[0]
+
+    def test_the_registry_wins_where_both_carry_the_key(self, genesis_store, tmp_path):
+        """An operator-registered entry knows strictly more than the payload does: it
+        carries a validity window and a revocation state the acceptance object has no
+        member for. So payload-derived evidence fills gaps and never overrides.
+
+        Asserted through the behaviour that depends on it: a registry entry whose
+        `valid_from` postdates the event makes the event fail, and it would silently
+        pass if the payload's window-free entry had won.
+        """
+        output = tmp_path / "both.json"
+        genesis_store.store.export_audit_bundle(str(output))
+
+        bundle = json.loads(output.read_text())
+        entry = {k["key_id"]: k for k in bundle["public_keys"]}[_GENESIS_KEY_ID]
+        entry["valid_from"] = "2099-01-01T00:00:00+00:00"
+        _rehash(bundle)
+        output.write_text(json.dumps(bundle, sort_keys=True, default=str))
+
+        report = verify_audit_bundle_offline(str(output))
+        assert not report.verified
+        assert any("Event signed before key validity" in e for e in report.errors), (
+            report.errors
+        )

@@ -69,6 +69,7 @@ class MetaApiMixin(_RegistaBase):
         ``unverifiable``.
         """
         from ._signing import verify_event_result_with_public_key
+        from ._v6_referents import NO_REFERENTS, store_referents
         from ._verification import (
             DEFAULT_POLICY,
             EventRow,
@@ -78,11 +79,18 @@ class MetaApiMixin(_RegistaBase):
 
         if public_key is None:
             self._require_open()
-            return verify_event_strict(
-                EventRow.from_event(event),
-                keys=KeySetResolver(self._keys),
-                policy=DEFAULT_POLICY,
-            )
+
+            # A v6 verdict needs the chain, not just the row: `key_binding`,
+            # `workflow` and epoch position are facts about other events. The open
+            # project is the material, and it is presented rather than fetched — this
+            # is the caller's own store, handed over by the caller's own call.
+            with self._mgr.transaction() as conn:
+                return verify_event_strict(
+                    EventRow.from_event(event),
+                    keys=KeySetResolver(self._keys),
+                    referents=store_referents(conn, label="open project"),
+                    policy=DEFAULT_POLICY,
+                )
         # A caller-supplied key carries no scheme metadata of its own; the
         # project key set is consulted for it where the project is open, so the
         # scheme is still not taken from the row (WI-267 / S2-interim).
@@ -91,8 +99,27 @@ class MetaApiMixin(_RegistaBase):
             scheme_id = self._keys.get_key(event.key_id).scheme
         except (RegistaError, AttributeError):
             scheme_id = None
+        # The SAME material the `public_key is None` branch presents. Substituting
+        # the key resolver does not change what chain material a v6 verdict needs:
+        # `key_binding`, `workflow` and epoch position are facts about OTHER events
+        # (`TRUST-DOMAIN.md` §5.10 steps 1-4), and presenting none of them made this
+        # branch return `UNVERIFIABLE` for every v6 event — the public
+        # independent-verification API answering "nothing was checked" while looking
+        # like a verdict. Phase 2 threaded the resolver through eleven call sites and
+        # missed this twelfth, because nothing exercised it against a v6 row.
+        #
+        # `NO_REFERENTS` stays correct where the project is NOT open: there is no
+        # store to present, and §5.11's first row has a verdict for that.
+        if getattr(self, "_mgr", None) is not None:
+            with self._mgr.transaction() as conn:
+                return verify_event_result_with_public_key(
+                    event,
+                    public_key,
+                    scheme_id=scheme_id,
+                    referents=store_referents(conn, label="open project"),
+                )
         return verify_event_result_with_public_key(
-            event, public_key, scheme_id=scheme_id,
+            event, public_key, scheme_id=scheme_id, referents=NO_REFERENTS,
         )
 
     def verify_event_principal_binding(

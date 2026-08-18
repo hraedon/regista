@@ -265,6 +265,52 @@ backend that fails closed by design. Options:
 Until D2 is decided, C3's failing nodes ride the §2.1 manifest under their
 own section.
 
+*(Successor note, 2026-08-18, WI-287 — D2(a) executed, and one number in this
+document corrected.)* `InMemoryRegista` now has the "equivalent v6 genesis
+implementation" the README made its condition: `write_genesis` /
+`initialize_epoch` / `read_genesis` run the **same** `_genesis` and `_v6_writer`
+functions the Postgres backend runs, over a `DictConn`-shaped facade
+(`src/regista/_in_memory_v6.py`) whose statement grammar is closed and refuses
+by name (`PARITY_BOUNDARY_POSTGRES_ONLY`). The shared conformance suite is
+shared by **inheritance** —
+`tests/test_wi287_inmem_parity.py::TestSemanticConformanceInMemory` subclasses
+P1.7's `TestSemanticConformance`, overriding only the `project`/`genesis`
+fixtures — and `TestParityBoundary` enforces the split structurally rather than
+by prose: whole-suite parity, no weakened overrides, no in-memory subclass of
+`TestPostgresOnly`, a source tripwire on the shared class, a refusal instead of
+a faked rollback, and `provides_transactional_isolation is False`.
+
+**Correction to the C3/in-memory population figure.** The in-memory tranche of
+the §2.1 manifest is **217 nodes, not 167**. The 167 figure was a name-based
+heuristic (`'in_memory' in node_id`); measured causally instead — a full
+all-extras run with the manifest disabled, classifying each failure by whether
+its exception text is the in-memory refusal — the 694 splits as **217
+in-memory / 446 Postgres / 24 indirect / 7 slow-tier**. The heuristic missed 74
+in-memory nodes and wrongly claimed 30 that are the `[real]` (Postgres)
+parameter of a parametrized fixture.
+
+**Those 217 do not become passing tests when the in-memory epoch opens**, and
+this is a sequencing fact rather than a shortfall in D2. They fail because they
+call the *legacy* ordinary API, which is refused post-genesis on both backends
+by design. Reaching them needs the ordinary API routed to `append_v6_event`
+plus the five per-fixture requirements NOTES-P17 §3 enumerates (per-principal
+Ed25519 keys, an acceptance event per principal, a signed `workflow_registered`
+event, a process-level `producer` identity, canonical actor ids) — every one of
+which is identical work for the `[real]` parameter of the same fixture. The
+migration therefore belongs with the wiring, once, for both backends. WI-287
+ships that migration's harness (`_v6_fixtures.open_v6_epoch`, `accept_key`,
+`register_test_workflow`, `write_test_genesis` — the functions this module's own
+docstring had always promised but never defined), proven on **both** backends,
+so each of the 25 in-memory files and their Postgres siblings becomes one call
+rather than ~25 lines of ceremony.
+
+An amendment to P1.7's "manifest literally empty" acceptance wording — evaluating
+it at the *joint* completion of P1.7 and WI-287, the shape NOTES-P17 §2 option 3
+proposed — has been relayed as owner-approved. **The ratified wording in §2.0 is
+deliberately left unedited here**: this successor note records the measurement
+and the dependency, and the normative wording change should be made by whoever
+holds the owner's instruction directly.
+
 ## 3. Merge ordering
 
 **The gate and the reconciliation enter main together; neither merges red.**

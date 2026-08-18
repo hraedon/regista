@@ -24,6 +24,18 @@ DSN = os.environ.get(
 TEST_KEYS = os.environ.get("TEST_KEYS", "tests/test_keys.json")
 TEST_WORKFLOW = os.environ.get("TEST_WORKFLOW", "tests/test_workflow.yaml")
 
+# The sidecar signs as the *token's* actor, so every token in this module needs a
+# canonical `(human|agent|service):<subject>` principal (TRUST-DOMAIN.md §2.1) that
+# the project has accepted. Four distinct agent-kind tokens are load-bearing here —
+# the workflow-scoping tests turn on two of them being different principals — so the
+# five defaults are extended rather than doubled up. The same tuple goes to
+# `make_v6_keyset` and `open_v6_epoch`: an id in the keyset but not accepted is
+# refused with KEY_BINDING_UNRESOLVED.
+SIDECAR_AGENT = "agent:worker"
+SIDECAR_NONADMIN_AGENT = "agent:reviewer"
+SIDECAR_SCOPED_AGENT = "agent:sidecar-scoped"
+SIDECAR_ADMIN_AGENT = "agent:sidecar-admin"
+
 
 def _make_token_file():
     raw_token = "test-secret-token-12345"
@@ -34,13 +46,13 @@ def _make_token_file():
         "tokens": [
             {
                 "token_sha256": token_sha256,
-                "actor_id": "test-agent",
+                "actor_id": SIDECAR_AGENT,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent", "coder", "reviewer", "admin"],
             },
             {
                 "token_sha256": nonadmin_sha256,
-                "actor_id": "test-nonadmin",
+                "actor_id": SIDECAR_NONADMIN_AGENT,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent"],
             },
@@ -62,9 +74,20 @@ def token_file():
 
 
 @pytest.fixture(scope="module")
-def regista_instance():
+def regista_instance(tmp_path_factory):
+    from tests._v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, open_v6_epoch
+
+    principals = (
+        *ACTOR_PRINCIPALS,
+        SIDECAR_SCOPED_AGENT,
+        SIDECAR_ADMIN_AGENT,
+    )
+    keyset = make_v6_keyset(
+        tmp_path_factory.mktemp("sidecar_keys"), principals=principals
+    )
     project = f"sidecar_test_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, TEST_KEYS)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset, principals=principals)
     yield sub
     sub.close()
     from regista._testing import drop_project_schema
@@ -303,7 +326,7 @@ class TestClaims:
             headers=auth_headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["actor_id"] == "test-agent"
+        assert resp.json()["actor_id"] == SIDECAR_AGENT
 
         resp = client.post(
             "/v1/release_claim",
@@ -880,14 +903,14 @@ def _make_workflow_scoped_token_file():
         "tokens": [
             {
                 "token_sha256": scoped_sha256,
-                "actor_id": "scoped-agent",
+                "actor_id": SIDECAR_SCOPED_AGENT,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent"],
                 "allowed_workflows": ["hook_test_workflow"],
             },
             {
                 "token_sha256": admin_sha256,
-                "actor_id": "admin-agent",
+                "actor_id": SIDECAR_ADMIN_AGENT,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent", "admin"],
             },

@@ -6,13 +6,17 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from _helpers import DSN
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 from psycopg.rows import dict_row
 
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spelling is refused at the
+#: v6 ingress.
+ACTOR = "agent:worker"
 
 WORKFLOW_WITH_HOOKS = """\
 name: hook_prim_test
@@ -44,15 +48,29 @@ attempt_threshold: 99
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_hookprim_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("hookprim_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no epoch to
+    # append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WORKFLOW_WITH_HOOKS)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
+
+
+#: The ``unmigrated_regista`` fixture is gone, and with it the last-resort pattern
+#: its docstring described. It existed because ``_hooks._move_to_dead_letter``
+#: appended ``hook_dead_lettered`` with a hardcoded ``actor_id="system"`` — neither a
+#: canonical §2.1 principal nor a key any epoch can bind, refused with
+#: ``ACTOR_SIGNER_MISMATCH``. That production gap is closed by
+#: ``_events.resolve_system_actor_id``, which attributes the dead-lettering to the
+#: project's own bootstrap principal, so the node runs on the migrated handle.
 
 
 def _raw_conn(schema: str):
@@ -61,17 +79,17 @@ def _raw_conn(schema: str):
     return conn
 
 
-def _trigger_hook(regista):
+def _trigger_hook(regista, actor_id=ACTOR):
     wi, _ = regista.create_work_item(
         workflow_name="hook_prim_test",
         work_item_type="task",
-        actor_id="agent-1",
+        actor_id=actor_id,
         custom_fields={},
     )
     regista.transition(
         work_item_id=wi.work_item_id,
         transition_name="finish",
-        actor_id="agent-1",
+        actor_id=actor_id,
     )
     return wi
 

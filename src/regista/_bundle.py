@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac as _hmac
 import json
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,13 +17,16 @@ import structlog
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
-from ._signing_scheme import get_scheme, resolve_hash_function
+from ._signing_scheme import get_scheme
 from ._types import Event
+from ._v6_referents import BundleReferents
 from ._verification import (
     DEFAULT_POLICY,
+    Applicability,
     Backend,
     BundleKeyResolver,
     EventRow,
+    VerificationPolicy,
     verify_event_strict,
 )
 
@@ -92,6 +97,12 @@ class BundleVerificationReport:
     signatures_unverifiable: int = 0
     signature_check: str = "enforced"
     errors: list[str] = field(default_factory=list)
+    #: Why each unverifiable signature was unverifiable. A count with no reason is
+    #: how "nothing was checked" gets read as "everything checks out"; the two v6
+    #: cases that land here (an unpinned bootstrap event, a referent outside a
+    #: windowed scope) are both things an auditor must be able to read off the
+    #: report rather than reproduce.
+    unverifiable_details: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +118,7 @@ class BundleVerificationReport:
             "signatures_unverifiable": self.signatures_unverifiable,
             "signature_check": self.signature_check,
             "errors": self.errors,
+            "unverifiable_details": self.unverifiable_details,
         }
 
 
@@ -287,6 +299,7 @@ def export_audit_bundle(
             "signatures_unverifiable": report.signatures_unverifiable,
             "signature_check": report.signature_check,
             "errors": report.errors[:5],
+            "unverifiable_details": report.unverifiable_details[:5],
         },
     }
 
@@ -328,7 +341,22 @@ def _list_principal_key_dicts(conn: DictConn) -> list[dict[str, Any]]:
     return [k.to_dict() for k in list_principal_keys_for_conn(conn)]
 
 
-def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationReport:
+def verify_audit_bundle_offline(
+    bundle_path: str | Path,
+    *,
+    policy: VerificationPolicy | None = None,
+) -> BundleVerificationReport:
+    """Verify a bundle offline. No network, no store, no fetch (§8.4).
+
+    ``policy`` carries the caller's out-of-band pins — the trust domain, the cutover
+    checkpoint hash, the project instance. They are the difference between "this
+    artifact is internally consistent" and "this artifact chains to a root I named",
+    and they cannot come from the artifact: a bundle that supplied its own pin would
+    be vouching for itself. ``None`` means no pin was supplied, and the report then
+    says so per event (``unbound_properties`` names ``external_trust_pin``) rather
+    than quietly grading the bundle as if it had one.
+    """
+
     path = Path(bundle_path)
     if not path.is_file():
         raise RegistaError(
@@ -406,10 +434,16 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         signature_check = "skipped_v1_bundle"
         sigs_verified = 0
         sigs_unverifiable = 0
+        sigs_unverifiable_details: list[str] = []
     else:
         signature_check = "enforced"
-        sigs_verified, sigs_unverifiable, sig_errors = _verify_event_signatures(
-            events, bundle.get("public_keys", [])
+        sigs_verified, sigs_unverifiable, sig_errors, sigs_unverifiable_details = (
+            _verify_event_signatures(
+            events,
+            bundle.get("public_keys", []),
+            manifest=manifest,
+            policy=policy or DEFAULT_POLICY,
+            )
         )
         errors.extend(sig_errors)
         if sigs_verified == 0 and len(events) > 0:
@@ -445,12 +479,96 @@ def verify_audit_bundle_offline(bundle_path: str | Path) -> BundleVerificationRe
         signatures_unverifiable=sigs_unverifiable,
         signature_check=signature_check,
         errors=errors,
+        unverifiable_details=sigs_unverifiable_details,
     )
 
 
+def _key_evidence_from_v6_payloads(events: list[Event]) -> dict[str, dict[str, Any]]:
+    """Key material carried by the bundle's own v6 acceptance payloads (WI-296).
+
+    ``TRUST-DOMAIN.md`` §5.8 repeats ``public_key`` inside every
+    ``regista.key-acceptance`` object, and ``RECONCILIATION.md`` Resolution 1 repeats
+    it inside every ``bootstrap_key_acceptance``, and both say why: "It makes a
+    project bundle self-sufficient for key material without making it self-sufficient
+    for *trust*: the bytes are present, the authority to believe them comes from the
+    externally pinned root via ``trust_event_hash``."
+
+    So this is not a fallback and not a second key resolver — it reads the **signed
+    envelope** of an event the bundle already carries. The alternative WI-296 offered
+    (``write_genesis`` seeding a ``principal_keys`` row from the same object) was
+    rejected on the item: a projection row that exists *because* a verifier needs it
+    is precisely §5.9 rule 1's forbidden coupling.
+
+    The entries produced carry no validity window and no revocation state, because
+    the acceptance payload declares none. That is why an operator-registered entry
+    wins where both exist: it knows strictly more.
+    """
+
+    from ._verification import (
+        V6EnvelopeError,
+        parse_v6_envelope_strict,
+    )
+
+    evidence: dict[str, dict[str, Any]] = {}
+    for evt in events:
+        if evt.canonical_envelope is None:
+            continue
+        try:
+            envelope = parse_v6_envelope_strict(bytes(evt.canonical_envelope))
+        except (V6EnvelopeError, TypeError, ValueError):
+            continue
+        payload = envelope["payload"]
+        if not isinstance(payload, Mapping):
+            continue
+        candidates: list[Mapping[str, Any]] = []
+        if payload.get("type") == "regista.key-acceptance":
+            candidates.append(payload)
+        embedded = payload.get("bootstrap_key_acceptance")
+        if isinstance(embedded, Mapping):
+            candidates.append(embedded)
+        for acceptance in candidates:
+            key_id = acceptance.get("key_id")
+            principal_id = acceptance.get("principal_id")
+            public_key = acceptance.get("public_key")
+            if not (
+                isinstance(key_id, str)
+                and isinstance(principal_id, str)
+                and isinstance(public_key, str)
+            ):
+                continue
+            try:
+                material = base64.b64decode(public_key, validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            if len(material) != 32:
+                continue
+            evidence.setdefault(
+                key_id,
+                {
+                    "key_id": key_id,
+                    "principal_id": principal_id,
+                    # The scheme is ed25519 by construction: a v6 envelope's
+                    # `signing.scheme_id` is validated to it, and the acceptance's
+                    # own `scheme_id` is cross-checked at write time
+                    # (`_genesis._require_bootstrap_acceptance`).
+                    "scheme": "ed25519",
+                    "public_key": material,
+                    "status": "active",
+                    "valid_from": None,
+                    "valid_to": None,
+                    "revoked_at": None,
+                },
+            )
+    return evidence
+
+
 def _verify_event_signatures(
-    events: list[Event], public_keys_data: list[dict[str, Any]]
-) -> tuple[int, int, list[str]]:
+    events: list[Event],
+    public_keys_data: list[dict[str, Any]],
+    *,
+    manifest: Mapping[str, Any] | None = None,
+    policy: VerificationPolicy | None = None,
+) -> tuple[int, int, list[str], list[str]]:
     """Verify event signatures offline against the bundled key registry.
 
     Asymmetric-scheme events (e.g. ed25519) are verified against the
@@ -462,7 +580,7 @@ def _verify_event_signatures(
     an HMAC requires the secret, which is deliberately never exported. An
     unknown scheme fails closed.
 
-    Returns ``(verified_count, unverifiable_count, errors)``.
+    Returns ``(verified_count, unverifiable_count, errors, unverifiable_details)``.
     """
     keys_by_id: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
@@ -496,9 +614,27 @@ def _verify_event_signatures(
             continue
         keys_by_id[entry["key_id"]] = entry
 
+    # WI-296's genesis key-evidence half, taking the BUNDLE route rather than
+    # seeding `principal_keys` from the genesis payload. §5.8 repeats `public_key`
+    # inside the acceptance object **on purpose** — "it makes a project bundle
+    # self-sufficient for key material without making it self-sufficient for
+    # trust" — so a bundle that carries a v6 acceptance already carries the bytes,
+    # and reading them from there is not a fallback: it is the signed artifact.
+    # Seeding the projection instead would put a row in `principal_keys`
+    # specifically so a verifier could find it, which §5.9 rule 1 forbids and
+    # §5.11's last row calls the S6 defect.
+    #
+    # The registry still wins where both exist: an operator-registered entry
+    # carries a validity window and a status that the payload does not.
+    for key_id, entry in _key_evidence_from_v6_payloads(events).items():
+        keys_by_id.setdefault(key_id, entry)
+
     verified_count = 0
     unverifiable_count = 0
+    errors_unverifiable: list[str] = []
     resolver = BundleKeyResolver(keys_by_id)
+    referents = BundleReferents.from_bundle(manifest or {}, events)
+    effective_policy = policy or DEFAULT_POLICY
 
     for evt in events:
         label = f"event {evt.event_id} (global_seq={evt.global_seq})"
@@ -576,15 +712,27 @@ def _verify_event_signatures(
         result = verify_event_strict(
             EventRow.from_event(evt, backend=Backend.BUNDLE),
             keys=resolver,
-            policy=DEFAULT_POLICY,
+            referents=referents,
+            policy=effective_policy,
         )
-        if not result.accepted:
+        if result.applicability is Applicability.INVALID:
             errors.append(f"Signature verification failed at {label}: {result.summary()}")
+            continue
+        if not result.accepted:
+            # UNVERIFIABLE is an evidentiary gap, not a defect of the artifact, and
+            # the two must not be collapsed — the operator response is completely
+            # different. Two cases reach here on a healthy v6 bundle and both are
+            # honest: a bootstrap event whose authority is external and unpinned
+            # (RECONCILIATION.md Resolution 1), and a referent outside a
+            # `contiguous-range` window (§9 criterion 15). Both are counted, and the
+            # reason travels with the count instead of being dropped.
+            unverifiable_count += 1
+            errors_unverifiable.append(f"{label}: {result.summary()}")
             continue
 
         verified_count += 1
 
-    return verified_count, unverifiable_count, errors
+    return verified_count, unverifiable_count, errors, errors_unverifiable
 # ---------------------------------------------------------------------------
 # Chain verification over bundle events.
 #
@@ -597,10 +745,28 @@ def _verify_event_signatures(
 
 
 def _hash_event(event: Event) -> bytes | None:
+    """The chain head hash this event contributes, in ITS OWN version's formula.
+
+    Delegates to :func:`regista._signing.compute_chain_head_hash`, which is where the
+    formula lives for the whole tree. This function used to hand-copy the version
+    dispatch, which made it the **fifth** copy — and the copies have a history:
+    mutation M20 reverted this one to the legacy formula and the suite stayed green
+    (NOTES-P17 finding 15), and ``_in_memory_replay`` carried the legacy formula in
+    both its chain walks, which made a healthy in-memory v6 epoch report five chain
+    breaks (finding 16). Finding 16 centralised the formula; this is that
+    centralisation finishing the job it started, found by the phase-4 ceremony.
+
+    ``None`` when the event carries no bytes to chain on — a bundle may legitimately
+    contain pre-002 rows, and "no envelope" is not "a zero hash".
+    """
+
     if event.canonical_envelope is None or event.signature is None:
         return None
-    hash_fn = resolve_hash_function("sha-256")
-    return hash_fn(bytes(event.canonical_envelope) + bytes(event.signature)).digest()
+    from ._signing import compute_chain_head_hash
+
+    return compute_chain_head_hash(
+        bytes(event.canonical_envelope), bytes(event.signature)
+    )
 
 
 def _verify_global_chain(

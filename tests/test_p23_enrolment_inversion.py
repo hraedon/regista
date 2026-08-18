@@ -531,6 +531,7 @@ def test_a_historical_bare_name_event_still_verifies():
     The enrolment inversion must not retroactively invalidate 54,676 bare-actor events.
     """
     from regista._verification import (
+        NO_REFERENTS,
         Applicability,
         StaticKeyResolver,
         TrustedKeySource,
@@ -545,6 +546,7 @@ def test_a_historical_bare_name_event_still_verifies():
             scheme_id="hmac-sha256",
             source=TrustedKeySource.KEYSET_FILE,
         ),
+    referents=NO_REFERENTS,
     )
     assert result.applicability is Applicability.FULLY_AUTHENTICATED
     assert result.ok is True

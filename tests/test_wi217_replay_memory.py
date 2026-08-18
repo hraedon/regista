@@ -29,6 +29,23 @@ Measured on this seeding, pre-fix vs post-fix:
 so each limit sits ~2.6x below the pre-fix measurement and ~2x above the
 post-fix one.
 
+**The same bound, re-measured on a clean v6 epoch (P1.7 phase 4).** This module
+was epoch-blocked, and migrating its fixture is what exposed the regression the
+notes escalated: the v6 verifier boundary builds one ``StoreReferents`` per
+replay, and its index retained every event's whole parsed envelope for the
+resolver's lifetime — so Phase 2's per-resolver cache was the materialization
+this file exists to forbid, wearing a different name.
+
+    v6, before the fix: growth 5.5x, peak 19.89 MiB
+    v6, after:          growth 1.61x, peak 3.36 MiB (small 2.09 MiB)
+
+Two changes, both in ``_v6_referents``: the index holds a ``ReferentSummary``
+per event and re-reads an envelope only when a verdict reads its payload, and
+``store_referents`` streams its scan through a server-side cursor instead of
+``fetchall()``. Note that iterating a *client-side* cursor would have moved the
+same bytes into libpq's C heap, where this measurement cannot see them — which
+is why the fix is a server-side cursor and why that distinction is written down.
+
 tracemalloc peaks are used rather than RSS on purpose: they count Python
 allocations directly, so they are reproducible to within ~0.01 MiB run to run,
 where RSS depends on glibc arena behaviour and is not a stable gate.
@@ -56,9 +73,14 @@ import uuid
 
 import pytest
 import structlog
-from _helpers import DSN, KEY_PATH, WORKFLOW_PATH
+from _helpers import DSN, WORKFLOW_PATH
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista.testing import drop_project_schema
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spelling is refused at the
+#: v6 ingress.
+ACTOR = "agent:worker"
 
 # 8 work items, then 64 — an 8x log with an unchanged widest work item, which
 # is the dimension a streaming replay is supposed to be insensitive to.
@@ -69,8 +91,10 @@ PAYLOAD_BYTES = 4096
 ROUNDS = 3
 
 # The peak may grow by at most this factor when the log grows 8x. Streaming
-# measures 1.5x (a fixed fetch block plus the compact chain index, which is
-# ~0.5 KiB per event); loading the log measures 7.7x.
+# measures 1.5x on a legacy log and 1.61x on a v6 epoch (a fixed fetch block,
+# the compact chain index at ~0.5 KiB per event, and the referent index at
+# ~0.5 KiB per event); loading the log measures 7.7x, and retaining parsed v6
+# envelopes for the resolver's lifetime measured 5.5x.
 MAX_PEAK_GROWTH = 3.0
 
 # Round-to-round peak variation. tracemalloc peaks are stable to ~0.01 MiB;
@@ -97,7 +121,7 @@ def _append_events(sub, items, rng):
         for j in range(EVENTS_PER_ITEM - 1):
             sub.append_event(
                 wi_id,
-                "agent-1",
+                ACTOR,
                 transition=f"wi217_note_{j}",
                 payload={"note": rng.randbytes(PAYLOAD_BYTES // 2).hex(), "seq": j},
             )
@@ -109,7 +133,7 @@ def _create_items(sub, count, start):
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": f"wi217 item {start + i}"},
         )
         ids.append(wi.work_item_id)
@@ -117,7 +141,7 @@ def _create_items(sub, count, start):
 
 
 @pytest.fixture(scope="module")
-def seeded():
+def seeded(tmp_path_factory):
     """A project seeded to ITEMS_SMALL, which tests grow to ITEMS_BIG.
 
     Growing one project in place (rather than seeding two) keeps the schema,
@@ -127,6 +151,10 @@ def seeded():
     structlog is muted for the duration: replay emits one warning per raw
     event, and rendering ~5k log lines would both dominate the runtime and add
     allocation noise to the measurement.
+
+    The epoch is opened before the workflow registration, in that order: the
+    registration emits a signed ``workflow_registered`` event and is a silent
+    no-op before genesis (NOTES-P17 §0a's migration recipe).
     """
     from regista import Regista
 
@@ -134,8 +162,10 @@ def seeded():
     structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(50))
 
     project = f"test_wi217_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("wi217_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
     try:
+        open_v6_epoch(sub, keyset)
         sub.register_workflow_file(WORKFLOW_PATH)
         rng = random.Random(217)
         _append_events(sub, _create_items(sub, ITEMS_SMALL, 0), rng)

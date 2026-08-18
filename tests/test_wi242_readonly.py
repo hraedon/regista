@@ -40,28 +40,42 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _create_project():
+def _create_project(tmp_path):
+    """A project on a clean v6 epoch, plus the keyset a read-only reconnect needs.
+
+    The keyset is returned because the read-only handles below reconnect with their
+    own ``Regista``: replay verifies Ed25519 signatures against the key file, so the
+    reconnect must load the same actor-role keyset that wrote the events, not
+    ``tests/test_keys.json``.
+    """
+
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
     project = f"wi242_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Genesis before the workflow registration, which emits a signed
+    # `workflow_registered` event.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
-    return sub, project
+    return sub, project, keyset
 
 
 def _setup_work_item(sub):
-    sub.register_actor_role("agent-1", "agent")
+    sub.register_actor_role("agent:worker", "agent")
     wi, _ = sub.create_work_item(
-        "test_workflow", "feature", "agent-1",
+        "test_workflow", "feature", "agent:worker",
         custom_fields={"title": "wi242"},
     )
     sub.transition(
-        wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"},
+        wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"},
     )
     return wi.work_item_id
 
 
 class TestReplayNoResidue:
-    def test_replay_leaves_no_permanent_replay_tables(self):
-        sub, project = _create_project()
+    def test_replay_leaves_no_permanent_replay_tables(self, tmp_path):
+        sub, project, _keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             report = sub.replay()
@@ -82,13 +96,13 @@ class TestReplayNoResidue:
 
 
 class TestReplayReadOnly:
-    def test_replay_works_under_read_only(self):
-        sub, project = _create_project()
+    def test_replay_works_under_read_only(self, tmp_path):
+        sub, project, keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             sub.close()
             # Reconnect read-only and replay.
-            sub_ro = Regista(DSN_RO, project, KEY_PATH, read_only=True)
+            sub_ro = Regista(DSN_RO, project, keyset.path, read_only=True)
             try:
                 report = sub_ro.replay()
                 assert report.replayed_ok >= 1
@@ -101,11 +115,11 @@ class TestReplayReadOnly:
 
 
 class TestConnectReadOnly:
-    def test_read_only_connect_succeeds_on_migrated_schema(self):
-        sub, project = _create_project()
+    def test_read_only_connect_succeeds_on_migrated_schema(self, tmp_path):
+        sub, project, keyset = _create_project(tmp_path)
         sub.close()
         try:
-            sub_ro = Regista(DSN_RO, project, KEY_PATH, read_only=True)
+            sub_ro = Regista(DSN_RO, project, keyset.path, read_only=True)
             try:
                 assert sub_ro.project == project
             finally:
@@ -118,8 +132,8 @@ class TestConnectReadOnly:
             Regista(DSN_RO, "does_not_exist_schema_xyz", KEY_PATH, read_only=True)
         assert exc.value.code == ErrorCode.DB_NOT_FOUND
 
-    def test_read_only_connect_fails_closed_on_missing_migrations_table(self):
-        sub, project = _create_project()
+    def test_read_only_connect_fails_closed_on_missing_migrations_table(self, tmp_path):
+        sub, project, keyset = _create_project(tmp_path)
         sub.close()
         # Drop the migrations table so the schema exists but is unmigrated.
         with psycopg.connect(DSN, autocommit=True) as conn:
@@ -128,13 +142,13 @@ class TestConnectReadOnly:
             )
         try:
             with pytest.raises(RegistaError) as exc:
-                Regista(DSN_RO, project, KEY_PATH, read_only=True)
+                Regista(DSN_RO, project, keyset.path, read_only=True)
             assert exc.value.code == ErrorCode.MIGRATION_REQUIRED
         finally:
             drop_project_schema(DSN, project)
 
-    def test_normal_connect_creates_migrations_table(self):
-        sub, project = _create_project()
+    def test_normal_connect_creates_migrations_table(self, tmp_path):
+        sub, project, keyset = _create_project(tmp_path)
         sub.close()
         drop_project_schema(DSN, project)
         # Create an empty schema (no migrations table).
@@ -143,7 +157,7 @@ class TestConnectReadOnly:
         try:
             # Normal connect converges schema by creating _regista_migrations.
             with pytest.raises(RegistaError) as exc:
-                Regista(DSN, project, KEY_PATH)
+                Regista(DSN, project, keyset.path)
             # Migrations are pending (table created empty) -> MIGRATION_REQUIRED.
             assert exc.value.code == ErrorCode.MIGRATION_REQUIRED
             with psycopg.connect(DSN) as conn:
@@ -160,8 +174,8 @@ class TestConnectReadOnly:
 class TestReplayEntriesPortable:
     """F1: per-item results must be reachable via `entries` in BOTH modes."""
 
-    def test_normal_mode_populates_entries(self):
-        sub, project = _create_project()
+    def test_normal_mode_populates_entries(self, tmp_path):
+        sub, project, _keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             report = sub.replay()
@@ -175,12 +189,12 @@ class TestReplayEntriesPortable:
             sub.close()
             drop_project_schema(DSN, project)
 
-    def test_read_only_mode_populates_entries(self):
-        sub, project = _create_project()
+    def test_read_only_mode_populates_entries(self, tmp_path):
+        sub, project, keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             sub.close()
-            sub_ro = Regista(DSN_RO, project, KEY_PATH, read_only=True)
+            sub_ro = Regista(DSN_RO, project, keyset.path, read_only=True)
             try:
                 report = sub_ro.replay()
                 assert report.table_name is None
@@ -190,9 +204,9 @@ class TestReplayEntriesPortable:
         finally:
             drop_project_schema(DSN, project)
 
-    def test_entries_round_trip_with_warnings(self):
+    def test_entries_round_trip_with_warnings(self, tmp_path):
         """F4: per-item warnings are carried on each entry in both modes."""
-        sub, project = _create_project()
+        sub, project, _keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             report = sub.replay()
@@ -213,11 +227,11 @@ class TestReplayTempTablesDropped:
     drop, each replay leaks two temp tables on that session forever.
     """
 
-    def test_no_temp_table_residue_after_success(self):
+    def test_no_temp_table_residue_after_success(self, tmp_path):
         # Use ONE dedicated connection so we can inspect the same session before
         # and after. We drive the internal replay function directly with a
         # KeySet taken from a live Regista handle.
-        sub, project = _create_project()
+        sub, project, _keyset = _create_project(tmp_path)
         try:
             _setup_work_item(sub)
             key_set = sub._keys

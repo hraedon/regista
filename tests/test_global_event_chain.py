@@ -24,10 +24,27 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+
+
 @pytest.fixture
-def regista():
+def keyset(tmp_path):
+    from tests._v6_fixtures import make_v6_keyset
+
+    return make_v6_keyset(tmp_path)
+
+
+@pytest.fixture
+def regista(keyset):
+    from tests._v6_fixtures import open_v6_epoch
+
     project = f"test_global_chain_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -48,13 +65,13 @@ def _all_events_in_global_order(regista):
 def test_bc298_public_append_event_persists_prev_global_event_hash(regista):
     wi, _ = regista.create_work_item(
         workflow_name="test_workflow", work_item_type="feature",
-        actor_id="agent-1", custom_fields={"title": "bc298"},
+        actor_id=WORKER, custom_fields={"title": "bc298"},
     )
     regista.append_event(
-        wi.work_item_id, "agent-1", transition="note", payload={"k": "v"},
+        wi.work_item_id, WORKER, transition="note", payload={"k": "v"},
     )
     regista.append_event(
-        wi.work_item_id, "agent-1", transition="note2", payload={"k": "v2"},
+        wi.work_item_id, WORKER, transition="note2", payload={"k": "v2"},
     )
 
     rows = _all_events_in_global_order(regista)
@@ -64,15 +81,17 @@ def test_bc298_public_append_event_persists_prev_global_event_hash(regista):
         assert r["prev_global_event_hash"] is not None
 
 
-def test_bc300_replay_clean_global_chain_in_memory():
+def test_bc300_replay_clean_global_chain_in_memory(keyset):
     from regista.testing import InMemoryRegista
+    from tests._v6_fixtures import open_v6_epoch
 
-    sub = InMemoryRegista(project="memory", hmac_key_path=KEY_PATH)
+    sub = InMemoryRegista(project="memory", hmac_key_path=keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     for i in range(3):
         sub.create_work_item(
             workflow_name="test_workflow", work_item_type="feature",
-            actor_id="agent-1", custom_fields={"title": f"im-{i}"},
+            actor_id=WORKER, custom_fields={"title": f"im-{i}"},
         )
     report = sub.replay()
     assert report.warnings == 0
@@ -86,13 +105,13 @@ def test_append_returns_db_assigned_global_seq(regista):
     # returned the in-memory object whose global_seq was still None.
     wi, created = regista.create_work_item(
         workflow_name="test_workflow", work_item_type="feature",
-        actor_id="agent-1", custom_fields={"title": "wi010"},
+        actor_id=WORKER, custom_fields={"title": "wi010"},
     )
     assert created.global_seq is not None
     assert created.global_seq > 0
 
     appended = regista.append_event(
-        work_item_id=wi.work_item_id, actor_id="agent-1", transition="wi010_note"
+        work_item_id=wi.work_item_id, actor_id=WORKER, transition="wi010_note"
     )
     assert appended.global_seq is not None
     assert appended.global_seq > created.global_seq

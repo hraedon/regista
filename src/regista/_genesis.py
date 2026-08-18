@@ -18,7 +18,9 @@ from ._connection import DictConn
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeyEntry, KeySet
 from ._signing import compute_v6_event_hash, sign_v6_envelope
+from ._v6_referents import store_referents
 from ._verification import (
+    V6_ENTITY_KINDS,
     EventRow,
     KeySetResolver,
     V6EnvelopeError,
@@ -33,9 +35,9 @@ GENESIS_ENTITY_KIND = "project"
 # Compatibility spelling used by early v6 conformance fixtures.
 _GENESIS_TRANSITION = GENESIS_TRANSITION
 _MISSING = object()
-_V6_ENTITY_KINDS = frozenset(
-    {"work_item", "project", "principal", "trust_domain", "project_instance", "workflow"}
-)
+#: The closed six-value registry, imported rather than restated — see
+#: ``_verification.V6_ENTITY_KINDS``.
+_V6_ENTITY_KINDS = V6_ENTITY_KINDS
 
 _REQUIRED_LOAD_BEARING_PATHS: tuple[tuple[str, ...], ...] = (
     ("type",),
@@ -906,6 +908,12 @@ def read_genesis_from_connection(conn: DictConn, key_set: KeySet) -> GenesisReco
     row_result = verify_event_strict(
         EventRow.from_mapping(row),
         keys=KeySetResolver(key_set),
+        # The store itself is the presented material. Genesis recovery only reads
+        # `signature_valid` and `row_reconciled` below — it deliberately does not
+        # require the *verdict*, because a genesis event's authority is external by
+        # construction and recovery must work for an operator who has not yet pinned
+        # a trust policy (RECONCILIATION.md Resolution 1).
+        referents=store_referents(conn, label="project store (genesis recovery)"),
     )
     if not row_result.signature_valid or not row_result.row_reconciled:
         raise RegistaError(

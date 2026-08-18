@@ -119,6 +119,40 @@ _STATUS_MAP: dict[str, int] = {
     # to a small sanctioned set (tests/sidecar/test_sidecar.py
     # ::test_status_map_values_are_valid_http_codes) and 501 is not in it.
     ErrorCode.WITNESS_LIFECYCLE_CUT: 409,
+    # The post-genesis v6 writer (P1.7). The split here is deliberate: an
+    # unresolvable *referent* is a conflict with the store's state, while a
+    # contradiction inside what the caller submitted is a client defect.
+    #
+    # 409: the request is well-formed, but the project chain does not (yet) contain
+    # the acceptance or the workflow registration it names. The caller's fix is to
+    # append the missing anchor/registration, not to reformat the request.
+    ErrorCode.KEY_BINDING_UNRESOLVED: 409,
+    ErrorCode.WORKFLOW_REGISTRATION_UNRESOLVED: 409,
+    # 403: an authorization decision. The producer block contradicts the scopes the
+    # accepted key holds, the closed lineage registry, or a pinned producer policy.
+    # Not 400 — nothing is malformed; the caller is not permitted.
+    ErrorCode.PRODUCER_NOT_AUTHORIZED: 403,
+    # 400: the submitted envelope does not satisfy the v6 contract.
+    ErrorCode.V6_ENVELOPE_INVALID: 400,
+    # 500: the store's own entity chain is missing a link the writer must build on.
+    # That is a server-side integrity fault, not something the caller can fix.
+    ErrorCode.V6_CHAIN_LINK_MISSING: 500,
+    # 500: the material stopped presenting an event it had already presented, part-way
+    # through one verification pass. Server-side, and deliberately not 409: a conflict
+    # invites a retry, and a store that changes under the pass reading it is a fault to
+    # investigate rather than a race to re-run.
+    ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION: 500,
+    # 400: a malformed project-local acceptance payload is a defect in what was
+    # submitted, matching TRUST_LOG_PAYLOAD_INVALID's reasoning for the trust log.
+    ErrorCode.KEY_ACCEPTANCE_PAYLOAD_INVALID: 400,
+    # 403: the key's acceptance was revoked. An authorization decision, not a
+    # missing referent — which is why it is not 409 like KEY_BINDING_UNRESOLVED.
+    ErrorCode.KEY_ACCEPTANCE_REVOKED: 403,
+    # 500: the in-memory v6 parity boundary (WI-287). A sidecar never runs on the
+    # in-memory backend, so reaching this through HTTP means the deployment is
+    # misconfigured — a server fault the caller cannot fix by reformatting, and
+    # emphatically not a 409 the caller might retry into existence.
+    ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY: 500,
 }
 
 

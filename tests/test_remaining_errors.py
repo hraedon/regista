@@ -15,12 +15,22 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_remain_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -33,13 +43,13 @@ class TestNotBeforeFuture:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Future not before"},
             not_before=future,
         )
 
         with pytest.raises(RegistaError) as exc_info:
-            regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+            regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         assert exc_info.value.code == ErrorCode.NOT_BEFORE_FUTURE
 
 
@@ -49,7 +59,7 @@ class TestWorkItemTypeNotDeclared:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="nonexistent_type",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "Bad type"},
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_TYPE_NOT_DECLARED
@@ -61,7 +71,7 @@ class TestWorkflowNotRegistered:
             regista.create_work_item(
                 workflow_name="nonexistent_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "Unknown workflow"},
             )
         assert exc_info.value.code == ErrorCode.WORKFLOW_NOT_REGISTERED
@@ -99,13 +109,13 @@ class TestLinkCrossProject:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "A"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="other_workflow",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=WORKER,
         )
 
         with pytest.raises(RegistaError) as exc_info:
@@ -113,7 +123,7 @@ class TestLinkCrossProject:
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
-                actor_id="agent-1",
+                actor_id=WORKER,
             )
         assert exc_info.value.code == ErrorCode.LINK_CROSS_PROJECT
 
@@ -124,7 +134,7 @@ class TestCustomFieldViolation:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="bug",
-                actor_id="agent-1",
+                actor_id=WORKER,
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
@@ -133,7 +143,7 @@ class TestCustomFieldViolation:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "Ok", "nonexistent": "bad"},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -143,7 +153,7 @@ class TestCustomFieldViolation:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": 123},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -153,7 +163,7 @@ class TestCustomFieldViolation:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 custom_fields={"title": "Ok", "priority": "super_high"},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -162,14 +172,14 @@ class TestCustomFieldViolation:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "Field test"},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="start",
-                actor_id="agent-1",
+                actor_id=WORKER,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": 9999},
             )

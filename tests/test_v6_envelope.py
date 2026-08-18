@@ -21,6 +21,7 @@ from regista._signing import (
     sign_v6_envelope,
 )
 from regista._verification import (
+    NO_REFERENTS,
     Backend,
     EnvelopeVersion,
     EventRow,
@@ -88,12 +89,27 @@ def _digest_bytes(value: str | None) -> bytes | None:
     return bytes.fromhex(value.removeprefix("sha256:")) if value is not None else None
 
 
-def _resolver(*, scheme_id: str | None = "ed25519") -> StaticKeyResolver:
+def _resolver(
+    *,
+    scheme_id: str | None = "ed25519",
+    source: TrustedKeySource = TrustedKeySource.KEYSET_FILE,
+) -> StaticKeyResolver:
+    """A trusted key for the vector's signer.
+
+    ``source`` was ``PRINCIPAL_REGISTRY`` until the v6 verifier boundary landed, and
+    that was never legitimate for a v6 event: ``TRUST-DOMAIN.md`` §5.9 rule 1 makes
+    registry resolution for a v6 event "a programming error [that] raises", and the
+    boundary now raises. ``KEYSET_FILE`` is the honest label for a locally supplied
+    key. The rule itself is asserted directly by
+    ``test_a_v6_event_may_not_resolve_its_key_from_the_principal_keys_projection``,
+    which is where the old source value now earns its keep.
+    """
+
     return StaticKeyResolver(
         material=PUBLIC_KEY,
         scheme_id=scheme_id,
         key_id=BASE["signing"]["key_id"],
-        source=TrustedKeySource.PRINCIPAL_REGISTRY,
+        source=source,
     )
 
 
@@ -454,7 +470,7 @@ def test_legacy_result_surface_reconciles_v6_row_fields_without_claiming_externa
 ) -> None:
     row = _event_row()
     resolver = _resolver()
-    result = verify_event_strict(row, keys=resolver)
+    result = verify_event_strict(row, keys=resolver, referents=NO_REFERENTS)
     assert result.envelope_version is EnvelopeVersion.V6
     assert result.signature_valid
     assert result.row_reconciled
@@ -466,18 +482,22 @@ def test_legacy_result_surface_reconciles_v6_row_fields_without_claiming_externa
     assert not result.ok
 
     tampered = dataclasses.replace(row, payload={"changed": True})
-    changed = verify_event_strict(tampered, keys=resolver)
+    changed = verify_event_strict(tampered, keys=resolver, referents=NO_REFERENTS)
     assert changed.applicability.value == "invalid"
     assert "payload" in changed.mismatched_field_names
 
     tampered_hash = dataclasses.replace(row, payload_canonical_hash=b"\x00" * 32)
-    hash_result = verify_event_strict(tampered_hash, keys=resolver)
+    hash_result = verify_event_strict(tampered_hash, keys=resolver, referents=NO_REFERENTS)
     assert hash_result.reasons[0].value == "canonical_hash_mismatch"
     assert hash_result.authenticated_fields == frozenset()
 
 
 def test_v6_raw_public_key_uses_the_signed_scheme_not_the_row_as_fallback() -> None:
-    result = verify_event_strict(_event_row(), keys=_resolver(scheme_id=None))
+    result = verify_event_strict(
+        _event_row(),
+        keys=_resolver(scheme_id=None),
+        referents=NO_REFERENTS,
+    )
     assert result.signature_valid
     assert result.row_reconciled
     assert result.scheme_id == "ed25519"
@@ -489,7 +509,7 @@ def test_v6_null_workflow_reconciles_against_null_projection_columns() -> None:
             encoding="utf-8"
         )
     )["input"]["envelope_declaration_order"]
-    result = verify_event_strict(_event_row(envelope), keys=_resolver())
+    result = verify_event_strict(_event_row(envelope), keys=_resolver(), referents=NO_REFERENTS)
     assert result.signature_valid
     assert result.row_reconciled
     assert "workflow_name" in result.authenticated_fields
@@ -501,6 +521,7 @@ def test_v6_uncanonical_row_has_a_distinct_failure_reason() -> None:
     result = verify_event_strict(
         dataclasses.replace(row, canonical_envelope=b" " + (row.canonical_envelope or b"")),
         keys=_resolver(),
+    referents=NO_REFERENTS,
     )
     assert result.envelope_version is EnvelopeVersion.UNCANONICAL
     assert result.reasons == (FailureReason.ENVELOPE_UNCANONICAL,)
@@ -511,6 +532,7 @@ def test_v6_missing_payload_hash_fails_closed() -> None:
     result = verify_event_strict(
         dataclasses.replace(_event_row(), payload_canonical_hash=None),
         keys=_resolver(),
+    referents=NO_REFERENTS,
     )
     assert result.signature_valid
     assert result.applicability.value == "invalid"
@@ -551,7 +573,7 @@ def test_each_v6_row_projection_rewrite_is_named(
     changes: dict[str, Any], mismatch: str,
 ) -> None:
     row = dataclasses.replace(_event_row(), **changes)
-    result = verify_event_strict(row, keys=_resolver())
+    result = verify_event_strict(row, keys=_resolver(), referents=NO_REFERENTS)
     assert result.signature_valid
     assert result.applicability.value == "invalid"
     assert mismatch in result.mismatched_field_names
@@ -560,7 +582,7 @@ def test_each_v6_row_projection_rewrite_is_named(
 def test_invalid_v6_signature_authenticates_no_row_columns() -> None:
     row = _event_row()
     invalid = dataclasses.replace(row, signature=b"\x00" * 64)
-    result = verify_event_strict(invalid, keys=_resolver())
+    result = verify_event_strict(invalid, keys=_resolver(), referents=NO_REFERENTS)
     assert not result.signature_valid
     assert result.authenticated_fields == frozenset()
     assert result.unsigned_fields == frozenset(
@@ -595,7 +617,7 @@ def test_v6_row_only_fields_remain_explicitly_unsigned() -> None:
         global_seq=999_999,
         on_behalf_of={"principal_id": "human:untrusted-assertion"},
     )
-    result = verify_event_strict(row, keys=_resolver())
+    result = verify_event_strict(row, keys=_resolver(), referents=NO_REFERENTS)
     assert result.signature_valid
     assert result.row_reconciled
     assert {"global_seq", "on_behalf_of", "work_item_id"} <= result.unsigned_fields

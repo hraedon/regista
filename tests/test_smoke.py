@@ -15,16 +15,23 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_smoke_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("smoke_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch, then the workflow registration — in that order, because
+    # `register_workflow_file` emits the signed `workflow_registered` event that
+    # admission gate 1 requires and there is no epoch to append it to before
+    # `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     # Register in the fixture so any subset of tests (e.g. -k filtered runs)
     # works without depending on TestWorkflow.test_register_workflow ordering.
     sub.register_workflow_file(WORKFLOW_PATH)
-    sub.register_actor_role("agent-1", "agent")
-    sub.register_actor_role("reviewer-1", "reviewer")
+    sub.register_actor_role("agent:worker", "agent")
+    sub.register_actor_role("human:reviewer", "reviewer")
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -62,8 +69,13 @@ class TestWorkItem:
         wi, evt = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
-            actor_metadata={"role": "agent", "model": "gpt-4"},
+            actor_id="agent:worker",
+            # No `model` here: `V6-ENVELOPE.md` puts the harness/model identity in
+            # the `producer` block, and `_validate_v6_object` refuses a producer
+            # field inside `actor.metadata` ("producer fields must not appear in
+            # actor.metadata"). The producer is a property of the running process,
+            # not of the actor — `open_v6_epoch` publishes it.
+            actor_metadata={"role": "agent"},
             custom_fields={"title": "Test feature", "priority": "high"},
         )
         assert wi.current_state == "new"
@@ -77,7 +89,7 @@ class TestWorkItem:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="nonexistent",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.WORK_ITEM_TYPE_NOT_DECLARED
 
@@ -86,7 +98,7 @@ class TestWorkItem:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="bug",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
 
@@ -96,7 +108,7 @@ class TestTransition:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             actor_metadata={"role": "agent"},
             custom_fields={"title": "Test"},
         )
@@ -107,7 +119,7 @@ class TestTransition:
         evt = regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             actor_metadata={"role": "agent"},
         )
         assert evt.transition == "start"
@@ -123,7 +135,7 @@ class TestTransition:
             regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="approve",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 actor_metadata={"role": "agent"},
             )
         assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
@@ -133,26 +145,28 @@ class TestTransition:
         regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="start",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             actor_metadata={"role": "agent"},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.transition(
                 work_item_id=wi.work_item_id,
                 transition_name="submit_review",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 actor_metadata={"role": "reviewer"},
             )
         assert exc_info.value.code == ErrorCode.ROLE_NOT_PERMITTED
 
     def test_full_lifecycle(self, regista):
         wi = self._create_feature(regista)
-        regista.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
         regista.transition(
-            wi.work_item_id, "submit_review", "agent-1", actor_metadata={"role": "agent"}
+            wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"}
         )
         regista.transition(
-            wi.work_item_id, "approve", "reviewer-1", actor_metadata={"role": "reviewer"}
+            wi.work_item_id, "submit_review", "agent:worker", actor_metadata={"role": "agent"}
+        )
+        regista.transition(
+            wi.work_item_id, "approve", "human:reviewer", actor_metadata={"role": "reviewer"}
         )
 
         refreshed = regista.get_work_item(wi.work_item_id)
@@ -164,10 +178,12 @@ class TestEvents:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Events test"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+        regista.transition(
+            wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"}
+        )
 
         events = regista.read_events(work_item_id=wi.work_item_id)
         assert len(events) == 2
@@ -180,18 +196,18 @@ class TestClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Claim test"},
         )
 
-        claim = regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
-        assert claim.actor_id == "agent-1"
+        claim = regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
+        assert claim.actor_id == "agent:worker"
         assert claim.attempt_number == 1
 
         refreshed = regista.get_work_item(wi.work_item_id)
-        assert refreshed.claimed_by == "agent-1"
+        assert refreshed.claimed_by == "agent:worker"
 
-        regista.release_claim(wi.work_item_id, "agent-1")
+        regista.release_claim(wi.work_item_id, "agent:worker")
         refreshed = regista.get_work_item(wi.work_item_id)
         assert refreshed.claimed_by is None
 
@@ -199,26 +215,26 @@ class TestClaims:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Contested"},
         )
 
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
 
         with pytest.raises(RegistaError) as exc_info:
-            regista.acquire_claim(wi.work_item_id, "agent-2", ttl_seconds=300)
+            regista.acquire_claim(wi.work_item_id, "agent:reviewer", ttl_seconds=300)
         assert exc_info.value.code == "CLAIM_CONTESTED"
 
     def test_heartbeat(self, regista):
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Heartbeat"},
         )
 
-        claim1 = regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        claim2 = regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        claim1 = regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        claim2 = regista.heartbeat_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         assert claim2.expires_at > claim1.expires_at
 
 
@@ -227,7 +243,7 @@ class TestQuery:
         regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Query test"},
         )
 
@@ -256,7 +272,7 @@ class TestQuery:
             regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 custom_fields={"title": f"Page test {i}"},
             )
 
@@ -283,13 +299,13 @@ class TestLinks:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Feature 1"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"severity": "major"},
         )
 
@@ -297,7 +313,7 @@ class TestLinks:
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
         assert link.link_type == "fixes"
 
@@ -305,7 +321,7 @@ class TestLinks:
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
 
         events = regista.read_events(work_item_id=wi1.work_item_id)
@@ -322,13 +338,13 @@ class TestLinks:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Feature 1"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"severity": "major"},
         )
 
@@ -336,7 +352,7 @@ class TestLinks:
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             payload={"rationale": "Bug caused by missing null check", "priority": "high"},
         )
         assert link.payload == {"rationale": "Bug caused by missing null check", "priority": "high"}
@@ -347,20 +363,20 @@ class TestIdempotency:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Idempotency"},
         )
 
         eid = uuid.uuid4()
         e1 = regista.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id="agent:worker",
             transition="custom_event",
             event_id=eid,
         )
         e2 = regista.append_event(
             work_item_id=wi.work_item_id,
-            actor_id="agent-1",
+            actor_id="agent:worker",
             transition="custom_event",
             event_id=eid,
         )
@@ -373,10 +389,12 @@ class TestReplay:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "Replay test"},
         )
-        regista.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+        regista.transition(
+            wi.work_item_id, "start", "agent:worker", actor_metadata={"role": "agent"}
+        )
 
         report = regista.replay()
         assert report.replayed_drift == 0

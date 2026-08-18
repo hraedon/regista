@@ -51,15 +51,23 @@ def keypair() -> tuple[nacl.signing.SigningKey, bytes]:
 @pytest.fixture
 def enrollment(keypair: tuple[nacl.signing.SigningKey, bytes]) -> EnrollmentRequest:
     _private_key, public_key = keypair
+    # Canonical ids per `TRUST-DOMAIN.md` §2.1 — the v6 grammar refuses a bare
+    # legacy name at ingress (`PRINCIPAL_ID_UNGRAMMATICAL`), and the actor must be a
+    # principal the project's epoch has accepted so the ceremony's append can be
+    # signed. `requested_authority="root"` because `_authorized_by` maps anything
+    # else onto §5.4 registrar authority, which requires a `delegation_event_hash`
+    # this ceremony has no way to name (registrar delegation is not wired) — §5.5
+    # then refuses the payload. `tests/test_trust_projection.py`'s already-passing
+    # ceremony fixtures use the same root shape.
     return EnrollmentRequest(
-        principal_id="entra:tenant:object-123",
+        principal_id="human:enrollee",
         principal_kind=PrincipalKind.HUMAN,
-        actor_id="entra:tenant:admin-456",
+        actor_id="human:operator",
         public_key=public_key,
         scheme="ed25519",
         custody_mode=CustodyMode.WINDOWS_LOCAL,
         reason="Initial project enrollment",
-        requested_authority="project-signer",
+        requested_authority="root",
         policy_version="policy-2026-07",
         identity_binding_digest="sha256:identity-binding",
         protected_options=(("ticket", "KEY-42"),),
@@ -218,16 +226,25 @@ def _enroll_and_approve(
 
 
 @pytest.fixture
-def regista_instance():
+def v6_keyset(tmp_path):
+    from tests._v6_fixtures import make_v6_keyset
+
+    return make_v6_keyset(tmp_path)
+
+
+@pytest.fixture
+def regista_instance(v6_keyset):
     import uuid
 
-    from _helpers import DSN, KEY_PATH
+    from _helpers import DSN
 
     from regista import Regista
     from regista.testing import drop_project_schema
+    from tests._v6_fixtures import open_v6_epoch
 
     project = f"test_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    sub = Regista.create_project(DSN, project, v6_keyset.path)
+    open_v6_epoch(sub, v6_keyset)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -274,6 +291,18 @@ def _db_count(
         return cast(int, row["n"])
 
 
+#: The ceremony's own §5.3 transitions, named rather than counted by entity kind.
+#: A clean v6 epoch already carries one ``principal_key_accepted`` per accepted actor
+#: principal (``TRUST-DOMAIN.md`` §5.8, appended by ``open_v6_epoch``), and those share
+#: ``entity_kind = 'principal'`` with the lifecycle events. Naming the three §5.3
+#: transitions keeps "how many events did this commit append" exact — and pins the
+#: transition as well as the entity kind, which the bare entity-kind count did not.
+_CEREMONY_EVENTS = (
+    "entity_kind = 'principal' AND transition IN "
+    "('principal_key_enrolled', 'principal_key_rotated', 'principal_key_revoked')"
+)
+
+
 def _db_key_status(reg: regista.Regista, key_id: str) -> str:
     with reg._mgr.transaction() as conn:
         row = conn.execute(
@@ -284,10 +313,13 @@ def _db_key_status(reg: regista.Regista, key_id: str) -> str:
         return cast(str, row["status"])
 
 
-def _open_fresh_instance(reg: regista.Regista) -> regista.Regista:
-    from _helpers import DSN, KEY_PATH
+def _open_fresh_instance(reg: regista.Regista, keyset: Any) -> regista.Regista:
+    from _helpers import DSN
 
-    return regista.Regista(DSN, reg.project, KEY_PATH)
+    # The v6 keyset, not `KEY_PATH`: a second handle on the same project has to
+    # sign with keys the project's epoch has accepted, and the committed
+    # `tests/test_keys.json` holds one HMAC key with no `principal_id`.
+    return regista.Regista(DSN, reg.project, keyset.path)
 
 
 def test_durable_prepare_persists(
@@ -379,7 +411,7 @@ def test_durable_commit_enrollment(
     committed = lifecycle.get_operation(operation.operation_id)
     assert committed.state is LifecycleState.COMMITTED
     assert _db_operation_state(regista_instance, operation.operation_id) == "committed"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 1
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 1
     assert (
         _db_count(
             regista_instance,
@@ -413,7 +445,7 @@ def test_durable_commit_rotation(
         scheme="ed25519",
         custody_mode=CustodyMode.WINDOWS_LOCAL,
         reason="Key rotation",
-        requested_authority="project-signer",
+        requested_authority="root",
         policy_version="policy-2026-07",
         old_key_id=old_key_id,
     )
@@ -460,7 +492,7 @@ def test_durable_commit_revocation(
         actor_id=enrollment.actor_id,
         key_id=receipt.key_id,
         reason="Reported compromise",
-        requested_authority="security-admin",
+        requested_authority="root",
         policy_version="policy-2026-07",
     )
     rev_op = lifecycle.prepare_revocation(revocation, idempotency_key="idem-revoke-2")
@@ -748,7 +780,7 @@ def test_durable_idempotent_commit(
     receipt2 = lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     assert receipt1 == receipt2
     assert _db_operation_state(regista_instance, operation.operation_id) == "committed"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 1
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 1
     assert (
         _db_count(
             regista_instance,
@@ -774,7 +806,7 @@ def test_durable_commit_rejects_digest_mismatch(
         lifecycle.commit(operation.operation_id, expected_digest="wrong")
     assert exc_info.value.code is LifecycleErrorCode.OPERATION_DIGEST_MISMATCH
     assert _db_operation_state(regista_instance, operation.operation_id) == "approved"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 0
 
 
 def test_durable_commit_rejects_expired(
@@ -807,7 +839,7 @@ def test_durable_commit_rejects_expired(
         lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     assert exc_info.value.code is LifecycleErrorCode.OPERATION_EXPIRED
     assert _db_operation_state(regista_instance, operation.operation_id) == "approved"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 0
 
 
 def test_durable_commit_rejects_unapproved(
@@ -824,7 +856,7 @@ def test_durable_commit_rejects_unapproved(
         lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
     assert exc_info.value.code is LifecycleErrorCode.INVALID_OPERATION_STATE
     assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 0
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 0
 
 
 def test_durable_idempotent_prepare(
@@ -858,7 +890,7 @@ def test_durable_commit_revocation_rejects_unapproved(
         actor_id=enrollment.actor_id,
         key_id=receipt.key_id,
         reason="Reported compromise",
-        requested_authority="security-admin",
+        requested_authority="root",
         policy_version="policy-2026-07",
     )
     rev_op = lifecycle.prepare_revocation(revocation, idempotency_key="idem-revoke-unapproved")
@@ -866,16 +898,17 @@ def test_durable_commit_revocation_rejects_unapproved(
         lifecycle.commit(rev_op.operation_id, expected_digest=rev_op.digest.value)
     assert exc_info.value.code is LifecycleErrorCode.INVALID_OPERATION_STATE
     assert _db_operation_state(regista_instance, rev_op.operation_id) == "awaiting_approval"
-    assert _db_count(regista_instance, "events", "entity_kind = 'principal'", []) == 1
+    assert _db_count(regista_instance, "events", _CEREMONY_EVENTS, []) == 1
 
 
 def test_durable_cross_instance_get_operation(
     regista_instance: Any,
+    v6_keyset: Any,
     enrollment: EnrollmentRequest,
 ) -> None:
     lifecycle_a = regista_instance.principal_lifecycle
     operation = lifecycle_a.prepare_enrollment(enrollment, idempotency_key="idem-cross-get")
-    reg_b = _open_fresh_instance(regista_instance)
+    reg_b = _open_fresh_instance(regista_instance, v6_keyset)
     try:
         lifecycle_b = reg_b.principal_lifecycle
         op_b = lifecycle_b.get_operation(operation.operation_id)
@@ -887,6 +920,7 @@ def test_durable_cross_instance_get_operation(
 
 def test_durable_cross_instance_approval_and_commit(
     regista_instance: Any,
+    v6_keyset: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
     enrollment: EnrollmentRequest,
 ) -> None:
@@ -895,7 +929,7 @@ def test_durable_cross_instance_approval_and_commit(
     operation = _full_enrollment_flow(
         lifecycle_a, private_key, enrollment, idempotency_key="idem-cross-approval"
     )
-    reg_b = _open_fresh_instance(regista_instance)
+    reg_b = _open_fresh_instance(regista_instance, v6_keyset)
     try:
         lifecycle_b = reg_b.principal_lifecycle
         op_b = lifecycle_b.get_operation(operation.operation_id)
@@ -910,13 +944,14 @@ def test_durable_cross_instance_approval_and_commit(
         receipt = lifecycle_b.commit(operation.operation_id, expected_digest=op_b.digest.value)
         assert receipt.status is RegistryReceiptStatus.COMMITTED
         assert _db_operation_state(reg_b, operation.operation_id) == "committed"
-        assert _db_count(reg_b, "events", "entity_kind = 'principal'", []) == 1
+        assert _db_count(reg_b, "events", _CEREMONY_EVENTS, []) == 1
     finally:
         reg_b.close()
 
 
 def test_durable_cross_instance_commit_idempotency(
     regista_instance: Any,
+    v6_keyset: Any,
     keypair: tuple[nacl.signing.SigningKey, bytes],
     enrollment: EnrollmentRequest,
 ) -> None:
@@ -929,14 +964,14 @@ def test_durable_cross_instance_commit_idempotency(
     )
     lifecycle_a = regista_instance.principal_lifecycle
     receipt_a = lifecycle_a.commit(operation.operation_id, expected_digest=operation.digest.value)
-    reg_b = _open_fresh_instance(regista_instance)
+    reg_b = _open_fresh_instance(regista_instance, v6_keyset)
     try:
         lifecycle_b = reg_b.principal_lifecycle
         receipt_b = lifecycle_b.commit(
             operation.operation_id, expected_digest=operation.digest.value
         )
         assert receipt_b == receipt_a
-        assert _db_count(reg_b, "events", "entity_kind = 'principal'", []) == 1
+        assert _db_count(reg_b, "events", _CEREMONY_EVENTS, []) == 1
     finally:
         reg_b.close()
 

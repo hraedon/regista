@@ -420,7 +420,9 @@ class Regista(
     def workflows(self) -> WorkflowOps:
         self._require_open()
         if not hasattr(self, "_workflows_ops"):
-            self._workflows_ops = WorkflowOps(self._mgr, self._metrics, self._project)
+            self._workflows_ops = WorkflowOps(
+                self._mgr, self._metrics, self._project, self._keys
+            )
         return self._workflows_ops
 
     @property

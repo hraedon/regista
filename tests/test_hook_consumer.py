@@ -48,12 +48,21 @@ attempt_threshold: 99
 """
 
 
+ACTOR = "agent:worker"
+
+
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_hookcons_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("hookcons_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Genesis before registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires and is a silent no-op
+    # before genesis.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WORKFLOW_WITH_HOOKS)
     yield sub
     sub.close()
@@ -240,13 +249,13 @@ class TestHookConsumerDelivery:
         wi, _ = regista.create_work_item(
             workflow_name="hook_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "consumer test"},
         )
         regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
-            actor_id="agent-1",
+            actor_id=ACTOR,
         )
 
         deadline = time.time() + 15

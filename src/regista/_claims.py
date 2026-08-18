@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from psycopg.sql import SQL
 
 from ._connection import DictConn
@@ -19,6 +20,8 @@ from ._contract import (
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeySet
 from ._types import Claim
+
+log = structlog.get_logger()
 
 
 def _row_to_claim(row: dict[str, Any]) -> Claim:
@@ -154,7 +157,7 @@ def _check_escalation(
     attempt_number: int,
     key_set: KeySet,
 ) -> bool:
-    from ._events import append_event
+    from ._events import append_event, resolve_system_actor_id
 
     wf_row = conn.execute(
         SQL("SELECT definition FROM workflow_registry WHERE workflow_name = %s AND version = %s"),
@@ -180,7 +183,7 @@ def _check_escalation(
     append_event(
         conn=conn,
         work_item_id=wi["work_item_id"],
-        actor_id="system",
+        actor_id=resolve_system_actor_id(conn, legacy_actor_id="system"),
         actor_kind="system",
         actor_metadata=None,
         key_set=key_set,
@@ -349,7 +352,48 @@ def release_claim(
 
 
 def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
-    from ._events import append_event, lock_work_item
+    """Expire every lapsed claim, one savepoint at a time.
+
+    Returns the number of claims actually swept. Two properties are load-bearing and
+    were both fixed by the phase-4 ceremony's NB5:
+
+    **``claim_expired`` is a SYSTEM action.** The holder did not act — a lease lapsed —
+    so in an open v6 epoch the event is attributed to the project's own bootstrap
+    principal through :func:`~regista._events.resolve_system_actor_id`, exactly like
+    ``escalated``, hook dead-lettering and recurrence firing. Attributing it to the
+    *holder* made the sweep depend on the holder still being appendable: a holder whose
+    key acceptance had been revoked, or whose acceptance scopes do not cover
+    ``claim_expired``, raised inside the sweep and the operator's expiry sweep stopped
+    working — while the projection change had already been made. The holder is not
+    lost: the payload names it, which is where "whose claim expired" belongs.
+    ``legacy_actor_id`` keeps the pre-genesis attribution byte for byte, so a legacy
+    project's events are unchanged.
+
+    **One claim's REFUSAL must not abort the batch — and only a refusal is isolated.**
+    Each claim is processed inside its own savepoint (``conn.transaction()``), so a
+    ``RegistaError`` rolls that claim's ``DELETE`` and projection ``UPDATE`` back and
+    leaves the claim exactly as it was — fail-closed per claim rather than a committed
+    projection change with no event, which is the shape replay reports as drift. The
+    remaining claims are then swept. Refusals are reported as
+    ``claims.sweep_claim_refused`` log lines carrying the work item and the error, plus
+    one ``claims.sweep_incomplete`` summary; the return value counts successes only, so a
+    caller comparing it against the number of expired claims can see that something was
+    refused without parsing anything.
+
+    The narrowness is deliberate (R2 NB2). ``RegistaError`` is this system *deciding*
+    something about one claim — a revoked acceptance, a scope it does not hold, a
+    workflow that no longer admits the transition — and a decision about one claim is
+    exactly what must not become a decision about the batch. Anything else is a defect or
+    an infrastructure failure: a ``TypeError`` in the signing path, a serialization
+    failure, a dropped connection. Those are **not** caught, so they abort the sweep and
+    reach the caller. Swallowing them would convert "the code is broken" or "the database
+    went away" into "1 of 2 claims swept", which is a truthful-looking number produced by
+    a process that has no idea what happened — and an operator who reads a count instead
+    of a stack trace does not go looking for the bug. Pinned by
+    ``test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted``.
+    """
+
+    from ._events import append_event, lock_work_item, resolve_system_actor_id
 
     now = datetime.now(UTC)
     expired = conn.execute(
@@ -358,56 +402,87 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
     ).fetchall()
 
     swept = 0
+    refused = 0
     for row in expired:
         wi_id = row["work_item_id"]
         prior_actor_id = row["actor_id"]
 
-        wi = lock_work_item(conn, wi_id)
+        try:
+            with conn.transaction():
+                wi = lock_work_item(conn, wi_id)
 
-        still_expired = conn.execute(
-            SQL("SELECT actor_id FROM claims WHERE work_item_id = %s AND expires_at < %s"),
-            [wi_id, now],
-        ).fetchone()
-        if still_expired is None:
-            continue
+                still_expired = conn.execute(
+                    SQL(
+                        "SELECT actor_id FROM claims "
+                        "WHERE work_item_id = %s AND expires_at < %s"
+                    ),
+                    [wi_id, now],
+                ).fetchone()
+                if still_expired is None:
+                    continue
 
-        if still_expired["actor_id"] != prior_actor_id:
-            continue
+                if still_expired["actor_id"] != prior_actor_id:
+                    continue
 
-        conn.execute(
-            SQL("DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s"),
-            [wi_id, prior_actor_id],
-        )
+                conn.execute(
+                    SQL("DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s"),
+                    [wi_id, prior_actor_id],
+                )
 
-        cur = conn.execute(
-            SQL(
-                "UPDATE work_items_current SET claimed_by = NULL, claim_expires_at = NULL "
-                "WHERE work_item_id = %s AND claimed_by = %s"
-            ),
-            [wi_id, prior_actor_id],
-        )
+                cur = conn.execute(
+                    SQL(
+                        "UPDATE work_items_current SET claimed_by = NULL, "
+                        "claim_expires_at = NULL "
+                        "WHERE work_item_id = %s AND claimed_by = %s"
+                    ),
+                    [wi_id, prior_actor_id],
+                )
 
-        if cur.rowcount > 0 and wi is not None:
-            append_event(
-                conn=conn,
-                work_item_id=wi_id,
-                actor_id=prior_actor_id or "system",
-                actor_kind="system",
-                actor_metadata=None,
-                key_set=key_set,
-                workflow_name=wi["workflow_name"],
-                workflow_version=wi["workflow_version"],
-                transition="claim_expired",
-                payload=Jsonb(
-                    {
-                        "actor_id": prior_actor_id,
-                        "expired_at": now.isoformat(),
-                    }
+                if cur.rowcount > 0 and wi is not None:
+                    append_event(
+                        conn=conn,
+                        work_item_id=wi_id,
+                        actor_id=resolve_system_actor_id(
+                            conn, legacy_actor_id=prior_actor_id or "system"
+                        ),
+                        actor_kind="system",
+                        actor_metadata=None,
+                        key_set=key_set,
+                        workflow_name=wi["workflow_name"],
+                        workflow_version=wi["workflow_version"],
+                        transition="claim_expired",
+                        payload=Jsonb(
+                            {
+                                "actor_id": prior_actor_id,
+                                "expired_at": now.isoformat(),
+                            }
+                        ),
+                        event_id=uuid.uuid4(),
+                        _prelocked_wi=wi,
+                    )
+        except RegistaError as exc:
+            refused += 1
+            log.error(
+                "claims.sweep_claim_refused",
+                work_item_id=str(wi_id),
+                actor_id=prior_actor_id,
+                error_code=getattr(exc.code, "value", str(exc.code)),
+                error=str(exc)[:500],
+                detail=(
+                    "this claim was left intact and the sweep continued; a refusal "
+                    "here must not stop the other claims from expiring"
                 ),
-                event_id=uuid.uuid4(),
-                _prelocked_wi=wi,
             )
+            continue
 
         swept += 1
+
+    if refused:
+        log.error(
+            "claims.sweep_incomplete",
+            expired=len(expired),
+            swept=swept,
+            refused=refused,
+        )
 
     return swept

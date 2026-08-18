@@ -4,38 +4,79 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _helpers import DSN
 
 from regista._errors import RegistaError
 from regista.testing import drop_project_schema
+from tests._v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, open_v6_epoch
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 PHASE1_PATH = str(TESTS_DIR / "fixtures" / "sf2_phase1.yaml")
 FULL_PIPELINE_PATH = str(TESTS_DIR / "fixtures" / "sf2_full_pipeline.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+#: One id per role the SF2 workflows gate on, plus the two extra architects the
+#: escalation case needs as *distinct* claimants, plus the unauthorised actor.
+ARCHITECT = "agent:architect"
+ARCHITECT_B = "agent:architect-b"
+ARCHITECT_C = "agent:architect-c"
+GATE = "agent:gate"
+IMPLEMENTER = "agent:implementer"
+TEST_AUTHOR = "agent:test-author"
+INTRUDER = "agent:intruder"
+
+#: Passed to BOTH `make_v6_keyset` and `open_v6_epoch`, identical: a key on file is
+#: not a project-local acceptance, so an id present in only one of the two lists is
+#: refused with KEY_BINDING_UNRESOLVED (`_v6_fixtures.open_v6_epoch`, §5.11).
+SF2_PRINCIPALS = (
+    *ACTOR_PRINCIPALS,
+    ARCHITECT,
+    ARCHITECT_B,
+    ARCHITECT_C,
+    GATE,
+    IMPLEMENTER,
+    TEST_AUTHOR,
+    INTRUDER,
+)
+
+
 @pytest.fixture(scope="function")
-def regista():
+def regista(tmp_path):
     from regista import Regista
 
     project = f"test_sf2_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path, principals=SF2_PRINCIPALS)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset, principals=SF2_PRINCIPALS)
     sub.register_workflow_file(PHASE1_PATH)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
 
 
+#: The ``unmigrated_regista`` fixture is gone. It existed for exactly one node —
+#: ``test_attempt_threshold_drives_escalation`` — because ``_claims.py``'s
+#: auto-escalation appended its ``escalated`` event as the bare literal
+#: ``"system"``, which no keyset can bind (``ACTOR_SIGNER_MISMATCH``). Its own
+#: docstring named the condition for its removal: "migrate it in the same change
+#: that gives escalation a v6 principal." ``_events.resolve_system_actor_id`` is
+#: that change, so the node runs on the ordinary migrated ``regista`` fixture and
+#: the last-resort pattern is retired instead of inherited.
+
+
 class TestSF2WorkflowRoundtripV1:
     def test_phase1_interface_spec_lifecycle(self, regista):
-        regista.register_actor_role("arch-1", "interface_architect")
-        regista.register_actor_role("gate-1", "mechanical_gate")
+        regista.register_actor_role(ARCHITECT, "interface_architect")
+        regista.register_actor_role(GATE, "mechanical_gate")
 
         wi, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="interface_spec",
-            actor_id="arch-1",
+            actor_id=ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={
@@ -48,7 +89,7 @@ class TestSF2WorkflowRoundtripV1:
         assert wi.workflow_version == 1
 
         regista.transition(
-            wi.work_item_id, "claim", "arch-1",
+            wi.work_item_id, "claim", ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
         )
@@ -56,7 +97,7 @@ class TestSF2WorkflowRoundtripV1:
         assert after_claim.current_state == "in_progress"
 
         regista.transition(
-            wi.work_item_id, "submit", "arch-1",
+            wi.work_item_id, "submit", ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={"artifact_hash": "sha256:abc"},
@@ -66,7 +107,7 @@ class TestSF2WorkflowRoundtripV1:
         assert after_submit.custom_fields.get("artifact_hash") == "sha256:abc"
 
         regista.transition(
-            wi.work_item_id, "gate_pass", "gate-1",
+            wi.work_item_id, "gate_pass", GATE,
             actor_kind="agent",
             actor_metadata={"role": "mechanical_gate"},
         )
@@ -74,12 +115,12 @@ class TestSF2WorkflowRoundtripV1:
         assert after_gate.current_state == "locked"
 
     def test_phase1_create_missing_required_field_rejected(self, regista):
-        regista.register_actor_role("arch-2", "interface_architect")
+        regista.register_actor_role(ARCHITECT, "interface_architect")
         with pytest.raises(RegistaError, match="CUSTOM_FIELD_VIOLATION"):
             regista.create_work_item(
                 workflow_name="software_factory",
                 work_item_type="interface_spec",
-                actor_id="arch-2",
+                actor_id=ARCHITECT,
                 actor_kind="agent",
                 actor_metadata={"role": "interface_architect"},
                 custom_fields={
@@ -88,11 +129,11 @@ class TestSF2WorkflowRoundtripV1:
             )
 
     def test_role_gating_rejects_unauthorized(self, regista):
-        regista.register_actor_role("arch-3", "interface_architect")
+        regista.register_actor_role(ARCHITECT, "interface_architect")
         wi, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="interface_spec",
-            actor_id="arch-3",
+            actor_id=ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={
@@ -102,20 +143,21 @@ class TestSF2WorkflowRoundtripV1:
         )
         with pytest.raises(RegistaError, match="ROLE_NOT_PERMITTED"):
             regista.transition(
-                wi.work_item_id, "claim", "intruder-1",
+                wi.work_item_id, "claim", INTRUDER,
                 actor_kind="agent",
                 actor_metadata={"role": "mechanical_gate"},
             )
 
     def test_attempt_threshold_drives_escalation(self, regista):
-        regista.register_actor_role("arch-4a", "interface_architect")
-        regista.register_actor_role("arch-4b", "interface_architect")
-        regista.register_actor_role("arch-4c", "interface_architect")
+        a, b, c = ARCHITECT, ARCHITECT_B, ARCHITECT_C
+        regista.register_actor_role(a, "interface_architect")
+        regista.register_actor_role(b, "interface_architect")
+        regista.register_actor_role(c, "interface_architect")
 
         wi, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="interface_spec",
-            actor_id="arch-4a",
+            actor_id=a,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={
@@ -124,14 +166,14 @@ class TestSF2WorkflowRoundtripV1:
             },
         )
 
-        regista.acquire_claim(wi.work_item_id, "arch-4a", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, a, ttl_seconds=1)
         import time
         time.sleep(1.1)
 
-        regista.acquire_claim(wi.work_item_id, "arch-4b", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, b, ttl_seconds=1)
         time.sleep(1.1)
 
-        regista.acquire_claim(wi.work_item_id, "arch-4c", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, c, ttl_seconds=1)
 
         final = regista.get_work_item(wi.work_item_id)
         assert final.needs_review is True
@@ -144,14 +186,14 @@ class TestSF2WorkflowRoundtripV2:
         assert v2.version == 2
 
     def test_version_pinning_across_v1_v2(self, regista):
-        regista.register_actor_role("arch-5", "interface_architect")
-        regista.register_actor_role("imp-5", "implementer")
-        regista.register_actor_role("ta-5", "test_author")
+        regista.register_actor_role(ARCHITECT, "interface_architect")
+        regista.register_actor_role(IMPLEMENTER, "implementer")
+        regista.register_actor_role(TEST_AUTHOR, "test_author")
 
         wi1, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="interface_spec",
-            actor_id="arch-5",
+            actor_id=ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={
@@ -166,7 +208,7 @@ class TestSF2WorkflowRoundtripV2:
         ts, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="test_suite",
-            actor_id="ta-5",
+            actor_id=TEST_AUTHOR,
             actor_kind="agent",
             actor_metadata={"role": "test_author"},
             custom_fields={
@@ -178,7 +220,7 @@ class TestSF2WorkflowRoundtripV2:
         wi2, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="implementation",
-            actor_id="imp-5",
+            actor_id=IMPLEMENTER,
             actor_kind="agent",
             actor_metadata={"role": "implementer"},
             custom_fields={
@@ -189,7 +231,7 @@ class TestSF2WorkflowRoundtripV2:
         assert wi2.workflow_version == 2
 
         regista.transition(
-            wi2.work_item_id, "claim", "imp-5",
+            wi2.work_item_id, "claim", IMPLEMENTER,
             actor_kind="agent",
             actor_metadata={"role": "implementer"},
         )
@@ -198,21 +240,21 @@ class TestSF2WorkflowRoundtripV2:
 
         with pytest.raises(RegistaError, match="ROLE_NOT_PERMITTED"):
             regista.transition(
-                wi1.work_item_id, "claim", "imp-5",
+                wi1.work_item_id, "claim", IMPLEMENTER,
                 actor_kind="agent",
                 actor_metadata={"role": "implementer"},
             )
 
     def test_full_pipeline_link_types(self, regista):
         regista.register_workflow_file(FULL_PIPELINE_PATH)
-        regista.register_actor_role("arch-6", "interface_architect")
-        regista.register_actor_role("imp-6", "implementer")
-        regista.register_actor_role("ta-6", "test_author")
+        regista.register_actor_role(ARCHITECT, "interface_architect")
+        regista.register_actor_role(IMPLEMENTER, "implementer")
+        regista.register_actor_role(TEST_AUTHOR, "test_author")
 
         wi1, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="interface_spec",
-            actor_id="arch-6",
+            actor_id=ARCHITECT,
             actor_kind="agent",
             actor_metadata={"role": "interface_architect"},
             custom_fields={
@@ -223,7 +265,7 @@ class TestSF2WorkflowRoundtripV2:
         ts, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="test_suite",
-            actor_id="ta-6",
+            actor_id=TEST_AUTHOR,
             actor_kind="agent",
             actor_metadata={"role": "test_author"},
             custom_fields={
@@ -234,7 +276,7 @@ class TestSF2WorkflowRoundtripV2:
         wi2, _ = regista.create_work_item(
             workflow_name="software_factory",
             work_item_type="implementation",
-            actor_id="imp-6",
+            actor_id=IMPLEMENTER,
             actor_kind="agent",
             actor_metadata={"role": "implementer"},
             custom_fields={
@@ -247,7 +289,7 @@ class TestSF2WorkflowRoundtripV2:
             from_work_item_id=wi2.work_item_id,
             to_work_item_id=wi1.work_item_id,
             link_type="implements",
-            actor_id="imp-6",
+            actor_id=IMPLEMENTER,
             actor_kind="agent",
         )
         assert link.link_type == "implements"

@@ -14,12 +14,22 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_replay_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -31,11 +41,11 @@ class TestAC17RevokedKeyHaltsReplay:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "AC-17 halted"},
         )
         regista.transition(
-            wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"}
+            wi.work_item_id, "start", WORKER, actor_metadata={"role": "agent"}
         )
 
         report = regista.replay()
@@ -48,7 +58,7 @@ class TestAC29OutOfBandEditDrift:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "AC-29 state drift"},
         )
 
@@ -66,7 +76,7 @@ class TestAC29OutOfBandEditDrift:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             custom_fields={"title": "AC-29 field drift"},
         )
 
@@ -84,12 +94,12 @@ class TestAC29OutOfBandEditDrift:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=WORKER,
             actor_metadata={"role": "agent"},
             custom_fields={"title": "AC-29 clean"},
         )
         regista.transition(
-            wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"}
+            wi.work_item_id, "start", WORKER, actor_metadata={"role": "agent"}
         )
 
         report = regista.replay()

@@ -630,6 +630,27 @@ class ReplayReport:
     #: True. When the check did not run, ``0`` means "not checked" — surfaces
     #: must not render it as a pass.
     principal_binding_verified: bool = False
+    #: Entity groups from the CLOSED v6 entity-kind registry other than
+    #: ``work_item`` — ``project``, ``principal``, ``trust_domain``,
+    #: ``project_instance``, ``workflow`` (``V6-ENVELOPE.md`` §1.2). A v6 epoch's
+    #: chain necessarily carries these, so a healthy clean-epoch replay reports a
+    #: NON-ZERO value here and it is not a finding.
+    #:
+    #: What "verified" claims, exactly: every event in these groups was carried
+    #: into the global hash-chain verification (so any rewrite of their bytes is a
+    #: ``chain_breaks`` finding), and their entity kind was checked against the
+    #: closed registry. It does NOT claim a per-event ``verify_event_strict``
+    #: verdict: the project-genesis event in this population is legitimately
+    #: ``UNVERIFIABLE`` until a caller supplies an external trust pin
+    #: (NOTES-P17 Finding 11), so folding these groups into the signature-verdict
+    #: counters would make every healthy epoch report an evidentiary gap it does
+    #: not have.
+    #:
+    #: They are deliberately NOT ``warnings`` (a healthy chain must not warn) and
+    #: NOT ``halted`` (they are spec-legal chain members with no
+    #: ``work_items_current`` row to rebuild). An entity kind OUTSIDE the closed
+    #: registry is neither counted here nor tolerated — it halts.
+    non_work_item_groups_verified: int = 0
     #: Detailed per-work-item results, populated in BOTH modes. This is the
     #: portable access path for per-item replay outcomes; prefer it over
     #: querying ``table_name``.
@@ -653,6 +674,8 @@ class ReplayReport:
             d["principal_binding_failures"] = self.principal_binding_failures
         elif self.principal_binding_failures > 0:
             d["principal_binding_failures"] = self.principal_binding_failures
+        if self.non_work_item_groups_verified > 0:
+            d["non_work_item_groups_verified"] = self.non_work_item_groups_verified
         if self.entries:
             d["entries"] = [e.to_dict() for e in self.entries]
         return d
@@ -669,6 +692,7 @@ class ReplayReport:
             unverifiable=data.get("unverifiable", 0),
             principal_binding_failures=data.get("principal_binding_failures", 0),
             principal_binding_verified=data.get("principal_binding_verified", False),
+            non_work_item_groups_verified=data.get("non_work_item_groups_verified", 0),
             entries=tuple(
                 ReplayReportEntry.from_dict(e) for e in data.get("entries", [])
             ),

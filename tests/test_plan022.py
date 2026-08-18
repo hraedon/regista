@@ -589,22 +589,46 @@ class TestEventDataclass:
 
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
     from regista.testing import drop_project_schema
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_p022_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
 
 
+def _v6_in_memory(tmp_path):
+    """An ``InMemoryRegista`` on a clean v6 epoch, workflow registered.
+
+    Same sequence as the Postgres fixture: the Ed25519 actor-role keyset replaces
+    ``tests/test_keys.json`` (one HMAC key, no ``principal_id`` — unusable in the
+    clean epoch), and the workflow registration follows genesis.
+    """
+
+    from regista.testing import InMemoryRegista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    keyset = make_v6_keyset(tmp_path)
+    s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+    open_v6_epoch(s, keyset)
+    s.register_workflow_file(WORKFLOW_PATH)
+    return s
+
+
 class TestIntegrationEntityFields:
     def test_created_event_has_entity_columns(self, regista):
         wi, evt = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "entity test"},
         )
         assert evt.entity_kind == "work_item"
@@ -613,11 +637,11 @@ class TestIntegrationEntityFields:
 
     def test_transition_event_has_entity_columns(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "transition entity"},
         )
         evt = regista.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         assert evt.entity_kind == "work_item"
@@ -626,11 +650,11 @@ class TestIntegrationEntityFields:
 
     def test_read_events_returns_entity_fields(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "read entity"},
         )
         regista.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -642,15 +666,15 @@ class TestIntegrationEntityFields:
 
     def test_replay_verifies_v4_events(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "replay v4"},
         )
         regista.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         regista.transition(
-            wi.work_item_id, "submit_review", "agent-1",
+            wi.work_item_id, "submit_review", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         report = regista.replay()
@@ -659,10 +683,10 @@ class TestIntegrationEntityFields:
 
     def test_claim_events_have_entity_fields(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "claim entity"},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=300)
         events = regista.read_events(work_item_id=wi.work_item_id)
         claim_events = [e for e in events if e.transition == "claim_acquired"]
         assert len(claim_events) == 1
@@ -673,7 +697,7 @@ class TestIntegrationEntityFields:
         from regista._testing import raw_transaction
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "db columns"},
         )
         with raw_transaction(regista) as conn:
@@ -691,7 +715,7 @@ class TestIntegrationEntityFields:
         from regista._testing import raw_transaction
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "unique test"},
         )
         with pytest.raises(Exception) as exc_info:
@@ -715,30 +739,24 @@ class TestIntegrationEntityFields:
 
 
 class TestInMemoryEntityFields:
-    def test_in_memory_event_has_entity_fields(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        s.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_event_has_entity_fields(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
         wi, evt = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "inmem entity"},
         )
         assert evt.entity_kind == "work_item"
         assert evt.entity_id == wi.work_item_id
         assert evt.hash_alg == "sha-256"
 
-    def test_in_memory_replay_verifies_v4(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        s.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_replay_verifies_v4(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
         wi, _ = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "inmem replay v4"},
         )
         s.transition(
-            wi.work_item_id, "start", "agent-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         report = s.replay()
@@ -1052,12 +1070,12 @@ class TestSizeAudit:
 class TestCrossProjectValueReferences:
     def test_cross_project_link_create(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "xproject source"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         assert link.target_project == "other_project"
@@ -1072,12 +1090,12 @@ class TestCrossProjectValueReferences:
 
     def test_cross_project_link_with_content_hash(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "content hash test"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash="sha256:abc123",
         )
@@ -1089,12 +1107,12 @@ class TestCrossProjectValueReferences:
 
     def test_cross_project_link_with_target_entity_kind(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "entity kind test"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             target_entity_kind="note",
         )
@@ -1106,13 +1124,13 @@ class TestCrossProjectValueReferences:
 
     def test_cross_project_link_rejects_undeclared_link_type(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "undeclared type test"},
         )
         target_id = uuid.uuid4()
         with pytest.raises(Exception) as exc_info:
             regista.create_link(
-                wi.work_item_id, target_id, "nonexistent_type", "agent-1",
+                wi.work_item_id, target_id, "nonexistent_type", "agent:worker",
                 target_project="other_project",
             )
         assert "LINK_TYPE_NOT_ALLOWED" in str(exc_info.value) or \
@@ -1120,16 +1138,16 @@ class TestCrossProjectValueReferences:
 
     def test_cross_project_link_remove(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "xproject remove test"},
         )
         target_id = uuid.uuid4()
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         regista.remove_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -1139,24 +1157,24 @@ class TestCrossProjectValueReferences:
 
     def test_cross_project_link_does_not_lookup_target(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "no lookup test"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="nonexistent_project",
         )
         assert link.target_project == "nonexistent_project"
 
     def test_cross_project_link_replay(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "replay xproject test"},
         )
         target_id = uuid.uuid4()
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash="sha256:test123",
         )
@@ -1166,99 +1184,96 @@ class TestCrossProjectValueReferences:
 
     def test_intra_project_link_still_works(self, regista):
         wi1, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "intra 1"},
         )
         wi2, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "intra 2"},
         )
         link = regista.create_link(
-            wi1.work_item_id, wi2.work_item_id, "blocks", "agent-1",
+            wi1.work_item_id, wi2.work_item_id, "blocks", "agent:worker",
         )
         assert link.target_project is None
         assert link.target_entity_kind is None
 
     def test_cross_project_link_target_not_needed_for_remove(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "remove no target"},
         )
         target_id = uuid.uuid4()
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         with pytest.raises(Exception):
             regista.remove_link(
-                wi.work_item_id, uuid.uuid4(), "blocks", "agent-1",
+                wi.work_item_id, uuid.uuid4(), "blocks", "agent:worker",
             )
 
     def test_multiple_cross_project_links_same_target_distinct(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "multi xproject"},
         )
         target_id = uuid.uuid4()
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="project_a",
         )
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="project_b",
         )
         regista.remove_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="project_a",
         )
         regista.remove_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="project_b",
         )
 
     def test_cross_project_remove_wrong_project_raises(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "wrong project remove"},
         )
         target_id = uuid.uuid4()
         regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="project_a",
         )
         with pytest.raises(Exception):
             regista.remove_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="project_b",
             )
 
     def test_empty_target_project_rejected(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "empty target_project"},
         )
         target_id = uuid.uuid4()
         with pytest.raises(Exception):
             regista.create_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="",
             )
 
 
 class TestInMemoryCrossProjectValueReferences:
-    def test_in_memory_cross_project_link_create(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        s.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_cross_project_link_create(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
         wi, _ = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "inmem xproject"},
         )
         target_id = uuid.uuid4()
         link = s.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         assert link.target_project == "other_project"
@@ -1268,22 +1283,19 @@ class TestInMemoryCrossProjectValueReferences:
         assert len(link_events) == 1
         assert link_events[0].payload["target_project"] == "other_project"
 
-    def test_in_memory_cross_project_link_remove(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        s.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_cross_project_link_remove(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
         wi, _ = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "inmem remove"},
         )
         target_id = uuid.uuid4()
         s.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         s.remove_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
         )
         events = s.read_events(work_item_id=wi.work_item_id)
@@ -1291,18 +1303,15 @@ class TestInMemoryCrossProjectValueReferences:
         assert len(remove_events) == 1
         assert remove_events[0].payload.get("target_project") == "other_project"
 
-    def test_in_memory_cross_project_replay(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        s.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_cross_project_replay(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
         wi, _ = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "inmem replay xproject"},
         )
         target_id = uuid.uuid4()
         s.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash="sha256:abc",
         )
@@ -1361,27 +1370,27 @@ class TestContentHashValidation:
         from regista._errors import RegistaError
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "oversized hash"},
         )
         target_id = uuid.uuid4()
         oversized = "x" * 257
         with pytest.raises(RegistaError, match="content_hash exceeds maximum length"):
             regista.create_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="other_project",
                 content_hash=oversized,
             )
 
     def test_max_length_content_hash_accepted(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "max len hash"},
         )
         target_id = uuid.uuid4()
         max_hash = "x" * 256
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash=max_hash,
         )
@@ -1391,25 +1400,25 @@ class TestContentHashValidation:
         from regista._errors import RegistaError
 
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "null byte hash"},
         )
         target_id = uuid.uuid4()
         with pytest.raises(RegistaError, match="disallowed character"):
             regista.create_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="other_project",
                 content_hash="sha256:\x00abc",
             )
 
     def test_none_content_hash_accepted(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "none hash"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash=None,
         )
@@ -1417,80 +1426,73 @@ class TestContentHashValidation:
 
     def test_normal_content_hash_accepted(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "normal hash"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash="sha256:abcdef1234567890",
         )
         assert link.content_hash == "sha256:abcdef1234567890"
 
-    def test_in_memory_oversized_content_hash_rejected(self):
+    def test_in_memory_oversized_content_hash_rejected(self, tmp_path):
         from regista._errors import RegistaError
-        from regista.testing import InMemoryRegista
 
-        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
+        sub = _v6_in_memory(tmp_path)
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "in-mem oversized"},
         )
         target_id = uuid.uuid4()
         with pytest.raises(RegistaError, match="content_hash exceeds maximum length"):
             sub.create_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="other_project",
                 content_hash="x" * 257,
             )
 
     def test_empty_string_content_hash_accepted(self, regista):
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "empty hash"},
         )
         target_id = uuid.uuid4()
         link = regista.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash="",
         )
         assert link.content_hash == ""
 
-    def test_in_memory_max_length_content_hash_accepted(self):
-        from regista.testing import InMemoryRegista
-
-        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
+    def test_in_memory_max_length_content_hash_accepted(self, tmp_path):
+        sub = _v6_in_memory(tmp_path)
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "in-mem max len"},
         )
         target_id = uuid.uuid4()
         max_hash = "x" * 256
         link = sub.create_link(
-            wi.work_item_id, target_id, "blocks", "agent-1",
+            wi.work_item_id, target_id, "blocks", "agent:worker",
             target_project="other_project",
             content_hash=max_hash,
         )
         assert link.content_hash == max_hash
 
-    def test_in_memory_null_byte_content_hash_rejected(self):
+    def test_in_memory_null_byte_content_hash_rejected(self, tmp_path):
         from regista._errors import RegistaError
-        from regista.testing import InMemoryRegista
 
-        sub = InMemoryRegista(project="test", hmac_key_path=KEY_PATH)
-        sub.register_workflow_file(WORKFLOW_PATH)
+        sub = _v6_in_memory(tmp_path)
         wi, _ = sub.create_work_item(
-            "test_workflow", "feature", "agent-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "in-mem null byte"},
         )
         target_id = uuid.uuid4()
         with pytest.raises(RegistaError, match="disallowed character"):
             sub.create_link(
-                wi.work_item_id, target_id, "blocks", "agent-1",
+                wi.work_item_id, target_id, "blocks", "agent:worker",
                 target_project="other_project",
                 content_hash="sha256:\x00abc",
             )

@@ -14,18 +14,26 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture(params=["real", "in_memory"])
-def sub(request):
+def sub(request, tmp_path):
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    # One Ed25519 actor-role keyset per parametrisation; both backends open the
+    # clean epoch before the workflow registration, which emits a signed
+    # `workflow_registered` event that needs an epoch to land in.
+    keyset = make_v6_keyset(tmp_path)
     if request.param == "real":
         from regista import Regista
 
         project = f"test_read_evt_{uuid.uuid4().hex[:8]}"
-        s = Regista.create_project(DSN, project, KEY_PATH)
+        s = Regista.create_project(DSN, project, keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
         drop_project_schema(DSN, project)
     else:
-        s = InMemoryRegista(project="test")
+        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(s, keyset)
         s.register_workflow_file(WORKFLOW_PATH)
         yield s
         s.close()
@@ -35,11 +43,14 @@ def _create_work_item_with_events(sub, n_extra=5):
     wi, _ = sub.create_work_item(
         workflow_name="test_workflow",
         work_item_type="feature",
-        actor_id="agent-1",
+        actor_id="agent:worker",
         custom_fields={"title": "ordering-test"},
     )
     for _ in range(n_extra):
-        sub.append_event(wi.work_item_id, "agent-1")
+        # An explicit transition, because a v6 event has no transitionless form
+        # (RECONCILIATION.md Resolution 3) — this test's subject is read ordering,
+        # not the shape of a bare append.
+        sub.append_event(wi.work_item_id, "agent:worker", transition="note")
     return wi
 
 
@@ -103,7 +114,7 @@ class TestReadEventsOrderingConformance:
             sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id="agent:worker",
                 custom_fields={"title": f"item-{i}"},
             )
         evts = sub.read_events(limit=10)
@@ -116,11 +127,11 @@ class TestReadEventsOrderingConformance:
         wi, _ = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "tiebreaker"},
         )
-        sub.append_event(wi.work_item_id, "agent-1")
-        sub.append_event(wi.work_item_id, "agent-1")
+        sub.append_event(wi.work_item_id, "agent:worker", transition="note")
+        sub.append_event(wi.work_item_id, "agent:worker", transition="note")
         evts = sub.read_events(limit=10)
         assert len(evts) >= 3
         for i in range(len(evts) - 1):

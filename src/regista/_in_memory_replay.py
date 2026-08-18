@@ -13,7 +13,9 @@ from ._errors import ErrorCode, RegistaError
 from ._event_store import InMemoryEventStore
 from ._keys import KeySet
 from ._types import Event, ReplayReport
+from ._v6_referents import MappingReferents, MaterialCompleteness
 from ._verification import (
+    V6_ENTITY_KINDS,
     AbsentEnvelopeProbe,
     Applicability,
     Backend,
@@ -62,6 +64,25 @@ _NO_KEY_RESOLVER = _NoKeyResolver()
 
 
 
+def _head_hash(event: Event) -> bytes | None:
+    """The chain head hash ``event`` contributes, under its own envelope version.
+
+    Delegates to ``_signing.compute_chain_head_hash`` — the same call the Postgres
+    path's ``_replay._event_head_hash`` makes. Both walks in this module used to
+    hardcode the v1-v5 formula, which made every v6 event in an in-memory epoch
+    unreachable from genesis: a healthy epoch reported one chain break per
+    post-genesis event and the backends disagreed about a clean chain.
+    """
+
+    env = event.canonical_envelope
+    sig = event.signature
+    if env is None or sig is None:
+        return None
+    from ._signing import compute_chain_head_hash
+
+    return compute_chain_head_hash(bytes(env), bytes(sig))
+
+
 def _verify_hash_chain_in_memory(
     event: Event,
     prev_event: Event | None,
@@ -75,10 +96,9 @@ def _verify_hash_chain_in_memory(
     prev_sig = prev_event.signature
     if prev_env is None or prev_sig is None:
         return False, "previous event missing canonical_envelope or signature"
-    from ._signing_scheme import resolve_hash_function
-
-    hash_fn = resolve_hash_function("sha-256")
-    computed = hash_fn(bytes(prev_env) + bytes(prev_sig)).digest()
+    computed = _head_hash(prev_event)
+    if computed is None:
+        return False, "previous event has no computable event hash"
     if not _hmac.compare_digest(computed, bytes(expected)):
         detail = f"hash chain mismatch: computed={computed.hex()} expected={bytes(expected).hex()}"
         return False, detail
@@ -96,12 +116,8 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
     """
     from collections import defaultdict
 
-    from ._signing_scheme import resolve_hash_function
-
     if not events:
         return 0, None
-
-    hash_fn = resolve_hash_function("sha-256")
 
     link_map: dict[str, list[Event]] = defaultdict(list)
     genesis_events: list[Event] = []
@@ -160,12 +176,10 @@ def _verify_global_hash_chain_in_memory(events: list[Event]) -> tuple[int, Event
 
         visited.add(eid)
 
-        env = current.canonical_envelope
-        sig = current.signature
-        if env is None or sig is None:
+        head_hash = _head_hash(current)
+        if head_hash is None:
             break
 
-        head_hash = hash_fn(bytes(env) + bytes(sig)).digest()
         successors = link_map.get(head_hash.hex(), [])
 
         if not successors:
@@ -212,7 +226,18 @@ def in_memory_replay(
     warnings = 0
     chain_breaks = 0
     unverifiable = 0
+    non_work_item_groups = 0
     scoped = work_item_id is not None
+
+    # The presented material, built once (see `_replay.store_referents` for why once).
+    # `COMPLETE_STORE`: this store IS the whole project, so an anchor it does not hold
+    # is absent rather than out of scope — the same claim the Postgres backend makes,
+    # which is what keeps the two backends' v6 verdicts identical.
+    referents = MappingReferents.from_pairs(
+        ((evt.canonical_envelope, evt.signature) for evt in store.all_events()),
+        completeness=MaterialCompleteness.COMPLETE_STORE,
+        label="in-memory project store",
+    )
 
     if verify_principal_binding:
         warnings += 1
@@ -228,14 +253,36 @@ def in_memory_replay(
         orphan_ids = all_event_wi_ids - wi_ids
         for orphan_id in orphan_ids:
             orphan_evts = sorted(store.events.get(orphan_id, []), key=lambda e: e.event_seq)
-            is_non_work_item = any(
-                e.entity_kind != "work_item" for e in orphan_evts
-            )
-            if is_non_work_item:
-                warnings += 1
+            # Identical decision procedure to `_replay._handle_orphan_group` —
+            # unknown kind halts, a mixed group halts, a spec-legal non-work-item
+            # group is counted by name. Parity is the point: the two backends may
+            # not disagree about whether a healthy v6 chain has findings.
+            kinds = {e.entity_kind for e in orphan_evts}
+            unknown = sorted(kinds - V6_ENTITY_KINDS)
+            if unknown:
+                halted += 1
+                log.error(
+                    "replay.unknown_entity_kind",
+                    entity_id=str(orphan_id),
+                    entity_kinds=unknown,
+                    event_count=len(orphan_evts),
+                )
+                continue
+            if kinds != {"work_item"}:
+                if "work_item" in kinds:
+                    halted += 1
+                    log.error(
+                        "replay.mixed_entity_kind_group",
+                        entity_id=str(orphan_id),
+                        entity_kinds=sorted(kinds),
+                        event_count=len(orphan_evts),
+                    )
+                    continue
+                non_work_item_groups += 1
                 log.info(
                     "replay.non_work_item_entity",
                     entity_id=str(orphan_id),
+                    entity_kinds=sorted(kinds),
                     event_count=len(orphan_evts),
                 )
                 continue
@@ -344,6 +391,7 @@ def in_memory_replay(
                         verification = verify_event_strict(
                             EventRow.from_event(evt, backend=Backend.IN_MEMORY),
                             keys=KeySetResolver(key_set),
+                            referents=referents,
                             policy=_IN_MEMORY_POLICY,
                         )
                         if verification.applicability is Applicability.INVALID:
@@ -411,6 +459,7 @@ def in_memory_replay(
                     verification = verify_event_strict(
                         EventRow.from_event(evt, backend=Backend.IN_MEMORY),
                         keys=_NO_KEY_RESOLVER,
+                        referents=referents,
                         policy=_KEYLESS_POLICY,
                     )
                     if verification.applicability is not Applicability.FULLY_AUTHENTICATED:
@@ -568,13 +617,8 @@ def in_memory_replay(
             chain_breaks += chain_breaks_found
 
             if chain_tail is not None:
-                last = chain_tail
-                if last.canonical_envelope is not None and last.signature is not None:
-                    from ._signing_scheme import resolve_hash_function
-
-                    computed_head = resolve_hash_function("sha-256")(
-                        bytes(last.canonical_envelope) + bytes(last.signature)
-                    ).digest()
+                computed_head = _head_hash(chain_tail)
+                if computed_head is not None:
                     if stored_head is not None and not _hmac.compare_digest(
                         bytes(stored_head), computed_head
                     ):
@@ -615,4 +659,5 @@ def in_memory_replay(
         # the InMemory backend has no principal_keys registry, so the check did
         # not run. WI-223 — never claim a binding was verified when it wasn't.
         principal_binding_verified=False,
+        non_work_item_groups_verified=non_work_item_groups,
     )

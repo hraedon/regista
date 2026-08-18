@@ -77,18 +77,23 @@ class TestHookQueueDepthMetric:
             sub.close()
             drop_project_schema(DSN, project)
 
-    def test_gauge_reflects_pending_hooks(self):
+    def test_gauge_reflects_pending_hooks(self, tmp_path):
         """After enqueuing hooks, pending count rises; after processing, it drops."""
         from prometheus_client import CollectorRegistry
 
         from regista import Regista
         from regista.testing import drop_project_schema
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
         project = f"test_bc184b_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
+        keyset = make_v6_keyset(tmp_path)
         sub = Regista.create_project(
-            DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
+            DSN, project, keyset.path, prometheus_registry=registry, auto_partition=True
         )
+        # The epoch opens before the workflow registration, which emits a signed
+        # `workflow_registered` event.
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(WORKFLOW_YAML)
 
         completed = []
@@ -103,10 +108,10 @@ class TestHookQueueDepthMetric:
                 wi, _ = sub.create_work_item(
                     workflow_name="bc184_185_test",
                     work_item_type="task",
-                    actor_id="agent-1",
+                    actor_id="agent:worker",
                 )
                 sub.transition(
-                    wi.work_item_id, "finish", "agent-1",
+                    wi.work_item_id, "finish", "agent:worker",
                     actor_metadata={"role": "agent"},
                 )
 
@@ -184,7 +189,7 @@ class TestMaintenanceHealthy:
 class TestMaintenanceCounters:
     """BC-185: maintenance counters increment correctly on sweep operations."""
 
-    def test_maintenance_claims_swept_counter(self):
+    def test_maintenance_claims_swept_counter(self, tmp_path):
         """sweep_expired_claims increments regista_maintenance_claims_swept_total."""
         from datetime import UTC, datetime, timedelta
 
@@ -193,21 +198,24 @@ class TestMaintenanceCounters:
 
         from regista import Regista
         from regista.testing import drop_project_schema
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
         project = f"test_bc185c_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
+        keyset = make_v6_keyset(tmp_path)
         sub = Regista.create_project(
-            DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
+            DSN, project, keyset.path, prometheus_registry=registry, auto_partition=True
         )
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(WORKFLOW_YAML)
         try:
             # Create a work item and acquire a claim.
             wi, _ = sub.create_work_item(
                 workflow_name="bc184_185_test",
                 work_item_type="task",
-                actor_id="agent-sweep",
+                actor_id="agent:worker",
             )
-            sub.acquire_claim(wi.work_item_id, "agent-sweep", ttl_seconds=1)
+            sub.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=1)
 
             # Manually expire the claim by back-dating it.
             conn = psycopg.connect(DSN, autocommit=True)
@@ -215,7 +223,7 @@ class TestMaintenanceCounters:
                 f'SET search_path TO "{project}"'
             )
             conn.execute(
-                "UPDATE claims SET expires_at = %s WHERE actor_id = 'agent-sweep'",
+                "UPDATE claims SET expires_at = %s WHERE actor_id = 'agent:worker'",
                 [datetime.now(UTC) - timedelta(seconds=60)],
             )
             conn.close()
@@ -235,7 +243,7 @@ class TestMaintenanceCounters:
             sub.close()
             drop_project_schema(DSN, project)
 
-    def test_maintenance_hook_leases_swept_counter(self):
+    def test_maintenance_hook_leases_swept_counter(self, tmp_path):
         """sweep_expired_hook_leases increments regista_maintenance_hook_leases_swept_total."""
         from datetime import UTC, datetime, timedelta
 
@@ -244,12 +252,15 @@ class TestMaintenanceCounters:
 
         from regista import Regista
         from regista.testing import drop_project_schema
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
         project = f"test_bc185h_{uuid.uuid4().hex[:8]}"
         registry = CollectorRegistry()
+        keyset = make_v6_keyset(tmp_path)
         sub = Regista.create_project(
-            DSN, project, KEY_PATH, prometheus_registry=registry, auto_partition=True
+            DSN, project, keyset.path, prometheus_registry=registry, auto_partition=True
         )
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(WORKFLOW_YAML)
 
         def on_finish(ctx):
@@ -260,10 +271,10 @@ class TestMaintenanceCounters:
             wi, _ = sub.create_work_item(
                 workflow_name="bc184_185_test",
                 work_item_type="task",
-                actor_id="agent-hls",
+                actor_id="agent:worker",
             )
             sub.transition(
-                wi.work_item_id, "finish", "agent-hls",
+                wi.work_item_id, "finish", "agent:worker",
                 actor_metadata={"role": "agent"},
             )
 

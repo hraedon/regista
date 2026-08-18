@@ -59,11 +59,17 @@ attempt_threshold: 3
 
 
 @pytest.fixture(scope="function")
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_wir_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Epoch before registration: `register_workflow` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and it is a silent
+    # no-op until genesis exists.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(REF_WORKFLOW_YAML)
     yield sub
     sub.close()
@@ -77,7 +83,7 @@ class TestWorkItemRefCreateValidation:
             regista.create_work_item(
                 workflow_name="ref_test",
                 work_item_type="consumer",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"source_ref": fake_uuid},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -87,20 +93,20 @@ class TestWorkItemRefCreateValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.create_work_item(
                 workflow_name="ref_test",
                 work_item_type="consumer",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"source_ref": str(consumer.work_item_id)},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -110,13 +116,13 @@ class TestWorkItemRefCreateValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         assert consumer.custom_fields["source_ref"] == str(src.work_item_id)
@@ -126,7 +132,7 @@ class TestWorkItemRefCreateValidation:
             regista.create_work_item(
                 workflow_name="ref_test",
                 work_item_type="consumer",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"source_ref": "not-a-uuid"},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -136,13 +142,13 @@ class TestWorkItemRefCreateValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={
                 "source_ref": str(src.work_item_id),
                 "optional_ref": None,
@@ -154,13 +160,13 @@ class TestWorkItemRefCreateValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         holder, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="untyped_ref_holder",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"any_ref": str(src.work_item_id)},
         )
         assert holder.custom_fields["any_ref"] == str(src.work_item_id)
@@ -170,7 +176,7 @@ class TestWorkItemRefCreateValidation:
             regista.create_work_item(
                 workflow_name="ref_test",
                 work_item_type="untyped_ref_holder",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"any_ref": str(uuid.uuid4())},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -181,18 +187,18 @@ class TestWorkItemRefTransitionValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.transition(
-                consumer.work_item_id, "start", "a1",
+                consumer.work_item_id, "start", "agent:worker",
                 actor_metadata={"role": "agent"},
                 custom_fields={"optional_ref": str(uuid.uuid4())},
             )
@@ -202,24 +208,24 @@ class TestWorkItemRefTransitionValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         other_consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         with pytest.raises(RegistaError) as exc_info:
             regista.transition(
-                consumer.work_item_id, "start", "a1",
+                consumer.work_item_id, "start", "agent:worker",
                 actor_metadata={"role": "agent"},
                 custom_fields={"optional_ref": str(other_consumer.work_item_id)},
             )
@@ -230,23 +236,23 @@ class TestWorkItemRefTransitionValidation:
         src, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-1"},
         )
         src2, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="source",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"name": "src-2"},
         )
         consumer, _ = regista.create_work_item(
             workflow_name="ref_test",
             work_item_type="consumer",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"source_ref": str(src.work_item_id)},
         )
         regista.transition(
-            consumer.work_item_id, "start", "a1",
+            consumer.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
             custom_fields={"optional_ref": str(src2.work_item_id)},
         )
@@ -303,12 +309,16 @@ attempt_threshold: 3
 
 
 @pytest.fixture(params=["postgres", "in_memory"], scope="function")
-def multi_target_regista(request):
+def multi_target_regista(request, tmp_path):
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    keyset = make_v6_keyset(tmp_path)
     if request.param == "postgres":
         from regista import Regista
 
         project = f"test_wir_multi_{uuid.uuid4().hex[:8]}"
-        sub = Regista.create_project(DSN, project, KEY_PATH)
+        sub = Regista.create_project(DSN, project, keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(MULTI_TARGET_WORKFLOW_YAML)
         yield sub
         sub.close()
@@ -316,7 +326,8 @@ def multi_target_regista(request):
     else:
         from regista.testing import InMemoryRegista
 
-        sub = InMemoryRegista(project="test")
+        sub = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(MULTI_TARGET_WORKFLOW_YAML)
         yield sub
         sub.close()
@@ -327,13 +338,13 @@ class TestMultiTargetWorkItemRefCreateValidation:
         rev, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="review",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "rev-1"},
         )
         revision, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(rev.work_item_id)},
         )
         assert revision.custom_fields["upstream"] == str(rev.work_item_id)
@@ -342,13 +353,13 @@ class TestMultiTargetWorkItemRefCreateValidation:
         jury, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="jury",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "jury-1"},
         )
         revision, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(jury.work_item_id)},
         )
         assert revision.custom_fields["upstream"] == str(jury.work_item_id)
@@ -357,20 +368,20 @@ class TestMultiTargetWorkItemRefCreateValidation:
         rev, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="review",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "rev-1"},
         )
         other_revision, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(rev.work_item_id)},
         )
         with pytest.raises(RegistaError) as exc_info:
             multi_target_regista.create_work_item(
                 workflow_name="multi_ref_test",
                 work_item_type="revision",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"upstream": str(other_revision.work_item_id)},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -381,7 +392,7 @@ class TestMultiTargetWorkItemRefCreateValidation:
             multi_target_regista.create_work_item(
                 workflow_name="multi_ref_test",
                 work_item_type="revision",
-                actor_id="a1",
+                actor_id="agent:worker",
                 custom_fields={"upstream": str(uuid.uuid4())},
             )
         assert exc_info.value.code == ErrorCode.CUSTOM_FIELD_VIOLATION
@@ -391,23 +402,23 @@ class TestMultiTargetWorkItemRefCreateValidation:
         rev, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="review",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "rev-1"},
         )
         jury, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="jury",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "jury-1"},
         )
         revision, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(rev.work_item_id)},
         )
         multi_target_regista.transition(
-            revision.work_item_id, "start", "a1",
+            revision.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
             custom_fields={"upstream": str(jury.work_item_id)},
         )
@@ -418,24 +429,24 @@ class TestMultiTargetWorkItemRefCreateValidation:
         rev, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="review",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"title": "rev-1"},
         )
         revision, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(rev.work_item_id)},
         )
         revision2, _ = multi_target_regista.create_work_item(
             workflow_name="multi_ref_test",
             work_item_type="revision",
-            actor_id="a1",
+            actor_id="agent:worker",
             custom_fields={"upstream": str(rev.work_item_id)},
         )
         with pytest.raises(RegistaError) as exc_info:
             multi_target_regista.transition(
-                revision.work_item_id, "start", "a1",
+                revision.work_item_id, "start", "agent:worker",
                 actor_metadata={"role": "agent"},
                 custom_fields={"upstream": str(revision2.work_item_id)},
             )

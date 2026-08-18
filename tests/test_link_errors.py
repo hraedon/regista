@@ -15,11 +15,16 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_links_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # `register_workflow_file` emits a signed `workflow_registered` event, so the
+    # epoch has to be open before it runs.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -31,13 +36,13 @@ class TestLinkErrorPaths:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "A"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"severity": "major"},
         )
         with pytest.raises(RegistaError) as exc_info:
@@ -45,7 +50,7 @@ class TestLinkErrorPaths:
                 from_work_item_id=wi2.work_item_id,
                 to_work_item_id=wi1.work_item_id,
                 link_type="blocks",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.LINK_TYPE_NOT_ALLOWED
 
@@ -53,7 +58,7 @@ class TestLinkErrorPaths:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "A"},
         )
         phantom = uuid.uuid4()
@@ -62,7 +67,7 @@ class TestLinkErrorPaths:
                 from_work_item_id=wi.work_item_id,
                 to_work_item_id=phantom,
                 link_type="blocks",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.LINK_TARGET_NOT_FOUND
 
@@ -70,13 +75,13 @@ class TestLinkErrorPaths:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "A"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"severity": "major"},
         )
         with pytest.raises(RegistaError) as exc_info:
@@ -84,7 +89,7 @@ class TestLinkErrorPaths:
                 from_work_item_id=wi1.work_item_id,
                 to_work_item_id=wi2.work_item_id,
                 link_type="fixes",
-                actor_id="agent-1",
+                actor_id="agent:worker",
             )
         assert exc_info.value.code == ErrorCode.LINK_NOT_FOUND
 
@@ -92,20 +97,20 @@ class TestLinkErrorPaths:
         wi1, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"title": "A"},
         )
         wi2, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="bug",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={"severity": "major"},
         )
         regista.create_link(
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
 
         events_before = regista.read_events(work_item_id=wi1.work_item_id)
@@ -116,7 +121,7 @@ class TestLinkErrorPaths:
             from_work_item_id=wi1.work_item_id,
             to_work_item_id=wi2.work_item_id,
             link_type="fixes",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
 
         events_after = regista.read_events(work_item_id=wi1.work_item_id)

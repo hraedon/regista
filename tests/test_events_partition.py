@@ -43,11 +43,16 @@ attempt_threshold: 99
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_partition_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("partition_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # `register_workflow` emits a signed `workflow_registered` event, so the epoch
+    # has to be open first.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(WORKFLOW)
     yield sub
     sub.close()
@@ -77,7 +82,7 @@ class TestEventStorage:
         wi, _ = regista.create_work_item(
             workflow_name="partition_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={},
         )
         schema = regista._mgr.schema
@@ -99,7 +104,7 @@ class TestEventStorage:
         wi, _ = regista.create_work_item(
             workflow_name="partition_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={},
         )
 
@@ -125,13 +130,13 @@ class TestEventStorage:
         wi, _ = regista.create_work_item(
             workflow_name="partition_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={},
         )
         regista.transition(
             work_item_id=wi.work_item_id,
             transition_name="finish",
-            actor_id="agent-1",
+            actor_id="agent:worker",
         )
         start = datetime(2026, 1, 1, tzinfo=UTC)
         end = datetime(2026, 12, 31, tzinfo=UTC)
@@ -235,12 +240,12 @@ class TestEscalationUniquePerWorkItem:
         wi, _ = regista.create_work_item(
             workflow_name="partition_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             custom_fields={},
         )
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=60)
+        regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
+        regista.acquire_claim(wi.work_item_id, "agent:worker", ttl_seconds=60)
 
         events = regista.read_events(work_item_id=wi.work_item_id)
         escalated_events = [e for e in events if e.transition == "escalated"]

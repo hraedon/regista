@@ -251,12 +251,31 @@ class TestCatchupPolicySkip:
         assert updated["next_fire_at"] > now
 
 
-class TestCatchupPolicyFireAll:
-    def test_fire_all_fires_one_per_call(self):
-        from regista.testing import InMemoryRegista
+def _v6_in_memory(tmp_path):
+    """An ``InMemoryRegista`` on a clean v6 epoch, ``test_workflow`` registered.
 
-        s = InMemoryRegista(project="test")
-        s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
+    Only the two ``fire_all`` nodes below need this. A firing creates a work item
+    authored by *the scheduler*, and the bare ``"system:scheduler"`` literal the
+    legacy path used has no key-binding anchor — refused with
+    ``ACTOR_SIGNER_MISMATCH`` — which is why those two nodes were epoch-blocked and
+    the rest of this file (pure schedule arithmetic, no appends) never was.
+    """
+    from _v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    from regista.testing import InMemoryRegista
+
+    keyset = make_v6_keyset(tmp_path)
+    s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+    # Genesis before the workflow: the registration is a signed event in the open
+    # epoch, not a registry row.
+    open_v6_epoch(s, keyset)
+    s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
+    return s
+
+
+class TestCatchupPolicyFireAll:
+    def test_fire_all_fires_one_per_call(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
 
         now = datetime.now(UTC)
         start = now - timedelta(minutes=15)
@@ -281,11 +300,8 @@ class TestCatchupPolicyFireAll:
         assert wi2 is not None
         assert rule["next_fire_at"] == start + timedelta(minutes=10)
 
-    def test_fire_all_does_not_skip_past_slots(self):
-        from regista.testing import InMemoryRegista
-
-        s = InMemoryRegista(project="test")
-        s.register_workflow_file(str(Path(__file__).parent / "test_workflow.yaml"))
+    def test_fire_all_does_not_skip_past_slots(self, tmp_path):
+        s = _v6_in_memory(tmp_path)
 
         now = datetime.now(UTC)
         start = now - timedelta(minutes=15)

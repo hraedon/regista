@@ -71,11 +71,17 @@ def due_recurrences(mgr: ConnectionManager, now: datetime | None = None) -> list
 def fire_recurrence(
     mgr: ConnectionManager, keys: KeySet, metrics: Metrics, project: str, rule_id: uuid.UUID
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    from ._events import resolve_system_actor_id
     from ._recurrence import fire_recurrence as _fire
 
     with mgr.transaction() as conn:
         return _fire(
-            conn, rule_id, "system:scheduler", keys, metrics, project,
+            conn,
+            rule_id,
+            resolve_system_actor_id(conn, legacy_actor_id="system:scheduler"),
+            keys,
+            metrics,
+            project,
         )
 
 

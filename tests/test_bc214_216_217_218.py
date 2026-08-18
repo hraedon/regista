@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from pathlib import Path
 
 import pytest
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista._errors import ErrorCode, RegistaError
 from regista._keys import KeySet
@@ -342,70 +344,97 @@ work_item_types:
         required: true
 """
 
-    def _make_key_file(self, tmp_path, keys):
-        kf = tmp_path / "keys.json"
-        kf.write_text(json.dumps({"keys": keys}))
-        return str(kf)
+    #: The acting principals, canonical per ``TRUST-DOMAIN.md`` §2.1 — the bare
+    #: ``agent1`` these replace is refused at the v6 ingress. ``WRITER`` always holds an
+    #: ``actor`` key and creates the work item; the other two hold the non-actor roles
+    #: under test, and the list passed to ``make_v6_keyset`` and ``open_v6_epoch`` must
+    #: be identical or an unaccepted id is refused with ``KEY_BINDING_UNRESOLVED``.
+    WRITER = "agent:worker"
+    AUDITOR = "agent:auditor"
+    RECOVERY = "agent:recovery"
+    PRINCIPALS = (WRITER, AUDITOR, RECOVERY)
 
-    def test_actor_key_can_transition(self, tmp_path):
+    def _v6_project(self, tmp_path, *, roles=None):
+        """An in-memory project on a clean v6 epoch, with ``roles`` overriding.
+
+        ``make_v6_keyset`` writes ``role: "actor"`` for every principal because that is
+        what ``_v6_writer._writer_key`` requires. Rewriting one entry's role is how
+        BC-218's key-role policy is still exercised in the clean epoch: the bootstrap
+        key keeps ``actor`` so genesis and the standalone acceptances can be signed at
+        all, and the *acting* principal's key carries the role under test. The single
+        HMAC key the pre-epoch version of this test used is unusable here — a v6 event
+        must be Ed25519 and must be signed by a key bound to ``actor.principal_id``.
+        """
         from regista.testing import InMemoryRegista
 
-        key_path = self._make_key_file(tmp_path, [
-            {"key_id": "actor-key", "secret": SECRET, "status": "active", "role": "actor"},
-        ])
-        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
+        keyset = make_v6_keyset(tmp_path, principals=self.PRINCIPALS)
+        entries = []
+        for principal_id, key in keyset.keys.items():
+            entries.append({
+                "key_id": key.key_id,
+                "scheme": "ed25519",
+                "alg": "Ed25519",
+                "secret": base64.b64encode(key.seed).decode("ascii"),
+                "encoding": "base64",
+                "public_key": key.public_key_b64,
+                "principal_id": principal_id,
+                "role": (roles or {}).get(principal_id, "actor"),
+                "status": "active",
+            })
+        key_path = tmp_path / "roled_keys.json"
+        key_path.write_text(json.dumps({"keys": entries}))
+
+        sub = InMemoryRegista(project="test", hmac_key_path=str(key_path))
+        # The clean v6 epoch before the registration: `register_workflow` emits the
+        # signed `workflow_registered` event admission gate 1 requires, and there is no
+        # epoch to append it to until `open_v6_epoch` returns.
+        open_v6_epoch(sub, keyset, principals=self.PRINCIPALS)
         sub.register_workflow(self.WORKFLOW_YAML)
-        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        return sub
+
+    def test_actor_key_can_transition(self, tmp_path):
+        sub = self._v6_project(tmp_path)
+        wi, _ = sub.create_work_item(
+            "test_policy", "task", self.WRITER, custom_fields={"title": "t"},
+        )
         evt = sub.transition(
-            wi.work_item_id, "start", "agent1",
+            wi.work_item_id, "start", self.WRITER,
             actor_metadata={"role": "agent"},
         )
         assert evt.transition == "start"
         sub.close()
 
     def test_auditor_key_blocked_from_workflow_transition(self, tmp_path):
-        from regista.testing import InMemoryRegista
-
-        key_path = self._make_key_file(tmp_path, [
-            {"key_id": "aud-key", "secret": SECRET, "status": "active", "role": "auditor"},
-        ])
-        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
-        sub.register_workflow(self.WORKFLOW_YAML)
-        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        sub = self._v6_project(tmp_path, roles={self.AUDITOR: "auditor"})
+        wi, _ = sub.create_work_item(
+            "test_policy", "task", self.WRITER, custom_fields={"title": "t"},
+        )
         with pytest.raises(RegistaError) as exc:
             sub.transition(
-                wi.work_item_id, "start", "agent1",
+                wi.work_item_id, "start", self.AUDITOR,
                 actor_metadata={"role": "agent"},
             )
         assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
         sub.close()
 
     def test_auditor_key_blocked_from_append_event_transition(self, tmp_path):
-        from regista.testing import InMemoryRegista
-
-        key_path = self._make_key_file(tmp_path, [
-            {"key_id": "aud-key", "secret": SECRET, "status": "active", "role": "auditor"},
-        ])
-        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
-        sub.register_workflow(self.WORKFLOW_YAML)
-        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        sub = self._v6_project(tmp_path, roles={self.AUDITOR: "auditor"})
+        wi, _ = sub.create_work_item(
+            "test_policy", "task", self.WRITER, custom_fields={"title": "t"},
+        )
         with pytest.raises(RegistaError) as exc:
-            sub.append_event(wi.work_item_id, "agent1", transition="tool_call")
+            sub.append_event(wi.work_item_id, self.AUDITOR, transition="tool_call")
         assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED
         sub.close()
 
     def test_recovery_key_blocked_from_workflow_transition(self, tmp_path):
-        from regista.testing import InMemoryRegista
-
-        key_path = self._make_key_file(tmp_path, [
-            {"key_id": "rec-key", "secret": SECRET, "status": "active", "role": "recovery"},
-        ])
-        sub = InMemoryRegista(project="test", hmac_key_path=key_path)
-        sub.register_workflow(self.WORKFLOW_YAML)
-        wi, _ = sub.create_work_item("test_policy", "task", "agent1", custom_fields={"title": "t"})
+        sub = self._v6_project(tmp_path, roles={self.RECOVERY: "recovery"})
+        wi, _ = sub.create_work_item(
+            "test_policy", "task", self.WRITER, custom_fields={"title": "t"},
+        )
         with pytest.raises(RegistaError) as exc:
             sub.transition(
-                wi.work_item_id, "start", "agent1",
+                wi.work_item_id, "start", self.RECOVERY,
                 actor_metadata={"role": "agent"},
             )
         assert exc.value.code == ErrorCode.KEY_ROLE_NOT_PERMITTED

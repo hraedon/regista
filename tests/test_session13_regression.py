@@ -16,12 +16,24 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
+WORKER = "agent:worker"
+#: The reacquiring claimant the sweep race writes straight into the projection.
+OTHER = "agent:reviewer"
+
+
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_regression_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("regression_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to before `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -32,7 +44,7 @@ def _create_feature(regista, title="regression"):
     wi, _ = regista.create_work_item(
         workflow_name="test_workflow",
         work_item_type="feature",
-        actor_id="agent-1",
+        actor_id=WORKER,
         custom_fields={"title": title},
     )
     return wi
@@ -41,7 +53,7 @@ def _create_feature(regista, title="regression"):
 class TestSweepRaceCondition:
     def test_sweep_does_not_clobber_new_claim(self, regista):
         wi = _create_feature(regista, "sweep-race")
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=1)
 
         expired_at = datetime.now(UTC) - timedelta(seconds=10)
         with raw_transaction(regista) as conn:
@@ -67,7 +79,7 @@ class TestSweepRaceCondition:
 
     def test_sweep_preserves_claim_reacquired_between_delete_and_lock(self, regista):
         wi = _create_feature(regista, "sweep-race-2")
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=1)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=1)
 
         expired_at = datetime.now(UTC) - timedelta(seconds=10)
         with raw_transaction(regista) as conn:
@@ -79,7 +91,8 @@ class TestSweepRaceCondition:
             )
             conn.execute(
                 SQL(
-                    "UPDATE work_items_current SET claim_expires_at = %s, claimed_by = 'agent-2' "
+                    "UPDATE work_items_current "
+                    "SET claim_expires_at = %s, claimed_by = 'agent:reviewer' "
                     "WHERE work_item_id = %s"
                 ),
                 [datetime.now(UTC) + timedelta(seconds=300), wi.work_item_id],
@@ -88,13 +101,13 @@ class TestSweepRaceCondition:
         regista.sweep_expired_claims()
 
         refreshed = regista.get_work_item(wi.work_item_id)
-        assert refreshed.claimed_by == "agent-2"
+        assert refreshed.claimed_by == OTHER
 
 
 class TestBeforeSeqOrdering:
     def test_before_seq_returns_ascending_order(self, regista):
         wi = _create_feature(regista, "before-seq-order")
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", WORKER,
                             actor_metadata={"role": "agent"})
 
         events = regista.read_events(
@@ -106,7 +119,7 @@ class TestBeforeSeqOrdering:
 
     def test_before_seq_excludes_at_and_above(self, regista):
         wi = _create_feature(regista, "before-seq-excl")
-        regista.transition(wi.work_item_id, "start", "agent-1",
+        regista.transition(wi.work_item_id, "start", WORKER,
                             actor_metadata={"role": "agent"})
 
         events = regista.read_events(
@@ -121,20 +134,20 @@ class TestTtlSecondsValidation:
     def test_acquire_rejects_zero_ttl(self, regista):
         wi = _create_feature(regista, "ttl-zero")
         with pytest.raises(RegistaError) as exc_info:
-            regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=0)
+            regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=0)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_acquire_rejects_negative_ttl(self, regista):
         wi = _create_feature(regista, "ttl-neg")
         with pytest.raises(RegistaError) as exc_info:
-            regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=-5)
+            regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=-5)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
     def test_heartbeat_rejects_zero_ttl(self, regista):
         wi = _create_feature(regista, "ttl-heartbeat")
-        regista.acquire_claim(wi.work_item_id, "agent-1", ttl_seconds=300)
+        regista.acquire_claim(wi.work_item_id, WORKER, ttl_seconds=300)
         with pytest.raises(RegistaError) as exc_info:
-            regista.heartbeat_claim(wi.work_item_id, "agent-1", ttl_seconds=0)
+            regista.heartbeat_claim(wi.work_item_id, WORKER, ttl_seconds=0)
         assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
 
 

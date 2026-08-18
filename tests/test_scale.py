@@ -5,14 +5,19 @@ import uuid
 from pathlib import Path
 
 import pytest
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 
 from regista._testing import Metrics, poll_and_process_hooks, raw_transaction
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1; the bare legacy spellings are refused at the
+#: v6 ingress.
+ACTOR = "agent:worker"
+REVIEWER = "human:reviewer"
 
 slow = pytest.mark.slow
 pytestmark = slow
@@ -23,11 +28,16 @@ def pytest_configure(config):
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_scale_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("scale_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow_file` emits the
+    # signed `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -44,18 +54,18 @@ class TestReplayBenchmark:
             wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=ACTOR,
                 custom_fields={"title": f"Bench item {i}"},
             )
             for j in range(events_per_item - 1):
                 if j == 0:
                     regista.transition(
-                        wi.work_item_id, "start", "agent-1",
+                        wi.work_item_id, "start", ACTOR,
                         actor_metadata={"role": "agent"},
                     )
                 else:
                     regista.append_event(
-                        wi.work_item_id, "agent-1",
+                        wi.work_item_id, ACTOR,
                         transition=f"bench_note_{j}",
                         payload={"note": f"event {j}"},
                     )
@@ -82,41 +92,41 @@ class TestReplayBenchmark:
             wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=ACTOR,
                 custom_fields={"title": f"Long history item {i}"},
             )
             regista.transition(
-                wi.work_item_id, "start", "agent-1",
+                wi.work_item_id, "start", ACTOR,
                 actor_metadata={"role": "agent"},
             )
             regista.transition(
-                wi.work_item_id, "submit_review", "agent-1",
+                wi.work_item_id, "submit_review", ACTOR,
                 actor_metadata={"role": "agent"},
             )
             if i % 2 == 0:
                 regista.transition(
-                    wi.work_item_id, "approve", "reviewer-1",
+                    wi.work_item_id, "approve", REVIEWER,
                     actor_metadata={"role": "reviewer"},
                 )
                 used = 4
             else:
                 regista.transition(
-                    wi.work_item_id, "reject", "reviewer-1",
+                    wi.work_item_id, "reject", REVIEWER,
                     actor_metadata={"role": "reviewer"},
                 )
                 regista.transition(
-                    wi.work_item_id, "submit_review", "agent-1",
+                    wi.work_item_id, "submit_review", ACTOR,
                     actor_metadata={"role": "agent"},
                 )
                 regista.transition(
-                    wi.work_item_id, "approve", "reviewer-1",
+                    wi.work_item_id, "approve", REVIEWER,
                     actor_metadata={"role": "reviewer"},
                 )
                 used = 6
 
             for j in range(events_per_item - used - 1):
                 regista.append_event(
-                    wi.work_item_id, "agent-1",
+                    wi.work_item_id, ACTOR,
                     transition=f"note_{j}",
                     payload={"idx": j},
                 )
@@ -126,7 +136,7 @@ class TestReplayBenchmark:
                     from_work_item_id=wi.work_item_id,
                     to_work_item_id=prev_wi_id,
                     link_type="blocks",
-                    actor_id="agent-1",
+                    actor_id=ACTOR,
                 )
             prev_wi_id = wi.work_item_id
 
@@ -167,13 +177,13 @@ class TestLinkQueryBenchmark:
             src, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=ACTOR,
                 custom_fields={"title": f"Link src {i}"},
             )
             tgt, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="bug",
-                actor_id="agent-1",
+                actor_id=ACTOR,
                 custom_fields={"severity": "major"},
             )
             sources.append(src.work_item_id)
@@ -186,7 +196,7 @@ class TestLinkQueryBenchmark:
                     from_work_item_id=sources[i],
                     to_work_item_id=targets[t_idx],
                     link_type="fixes",
-                    actor_id="agent-1",
+                    actor_id=ACTOR,
                 )
 
         total_links = n_items * links_per_item
@@ -217,7 +227,7 @@ class TestHookThroughputBenchmark:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id=ACTOR,
             custom_fields={"title": "Hook bench"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)

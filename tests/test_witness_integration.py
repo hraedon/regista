@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 import pytest
-from _helpers import seed_precut_ed25519_witness
+from _helpers import DSN, WORKFLOW_PATH, seed_precut_ed25519_witness
 
 from regista._errors import RegistaError
 from regista.testing import drop_project_schema
 
-TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
-WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
-
 
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
+    # An Ed25519 actor-role keyset and an open v6 epoch. `tests/test_keys.json` is one
+    # HMAC key with no `principal_id`, which the clean epoch cannot sign with, and
+    # `open_v6_epoch` must precede `register_workflow_file` — the registration emits a
+    # signed `workflow_registered` event and there is no chain to append it to before
+    # genesis.
     project = f"test_wit_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -95,7 +97,7 @@ class TestWitnessReceipts:
             event_filter=None,
         )
         _wi, evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         receipts = regista.list_witness_receipts(event_id=evt.event_id)
@@ -109,7 +111,7 @@ class TestWitnessReceipts:
             event_filter={"transitions": ["close"]},
         )
         _wi, evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         receipts = regista.list_witness_receipts(event_id=evt.event_id)
@@ -124,7 +126,7 @@ class TestWitnessReceipts:
             event_filter={"transitions": ["start"]},
         )
         _wi, evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         receipts = regista.list_witness_receipts(event_id=evt.event_id)
@@ -134,11 +136,11 @@ class TestWitnessReceipts:
     def test_receipt_created_on_transition(self, regista):
         regista.register_witness("https://example.com/webhook")
         wi, _evt_create = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         evt_transition = regista.transition(
-            wi.work_item_id, "start", "actor-1",
+            wi.work_item_id, "start", "agent:worker",
             actor_metadata={"role": "agent"},
         )
         receipts = regista.list_witness_receipts(event_id=evt_transition.event_id)
@@ -147,11 +149,11 @@ class TestWitnessReceipts:
     def test_receipt_created_on_append_event(self, regista):
         regista.register_witness("https://example.com/webhook")
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         evt = regista.append_event(
-            wi.work_item_id, "actor-1",
+            wi.work_item_id, "agent:worker",
             transition="note",
         )
         receipts = regista.list_witness_receipts(event_id=evt.event_id)
@@ -160,7 +162,7 @@ class TestWitnessReceipts:
     def test_list_receipts_by_witness(self, regista):
         wid = regista.register_witness("https://example.com/webhook")
         _wi, _evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         receipts = regista.list_witness_receipts(witness_id=wid)
@@ -169,7 +171,7 @@ class TestWitnessReceipts:
     def test_deliver_pending_receipts_returns_zero(self, regista):
         regista.register_witness("https://unreachable.example.com/webhook")
         _wi, _evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         count = regista.deliver_pending_witness_receipts()
@@ -178,7 +180,7 @@ class TestWitnessReceipts:
     def test_unregister_abandons_pending_receipts(self, regista):
         wid = regista.register_witness("https://example.com/webhook")
         _wi, _evt = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "test"},
         )
         regista.unregister_witness(wid)
@@ -253,7 +255,7 @@ class TestBC297AsymmetricWitnessKeys:
         # transport, which is what this test still exercises.
         seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "bc297"},
         )
         events = regista.read_events(work_item_id=wi.work_item_id)
@@ -293,7 +295,7 @@ class TestBC297AsymmetricWitnessKeys:
         # transport, which is what this test still exercises.
         seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         _wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "bc297-missing"},
         )
 
@@ -328,7 +330,7 @@ class TestBC297AsymmetricWitnessKeys:
         # transport, which is what this test still exercises.
         seed_precut_ed25519_witness(regista, "http://localhost:19999/witness", pk)
         _wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "bc297-bad"},
         )
 
@@ -371,7 +373,7 @@ class TestBC297AsymmetricWitnessKeys:
             )
             conn.commit()
         _wi, _ = regista.create_work_item(
-            "test_workflow", "feature", "actor-1",
+            "test_workflow", "feature", "agent:worker",
             custom_fields={"title": "bc297-retries"},
         )
 

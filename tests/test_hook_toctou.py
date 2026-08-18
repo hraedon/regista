@@ -8,17 +8,24 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from _helpers import DSN
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 from psycopg.rows import dict_row
 
 from regista._errors import ErrorCode, RegistaError
 from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = os.environ.get(
-    "TEST_DSN",
-    "postgresql://regista_test:regista_test@localhost:5432/regista_test",
-)
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
+
+#: Canonical per ``TRUST-DOMAIN.md`` §2.1 — the v6 ingress refuses a bare legacy
+#: name like ``agent-1``. The hook *claimants* below stay ``alice``/``bob``: a hook
+#: lease owner is a ``hook_queue`` column, not an event actor, so it is outside the
+#: principal grammar.
+ACTOR = "agent:worker"
+#: The sidecar's two token identities. Distinct principals, because the subject here
+#: is one actor being refused a hook another actor claimed.
+SIDECAR_ALICE = "agent:worker"
+SIDECAR_BOB = "agent:reviewer"
 
 HOOK_WORKFLOW_YAML = """\
 name: toctou_hook_test
@@ -53,21 +60,26 @@ def _trigger_hook(regista):
     wi, _ = regista.create_work_item(
         workflow_name="toctou_hook_test",
         work_item_type="task",
-        actor_id="agent-1",
+        actor_id=ACTOR,
         custom_fields={},
     )
     regista.transition(
         work_item_id=wi.work_item_id,
         transition_name="complete",
-        actor_id="agent-1",
+        actor_id=ACTOR,
     )
     return wi
 
 
 class TestInMemoryHookOwnership:
     @pytest.fixture
-    def regista(self):
-        sub = InMemoryRegista(hmac_key_path=KEY_PATH)
+    def regista(self, tmp_path):
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(project="test_toctou", hmac_key_path=keyset.path)
+        # The clean v6 epoch before the registration: `register_workflow` emits the
+        # signed `workflow_registered` event admission gate 1 requires, and there is
+        # no epoch to append it to until `open_v6_epoch` returns.
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(HOOK_WORKFLOW_YAML)
         return sub
 
@@ -189,11 +201,13 @@ def _raw_conn(schema: str):
 
 class TestPostgresHookOwnership:
     @pytest.fixture(scope="class")
-    def regista(self):
+    def regista(self, tmp_path_factory):
         from regista import Regista
 
         project = f"test_toctou_{uuid.uuid4().hex[:8]}"
-        sub = Regista.create_project(DSN, project, KEY_PATH)
+        keyset = make_v6_keyset(tmp_path_factory.mktemp("toctou_keys"))
+        sub = Regista.create_project(DSN, project, keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_workflow(HOOK_WORKFLOW_YAML)
         yield sub
         sub.close()
@@ -353,17 +367,20 @@ def _make_token_file():
     token_sha256 = hashlib.sha256(raw_token.encode()).hexdigest()
     other_raw = "toctou-other-token-67890"
     other_sha256 = hashlib.sha256(other_raw.encode()).hexdigest()
+    # The sidecar resolves the *event* actor from the bearer token, so these two ids
+    # do have to be canonical (§2.1) — unlike the `alice`/`bob` hook lease owners in
+    # the two classes above, which never reach the writer.
     data = {
         "tokens": [
             {
                 "token_sha256": token_sha256,
-                "actor_id": "alice",
+                "actor_id": SIDECAR_ALICE,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent", "admin"],
             },
             {
                 "token_sha256": other_sha256,
-                "actor_id": "bob",
+                "actor_id": SIDECAR_BOB,
                 "actor_kind": "agent",
                 "allowed_roles": ["agent", "admin"],
             },
@@ -384,11 +401,13 @@ def token_file():
 
 
 @pytest.fixture(scope="module")
-def sidecar_regista():
+def sidecar_regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_toctou_sidecar_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("toctou_sidecar_keys"))
+    sub = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(sub, keyset)
     sub.register_workflow(HOOK_WORKFLOW_YAML)
     yield sub
     sub.close()
@@ -428,8 +447,8 @@ class TestSidecarHookOwnership:
     def test_complete_rejects_wrong_actor(
         self, sidecar_client, alice_headers, bob_headers, sidecar_regista,
     ):
-        sidecar_regista.register_actor_role("alice", "agent")
-        sidecar_regista.register_actor_role("bob", "agent")
+        sidecar_regista.register_actor_role(SIDECAR_ALICE, "agent")
+        sidecar_regista.register_actor_role(SIDECAR_BOB, "agent")
 
         resp = sidecar_client.post(
             "/v1/create_work_item",

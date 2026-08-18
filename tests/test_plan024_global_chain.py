@@ -16,15 +16,25 @@ KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
 
+AGENT = "agent:worker"
+REVIEWER = "human:reviewer"
+
+
 @pytest.fixture
-def regista():
+def regista(tmp_path):
     from regista import Regista
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     project = f"test_p024_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # Genesis before registration: `register_workflow_file` emits the signed
+    # `workflow_registered` event and has no epoch to append it to before
+    # `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset)
     sub.register_workflow_file(WORKFLOW_PATH)
-    sub.register_actor_role("agent-1", "agent")
-    sub.register_actor_role("reviewer-1", "reviewer")
+    sub.register_actor_role(AGENT, "agent")
+    sub.register_actor_role(REVIEWER, "reviewer")
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -40,7 +50,7 @@ class TestPlan024ConcurrentGlobalChain:
             wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=AGENT,
                 custom_fields={"title": f"p024-{i}"},
             )
             work_items.append(wi)
@@ -51,13 +61,13 @@ class TestPlan024ConcurrentGlobalChain:
             try:
                 wi = work_items[idx]
                 regista.transition(
-                    wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"}
+                    wi.work_item_id, "start", AGENT, actor_metadata={"role": "agent"}
                 )
                 regista.transition(
-                    wi.work_item_id, "submit_review", "agent-1", actor_metadata={"role": "agent"}
+                    wi.work_item_id, "submit_review", AGENT, actor_metadata={"role": "agent"}
                 )
                 regista.transition(
-                    wi.work_item_id, "approve", "reviewer-1", actor_metadata={"role": "reviewer"}
+                    wi.work_item_id, "approve", REVIEWER, actor_metadata={"role": "reviewer"}
                 )
             except Exception as e:
                 errors.append(e)
@@ -322,23 +332,27 @@ class TestPlan024VerifierHashWalk:
                 f"chain tail changed under permutation {[e['event_id'] for e in perm]}"
             )
 
-    def test_in_memory_replay_walks_chain(self):
-        sub = InMemoryRegista(project="test_p024_im", hmac_key_path=KEY_PATH)
+    def test_in_memory_replay_walks_chain(self, tmp_path):
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path)
+        sub = InMemoryRegista(project="test_p024_im", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset)
         sub.register_workflow_file(WORKFLOW_PATH)
-        sub.register_actor_role("agent-1", "agent")
+        sub.register_actor_role(AGENT, "agent")
 
         items = []
         for i in range(5):
             wi, _ = sub.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-1",
+                actor_id=AGENT,
                 custom_fields={"title": f"im-{i}"},
             )
             items.append(wi)
 
         for wi in items:
-            sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata={"role": "agent"})
+            sub.transition(wi.work_item_id, "start", AGENT, actor_metadata={"role": "agent"})
 
         report = sub.replay()
         assert report.halted == 0
@@ -359,10 +373,13 @@ class TestPlan024GenesisRace:
     """
 
     def test_concurrent_genesis_single_root(self, regista):
-        # Fresh schema: fire N create_work_item concurrently so their genesis
-        # ("created") events race for the single NULL prev_global_event_hash
-        # slot. The sentinel row (migration 035) guarantees FOR UPDATE always
-        # has a row to lock, so only one event may chain from NULL.
+        # Fire N create_work_item concurrently against the single NULL
+        # prev_global_event_hash slot. The sentinel row (migration 035)
+        # guarantees FOR UPDATE always has a row to lock, so only one event may
+        # chain from NULL. On the clean v6 epoch the event holding that slot is
+        # `project_initialized` rather than a racing `created`, so the invariant
+        # asserted below — exactly one NULL prev link, whatever else raced — is
+        # now also what makes the epoch root unique.
         num_workers = 8
         errors: list[Exception] = []
         created: list = []
@@ -372,7 +389,7 @@ class TestPlan024GenesisRace:
                 wi, _ = regista.create_work_item(
                     workflow_name="test_workflow",
                     work_item_type="feature",
-                    actor_id="agent-1",
+                    actor_id=AGENT,
                     custom_fields={"title": f"p024-gen-{idx}"},
                 )
                 created.append(wi.work_item_id)

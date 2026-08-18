@@ -5,21 +5,38 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from _v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, open_v6_epoch
 
 from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
+
+NUM_WORKERS = 20
+
+#: One canonical principal per concurrent writer (``TRUST-DOMAIN.md`` §2.1). The v6
+#: writer requires ``entry.principal_id == actor_id`` — there is no shared signing key —
+#: so twenty concurrent appenders need twenty keys, and the list passed to
+#: ``make_v6_keyset`` and to ``open_v6_epoch`` must be identical or the unaccepted ids
+#: are refused with ``KEY_BINDING_UNRESOLVED``.
+WORKERS = tuple(f"agent:worker-{i}" for i in range(NUM_WORKERS))
+CREATOR = "agent:worker"
+REVIEWER = "human:reviewer"
+PRINCIPALS = (*ACTOR_PRINCIPALS, *WORKERS)
 
 
 @pytest.fixture(scope="module")
-def regista():
+def regista(tmp_path_factory):
     from regista import Regista
 
     project = f"test_conc_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
+    keyset = make_v6_keyset(tmp_path_factory.mktemp("conc_keys"), principals=PRINCIPALS)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch before the registration: `register_workflow_file` emits
+    # the signed `workflow_registered` event admission gate 1 requires, and there
+    # is no epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(sub, keyset, principals=PRINCIPALS)
     sub.register_workflow_file(WORKFLOW_PATH)
     yield sub
     sub.close()
@@ -31,11 +48,11 @@ class TestAC28ConcurrentSeqGapFree:
         wi, _ = regista.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-main",
+            actor_id=CREATOR,
             custom_fields={"title": "AC-28 concurrency"},
         )
 
-        num_workers = 20
+        num_workers = NUM_WORKERS
         events_per_worker = 5
         total = num_workers * events_per_worker
         errors: list[Exception] = []
@@ -47,7 +64,7 @@ class TestAC28ConcurrentSeqGapFree:
                 for i in range(events_per_worker):
                     evt = regista.append_event(
                         work_item_id=wi.work_item_id,
-                        actor_id=f"worker-{worker_id}",
+                        actor_id=WORKERS[worker_id],
                         transition=f"concurrent_{worker_id}_{i}",
                     )
                     local_seqs.append(evt.event_seq)
@@ -74,7 +91,7 @@ class TestAC28ConcurrentSeqGapFree:
             wi, _ = regista.create_work_item(
                 workflow_name="test_workflow",
                 work_item_type="feature",
-                actor_id="agent-main",
+                actor_id=CREATOR,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": f"AC-28 trans {i}"},
             )
@@ -87,19 +104,19 @@ class TestAC28ConcurrentSeqGapFree:
                 regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="start",
-                    actor_id="agent-1",
+                    actor_id=CREATOR,
                     actor_metadata={"role": "agent"},
                 )
                 regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="submit_review",
-                    actor_id="agent-1",
+                    actor_id=CREATOR,
                     actor_metadata={"role": "agent"},
                 )
                 regista.transition(
                     work_item_id=wi.work_item_id,
                     transition_name="approve",
-                    actor_id="reviewer-1",
+                    actor_id=REVIEWER,
                     actor_metadata={"role": "reviewer"},
                 )
             except Exception as e:

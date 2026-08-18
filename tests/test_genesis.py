@@ -19,6 +19,7 @@ from regista._errors import ErrorCode, RegistaError
 from regista._event_store import InMemoryEventStore
 from regista._genesis import (
     admit_legacy_append,
+    check_legacy_append,
     first_write_admission,
     validate_load_bearing_fields,
 )
@@ -289,9 +290,26 @@ def test_postgres_genesis_is_single_and_recoverable(tmp_path: Path) -> None:
         assert recovered.event_hash == written.event_hash
         assert recovered.project_instance_id == written.project_instance_id
 
-        with pytest.raises(RegistaError) as legacy:
+        # Post-genesis the ordinary API is no longer the legacy writer: it routes to
+        # `_v6_writer.append_v6_event`, so it gets PAST the epoch door and is then
+        # refused by the v6 path's own contract check — this work item does not
+        # exist. Asserting V6_EPOCH_OPEN here would now be asserting that P1.7's
+        # wiring is absent.
+        with pytest.raises(RegistaError) as routed:
             regista.append_event(uuid.uuid4(), "agent:genesis-probe")
-        assert legacy.value.code is ErrorCode.V6_EPOCH_OPEN
+        assert routed.value.code is ErrorCode.WORK_ITEM_NOT_FOUND
+
+        # The invariant this test has always been about — a LEGACY writer cannot
+        # extend the opened epoch (EPOCH-RESET.md §5.1) — is now pinned at the place
+        # that enforces it, rather than through an ordinary-API call whose meaning
+        # changed underneath it. Both doors: the check and the admit.
+        with regista._mgr.transaction() as conn:
+            with pytest.raises(RegistaError) as legacy_check:
+                check_legacy_append(conn, writer="test.legacy_probe")
+            assert legacy_check.value.code is ErrorCode.V6_EPOCH_OPEN
+            with pytest.raises(RegistaError) as legacy_admit:
+                admit_legacy_append(conn, writer="test.legacy_probe")
+            assert legacy_admit.value.code is ErrorCode.V6_EPOCH_OPEN
 
         with pytest.raises(RegistaError) as second:
             regista.write_genesis(_envelope(public_key), gate_passed=True)

@@ -104,9 +104,19 @@ def _mgr(store):
 
 
 def _snapshot(store) -> list[tuple]:
-    """Every column of every row, ordered — the byte-for-byte comparison surface."""
-    with psycopg.connect(store.dsn, autocommit=True) as conn:
-        conn.execute(f'SET search_path TO "{store.project}"')
+    """Every column of every row, ordered — the byte-for-byte comparison surface.
+
+    Takes anything naming a schema: a ``TrustLogStore`` (``.dsn`` + ``.project``) or a
+    ``Regista`` handle, which carries ``.project`` but no ``.dsn`` — the ceremony
+    round-trip reads the *ordinary* project's projection, so both shapes are needed.
+    """
+    dsn = getattr(store, "dsn", None) or DSN
+    return _snapshot_of(dsn, store.project)
+
+
+def _snapshot_of(dsn: str, project: str) -> list[tuple]:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f'SET search_path TO "{project}"')
         rows = conn.execute(
             f"SELECT {_COLUMNS} FROM principal_keys "
             "ORDER BY principal_id, key_id"
@@ -912,44 +922,77 @@ class TestCeremonyPathRoundTrip:
     Each was a permanent ``field_mismatch``. This test drives the ceremony's actual
     code path and asserts every compared column reproduces byte-for-byte.
 
-    **The append gate is bypassed deliberately, and only the gate.** ``commit()``
-    appends through the legacy writer, which P1.2 refuses on both sides of genesis
-    (``GENESIS_REQUIRED`` / ``V6_EPOCH_OPEN``) — that is P1.7's package. Stubbing the
-    two admission checks simulates the post-P1.7 writer so the writer/rebuild
-    contract is testable now, before P1.7 depends on it. Everything else — payload
-    construction, validation, the append, the appliers, the rebuild — is the real
-    code path.
+    **Nothing is stubbed any more.** While P1.7 was outstanding this class stubbed the
+    append gate, because ``commit()`` appends through the legacy writer and P1.2
+    refuses that on both sides of genesis. P1.7's writer landed, so the ceremony now
+    runs on an ordinary project with a genuinely open v6 epoch and its event is
+    signed, key-bound and chained by ``_v6_writer.append_v6_event``.
+
+    **Known topology debt, stated rather than hidden.** ``commit()`` appends
+    ``principal_key_enrolled`` — a *trust-log* transition (§5.3) — to the **project**
+    chain, because that is where the only production append path leads. §5.2 puts it
+    on the trust-log chain, and §5.9's column split (``source_event_hash`` = the
+    trust-log event, ``acceptance_event_hash`` = the project event) says the same.
+    Relocating it needs a production trust-log writer, which does not exist: the
+    trust-log chain is written only by ``tests/_trust_log_fixtures``, and
+    ``append_v6_event`` cannot serve it because a trust-log project has no
+    ``project_identity`` (its genesis is ``trust_domain_established``, not
+    ``project_initialized``). So this class asserts the writer/rebuild contract on one
+    chain, which is what production does today; the cross-chain correction is tracked
+    separately and is not claimed here.
     """
 
-    def _project_with_identity(self, trust_store):
+    def _project_with_identity(self, trust_store, tmp_path):
+        """A SECOND, ORDINARY project with a real v6 epoch — not the trust log.
+
+        This used to build a ``Regista`` on ``trust_store.project`` and INSERT a fake
+        ``project_identity`` row there. That was the P1.7 Finding-4 defect: the trust
+        log is a **separate project chain** (``TRUST-DOMAIN.md`` §5.2 — "one
+        estate-wide project, with its own ``project_instance_id``"), so a fixture
+        that puts a project identity on the trust log's schema models a state
+        production cannot produce, and it is what made the genesis admission rule
+        (``events`` must be empty) look self-contradictory. It is not.
+
+        The two chains agree on ``trust_domain_id`` and on nothing else — that is the
+        whole point of §6.6's cross-chain ordering window — so the domain is passed
+        through to the genesis envelope and the project chain is opened for real.
+
+        Returns ``(handle, keyset)``; the caller closes the handle and drops the
+        schema (WI-243's leak guard fails the session otherwise).
+        """
+        from _v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, open_v6_epoch
+
         from regista import Regista
 
-        sub = Regista(DSN, trust_store.project, KEY_PATH)
-        with sub._mgr.transaction() as conn:
-            conn.execute(
-                "INSERT INTO project_identity (id, project_instance_id, "
-                "trust_domain_id, genesis_event_id, genesis_event_hash, "
-                "principal_id, key_id, scheme_id, key_fingerprint) "
-                "VALUES (TRUE, %s, %s, %s, %s, %s, %s, %s, %s)",
-                [
-                    trust_store.project_instance_id,
-                    trust_store.trust_domain_id,
-                    str(uuid.uuid4()),
-                    b"\x00" * 32,
-                    "agent:genesis",
-                    "pk-genesis",
-                    "ed25519",
-                    "ed25519:sha256:" + "0" * 64,
-                ],
-            )
-        return sub
+        project = f"p22_ceremony_{uuid.uuid4().hex[:8]}"
+        # The ceremony's own actors, which are NOT in ACTOR_PRINCIPALS: `commit()`
+        # signs as `human:requester`, and the enrolled subject is `agent:ceremony`.
+        # A keyset missing either is refused with ACTOR_SIGNER_MISMATCH, which is
+        # correct and is not worked around.
+        principals = (*ACTOR_PRINCIPALS, "human:requester", "agent:ceremony")
+        keyset = make_v6_keyset(tmp_path, principals=principals, filename="ceremony_keys.json")
+        handle = Regista.create_project(DSN, project, keyset.path)
+        open_v6_epoch(
+            handle,
+            keyset,
+            principals=principals,
+            trust_domain_id=trust_store.trust_domain_id,
+        )
+        return handle, keyset
 
-    def _run_ceremony(self, sub, monkeypatch, *, reason="policy"):
-        """Full commit() with ONLY the P1.7 append gate stubbed out."""
+    def _run_ceremony(self, sub, *, reason="policy"):
+        """Full ``commit()`` through the REAL v6 writer — no stubs at all.
+
+        Three monkeypatches used to stand in for the P1.7 append gate
+        (``v6_epoch_open`` → False, ``check_legacy_append`` / ``admit_legacy_append``
+        → no-ops). All three are gone: with the project's epoch genuinely open, the
+        legacy funnel routes to ``_v6_writer.append_v6_event``, so the ceremony's
+        event is signed, key-bound and chained for real. Payload construction,
+        validation, the appliers and the rebuild were always real; now the append is
+        too.
+        """
         import nacl.signing
 
-        from regista import _genesis as genesis_mod
-        from regista._event_store import PostgresEventStore
         from regista.principal_lifecycle import (
             Approval,
             CustodyMode,
@@ -958,16 +1001,6 @@ class TestCeremonyPathRoundTrip:
             PrincipalKind,
             PrincipalLifecycle,
             ProofFormat,
-        )
-
-        # Simulate the post-P1.7 writer: admission passes, chain head stays null.
-        monkeypatch.setattr(PostgresEventStore, "check_legacy_append", lambda self: None)
-        monkeypatch.setattr(
-            PostgresEventStore, "admit_legacy_append", lambda self: None
-        )
-        monkeypatch.setattr(genesis_mod, "check_legacy_append", lambda conn, *, writer: None)
-        monkeypatch.setattr(
-            genesis_mod, "admit_legacy_append", lambda conn, *, writer: None
         )
 
         private_key = nacl.signing.SigningKey.generate()
@@ -1010,13 +1043,13 @@ class TestCeremonyPathRoundTrip:
         return receipt, public_key
 
     def test_the_ceremony_path_round_trips_byte_for_byte(
-        self, trust_store, monkeypatch,
+        self, trust_store, tmp_path,
     ):
-        sub = self._project_with_identity(trust_store)
+        sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            receipt, public_key = self._run_ceremony(sub, monkeypatch)
+            receipt, public_key = self._run_ceremony(sub)
 
-            before = _snapshot(trust_store)
+            before = _snapshot(sub)
             assert len(before) == 1, "the ceremony must have written exactly one row"
 
             # No divergence: the ceremony's row is what the rebuild derives.
@@ -1029,45 +1062,56 @@ class TestCeremonyPathRoundTrip:
 
             # ...and an applied rebuild reproduces every compared column exactly.
             rebuild_projection(sub._mgr, project=sub.project)
-            after = _snapshot(trust_store)
+            after = _snapshot(sub)
             assert after == before, "an applied rebuild rewrote the ceremony's row"
             assert receipt.key_id
             assert before[0][3] == public_key  # public_key column
         finally:
+            _sub_project = sub.project
             sub.close()
+            drop_project_schema(DSN, _sub_project)
 
-    def test_the_ceremony_row_records_the_trust_domain(self, trust_store, monkeypatch):
+    def test_the_ceremony_row_records_the_trust_domain(self, trust_store, tmp_path):
         """The column that was silently NULL while the payload carried the UUID."""
         from regista._principal_keys import get_active_key
 
-        sub = self._project_with_identity(trust_store)
+        sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            self._run_ceremony(sub, monkeypatch)
+            self._run_ceremony(sub)
             entry = get_active_key(sub._mgr, "agent:ceremony")
             assert entry.trust_domain_id == trust_store.trust_domain_id
             assert entry.source_event_hash is not None
             assert entry.provenance == "v6_sourced"
         finally:
+            _sub_project = sub.project
             sub.close()
+            drop_project_schema(DSN, _sub_project)
 
     def test_the_ceremony_row_and_its_event_agree_on_valid_from(
-        self, trust_store, monkeypatch,
+        self, trust_store, tmp_path,
     ):
         """One clock read, not two: the row's valid_from IS the payload's not_before."""
         import json as _json
 
         from regista._principal_keys import get_active_key
 
-        sub = self._project_with_identity(trust_store)
+        sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            self._run_ceremony(sub, monkeypatch)
+            self._run_ceremony(sub)
             entry = get_active_key(sub._mgr, "agent:ceremony")
-            with psycopg.connect(trust_store.dsn, autocommit=True) as conn:
-                conn.execute(f'SET search_path TO "{trust_store.project}"')
+            # The ceremony's event is on the ORDINARY project's chain, which is where
+            # the only production append path leads (see the class docstring's
+            # topology note). Reading it from the trust-log schema found nothing.
+            with psycopg.connect(DSN, autocommit=True) as conn:
+                conn.execute(f'SET search_path TO "{sub.project}"')
                 row = conn.execute(
                     "SELECT payload FROM events WHERE transition = %s",
                     [PRINCIPAL_KEY_ENROLLED],
                 ).fetchone()
+            assert row is not None, (
+                "the ceremony appended no principal_key_enrolled event to the "
+                "project chain"
+            )
             payload = row[0] if not isinstance(row[0], str) else _json.loads(row[0])
             from regista._trust_log import parse_principal_key_enrolled
 
@@ -1076,10 +1120,12 @@ class TestCeremonyPathRoundTrip:
             assert entry.key_id == parsed.key.key_id
             assert entry.registered_by == parsed.authorized_by.principal_id
         finally:
+            _sub_project = sub.project
             sub.close()
+            drop_project_schema(DSN, _sub_project)
 
     def test_a_revocation_with_an_out_of_set_reason_round_trips(
-        self, trust_store, monkeypatch,
+        self, trust_store, tmp_path,
     ):
         """B1-prime item 3: the write path used the RAW reason, the payload a mapped one.
 
@@ -1095,9 +1141,9 @@ class TestCeremonyPathRoundTrip:
             RevocationRequest,
         )
 
-        sub = self._project_with_identity(trust_store)
+        sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            receipt, _public_key = self._run_ceremony(sub, monkeypatch)
+            receipt, _public_key = self._run_ceremony(sub)
 
             lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
             request = RevocationRequest(
@@ -1132,12 +1178,14 @@ class TestCeremonyPathRoundTrip:
             # Mapped, on BOTH sides — not the raw "operator-said-so".
             assert rows[0].revoked_reason == "unspecified"
 
-            before = _snapshot(trust_store)
+            before = _snapshot(sub)
             report = check_projection_consistent(sub._mgr, project=sub.project)
             assert report.consistent is True, (
                 f"{[(d.kind, d.fields) for d in report.differences]}"
             )
             rebuild_projection(sub._mgr, project=sub.project)
-            assert _snapshot(trust_store) == before
+            assert _snapshot(sub) == before
         finally:
+            _sub_project = sub.project
             sub.close()
+            drop_project_schema(DSN, _sub_project)

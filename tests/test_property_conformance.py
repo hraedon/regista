@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from _helpers import DSN, KEY_PATH
+from _v6_fixtures import make_v6_keyset, open_v6_epoch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -12,8 +14,6 @@ from regista._errors import RegistaError
 from regista.testing import InMemoryRegista, drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
 
@@ -27,6 +27,18 @@ VALID_TRANSITIONS = {
 ACTOR_IDS = ["agent-1", "agent-2", "reviewer-1"]
 ROLES = ["agent", "reviewer"]
 ACTOR_ROLE_MAP = {"agent-1": "agent", "agent-2": "agent", "reviewer-1": "reviewer"}
+
+#: Canonical principal ids (TRUST-DOMAIN.md §2.1) for the three nodes that run on a
+#: **clean v6 epoch**. A second list rather than a rename of ``ACTOR_IDS`` on
+#: purpose: the other three nodes in this class were never epoch-blocked — they
+#: compare *error codes* across backends over deliberately-invalid input and pass
+#: pre-genesis today. Renaming the shared list would drag them onto the v6 route as
+#: a side effect of migrating their neighbours, and their recorded behaviour is not
+#: this change's to alter.
+V6_AGENT_1 = "agent:worker"
+V6_AGENT_2 = "agent:reviewer"
+V6_REVIEWER = "human:reviewer"
+V6_ACTOR_IDS = [V6_AGENT_1, V6_AGENT_2, V6_REVIEWER]
 
 
 @st.composite
@@ -423,6 +435,39 @@ def _exec_op_adversarial(backend, op, work_items):
     return ("noop", "unknown")
 
 
+@pytest.fixture(scope="module")
+def v6_keyset(tmp_path_factory):
+    """One Ed25519 keyset for every hypothesis example in this module.
+
+    **Module-scoped deliberately**: hypothesis refuses a function-scoped fixture
+    under ``@given`` (``function_scoped_fixture`` health check), and one keyset can
+    serve any number of projects — a key file is not project-local, only the
+    ``principal_key_accepted`` events are, and ``open_v6_epoch`` writes fresh ones
+    into each project it opens.
+    """
+    return make_v6_keyset(tmp_path_factory.mktemp("prop_keys"), principals=V6_ACTOR_IDS)
+
+
+def _v6_pair(keyset, project):
+    """A Postgres/in-memory pair, both on a clean v6 epoch, workflow registered.
+
+    Both sides get an epoch, not just Postgres. A migrated Postgres project beside a
+    legacy in-memory one would compare two backends running *different* writers —
+    and since the system actor these nodes exercise (auto-escalation) resolves per
+    epoch, that mismatch is exactly the divergence this file exists to catch.
+    """
+    from regista import Regista
+
+    real = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(real, keyset, principals=V6_ACTOR_IDS)
+    real.register_workflow(WORKFLOW_YAML)
+
+    mem = InMemoryRegista(project="test", hmac_key_path=keyset.path)
+    open_v6_epoch(mem, keyset, principals=V6_ACTOR_IDS)
+    mem.register_workflow(WORKFLOW_YAML)
+    return real, mem
+
+
 @pytest.mark.slow
 class TestPropertyBasedConformance:
     @settings(
@@ -477,30 +522,25 @@ class TestPropertyBasedConformance:
             st.fixed_dictionaries(
                 {
                     "op": st.just("claim"),
-                    "actor_id": st.sampled_from(ACTOR_IDS),
+                    "actor_id": st.sampled_from(V6_ACTOR_IDS),
                     "ttl": st.integers(min_value=60, max_value=600),
                 }
             ),
             max_size=10,
         )
     )
-    def test_claim_contention_sequence(self, claim_ops):
-        from regista import Regista
-
+    def test_claim_contention_sequence(self, claim_ops, v6_keyset):
         project = f"prop_claim_{uuid.uuid4().hex[:8]}"
-        real = Regista.create_project(DSN, project, KEY_PATH)
-        real.register_workflow(WORKFLOW_YAML)
-        mem = InMemoryRegista(project="test")
-        mem.register_workflow(WORKFLOW_YAML)
+        real, mem = _v6_pair(v6_keyset, project)
 
         try:
             real_wi, _ = real.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
             mem_wi, _ = mem.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
@@ -526,28 +566,23 @@ class TestPropertyBasedConformance:
     @given(
         n_claims=st.integers(min_value=1, max_value=5),
     )
-    def test_escalation_equivalence(self, n_claims):
-        from regista import Regista
-
+    def test_escalation_equivalence(self, n_claims, v6_keyset):
         project = f"prop_esc_{uuid.uuid4().hex[:8]}"
-        real = Regista.create_project(DSN, project, KEY_PATH)
-        real.register_workflow(WORKFLOW_YAML)
-        mem = InMemoryRegista(project="test")
-        mem.register_workflow(WORKFLOW_YAML)
+        real, mem = _v6_pair(v6_keyset, project)
 
         try:
             real_wi, _ = real.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
             mem_wi, _ = mem.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
 
-            actors = ["agent-1", "agent-2"]
+            actors = [V6_AGENT_1, V6_AGENT_2]
             for i in range(n_claims):
                 actor = actors[i % len(actors)]
                 _safe_claim(real, real_wi.work_item_id, actor, 1)
@@ -565,23 +600,18 @@ class TestPropertyBasedConformance:
 
     @settings(max_examples=50, deadline=None)
     @given(data=st.data())
-    def test_transition_sequence_equivalence(self, data):
-        from regista import Regista
-
+    def test_transition_sequence_equivalence(self, data, v6_keyset):
         project = f"prop_trans_{uuid.uuid4().hex[:8]}"
-        real = Regista.create_project(DSN, project, KEY_PATH)
-        real.register_workflow(WORKFLOW_YAML)
-        mem = InMemoryRegista(project="test")
-        mem.register_workflow(WORKFLOW_YAML)
+        real, mem = _v6_pair(v6_keyset, project)
 
         try:
             real_wi, _ = real.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
             mem_wi, _ = mem.create_work_item(
-                "test_workflow", "feature", "agent-1",
+                "test_workflow", "feature", V6_AGENT_1,
                 actor_metadata={"role": "agent"},
                 custom_fields={"title": "test"},
             )
@@ -592,7 +622,7 @@ class TestPropertyBasedConformance:
                 ("approve", "reviewer"),
             ]
             for t_name, t_role in transitions:
-                actor = "agent-1" if t_role == "agent" else "reviewer-1"
+                actor = V6_AGENT_1 if t_role == "agent" else V6_REVIEWER
                 real_evt = real.transition(
                     real_wi.work_item_id, t_name, actor,
                     actor_metadata={"role": t_role},
