@@ -93,7 +93,9 @@ v6 writes. The proposal therefore adds:
 >
 > **AMENDED 2026-08-18 (owner-approved; IMPLEMENTATION-PLAN.md P1.7 carries the full
 > record).** The emptying criterion is evaluated at the **joint completion of P1.7 and
-> WI-287**: 167 of the manifest's nodes are blocked by the in-memory backend's epoch
+> WI-287**: a measured tranche of the manifest's nodes (217 by the WI-287 causal
+> classification; the initially quoted 167 name-matching figure is superseded) is
+> blocked by the in-memory backend's epoch
 > refusal — §2.3's D2 territory, decided as WI-287 after this wording was ratified — and
 > P1.7 owns only the Postgres-blocked population. Ledger and green-suite clauses unchanged.
 
