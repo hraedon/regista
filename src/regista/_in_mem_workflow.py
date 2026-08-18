@@ -316,7 +316,6 @@ class InMemWorkflowMixin(_InMemoryBase):
         self,
         *,
         continue_on_revoked: bool = False,
-        verify_timestamps: bool = False,
         verify_principal_binding: bool = False,
         work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:

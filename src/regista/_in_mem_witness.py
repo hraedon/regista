@@ -439,9 +439,6 @@ class InMemWitnessMixin(_InMemoryBase):
     def sweep_stuck_witness_receipts(self, max_age_seconds: int = 300) -> int:
         return self.witnesses.sweep_stuck(max_age_seconds)  # type: ignore[no-any-return]
 
-    def sweep_stale_timestamp_batches(self, max_age_seconds: int = 300) -> int:
-        return 0
-
     def _try_create_witness_receipts(self, event: Event) -> None:
         from ._witness import event_matches_filter
 

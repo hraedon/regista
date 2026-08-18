@@ -243,7 +243,6 @@ class TestVerifyVerbsJsonExitCode:
             "global_chain_ok": False,
             "global_chain_error": "hash mismatch at seq 4",
             "work_item_chain_ok": True,
-            "segment_chain_ok": True,
             "errors": ["No public key for key_id 'pk_deadbeef' in bundle registry"],
         }
         monkeypatch.setattr(
@@ -255,68 +254,6 @@ class TestVerifyVerbsJsonExitCode:
         out = capsys.readouterr()
         assert json.loads(out.out)["verified"] is False
         assert code == 1
-
-    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "text"])
-    def test_archive_verify_exits_nonzero_when_unverified(
-        self, monkeypatch, capsys, json_mode
-    ):
-        """`archive verify` exited 0 in *both* formats while printing FAILED.
-
-        Not the asymmetry the others have — a plain "print an error, exit 0". Its
-        sibling `bundle verify` already exited 1 for the same claim over a wider
-        range, so both channels are brought into line here.
-        """
-        import regista._cli as cli
-
-        class _Archive:
-            def verify(self, segment_id):
-                return {
-                    "verified": False,
-                    "event_count": 3,
-                    "errors": ["head_hash mismatch"],
-                }
-
-        class _FakeRegista:
-            def __init__(self, *a, **k):
-                self.archive = _Archive()
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(cli, "Regista", _FakeRegista)
-        monkeypatch.setenv("REGISTA_DSN", _DSN)
-        monkeypatch.setenv("REGISTA_PROJECT", "wi229")
-        argv = ["archive", "verify", "00000000-0000-0000-0000-000000000000"]
-        if json_mode:
-            argv.append("--json")
-        code = _run_cli(argv)
-        out = capsys.readouterr()
-        if json_mode:
-            assert json.loads(out.out)["verified"] is False
-        assert code == 1
-
-    def test_archive_verify_still_zero_when_verified(self, monkeypatch, capsys):
-        import regista._cli as cli
-
-        class _Archive:
-            def verify(self, segment_id):
-                return {"verified": True, "event_count": 3, "head_hash": "ab" * 16}
-
-        class _FakeRegista:
-            def __init__(self, *a, **k):
-                self.archive = _Archive()
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(cli, "Regista", _FakeRegista)
-        monkeypatch.setenv("REGISTA_DSN", _DSN)
-        monkeypatch.setenv("REGISTA_PROJECT", "wi229")
-        code = _run_cli(
-            ["archive", "verify", "00000000-0000-0000-0000-000000000000", "--json"]
-        )
-        assert json.loads(capsys.readouterr().out)["verified"] is True
-        assert code == 0
 
     def test_bundle_verify_json_still_zero_when_verified(
         self, monkeypatch, capsys, tmp_path
@@ -330,8 +267,6 @@ class TestVerifyVerbsJsonExitCode:
                 lambda p: {
                     "verified": True,
                     "event_count": 5,
-                    "anchor_receipt_count": 0,
-                    "segment_count": 1,
                     "signatures_verified": 4,
                     "signatures_unverifiable": 1,
                     "signature_check": "enforced",
@@ -573,8 +508,6 @@ class TestJsonExitCodeAudit:
         "provision": "cmd_provision",
         "provision-principal": "cmd_provision_principal",
         "bundle verify": "cmd_bundle_verify",
-        "archive verify": "cmd_archive_verify",
-        "archive verify-chain": "cmd_archive_verify_chain",
     }
 
     @staticmethod
@@ -657,4 +590,4 @@ class TestJsonExitCodeAudit:
             h for h in self.SELF_REPORTING_FAILURE_VERBS.values() if not hasattr(cli, h)
         ]
         assert missing == [], f"audited handlers no longer exist: {missing}"
-        assert len(self.SELF_REPORTING_FAILURE_VERBS) >= 5
+        assert len(self.SELF_REPORTING_FAILURE_VERBS) >= 3

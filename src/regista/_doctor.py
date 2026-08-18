@@ -191,97 +191,6 @@ def _check_schema_version(dsn: str, project: str, require_ssl: bool) -> DoctorCh
         )
 
 
-_ANCHORING_STALE_AFTER_SECONDS = 3600
-
-
-def _check_anchoring_stale_receipts(
-    dsn: str,
-    project: str,
-    require_ssl: bool,
-    stale_after_seconds: int,
-) -> DoctorCheck:
-    # WI-206: latest_confirmed_seq treats pending/retryable receipts as the
-    # anchoring watermark, so a receipt stuck in either state (a crash that
-    # left receipt_bytes NULL, or retry_failed_anchors never being scheduled)
-    # silently stops new events from ever being anchored. Surface receipts that
-    # have been stuck longer than the threshold so bootstrap/operators see it.
-    from ._connection import validate_project_name
-
-    name = f"anchoring:{project}"
-    try:
-        validate_project_name(project)
-    except ValueError as e:
-        return DoctorCheck(
-            name=name,
-            status="fail",
-            detail=f"Invalid project name: {e}",
-        )
-
-    try:
-        import psycopg
-        from psycopg.rows import dict_row
-        from psycopg.sql import SQL, Identifier
-
-        connect_kwargs: dict[str, Any] = {}
-        if require_ssl:
-            connect_kwargs["sslmode"] = "require"
-        with cast(DictConn, psycopg.connect(
-            dsn, connect_timeout=5, row_factory=dict_row, **connect_kwargs
-        )) as conn:
-            conn.execute(SQL("SET search_path TO {}").format(Identifier(project)))
-            present = conn.execute(
-                "SELECT to_regclass('anchor_receipts') IS NOT NULL AS present"
-            ).fetchone()["present"]  # type: ignore[index]
-            if not present:
-                return DoctorCheck(
-                    name=name,
-                    status="skip",
-                    detail="anchor_receipts table absent (anchoring migration not applied)",
-                )
-            row = cast(
-                dict[str, Any],
-                conn.execute(
-                    "SELECT count(*) AS n, min(submitted_at) AS oldest "
-                    "FROM anchor_receipts "
-                    "WHERE status IN ('pending', 'retryable') "
-                    "AND submitted_at < now() - make_interval(secs => %s)",
-                    [stale_after_seconds],
-                ).fetchone(),
-            )
-            stale_count = row["n"]
-            oldest = row["oldest"]
-            watermark = conn.execute(
-                "SELECT COALESCE(MAX(target_global_seq), 0) AS max_seq "
-                "FROM anchor_receipts "
-                "WHERE status IN ('pending', 'committed', 'confirmed', 'retryable')"
-            ).fetchone()["max_seq"]  # type: ignore[index]
-    except Exception as e:
-        return DoctorCheck(
-            name=name,
-            status="fail",
-            detail=_sanitize_error(e),
-        )
-
-    if stale_count == 0:
-        return DoctorCheck(
-            name=name,
-            status="ok",
-            detail=(
-                f"no receipts stuck pending/retryable beyond {stale_after_seconds}s"
-            ),
-        )
-    age_detail = f", oldest submitted_at={oldest.isoformat()}" if oldest is not None else ""
-    return DoctorCheck(
-        name=name,
-        status="warn",
-        detail=(
-            f"{stale_count} receipt(s) stuck pending/retryable beyond "
-            f"{stale_after_seconds}s{age_detail}; the anchoring watermark is held at "
-            f"global_seq={watermark} — retry or re-submit anchoring to unblock it"
-        ),
-    )
-
-
 def _check_witness_key_enrollment(
     dsn: str,
     project: str,
@@ -712,7 +621,6 @@ def run_doctor(
     require_ssl: bool = False,
     key_path: str | None = None,
     secret_backend: str | None = None,
-    anchoring_stale_after_seconds: int | None = None,
     max_projects: int = 25,
 ) -> DoctorReport:
     """Run the regista health checks.
@@ -735,11 +643,6 @@ def run_doctor(
     reachable = False
     projects_list: list[dict[str, Any]] = []
     checked_projects: list[str] = []
-    stale_after = (
-        anchoring_stale_after_seconds
-        if anchoring_stale_after_seconds is not None
-        else _ANCHORING_STALE_AFTER_SECONDS
-    )
 
     if dsn is None:
         checks.append(DoctorCheck(
@@ -762,9 +665,6 @@ def run_doctor(
             if project:
                 checked_projects = [project]
                 checks.append(_check_schema_version(dsn, project, require_ssl))
-                checks.append(
-                    _check_anchoring_stale_receipts(dsn, project, require_ssl, stale_after)
-                )
                 checks.append(
                     _check_witness_key_enrollment(dsn, project, require_ssl)
                 )
@@ -790,11 +690,6 @@ def run_doctor(
                     checked_projects = names
                 for name in checked_projects:
                     checks.append(_check_schema_version(dsn, name, require_ssl))
-                    checks.append(
-                        _check_anchoring_stale_receipts(
-                            dsn, name, require_ssl, stale_after
-                        )
-                    )
                     checks.append(
                         _check_witness_key_enrollment(dsn, name, require_ssl)
                     )

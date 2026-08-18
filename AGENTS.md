@@ -42,7 +42,6 @@ src/regista/
   _links.py         # Typed directed links
   _event_store.py   # EventStore protocol + shared append + InMemory/Postgres stores (BC-128)
   _archive.py        # Archive complete dormant work-items (BC-258)
-  _archive_segments.py  # Plan 028: segment sealing for chain-preserving retention
   _replay.py        # Rebuild projection from event log
   _integrity.py     # Startup version compatibility checks
   _workflow.py      # YAML parse, JSON Schema validate, semantic checks
@@ -66,7 +65,6 @@ src/regista/
   _ops.py              # Facade classes: WorkflowOps, WorkItemOps, etc. (Plan 007)
   _maintenance.py      # MaintenanceThread — timer-driven sweep/recurrence/witness
   _signing_scheme.py   # SigningScheme protocol + HMACSHA256Scheme + Ed25519Scheme (Plan 011)
-  _timestamping.py     # RFC 3161 TSA Merkle tree batching (Plan 012)
   _hooks_api.py        # Postgres-only hooks helpers for _ops facades
   _in_memory_replay.py # InMemory replay engine (FR-16)
   _witness.py          # Witness registration, receipt creation, event filtering, delivery (Plan 013)
@@ -93,7 +91,6 @@ src/regista/
   docs/
     suite-config.md     # Suite config contract: vars, precedence, doctor shape, version surface (Plan 025)
     review-assurance.md # Review assurance levels and gate profiles (Plan 027)
-    retention.md        # Event-log retention + segment sealing model (Plan 028)
   suite.env.example     # Template for ~/.config/agent-suite/suite.env (Plan 025)
 ```
 
@@ -289,7 +286,9 @@ compose_workflow(file_or_path)                         # -> composed dict + Sour
 
 ## Status
 
-MVP + Phase 2 + Phase 3 + Plans 002-022 implemented. All FRs FR-01 through FR-29 are in tree. Full test suite (core, sidecar, property-based, witness, timestamping, and plan-specific) — run `pytest tests/ -v` for current count.
+MVP + Phase 2 + Phase 3 + Plans 002-022 implemented. All FRs FR-01 through FR-29 are in tree. Full test suite (core, sidecar, property-based, witness, and plan-specific) — run `pytest tests/ -v` for current count.
+
+**Removed by P1.4 (0.6.0, docs/0.6.0/IMPLEMENTATION-PLAN.md):** RFC 3161 timestamping (Plan 012), transparency-log anchoring (Plan 019), and archive segment sealing (Plan 028) were deleted outright — zero rows existed estate-wide and bundle v3 replaces their claims with a signed statement (BUNDLE-V3.md). Plan-history entries below describing those subsystems are historical record, not current capability.
 
 Production readiness additions: migration packaging for pip installs (importlib.resources + force-include), claims_stolen metric wired, actor_kind validation at API boundary, docstrings on all public methods, spec.yaml synced to v5, structured replay error handling, CHANGELOG.md, mypy --strict type-checking (burndown ratchet — see `[tool.mypy]` in `pyproject.toml`).
 

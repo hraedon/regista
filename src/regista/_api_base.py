@@ -20,7 +20,6 @@ if TYPE_CHECKING:
         HookOps,
         LinkOps,
         RecurrenceOps,
-        TimestampOps,
         WebhookOps,
         WitnessOps,
         WorkflowOps,
@@ -114,9 +113,6 @@ class _RegistaBase:
         def recurrence(self) -> RecurrenceOps: ...
 
         @property
-        def timestamping(self) -> TimestampOps: ...
-
-        @property
         def witnesses(self) -> WitnessOps: ...
 
         @property
@@ -124,6 +120,3 @@ class _RegistaBase:
 
         @property
         def webhooks(self) -> WebhookOps: ...
-
-        @property
-        def anchoring(self) -> Any: ...

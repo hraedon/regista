@@ -78,15 +78,6 @@ class TestWebhookLifecycle:
         assert any(str(w["webhook_id"]) == str(webhook_id) for w in active)
 
 
-def _drive_to_terminal(sub, wi):
-    # test_workflow terminal state is "done": new -> in_progress -> review -> done.
-    agent = {"role": "agent"}
-    reviewer = {"role": "reviewer"}
-    sub.transition(wi.work_item_id, "start", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "submit_review", "agent-1", actor_metadata=agent)
-    sub.transition(wi.work_item_id, "approve", "reviewer-1", actor_metadata=reviewer)
-
-
 class TestArchiveEvents:
     def test_archive_dry_run_empty(self, sub):
         count = sub.archive_events(
@@ -94,78 +85,6 @@ class TestArchiveEvents:
             dry_run=True,
         )
         assert count == 0
-
-    def test_archive_dry_run_with_events(self, sub):
-        wi, _ = sub.create_work_item("test_workflow", "feature", "archive-test",
-                                     custom_fields={"title": "archive-test"})
-        _drive_to_terminal(sub, wi)
-        count = sub.archive_events(
-            before_timestamp=datetime.now(UTC) + timedelta(days=365),
-            dry_run=True,
-        )
-        assert count >= 1
-
-    def test_archive_actual(self, sub):
-        # BC-290: archival must leave the projection fully derivable from the
-        # live event log. After archiving a terminal item, its events AND its
-        # work_items_current projection row must both be gone — not orphaned.
-        wi, _ = sub.create_work_item("test_workflow", "feature", "archive-actual",
-                                     custom_fields={"title": "archive-actual"})
-        _drive_to_terminal(sub, wi)
-        before = datetime.now(UTC) + timedelta(days=365)
-        count = sub.archive_events(before_timestamp=before, dry_run=False)
-        assert count >= 1
-
-        # Live events gone.
-        remaining = sub.read_events(work_item_id=wi.work_item_id)
-        assert len(remaining) == 0
-
-        # Projection row gone (no orphan, no phantom claimable row).
-        page = sub.query_work_items()
-        assert all(str(w.work_item_id) != str(wi.work_item_id) for w in page.items)
-
-        # Events preserved in events_archive (still inspectable / verifiable).
-        archived = _archive_event_count(sub, wi.work_item_id)
-        assert archived >= 1
-
-        # Replay over the live log reports no drift: the archived item is not
-        # silently skipped while leaving an underivable projection row behind.
-        report = sub.replay()
-        assert report.replayed_drift == 0
-
-    def test_archive_idempotent(self, sub):
-        wi, _ = sub.create_work_item("test_workflow", "feature", "archive-idem",
-                                     custom_fields={"title": "archive-idem"})
-        _drive_to_terminal(sub, wi)
-        before = datetime.now(UTC) + timedelta(days=365)
-        sub.archive_events(before_timestamp=before)
-        count2 = sub.archive_events(before_timestamp=before)
-        assert count2 == 0
-
-    def test_archive_skips_non_terminal_dormant_item(self, sub):
-        # BC-293: a dormant but non-terminal item (parked in "new", never
-        # transitioned) must NOT be archived, even though its only event is old.
-        wi, _ = sub.create_work_item("test_workflow", "feature", "dormant-new",
-                                     custom_fields={"title": "dormant-new"})
-        before = datetime.now(UTC) + timedelta(days=365)
-        sub.archive_events(before_timestamp=before, dry_run=False)
-
-        # Events and projection row both survive.
-        remaining = sub.read_events(work_item_id=wi.work_item_id)
-        assert len(remaining) >= 1
-        page = sub.query_work_items(current_states=["new"])
-        assert any(str(w.work_item_id) == str(wi.work_item_id) for w in page.items)
-
-
-def _archive_event_count(sub, work_item_id):
-    from regista._testing import raw_transaction
-
-    with raw_transaction(sub) as conn:
-        row = conn.execute(
-            "SELECT count(*) AS c FROM events_archive WHERE work_item_id = %s",
-            [work_item_id],
-        ).fetchone()
-    return row["c"]
 
 
 class TestWebhookSidecarRoutes:

@@ -19,28 +19,15 @@ class MaintenanceThread:
         recurrence_interval: float = 10.0,
         hook_poll_interval: float = 2.0,
         partition_interval: float = 3600.0,
-        timestamp_interval: float = 3600.0,
-        tsa_config: Any = None,
         witness_interval: float = 30.0,
-        anchor_provider: Any = None,
-        anchor_interval: float = 3600.0,
-        anchor_upgrade_interval: float = 600.0,
     ) -> None:
         self._regista = regista
         self._sweep_interval = sweep_interval
         self._recurrence_interval = recurrence_interval
         self._hook_poll_interval = hook_poll_interval
         self._partition_interval = partition_interval
-        self._timestamp_interval = timestamp_interval
-        self._tsa_config = tsa_config
         self._witness_interval = witness_interval
-        self._anchor_provider = anchor_provider
-        self._anchor_interval = anchor_interval
-        self._anchor_upgrade_interval = anchor_upgrade_interval
-        self._next_timestamp = 0.0
         self._next_witness = 0.0
-        self._next_anchor = 0.0
-        self._next_anchor_upgrade = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_cycle_ok: bool = True
@@ -51,10 +38,7 @@ class MaintenanceThread:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._next_timestamp = 0.0
         self._next_witness = 0.0
-        self._next_anchor = 0.0
-        self._next_anchor_upgrade = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         log.info("maintenance.thread_started", project=self._project)
@@ -89,15 +73,7 @@ class MaintenanceThread:
 
                 self._regista.refresh_hook_queue_metrics()
 
-                self._sweep_stale_timestamp_batches()
-
-                self._maybe_timestamp_events()
-
                 self._maybe_deliver_witness_receipts()
-
-                self._maybe_anchor_events()
-
-                self._maybe_upgrade_anchors()
 
                 self._last_cycle_ok = True
             except Exception as e:
@@ -110,25 +86,6 @@ class MaintenanceThread:
                 self._metrics.inc("maintenance_cycles", self._project)
 
             self._stop.wait(timeout=self._sweep_interval)
-
-    def _maybe_timestamp_events(self) -> None:
-        import time
-
-        if self._tsa_config is None or self._timestamp_interval <= 0:
-            return
-        now = time.monotonic()
-        if now < self._next_timestamp:
-            return
-        self._next_timestamp = now + self._timestamp_interval
-        try:
-            ts_ops = getattr(self._regista, "timestamping", None)
-            if ts_ops is not None:
-                ts_ops.trigger()
-                log.info("maintenance.timestamping_triggered", project=self._project)
-        except Exception as e:
-            log.error("maintenance.timestamping_error", error=str(e))
-            if self._metrics:
-                self._metrics.inc("timestamping_errors", self._project)
 
     def _maybe_deliver_witness_receipts(self) -> None:
         import time
@@ -151,54 +108,6 @@ class MaintenanceThread:
             log.error("maintenance.witness_delivery_error", error=str(e))
             if self._metrics:
                 self._metrics.inc("maintenance_errors", self._project)
-
-    def _maybe_anchor_events(self) -> None:
-        import time
-
-        if self._anchor_provider is None or self._anchor_interval <= 0:
-            return
-        now = time.monotonic()
-        if now < self._next_anchor:
-            return
-        self._next_anchor = now + self._anchor_interval
-        try:
-            anchor_ops = getattr(self._regista, "anchoring", None)
-            if anchor_ops is not None:
-                receipt = anchor_ops.trigger()
-                if receipt is not None:
-                    log.info(
-                        "maintenance.anchor_triggered",
-                        project=self._project,
-                        status=receipt.status,
-                    )
-        except Exception as e:
-            log.error("maintenance.anchor_error", error=str(e))
-            if self._metrics:
-                self._metrics.inc("anchor_errors", self._project)
-
-    def _maybe_upgrade_anchors(self) -> None:
-        import time
-
-        if self._anchor_provider is None or self._anchor_upgrade_interval <= 0:
-            return
-        now = time.monotonic()
-        if now < self._next_anchor_upgrade:
-            return
-        self._next_anchor_upgrade = now + self._anchor_upgrade_interval
-        try:
-            anchor_ops = getattr(self._regista, "anchoring", None)
-            if anchor_ops is not None:
-                count = anchor_ops.upgrade_pending()
-                if count > 0:
-                    log.info(
-                        "maintenance.anchors_upgraded",
-                        project=self._project,
-                        count=count,
-                    )
-        except Exception as e:
-            log.error("maintenance.anchor_upgrade_error", error=str(e))
-            if self._metrics:
-                self._metrics.inc("anchor_errors", self._project)
 
     def _fire_due_recurrences(self) -> None:
         try:
@@ -225,17 +134,6 @@ class MaintenanceThread:
             if count > 0:
                 log.info(
                     "maintenance.witness_receipts_swept",
-                    project=self._project,
-                    count=count,
-                )
-
-    def _sweep_stale_timestamp_batches(self) -> None:
-        ts_ops = getattr(self._regista, "timestamping", None)
-        if ts_ops is not None and hasattr(ts_ops, "sweep_stale"):
-            count = ts_ops.sweep_stale()
-            if count > 0:
-                log.warning(
-                    "maintenance.timestamp_batches_swept",
                     project=self._project,
                     count=count,
                 )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys as _sys
-import uuid
 from collections.abc import Callable
 from types import TracebackType
 from typing import Any
@@ -33,7 +32,6 @@ from ._lineage import MODEL_LINEAGE_FAMILIES as MODEL_LINEAGE_FAMILIES
 from ._migrations import run_migrations
 from ._observability import Metrics
 from ._ops import (
-    AnchorOps,
     ArchiveOps,
     AssuranceOps,
     ClaimOps,
@@ -42,7 +40,6 @@ from ._ops import (
     LinkOps,
     PrincipalKeyOps,
     RecurrenceOps,
-    TimestampOps,
     WebhookOps,
     WitnessOps,
     WorkflowOps,
@@ -485,22 +482,6 @@ class Regista(
         return self._recurrence_ops
 
     @property
-    def timestamping(self) -> TimestampOps:
-        self._require_open()
-        if not hasattr(self, "_timestamping_ops"):
-            self._timestamping_ops = TimestampOps(
-                self._mgr, self._keys, self._metrics, self._project,
-            )
-        return self._timestamping_ops
-
-    @property
-    def anchoring(self) -> AnchorOps:
-        self._require_open()
-        if not hasattr(self, "_anchoring_ops"):
-            self._anchoring_ops = AnchorOps(self._mgr, self._metrics, self._project)
-        return self._anchoring_ops
-
-    @property
     def witnesses(self) -> WitnessOps:
         self._require_open()
         if not hasattr(self, "_witness_ops"):
@@ -605,35 +586,6 @@ class Regista(
         with psycopg.connect(dsn, row_factory=dict_row) as conn:
             return list_catalog_projects(conn)
 
-    def trigger_anchoring(self, *, batch_size: int = 10_000) -> Any:
-        """Submit a Merkle root of pending events to the configured anchor provider.
-
-        Requires ``start_maintenance(anchor_provider=...)`` or
-        ``regista.anchoring.set_provider(...)`` to have been called first.
-        """
-        return self.anchoring.trigger(batch_size=batch_size)
-
-    def upgrade_pending_anchors(self, *, max_iterations: int = 100) -> int:
-        """Poll the anchor provider for upgrades of pending receipts."""
-        return self.anchoring.upgrade_pending(max_iterations=max_iterations)
-
-    def list_anchor_receipts(
-        self,
-        status: str | None = None,
-        provider: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """List anchor receipts, optionally filtered."""
-        return self.anchoring.list_receipts(status=status, provider=provider, limit=limit)
-
-    def get_anchor_receipt(self, receipt_id: uuid.UUID) -> Any:
-        """Retrieve a single anchor receipt by ID."""
-        return self.anchoring.get_receipt(receipt_id)
-
-    def verify_anchor_receipt(self, receipt_id: uuid.UUID) -> str:
-        """Re-verify a stored anchor receipt against its merkle root."""
-        return self.anchoring.verify(receipt_id)
-
     def export_audit_bundle(
         self,
         output_path: str,
@@ -641,7 +593,7 @@ class Regista(
         since_seq: int | None = None,
         until_seq: int | None = None,
     ) -> dict[str, Any]:
-        """Export events, anchor receipts, and segments as a self-contained JSON bundle.
+        """Export events and the public-key registry as a self-contained JSON bundle.
 
         The bundle can be verified offline by a third-party auditor without
         production database access or private keys (Plan 019 WI-3/WI-4,
@@ -659,18 +611,10 @@ class Regista(
     def verify_audit_bundle_offline(bundle_path: str) -> dict[str, Any]:
         """Verify an exported audit bundle without a database connection.
 
-        Recomputes content anchors from the bundle's events, verifies chain
-        integrity, and checks anchor receipt merkle roots against recomputed
-        values. Returns a detailed verification report.
+        Verifies the bundle hash, global and per-entity hash chains, and
+        event signatures against the bundled public-key registry. Returns a
+        detailed verification report.
         """
         from ._bundle import verify_audit_bundle_offline
 
         return verify_audit_bundle_offline(bundle_path).to_dict()
-
-    def verify_archive_chain(self) -> dict[str, Any]:
-        """Verify chain integrity across all sealed archive segments.
-
-        Confirms each segment's internal chain, seal signature, and that
-        segment N's head_hash chains to segment N+1's first_event_prev_hash.
-        """
-        return self.archive.verify_archive_chain()

@@ -50,12 +50,6 @@ encryption = [
 vendor-check = [
     "rfc8785==0.1.4",
 ]
-timestamping = [
-    "asn1crypto>=1.5",
-]
-anchoring = [
-    "opentimestamps>=0.4",
-]
 vault = [
     "hvac>=2.0",
 ]
@@ -110,7 +104,7 @@ files = ["src/regista"]
 
 # Untyped third-party libs (installed in CI via extras, but ship no stubs).
 [[tool.mypy.overrides]]
-module = ["nacl", "nacl.*", "asn1crypto", "asn1crypto.*", "rfc8785", "rfc8785.*", "opentimestamps", "opentimestamps.*", "hvac", "hvac.*", "azure.identity", "azure.identity.*", "azure.keyvault", "azure.keyvault.*", "azure.core", "azure.core.*"]
+module = ["nacl", "nacl.*", "rfc8785", "rfc8785.*", "hvac", "hvac.*", "azure.identity", "azure.identity.*", "azure.keyvault", "azure.keyvault.*", "azure.core", "azure.core.*"]
 ignore_missing_imports = true
 
 # --- WI-233 complete: all source modules are now mypy --strict clean.
