@@ -119,6 +119,24 @@ _STATUS_MAP: dict[str, int] = {
     # to a small sanctioned set (tests/sidecar/test_sidecar.py
     # ::test_status_map_values_are_valid_http_codes) and 501 is not in it.
     ErrorCode.WITNESS_LIFECYCLE_CUT: 409,
+    # The post-genesis v6 writer (P1.7). The split here is deliberate: an
+    # unresolvable *referent* is a conflict with the store's state, while a
+    # contradiction inside what the caller submitted is a client defect.
+    #
+    # 409: the request is well-formed, but the project chain does not (yet) contain
+    # the acceptance or the workflow registration it names. The caller's fix is to
+    # append the missing anchor/registration, not to reformat the request.
+    ErrorCode.KEY_BINDING_UNRESOLVED: 409,
+    ErrorCode.WORKFLOW_REGISTRATION_UNRESOLVED: 409,
+    # 403: an authorization decision. The producer block contradicts the scopes the
+    # accepted key holds, the closed lineage registry, or a pinned producer policy.
+    # Not 400 — nothing is malformed; the caller is not permitted.
+    ErrorCode.PRODUCER_NOT_AUTHORIZED: 403,
+    # 400: the submitted envelope does not satisfy the v6 contract.
+    ErrorCode.V6_ENVELOPE_INVALID: 400,
+    # 500: the store's own entity chain is missing a link the writer must build on.
+    # That is a server-side integrity fault, not something the caller can fix.
+    ErrorCode.V6_CHAIN_LINK_MISSING: 500,
 }
 
 

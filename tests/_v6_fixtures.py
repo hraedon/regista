@@ -1,0 +1,306 @@
+"""Shared Ed25519 actor-role keyset and v6 genesis fixture (P1.7 deliverable).
+
+``SUITE-RECONCILIATION.md`` §2.0 names these as P1.7's own deliverables, and the
+reason is mechanical: **the committed ``tests/test_keys.json`` is unusable in the
+clean epoch.** It holds one HMAC key, with no ``principal_id``, no ``role`` and no
+public key — and a v6 event must be Ed25519, must be signed by a key bound to
+``actor.principal_id``, and must name a key-binding anchor that carries that key's
+public bytes. Not one of those four properties can be satisfied by that file.
+
+This module consolidates three pieces of prior art rather than adding a fourth:
+
+* ``tests/test_genesis.py``'s ``_envelope`` / ``_key_file`` pair, which builds a
+  genesis envelope from the committed ``vectors/v6/bootstrap-project-initialized``
+  case and a throwaway Ed25519 key file;
+* P1.4's ``genesis_store`` in ``tests/test_bundle.py``, which additionally had to
+  register the principal key *before* ``write_genesis`` so the exported bundle had
+  key evidence at all (the fact WI-296 records);
+* P2.2's ``tests/_trust_log_fixtures.py``, which signs v6 trust-log envelopes.
+
+The shape here is deliberately "one keyset, many roles". A single shared key for
+every actor is what the legacy fixture did, and the v6 writer refuses it:
+``_v6_writer._writer_key`` requires ``entry.principal_id == actor_id``, so the
+suite needs a *per-principal* key or its appends fail with
+``ACTOR_SIGNER_MISMATCH``. That refusal is correct and is not worked around here.
+
+Sequencing, which is the part that is easy to get wrong:
+
+1. ``make_v6_keyset`` writes an Ed25519 key file with one actor-role key per
+   principal. Nothing is in the store yet.
+2. ``write_test_genesis`` opens the epoch with the *bootstrap* principal. Its
+   embedded ``bootstrap_key_acceptance`` is the project's first key-binding
+   anchor, and it holds ``may_accept_keys: true`` — that is what lets step 3
+   happen without self-authorisation.
+3. ``accept_key`` appends a standalone ``principal_key_accepted`` for each other
+   principal, signed by the bootstrap principal. Only after this may a principal
+   append ordinary events; before it, ``resolve_key_binding_anchor`` refuses with
+   ``KEY_BINDING_UNRESOLVED``.
+
+That ordering is the contract, not an implementation detail: it is
+``RECONCILIATION.md`` Resolution 1's "Bootstrap A establishes external authority;
+Bootstrap B imports that authority and creates project-chain order; ordinary
+acceptance then operates without exceptions".
+"""
+
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, cast
+
+from nacl.signing import SigningKey
+
+VECTOR_PATH = Path(__file__).parent / "vectors" / "v6" / "bootstrap-project-initialized.json"
+
+#: The bootstrap principal. It is a ``service:`` id on purpose: the key that opens
+#: a project's epoch and accepts other keys is infrastructure, not a person and not
+#: an agent. ``RECONCILIATION.md`` Resolution 1's own example spells it
+#: ``"principal_id": "service:..."``.
+BOOTSTRAP_PRINCIPAL = "service:regista-genesis"
+
+#: The actor roles the suite writes ordinary events as. Canonical per
+#: ``TRUST-DOMAIN.md`` §2.1 — ``(human|agent|service):<subject>`` — because
+#: ``validate_v6_envelope`` rejects anything else and a bare legacy name is exactly
+#: what criterion 19's inversion refuses.
+ACTOR_PRINCIPALS: tuple[str, ...] = (
+    "human:operator",
+    "human:reviewer",
+    "agent:worker",
+    "agent:reviewer",
+    "service:hooks",
+)
+
+#: A producer block every fixture-written event can carry. ``model_lineage`` must be
+#: a family in ``_lineage.MODEL_LINEAGE_FAMILIES`` or admission gate 2 refuses it,
+#: so this is a real family and not a placeholder string.
+TEST_HARNESS = "claude-code"
+TEST_HARNESS_VERSION = "test-harness/1"
+TEST_MODEL = "claude-fable-5"
+TEST_MODEL_LINEAGE = "fable"
+
+
+@dataclass(frozen=True)
+class TestKey:
+    principal_id: str
+    key_id: str
+    seed: bytes
+    public_key: bytes
+
+    @property
+    def fingerprint(self) -> str:
+        return "ed25519:sha256:" + hashlib.sha256(self.public_key).hexdigest()
+
+    @property
+    def public_key_b64(self) -> str:
+        return base64.b64encode(self.public_key).decode("ascii")
+
+
+@dataclass(frozen=True)
+class V6TestKeyset:
+    """An Ed25519, actor-role, one-key-per-principal keyset on disk."""
+
+    path: str
+    keys: dict[str, TestKey] = field(default_factory=dict)
+
+    @property
+    def bootstrap(self) -> TestKey:
+        return self.keys[BOOTSTRAP_PRINCIPAL]
+
+    def key_for(self, principal_id: str) -> TestKey:
+        try:
+            return self.keys[principal_id]
+        except KeyError:
+            raise AssertionError(
+                f"{principal_id!r} is not in this keyset. Pass it to make_v6_keyset "
+                "rather than reusing another principal's key — the v6 writer refuses "
+                "an actor/signer mismatch by design (ACTOR_SIGNER_MISMATCH)."
+            ) from None
+
+
+def _key_id_for(principal_id: str) -> str:
+    """A stable, grammatical key id derived from the principal.
+
+    Derived rather than random so a failure message names which principal's key is
+    involved, and so two runs of the same fixture produce comparable ids.
+    """
+
+    digest = hashlib.sha256(principal_id.encode("utf-8")).hexdigest()[:16]
+    return f"pk_{digest}"
+
+
+def make_v6_keyset(
+    directory: Path | str,
+    *,
+    principals: tuple[str, ...] = ACTOR_PRINCIPALS,
+    include_bootstrap: bool = True,
+    filename: str = "v6_keys.json",
+) -> V6TestKeyset:
+    """Write a fresh Ed25519 keyset covering ``principals`` (+ the bootstrap key).
+
+    Always writes to a caller-owned directory — usually ``tmp_path``. Never point
+    this at ``tests/test_keys.json``: mutating a tracked fixture is what made the
+    next run fail with ``PRINCIPAL_KEY_ALREADY_EXISTS`` in P2.3's observed case.
+    """
+
+    target = Path(directory) / filename
+    wanted = list(principals)
+    if include_bootstrap and BOOTSTRAP_PRINCIPAL not in wanted:
+        wanted.insert(0, BOOTSTRAP_PRINCIPAL)
+
+    keys: dict[str, TestKey] = {}
+    entries: list[dict[str, Any]] = []
+    for principal_id in wanted:
+        signing_key = SigningKey.generate()
+        key = TestKey(
+            principal_id=principal_id,
+            key_id=_key_id_for(principal_id),
+            seed=bytes(signing_key),
+            public_key=bytes(signing_key.verify_key),
+        )
+        keys[principal_id] = key
+        entries.append(
+            {
+                "key_id": key.key_id,
+                "scheme": "ed25519",
+                "alg": "Ed25519",
+                "secret": base64.b64encode(key.seed).decode("ascii"),
+                "encoding": "base64",
+                "public_key": key.public_key_b64,
+                "principal_id": principal_id,
+                # The v6 writer requires role == "actor"; a signing key with any
+                # other role is refused with KEY_ROLE_NOT_PERMITTED.
+                "role": "actor",
+                "status": "active",
+            }
+        )
+    target.write_text(json.dumps({"keys": entries}, indent=2), encoding="utf-8")
+    return V6TestKeyset(path=str(target), keys=keys)
+
+
+def genesis_envelope(
+    keyset: V6TestKeyset,
+    *,
+    principal_id: str = BOOTSTRAP_PRINCIPAL,
+    project_instance_id: str | None = None,
+    trust_domain_id: str | None = None,
+    entity_kinds: tuple[str, ...] = ("project", "principal", "workflow", "work_item"),
+) -> dict[str, Any]:
+    """Build a complete ``project_initialized`` envelope from the committed vector.
+
+    Reads ``vectors/v6/bootstrap-project-initialized.json`` rather than hand-rolling
+    sixteen members, so the fixture and the frozen conformance vector cannot drift
+    apart silently.
+    """
+
+    key = keyset.key_for(principal_id)
+    case = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
+    envelope = cast(
+        dict[str, Any], copy.deepcopy(case["input"]["envelope_declaration_order"])
+    )
+    project = project_instance_id or str(uuid.uuid4())
+    envelope["project_instance_id"] = project
+    envelope["entity"]["id"] = project
+    envelope["event_id"] = str(uuid.uuid4())
+    envelope["trust_domain_id"] = trust_domain_id or str(uuid.uuid4())
+    envelope["actor"]["principal_id"] = principal_id
+    envelope["actor"]["kind"] = "system"
+    envelope["signing"]["key_id"] = key.key_id
+    envelope["producer"] = {
+        "harness": TEST_HARNESS,
+        "harness_version": TEST_HARNESS_VERSION,
+        "model": TEST_MODEL,
+        "model_lineage": TEST_MODEL_LINEAGE,
+    }
+    acceptance = envelope["payload"]["bootstrap_key_acceptance"]
+    acceptance["principal_id"] = principal_id
+    acceptance["key_id"] = key.key_id
+    acceptance["scheme_id"] = "ed25519"
+    acceptance["public_key"] = key.public_key_b64
+    acceptance["fingerprint"] = key.fingerprint
+    acceptance["scopes"] = {
+        "entity_kinds": list(entity_kinds),
+        "transitions": None,
+        # may_accept_keys is what lets the bootstrap principal sign the standalone
+        # acceptances in accept_key(). Without it, ordinary acceptance would have
+        # nowhere to start — which is the circularity Resolution 1 removed.
+        "may_accept_keys": True,
+        "may_sign_checkpoints": True,
+        "may_sign_bundles": False,
+    }
+    return envelope
+
+
+def acceptance_payload(
+    keyset: V6TestKeyset,
+    *,
+    principal_id: str,
+    accepted_by: str,
+    accepted_by_anchor: str,
+    project_instance_id: str,
+    trust_domain_id: str,
+    entity_kinds: tuple[str, ...] = ("work_item", "principal", "workflow"),
+    transitions: tuple[str, ...] | None = None,
+    may_sign_checkpoints: bool = False,
+    may_sign_bundles: bool = False,
+) -> dict[str, Any]:
+    """The ``regista.key-acceptance/v1`` payload of ``TRUST-DOMAIN.md`` §5.8.
+
+    ``public_key`` is repeated in the payload **on purpose** (§5.8): it makes a
+    project bundle self-sufficient for key *material* without making it
+    self-sufficient for *trust*. ``trust_event_hash`` and the checkpoint are the
+    external referents; in a test-root context they are fixtures, which is exactly
+    what "test roots only" means — no real root material is ever handled here.
+    """
+
+    key = keyset.key_for(principal_id)
+    accepted_by_key = keyset.key_for(accepted_by)
+    return {
+        "type": "regista.key-acceptance",
+        "version": 1,
+        "trust_domain_id": trust_domain_id,
+        "project_instance_id": project_instance_id,
+        "principal_id": principal_id,
+        "key_id": key.key_id,
+        "fingerprint": key.fingerprint,
+        "public_key": key.public_key_b64,
+        "trust_event_hash": "sha256:" + hashlib.sha256(
+            b"test-root-enrolment\x00" + key.public_key
+        ).hexdigest(),
+        "trust_log_checkpoint": {
+            "checkpoint_seq": 1,
+            "head_event_hash": "sha256:" + hashlib.sha256(b"test-root-head").hexdigest(),
+            "document_digest": "sha256:" + hashlib.sha256(b"test-root-doc").hexdigest(),
+        },
+        "scopes": {
+            "entity_kinds": list(entity_kinds),
+            "transitions": None if transitions is None else list(transitions),
+            "may_sign_checkpoints": may_sign_checkpoints,
+            "may_sign_bundles": may_sign_bundles,
+        },
+        "accepted_by": {
+            "principal_id": accepted_by,
+            "key_id": accepted_by_key.key_id,
+            "key_binding_event_hash": accepted_by_anchor,
+        },
+    }
+
+
+__all__ = [
+    "ACTOR_PRINCIPALS",
+    "BOOTSTRAP_PRINCIPAL",
+    "TEST_HARNESS",
+    "TEST_HARNESS_VERSION",
+    "TEST_MODEL",
+    "TEST_MODEL_LINEAGE",
+    "VECTOR_PATH",
+    "TestKey",
+    "V6TestKeyset",
+    "acceptance_payload",
+    "genesis_envelope",
+    "make_v6_keyset",
+]

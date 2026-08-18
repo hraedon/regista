@@ -4,6 +4,40 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **The post-genesis v6 ordinary-event writer (P1.7), `regista._v6_writer`.** Genesis
+  opened the epoch and then every writer was refused on both sides of it; this is the
+  sanctioned path after the boundary. `append_v6_event` constructs all sixteen v6
+  members, resolves `signing.key_binding_event_hash` to a **preceding** project
+  key-binding anchor (the genesis bootstrap acceptance or a standalone
+  `principal_key_accepted`, `TRUST-DOMAIN.md` §5.8), links both the entity and project
+  chains by v6 event hash, serializes on the same global-chain sentinel as genesis, and
+  validates through `validate_v6_envelope` before any signing.
+
+  It sits behind the two admission checks P1.7 owns, both failing closed with named
+  codes and neither having a permissive default:
+
+  - **`WORKFLOW_REGISTRATION_UNRESOLVED`** — an event naming a workflow must reference a
+    signed `workflow_registered` event that precedes it and was not retired. A
+    `workflow_registry` *row* is mutable operator state and is not a registration.
+  - **`PRODUCER_NOT_AUTHORIZED`** — the `producer` block must fall inside the accepted
+    key's scopes (entity kind and transition), declare `model`/`model_lineage` null
+    together, and use a lineage family from the closed registry. A supplied producer
+    policy that contradicts the event is a refusal; an *unsupplied* one is reported
+    `policy_not_supplied` and never silently skipped.
+
+  Also new: `KEY_BINDING_UNRESOLVED` (no anchor — the `principal_keys` projection is
+  never consulted for a v6 event, §5.11), `V6_ENVELOPE_INVALID`, and
+  `V6_CHAIN_LINK_MISSING`.
+
+- **The shared Ed25519 actor-role test keyset and v6 genesis fixture**,
+  `tests/_v6_fixtures.py`. The committed `tests/test_keys.json` is a single HMAC key with
+  no `principal_id`, no `role` and no public key, so it cannot satisfy any v6 append;
+  `make_v6_keyset` mints one actor-role Ed25519 key per principal, and
+  `genesis_envelope` / `acceptance_payload` build the genesis and acceptance events in
+  the order Bootstrap A → Bootstrap B → ordinary acceptance requires.
+
 ### Changed — BREAKING
 
 - **Clean v6 project genesis:** fresh schemas now carry nullable workflow identity

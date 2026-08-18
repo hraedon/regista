@@ -109,6 +109,30 @@ class ErrorCode(StrEnum):
     # D-7 / §7 CUT marker: witness lifecycle is not a 0.6.0 trust mechanism, so the
     # witness key-lifecycle write paths refuse instead of silently bypassing §5.9.
     WITNESS_LIFECYCLE_CUT = "WITNESS_LIFECYCLE_CUT"
+    # The post-genesis v6 ordinary-event writer (P1.7). Each error carries a
+    # machine-readable `reason` or the referent it could not resolve, so a caller
+    # asserts the named refusal rather than message text.
+    #
+    # KEY_BINDING_UNRESOLVED: no PRECEDING project key-binding anchor accepts this
+    # key for this principal (TRUST-DOMAIN.md §5.8/§5.11). Deliberately not a
+    # fallback to the principal_keys projection — that is the S6 defect.
+    KEY_BINDING_UNRESOLVED = "KEY_BINDING_UNRESOLVED"
+    # Admission gate 1 (P1.7 owns it): the event names a workflow whose signed
+    # workflow_registered event cannot be resolved on this project's chain, or was
+    # retired before this position. A workflow_registry ROW is not a registration.
+    WORKFLOW_REGISTRATION_UNRESOLVED = "WORKFLOW_REGISTRATION_UNRESOLVED"
+    # Admission gate 2 (P1.7 owns it): the producer block contradicts the accepted
+    # key's scopes (§5.8), the closed lineage registry, or a supplied producer
+    # policy (V6-ENVELOPE.md §1.8). An UNSUPPLIED policy is never this error — it
+    # is reported `policy_not_supplied`, which is an explicit state, not a skip.
+    PRODUCER_NOT_AUTHORIZED = "PRODUCER_NOT_AUTHORIZED"
+    # The writer refused to sign, or signed bytes that did not verify under their
+    # own key. Distinct from GENESIS_INVALID so a genesis defect and an ordinary
+    # append defect are never confused in a report.
+    V6_ENVELOPE_INVALID = "V6_ENVELOPE_INVALID"
+    # A v6 entity chain may not skip a link: the predecessor at entity_seq - 1 must
+    # exist and be signed, or the append is refused rather than writing a fork.
+    V6_CHAIN_LINK_MISSING = "V6_CHAIN_LINK_MISSING"
 
 
 class RegistaError(Exception):
