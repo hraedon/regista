@@ -90,6 +90,12 @@ v6 writes. The proposal therefore adds:
 > already gone via the P1.4 dependency), the retired-test ledger (§2.2)
 > accounts for every node that did not return, and the suite is green with
 > no epoch-blocked entries remaining.
+>
+> **AMENDED 2026-08-18 (owner-approved; IMPLEMENTATION-PLAN.md P1.7 carries the full
+> record).** The emptying criterion is evaluated at the **joint completion of P1.7 and
+> WI-287**: 167 of the manifest's nodes are blocked by the in-memory backend's epoch
+> refusal — §2.3's D2 territory, decided as WI-287 after this wording was ratified — and
+> P1.7 owns only the Postgres-blocked population. Ledger and green-suite clauses unchanged.
 
 In the plan's gate graph P1.7 is sequenced **inside Gate 1's closure**, and
 **Gate 3 (quiesced rehearsal) explicitly depends on P1.7** — the rehearsal
