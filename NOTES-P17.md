@@ -9,6 +9,35 @@
 
 ## 0a. Session 4 (2026-08-18): PHASE 3 — the manifest march
 
+| SHA | Slice |
+|---|---|
+| `1cd0fe2` | Finding 14 corrected + finding 16 (`_signing.compute_chain_head_hash`), `V6_ENTITY_KINDS` unified, `ReplayReport.non_work_item_groups_verified`, `tests/test_p17_replay_entity_kinds.py`, `tests/test_smoke.py` migrated. 686 -> 671 |
+| `23975c0` | 24 files migrated (batches A + B) + the `_api_meta` public-key referents fix. 671 -> 411 |
+| `3a8f86f` | Batches C + D, the system-actor fix, the witness-hash fix, the `_in_mem_ops` referents fix, WI-289 clusters 1/2/3/5, notes + CHANGELOG. 411 -> **129** |
+
+**Manifest: 686 -> 129.** 557 nodes migrated across 60 of the 74 files. Everything left
+is a production gap; see the accounting below.
+
+**Validation, final state:**
+
+| Check | Result |
+|---|---|
+| default lane (`-m 'not slow'`, all extras, dedicated DB) | **3412 passed, 0 failed, 129 xfailed, 17 skipped** |
+| slow lane (`-m slow`) | **11 passed, 0 failed, 0 xfailed** |
+| measured wall time, default lane | **478s**, up from 365s at Phase 2 — expected, and the point: 557 nodes that used to refuse at genesis now do real work |
+| `scripts/check-epoch-debt.py --base main` | OK — 129, shrink-only node set vs main (694) |
+| `tests/epoch_blocked_inventory.txt` | byte-identical to main (`8696641a…`) — **never touched** |
+| ruff (`src/ tests/ scripts/ tools/`) | clean |
+| mypy (`src/regista`, 103 files) | clean |
+| `docs/0.6.0/check-conflicts.py` | 0 contested values |
+| `docs/0.6.0/check-crossrefs.py` | 0 unresolved references |
+
+The debt figure any claim about this branch carries is now
+`green-with-epoch-debt(129)`. Note the slow tier is **empty of manifest entries** —
+`test_scale.py` and `test_property_conformance.py` both migrated — so 129 is the whole
+figure and no longer splits across lanes.
+
+
 ### FINDING 14 WAS WRONG, and the remedy landed anyway
 
 Finding 14 (§0b) recorded that `_replay._process_group` "files every non-work-item
@@ -860,8 +889,8 @@ no v6 row can ever be `FULLY_AUTHENTICATED`**, which is easy to miss.
 | **1c — the wiring** | **Partial** (`d3cce8f`). The `_event_store.append_event` epoch fork landed, gated on `project_identity` presence (§3d). Still open: the trust-log/project topology split (§3c step 1-3), `provision_principal`'s signed enrolment, `PrincipalLifecycle.commit()`. No fixture migrated, so the manifest is untouched. |
 | **2 — verifier boundary** | **LANDED** (`906ed88`). `_v6_referents.py` (new), §5.10/§5.11 in `_verification.py`, the resolver threaded through 11 production call sites, `RESULT-MODEL.md` §10.1's eleven result fields, `tests/test_p17_v6_verifier_boundary.py` (78 nodes), WI-296 both halves, WI-287 cluster 6 tightened. **§0b supersedes §4.** |
 | **1b/1c blockers** | Finding 4 **resolved 2026-08-18** — the admission rule is unchanged; it was a fixture-topology bug. §3c has the taken path and the scoped remaining work. |
-| **3 — empty the manifest** | **Started.** 694 → **686** (2 of 74 files; 8 nodes newly passing, 0 retired). Finding 8's Phase-2 dependency is **discharged** (§0b); read **Finding 14** before migrating any file that calls `replay()`. §0 has the recipe and the per-file cost. The population figure is **217 in-memory / 446 Postgres / 24 indirect / 7 slow** (NOTES-WI287 §4's causal measurement), **not** §2's name-based 167. |
-| **4 — full validation** | Re-run at each session-2 checkpoint; see §0. |
+| **3 — empty the manifest** | **Landed as far as the blockers allow: 694 → 686 → 129** (60 of 74 files, 557 nodes newly passing, 0 retired). §0a is the record. Finding 8's dependency is discharged; **Finding 14 was wrong** and its remedy landed anyway. The 129 remaining are all production gaps, itemised in §0a with owners — 26 of them are RETIRE candidates listed rather than executed. |
+| **4 — full validation** | **Done, §0a's table.** 3412 passed / 0 failed both lanes, all guards clean, inventory untouched. |
 
 Phase 1b deliberately stopped short of routing `_event_store.append_event` to the writer. Doing
 that before the fixtures are migrated reddens all 694 manifest nodes with a *changed* failure
