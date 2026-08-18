@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib
 import uuid
+from datetime import UTC, datetime
 
 import psycopg
 import pytest
@@ -49,6 +50,8 @@ from regista._trust_projection import (
     rebuild_projection,
 )
 from regista.testing import drop_project_schema, seed_legacy_principal_key
+
+_UTC_IMPORTS_USED = True
 
 _COLUMNS = (
     "principal_id, key_id, scheme, public_key, fingerprint, status, valid_from, "
@@ -84,6 +87,12 @@ def trust_store(tmp_path):
     open_trust_log(store, genesis.document, root_key)
     yield store
     drop_project_schema(DSN, project)
+
+
+@pytest.fixture
+def principal_keys_project(regista_instance):
+    """A migrated project for applier-level unit checks."""
+    return regista_instance
 
 
 def _mgr(store):
@@ -606,3 +615,280 @@ class TestEnrolmentWithoutPublicKeyIsRejectedAtRebuild:
             assert "public_key" in exc_info.value.detail["missing"]
         finally:
             mgr.close()
+
+
+class TestRebuildAndTheSanctionedWriterIntersect:
+    """The rebuild must be able to see and reproduce the sanctioned writer's events.
+
+    Regression for the P2.2 review's blocking finding B1. Every refusal message P2.2
+    added points callers at ``PrincipalLifecycle`` — the one correct event-driven
+    implementation (§5.1). Before the fix its ``commit()`` emitted Plan-026
+    transitions (``principal_enrolled``/``_rotated``/``_revoked``) with a payload
+    carrying no public key, while the rebuild replays only the §5.3 catalogue names
+    and parses strictly against §5.5. A row written by the ceremony was therefore
+    stamped as v6-sourced yet invisible to the rebuild, which meant: diff reports
+    ``only_live`` -> doctor reports ``fail`` -> the remediation text says "run
+    rebuild-projection" -> the applied rebuild's DELETE removes the row the ceremony
+    just wrote.
+
+    **Scope note, stated plainly.** The end-to-end commit->rebuild path cannot be
+    exercised today: ``commit()`` appends through the legacy writer, which P1.2
+    refuses on both sides of genesis (``GENESIS_REQUIRED`` before, ``V6_EPOCH_OPEN``
+    after). That is why all 27 ``commit()`` tests in
+    ``test_principal_lifecycle_durable.py`` are epoch-blocked on P1.7, and it is why
+    the destruction was latent rather than live. What is provable now — and what
+    these tests pin — is the *contract* between the two halves: the ceremony emits
+    exactly the transitions the rebuild replays, and a payload the rebuild's own
+    parsers accept. When P1.7 supplies the append path, the loop closes on agreeing
+    shapes instead of diverging ones.
+    """
+
+    def _prepared_operation(self, sub, op_type="enrollment"):
+        """Drive the ceremony as far as it goes without appending."""
+        import nacl.signing
+
+        from regista.principal_lifecycle import (
+            CustodyMode,
+            EnrollmentRequest,
+            PossessionProof,
+            PrincipalKind,
+            PrincipalLifecycle,
+            ProofFormat,
+        )
+
+        private_key = nacl.signing.SigningKey.generate()
+        public_key = bytes(private_key.verify_key)
+        lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
+        request = EnrollmentRequest(
+            principal_id="agent:ceremony",
+            principal_kind=PrincipalKind.AGENT,
+            actor_id="human:requester",
+            public_key=public_key,
+            scheme="ed25519",
+            custody_mode=CustodyMode.FILE,
+            reason="intersection regression",
+            requested_authority="root",
+            policy_version="v1",
+        )
+        operation = lifecycle.prepare_enrollment(request, idempotency_key="idem-x")
+        challenge = lifecycle.issue_possession_challenge(operation.operation_id)
+        proof = PossessionProof(
+            format=ProofFormat.SIGNATURE_V1,
+            challenge_id=challenge.challenge_id,
+            operation_id=challenge.operation_id,
+            operation_digest=operation.digest.value,
+            signature=private_key.sign(challenge.signing_bytes()).signature,
+        )
+        operation = lifecycle.submit_possession(operation.operation_id, proof)
+        return lifecycle, operation, public_key
+
+    def test_the_ceremony_emits_the_transitions_the_rebuild_replays(self):
+        """The exact mismatch that made the ceremony's events invisible."""
+        from regista._trust_log import PROJECTION_DRIVING_TRANSITIONS
+        from regista.principal_lifecycle import (
+            LifecycleOperationType,
+            PrincipalLifecycle,
+        )
+
+        lifecycle = PrincipalLifecycle("any-project")
+        emitted = {
+            lifecycle._transition_for(op_type)
+            for op_type in LifecycleOperationType
+        }
+        assert emitted == set(PROJECTION_DRIVING_TRANSITIONS), (
+            "the sanctioned ceremony must emit exactly the transitions the rebuild "
+            f"replays; emits {sorted(emitted)}, rebuild replays "
+            f"{sorted(PROJECTION_DRIVING_TRANSITIONS)}"
+        )
+
+    def test_the_ceremony_payload_parses_under_the_rebuild_s_own_parsers(
+        self, trust_store, tmp_path,
+    ):
+        """A payload the rebuild would reject is an event that cannot be replayed.
+
+        Built against a project that has a trust domain, because §5.5 requires one;
+        a pre-genesis project has none, and there ``commit()`` refuses at the append
+        with GENESIS_REQUIRED before the shape matters.
+        """
+        from regista import Regista
+        from regista._trust_log import parse_principal_key_enrolled
+
+        sub = Regista(DSN, trust_store.project, KEY_PATH)
+        try:
+            with sub._mgr.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO project_identity (id, project_instance_id, "
+                    "trust_domain_id, genesis_event_id, genesis_event_hash, "
+                    "principal_id, key_id, scheme_id, key_fingerprint) "
+                    "VALUES (TRUE, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [
+                        trust_store.project_instance_id,
+                        trust_store.trust_domain_id,
+                        str(uuid.uuid4()),
+                        b"\x00" * 32,
+                        "agent:genesis",
+                        "pk-genesis",
+                        "ed25519",
+                        "ed25519:sha256:" + "0" * 64,
+                    ],
+                )
+            lifecycle, operation, public_key = self._prepared_operation(sub)
+            payload = lifecycle._trust_log_payload(operation, key_id="pk_ceremony_1")
+
+            # The rebuild's own parser is the acceptance test.
+            parsed = parse_principal_key_enrolled(payload)
+            assert parsed.key.public_key == public_key, (
+                "the event must carry the key bytes, or the projection is not "
+                "rebuildable from it (Defect A / WI-273)"
+            )
+            assert parsed.key.key_id == "pk_ceremony_1", (
+                "the event must name the key id the applier will write, or the row "
+                "cannot be reproduced from the event"
+            )
+            assert parsed.trust_domain_id == trust_store.trust_domain_id
+            assert parsed.possession_proof.domain == "regista.principal-possession.v2"
+        finally:
+            sub.close()
+
+    def test_a_ceremony_written_row_would_be_reproduced_not_deleted(
+        self, trust_store,
+    ):
+        """The destruction property, driven through the rebuild's real machinery.
+
+        Stores a §5.5 event of the kind the ceremony now emits, applies the row the
+        ceremony's applier would write, and asserts an applied rebuild reproduces it.
+        Before the fix the equivalent event carried a Plan-026 transition, the
+        rebuild replayed nothing, and this DELETE removed the row.
+        """
+        from regista._principal_keys import (
+            _apply_enrollment_projection,
+            list_principal_keys,
+        )
+
+        writer = TrustLogKey.mint("pk-trust-log")
+        key = TrustLogKey.mint("pk_ceremony_1")
+        event = _enrol(trust_store, "agent:ceremony", key, writer=writer)
+
+        mgr = _mgr(trust_store)
+        try:
+            # Exactly what PrincipalLifecycle._commit_key does after appending.
+            with mgr.transaction() as conn:
+                _apply_enrollment_projection(
+                    conn,
+                    "agent:ceremony",
+                    key.public_key,
+                    "ed25519",
+                    source_event_hash=event.event_hash,
+                    valid_from=datetime(2026, 8, 20, tzinfo=UTC),
+                    registered_at=datetime(2026, 8, 20, tzinfo=UTC),
+                    key_id=key.key_id,
+                    # registered_by MUST be the event's authorized_by.principal_id:
+                    # that is what the rebuild derives it from, and PrincipalLifecycle
+                    # sets both from operation.actor_id for exactly this reason. A
+                    # mismatch here is a permanent field_mismatch divergence.
+                    registered_by=event.payload["authorized_by"]["principal_id"],
+                    trust_domain_id=trust_store.trust_domain_id,
+                )
+            assert len(list_principal_keys(mgr, "agent:ceremony")) == 1
+
+            report = check_projection_consistent(mgr, project=trust_store.project)
+            assert report.consistent is True, report.differences
+
+            rebuild_projection(mgr, project=trust_store.project)
+            after = list_principal_keys(mgr, "agent:ceremony")
+            assert len(after) == 1, (
+                "an applied rebuild deleted a row whose source event is in the store"
+            )
+            assert after[0].key_id == key.key_id
+            assert after[0].public_key == key.public_key
+        finally:
+            mgr.close()
+
+
+class TestEventHashConstructionMatchesTheWritePath:
+    """Regression for blocking finding B2.
+
+    ``_trust_projection._event_hash_text`` (rebuild) and
+    ``principal_lifecycle._lifecycle_event_hash`` (write path) must compute the same
+    hash for the same event. The rebuild used the v6 construction unconditionally
+    while the write path branched on ``scheme_id``, so an HMAC-schemed lifecycle
+    event got a v6-labelled hash from the rebuild and a legacy one from the writer —
+    a permanent, wrongly-labelled divergence in the "invents rows" direction.
+    """
+
+    def _row(self, scheme_id):
+        return {
+            "canonical_envelope": b"envelope-bytes",
+            "signature": b"signature-bytes",
+            "scheme_id": scheme_id,
+        }
+
+    def test_ed25519_uses_the_v6_construction(self):
+        from regista._signing import compute_v6_event_hash
+        from regista._trust_projection import _event_hash_text
+
+        expected = "sha256:" + compute_v6_event_hash(
+            b"envelope-bytes", b"signature-bytes"
+        ).hex()
+        assert _event_hash_text(self._row("ed25519")) == expected
+
+    @pytest.mark.parametrize("scheme_id", ["hmac-sha256", None])
+    def test_a_non_ed25519_event_is_hashed_as_legacy_not_re_labelled_v6(
+        self, scheme_id,
+    ):
+        import hashlib
+
+        from regista._signing import compute_v6_event_hash
+        from regista._trust_projection import _event_hash_text
+
+        legacy = "sha256:" + hashlib.sha256(
+            b"envelope-bytes" + b"signature-bytes"
+        ).hexdigest()
+        v6 = "sha256:" + compute_v6_event_hash(
+            b"envelope-bytes", b"signature-bytes"
+        ).hex()
+        assert legacy != v6
+        assert _event_hash_text(self._row(scheme_id)) == legacy
+
+    def test_the_rebuild_and_the_write_path_agree_for_both_schemes(self):
+        """The property that actually matters: the two constructions never diverge."""
+        from types import SimpleNamespace
+
+        from regista._trust_projection import _event_hash_text
+        from regista.principal_lifecycle import _lifecycle_event_hash
+
+        for scheme_id in ("ed25519", "hmac-sha256"):
+            event = SimpleNamespace(
+                canonical_envelope=b"envelope-bytes",
+                signature=b"signature-bytes",
+                scheme_id=scheme_id,
+            )
+            assert _lifecycle_event_hash(event) == _event_hash_text(
+                self._row(scheme_id)
+            ), f"write path and rebuild disagree for scheme_id={scheme_id!r}"
+
+
+class TestSourceEventHashShapeIsValidated:
+    """B2's second half: the applier must reject a placeholder provenance hash."""
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["not-a-hash", "sha256:tooshort", "sha1:" + "a" * 64, "SHA256:" + "a" * 64,
+         "sha256:" + "A" * 64],
+    )
+    def test_a_malformed_source_event_hash_is_refused(self, principal_keys_project, bad):
+        from regista._principal_keys import _apply_enrollment_projection
+
+        with pytest.raises(RegistaError) as exc_info:
+            with principal_keys_project._mgr.transaction() as conn:
+                _apply_enrollment_projection(
+                    conn,
+                    "agent:shape",
+                    b"\x01" * 32,
+                    "ed25519",
+                    source_event_hash=bad,
+                    valid_from=datetime(2026, 8, 20, tzinfo=UTC),
+                    registered_at=datetime(2026, 8, 20, tzinfo=UTC),
+                )
+        assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+        assert exc_info.value.detail["reason"] == "source_event_hash_malformed"

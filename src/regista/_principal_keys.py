@@ -26,6 +26,7 @@ that *invents* them is worse — see :mod:`regista._trust_projection`.
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +36,10 @@ from psycopg.sql import SQL, Identifier
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
+
+#: The only accepted ``source_event_hash`` spelling (matches the event-hash text
+#: form produced by _signing.compute_v6_event_hash and the legacy head hash).
+_EVENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 #: Rows created by an event-driven applier. Bumped only when the projection's
 #: derivation from events changes in a way that makes old rows non-reproducible.
@@ -118,6 +123,16 @@ def _require_source_event_hash(source_event_hash: str, applier: str) -> str:
             "projection of signed trust-log events (TRUST-DOMAIN.md §5.9), and a row "
             "with no source event is not a projection of anything.",
             {"reason": "source_event_hash_required", "applier": applier},
+        )
+    # Shape, not just presence. "any non-empty string" would let a caller stamp a
+    # placeholder and produce a row that looks v6-sourced while naming nothing a
+    # rebuild could ever resolve.
+    if _EVENT_HASH_RE.fullmatch(source_event_hash) is None:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            f"{applier} requires source_event_hash of the form "
+            f"sha256:<64 lowercase hex>, got {source_event_hash!r}",
+            {"reason": "source_event_hash_malformed", "applier": applier},
         )
     return source_event_hash
 

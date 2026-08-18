@@ -917,6 +917,9 @@ class TrustDomainCustodyDeclared:
       correction, it is a rewrite.
     * ``declaration_seq`` is strictly monotone per trust domain, so two concurrent
       corrections cannot silently interleave into an ambiguous "current" custody.
+      Enforced across a sequence by :func:`replay_custody_declarations`, which is
+      where "monotone" can actually be checked — a single payload can only assert
+      its own seq and the digest it supersedes.
 
     Custody remains an **unverified operator claim** at every version
     (OPERATOR-FORGERY R1); correcting it changes what is claimed, never what is
@@ -1673,6 +1676,46 @@ _REGISTRAR_DELEGATED_KEYS = frozenset(
 )
 
 
+def replay_custody_declarations(
+    declarations: Sequence[tuple[TrustDomainCustodyDeclared, str]],
+) -> TrustDomainCustodyDeclared | None:
+    """Replay custody corrections in order, enforcing the WI-292 monotone rules.
+
+    Takes ``(declaration, its_own_digest)`` pairs in chain order and returns the
+    current declaration, or ``None`` for an empty sequence. Two rules the individual
+    payload cannot check:
+
+    * ``declaration_seq`` must increase by exactly one, starting at 1. A gap would
+      mean a correction is missing from the presented material; a repeat or a
+      decrease would make "current custody" ambiguous.
+    * ``supersedes_declaration_digest`` must name the **immediately preceding**
+      declaration. Naming an older one would silently discard the corrections
+      between, which is a rewrite wearing a correction's clothes.
+    """
+    previous: TrustDomainCustodyDeclared | None = None
+    previous_digest: str | None = None
+    for index, (declaration, digest) in enumerate(declarations):
+        expected_seq = index + 1
+        _require(
+            declaration.declaration_seq == expected_seq,
+            f"custody declaration_seq must increase by one from 1; expected "
+            f"{expected_seq}, got {declaration.declaration_seq}",
+            "custody_seq_not_contiguous",
+            expected=expected_seq,
+            stated=declaration.declaration_seq,
+        )
+        _require(
+            declaration.supersedes_declaration_digest == previous_digest,
+            "custody supersedes_declaration_digest must name the immediately "
+            "preceding declaration",
+            "custody_supersedes_wrong_predecessor",
+            expected=previous_digest,
+            stated=declaration.supersedes_declaration_digest,
+        )
+        previous, previous_digest = declaration, digest
+    return previous
+
+
 def parse_registrar_delegated(payload: Mapping[str, Any]) -> RegistrarDelegated:
     """§5.4: a scoped, expiring online credential, signed at root threshold.
 
@@ -2262,6 +2305,14 @@ def classify_rotation_authority(
     Raises on any failure. There is no path that accepts a recovery rotation below
     the current root threshold, and none that accepts a dual rotation without the
     outgoing-key signature.
+
+    **Caller obligation.** This function checks the rotation-specific authority
+    only. The registrar half of a ``mode: "dual"`` rotation — that
+    ``authorized_by`` resolves to a live, in-scope, unexpired delegation — is
+    :func:`authorize_lifecycle_operation`'s, and the caller must run both. They are
+    deliberately separate because the root-threshold path takes no registrar at all
+    (Resolution 5), so composing them here would mean passing a registrar registry
+    to a check that must not consult one.
     """
     if rotation.dual_authorization.mode == "recovery":
         verify_root_threshold(
@@ -2366,6 +2417,7 @@ __all__: Sequence[str] = [
     "parse_trust_log_payload",
     "parse_trust_root_rotated",
     "refuse_registrar_delegating_registrar",
+    "replay_custody_declarations",
     "root_signature_input",
     "trust_log_authorization_core",
     "validate_established_against_genesis",

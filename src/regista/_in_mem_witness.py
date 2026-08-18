@@ -22,6 +22,19 @@ _WitnessList: TypeAlias = list[dict[str, Any]]
 log = structlog.get_logger()
 
 
+# NB6 (P2.2 review): the in-memory backend does NOT mirror the Postgres backend's
+# witness key-lifecycle refusals. `_witness.py` refuses ed25519 registration, key
+# rotation, and unregister-with-active-rows with WITNESS_LIFECYCLE_CUT (§7 CUT
+# marker, D-7); this backend still performs them against its in-process state.
+#
+# Left divergent deliberately rather than silently: InMemoryRegista's v6 parity is
+# tracked separately (WI-287, "D2: v6 parity for InMemoryRegista under the
+# SUITE-RECONCILIATION conformance split"), and making this backend refuse without
+# that conformance work would create a second, unreviewed definition of which
+# operations are cut. The divergence matters only for tests — no estate deployment
+# uses the in-memory backend for witness lifecycle, and preflight measured zero
+# witness registrations estate-wide.
+
 class InMemWitnessMixin(_InMemoryBase):
 
     def register_witness(

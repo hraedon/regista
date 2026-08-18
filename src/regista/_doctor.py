@@ -690,6 +690,7 @@ def _check_projection_consistent(
                 f"({summary}); first: {first.principal_id}/{first.key_id} "
                 f"{first.kind}"
                 + (f" [{', '.join(first.fields)}]" if first.fields else "")
+                + f"; ordering basis {report.ordering_basis}"
                 + ". Run `regista trust rebuild-projection --project "
                 f"{project}` to restore it from the events."
             ),
@@ -700,7 +701,8 @@ def _check_projection_consistent(
         detail=(
             f"principal_keys reproduces exactly from {report.events_replayed} signed "
             f"lifecycle event(s): {report.rows_rebuilt} v6 row(s), "
-            f"{report.legacy_unsourced_preserved} legacy_unsourced row(s) untouched"
+            f"{report.legacy_unsourced_preserved} legacy_unsourced row(s) untouched; "
+            f"ordering basis {report.ordering_basis}"
         ),
     )
 

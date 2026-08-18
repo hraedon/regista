@@ -589,7 +589,12 @@ class TestTrustDomainEstablished:
         payload = make_trust_domain_established_payload(fixture.document)
         for signer in payload["binding_core"]["signers"]:
             if mutation == "drop_custody":
-                # No-op once WI-292 has landed; the point is that either shape works.
+                # NB4 (P2.2 review): this arm goes VACUOUS once WI-292 lands and
+                # signers no longer carry custody — pop() becomes a no-op and the
+                # case degenerates into "an unmodified core parses". It is kept
+                # because it is the pre-WI-292 half of the guarantee; the
+                # add_unknown_field arm is the one that stays load-bearing on both
+                # sides, so do not delete that one when tidying this up.
                 signer.pop("custody", None)
             else:
                 signer["some_future_field"] = "value"

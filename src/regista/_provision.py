@@ -398,6 +398,10 @@ def provision_principal(
     resolved_backend = resolve_backend(secret_backend)
 
     if dry_run:
+        # NB8 (P2.2 review): this returns a success-shaped result even though the
+        # real run now refuses (§5.9 rule 2). `error` carries the reason so a caller
+        # reading the dry run is not told the real thing would work — the two
+        # placeholder "(dry-run)" fields alone did not say that.
         return PrincipalProvisionResult(
             principal_id=principal_id,
             project=project,
@@ -407,6 +411,12 @@ def provision_principal(
             private_key_stored=False,
             public_key_registered=False,
             secret_backend=resolved_backend,
+            error=(
+                "dry-run only: a real run is refused with "
+                "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED until key provisioning "
+                "goes through a signed principal_key_enrolled event "
+                "(TRUST-DOMAIN.md §5.5, blocked on P1.7)"
+            ),
         )
 
     from ._connection import ConnectionManager

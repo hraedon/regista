@@ -162,19 +162,32 @@ def _require_projection_schema(conn: DictConn, project: str) -> None:
 
 
 def _event_hash_text(row: Mapping[str, Any]) -> str | None:
-    """``"sha256:" + hex`` of the v6 event hash, or ``None`` for a legacy row.
+    """``"sha256:" + hex`` of the event hash, or ``None`` when it cannot be computed.
 
-    Uses the same construction the rest of the tree uses for a v6 event hash
-    (``_signing.compute_v6_event_hash``), so a rebuild's ``source_event_hash``
-    matches what a writer stamped.
+    **Branches on ``scheme_id``**, mirroring
+    ``principal_lifecycle._lifecycle_event_hash`` exactly. The two must agree: the
+    write path stamps ``source_event_hash`` and the rebuild recomputes it, so a
+    construction mismatch would make every affected row read as divergence and — on
+    an applied rebuild — be replaced by a row carrying a different provenance hash.
+    That is the "invents rows" direction §5.9 warns about.
+
+    An Ed25519 event uses the domain-separated v6 construction. Anything else (an
+    HMAC-schemed lifecycle event in a pre-cutover store) uses the legacy
+    ``sha256(canonical_envelope || signature)`` head-hash form. Labelling a
+    legacy event with a v6-domain hash would be a false claim about which epoch
+    produced it.
     """
     envelope = row.get("canonical_envelope")
     signature = row.get("signature")
     if envelope is None or signature is None:
         return None
-    from ._signing import compute_v6_event_hash
+    if row.get("scheme_id") == "ed25519":
+        from ._signing import compute_v6_event_hash
 
-    return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
+        return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
+    import hashlib as _hashlib
+
+    return "sha256:" + _hashlib.sha256(bytes(envelope) + bytes(signature)).hexdigest()
 
 
 def read_lifecycle_events(conn: DictConn) -> list[dict[str, Any]]:
@@ -336,9 +349,27 @@ def _fetch_rows(conn: DictConn, table: str, *, v6_only: bool) -> dict[
     rows = conn.execute(
         f"SELECT {columns} FROM {table} {where}"
     ).fetchall()
-    return {
-        _row_key(r): {k: _normalize(dict(r)[k]) for k in _COMPARED_COLUMNS} for r in rows
-    }
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        key = _row_key(r)
+        if key in out:
+            # Keying by (principal_id, key_id) would otherwise silently collapse a
+            # duplicate, and the diff would report agreement between a table with
+            # two rows and a rebuild with one.
+            raise RegistaError(
+                ErrorCode.PRINCIPAL_KEYS_PROJECTION_DIVERGED,
+                f"{table} contains more than one row for principal_id={key[0]!r} "
+                f"key_id={key[1]!r}; the projection's primary key is not unique, so "
+                "no comparison against a rebuild is meaningful",
+                {
+                    "reason": "duplicate_projection_row",
+                    "table": table,
+                    "principal_id": key[0],
+                    "key_id": key[1],
+                },
+            )
+        out[key] = {k: _normalize(dict(r)[k]) for k in _COMPARED_COLUMNS}
+    return out
 
 
 def _diff(

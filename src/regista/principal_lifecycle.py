@@ -12,12 +12,13 @@ import base64
 import hashlib
 import hmac
 import secrets
+import struct
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Final, Protocol, assert_never
+from typing import Any, ClassVar, Final, Protocol, assert_never
 
 import psycopg
 
@@ -44,6 +45,7 @@ from ._principal_keys import (
     _apply_enrollment_projection,
     _apply_revocation_projection,
     _apply_rotation_projection,
+    _generate_key_id,
 )
 from ._principal_keys import (
     list_principal_keys_for_conn as _list_principal_keys_for_conn,
@@ -52,9 +54,19 @@ from ._principal_keys import (
     principal_entity_id as _principal_entity_id,
 )
 from ._signing_scheme import asymmetric_scheme_ids, get_scheme
+from ._trust_log import (
+    PRINCIPAL_KEY_ENROLLED as _TRUST_LOG_PRINCIPAL_KEY_ENROLLED,
+)
+from ._trust_log import (
+    PRINCIPAL_KEY_REVOKED as _TRUST_LOG_PRINCIPAL_KEY_REVOKED,
+)
+from ._trust_log import (
+    PRINCIPAL_KEY_ROTATED as _TRUST_LOG_PRINCIPAL_KEY_ROTATED,
+)
 
 CONTRACT_VERSION: Final[str] = "regista.principal-lifecycle.v1-draft.1"
-POSSESSION_DOMAIN: Final[str] = "regista.principal-possession.v1"
+# §5.5: enrolment through the 0.6.0 contract requires the v2 possession domain.
+POSSESSION_DOMAIN: Final[str] = "regista.principal-possession.v2"
 EFFECTIVE_DOMAIN: Final[str] = "regista.principal-effective.v1"
 EFFECTIVE_RECEIPT_DOMAIN: Final[str] = "regista.principal-effective-receipt.v1"
 # Tolerated clock skew between a client's observed_at and the verifier-issued
@@ -282,6 +294,26 @@ class LifecycleOperation:
 
 @dataclass(frozen=True)
 class PossessionChallenge:
+    """Possession challenge, upgraded to **v2** framing (TRUST-DOMAIN.md §5.5).
+
+    v2 keeps v1's object shape — including the in-object ``domain`` field, which
+    D-9 deliberately retains — and adds ``trust_domain_id`` and
+    ``enrollment_request_digest``, then changes the framing to the byte-prefix form
+    used everywhere else in v6::
+
+        p = JCS(challenge_object_including_domain_field)
+        input = b"regista.principal-possession.v2\x00" || uint64be(len(p)) || p
+
+    **Deliberate contract change (P2.2 review B1).** The v1 object had the domain
+    inside the JCS payload only, with no prefix, and a ``token_urlsafe`` nonce.
+    Neither satisfies §5.5, so a lifecycle commit could not produce a payload the
+    §5.5 parsers accept — which is what left the sanctioned ceremony's events
+    invisible to the rebuild. Both the verifier (``submit_possession``) and the
+    shipped client (``client_signer``) obtain the bytes from ``signing_bytes()``
+    rather than reconstructing them, so the framing change is transparent to
+    callers that use the helper; a caller that hardcoded the v1 bytes must move.
+    """
+
     challenge_id: str
     operation_id: str
     operation_digest: str
@@ -292,9 +324,14 @@ class PossessionChallenge:
     verifier_nonce: str
     issued_at: datetime
     expires_at: datetime
+    trust_domain_id: str | None = None
+    enrollment_request_digest: str | None = None
 
     def signing_bytes(self) -> bytes:
-        return canonicalize(self.to_dict())
+        from ._trust_log import POSSESSION_PREFIX_V2
+
+        body = canonicalize(self.to_dict())
+        return POSSESSION_PREFIX_V2 + struct.pack(">Q", len(body)) + body
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -303,10 +340,12 @@ class PossessionChallenge:
             "operation_id": self.operation_id,
             "operation_digest": self.operation_digest,
             "project": self.project,
+            "trust_domain_id": self.trust_domain_id,
             "principal_id": self.principal_id,
             "fingerprint": self.fingerprint,
             "scheme": self.scheme,
             "verifier_nonce": self.verifier_nonce,
+            "enrollment_request_digest": self.enrollment_request_digest,
             "issued_at": _format_time(self.issued_at),
             "expires_at": _format_time(self.expires_at),
         }
@@ -531,11 +570,15 @@ class PrincipalLifecycle:
         )
         self._durable = mgr is not None
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(32))
+        # 64 lowercase hex: the shape §5.5 fixes for possession_proof.verifier_nonce.
+        self._nonce_factory = nonce_factory or (lambda: secrets.token_bytes(32).hex())
         self._operations: dict[str, LifecycleOperation] = {}
         self._idempotency: dict[str, tuple[str, str]] = {}
         self._challenges: dict[str, _ChallengeRecord] = {}
         self._receipts: dict[str, RegistryReceipt] = {}
+        # operation_id -> base64 possession signature, kept so the committed event
+        # can name the proof submit_possession already verified (§5.5).
+        self._possession_signatures: dict[str, str] = {}
 
     @property
     def challenge_storage_scope(self) -> ChallengeStorageScope:
@@ -683,6 +726,11 @@ class PrincipalLifecycle:
             verifier_nonce=self._nonce_factory(),
             issued_at=issued_at,
             expires_at=expires_at,
+            # v2 additions (§5.5). trust_domain_id is the project's, read from
+            # project_identity; it is None only before genesis, where commit()
+            # cannot append anyway.
+            trust_domain_id=self._trust_domain_id(),
+            enrollment_request_digest=_enrollment_request_digest(operation),
         )
         self._challenges[challenge.challenge_id] = _ChallengeRecord(challenge)
         if self._durable:
@@ -731,6 +779,8 @@ class PrincipalLifecycle:
                     expected_kind="possession",
                     expected_operation_digest=operation.digest.value,
                     operation_id=operation_id,
+                    # Recorded so a commit on another instance can name the proof.
+                    proof_signature=_encode(proof.signature),
                 )
                 conn.execute(
                     "UPDATE lifecycle_operations SET state = 'awaiting_approval' "
@@ -740,6 +790,7 @@ class PrincipalLifecycle:
             self._challenges[proof.challenge_id] = _ChallengeRecord(consumed, used=True)
         else:
             self._challenges[proof.challenge_id].used = True
+        self._possession_signatures[operation_id] = _encode(proof.signature)
         verified = replace(operation, state=LifecycleState.AWAITING_APPROVAL)
         self._operations[operation_id] = verified
         return verified
@@ -829,20 +880,17 @@ class PrincipalLifecycle:
         transition = self._transition_for(operation.operation_type)
         entity_id = _principal_entity_id(operation.principal_id)
         event_id = uuid.uuid4()
-        payload: dict[str, Any] = {
-            "operation_id": operation.operation_id,
-            "principal_id": operation.principal_id,
-            "principal_kind": operation.principal_kind.value,
-            "actor_id": operation.actor_id,
-            "reason": operation.reason,
-            "policy_version": operation.policy_version,
-        }
-        if operation.fingerprint is not None:
-            payload["fingerprint"] = operation.fingerprint
-        if operation.scheme is not None:
-            payload["scheme"] = operation.scheme
-        if operation.old_key_id is not None:
-            payload["old_key_id"] = operation.old_key_id
+        # §5.5/§5.6/§5.7-shaped payload. The Plan-026 shape this replaces carried
+        # neither the public key bytes (Defect A) nor a §5.3 transition, so the
+        # events were unusable by §5.9's rebuild. The key_id is minted HERE and
+        # handed to the applier, so the event names the key it created rather than
+        # the applier inventing one the event does not mention.
+        new_key_id = (
+            None
+            if operation.operation_type is LifecycleOperationType.REVOCATION
+            else _generate_key_id()
+        )
+        payload = self._trust_log_payload(operation, key_id=new_key_id)
         with self._mgr.transaction() as conn:
             existing_row = conn.execute(
                     "SELECT state, receipt_key_id, committed_at FROM lifecycle_operations "
@@ -900,6 +948,7 @@ class PrincipalLifecycle:
                 operation,
                 source_event_hash=_lifecycle_event_hash(appended),
                 occurred_at=appended.timestamp,
+                key_id=new_key_id,
             )
             now = self._now()
             conn.execute(
@@ -1271,13 +1320,222 @@ class PrincipalLifecycle:
                 f"{method_name} requires a durable backend (ConnectionManager)",
             )
 
+    #: §5.5 custody.declared_backend for each lifecycle custody mode. An unmapped
+    #: mode declares "operator" — an unverified claim either way (§11 obligation 2).
+    _CUSTODY_BACKEND_BY_MODE: ClassVar[dict[CustodyMode, str]] = {
+        CustodyMode.REMOTE_ORGANIZATIONAL: "vault",
+        CustodyMode.WINDOWS_LOCAL: "windows",
+        CustodyMode.FILE: "file",
+    }
+
+    def _trust_log_payload(
+        self, operation: LifecycleOperation, *, key_id: str | None
+    ) -> dict[str, Any]:
+        """Build the §5.5 / §5.6 / §5.7 payload for a committed operation.
+
+        Validated through the frozen parsers before it is returned, so an event this
+        ceremony appends is one the §5.9 rebuild can replay. If it cannot be built
+        validly the commit fails here rather than writing an event that would later
+        read as divergence.
+
+        The one deliberate softness: a pre-genesis project has no trust domain, so
+        the payload cannot be §5.5-valid. Rather than raise a new error and change
+        the recorded failure form of the epoch-blocked commit tests, the unvalidated
+        payload is returned and the append refuses immediately afterwards with
+        GENESIS_REQUIRED — which is the honest reason and the one already recorded.
+        """
+        from ._trust_log import (
+            POSSESSION_DOMAIN_V2,
+            parse_principal_key_enrolled,
+            parse_principal_key_revoked,
+            parse_principal_key_rotated,
+        )
+
+        trust_domain_id = self._trust_domain_id()
+        now = _format_time(self._now())
+
+        if operation.operation_type is LifecycleOperationType.REVOCATION:
+            assert operation.old_key_id is not None
+            payload: dict[str, Any] = {
+                "type": "regista.key-revocation",
+                "version": 1,
+                "trust_domain_id": trust_domain_id,
+                "principal_id": operation.principal_id,
+                "key_id": operation.old_key_id,
+                "reason": (
+                    operation.reason
+                    if operation.reason
+                    in {"compromised", "superseded", "decommissioned", "policy"}
+                    else "unspecified"
+                ),
+                "revoked_at": now,
+                "effective_from": {
+                    "kind": "on_chain_position",
+                    "trust_log_event_hash": "self",
+                },
+                "retroactive_suspicion": {
+                    "declared": False,
+                    "suspect_from_event_hash": None,
+                    "note": None,
+                },
+                "authorized_by": self._authorized_by(operation),
+            }
+            if trust_domain_id is not None:
+                parse_principal_key_revoked(payload)
+            return payload
+
+        assert operation.public_key is not None
+        assert operation.scheme is not None
+        assert key_id is not None
+        challenge_id, verifier_nonce, signature = self._committed_possession(operation)
+        payload = {
+            "type": (
+                "regista.key-rotation"
+                if operation.operation_type is LifecycleOperationType.ROTATION
+                else "regista.key-enrollment"
+            ),
+            "version": 1,
+            "trust_domain_id": trust_domain_id,
+            "principal_id": operation.principal_id,
+            "principal_kind": operation.principal_kind.value,
+            "key_id": key_id,
+            "scheme_id": operation.scheme,
+            # Defect A / WI-273: the bytes, mandatory, so the projection is
+            # rebuildable from the event alone.
+            "public_key": _encode(operation.public_key),
+            "fingerprint": operation.fingerprint,
+            "not_before": now,
+            "not_after": None,
+            "possession_proof": {
+                "domain": POSSESSION_DOMAIN_V2,
+                "challenge_id": challenge_id,
+                "verifier_nonce": verifier_nonce,
+                "enrollment_request_digest": _enrollment_request_digest(operation),
+                "signature": signature,
+            },
+            "authorized_by": self._authorized_by(operation),
+            "custody": {
+                "declared_backend": self._CUSTODY_BACKEND_BY_MODE.get(
+                    operation.custody_mode, "operator"
+                )
+                if operation.custody_mode is not None
+                else "operator",
+                "declared_policy_ref": operation.policy_version,
+            },
+            "supersedes_key_id": operation.old_key_id,
+        }
+        if operation.operation_type is LifecycleOperationType.ROTATION:
+            # §5.6 dual authorization. This ceremony proves possession of the NEW
+            # key, not the outgoing one, so it cannot assert mode "dual"; it records
+            # the authority it actually had. Recovery requires the current root
+            # threshold (Resolution 5 / D-8), which the online ceremony cannot
+            # supply — so root_signatures is empty and a verifier will refuse it
+            # until the ceremony collects them. Left visible rather than faked.
+            payload["dual_authorization"] = {
+                "old_key_signature": None,
+                "mode": "recovery",
+                "recovery_reason": "custody-migration",
+            }
+            payload["root_signatures"] = []
+            if trust_domain_id is not None:
+                parse_principal_key_rotated(payload)
+        elif trust_domain_id is not None:
+            parse_principal_key_enrolled(payload)
+        return payload
+
+    def _authorized_by(self, operation: LifecycleOperation) -> dict[str, Any]:
+        """§5.5 ``authorized_by``, from the authority the operation requested."""
+        authority = "root" if operation.requested_authority == "root" else "registrar"
+        return {
+            "authority": authority,
+            "principal_id": operation.actor_id,
+            "key_id": operation.old_key_id or "pk_lifecycle",
+            # A registrar authorisation must name its delegation event (§5.4). This
+            # ceremony has no registrar delegation to name, so a non-root operation
+            # is reported with a null hash and the §5.5 parser refuses it — the
+            # honest outcome until registrar delegation is wired (P1.7/Gate 2).
+            "delegation_event_hash": None,
+        }
+
+    def _committed_possession(
+        self, operation: LifecycleOperation
+    ) -> tuple[str, str, str]:
+        """The consumed possession challenge's identifying fields plus the proof.
+
+        Read from this instance's challenge record for the operation. The proof was
+        already verified by ``submit_possession``; this repeats its identity into the
+        event so a replayer can bind the two.
+        """
+        if self._durable and self._mgr is not None:
+            # DB first: commit() may run on a different instance from the one that
+            # issued and verified the challenge (Plan 031's durable cross-instance
+            # property), so process-local state is not authoritative here.
+            with self._mgr.transaction() as conn:
+                row = conn.execute(
+                    "SELECT challenge_id, verifier_nonce, proof_signature "
+                    "FROM lifecycle_challenges "
+                    "WHERE operation_id = %s AND kind = 'possession' AND used = true "
+                    "ORDER BY issued_at DESC LIMIT 1",
+                    [operation.operation_id],
+                ).fetchone()
+            if row is not None:
+                return (
+                    str(row["challenge_id"]),
+                    row["verifier_nonce"],
+                    row["proof_signature"] or "",
+                )
+        for record in self._challenges.values():
+            challenge = record.challenge
+            if (
+                isinstance(challenge, PossessionChallenge)
+                and challenge.operation_id == operation.operation_id
+            ):
+                proof_sig = self._possession_signatures.get(operation.operation_id, "")
+                return challenge.challenge_id, challenge.verifier_nonce, proof_sig
+        raise LifecycleContractError(
+            LifecycleErrorCode.INVALID_OPERATION_STATE,
+            f"no possession challenge is recorded for operation "
+            f"{operation.operation_id!r}; the event could not name the proof it rests on",
+        )
+
+    def _trust_domain_id(self) -> str | None:
+        """The project's trust domain, from ``project_identity`` (written by genesis).
+
+        ``None`` before genesis. That is not an error here: ``commit()`` cannot
+        append an ordinary event in a pre-genesis project anyway (GENESIS_REQUIRED),
+        so the append refuses first and reports the real reason.
+        """
+        if not self._durable or self._mgr is None:
+            return None
+        try:
+            with self._mgr.transaction() as conn:
+                row = conn.execute(
+                    "SELECT trust_domain_id FROM project_identity WHERE id IS TRUE"
+                ).fetchone()
+        except Exception:
+            return None
+        if row is None or row["trust_domain_id"] is None:
+            return None
+        return str(row["trust_domain_id"])
+
     def _transition_for(self, op_type: LifecycleOperationType) -> str:
+        """The §5.3 catalogue transition names.
+
+        **Deliberate change (P2.2 review B1).** These were Plan 026's
+        ``principal_enrolled`` / ``principal_rotated`` / ``principal_revoked``.
+        ``TRUST-DOMAIN.md`` §5.3 fixes the catalogue as ``principal_key_enrolled`` /
+        ``principal_key_rotated`` / ``principal_key_revoked``, and §5.9's rebuild
+        replays exactly those. While this ceremony emitted the Plan-026 names its
+        events were invisible to the rebuild, so the rows it wrote could not be
+        reproduced — and an applied rebuild would have deleted them. §5.5-§5.7 is
+        the frozen contract; the Plan-026 shape predates it.
+        """
         if op_type is LifecycleOperationType.ENROLLMENT:
-            return "principal_enrolled"
+            return _TRUST_LOG_PRINCIPAL_KEY_ENROLLED
         if op_type is LifecycleOperationType.ROTATION:
-            return "principal_rotated"
+            return _TRUST_LOG_PRINCIPAL_KEY_ROTATED
         if op_type is LifecycleOperationType.REVOCATION:
-            return "principal_revoked"
+            return _TRUST_LOG_PRINCIPAL_KEY_REVOKED
         assert_never(op_type)
 
     def _commit_key(
@@ -1287,8 +1545,13 @@ class PrincipalLifecycle:
         *,
         source_event_hash: str,
         occurred_at: datetime,
+        key_id: str | None = None,
     ) -> PrincipalKeyEntry:
         """Apply the committed operation to the ``principal_keys`` projection.
+
+        ``key_id`` is the id minted in ``commit()`` and named in the appended event,
+        so the row and its source event agree on which key was created. Letting the
+        applier mint its own would make the row unreproducible from the event.
 
         ``source_event_hash`` is the hash of the signed lifecycle event appended
         immediately before this call, in the same transaction. The appliers require
@@ -1306,6 +1569,7 @@ class PrincipalLifecycle:
                 source_event_hash=source_event_hash,
                 valid_from=occurred_at,
                 registered_at=occurred_at,
+                key_id=key_id,
                 registered_by=operation.actor_id,
             )
         if operation.operation_type is LifecycleOperationType.ROTATION:
@@ -1319,6 +1583,7 @@ class PrincipalLifecycle:
                 source_event_hash=source_event_hash,
                 valid_from=occurred_at,
                 registered_at=occurred_at,
+                key_id=key_id,
                 registered_by=operation.actor_id,
             )
         if operation.operation_type is LifecycleOperationType.REVOCATION:
@@ -1479,8 +1744,9 @@ class PrincipalLifecycle:
                 INSERT INTO lifecycle_challenges
                     (challenge_id, operation_id, operation_digest,
                      project, principal_id, fingerprint, scheme,
-                     verifier_nonce, issued_at, expires_at, used, kind)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, %s)
+                     verifier_nonce, issued_at, expires_at, used, kind,
+                     trust_domain_id, enrollment_request_digest)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, %s, %s, %s)
                 """,
                 [
                     challenge.challenge_id,
@@ -1494,6 +1760,8 @@ class PrincipalLifecycle:
                     challenge.issued_at,
                     challenge.expires_at,
                     self._challenge_kind(challenge),
+                    getattr(challenge, "trust_domain_id", None),
+                    getattr(challenge, "enrollment_request_digest", None),
                 ],
             )
 
@@ -1513,7 +1781,15 @@ class PrincipalLifecycle:
         }
         if row["kind"] == "effective":
             return EffectiveChallenge(**common)
-        return PossessionChallenge(**common)
+        # v2 fields are part of the SIGNED challenge body, so a rehydrated
+        # challenge must reproduce them exactly or submit_possession would verify
+        # against different bytes than the client signed (migration 047).
+        trust_domain_id = row.get("trust_domain_id")
+        return PossessionChallenge(
+            **common,
+            trust_domain_id=str(trust_domain_id) if trust_domain_id is not None else None,
+            enrollment_request_digest=row.get("enrollment_request_digest"),
+        )
 
     def _fetch_challenge(
         self,
@@ -1554,7 +1830,11 @@ class PrincipalLifecycle:
             row = conn.execute(
                     "SELECT challenge_id, operation_id, operation_digest, project, "
                     "principal_id, fingerprint, scheme, verifier_nonce, "
-                    "issued_at, expires_at, kind, used "
+                    "issued_at, expires_at, kind, used, "
+                    # v2 fields are inside the SIGNED challenge body, so omitting
+                    # them here would rehydrate a challenge whose signing bytes
+                    # differ from the ones the client signed (migration 047).
+                    "trust_domain_id, enrollment_request_digest "
                     "FROM lifecycle_challenges WHERE challenge_id = %s",
                     [challenge_id],
             ).fetchone()
@@ -1693,6 +1973,7 @@ class PrincipalLifecycle:
         expected_kind: str,
         expected_operation_digest: str,
         operation_id: str,
+        proof_signature: str | None = None,
     ) -> PossessionChallenge | EffectiveChallenge:
         """Atomically consume a challenge within the caller's transaction.
 
@@ -1704,7 +1985,7 @@ class PrincipalLifecycle:
         row =             conn.execute(
                 """
                 UPDATE lifecycle_challenges
-                SET used = true
+                SET used = true, proof_signature = COALESCE(%s, proof_signature)
                 WHERE challenge_id = %s
                   AND used = false
                   AND kind = %s
@@ -1712,9 +1993,16 @@ class PrincipalLifecycle:
                   AND operation_digest = %s
                 RETURNING challenge_id, operation_id, operation_digest, project,
                           principal_id, fingerprint, scheme, verifier_nonce,
-                          issued_at, expires_at, kind
+                          issued_at, expires_at, kind,
+                          trust_domain_id, enrollment_request_digest
                 """,
-                [challenge_id, expected_kind, operation_id, expected_operation_digest],
+                [
+                    proof_signature,
+                    challenge_id,
+                    expected_kind,
+                    operation_id,
+                    expected_operation_digest,
+                ],
         ).fetchone()
         if row is not None:
             challenge = self._challenge_from_row(row)
@@ -1921,6 +2209,27 @@ def _lifecycle_event_hash(event: Any) -> str:
 
         return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
     return "sha256:" + hashlib.sha256(bytes(envelope) + bytes(signature)).hexdigest()
+
+
+def _enrollment_request_digest(operation: LifecycleOperation) -> str:
+    """``sha256:`` over the canonical enrolment request the challenge binds to (§5.5).
+
+    Derived from the operation's own identifying fields so it is reproducible from
+    stored state — the challenge persists it (migration 047) and the payload repeats
+    it, and the two must agree.
+    """
+    from ._trust_log import enrollment_request_digest
+
+    return enrollment_request_digest(
+        {
+            "operation_id": operation.operation_id,
+            "principal_id": operation.principal_id,
+            "principal_kind": operation.principal_kind.value,
+            "operation_type": operation.operation_type.value,
+            "fingerprint": operation.fingerprint,
+            "scheme": operation.scheme,
+        }
+    )
 
 
 def canonical_lifecycle_digest(fields: Mapping[str, object]) -> LifecycleDigest:
