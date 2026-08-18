@@ -184,6 +184,19 @@ is unusable in the clean epoch), and emptying the `epoch_blocked` manifest
 every node that did not return, and the suite is green with no epoch-blocked entries
 remaining.
 
+> **AMENDED 2026-08-18 (owner-approved; recorded on WI-300).** P1.7's Phase-1 measurement
+> found 167 of the manifest's 694 nodes are blocked by the **in-memory backend's** epoch
+> refusal — decision D2's territory (WI-287, `SUITE-RECONCILIATION.md` §2.3), an explicit
+> P1.7 non-goal — and retiring them would delete live C3 coverage, the alternative D1
+> rejected. The wording above predates the D2 decision and was not revisited when D2 chose
+> parity as a separate work item sized beside this package. Corrected criterion: **the
+> manifest empties at the joint completion of P1.7 and WI-287** — P1.7 owns the
+> Postgres-blocked population (694 − 167), WI-287 the C3/in-memory tranche (167). The
+> ledger and green-suite clauses are unchanged and apply to both. Same dependency-sequenced
+> shape as the `retires_with: P1.4` tranche in §2.2. Provenance: finding by the P1.7
+> implementer (WI-300); escalated 2026-08-18; owner: "I also approve your proposed
+> amendment to P1.7."
+
 ---
 
 ## Gate 2 — key provisioning · **HARD PREREQUISITE** · dep: Gate 1
