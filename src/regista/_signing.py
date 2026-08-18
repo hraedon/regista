@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ._jcs import canonicalize
+from ._v6_referents import NO_REFERENTS, ReferentResolver
 
 if TYPE_CHECKING:
     from ._verification import Backend, VerificationPolicy, VerificationResult
@@ -585,6 +586,7 @@ def verify_event(
     scheme_id: str | None = None,
     backend: Backend | None = None,
     policy: VerificationPolicy | None = None,
+    referents: ReferentResolver = NO_REFERENTS,
 ) -> bool:
     """Boolean bridge over :func:`regista._verification.verify_event_strict`.
 
@@ -633,6 +635,7 @@ def verify_event(
         scheme_id=scheme_id,
         backend=backend,
         policy=policy,
+        referents=referents,
     ).accepted
 
 
@@ -664,6 +667,7 @@ def verify_event_result(
     scheme_id: str | None = None,
     backend: Backend | None = None,
     policy: VerificationPolicy | None = None,
+    referents: ReferentResolver = NO_REFERENTS,
 ) -> VerificationResult:
     """Field-wise entry point to the one verification primitive."""
     from ._signing_scheme import HMACSHA256Scheme
@@ -712,7 +716,16 @@ def verify_event_result(
         source=TrustedKeySource.SUPPLIED_PUBLIC_KEY,
     )
     return verify_event_strict(
-        row, keys=resolver, policy=policy or DEFAULT_POLICY,
+        row,
+        keys=resolver,
+        # This helper is handed *field values*, not a chain. For a v6 event that
+        # means its key binding, workflow registration and chain position are
+        # unestablished, and the verdict says exactly that (UNVERIFIABLE /
+        # key_binding_unresolved) instead of guessing. A caller that holds material
+        # passes it; the default is the honest answer for one row, and it is spelled
+        # by name so a reader can see which it is.
+        referents=referents,
+        policy=policy or DEFAULT_POLICY,
     )
 
 
@@ -744,6 +757,7 @@ def verify_event_result_with_public_key(
     scheme_id: str | None = None,
     backend: Backend | None = None,
     policy: VerificationPolicy | None = None,
+    referents: ReferentResolver = NO_REFERENTS,
 ) -> VerificationResult:
     from ._verification import (
         DEFAULT_POLICY,
@@ -760,7 +774,12 @@ def verify_event_result_with_public_key(
         scheme_id=scheme_id,
         source=TrustedKeySource.SUPPLIED_PUBLIC_KEY,
     )
-    return verify_event_strict(row, keys=resolver, policy=policy or DEFAULT_POLICY)
+    return verify_event_strict(
+        row,
+        keys=resolver,
+        referents=referents,
+        policy=policy or DEFAULT_POLICY,
+    )
 
 
 
@@ -1049,6 +1068,7 @@ def verify_event_dict_principal_binding(
 ) -> PrincipalVerificationResult:
     scheme_id = evt.get("scheme_id") or "hmac-sha256"
 
+    from ._v6_referents import NO_REFERENTS
     from ._verification import (
         DEFAULT_POLICY,
         EventRow,
@@ -1072,7 +1092,16 @@ def verify_event_dict_principal_binding(
                 principal_id=entry.principal_id,
             )
             return verify_event_strict(
-                row, keys=resolver, policy=DEFAULT_POLICY,
+                row,
+                keys=resolver,
+                # A principal-binding probe over the `principal_keys` registry is
+                # LEGACY-ONLY by contract: §5.9 rule 1 makes registry resolution a
+                # raise for a v6 event, and `verify_event_strict` raises. The
+                # `except Exception` below is what turns that into "this entry does
+                # not bind", which is the correct answer — a v6 event's binding is
+                # decided by §5.10 over presented material, never by this table.
+                referents=NO_REFERENTS,
+                policy=DEFAULT_POLICY,
             ).accepted
         except Exception:
             return False

@@ -18,6 +18,7 @@ from ._connection import DictConn
 from ._errors import ErrorCode, RegistaError
 from ._keys import KeyEntry, KeySet
 from ._signing import compute_v6_event_hash, sign_v6_envelope
+from ._v6_referents import store_referents
 from ._verification import (
     EventRow,
     KeySetResolver,
@@ -906,6 +907,12 @@ def read_genesis_from_connection(conn: DictConn, key_set: KeySet) -> GenesisReco
     row_result = verify_event_strict(
         EventRow.from_mapping(row),
         keys=KeySetResolver(key_set),
+        # The store itself is the presented material. Genesis recovery only reads
+        # `signature_valid` and `row_reconciled` below — it deliberately does not
+        # require the *verdict*, because a genesis event's authority is external by
+        # construction and recovery must work for an operator who has not yet pinned
+        # a trust policy (RECONCILIATION.md Resolution 1).
+        referents=store_referents(conn, label="project store (genesis recovery)"),
     )
     if not row_result.signature_valid or not row_result.row_reconciled:
         raise RegistaError(

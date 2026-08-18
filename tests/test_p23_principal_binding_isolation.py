@@ -361,7 +361,7 @@ def test_the_bundle_binding_check_refuses_an_aliased_pair():
     event, public_key, key_id = _ed25519_signed_bundle_event(
         actor_id=alias.from_principal_id
     )
-    verified, unverifiable, errors = _verify_event_signatures(
+    verified, unverifiable, errors, _unverifiable_details = _verify_event_signatures(
         [event],
         _key_registry(
             key_id=key_id, principal_id=alias.to_principal_id, public_key=public_key
@@ -386,7 +386,7 @@ def test_a_covered_legacy_event_still_binds_to_its_exact_old_id():
     event, public_key, key_id = _ed25519_signed_bundle_event(
         actor_id=alias.from_principal_id
     )
-    verified, unverifiable, errors = _verify_event_signatures(
+    verified, unverifiable, errors, _unverifiable_details = _verify_event_signatures(
         [event],
         _key_registry(
             key_id=key_id, principal_id=alias.from_principal_id, public_key=public_key

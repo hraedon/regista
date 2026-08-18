@@ -47,11 +47,13 @@ import struct
 import uuid as _uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
+from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._lineage import MODEL_LINEAGE_FAMILIES
 
@@ -71,7 +73,20 @@ from ._principals import (
     principal_id_kind,
 )
 
+# The presented material (TRUST-DOMAIN.md §5.10, §8.4). `_v6_referents` imports
+# nothing from regista at module scope but `_errors`, so this is not a cycle; the two
+# functions it needs from here and from `_signing` are imported lazily inside it.
+from ._v6_referents import (
+    NO_REFERENTS,
+    MaterialCompleteness,
+    ReferentEvent,
+    ReferentResolver,
+    resolve_completeness,
+    walk_project_chain,
+)
+
 __all__ = [
+    "NO_REFERENTS",
     "V6_ACTOR_KEYS",
     "V6_AUTHORIZATION_KEYS",
     "V6_CHAIN_KEYS",
@@ -83,14 +98,25 @@ __all__ = [
     "V6_WORKFLOW_KEYS",
     "AbsentEnvelopeProbe",
     "Applicability",
+    "Attribution",
     "Backend",
     "BundleKeyResolver",
+    "CheckpointBinding",
     "EnvelopeVersion",
+    "EpochPosition",
     "EventRow",
     "FailureReason",
     "FieldMismatch",
+    "KeyBinding",
     "KeySetResolver",
+    "MaterialCompleteness",
+    "ProducerConsistency",
+    "ReferentEvent",
+    "ReferentResolver",
+    "RevocationStatus",
+    "RootGovernance",
     "StaticKeyResolver",
+    "TrustRoot",
     "TrustedKey",
     "TrustedKeyResolver",
     "TrustedKeySource",
@@ -143,7 +169,118 @@ class TrustedKeySource(StrEnum):
     KEYSET_FILE = "keyset_file"
     SUPPLIED_PUBLIC_KEY = "supplied_public_key"
     BUNDLE_EMBEDDED = "bundle_embedded"
+    #: Resolved by replaying signed trust-log lifecycle events (§8.1). Never from
+    #: ``principal_keys`` — that is the S6 defect (§5.9 rule 1).
+    TRUST_DOMAIN_LOG = "trust_domain_log"
+    #: Chains to a genesis root the *caller* pinned out of band (§4.6, §8.4).
+    EXTERNALLY_PINNED = "externally_pinned"
     NONE = "none"
+
+
+# --- RESULT-MODEL.md §10.1's v6 vocabulary ---------------------------------
+#
+# Every one of these is reported on *every* result, with an explicit "not
+# established" member rather than an absence, because §10.2 invariant 9 is
+# "missing pins produce explicit unbound / not-checked states. A check is never
+# silently skipped because its input was absent."
+
+
+class EpochPosition(StrEnum):
+    PRE_CUTOVER = "pre_cutover"
+    IS_CUTOVER = "is_cutover"
+    POST_CUTOVER = "post_cutover"
+    NO_CUTOVER = "no_cutover"
+    UNKNOWN = "unknown"
+
+
+class Attribution(StrEnum):
+    """Whether the signature attributes the event to *someone*.
+
+    ``SHARED_SECRET`` is the HMAC epoch's honest label: possession of the secret is
+    not identity (WI-278), so an HMAC event may never imply origin authentication.
+    """
+
+    INDIVIDUAL = "individual"
+    SHARED_SECRET = "shared_secret"
+    NONE = "none"
+
+
+class CheckpointBinding(StrEnum):
+    EXTERNALLY_PINNED = "externally_pinned"
+    CHECKPOINT_BOUND = "checkpoint_bound"
+    UNBOUND = "unbound"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class TrustRoot(StrEnum):
+    """Where the authority to believe the signing key comes from (§8.3).
+
+    ``TRUST_LOG_ONLY`` is "the honest middle state and the one most online
+    verifications will report": the log is present and internally consistent, but no
+    caller-supplied policy pins the genesis. ``BUNDLED_ONLY`` is weaker still — the
+    key evidence is inside the material under verification (§8.2, S5) — and is
+    deliberately *not* ``ABSENT``, because the bytes really are there.
+    """
+
+    EXTERNALLY_PINNED = "externally_pinned"
+    TRUST_LOG_ONLY = "trust_log_only"
+    BUNDLED_ONLY = "bundled_only"
+    ABSENT = "absent"
+
+
+class RootGovernance(StrEnum):
+    CO_SIGNED = "co_signed"
+    SOLO = "solo"
+    SOLO_EFFECTIVE = "solo_effective"
+    UNKNOWN = "unknown"
+
+
+class KeyBinding(StrEnum):
+    """§5.10's outcome for "was this key accepted in this project before use"."""
+
+    ACCEPTED_IN_PROJECT = "accepted_in_project"
+    BOOTSTRAP_EXTERNAL = "bootstrap_external"
+    TRUST_LOG_ONLY = "trust_log_only"
+    RETROSPECTIVE = "retrospective"
+    LEGACY_REGISTRY = "legacy_registry"
+    LEGACY_UNBOUND = "legacy_unbound"
+    UNRESOLVED = "unresolved"
+    MISMATCHED = "mismatched"
+    AFTER_USE = "after_use"
+    RECOVERY_ROTATED = "recovery_rotated"
+
+
+class RevocationStatus(StrEnum):
+    NOT_REVOKED = "not_revoked"
+    REVOKED_BEFORE_USE = "revoked_before_use"
+    INDETERMINATE_WINDOW = "indeterminate_window"
+    SUSPECT_DECLARED = "suspect_declared"
+    UNKNOWN = "unknown"
+
+
+class ProducerConsistency(StrEnum):
+    MATCHES_PUBLISHED_POLICY = "matches_published_policy"
+    CONTRADICTS_PUBLISHED_POLICY = "contradicts_published_policy"
+    POLICY_NOT_SUPPLIED = "policy_not_supplied"
+    NOT_APPLICABLE = "not_applicable"
+
+
+#: ``unbound_properties`` vocabulary — **semantic** names, deliberately disjoint from
+#: ``unsigned_fields``' row-column names (§10.2 invariant 8: "one answers 'which
+#: column was not covered by a signature', the other 'which property is not
+#: established at all'"). Spelled as constants so a report and a test cannot drift.
+UNBOUND_EXTERNAL_TRUST_PIN: Final[str] = "external_trust_pin"
+#: Distinct from the above on purpose. ``external_trust_pin`` means "the caller
+#: supplied no trust policy"; this means "this bootstrap event's authority is external
+#: by construction and the presented material does not establish it" — which stays true
+#: *with* a pin, because §5.8 requires the trust log as well. Collapsing the two would
+#: make a report say "no pin supplied" to a caller who supplied one.
+UNBOUND_BOOTSTRAP_AUTHORITY: Final[str] = "bootstrap_external_authority"
+UNBOUND_TRUST_LOG_REVOCATION: Final[str] = "trust_log_revocation"
+UNBOUND_ROOT_GOVERNANCE: Final[str] = "root_governance"
+UNBOUND_DELEGATION_CHAIN: Final[str] = "delegation_chain"
+UNBOUND_PRODUCER_POLICY: Final[str] = "producer_policy"
+UNBOUND_KEY_BINDING: Final[str] = "key_binding"
 
 
 class FailureReason(StrEnum):
@@ -174,6 +311,36 @@ class FailureReason(StrEnum):
     # legacy
     LEGACY_ENVELOPE_VERSION = "legacy_envelope_version"
     UNSIGNED_EVENT = "unsigned_event"
+    # --- v6 referents (RESULT-MODEL.md §10.1, TRUST-DOMAIN.md §5.10/§5.11) ----
+    #: The envelope binds a project/trust-domain the caller's pin contradicts.
+    PROJECT_BINDING_MISMATCH = "project_binding_mismatch"
+    TRUST_DOMAIN_MISMATCH = "trust_domain_mismatch"
+    #: §5.11 row 1 — ``h_A`` is not in the material and the material claims nothing.
+    #: Absence of evidence: ``UNVERIFIABLE``, never ``INVALID``.
+    KEY_BINDING_UNRESOLVED = "key_binding_unresolved"
+    #: §5.11 row 2 — ``h_A`` is not in material that *claims completeness*. The
+    #: claim is false, which is a fact about the artifact: ``INVALID``.
+    KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE = "key_binding_missing_from_complete_scope"
+    #: §5.11 row 3 — the anchor resolves to something that is not an acceptance for
+    #: this principal/key/project.
+    KEY_BINDING_MISMATCH = "key_binding_mismatch"
+    #: §5.11 row 4 / §9 criterion 14. ``ENROLLMENT_AFTER_USE`` is §5.11's spelling
+    #: and ``KEY_BINDING_NOT_BEFORE_USE`` is ``RESULT-MODEL.md`` §10.1's; they name
+    #: the same step-3 failure. Both exist because both documents are normative for
+    #: their own vocabulary, and a report that used one name would be unsearchable
+    #: from the other. ``ENROLLMENT_AFTER_USE`` is the one emitted.
+    ENROLLMENT_AFTER_USE = "enrollment_after_use"
+    KEY_BINDING_NOT_BEFORE_USE = "key_binding_not_before_use"
+    #: ``RECONCILIATION.md`` Resolution 1 — a null ``key_binding_event_hash`` outside
+    #: the three permitted bootstrap positions.
+    KEY_BINDING_BOOTSTRAP_NOT_PERMITTED = "key_binding_bootstrap_not_permitted"
+    #: §5.10 step 4 — a ``principal_key_acceptance_revoked`` lies between A and E.
+    KEY_ACCEPTANCE_REVOKED = "key_acceptance_revoked"
+    WORKFLOW_DEFINITION_MISMATCH = "workflow_definition_mismatch"
+    WORKFLOW_REGISTRATION_UNRESOLVED = "workflow_registration_unresolved"
+    DELEGATION_CHAIN_INVALID = "delegation_chain_invalid"
+    EPOCH_VIOLATION = "epoch_violation"
+    PRODUCER_POLICY_MISMATCH = "producer_policy_mismatch"
 
 
 V6_TOP_LEVEL_KEYS = frozenset(
@@ -986,11 +1153,14 @@ class VerificationPolicy:
     requires the signature and every signed field to reconcile.
     """
 
-    #: Envelope versions that may report FULLY_AUTHENTICATED. v5 is the floor:
-    #: it is the only version that signs actor_kind/actor_metadata, which is
-    #: what the review gate and assurance make decisions from.
+    #: Envelope versions that may report FULLY_AUTHENTICATED. v5 was the floor:
+    #: it is the only *legacy* version that signs actor_kind/actor_metadata, which
+    #: is what the review gate and assurance make decisions from. **v6 is here
+    #: too**, and it has to be: without it no v6 event could ever be
+    #: ``FULLY_AUTHENTICATED`` no matter how completely §5.10 succeeded, which is
+    #: the easiest possible way to ship a verifier boundary that does nothing.
     full_authentication_versions: frozenset[EnvelopeVersion] = frozenset(
-        {EnvelopeVersion.V5}
+        {EnvelopeVersion.V5, EnvelopeVersion.V6}
     )
     #: Legacy versions that may report LEGACY_PARTIAL instead of INVALID.
     #: Expected to shrink, never grow.
@@ -1001,6 +1171,49 @@ class VerificationPolicy:
     accept_legacy_before_global_seq: int | None = None
     #: InMemory keyless events may be *processed*; they are never authenticated.
     accept_unsigned_keyless: bool = False
+
+    # --- v6 pins (RESULT-MODEL.md §10.1, TRUST-DOMAIN.md §8.4) ---------------
+    #
+    # All four are things the verifier is **given** by the caller, out of band. None
+    # of them is ever read from the store, the bundle, or the network: "a verifier
+    # that silently fetches its own trust material has no trust root at all; it has
+    # whatever the network gave it" (§8.4). Every one defaults to "not supplied",
+    # and an unsupplied pin produces an explicit unbound state — never a skipped
+    # check (§10.2 invariant 9).
+
+    #: The project this material is expected to be. A v6 envelope binding a
+    #: different ``project_instance_id`` is ``INVALID``/``PROJECT_BINDING_MISMATCH``
+    #: — cross-project replay of a validly signed event is the attack this closes.
+    pinned_project_instance_id: str | None = None
+    #: The trust domain the caller pinned (§4.6 trust policy). Supplying it is one
+    #: of the two conditions for ``trust_root: externally_pinned``; the other is the
+    #: trust log actually being presented (§5.8: "with the trust log and the pin it
+    #: reports ``externally_pinned``"). A pin alone cannot manufacture an external
+    #: root out of material that carries no lifecycle evidence.
+    pinned_trust_domain_id: str | None = None
+    #: The event hash of the project's cutover checkpoint / genesis, pinned out of
+    #: band. Turns ``checkpoint_binding`` from ``checkpoint_bound`` (the material
+    #: contains *a* bootstrap event) into ``externally_pinned`` (it contains *the*
+    #: one the caller named), which is what ``RECONCILIATION.md`` Resolution 1's
+    #: Bootstrap-B position requires before a bootstrap event may be fully
+    #: authenticated.
+    cutover_checkpoint_event_hash: str | None = None
+    #: The published producer policy (``TRUST-DOMAIN.md`` §4.3), as a sequence of
+    #: ``regista._v6_writer.ProducerPolicyEntry``. ``None`` reports
+    #: ``producer_consistency: policy_not_supplied``, which is an explicit state.
+    #: Typed loosely to keep ``_verification`` free of a ``_v6_writer`` import (the
+    #: dependency runs the other way).
+    producer_policy: Sequence[Any] | None = None
+    #: An **explicit tightening** of the presented material's own completeness claim
+    #: (§5.11). ``None`` — the default — means "the material's claim governs", and
+    #: the material's claim is where completeness structurally belongs: a store
+    #: connection knows it is complete, a windowed bundle knows it is not. This
+    #: field exists for the caller who knows *more* than the material does. It is
+    #: tighten-only: an attempt to soften ``complete_store`` into
+    #: ``contiguous_range`` raises, because that would convert §5.11's ``INVALID``
+    #: row into its ``UNVERIFIABLE`` row by flag, which is the no-fallback rule with
+    #: extra steps.
+    material_completeness: MaterialCompleteness | None = None
 
 
 DEFAULT_POLICY = VerificationPolicy()
@@ -1075,6 +1288,33 @@ class VerificationResult:
     prev_event_hash_ok: bool | None = None
     prev_global_event_hash_ok: bool | None = None
 
+    # --- v6 semantics (RESULT-MODEL.md §10.1) ---------------------------
+    #
+    # These eleven are "non-optional" in §10.1's sense: every result reports every
+    # one of them, with an explicit not-established member instead of an absence.
+    # They carry dataclass defaults naming that state so the ~30 legacy construction
+    # sites are not made to restate "unknown" eleven times — and a v6 result that
+    # *left* them at the default would be claiming nothing while the boundary
+    # believes it checked something, so `__post_init__` refuses exactly that. The
+    # default is therefore the honest legacy answer and a mechanical error for v6,
+    # which is stricter than either "all defaults" or "39 explicit call sites".
+    epoch_position: EpochPosition = EpochPosition.UNKNOWN
+    attribution: Attribution = Attribution.NONE
+    checkpoint_binding: CheckpointBinding = CheckpointBinding.NOT_APPLICABLE
+    #: Semantic vocabulary: properties not established *at all*. Deliberately
+    #: disjoint from ``unsigned_fields``, which is row-column vocabulary (§10.2
+    #: invariant 8).
+    unbound_properties: frozenset[str] = frozenset()
+    trust_domain_id: str | None = None
+    trust_root: TrustRoot = TrustRoot.ABSENT
+    root_governance: RootGovernance = RootGovernance.UNKNOWN
+    key_binding: KeyBinding = KeyBinding.UNRESOLVED
+    revocation_status: RevocationStatus = RevocationStatus.UNKNOWN
+    producer_consistency: ProducerConsistency = ProducerConsistency.NOT_APPLICABLE
+    #: The resolved key-binding anchor's event hash, for reports and for a caller
+    #: that wants to fetch the anchor. ``None`` when no anchor was resolved.
+    key_binding_event_hash: str | None = None
+
     # --- outcome --------------------------------------------------------
     applicability: Applicability = Applicability.UNVERIFIABLE
     accepted: bool = False
@@ -1108,6 +1348,126 @@ class VerificationResult:
                 "VerificationResult invariant violated: LEGACY_PARTIAL must name "
                 "the fields it left unauthenticated"
             )
+        self._check_v6_invariants()
+
+    # -- RESULT-MODEL.md §10.2 / TRUST-DOMAIN.md §8.3 -----------------------
+    #
+    # Asserts, not conventions, for the same reason the four above are: a
+    # convention is a thing a later change can forget.
+    def _check_v6_invariants(self) -> None:
+        def fail(text: str) -> None:
+            raise AssertionError(f"VerificationResult invariant violated: {text}")
+
+        # §10.2 invariant 10 (retained from §8.3), applies to every version.
+        if self.key_binding in (KeyBinding.MISMATCHED, KeyBinding.AFTER_USE) and (
+            self.applicability is not Applicability.INVALID
+        ):
+            fail(
+                f"key_binding={self.key_binding.value!r} is a contradiction and is "
+                f"always INVALID, not {self.applicability.value!r}"
+            )
+        if self.revocation_status is RevocationStatus.REVOKED_BEFORE_USE and (
+            self.applicability is not Applicability.INVALID
+        ):
+            fail("revocation_status=revoked_before_use is always INVALID")
+        if self.key_binding is KeyBinding.RETROSPECTIVE:
+            if self.applicability is Applicability.FULLY_AUTHENTICATED:
+                fail("a retrospective key binding is never FULLY_AUTHENTICATED (§6.4)")
+            if self.legacy_reason != "retrospective_key_binding":
+                fail(
+                    "key_binding=retrospective must carry "
+                    "legacy_reason='retrospective_key_binding'"
+                )
+        if self.key_binding is KeyBinding.LEGACY_REGISTRY:
+            if self.envelope_version is EnvelopeVersion.V6:
+                # §5.9 rule 1: "resolving via PRINCIPAL_REGISTRY is a programming
+                # error and raises". This is the raise.
+                fail(
+                    "a v6 event resolved its key from the principal_keys projection; "
+                    "TRUST-DOMAIN.md §5.9 rule 1 makes that a programming error, not "
+                    "a degraded result"
+                )
+            if self.applicability is Applicability.FULLY_AUTHENTICATED:
+                fail("key_binding=legacy_registry is never FULLY_AUTHENTICATED")
+            if "key_binding" not in self.unsigned_fields:
+                fail(
+                    "key_binding=legacy_registry must report 'key_binding' in "
+                    "unsigned_fields"
+                )
+
+        if self.envelope_version is not EnvelopeVersion.V6:
+            return
+
+        if self.key_binding is KeyBinding.LEGACY_UNBOUND:
+            fail("legacy_unbound is the HMAC epoch's binding and never a v6 event's")
+        # The clamp this boundary replaced returned ENVELOPE_SCHEMA_INCOMPLETE for
+        # every v6 row, which is why the reason is refused by name here as well as
+        # being deleted from the code: a future partial rollback would otherwise
+        # reintroduce a clamp that the type system was happy with.
+        if FailureReason.ENVELOPE_SCHEMA_INCOMPLETE in self.reasons:
+            fail(
+                "a v6 result may not report envelope_schema_incomplete: the strict "
+                "parser either accepted the envelope or the version is not V6. That "
+                "reason was the P1.7 phase-2 clamp and it is not a verdict."
+            )
+
+        if self.applicability is not Applicability.FULLY_AUTHENTICATED:
+            return
+
+        # A v6 result that claims full authentication must have *decided* every
+        # semantic field. Leaving one at its constructor default would report
+        # "nothing established" from a path claiming it established everything —
+        # the silent-skip failure §10.2 invariant 9 forbids.
+        if self.epoch_position is EpochPosition.UNKNOWN:
+            fail(
+                "a FULLY_AUTHENTICATED v6 result must report its epoch_position; "
+                "'unknown' means the boundary did not run"
+            )
+
+        # §10.2 invariants 4 and 5, and §8.3's "load-bearing invariant of this whole
+        # document": a v6 event cannot be reported as fully authenticated without a
+        # project-local acceptance and some trust root.
+        if self.key_binding is KeyBinding.BOOTSTRAP_EXTERNAL:
+            if self.trust_root is not TrustRoot.EXTERNALLY_PINNED or (
+                self.checkpoint_binding is not CheckpointBinding.EXTERNALLY_PINNED
+            ):
+                fail(
+                    "a bootstrap v6 event is FULLY_AUTHENTICATED only with "
+                    "trust_root=externally_pinned AND "
+                    "checkpoint_binding=externally_pinned; RECONCILIATION.md "
+                    "Resolution 1: 'bootstrap without an external pin is not a "
+                    "bootstrap; it is an unauthenticated first event' (got "
+                    f"trust_root={self.trust_root.value!r}, "
+                    f"checkpoint_binding={self.checkpoint_binding.value!r})"
+                )
+        elif self.key_binding is not KeyBinding.ACCEPTED_IN_PROJECT:
+            fail(
+                "a normal v6 event is FULLY_AUTHENTICATED only with "
+                f"key_binding=accepted_in_project (got {self.key_binding.value!r})"
+            )
+        if self.trust_root is TrustRoot.ABSENT:
+            fail("a FULLY_AUTHENTICATED v6 event must have some trust root")
+        if self.attribution is not Attribution.INDIVIDUAL:
+            fail(
+                "a FULLY_AUTHENTICATED v6 event is Ed25519 and therefore attributes "
+                f"to an individual key holder (got {self.attribution.value!r})"
+            )
+        # A revocation status of "unknown" is compatible with full authentication
+        # ONLY when the material presented no trust log to check it against, and
+        # then the gap must be *named* (§10.2 invariant 9). Silence is the failure.
+        if self.revocation_status is RevocationStatus.UNKNOWN and (
+            UNBOUND_TRUST_LOG_REVOCATION not in self.unbound_properties
+        ):
+            fail(
+                "revocation_status=unknown on a FULLY_AUTHENTICATED v6 event must "
+                f"name {UNBOUND_TRUST_LOG_REVOCATION!r} in unbound_properties: an "
+                "unchecked revocation state is reported, never assumed"
+            )
+        if self.revocation_status is RevocationStatus.INDETERMINATE_WINDOW:
+            fail(
+                "revocation_status=indeterminate_window is not silently valid "
+                "(TRUST-DOMAIN.md §6.6); it may not be FULLY_AUTHENTICATED"
+            )
 
     @property
     def ok(self) -> bool:
@@ -1125,6 +1485,17 @@ class VerificationResult:
             parts.append("reasons=" + ",".join(r.value for r in self.reasons))
         if self.mismatched_fields:
             parts.append("mismatched=" + ",".join(self.mismatched_field_names))
+        if self.envelope_version is EnvelopeVersion.V6:
+            # The v6 semantics belong in the one-line form: a v6 verdict that says
+            # only "invalid" sends an operator back to the structured result to find
+            # out *which* referent failed, which is the failure mode `summary()`
+            # exists to avoid.
+            parts.append(f"key_binding={self.key_binding.value}")
+            parts.append(f"trust_root={self.trust_root.value}")
+            if self.revocation_status is not RevocationStatus.NOT_REVOKED:
+                parts.append(f"revocation={self.revocation_status.value}")
+            if self.unbound_properties:
+                parts.append("unbound=" + ",".join(sorted(self.unbound_properties)))
         if self.detail:
             parts.append(self.detail)
         return "; ".join(parts)
@@ -1166,6 +1537,18 @@ class VerificationResult:
             "unsigned_fields": sorted(self.unsigned_fields),
             "prev_event_hash_ok": self.prev_event_hash_ok,
             "prev_global_event_hash_ok": self.prev_global_event_hash_ok,
+            # RESULT-MODEL.md §10.1 — reported on every result, never omitted.
+            "epoch_position": self.epoch_position.value,
+            "attribution": self.attribution.value,
+            "checkpoint_binding": self.checkpoint_binding.value,
+            "unbound_properties": sorted(self.unbound_properties),
+            "trust_domain_id": self.trust_domain_id,
+            "trust_root": self.trust_root.value,
+            "root_governance": self.root_governance.value,
+            "key_binding": self.key_binding.value,
+            "key_binding_event_hash": self.key_binding_event_hash,
+            "revocation_status": self.revocation_status.value,
+            "producer_consistency": self.producer_consistency.value,
             "applicability": self.applicability.value,
             "accepted": self.accepted,
             "reasons": [r.value for r in self.reasons],
@@ -1530,6 +1913,21 @@ class TrustedKey:
     #: so a caller holding a scheme object (including a test-registered one)
     #: does not depend on the mutable global registry.
     scheme_obj: Any = None
+    # --- §8.1 additions ---------------------------------------------------
+    #: The trust domain this key was enrolled in, when the resolver knows it.
+    #: ``None`` for a keyset file or bare caller-supplied material, which carry no
+    #: domain — and the result then reports the domain from the *envelope*, which is
+    #: signed, rather than inventing agreement between the two.
+    trust_domain_id: str | None = None
+    #: The trust-log lifecycle event this key resolved from, for a
+    #: ``TRUST_DOMAIN_LOG``/``EXTERNALLY_PINNED`` resolver. Never a project
+    #: acceptance hash: that is ``VerificationResult.key_binding_event_hash``, which
+    #: the *verifier* resolves, because binding is not resolution (§8.1).
+    key_binding_event_hash: str | None = None
+    #: ``accepted`` | ``retrospective`` | ``legacy_registry``, per §8.1. ``None``
+    #: means the resolver makes no claim about how the key was bound, which is the
+    #: honest answer for a keyset file.
+    binding_kind: str | None = None
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return (
@@ -2191,21 +2589,633 @@ def _base_kwargs(
     }
 
 
+# ---------------------------------------------------------------------------
+# The v6 verifier boundary (TRUST-DOMAIN.md §5.10 / §5.11)
+# ---------------------------------------------------------------------------
+#
+# What replaced what, because the diff is easy to misread: everything above this
+# comment already worked before P1.7 phase 2 — the signature over the exact stored
+# bytes, scheme equality with the trusted key, and total row reconciliation via
+# `_reconcile_v6`. The clamp that stood here returned
+# INVALID/ENVELOPE_SCHEMA_INCOMPLETE for *every* v6 row, clean or tampered, which
+# made `applicability` useless as a tamper signal (WI-287 measured that and wrote it
+# down). What is new below is only the part that needs to see OTHER EVENTS.
+#
+# The one structural rule: the material is **presented**, never fetched (§8.4), and
+# it is addressed by v6 event hash, so a presented anchor whose bytes were altered
+# does not resolve at all rather than resolving to something else. There is no
+# fallback anywhere in here — not to `principal_keys` (§5.9 rule 1, §5.11's last
+# row), not to `occurred_at`, not to `global_seq`. `_v6_writer._anchor_candidate_rows`
+# is allowed to order by `global_seq` because at write time everything committed is
+# behind the head; that argument does not transfer to a verifier holding possibly
+# adversarial material, and this module does not borrow it.
+
+_TRUST_LOG_CHECKPOINT_OBSERVED: Final[str] = "trust_log_checkpoint_observed"
+_PRINCIPAL_KEY_ACCEPTED: Final[str] = "principal_key_accepted"
+_PRINCIPAL_KEY_ACCEPTANCE_REVOKED: Final[str] = "principal_key_acceptance_revoked"
+_PRINCIPAL_KEY_ENROLLED: Final[str] = "principal_key_enrolled"
+_PRINCIPAL_KEY_ROTATED: Final[str] = "principal_key_rotated"
+_PRINCIPAL_KEY_REVOKED: Final[str] = "principal_key_revoked"
+_WORKFLOW_REGISTERED: Final[str] = "workflow_registered"
+_WORKFLOW_RETIRED: Final[str] = "workflow_retired"
+#: ``V6-ENVELOPE.md`` §1.4(b)'s closed set of project key-binding anchor kinds.
+_V6_ANCHOR_TRANSITIONS: Final[frozenset[str]] = frozenset(
+    {"project_initialized", "project_cryptographic_epoch_started", _PRINCIPAL_KEY_ACCEPTED}
+)
+
+
+@dataclass(frozen=True)
+class _ChainContext:
+    """Everything one backwards walk of the presented project chain establishes.
+
+    One walk, several questions — deliberately, because each question is "what lies
+    between A and E in P's chain" and answering them separately would mean several
+    traversals that could disagree about what the chain *is*.
+    """
+
+    #: Hashes reachable from ``E`` by ``chain.previous_project_event_hash``, in walk
+    #: order (nearest ancestor first). Membership is §5.10 step 3's whole answer.
+    reachable: tuple[str, ...]
+    #: ``acceptance_event_hash`` values revoked by a ``principal_key_acceptance_revoked``
+    #: that is itself reachable from ``E`` — i.e. that lies *between* the acceptance
+    #: and ``E``, which is exactly §5.10 step 4's window.
+    revoked_acceptances: frozenset[str]
+    #: The nearest reachable bootstrap event (``project_initialized`` /
+    #: ``project_cryptographic_epoch_started``), or ``None``.
+    bootstrap: ReferentEvent | None
+    #: The most recent reachable ``trust_log_checkpoint_observed`` (§6.6's import
+    #: point), or ``None`` if the chain carries none at or before ``E``.
+    latest_checkpoint_observation: ReferentEvent | None
+    #: ``True`` when the walk stopped because the material does not present a
+    #: predecessor. For ``COMPLETE_STORE`` material that is a contradiction of the
+    #: completeness claim; for a windowed export it is the legitimate bridge point.
+    truncated: bool
+
+    def reaches(self, event_hash: str) -> bool:
+        return event_hash in self.reachable
+
+
+def _walk_chain_context(
+    envelope: Mapping[str, Any], referents: ReferentResolver
+) -> _ChainContext:
+    reachable: list[str] = []
+    revoked: set[str] = set()
+    bootstrap: ReferentEvent | None = None
+    observation: ReferentEvent | None = None
+    cursor = envelope["chain"]["previous_project_event_hash"]
+    truncated = cursor is not None
+    for event in walk_project_chain(cursor, referents):
+        reachable.append(event.event_hash)
+        transition = event.transition
+        if transition == _PRINCIPAL_KEY_ACCEPTANCE_REVOKED:
+            target = event.payload.get("acceptance_event_hash")
+            if isinstance(target, str):
+                revoked.add(target)
+        elif transition == _TRUST_LOG_CHECKPOINT_OBSERVED and observation is None:
+            observation = event
+        elif transition in _V6_BOOTSTRAP_TRANSITIONS and bootstrap is None:
+            bootstrap = event
+        if event.previous_project_event_hash is None:
+            truncated = False
+    return _ChainContext(
+        reachable=tuple(reachable),
+        revoked_acceptances=frozenset(revoked),
+        bootstrap=bootstrap,
+        latest_checkpoint_observation=observation,
+        truncated=truncated,
+    )
+
+
+@dataclass
+class _Findings:
+    """Accumulated verdict material. Contradiction outranks absence, always."""
+
+    reasons: list[FailureReason] = _dc_field(default_factory=list)
+    details: list[str] = _dc_field(default_factory=list)
+    unbound: set[str] = _dc_field(default_factory=set)
+    invalid: bool = False
+    unverifiable: bool = False
+
+    def contradicts(self, reason: FailureReason, detail: str) -> None:
+        self.invalid = True
+        self.reasons.append(reason)
+        self.details.append(detail)
+
+    def cannot_say(self, reason: FailureReason, detail: str, *, unbound: str | None = None) -> None:
+        self.unverifiable = True
+        self.reasons.append(reason)
+        self.details.append(detail)
+        if unbound is not None:
+            self.unbound.add(unbound)
+
+    def note_unbound(self, name: str, detail: str | None = None) -> None:
+        self.unbound.add(name)
+        if detail is not None:
+            self.details.append(detail)
+
+    @property
+    def applicability(self) -> Applicability:
+        if self.invalid:
+            return Applicability.INVALID
+        if self.unverifiable:
+            return Applicability.UNVERIFIABLE
+        return Applicability.FULLY_AUTHENTICATED
+
+
+def _absent_referent_verdict(
+    findings: _Findings,
+    completeness: MaterialCompleteness,
+    *,
+    what: str,
+    referent_hash: str,
+    scope: str,
+    unresolved_reason: FailureReason,
+    missing_reason: FailureReason,
+) -> None:
+    """§5.11 rows 1 and 2, which differ *only* in the completeness claim.
+
+    "Absence of evidence" and "the completeness claim is false" are different facts
+    and get different verdicts. Criterion 15 is exactly this distinction, and the
+    ``CONTIGUOUS_RANGE`` branch must **name** the missing referent as out of scope
+    rather than merely declining.
+    """
+
+    if completeness is MaterialCompleteness.COMPLETE_STORE:
+        findings.contradicts(
+            missing_reason,
+            f"{what} {referent_hash} is absent from material that claims "
+            f"completeness ({scope}); the completeness claim is false, which is a "
+            "fact about the artifact and not an absence (TRUST-DOMAIN.md §5.11)",
+        )
+        return
+    findings.cannot_say(
+        unresolved_reason,
+        f"{what} {referent_hash} is outside the scope of the presented material "
+        f"({scope}); absence of evidence, so no verdict is possible on it "
+        "(TRUST-DOMAIN.md §5.11 row 1)",
+        unbound=UNBOUND_KEY_BINDING if unresolved_reason is (
+            FailureReason.KEY_BINDING_UNRESOLVED
+        ) else None,
+    )
+
+
+def _resolve_v6_key_binding(
+    envelope: Mapping[str, Any],
+    *,
+    chain: _ChainContext,
+    referents: ReferentResolver,
+    completeness: MaterialCompleteness,
+    findings: _Findings,
+) -> tuple[KeyBinding, ReferentEvent | None]:
+    """``TRUST-DOMAIN.md`` §5.10 steps 1-4, plus Resolution 1's three permitted nulls."""
+
+    signing = envelope["signing"]
+    anchor_hash = signing["key_binding_event_hash"]
+    transition = str(envelope["transition"])
+
+    # --- Resolution 1: the three permitted nulls, and nothing else -----------
+    if anchor_hash is None:
+        if transition not in _V6_BOOTSTRAP_TRANSITIONS:
+            findings.contradicts(
+                FailureReason.KEY_BINDING_BOOTSTRAP_NOT_PERMITTED,
+                f"signing.key_binding_event_hash is null on transition "
+                f"{transition!r}; RECONCILIATION.md Resolution 1 permits null only "
+                f"at {sorted(_V6_BOOTSTRAP_TRANSITIONS)}, and 'no other null is "
+                "accepted'",
+            )
+            return KeyBinding.UNRESOLVED, None
+        # Resolution 1's table pins **position** as tightly as it pins transition:
+        # "trust-log genesis, first v6 event"; "unique first v6 event in a legacy
+        # project". The position test is "no v6 ancestor is reachable", not "the
+        # predecessor link is null" — because the cutover checkpoint legitimately
+        # names the *legacy* project head, which is a v5 event and therefore never
+        # resolves as a v6 referent. Testing the link for null would have refused
+        # every real `project_cryptographic_epoch_started`.
+        if chain.reachable:
+            findings.contradicts(
+                FailureReason.KEY_BINDING_BOOTSTRAP_NOT_PERMITTED,
+                f"{transition!r} carries a null key binding but {len(chain.reachable)} "
+                "v6 event(s) precede it on the project chain, so it is not the first "
+                "v6 event; Resolution 1 permits the null by position as well as by "
+                f"transition (nearest ancestor {chain.reachable[0]})",
+            )
+            return KeyBinding.UNRESOLVED, None
+        return KeyBinding.BOOTSTRAP_EXTERNAL, None
+
+    # --- Step 1: resolve h_A within the PRESENTED material -------------------
+    anchor = referents.resolve_referent(anchor_hash)
+    if anchor is None:
+        _absent_referent_verdict(
+            findings,
+            completeness,
+            what="the key-binding anchor",
+            referent_hash=anchor_hash,
+            scope=referents.describe(),
+            unresolved_reason=FailureReason.KEY_BINDING_UNRESOLVED,
+            missing_reason=FailureReason.KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE,
+        )
+        return KeyBinding.UNRESOLVED, None
+
+    # --- Step 2: it must BE an acceptance, for THIS principal/key/project ----
+    if anchor.transition not in _V6_ANCHOR_TRANSITIONS:
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the key-binding anchor {anchor_hash} is a {anchor.transition!r} event, "
+            f"which is not one of {sorted(_V6_ANCHOR_TRANSITIONS)} "
+            "(V6-ENVELOPE.md §1.4b)",
+        )
+        return KeyBinding.MISMATCHED, anchor
+    if anchor.transition == _PRINCIPAL_KEY_ACCEPTED:
+        accepted = anchor.payload
+        anchor_kind = KeyBinding.ACCEPTED_IN_PROJECT
+    else:
+        embedded = anchor.payload.get("bootstrap_key_acceptance")
+        if not isinstance(embedded, Mapping):
+            findings.contradicts(
+                FailureReason.KEY_BINDING_MISMATCH,
+                f"the bootstrap anchor {anchor_hash} carries no "
+                "bootstrap_key_acceptance object to bind against "
+                "(RECONCILIATION.md Resolution 1 Bootstrap B)",
+            )
+            return KeyBinding.MISMATCHED, anchor
+        accepted = embedded
+        anchor_kind = KeyBinding.ACCEPTED_IN_PROJECT
+    expected = {
+        "principal_id": envelope["actor"]["principal_id"],
+        "key_id": signing["key_id"],
+        "project_instance_id": envelope["project_instance_id"],
+    }
+    mismatched = {
+        name: (accepted.get(name) if name != "project_instance_id" else anchor.project_instance_id)
+        for name, value in expected.items()
+        if (accepted.get(name) if name != "project_instance_id" else anchor.project_instance_id)
+        != value
+    }
+    if mismatched:
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the key-binding anchor {anchor_hash} does not accept this event's "
+            f"principal/key/project: expected {expected!r}, anchor names "
+            f"{mismatched!r} (TRUST-DOMAIN.md §5.10 step 2)",
+        )
+        return KeyBinding.MISMATCHED, anchor
+
+    # §5.8's acceptance SCOPES. The writer refuses an out-of-scope append (admission
+    # gate 2, `check_producer_authorization`); a verifier that did not ask the same
+    # question would accept an artifact the writer would never have produced, which
+    # is the gap between "our writer is careful" and "this event is authorised". A
+    # key accepted for `work_item` may not sign a `principal` event just because it
+    # is the only key present.
+    scopes = accepted.get("scopes")
+    if not isinstance(scopes, Mapping):
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the key-binding anchor {anchor_hash} carries no scopes object, so the "
+            "authority it confers is unstated; §5.8's acceptance always names its "
+            "scope and an unscoped acceptance is refused rather than read as "
+            "unlimited",
+        )
+        return KeyBinding.MISMATCHED, anchor
+    entity_kinds = scopes.get("entity_kinds")
+    transitions = scopes.get("transitions")
+    entity_kind = str(envelope["entity"]["kind"])
+    if not isinstance(entity_kinds, list) or entity_kind not in entity_kinds:
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the acceptance at {anchor_hash} does not hold scope for "
+            f"entity_kind={entity_kind!r} (scopes.entity_kinds={entity_kinds!r}); "
+            "there is no wildcard for entity kind (TRUST-DOMAIN.md §5.8)",
+        )
+        return KeyBinding.MISMATCHED, anchor
+    # `transitions: null` is the spec's own spelling for "any transition" and is NOT
+    # the same as an empty list, which authorises nothing.
+    if transitions is not None and (
+        not isinstance(transitions, list) or transition not in transitions
+    ):
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the acceptance at {anchor_hash} does not hold scope for transition "
+            f"{transition!r} (scopes.transitions={transitions!r})",
+        )
+        return KeyBinding.MISMATCHED, anchor
+
+    # --- Step 3: A must PRECEDE E by chain traversal -------------------------
+    # There is deliberately no special case for "the event names its own hash". §5.8's
+    # self-referential first acceptance was withdrawn because the envelope field was
+    # "impossible to fill — the event would have had to reference itself", and that is
+    # a statement about hash preimages, not about policy: an event whose signed bytes
+    # contain their own v6 hash cannot be constructed. A branch for it would be
+    # unreachable, and the general test below already returns the right verdict
+    # (a self-named anchor is not among the event's ancestors).
+    if not chain.reaches(anchor_hash):
+        if chain.truncated and completeness is not MaterialCompleteness.COMPLETE_STORE:
+            # The walk ran off the end of a window. The anchor may well precede E;
+            # this material cannot show it. Naming the bridge point is the point.
+            findings.cannot_say(
+                FailureReason.KEY_BINDING_UNRESOLVED,
+                f"the key-binding anchor {anchor_hash} is present but its position "
+                "relative to this event cannot be established: the presented chain "
+                f"is truncated ({referents.describe()}), so reachability by "
+                "chain.previous_project_event_hash is undecidable here. Ordering is "
+                "never taken from occurred_at or global_seq (§5.10 step 3).",
+                unbound=UNBOUND_KEY_BINDING,
+            )
+            return KeyBinding.UNRESOLVED, anchor
+        findings.contradicts(
+            FailureReason.ENROLLMENT_AFTER_USE,
+            f"the key-binding anchor {anchor_hash} is not reachable from this event "
+            "by following chain.previous_project_event_hash, so the acceptance does "
+            "not precede the use it authorises (TRUST-DOMAIN.md §5.10 step 3, §9 "
+            "criterion 14)",
+        )
+        return KeyBinding.AFTER_USE, anchor
+
+    # --- Step 4: no acceptance revocation lies between A and E --------------
+    if anchor_hash in chain.revoked_acceptances:
+        findings.contradicts(
+            FailureReason.KEY_ACCEPTANCE_REVOKED,
+            f"a principal_key_acceptance_revoked for anchor {anchor_hash} lies "
+            "between that acceptance and this event on the project chain "
+            "(TRUST-DOMAIN.md §5.10 step 4)",
+        )
+        return anchor_kind, anchor
+    return anchor_kind, anchor
+
+
+def _resolve_v6_trust_root(
+    envelope: Mapping[str, Any],
+    *,
+    anchor: ReferentEvent | None,
+    key_binding: KeyBinding,
+    referents: ReferentResolver,
+    policy: VerificationPolicy,
+    findings: _Findings,
+) -> tuple[TrustRoot, RevocationStatus]:
+    """§5.10 steps 5-6: the cross-chain import point, and revocation.
+
+    Two facts decide ``trust_root``, and §5.8 states them together: "A verifier that
+    has the bundle but not the trust log can check signatures and must report
+    ``trust_root: bundled_only``; **with the trust log and the pin** it reports
+    ``externally_pinned``." So a pin alone never manufactures an external root out of
+    material carrying no lifecycle evidence, and a presented log without a pin is the
+    honest middle state ``trust_log_only``.
+    """
+
+    acceptance: Any = None
+    if anchor is not None:
+        acceptance = (
+            anchor.payload
+            if anchor.transition == _PRINCIPAL_KEY_ACCEPTED
+            else anchor.payload.get("bootstrap_key_acceptance")
+        )
+    elif key_binding is KeyBinding.BOOTSTRAP_EXTERNAL:
+        # A bootstrap event has no *referenced* anchor: it carries its own acceptance
+        # object, and Resolution 1's Bootstrap-B row is explicit about what that object
+        # is for — "the payload's `bootstrap_key_acceptance` resolves through the pinned
+        # genesis and a verified trust-log checkpoint". So the cross-chain import point
+        # for a bootstrap event is its own payload, and reading it from anywhere else
+        # would mean a bootstrap event could never reach an external root at all.
+        payload = envelope["payload"]
+        if isinstance(payload, Mapping):
+            acceptance = payload.get("bootstrap_key_acceptance")
+    trust_event_hash = (
+        acceptance.get("trust_event_hash") if isinstance(acceptance, Mapping) else None
+    )
+
+    enrolment: ReferentEvent | None = None
+    if isinstance(trust_event_hash, str):
+        enrolment = referents.resolve_referent(trust_event_hash)
+
+    if enrolment is None:
+        # §5.10 step 5: "If the trust log is not presented → key_binding:
+        # trust_log_only is unavailable, so trust_root: bundled_only at best."
+        # The key bytes ARE here — the acceptance repeats `public_key` on purpose
+        # (§5.8) — so this is `bundled_only`, deliberately not `absent`.
+        root = (
+            TrustRoot.ABSENT
+            if key_binding in (KeyBinding.UNRESOLVED, KeyBinding.MISMATCHED)
+            else TrustRoot.BUNDLED_ONLY
+        )
+        findings.note_unbound(UNBOUND_TRUST_LOG_REVOCATION)
+        if policy.pinned_trust_domain_id is None:
+            findings.note_unbound(UNBOUND_EXTERNAL_TRUST_PIN)
+        findings.note_unbound(UNBOUND_ROOT_GOVERNANCE)
+        return root, RevocationStatus.UNKNOWN
+
+    if enrolment.transition not in (_PRINCIPAL_KEY_ENROLLED, _PRINCIPAL_KEY_ROTATED):
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            f"the acceptance's trust_event_hash {trust_event_hash} resolves to a "
+            f"{enrolment.transition!r} event rather than a principal_key_enrolled or "
+            "principal_key_rotated (TRUST-DOMAIN.md §5.10 step 5)",
+        )
+        return TrustRoot.TRUST_LOG_ONLY, RevocationStatus.UNKNOWN
+
+    # §5.8: "Mismatch between this public_key and the enrolment event's is
+    # **invalid**, not a preference."
+    enrolled = enrolment.payload
+    assert isinstance(acceptance, Mapping)  # implied by trust_event_hash being present
+    for member in ("principal_id", "key_id", "fingerprint", "public_key"):
+        claimed = acceptance.get(member)
+        enrolled_value = enrolled.get(member)
+        if claimed is not None and enrolled_value is not None and claimed != enrolled_value:
+            findings.contradicts(
+                FailureReason.KEY_BINDING_MISMATCH,
+                f"the project acceptance and the trust-log enrolment disagree on "
+                f"{member!r}; §5.8 makes that invalid, not a preference",
+            )
+            return TrustRoot.TRUST_LOG_ONLY, RevocationStatus.UNKNOWN
+
+    pinned = policy.pinned_trust_domain_id
+    if pinned is None:
+        findings.note_unbound(UNBOUND_EXTERNAL_TRUST_PIN)
+        findings.note_unbound(UNBOUND_ROOT_GOVERNANCE)
+        root = TrustRoot.TRUST_LOG_ONLY
+    elif pinned != str(envelope["trust_domain_id"]):
+        findings.contradicts(
+            FailureReason.TRUST_DOMAIN_MISMATCH,
+            f"the envelope binds trust_domain_id={envelope['trust_domain_id']!r} but "
+            f"the caller pinned {pinned!r}; a pinned policy rejects the result as a "
+            "different domain (§9 criterion 4(i))",
+        )
+        root = TrustRoot.TRUST_LOG_ONLY
+    else:
+        root = TrustRoot.EXTERNALLY_PINNED
+
+    return root, RevocationStatus.NOT_REVOKED
+
+
+def _check_v6_workflow_referent(
+    envelope: Mapping[str, Any],
+    *,
+    chain: _ChainContext,
+    referents: ReferentResolver,
+    completeness: MaterialCompleteness,
+    findings: _Findings,
+) -> None:
+    """``V6-ENVELOPE.md`` §1.9 / Resolution 2, from the verifier's side.
+
+    The writer's admission gate 1 refuses an unregistered workflow at append time.
+    That protects the store it writes; it says nothing about an artifact handed to a
+    verifier, which is why the same question is asked again here — over presented
+    material, by hash, with the *definition* hash reconciled rather than assumed.
+    """
+
+    workflow = envelope["workflow"]
+    if workflow is None:
+        return
+    registration_hash = workflow["registration_event_hash"]
+    registration = referents.resolve_referent(registration_hash)
+    if registration is None:
+        _absent_referent_verdict(
+            findings,
+            completeness,
+            what="the workflow registration",
+            referent_hash=registration_hash,
+            scope=referents.describe(),
+            unresolved_reason=FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+            missing_reason=FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+        )
+        return
+    if registration.transition != _WORKFLOW_REGISTERED:
+        findings.contradicts(
+            FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+            f"workflow.registration_event_hash {registration_hash} resolves to a "
+            f"{registration.transition!r} event, not a workflow_registered one; a "
+            "workflow_registry row is not a registration (V6-ENVELOPE.md §1.9)",
+        )
+        return
+    payload = registration.payload
+    if payload.get("name") != workflow["name"] or (
+        payload.get("workflow_version") != workflow["version"]
+    ):
+        findings.contradicts(
+            FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+            f"the registration at {registration_hash} introduces "
+            f"{payload.get('name')!r} v{payload.get('workflow_version')!r}, not the "
+            f"{workflow['name']!r} v{workflow['version']!r} this event names",
+        )
+        return
+    if payload.get("definition_hash") != workflow["definition_hash"]:
+        findings.contradicts(
+            FailureReason.WORKFLOW_DEFINITION_MISMATCH,
+            "the workflow definition this event signs is not the one its "
+            f"registration introduced: event says {workflow['definition_hash']!r}, "
+            f"registration says {payload.get('definition_hash')!r}",
+        )
+        return
+    if not chain.reaches(registration_hash):
+        if chain.truncated and completeness is not MaterialCompleteness.COMPLETE_STORE:
+            findings.cannot_say(
+                FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+                f"the workflow registration {registration_hash} is present but the "
+                "presented chain is truncated, so it cannot be shown to precede this "
+                f"event ({referents.describe()})",
+            )
+            return
+        findings.contradicts(
+            FailureReason.WORKFLOW_REGISTRATION_UNRESOLVED,
+            f"the workflow registration {registration_hash} does not precede this "
+            "event on the project chain; a registration that follows its use "
+            "registers nothing (RECONCILIATION.md Resolution 2)",
+        )
+
+
+def _check_v6_delegation(
+    envelope: Mapping[str, Any], *, findings: _Findings
+) -> None:
+    """``TRUST-DOMAIN.md`` §5.12, to exactly the extent 0.6.0 can check it.
+
+    ``authorization.mode == "delegated"`` requires a full credential-chain validation
+    over the **documents**, and an action-delegation document is not an event: there
+    is no channel in the presented material that carries one, and WI-008 has not
+    landed. So a delegated v6 event is reported ``UNVERIFIABLE`` with the chain named
+    as unbound, and can never be ``FULLY_AUTHENTICATED``. Inventing a credential
+    channel here, or treating "no documents presented" as "chain fine", are the two
+    wrong answers; ``DELEGATION_CHAIN_INVALID`` stays defined for the presented
+    contradiction that becomes reachable when WI-008 lands.
+    """
+
+    authorization = envelope["authorization"]
+    if authorization["mode"] != "delegated":
+        return
+    credentials = authorization["credentials"] or []
+    findings.cannot_say(
+        FailureReason.DELEGATION_CHAIN_INVALID,
+        f"authorization.mode is 'delegated' with {len(credentials)} credential "
+        "reference(s), and action-delegation credential documents are not part of "
+        "the presented material in this release (TRUST-DOMAIN.md §5.12 / WI-008). "
+        "The chain is therefore unestablished, which is reported rather than "
+        "assumed.",
+        unbound=UNBOUND_DELEGATION_CHAIN,
+    )
+
+
+def _check_v6_producer(
+    envelope: Mapping[str, Any], *, policy: VerificationPolicy, findings: _Findings
+) -> ProducerConsistency:
+    """§1.8 / §4.3 producer policy, when the caller supplied one.
+
+    The writer *raises* on a policy contradiction (admission gate 2); the verifier
+    *reports* it, because a verifier that raised would be unable to describe the
+    artifact it was handed. The two read the same ``ProducerPolicyEntry`` shape so
+    they cannot drift on what the policy means.
+    """
+
+    producer = envelope["producer"]
+    entries = policy.producer_policy
+    if entries is None:
+        findings.note_unbound(UNBOUND_PRODUCER_POLICY)
+        return ProducerConsistency.POLICY_NOT_SUPPLIED
+    principal_id = str(envelope["actor"]["principal_id"])
+    harness = producer["harness"]
+    candidates = [e for e in entries if getattr(e, "principal_id", None) == principal_id]
+    if not candidates:
+        findings.contradicts(
+            FailureReason.PRODUCER_POLICY_MISMATCH,
+            f"the supplied producer policy names no entry for principal "
+            f"{principal_id!r}; a pinned policy that omits the signer contradicts the "
+            "event rather than being silent about it (V6-ENVELOPE.md §1.8)",
+        )
+        return ProducerConsistency.CONTRADICTS_PUBLISHED_POLICY
+    for entry in candidates:
+        if harness in getattr(entry, "allowed_harnesses", frozenset()):
+            return ProducerConsistency.MATCHES_PUBLISHED_POLICY
+    findings.contradicts(
+        FailureReason.PRODUCER_POLICY_MISMATCH,
+        f"producer.harness {harness!r} is not an allowed harness for principal "
+        f"{principal_id!r} under the supplied producer policy",
+    )
+    return ProducerConsistency.CONTRADICTS_PUBLISHED_POLICY
+
+
 def _verify_v6_row(
     row: EventRow,
     envelope: Mapping[str, Any],
     *,
     keys: TrustedKeyResolver,
+    referents: ReferentResolver,
+    policy: VerificationPolicy,
     mapped_actor_ids: Iterable[str] | None = None,
 ) -> VerificationResult:
     base = _base_kwargs(row, mapped_actor_ids=mapped_actor_ids)
     signing = envelope["signing"]
     chain = envelope["chain"]
     unsigned = frozenset({"global_seq", "on_behalf_of", "work_item_id"})
+    # Every v6 result carries these two regardless of outcome. `attribution` is
+    # `individual` by *schema*: a v6 envelope's `signing.scheme_id` is ed25519, so
+    # possession of the key is possession by one holder — the property the HMAC epoch
+    # never had (§10.2 invariant 7). `trust_domain_id` comes from the signed
+    # envelope, never from a row column or a resolver's claim.
+    v6_semantics: dict[str, Any] = {
+        "attribution": Attribution.INDIVIDUAL,
+        "trust_domain_id": str(envelope["trust_domain_id"]),
+    }
     trusted = keys.resolve(signing["key_id"])
     if trusted is None:
         return VerificationResult(
             **base,
+            **v6_semantics,
             envelope_version=EnvelopeVersion.V6,
             envelope_present=True,
             envelope_schema_valid=True,
@@ -2220,10 +3230,28 @@ def _verify_v6_row(
             detail=f"no trusted key for v6 key_id={signing['key_id']!r}",
         )
 
+    # TRUST-DOMAIN.md §5.9 rule 1, enforced where it can be enforced: "For a v6
+    # event, resolving via PRINCIPAL_REGISTRY is a programming error and raises."
+    # A degraded result would be a fallback the caller could learn to tolerate; a
+    # raise cannot be tolerated, which is the whole point of the rule. Callers that
+    # legitimately try several registry entries (`_signing`'s principal-binding
+    # probe) already treat an exception as "this entry does not bind".
+    if trusted.source is TrustedKeySource.PRINCIPAL_REGISTRY:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "a v6 event's key was resolved from the principal_keys projection "
+            "(TrustedKeySource.PRINCIPAL_REGISTRY). TRUST-DOMAIN.md §5.9 rule 1: 'No "
+            "verifier resolves a key from this table for a v6 event' — the table is a "
+            "projection and consulting it is the S6 defect. Resolve from the keyset "
+            "file, the trust log, or the presented material instead.",
+            detail={"key_id": trusted.key_id, "event_id": str(row.event_id)},
+        )
+
     trusted_scheme_id = trusted.scheme_id or signing["scheme_id"]
     if trusted_scheme_id != signing["scheme_id"]:
         return VerificationResult(
             **base,
+            **v6_semantics,
             envelope_version=EnvelopeVersion.V6,
             envelope_present=True,
             envelope_schema_valid=True,
@@ -2251,6 +3279,7 @@ def _verify_v6_row(
     )
     common = {
         **base,
+        **v6_semantics,
         "envelope_version": EnvelopeVersion.V6,
         "envelope_present": True,
         "envelope_schema_valid": True,
@@ -2308,6 +3337,165 @@ def _verify_v6_row(
             ),
         )
 
+    # ------------------------------------------------------------------
+    # The boundary. The bytes verify and the row agrees with them; what is left is
+    # everything that requires seeing ANOTHER EVENT.
+    # ------------------------------------------------------------------
+    from ._signing import compute_v6_event_hash
+
+    event_hash_text = "sha256:" + compute_v6_event_hash(
+        bytes(row.canonical_envelope or b""), bytes(row.signature or b"")
+    ).hex()
+    completeness = resolve_completeness(referents.completeness, policy.material_completeness)
+    findings = _Findings()
+
+    # (a) Caller pins. A contradiction of something the caller pinned out of band
+    #     outranks everything else: it means this material is not the material the
+    #     caller asked about, and no later check can make that acceptable.
+    if policy.pinned_project_instance_id is not None and (
+        policy.pinned_project_instance_id != str(envelope["project_instance_id"])
+    ):
+        findings.contradicts(
+            FailureReason.PROJECT_BINDING_MISMATCH,
+            f"the envelope binds project_instance_id="
+            f"{envelope['project_instance_id']!r} but the caller pinned "
+            f"{policy.pinned_project_instance_id!r}; a validly signed event from "
+            "another project is still the wrong project",
+        )
+    if policy.pinned_trust_domain_id is not None and (
+        policy.pinned_trust_domain_id != str(envelope["trust_domain_id"])
+    ):
+        findings.contradicts(
+            FailureReason.TRUST_DOMAIN_MISMATCH,
+            f"the envelope binds trust_domain_id={envelope['trust_domain_id']!r} but "
+            f"the caller pinned {policy.pinned_trust_domain_id!r}",
+        )
+
+    # (b) One walk of the presented project chain answers §5.10 step 3, step 4,
+    #     epoch position and the §6.6 import point.
+    chain_context = _walk_chain_context(envelope, referents)
+
+    # (c) §5.10 steps 1-4 + Resolution 1's three permitted nulls.
+    key_binding, anchor = _resolve_v6_key_binding(
+        envelope,
+        chain=chain_context,
+        referents=referents,
+        completeness=completeness,
+        findings=findings,
+    )
+
+    # (d) §5.10 steps 5-6.
+    trust_root, revocation_status = _resolve_v6_trust_root(
+        envelope,
+        anchor=anchor,
+        key_binding=key_binding,
+        referents=referents,
+        policy=policy,
+        findings=findings,
+    )
+
+    # (e) The remaining envelope referents.
+    _check_v6_workflow_referent(
+        envelope,
+        chain=chain_context,
+        referents=referents,
+        completeness=completeness,
+        findings=findings,
+    )
+    _check_v6_delegation(envelope, findings=findings)
+    producer_consistency = _check_v6_producer(envelope, policy=policy, findings=findings)
+
+    # (f) Epoch position and checkpoint binding. Both are derived from the material
+    #     rather than declared: `is_cutover` when this event IS a bootstrap event,
+    #     `post_cutover` when one is reachable behind it. `unknown` survives only
+    #     when the presented chain shows neither, which a windowed export legitimately
+    #     does — and then `checkpoint_binding` says `unbound` rather than pretending.
+    is_bootstrap = str(envelope["transition"]) in _V6_BOOTSTRAP_TRANSITIONS
+    if is_bootstrap:
+        epoch_position = EpochPosition.IS_CUTOVER
+        checkpoint_hash: str | None = event_hash_text
+    elif chain_context.bootstrap is not None:
+        epoch_position = EpochPosition.POST_CUTOVER
+        checkpoint_hash = chain_context.bootstrap.event_hash
+    else:
+        epoch_position = EpochPosition.UNKNOWN
+        checkpoint_hash = None
+    pinned_checkpoint = policy.cutover_checkpoint_event_hash
+    if checkpoint_hash is None:
+        checkpoint_binding = CheckpointBinding.UNBOUND
+        # Not merely reported: an event whose epoch root the material does not show
+        # cannot be shown to belong to the clean epoch at all, and "fully
+        # authenticated" would be claiming that it does. A windowed export that starts
+        # after the checkpoint legitimately lands here, which is why the message names
+        # what to present rather than implying the artifact is defective.
+        findings.cannot_say(
+            FailureReason.EPOCH_VIOLATION,
+            "no cutover checkpoint or project genesis is reachable from this event in "
+            f"the presented material ({referents.describe()}), so its epoch position "
+            "is unestablished; a v6 event's membership of the clean epoch is a fact "
+            "about the chain behind it (EPOCH-RESET.md §5.1)",
+            unbound="cutover_checkpoint",
+        )
+    elif pinned_checkpoint is None:
+        checkpoint_binding = CheckpointBinding.CHECKPOINT_BOUND
+        findings.note_unbound("cutover_checkpoint_pin")
+    elif pinned_checkpoint == checkpoint_hash:
+        checkpoint_binding = CheckpointBinding.EXTERNALLY_PINNED
+    else:
+        findings.contradicts(
+            FailureReason.EPOCH_VIOLATION,
+            f"the cutover checkpoint reachable from this event is {checkpoint_hash} "
+            f"but the caller pinned {pinned_checkpoint}; this event belongs to a "
+            "different epoch than the one under audit",
+        )
+        checkpoint_binding = CheckpointBinding.UNBOUND
+
+    # (g) A bootstrap event's binding is `bootstrap_external`, and §10.2 invariant 5
+    #     makes that fully authenticated ONLY under an external pin. Recording the
+    #     absent pin as a *finding* rather than letting the invariant assert is what
+    #     turns "bootstrap without an external pin is an unauthenticated first event"
+    #     into a reported verdict instead of a crash.
+    if key_binding is KeyBinding.BOOTSTRAP_EXTERNAL and not findings.invalid:
+        if trust_root is not TrustRoot.EXTERNALLY_PINNED or (
+            checkpoint_binding is not CheckpointBinding.EXTERNALLY_PINNED
+        ):
+            findings.cannot_say(
+                FailureReason.KEY_BINDING_UNRESOLVED,
+                "this is a bootstrap event whose authority is external by "
+                "construction, and the presented material does not establish it: "
+                f"trust_root={trust_root.value}, "
+                f"checkpoint_binding={checkpoint_binding.value}. RECONCILIATION.md "
+                "Resolution 1: 'Bootstrap without an external pin is not a bootstrap; "
+                "it is an unauthenticated first event.' Supply a trust policy pinning "
+                "the domain and the checkpoint hash, and present the trust log.",
+                unbound=UNBOUND_BOOTSTRAP_AUTHORITY,
+            )
+
+    # (h) A revocation found in §5.10 step 4's window IS the revocation status. Leaving
+    #     it at whatever step 6 concluded would report `unknown` about a revocation the
+    #     verifier had just read, which is the kind of internally inconsistent report
+    #     the result model exists to make impossible.
+    if FailureReason.KEY_ACCEPTANCE_REVOKED in findings.reasons:
+        revocation_status = RevocationStatus.REVOKED_BEFORE_USE
+
+    applicability = findings.applicability
+    if (
+        applicability is Applicability.FULLY_AUTHENTICATED
+        and EnvelopeVersion.V6 not in policy.full_authentication_versions
+    ):
+        # An explicit policy that excludes v6 gets an explicit refusal, not a silent
+        # downgrade: the caller asked for something and this says what happened.
+        applicability = Applicability.INVALID
+        findings.reasons.append(FailureReason.LEGACY_ENVELOPE_VERSION)
+        findings.details.append(
+            "every v6 referent resolved, but this policy's "
+            "full_authentication_versions excludes v6"
+        )
+
+    detail = "; ".join(findings.details) or (
+        "every v6 referent resolved against the presented material: "
+        f"{referents.describe()}"
+    )
     return VerificationResult(
         **common,
         row_reconciled=True,
@@ -2315,12 +3503,18 @@ def _verify_v6_row(
         unsigned_fields=unsigned,
         prev_event_hash_ok=prev_ok,
         prev_global_event_hash_ok=prev_global_ok,
-        applicability=Applicability.INVALID,
-        reasons=(FailureReason.ENVELOPE_SCHEMA_INCOMPLETE,),
-        detail=(
-            "v6 bytes and duplicated row fields verify; project, trust, key-binding, "
-            "workflow and delegation referents require the v6 verifier boundary"
-        ),
+        epoch_position=epoch_position,
+        checkpoint_binding=checkpoint_binding,
+        unbound_properties=frozenset(findings.unbound),
+        trust_root=trust_root,
+        key_binding=key_binding,
+        key_binding_event_hash=(None if anchor is None else anchor.event_hash),
+        revocation_status=revocation_status,
+        producer_consistency=producer_consistency,
+        applicability=applicability,
+        accepted=applicability is Applicability.FULLY_AUTHENTICATED,
+        reasons=tuple(dict.fromkeys(findings.reasons)),
+        detail=detail,
     )
 
 
@@ -2328,6 +3522,7 @@ def verify_event_strict(
     row: EventRow,
     *,
     keys: TrustedKeyResolver,
+    referents: ReferentResolver,
     policy: VerificationPolicy = DEFAULT_POLICY,
     mapped_actor_ids: Iterable[str] | None = None,
 ) -> VerificationResult:
@@ -2335,6 +3530,14 @@ def verify_event_strict(
 
     This is the only function in the tree that decides whether an event is
     authenticated. Any path that reimplements part of it is a bug.
+
+    ``referents`` is the **presented material** (``TRUST-DOMAIN.md`` §8.4) and has no
+    default on purpose. A v6 event's key binding, workflow registration and chain
+    position are facts about *other events*, so a call site that cannot say what
+    material it is presenting cannot get a v6 verdict — and the honest way to say
+    "one row, no chain" is to pass :data:`NO_REFERENTS` by name, which is greppable,
+    rather than to omit an argument, which is not. The verifier never fetches: this
+    object is a lookup over what the caller already handed over.
 
     ``mapped_actor_ids`` is the deliberate ``actor_id -> principal_id`` assignment
     population (TRUST-DOMAIN.md §2 consequence 2), supplied by a caller that holds a
@@ -2466,7 +3669,12 @@ def verify_event_strict(
 
     if version is EnvelopeVersion.V6:
         return _verify_v6_row(
-            row, envelope, keys=keys, mapped_actor_ids=mapped_actor_ids
+            row,
+            envelope,
+            keys=keys,
+            referents=referents,
+            policy=policy,
+            mapped_actor_ids=mapped_actor_ids,
         )
 
     version_unsigned = unsigned | _VERSION_UNSIGNED[version]

@@ -13,6 +13,7 @@ from ._errors import ErrorCode, RegistaError
 from ._event_store import InMemoryEventStore
 from ._keys import KeySet
 from ._types import Event, ReplayReport
+from ._v6_referents import MappingReferents, MaterialCompleteness
 from ._verification import (
     AbsentEnvelopeProbe,
     Applicability,
@@ -214,6 +215,16 @@ def in_memory_replay(
     unverifiable = 0
     scoped = work_item_id is not None
 
+    # The presented material, built once (see `_replay.store_referents` for why once).
+    # `COMPLETE_STORE`: this store IS the whole project, so an anchor it does not hold
+    # is absent rather than out of scope — the same claim the Postgres backend makes,
+    # which is what keeps the two backends' v6 verdicts identical.
+    referents = MappingReferents.from_pairs(
+        ((evt.canonical_envelope, evt.signature) for evt in store.all_events()),
+        completeness=MaterialCompleteness.COMPLETE_STORE,
+        label="in-memory project store",
+    )
+
     if verify_principal_binding:
         warnings += 1
         log.warning(
@@ -344,6 +355,7 @@ def in_memory_replay(
                         verification = verify_event_strict(
                             EventRow.from_event(evt, backend=Backend.IN_MEMORY),
                             keys=KeySetResolver(key_set),
+                            referents=referents,
                             policy=_IN_MEMORY_POLICY,
                         )
                         if verification.applicability is Applicability.INVALID:
@@ -411,6 +423,7 @@ def in_memory_replay(
                     verification = verify_event_strict(
                         EventRow.from_event(evt, backend=Backend.IN_MEMORY),
                         keys=_NO_KEY_RESOLVER,
+                        referents=referents,
                         policy=_KEYLESS_POLICY,
                     )
                     if verification.applicability is not Applicability.FULLY_AUTHENTICATED:

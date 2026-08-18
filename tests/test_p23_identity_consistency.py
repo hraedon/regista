@@ -26,6 +26,7 @@ from regista._testing import KeySet
 from regista._verification import (
     _ALL_ROW_FIELDS,
     _VERSION_UNSIGNED,
+    NO_REFERENTS,
     Applicability,
     EnvelopeVersion,
     EventRow,
@@ -129,7 +130,7 @@ def _signed_row(key_entry, *, actor_id, actor_kind, include_actor_kind=True, **r
 def test_every_result_carries_the_identity_trio(key_entry):
     row, version = _signed_row(key_entry, actor_id="agent:mvmcc03", actor_kind="agent")
     assert version == 5
-    result = verify_event_strict(row, keys=_resolver(key_entry))
+    result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert result.actor_id_kind == "agent"
     assert result.actor_kind == "agent"
     assert str(result.identity_consistency) == "consistent"
@@ -147,7 +148,7 @@ def test_the_231k_corpus_shape_is_surfaced_as_a_conflict_without_changing_the_ve
     verdict must not move.
     """
     row, _ = _signed_row(key_entry, actor_id="human:itadmin", actor_kind="agent")
-    result = verify_event_strict(row, keys=_resolver(key_entry))
+    result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert result.actor_id_kind == "human"
     assert result.actor_kind == "agent"
     assert str(result.identity_consistency) == "principal_kind_conflict"
@@ -160,7 +161,7 @@ def test_the_231k_corpus_shape_is_surfaced_as_a_conflict_without_changing_the_ve
 def test_a_bare_legacy_actor_id_reports_a_null_kind(key_entry):
     """§2.6: '``actor_id_kind`` — the prefix, or ``null`` for a bare legacy id'."""
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
-    result = verify_event_strict(row, keys=_resolver(key_entry))
+    result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert result.actor_id_kind is None
     assert str(result.identity_consistency) == "actor_id_ungrammatical"
     assert result.applicability is Applicability.FULLY_AUTHENTICATED
@@ -168,7 +169,7 @@ def test_a_bare_legacy_actor_id_reports_a_null_kind(key_entry):
 
 def test_service_principals_reconcile_with_the_row_spelling_system(key_entry):
     row, _ = _signed_row(key_entry, actor_id="service:agent-notes", actor_kind="system")
-    result = verify_event_strict(row, keys=_resolver(key_entry))
+    result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert str(result.identity_consistency) == "consistent"
 
 
@@ -176,7 +177,7 @@ def test_the_trio_is_present_even_on_outcomes_that_authenticate_nothing(key_entr
     """The case an operator most needs the label for: a row whose envelope is gone."""
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
     stripped = __import__("dataclasses").replace(row, canonical_envelope=None)
-    result = verify_event_strict(stripped, keys=_resolver(key_entry))
+    result = verify_event_strict(stripped, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert result.applicability is Applicability.UNVERIFIABLE
     assert result.actor_id_kind is None
     assert str(result.identity_consistency) == "actor_id_ungrammatical"
@@ -187,7 +188,7 @@ def test_the_trio_is_present_even_on_outcomes_that_authenticate_nothing(key_entr
 
 def test_the_trio_appears_in_to_dict(key_entry):
     row, _ = _signed_row(key_entry, actor_id="human:itadmin", actor_kind="agent")
-    d = verify_event_strict(row, keys=_resolver(key_entry)).to_dict()
+    d = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS).to_dict()
     assert d["actor_id_kind"] == "human"
     assert d["actor_kind"] == "agent"
     assert d["identity_consistency"] == "principal_kind_conflict"
@@ -233,7 +234,12 @@ def test_pre_v5_actor_kind_authenticated_is_false(key_entry):
         key_entry, actor_id="human:itadmin", actor_kind="agent", include_actor_kind=False
     )
     assert version == 4
-    result = verify_event_strict(row, keys=_resolver(key_entry), policy=_LEGACY_ALL)
+    result = verify_event_strict(
+        row,
+        keys=_resolver(key_entry),
+        policy=_LEGACY_ALL,
+        referents=NO_REFERENTS,
+    )
     assert result.applicability is Applicability.LEGACY_PARTIAL
     assert "actor_kind" in result.unsigned_fields
     assert "actor_kind" not in result.authenticated_fields
@@ -247,13 +253,18 @@ def test_actor_kind_authenticated_is_derived_from_unsigned_fields_not_stored(key
     """One source of truth: the flag reads ``authenticated_fields``, so it cannot disagree
     with the field list a consumer is told to check."""
     v5_row, _ = _signed_row(key_entry, actor_id="agent:mvmcc03", actor_kind="agent")
-    v5 = verify_event_strict(v5_row, keys=_resolver(key_entry))
+    v5 = verify_event_strict(v5_row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert v5.actor_kind_authenticated is ("actor_kind" in v5.authenticated_fields) is True
 
     v4_row, _ = _signed_row(
         key_entry, actor_id="agent:mvmcc03", actor_kind="agent", include_actor_kind=False
     )
-    v4 = verify_event_strict(v4_row, keys=_resolver(key_entry), policy=_LEGACY_ALL)
+    v4 = verify_event_strict(
+        v4_row,
+        keys=_resolver(key_entry),
+        policy=_LEGACY_ALL,
+        referents=NO_REFERENTS,
+    )
     assert v4.actor_kind_authenticated is ("actor_kind" in v4.authenticated_fields) is False
 
 
@@ -264,7 +275,7 @@ def test_actor_kind_authenticated_is_derived_from_unsigned_fields_not_stored(key
 
 def test_mapping_is_not_evaluated_unless_a_population_is_supplied(key_entry):
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
-    result = verify_event_strict(row, keys=_resolver(key_entry))
+    result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
     assert str(result.actor_principal_mapping) == "not_evaluated"
     assert str(result.identity_consistency) == "actor_id_ungrammatical"
 
@@ -274,7 +285,8 @@ def test_an_unmapped_writer_is_mapping_absent_not_a_guess(key_entry):
     supplying that canonical id as the only mapped *principal* must not map the actor."""
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
     result = verify_event_strict(
-        row, keys=_resolver(key_entry), mapped_actor_ids={"agent:mvmcc03"}
+        row, keys=_resolver(key_entry), mapped_actor_ids={"agent:mvmcc03"},
+    referents=NO_REFERENTS,
     )
     assert str(result.actor_principal_mapping) == "mapping_absent"
     assert str(result.identity_consistency) == "mapping_absent"
@@ -284,7 +296,8 @@ def test_an_unmapped_writer_is_mapping_absent_not_a_guess(key_entry):
 def test_a_mapped_writer_is_reported_mapped(key_entry):
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
     result = verify_event_strict(
-        row, keys=_resolver(key_entry), mapped_actor_ids={"mvmcc03-agent"}
+        row, keys=_resolver(key_entry), mapped_actor_ids={"mvmcc03-agent"},
+    referents=NO_REFERENTS,
     )
     assert str(result.actor_principal_mapping) == "mapped"
     assert str(result.identity_consistency) == "actor_id_ungrammatical"
@@ -293,7 +306,12 @@ def test_a_mapped_writer_is_reported_mapped(key_entry):
 def test_a_kind_conflict_is_never_masked_by_the_mapping_axis(key_entry):
     """The 231k corpus is both facts at once; two fields keep both."""
     row, _ = _signed_row(key_entry, actor_id="human:itadmin", actor_kind="agent")
-    result = verify_event_strict(row, keys=_resolver(key_entry), mapped_actor_ids=set())
+    result = verify_event_strict(
+        row,
+        keys=_resolver(key_entry),
+        mapped_actor_ids=set(),
+        referents=NO_REFERENTS,
+    )
     assert str(result.identity_consistency) == "principal_kind_conflict"
     assert str(result.actor_principal_mapping) == "self_canonical"
 
@@ -335,7 +353,8 @@ def test_the_mapping_population_can_come_from_a_validated_mapping_document(key_e
     )
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
     result = verify_event_strict(
-        row, keys=_resolver(key_entry), mapped_actor_ids=doc.mapped_actor_ids
+        row, keys=_resolver(key_entry), mapped_actor_ids=doc.mapped_actor_ids,
+    referents=NO_REFERENTS,
     )
     assert str(result.actor_principal_mapping) == "mapped"
 
@@ -344,7 +363,12 @@ def test_mapping_population_never_becomes_a_verdict_input(key_entry):
     """The same event, verified with and without a mapping population, must produce the
     same applicability, acceptance and reasons."""
     row, _ = _signed_row(key_entry, actor_id="mvmcc03-agent", actor_kind="agent")
-    without = verify_event_strict(row, keys=_resolver(key_entry))
-    with_empty = verify_event_strict(row, keys=_resolver(key_entry), mapped_actor_ids=set())
+    without = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
+    with_empty = verify_event_strict(
+        row,
+        keys=_resolver(key_entry),
+        mapped_actor_ids=set(),
+        referents=NO_REFERENTS,
+    )
     for field in ("applicability", "accepted", "reasons", "signature_valid", "row_reconciled"):
         assert getattr(without, field) == getattr(with_empty, field), field

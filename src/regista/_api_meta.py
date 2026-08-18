@@ -78,11 +78,19 @@ class MetaApiMixin(_RegistaBase):
 
         if public_key is None:
             self._require_open()
-            return verify_event_strict(
-                EventRow.from_event(event),
-                keys=KeySetResolver(self._keys),
-                policy=DEFAULT_POLICY,
-            )
+            from ._v6_referents import store_referents
+
+            # A v6 verdict needs the chain, not just the row: `key_binding`,
+            # `workflow` and epoch position are facts about other events. The open
+            # project is the material, and it is presented rather than fetched — this
+            # is the caller's own store, handed over by the caller's own call.
+            with self._mgr.transaction() as conn:
+                return verify_event_strict(
+                    EventRow.from_event(event),
+                    keys=KeySetResolver(self._keys),
+                    referents=store_referents(conn, label="open project"),
+                    policy=DEFAULT_POLICY,
+                )
         # A caller-supplied key carries no scheme metadata of its own; the
         # project key set is consulted for it where the project is open, so the
         # scheme is still not taken from the row (WI-267 / S2-interim).

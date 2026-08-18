@@ -66,8 +66,10 @@ from _v6_fixtures import (
 
 from regista._errors import ErrorCode, RegistaError
 from regista._signing import compute_v6_event_hash
+from regista._v6_referents import MappingReferents, MaterialCompleteness
 from regista._v6_writer import Producer, append_v6_event, read_project_identity
 from regista._verification import (
+    Applicability,
     EventRow,
     FailureReason,
     KeySetResolver,
@@ -163,9 +165,26 @@ def _row(project, event_id) -> dict[str, Any]:
 
 
 def _verify(project, event_id):
+    """Verify one stored row against the store's OWN events as presented material.
+
+    The referent resolver is the in-memory store, claiming ``COMPLETE_STORE`` — the
+    same claim the Postgres backend's ``store_referents`` makes, which is what keeps a
+    v6 verdict identical on the two backends. Passing ``NO_REFERENTS`` here would make
+    every v6 verdict ``UNVERIFIABLE`` for want of a key-binding anchor and quietly
+    reinstate the situation the P1.7 boundary removed.
+    """
+
     return verify_event_strict(
         EventRow.from_mapping(_row(project, event_id)),
         keys=KeySetResolver(project._keys),
+        referents=MappingReferents.from_pairs(
+            (
+                (event.canonical_envelope, event.signature)
+                for event in project._store.all_events()
+            ),
+            completeness=MaterialCompleteness.COMPLETE_STORE,
+            label="in-memory project store",
+        ),
     )
 
 
@@ -718,14 +737,19 @@ class TestWI289Cluster6:
     v6 domain-tagged ``compute_v6_event_hash`` and the v6 envelope's own
     ``chain`` block.
 
-    **Deliberately not asserted: ``applicability``.** P1.7's verifier boundary is
-    still clamped (``_verification._verify_v6_row`` returns
-    ``INVALID``/``ENVELOPE_SCHEMA_INCOMPLETE`` for *every* v6 row, clean or
-    tampered), so an ``applicability == INVALID`` assertion would pass on a clean
-    event and prove nothing. These assert ``row_reconciled``,
-    ``mismatched_field_names`` and the ``FailureReason`` set, which are decided
-    above the clamp. When the boundary lands, tighten them to include
-    ``applicability`` — do not merely delete this note.
+    **``applicability`` IS asserted, as of P1.7 phase 2.** The instruction this
+    docstring used to carry has been carried out rather than deleted, so the history
+    is worth keeping: while ``_verification._verify_v6_row`` was clamped it returned
+    ``INVALID``/``ENVELOPE_SCHEMA_INCOMPLETE`` for *every* v6 row, clean or tampered,
+    so an ``applicability == INVALID`` assertion would have passed on a clean event
+    and proved nothing at all. These tests therefore asserted only
+    ``row_reconciled``, ``mismatched_field_names`` and the ``FailureReason`` set —
+    everything decided *above* the clamp.
+
+    The boundary landed, so each tamper test now additionally asserts that the clean
+    event is ``FULLY_AUTHENTICATED`` and the tampered one is ``INVALID``. That pairing
+    is the point: an ``INVALID`` assertion is only evidence if the clean case is
+    something else.
     """
 
     @pytest.fixture
@@ -836,6 +860,9 @@ class TestWI289Cluster6:
         clean = _verify(appendable, second.event_id)
         assert clean.row_reconciled is True
         assert clean.mismatched_field_names == ()
+        # Tightened when the v6 verifier boundary landed: the clean case has to be
+        # something other than INVALID, or the tamper assertion below proves nothing.
+        assert clean.applicability is Applicability.FULLY_AUTHENTICATED, clean.summary()
 
         _rewrite_row(appendable, second.event_id, prev_global_event_hash=b"\x11" * 32)
         tampered = _verify(appendable, second.event_id)
@@ -843,6 +870,7 @@ class TestWI289Cluster6:
         assert tampered.row_reconciled is False
         assert tampered.mismatched_field_names == ("prev_global_event_hash",)
         assert FailureReason.ROW_FIELD_MISMATCH in tampered.reasons
+        assert tampered.applicability is Applicability.INVALID
 
     def test_an_in_memory_row_rewrite_halts_verification(self, appendable) -> None:
         """Discharges ``TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay``
@@ -854,12 +882,16 @@ class TestWI289Cluster6:
         """
 
         appended = _append(appendable, entity_id=uuid.uuid4(), transition="created")
+        clean = _verify(appendable, appended.event_id)
+        assert clean.applicability is Applicability.FULLY_AUTHENTICATED, clean.summary()
+
         _rewrite_row(appendable, appended.event_id, actor_id="agent:someone-else")
         result = _verify(appendable, appended.event_id)
         assert result.signature_valid is True
         assert result.row_reconciled is False
         assert result.mismatched_field_names == ("actor_id",)
         assert FailureReason.ROW_FIELD_MISMATCH in result.reasons
+        assert result.applicability is Applicability.INVALID
 
     def test_deleting_an_in_memory_envelope_is_unverifiable_not_a_silent_pass(
         self, appendable
@@ -874,6 +906,9 @@ class TestWI289Cluster6:
         """
 
         appended = _append(appendable, entity_id=uuid.uuid4(), transition="created")
+        clean = _verify(appendable, appended.event_id)
+        assert clean.applicability is Applicability.FULLY_AUTHENTICATED, clean.summary()
+
         _rewrite_row(appendable, appended.event_id, canonical_envelope=None)
         result = _verify(appendable, appended.event_id)
         assert result.envelope_present is False

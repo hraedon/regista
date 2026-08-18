@@ -36,6 +36,7 @@ from regista._signing import (
 from regista._signing_scheme import HMACSHA256Scheme
 from regista._testing import KeySet
 from regista._verification import (
+    NO_REFERENTS,
     AbsentEnvelopeProbe,
     Applicability,
     Backend,
@@ -250,7 +251,7 @@ class TestMutationMatrix:
         assert getattr(row, attr) != value, "the mutation must actually change something"
 
         tampered = dataclasses.replace(row, **{attr: value})
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
 
         assert result.applicability is Applicability.INVALID
         assert not result.ok and not result.accepted
@@ -264,7 +265,7 @@ class TestMutationMatrix:
     def test_nulling_a_signed_chain_link_is_a_presence_mismatch(self, key_entry):
         row = _v5_row(key_entry)
         tampered = dataclasses.replace(row, prev_event_hash=None)
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         mismatch = next(
             m for m in result.mismatched_fields if m.field == "prev_event_hash"
@@ -276,7 +277,7 @@ class TestMutationMatrix:
         row = _v5_row(key_entry, prev_event_hash=None)
         assert b"prev_event_hash" not in row.canonical_envelope
         tampered = dataclasses.replace(row, prev_event_hash=b"\x77" * 32)
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         mismatch = next(
             m for m in result.mismatched_fields if m.field == "prev_event_hash"
@@ -293,7 +294,7 @@ class TestMutationMatrix:
         """
         row = _v5_row(key_entry)
         tampered = dataclasses.replace(row, work_item_id=uuid.uuid4())
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         assert "work_item_id!=entity_id" in result.mismatched_field_names
         assert FailureReason.ENTITY_ALIAS_MISMATCH in result.reasons
@@ -302,7 +303,7 @@ class TestMutationMatrix:
         """The key is resolved from the ENVELOPE's key_id, not the row's."""
         row = _v5_row(key_entry)
         tampered = dataclasses.replace(row, key_id="not-a-real-key")
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         assert "key_id" in result.mismatched_field_names
         assert FailureReason.KEY_ID_MISMATCH in result.reasons
@@ -314,7 +315,7 @@ class TestMutationMatrix:
     def test_every_reconciled_field_is_covered_by_this_matrix(self, key_entry):
         """Guard: a new signed field must arrive with a mutation test."""
         row = _v5_row(key_entry)
-        result = verify_event_strict(row, keys=_resolver(key_entry))
+        result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
         covered = {m[0] for m in _V5_MUTATIONS}
         # global_seq is unsigned by design and is asserted separately.
         assert result.authenticated_fields - covered == set(), (
@@ -330,12 +331,16 @@ class TestGlobalSeqIsUnsignedByDesign:
         row = _v5_row(key_entry)
         assert b"global_seq" not in row.canonical_envelope
         tampered = dataclasses.replace(row, global_seq=999_999)
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.ok
         assert result.mismatched_fields == ()
 
     def test_global_seq_is_never_authenticated(self, key_entry):
-        result = verify_event_strict(_v5_row(key_entry), keys=_resolver(key_entry))
+        result = verify_event_strict(
+            _v5_row(key_entry),
+            keys=_resolver(key_entry),
+            referents=NO_REFERENTS,
+        )
         assert "global_seq" not in result.authenticated_fields
         assert "global_seq" in result.unsigned_fields
 
@@ -372,9 +377,9 @@ class TestGlobalSeqIsUnsignedByDesign:
             global_seq=5, canonical_envelope=envelope, signature=sig,
             payload_canonical_hash=chash, row_scheme_id="hmac-sha256",
         )
-        assert verify_event_strict(row, keys=_resolver(key_entry)).ok
+        assert verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS).ok
         tampered = dataclasses.replace(row, global_seq=6)
-        bad = verify_event_strict(tampered, keys=_resolver(key_entry))
+        bad = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert bad.applicability is Applicability.INVALID
         assert "global_seq" in bad.mismatched_field_names
         # ...and it is STILL not claimed as authenticated.
@@ -383,7 +388,11 @@ class TestGlobalSeqIsUnsignedByDesign:
 
 class TestNegativeControls:
     def test_honest_v5_event_is_fully_authenticated(self, key_entry):
-        result = verify_event_strict(_v5_row(key_entry), keys=_resolver(key_entry))
+        result = verify_event_strict(
+            _v5_row(key_entry),
+            keys=_resolver(key_entry),
+            referents=NO_REFERENTS,
+        )
         assert result.applicability is Applicability.FULLY_AUTHENTICATED
         assert result.ok and result.accepted
         assert result.mismatched_fields == ()
@@ -401,7 +410,11 @@ class TestNegativeControls:
     def test_honest_v4_event_is_legacy_partial_and_names_what_it_did_not_sign(
         self, key_entry,
     ):
-        result = verify_event_strict(_v4_row(key_entry), keys=_resolver(key_entry))
+        result = verify_event_strict(
+            _v4_row(key_entry),
+            keys=_resolver(key_entry),
+            referents=NO_REFERENTS,
+        )
         assert result.applicability is Applicability.LEGACY_PARTIAL
         assert result.accepted is True
         assert result.ok is False, "legacy is never `ok`"
@@ -415,7 +428,7 @@ class TestNegativeControls:
         """Legacy is never reachable from a mismatch."""
         row = _v4_row(key_entry)
         tampered = dataclasses.replace(row, transition="approve")
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         assert "transition" in result.mismatched_field_names
 
@@ -423,6 +436,7 @@ class TestNegativeControls:
         policy = VerificationPolicy(accept_legacy_versions=frozenset())
         result = verify_event_strict(
             _v4_row(key_entry), keys=_resolver(key_entry), policy=policy,
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.INVALID
         assert FailureReason.LEGACY_ENVELOPE_VERSION in result.reasons
@@ -432,11 +446,21 @@ class TestNegativeControls:
         below = VerificationPolicy(accept_legacy_before_global_seq=12)
         above = VerificationPolicy(accept_legacy_before_global_seq=11)
         assert (
-            verify_event_strict(row, keys=_resolver(key_entry), policy=below).applicability
+            verify_event_strict(
+                row,
+                keys=_resolver(key_entry),
+                policy=below,
+                referents=NO_REFERENTS,
+            ).applicability
             is Applicability.LEGACY_PARTIAL
         )
         assert (
-            verify_event_strict(row, keys=_resolver(key_entry), policy=above).applicability
+            verify_event_strict(
+                row,
+                keys=_resolver(key_entry),
+                policy=above,
+                referents=NO_REFERENTS,
+            ).applicability
             is Applicability.INVALID
         )
 
@@ -451,6 +475,7 @@ class TestNoFallback:
         result = verify_event_strict(
             dataclasses.replace(row, canonical_envelope=bytes(corrupted)),
             keys=_resolver(key_entry),
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.INVALID
         assert result.reasons[0] in (
@@ -483,12 +508,13 @@ class TestNoFallback:
         result = verify_event_strict(
             dataclasses.replace(row, canonical_envelope=v4),
             keys=_resolver(key_entry),
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.INVALID
 
     def test_missing_envelope_is_unverifiable_not_rebuilt(self, key_entry):
         row = dataclasses.replace(_v5_row(key_entry), canonical_envelope=None)
-        result = verify_event_strict(row, keys=_resolver(key_entry))
+        result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.UNVERIFIABLE
         assert FailureReason.ENVELOPE_ABSENT in result.reasons
         assert result.accepted is False
@@ -498,7 +524,7 @@ class TestNoFallback:
             def resolve(self, key_id):
                 return None
 
-        result = verify_event_strict(_v5_row(key_entry), keys=_Nothing())
+        result = verify_event_strict(_v5_row(key_entry), keys=_Nothing(), referents=NO_REFERENTS)
         assert result.applicability is Applicability.UNVERIFIABLE
         assert result.trusted_key_source is TrustedKeySource.NONE
         assert FailureReason.KEY_UNRESOLVABLE in result.reasons
@@ -516,7 +542,12 @@ class TestStrictEnvelopeParsing:
             signature=sig,
             payload_canonical_hash=chash,
         )
-        result = verify_event_strict(row, keys=_resolver(key_entry), policy=_LEGACY_ALL)
+        result = verify_event_strict(
+            row,
+            keys=_resolver(key_entry),
+            policy=_LEGACY_ALL,
+            referents=NO_REFERENTS,
+        )
         assert result.envelope_version is EnvelopeVersion.UNKNOWN_SCHEMA
         # INVALID, never UNVERIFIABLE: the envelope exists and its bytes are
         # wrong for every known schema.
@@ -602,7 +633,7 @@ class TestStrictEnvelopeParsing:
         row = dataclasses.replace(
             _v5_row(key_entry), canonical_envelope=b"not json at all",
         )
-        result = verify_event_strict(row, keys=_resolver(key_entry))
+        result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.envelope_version is EnvelopeVersion.UNPARSEABLE
         assert result.applicability is Applicability.INVALID
 
@@ -625,6 +656,7 @@ class TestSchemeBinding:
                 scheme_id="ed25519",  # what the trusted registry says
                 source=TrustedKeySource.PRINCIPAL_REGISTRY,
             ),
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.INVALID
         assert FailureReason.SCHEME_MISMATCH in result.reasons
@@ -744,6 +776,7 @@ class TestKeylessInMemory:
             self._keyless_row(Backend.IN_MEMORY),
             keys=StaticKeyResolver(material=b""),
             policy=VerificationPolicy(accept_unsigned_keyless=True),
+        referents=NO_REFERENTS,
         )
         assert result.envelope_version is EnvelopeVersion.KEYLESS_DUMMY
         assert result.applicability is Applicability.UNVERIFIABLE
@@ -759,6 +792,7 @@ class TestKeylessInMemory:
         result = verify_event_strict(
             self._keyless_row(Backend.IN_MEMORY),
             keys=StaticKeyResolver(material=b""),
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.UNVERIFIABLE
         assert result.accepted is False
@@ -768,6 +802,7 @@ class TestKeylessInMemory:
             self._keyless_row(Backend.POSTGRES),
             keys=StaticKeyResolver(material=b""),
             policy=VerificationPolicy(accept_unsigned_keyless=True),
+        referents=NO_REFERENTS,
         )
         assert result.envelope_version is EnvelopeVersion.UNPARSEABLE
         assert result.applicability is Applicability.INVALID
@@ -839,7 +874,12 @@ class TestResultModelInvariants:
                 full_authentication_versions=frozenset(EnvelopeVersion),
             ),
         ):
-            result = verify_event_strict(row, keys=_resolver(key_entry), policy=policy)
+            result = verify_event_strict(
+                row,
+                keys=_resolver(key_entry),
+                policy=policy,
+                referents=NO_REFERENTS,
+            )
             assert result.applicability is Applicability.INVALID
             assert result.accepted is False
 
@@ -847,7 +887,7 @@ class TestResultModelInvariants:
         secret = "SUPER-SECRET-TRANSCRIPT"
         row = _v5_row(key_entry, payload={"content": secret})
         tampered = dataclasses.replace(row, payload={"content": "changed"})
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         rendered = result.detail or ""
         assert secret not in rendered
         assert "changed" not in rendered
@@ -870,14 +910,14 @@ class TestNullColumnMasking:
         # work_item_id untouched it still equals the signed entity_id.
         assert tampered.effective_entity_id == row.entity_id
 
-        result = verify_event_strict(tampered, keys=_resolver(key_entry))
+        result = verify_event_strict(tampered, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         assert "entity_id" in result.mismatched_field_names
         assert "entity_id" not in result.authenticated_fields
 
     def test_nulled_work_item_id_breaks_the_alias(self, key_entry):
         row = dataclasses.replace(_v5_row(key_entry), work_item_id=None)
-        result = verify_event_strict(row, keys=_resolver(key_entry))
+        result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.INVALID
         assert "work_item_id!=entity_id" in result.mismatched_field_names
         assert FailureReason.ENTITY_ALIAS_MISMATCH in result.reasons
@@ -918,11 +958,13 @@ class TestNullColumnMasking:
         }
         assert verify_event_strict(
             EventRow.from_mapping(raw), keys=_resolver(key_entry),
+        referents=NO_REFERENTS,
         ).ok
 
         raw[column] = None
         result = verify_event_strict(
             EventRow.from_mapping(raw), keys=_resolver(key_entry),
+        referents=NO_REFERENTS,
         )
         assert result.applicability is Applicability.INVALID
         assert column in result.mismatched_field_names
@@ -1046,7 +1088,7 @@ class TestAbsentEnvelopeProbe:
         assert probe_absent_envelope(row, keys=_resolver(key_entry)) is (
             AbsentEnvelopeProbe.CONSISTENT
         )
-        result = verify_event_strict(row, keys=_resolver(key_entry))
+        result = verify_event_strict(row, keys=_resolver(key_entry), referents=NO_REFERENTS)
         assert result.applicability is Applicability.UNVERIFIABLE
         assert result.accepted is False
         assert result.ok is False

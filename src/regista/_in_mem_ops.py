@@ -46,6 +46,7 @@ class InMemOpsMixin(_InMemoryBase):
         pushed through the strict verifier as a malformed signed event.
         """
         from ._signing import verify_event_result_with_public_key
+        from ._v6_referents import MappingReferents, MaterialCompleteness
         from ._verification import (
             Backend,
             EventRow,
@@ -57,6 +58,13 @@ class InMemOpsMixin(_InMemoryBase):
 
         policy = VerificationPolicy()
         row = EventRow.from_event(event, backend=Backend.IN_MEMORY)
+        # The store is the presented material, and it is complete by construction:
+        # an in-memory store holds the whole project or nothing.
+        referents = MappingReferents.from_pairs(
+            ((e.canonical_envelope, e.signature) for e in self._store.all_events()),
+            completeness=MaterialCompleteness.COMPLETE_STORE,
+            label="in-memory project store",
+        )
         if public_key is not None:
             scheme_id: str | None = None
             if self._key_set is not None:
@@ -69,10 +77,13 @@ class InMemOpsMixin(_InMemoryBase):
             )
         if self._key_set is None:
             return verify_event_strict(
-                row, keys=StaticKeyResolver(material=b""), policy=policy,
+                row,
+                keys=StaticKeyResolver(material=b""),
+                referents=referents,
+                policy=policy,
             )
         return verify_event_strict(
-            row, keys=KeySetResolver(self._key_set), policy=policy,
+            row, keys=KeySetResolver(self._key_set), referents=referents, policy=policy,
         )
 
     @staticmethod

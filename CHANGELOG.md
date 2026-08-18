@@ -6,6 +6,76 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- **The v6 verifier boundary (P1.7 phase 2), in `regista._verification` and the new
+  `regista._v6_referents`.** `verify_event_strict` used to return
+  `INVALID`/`envelope_schema_incomplete` for **every** v6 row — clean or tampered — so
+  `applicability` carried no information about a v6 event at all. What replaces it is
+  `TRUST-DOMAIN.md` §5.10's six-step enrolment-before-use procedure and §5.11's
+  exhaustive verdict table, over **presented material**.
+
+  - **Presented material is a new, required input.** §5.10 steps 1-4 are chain
+    traversal, so the verifier needs to see other events; §8.4 says it may never fetch
+    them. `ReferentResolver` is that input: two members (`resolve_referent`,
+    `completeness`), no query surface, no connection. Referents are addressed by **v6
+    event hash**, which covers the envelope bytes *and* the signature — so a tampered
+    anchor does not resolve to something else, it does not resolve at all.
+    Implementations: `StoreReferents` (an open store, claiming completeness),
+    `BundleReferents` (deriving its completeness claim from the manifest's
+    `since_seq`/`until_seq`), `MappingReferents`, and `NO_REFERENTS` for a caller that
+    holds one row. `verify_event_strict(..., referents=...)` has **no default**: a call
+    site that cannot say what it presents cannot get a v6 verdict.
+  - **Ordering is by chain traversal only** — `chain.previous_project_event_hash`, never
+    `occurred_at`, never `global_seq`. The writer's `global_seq` ordering is a
+    documented write-time shortcut and is not borrowed here.
+  - **§5.11's two absence rows are distinguished by the material's completeness claim.**
+    An unresolvable anchor is `UNVERIFIABLE`/`KEY_BINDING_UNRESOLVED` from a
+    `contiguous-range` export (absence of evidence, with the missing referent named as
+    out of scope) and `INVALID`/`KEY_BINDING_MISSING_FROM_COMPLETE_SCOPE` from material
+    that claims completeness (the claim is false — a fact about the artifact). This is
+    `TRUST-DOMAIN.md` §9 criterion 15.
+  - **`VerificationResult` gains `RESULT-MODEL.md` §10.1's eleven fields** —
+    `epoch_position`, `attribution`, `checkpoint_binding`, `unbound_properties`,
+    `trust_domain_id`, `trust_root`, `root_governance`, `key_binding`,
+    `revocation_status`, `producer_consistency`, plus `key_binding_event_hash` — all
+    reported on every result, all in `to_dict()`, with §10.2's invariants enforced in
+    `__post_init__` as asserts. `EnvelopeVersion.V6` joins
+    `full_authentication_versions`; without it no v6 event could ever be
+    `FULLY_AUTHENTICATED` however completely §5.10 succeeded.
+  - **`VerificationPolicy` gains the four caller pins** `pinned_project_instance_id`,
+    `pinned_trust_domain_id`, `cutover_checkpoint_event_hash` and `producer_policy`, and
+    `material_completeness`. All default to "not supplied", and an unsupplied pin
+    produces an explicit `unbound_properties` entry rather than a skipped check (§10.2
+    invariant 9). `material_completeness` is **tighten-only**: softening a store's
+    completeness claim raises, because it would turn §5.11's `INVALID` row into its
+    `UNVERIFIABLE` row on request.
+  - **Fourteen new `FailureReason` members**, and `TrustedKeySource.TRUST_DOMAIN_LOG` /
+    `EXTERNALLY_PINNED`.
+  - **§5.9 rule 1 is enforced by raising.** Resolving a v6 event's key through
+    `TrustedKeySource.PRINCIPAL_REGISTRY` is "a programming error [that] raises", not a
+    degraded result — a degraded result is something a caller learns to tolerate.
+  - **A bootstrap event without an external pin is `UNVERIFIABLE`**, per
+    `RECONCILIATION.md` Resolution 1 ("bootstrap without an external pin is not a
+    bootstrap; it is an unauthenticated first event"). With the trust log presented and
+    a pinned domain and checkpoint it is `FULLY_AUTHENTICATED`. An ordinary
+    post-genesis event reaches `FULLY_AUTHENTICATED` with `trust_root: bundled_only`,
+    which is what unblocks replay over a v6 epoch.
+
+  Consequence for callers: `verify_event_strict`, `verify_event_result`,
+  `verify_event_result_with_public_key` and `verify_event` take a `referents` argument,
+  and `_bundle._verify_event_signatures` returns a fourth element (the reasons each
+  unverifiable signature was unverifiable).
+
+- **`verify_audit_bundle_offline(path, policy=...)`, and bundle key evidence from v6
+  acceptance payloads (WI-296).** A bundle now resolves key material from the
+  `regista.key-acceptance` / `bootstrap_key_acceptance` objects it already carries —
+  §5.8 repeats `public_key` inside them "on purpose … it makes a project bundle
+  self-sufficient for key material without making it self-sufficient for trust". The
+  rejected alternative was seeding a `principal_keys` row from the genesis payload,
+  which §5.9 rule 1 forbids. An operator-registered registry entry still wins where
+  both exist: it carries a validity window and a status the payload has no member for.
+  `BundleVerificationReport` gains `unverifiable_details`, so a count never travels
+  without its reason.
+
 - **The post-genesis v6 ordinary-event writer (P1.7), `regista._v6_writer`.** Genesis
   opened the epoch and then every writer was refused on both sides of it; this is the
   sanctioned path after the boundary. `append_v6_event` constructs all sixteen v6
@@ -329,6 +399,14 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     correctly on both sides, re-authenticating once.
 
 ### Fixed
+
+- **Bundle chain verification used the v1-v5 hash formula for v6 events.**
+  `_bundle._hash_event` computed `sha256(envelope || signature)` unconditionally, but a
+  v6 chain links on the domain-tagged `compute_v6_event_hash` (`V6-ENVELOPE.md` §6.1).
+  Every multi-event v6 bundle therefore reported a global-chain break — a false finding,
+  and one that would have made "a healthy v6-era export verifies" unreachable for a
+  reason with nothing to do with verification. A single-event bundle is vacuously fine,
+  which is why the genesis-only fixture never surfaced it.
 
 - **`hvac` failures now arrive as the error envelope, not a traceback
   (WI-229b, WI-226):** `regista secrets --ref` caught only `RegistaError`, so

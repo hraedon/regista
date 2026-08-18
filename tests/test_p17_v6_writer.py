@@ -807,6 +807,7 @@ class TestSemanticConformance:
 
         from regista._keys import KeySet
         from regista._verification import (
+            NO_REFERENTS,
             EventRow,
             KeySetResolver,
             verify_event_strict,
@@ -838,6 +839,7 @@ class TestSemanticConformance:
             keys=KeySetResolver(KeySet(appendable._keys.path)
                                 if hasattr(appendable._keys, "path")
                                 else appendable._keys),
+        referents=NO_REFERENTS,
         )
         assert result.signature_valid is True
         assert result.row_reconciled is True

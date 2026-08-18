@@ -18,6 +18,7 @@ from ._keys import KeySet
 from ._signing import verify_event_dict_principal_binding
 from ._signing_scheme import resolve_hash_function
 from ._types import ReplayReport, ReplayReportEntry
+from ._v6_referents import ReferentResolver, store_referents
 from ._verification import (
     DEFAULT_POLICY,
     AbsentEnvelopeProbe,
@@ -504,6 +505,14 @@ def _replay_inner(
 ) -> ReplayReport:
     scoped = work_item_id is not None
 
+    # The presented material for every v6 verdict in this replay. It is the whole
+    # store even for a *scoped* replay: scoping selects which work items are
+    # rebuilt, not which events the verifier may see, and a key-binding anchor for a
+    # work-item event is a `principal` event that no work-item scope would contain.
+    # Narrowing the material to the scope would turn "the anchor is elsewhere in this
+    # store" into "the anchor is missing", which is a false finding.
+    referents = store_referents(conn, label=f"project store {project!r}")
+
     if scoped:
         wi_rows = conn.execute(
             SQL("SELECT work_item_id FROM work_items_current WHERE work_item_id = %s"),
@@ -621,6 +630,7 @@ def _replay_inner(
                 key_set,
                 continue_on_revoked,
                 verify_principal_binding=verify_principal_binding,
+                referents=referents,
             )
             total_warnings += wi_warnings
             total_chain_breaks += wi_chain_breaks
@@ -936,6 +946,7 @@ def _replay_work_item(
     continue_on_revoked: bool = False,
     *,
     verify_principal_binding: bool = False,
+    referents: ReferentResolver,
 ) -> tuple[dict[str, Any], int, int, int, int]:
     """Returns ``(state, warnings, chain_breaks, principal_binding_failures,
     unverifiable)``. The last three are deliberately distinct counters — see
@@ -1021,6 +1032,7 @@ def _replay_work_item(
             verification = verify_event_strict(
                 EventRow.from_mapping(evt),
                 keys=KeySetResolver(key_set),
+                referents=referents,
                 policy=DEFAULT_POLICY,
             )
             if verification.applicability is Applicability.INVALID:
