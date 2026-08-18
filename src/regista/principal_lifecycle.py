@@ -53,7 +53,7 @@ from ._principal_keys import (
 from ._principal_keys import (
     principal_entity_id as _principal_entity_id,
 )
-from ._signing_scheme import asymmetric_scheme_ids, get_scheme
+from ._signing_scheme import asymmetric_scheme_ids, get_scheme, is_v6_scheme
 from ._trust_log import (
     PRINCIPAL_KEY_ENROLLED as _TRUST_LOG_PRINCIPAL_KEY_ENROLLED,
 )
@@ -543,6 +543,17 @@ class PrincipalLifecycle:
     challenges, approvals, and receipts to the database and can atomically
     commit registry changes.  Without one it operates as a process-local
     contract foundation: prepare and verify work, but commit is unavailable.
+
+    .. caution::
+
+       **A rotation committed here is parse-valid but NOT authorised.** Its event
+       satisfies ``TRUST-DOMAIN.md`` §5.6's payload contract and replays correctly
+       through §5.9's projection rebuild, but it carries ``mode: "recovery"`` with
+       empty ``root_signatures`` — so a verifier reports ``root_threshold_not_met``
+       (Resolution 5 / D-8: recovery requires the current root threshold, and this
+       online ceremony cannot supply it). Collecting root signatures is Gate-2
+       wiring; until then treat a ceremony rotation as unauthorised for
+       verification purposes. Enrolments and revocations are unaffected.
     """
 
     def __init__(
@@ -1600,6 +1611,10 @@ class PrincipalLifecycle:
 
         if operation.operation_type is LifecycleOperationType.ENROLLMENT:
             parsed = parse_principal_key_enrolled(payload)
+            assert key_id is None or parsed.key.key_id == key_id, (
+                f"payload key_id {parsed.key.key_id!r} != minted {key_id!r}: the row "
+                "and its source event would name different keys"
+            )
             return _apply_enrollment_projection(
                 conn,
                 parsed.principal_id,
@@ -1615,6 +1630,10 @@ class PrincipalLifecycle:
             )
         if operation.operation_type is LifecycleOperationType.ROTATION:
             rotated = parse_principal_key_rotated(payload)
+            assert key_id is None or rotated.key.key_id == key_id, (
+                f"payload key_id {rotated.key.key_id!r} != minted {key_id!r}: the row "
+                "and its source event would name different keys"
+            )
             return _apply_rotation_projection(
                 conn,
                 rotated.principal_id,
@@ -2246,12 +2265,10 @@ def _lifecycle_event_hash(event: Any) -> str:
             "committed lifecycle event has no canonical envelope or signature, so the "
             "projection row would have no source event to name",
         )
-    # Scheme-class membership, matching _trust_projection._is_v6_scheme exactly
-    # (NB3). The two constructions must never diverge; keying both off the same
-    # predicate is what guarantees it.
-    from ._trust_projection import _is_v6_scheme
-
-    if _is_v6_scheme(getattr(event, "scheme_id", None)):
+    # Scheme-class membership from the registry's own predicate (NB3). The rebuild
+    # imports the same function, which is what guarantees the two hash
+    # constructions cannot diverge.
+    if is_v6_scheme(getattr(event, "scheme_id", None)):
         from ._signing import compute_v6_event_hash
 
         return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()

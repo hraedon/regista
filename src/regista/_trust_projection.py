@@ -46,6 +46,7 @@ from ._principal_keys import (
     _apply_revocation_projection,
     _apply_rotation_projection,
 )
+from ._signing_scheme import is_v6_scheme
 from ._trust_log import (
     PRINCIPAL_KEY_ENROLLED,
     PRINCIPAL_KEY_REVOKED,
@@ -161,13 +162,6 @@ def _require_projection_schema(conn: DictConn, project: str) -> None:
         )
 
 
-def _is_v6_scheme(scheme_id: Any) -> bool:
-    """Whether ``scheme_id`` names an asymmetric (v6-epoch) signing scheme."""
-    from ._signing_scheme import asymmetric_scheme_ids
-
-    return isinstance(scheme_id, str) and scheme_id in set(asymmetric_scheme_ids())
-
-
 def _event_hash_text(row: Mapping[str, Any]) -> str | None:
     """``"sha256:" + hex`` of the event hash, or ``None`` when it cannot be computed.
 
@@ -186,13 +180,15 @@ def _event_hash_text(row: Mapping[str, Any]) -> str | None:
 
     NB3 (P2.2 review): the test is scheme-class membership, not the ``"ed25519"``
     literal, so the next asymmetric scheme added to the registry is classified v6
-    automatically instead of being silently mislabelled legacy.
+    automatically instead of being silently mislabelled legacy. The predicate lives
+    in :mod:`regista._signing_scheme`, beside the registry, and the write path
+    imports the same one.
     """
     envelope = row.get("canonical_envelope")
     signature = row.get("signature")
     if envelope is None or signature is None:
         return None
-    if _is_v6_scheme(row.get("scheme_id")):
+    if is_v6_scheme(row.get("scheme_id")):
         from ._signing import compute_v6_event_hash
 
         return "sha256:" + compute_v6_event_hash(bytes(envelope), bytes(signature)).hex()
