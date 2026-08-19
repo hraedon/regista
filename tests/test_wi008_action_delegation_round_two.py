@@ -506,6 +506,58 @@ def test_delegated_append_envelope_loads_do_not_track_the_chain(
     assert large <= 8
 
 
+def _authorization_envelope(*credential_hashes: str, mode: str = "delegated") -> dict[str, Any]:
+    """A minimal event envelope carrying an authorization block, shaped for both the
+    eager ``ReferentSummary.from_envelope`` read and the envelope fallback."""
+
+    return {
+        "transition": "note_added",
+        "project_instance_id": "proj-uses-equivalence",
+        "trust_domain_id": "trust-uses-equivalence",
+        "actor": {"principal_id": "agent:delegated-worker"},
+        "signing": {"key_id": "key-uses-equivalence"},
+        "chain": {"previous_project_event_hash": "sha256:" + "ab" * 32},
+        "authorization": {
+            "mode": mode,
+            "credentials": [{"credential_hash": h} for h in credential_hashes],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "hashes",
+    [
+        (),
+        ("sha256:" + "11" * 32,),
+        ("sha256:" + "11" * 32, "sha256:" + "22" * 32),
+    ],
+    ids=["direct-no-credentials", "single-credential", "multiple-credentials"],
+)
+def test_consumed_hashes_agree_between_eager_summary_and_envelope_fallback(hashes) -> None:
+    """The B2 fix reads uses from an eagerly-carried frozenset instead of re-parsing
+    each ancestor envelope. Pin the load-bearing invariant the perf test does not:
+    the eager summary counts exactly the credential hashes the envelope names, so the
+    summary-backed path and the fallback path can never disagree on a use count.
+    """
+    from regista._action_delegation import _consumed_credential_hashes
+    from regista._v6_referents import ReferentEvent, ReferentSummary
+
+    envelope = _authorization_envelope(*hashes)
+    expected = frozenset(hashes)
+
+    summary = ReferentSummary.from_envelope(envelope)
+    assert summary.authorization_credential_hashes == expected
+
+    eager = ReferentEvent(
+        event_hash="sha256:" + "cd" * 32, envelope=envelope, summary=summary
+    )
+    fallback = ReferentEvent(event_hash="sha256:" + "cd" * 32, envelope=envelope)
+
+    assert _consumed_credential_hashes(eager) == expected
+    assert _consumed_credential_hashes(fallback) == expected
+    assert _consumed_credential_hashes(eager) == _consumed_credential_hashes(fallback)
+
+
 def test_in_memory_writer_rejects_second_use_after_max_uses(tmp_path) -> None:
     project = in_memory_action_project(tmp_path)
     try:
