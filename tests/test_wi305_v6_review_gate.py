@@ -102,12 +102,13 @@ def _work_to_review(sub) -> uuid.UUID:
     return wi.work_item_id
 
 
-def _pass(sub, wi_id, *, lineage, ack=False) -> None:
-    claims = {"model_lineage": lineage}
+def _pass(sub, wi_id, *, lineage=None, ack=False, include_claims=True) -> None:
     payload = {"review_note": "adversarial review: checked the diff"}
     if ack:
         payload["same_lineage_acknowledged"] = True
-    payload["reviewer_claims"] = claims
+    if include_claims:
+        claims = {} if lineage is None else {"model_lineage": lineage}
+        payload["reviewer_claims"] = claims
     sub.transition(
         wi_id,
         "adversarial_pass",
@@ -142,6 +143,39 @@ class TestCrossLineageGateOverV6:
         events = epoch.read_events(work_item_id=wi_id, limit=1000)
         level = compute_assurance_level(events)
         assert level is AssuranceLevel.INDEPENDENTLY_REVIEWED
+
+
+class TestPostEpochReviewerClaimsAreMandatory:
+    """WI-307: a v6 adversarial pass MUST carry a canonical reviewer_claims block.
+
+    The prior events (create/start/submit) written inside the epoch carry v6
+    envelopes, so the gate reads the verdict as post-epoch and refuses to let the
+    reviewer lineage fall back to the producer block — the omission fails closed
+    at ingress with INVALID_MODEL_LINEAGE, before the verdict is accepted.
+    """
+
+    def test_post_epoch_pass_omitting_reviewer_claims_fails_closed(self, epoch) -> None:
+        wi_id = _work_to_review(epoch)
+        with pytest.raises(RegistaError) as exc_info:
+            _pass(epoch, wi_id, include_claims=False)
+        assert exc_info.value.code == ErrorCode.INVALID_MODEL_LINEAGE
+        # The verdict was refused: the item never left in_review.
+        refreshed = epoch.get_work_item(wi_id)
+        assert refreshed is not None
+        assert refreshed.current_state == "in_review"
+
+    def test_post_epoch_pass_with_empty_reviewer_claims_fails_closed(self, epoch) -> None:
+        wi_id = _work_to_review(epoch)
+        with pytest.raises(RegistaError) as exc_info:
+            _pass(epoch, wi_id, lineage=None, include_claims=True)
+        assert exc_info.value.code == ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_post_epoch_pass_with_canonical_reviewer_claims_passes(self, epoch) -> None:
+        wi_id = _work_to_review(epoch)
+        _pass(epoch, wi_id, lineage="glm")
+        refreshed = epoch.get_work_item(wi_id)
+        assert refreshed is not None
+        assert refreshed.current_state == "done"
 
 
 class TestIngressRejectsNoncanonicalReviewerLineage:

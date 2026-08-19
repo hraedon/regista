@@ -5,8 +5,10 @@ from typing import Any
 
 from ._lineage import (
     declared_model_lineage,
+    event_has_v6_envelope,
     event_model_lineage,
     require_canonical_reviewer_lineage,
+    require_present_canonical_reviewer_lineage,
     reviewer_model_lineage,
 )
 
@@ -111,6 +113,22 @@ def classify_principal_kind(delegation: Any) -> str:
 
 def _event_lineage(event: Any) -> str | None:
     return event_model_lineage(event)
+
+
+def _is_post_epoch(ctx: Any) -> bool:
+    """Whether this verdict is being written inside the project's clean v6 epoch.
+
+    WI-307: the epoch is "``project_identity`` present" (``_events._v6_epoch_open``),
+    which a validator cannot read directly — it holds no connection, only ``ctx``.
+    The per-event proxy is the one the lineage layer already uses: a v6 envelope
+    carries ``version == 6`` (``_lineage.raw_event_model_lineage`` /
+    ``event_has_v6_envelope``). Because the genesis gate refuses to open an epoch
+    over legacy history, a work item worked inside the epoch has an all-v6 prior
+    history, so any v6 prior event proves the epoch is open. A wholly pre-epoch
+    item (persisted legacy rows, no v6 envelope) reads as legacy and keeps the
+    tolerant present-only reviewer-lineage check.
+    """
+    return any(event_has_v6_envelope(e) for e in getattr(ctx, "prior_events", ()))
 
 
 def _add_delegated_principal(
@@ -328,6 +346,18 @@ def adversarial_review(ctx: Any) -> None:
     if finding_only or canonical_legacy_request_changes:
         _require_review_note(ctx, "adversarial_review")
         return
+
+    # WI-307: this is the positive-verdict path, where reviewer lineage is
+    # consumed below for the cross-lineage distinctness decision. Inside the v6
+    # epoch the reviewer's lineage is carried ONLY in the signed role-specific
+    # payload (``reviewer_claims.model_lineage``, ``REVIEW-VERDICTS.md`` §2.2), so
+    # a verdict that omits it must fail closed here rather than let
+    # ``reviewer_model_lineage`` fall back to the producer/actor lineage and
+    # manufacture a cross-lineage claim the reviewer never signed. Pre-epoch
+    # (persisted legacy) verdicts keep the tolerant present-only check applied at
+    # the top of this validator.
+    if _is_post_epoch(ctx):
+        require_present_canonical_reviewer_lineage(getattr(ctx, "payload", None))
 
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events

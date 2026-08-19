@@ -185,6 +185,35 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
 > a recomputed statement about the reviewer/author relation for negative
 > verdicts; it is recorded but not enforced at `request_changes` ingress.
 
+> **INGRESS AMENDMENT — 2026-08-19, WI-307.** For any positive review verdict
+> written **inside the v6 epoch** (an `adversarial_pass`), `reviewer_claims` is
+> **mandatory**, not optional: `reviewer_claims.model_lineage` MUST be present and
+> a canonical family (`_lineage.MODEL_LINEAGE_FAMILIES`). An omitted, empty, null,
+> or non-canonical block fails closed with `INVALID_MODEL_LINEAGE` at ingress,
+> before the verdict is accepted. This closes the fallback in which a v6 verdict
+> that omits `reviewer_claims` lets the reviewer lineage silently default to the
+> actor/producer block — a cross-lineage independence claim the reviewer never
+> signed in its role-specific payload (§2.2), weakening the WI-305 A contract that
+> reviewer lineage is carried in the signed `reviewer_claims` block. The epoch is
+> detected the same way the lineage layer detects it — a v6 envelope
+> (`version == 6`) in the item's history (`_lineage.event_has_v6_envelope`); the
+> genesis gate refuses to open an epoch over legacy history, so a post-epoch item
+> has an all-v6 prior chain.
+>
+> **Pre-epoch carve-out.** Verdicts on wholly pre-epoch work items (persisted
+> legacy events, no v6 envelope) keep the tolerant present-only behaviour of
+> `_lineage.require_canonical_reviewer_lineage`: a legacy verdict may omit
+> `reviewer_claims` and fall back to the legacy per-event lineage vehicle
+> (`actor_metadata`). **Scope.** The requirement binds the `adversarial_review`
+> validator's positive path — the transition that asserts and consumes reviewer
+> lineage for the cross-lineage distinctness decision. It does **not** bind
+> `request_changes` (a negative verdict, per the WI-284 amendment above) nor the
+> `human_gate` `accept` path: a final human accepter carries no model lineage, and
+> the accept verdict is not read as a reviewer-lineage source (the human gate
+> reads the deciding **pass's** signed claim, which this amendment now guarantees
+> is present). `human_gate` retains the present-only `require_canonical_reviewer_lineage`
+> check, so a present-but-non-canonical block is still rejected there.
+
 ### 2.3 The content binding — `subject_digest`
 
 This is the part that closes the audit's headline S8 scenario, so it is specified to the byte.
