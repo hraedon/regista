@@ -247,6 +247,7 @@ def acceptance_payload(
     transitions: tuple[str, ...] | None = None,
     may_sign_checkpoints: bool = False,
     may_sign_bundles: bool = False,
+    trust_event_hash: str | None = None,
 ) -> dict[str, Any]:
     """The ``regista.key-acceptance/v1`` payload of ``TRUST-DOMAIN.md`` §5.8.
 
@@ -268,7 +269,7 @@ def acceptance_payload(
         "key_id": key.key_id,
         "fingerprint": key.fingerprint,
         "public_key": key.public_key_b64,
-        "trust_event_hash": "sha256:" + hashlib.sha256(
+        "trust_event_hash": trust_event_hash or "sha256:" + hashlib.sha256(
             b"test-root-enrolment\x00" + key.public_key
         ).hexdigest(),
         "trust_log_checkpoint": {
@@ -349,6 +350,7 @@ def accept_key(
     keyset: V6TestKeyset,
     genesis: Any,
     principal_id: str,
+    trust_event_hash: str | None = None,
     **scopes: Any,
 ) -> Any:
     """Step 3: append the standalone ``principal_key_accepted`` for ``principal_id``.
@@ -369,6 +371,7 @@ def accept_key(
         accepted_by_anchor=genesis.to_dict()["event_hash"],
         project_instance_id=str(identity.project_instance_id),
         trust_domain_id=str(identity.trust_domain_id),
+        trust_event_hash=trust_event_hash,
         **scopes,
     )
     with instance._mgr.transaction() as conn:

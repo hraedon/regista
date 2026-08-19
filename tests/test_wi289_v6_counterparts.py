@@ -1500,6 +1500,38 @@ class TestCluster5KeyLifecycle:
         ]
         assert verification_halts == [], verification_halts
 
+    def test_a_historical_event_remains_verifiable_after_rotation(
+        self, rotation_epoch
+    ) -> None:
+        """A key rotation is not retroactive for an already signed event.
+
+        The old event's envelope names the old key and its project-local
+        acceptance. Rotating the active key and accepting the replacement must
+        not make that historical evidence unverifiable.
+        """
+
+        from regista._keys import KeySet
+
+        epoch, active, deprecated = rotation_epoch
+        before = epoch.append(payload={"phase": "historical-key"})
+
+        document = json.loads(Path(epoch.keyset.path).read_text(encoding="utf-8"))
+        for entry in document["keys"]:
+            if entry["key_id"] == active.key_id:
+                entry["status"] = "deprecated"
+            elif entry["key_id"] == deprecated.key_id:
+                entry["status"] = "active"
+        Path(epoch.keyset.path).write_text(
+            json.dumps(document, indent=2), encoding="utf-8"
+        )
+        rotated_keys = KeySet(epoch.keyset.path, poll_interval=0.0)
+        _accept_rotated_key(epoch, rotated_keys, deprecated)
+
+        result = epoch.verify(before.event_id)
+        assert result.trusted_key_id == active.key_id
+        assert result.principal_binding_verified is True
+        assert result.applicability is Applicability.FULLY_AUTHENTICATED, result.summary()
+
 
 def _accept_rotated_key(epoch: _Epoch, keys: Any, key: V6TestKey) -> Any:
     """Append the standalone ``principal_key_accepted`` for a rotated-in key.

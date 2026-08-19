@@ -382,7 +382,7 @@ V6_PRODUCER_KEYS = frozenset(
     {"harness", "harness_version", "model", "model_lineage"}
 )
 
-#: The CLOSED v6 entity-kind registry (``V6-ENVELOPE.md`` §1.2). Exactly six
+#: The CLOSED v6 entity-kind registry (``V6-ENVELOPE.md`` §1.2). Exactly seven
 #: values, and "closed" is the load-bearing word: a kind outside this set is not
 #: an unrecognised extension to be tolerated, it is a refusal. This is the single
 #: definition — ``_genesis``, ``_v6_writer`` and ``_replay`` all import it rather
@@ -396,6 +396,7 @@ V6_ENTITY_KINDS: frozenset[str] = frozenset(
         "trust_domain",
         "project_instance",
         "workflow",
+        "spec",
     }
 )
 _V6_ENTITY_KINDS = V6_ENTITY_KINDS
@@ -758,6 +759,7 @@ def _validate_v6_object(
                     "trust_domain",
                     "project_instance",
                     "workflow",
+                    "spec",
                 },
                 "workflow null is not valid for this entity kind",
             )
@@ -3542,6 +3544,20 @@ def _verify_v6_row(
     if FailureReason.KEY_ACCEPTANCE_REVOKED in findings.reasons:
         revocation_status = RevocationStatus.REVOKED_BEFORE_USE
 
+    # This is the v6 acceptance-chain equivalent of the legacy principal-key
+    # binding result. It is intentionally narrower than ``accepted``: unrelated
+    # semantic gaps may leave an event unverifiable while its principal/key
+    # relationship was still established, but an unresolved, mismatched, or
+    # revoked acceptance may never be reported as verified.
+    principal_binding_verified = (
+        key_binding is KeyBinding.ACCEPTED_IN_PROJECT
+        and FailureReason.KEY_ACCEPTANCE_REVOKED not in findings.reasons
+    ) or (
+        key_binding is KeyBinding.BOOTSTRAP_EXTERNAL
+        and trust_root is TrustRoot.EXTERNALLY_PINNED
+        and checkpoint_binding is CheckpointBinding.EXTERNALLY_PINNED
+    )
+
     applicability = findings.applicability
     if (
         applicability is Applicability.FULLY_AUTHENTICATED
@@ -3572,6 +3588,7 @@ def _verify_v6_row(
         unbound_properties=frozenset(findings.unbound),
         trust_root=trust_root,
         key_binding=key_binding,
+        principal_binding_verified=principal_binding_verified,
         key_binding_event_hash=(None if anchor is None else anchor.event_hash),
         revocation_status=revocation_status,
         producer_consistency=producer_consistency,

@@ -19,9 +19,13 @@ claimed here.
 
 from __future__ import annotations
 
+import base64
 import importlib
+import json
+import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -29,29 +33,42 @@ from _helpers import DSN, KEY_PATH
 from _trust_fixtures import mint_solo
 from _trust_log_fixtures import (
     TrustLogKey,
+    make_authorized_by,
     make_enrollment_payload,
+    make_possession_challenge,
+    make_registrar_delegation_payload,
     make_revocation_payload,
     make_rotation_payload,
-    make_trust_log_project,
-    open_trust_log,
+    persist_consumed_possession_challenge,
     principal_entity_uuid,
-    store_trust_log_event,
 )
 
+from regista import Regista
 from regista._errors import ErrorCode, RegistaError
 from regista._trust_log import (
     PRINCIPAL_KEY_ENROLLED,
     PRINCIPAL_KEY_REVOKED,
     PRINCIPAL_KEY_ROTATED,
 )
+from regista._trust_log_writer import (
+    _row_event_hash,
+    append_trust_log_event,
+    chain_order,
+    read_trust_log_rows,
+    write_trust_genesis,
+)
 from regista._trust_projection import (
     check_projection_consistent,
     projection_summary,
     rebuild_projection,
+    rebuild_projection_from_trust_log,
+    verify_project_acceptance,
 )
 from regista.testing import drop_project_schema, seed_legacy_principal_key
 
-_UTC_IMPORTS_USED = True
+ROOT_PRINCIPAL = "service:root-a"
+REGISTRAR_PRINCIPAL = "service:registrar-1"
+DEFAULT_EVENT_TIME = "2026-08-20T00:00:00.000000Z"
 
 _COLUMNS = (
     "principal_id, key_id, scheme, public_key, fingerprint, status, valid_from, "
@@ -62,21 +79,17 @@ _COLUMNS = (
 
 @pytest.fixture
 def trust_store(tmp_path):
-    """A trust-log project whose chain is opened by `trust_domain_established`.
+    """A production-writer trust log with pinned genesis and durable evidence."""
+    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
+    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
+    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
-    The log is a real v6 chain: Bootstrap A first (the only event permitted a null
-    key binding and a null previous_project_event_hash), everything else anchored to
-    it. Starting mid-chain would let the fixtures produce envelopes the v6 rules
-    reject, which is how a rebuild test ends up proving nothing.
-    """
     project = f"p22_tl_{uuid.uuid4().hex[:8]}"
     genesis = mint_solo()
-    store = make_trust_log_project(
-        DSN,
-        project,
-        tmp_path / "trust_keys.json",
-        trust_domain_id=genesis.trust_domain_id,
-    )
+    genesis_path = tmp_path / "trust-genesis.json"
+    genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")
+    os.environ["REGISTRA_TRUST_GENESIS_PATH"] = str(genesis_path)
     root_signer = genesis.signer_ids[0]
     root_key = TrustLogKey(
         key_id="pk_root_a",
@@ -84,9 +97,81 @@ def trust_store(tmp_path):
         public_key=genesis.public_keys[root_signer],
         fingerprint=genesis.fingerprints[root_signer],
     )
-    open_trust_log(store, genesis.document, root_key)
+    registrar_key = TrustLogKey.mint("pk_registrar")
+    key_path = tmp_path / "trust_keys.json"
+    key_path.write_text(
+        json.dumps(
+            {
+                "keys": [
+                    _key_entry(ROOT_PRINCIPAL, root_key),
+                    _key_entry(REGISTRAR_PRINCIPAL, registrar_key),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    handle = Regista.create_project(DSN, project, hmac_key_path=str(key_path))
+    write_trust_genesis(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=genesis.document,
+        root_principal_id=ROOT_PRINCIPAL,
+    )
+    delegation_payload = make_registrar_delegation_payload(
+        trust_domain_id=genesis.trust_domain_id,
+        registrar_principal_id=REGISTRAR_PRINCIPAL,
+        key=registrar_key,
+        max_operations=100,
+        root_keys=[root_key],
+        not_before="2026-01-01T00:00:00.000000Z",
+        not_after="2027-01-01T00:00:00.000000Z",
+    )
+    append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=genesis.document,
+        transition="registrar_delegated",
+        payload=delegation_payload,
+        entity_kind="trust_domain",
+        entity_id=uuid.UUID(genesis.trust_domain_id),
+        principal_id=ROOT_PRINCIPAL,
+        authority="root",
+    )
+    with handle._mgr.transaction() as conn:
+        rows = chain_order(read_trust_log_rows(conn))
+    delegation_hash = next(
+        _row_event_hash(row)
+        for row in rows
+        if row["transition"] == "registrar_delegated"
+    )
+    store = SimpleNamespace(
+        dsn=DSN,
+        project=project,
+        handle=handle,
+        genesis_document=genesis.document,
+        trust_domain_id=genesis.trust_domain_id,
+        project_instance_id=str(genesis.document["trust_log"]["project_instance_id"]),
+        registrar_key=registrar_key,
+        delegation_event_hash=delegation_hash,
+        events=[],
+    )
     yield store
+    handle.close()
     drop_project_schema(DSN, project)
+
+
+def _key_entry(principal_id: str, key: TrustLogKey) -> dict[str, str]:
+    return {
+        "key_id": key.key_id,
+        "scheme": "ed25519",
+        "alg": "Ed25519",
+        "secret": base64.b64encode(key.seed).decode("ascii"),
+        "encoding": "base64",
+        "public_key": base64.b64encode(key.public_key).decode("ascii"),
+        "principal_id": principal_id,
+        "role": "actor",
+        "status": "active",
+    }
 
 
 @pytest.fixture
@@ -101,6 +186,61 @@ def _mgr(store):
     mgr = ConnectionManager(store.dsn, store.project)
     mgr.open()
     return mgr
+
+
+def _writer_mgr(store):
+    return store.handle._mgr
+
+
+def _event_time(occurred_at: str | None) -> datetime:
+    return datetime.fromisoformat((occurred_at or DEFAULT_EVENT_TIME).replace("Z", "+00:00"))
+
+
+def _event_record(store, event_id: str, payload: dict) -> SimpleNamespace:
+    with _writer_mgr(store).transaction() as conn:
+        row = conn.execute(
+            "SELECT event_id, transition, entity_kind, entity_id, event_seq, payload, "
+            "canonical_envelope, signature, timestamp FROM events WHERE event_id = %s",
+            [uuid.UUID(event_id)],
+        ).fetchone()
+    assert row is not None
+    record = SimpleNamespace(
+        event_id=str(row["event_id"]),
+        transition=str(row["transition"]),
+        entity_kind=str(row["entity_kind"]),
+        entity_id=str(row["entity_id"]),
+        entity_seq=int(row["event_seq"]),
+        payload=payload,
+        event_hash=_row_event_hash(row),
+        canonical_envelope=bytes(row["canonical_envelope"]),
+        signature=bytes(row["signature"]),
+        occurred_at=row["timestamp"].isoformat(),
+    )
+    store.events.append(record)
+    return record
+
+
+def _challenge(store, principal_id: str, key: TrustLogKey, occurred_at: str | None):
+    event_at = _event_time(occurred_at)
+    issued_at = (event_at - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    expires_at = (event_at + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return make_possession_challenge(
+        trust_domain_id=store.trust_domain_id,
+        principal_id=principal_id,
+        fingerprint=key.fingerprint,
+        project=store.project,
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
+
+
+def _authorized(store):
+    return make_authorized_by(
+        authority="registrar",
+        principal_id=REGISTRAR_PRINCIPAL,
+        key_id=store.registrar_key.key_id,
+        delegation_event_hash=store.delegation_event_hash,
+    )
 
 
 def _snapshot(store) -> list[tuple]:
@@ -125,20 +265,103 @@ def _snapshot_of(dsn: str, project: str) -> list[tuple]:
 
 
 def _enrol(store, principal_id, key, *, writer, occurred_at=None, **kwargs):
+    occurred_at = occurred_at or DEFAULT_EVENT_TIME
+    challenge = _challenge(store, principal_id, key, occurred_at)
     payload = make_enrollment_payload(
         trust_domain_id=store.trust_domain_id,
         principal_id=principal_id,
         key=key,
+        authorized_by=_authorized(store),
+        challenge=challenge,
         **kwargs,
     )
-    return store_trust_log_event(
-        store,
+    with _writer_mgr(store).transaction() as conn:
+        persist_consumed_possession_challenge(
+            conn, challenge, payload["possession_proof"]["signature"]
+        )
+    event_id = append_trust_log_event(
+        _writer_mgr(store),
+        keys=store.handle._keys,
+        genesis_document=store.genesis_document,
         transition=PRINCIPAL_KEY_ENROLLED,
         payload=payload,
-        signing_key=writer,
+        entity_kind="principal",
         entity_id=principal_entity_uuid(principal_id),
-        occurred_at=occurred_at,
+        principal_id=REGISTRAR_PRINCIPAL,
+        authority="registrar",
+        occurred_at=_event_time(occurred_at),
     )
+    return _event_record(store, event_id, payload)
+
+
+def _rotate(
+    store,
+    principal_id: str,
+    old_key: TrustLogKey,
+    new_key: TrustLogKey,
+    *,
+    occurred_at: str | None = None,
+    **kwargs,
+):
+    occurred_at = occurred_at or DEFAULT_EVENT_TIME
+    challenge = _challenge(store, principal_id, new_key, occurred_at)
+    payload = make_rotation_payload(
+        trust_domain_id=store.trust_domain_id,
+        principal_id=principal_id,
+        key=new_key,
+        supersedes_key_id=old_key.key_id,
+        superseded_key=old_key,
+        authorized_by=_authorized(store),
+        challenge=challenge,
+        **kwargs,
+    )
+    with _writer_mgr(store).transaction() as conn:
+        persist_consumed_possession_challenge(
+            conn, challenge, payload["possession_proof"]["signature"]
+        )
+    event_id = append_trust_log_event(
+        _writer_mgr(store),
+        keys=store.handle._keys,
+        genesis_document=store.genesis_document,
+        transition=PRINCIPAL_KEY_ROTATED,
+        payload=payload,
+        entity_kind="principal",
+        entity_id=principal_entity_uuid(principal_id),
+        principal_id=REGISTRAR_PRINCIPAL,
+        authority="registrar",
+        occurred_at=_event_time(occurred_at),
+    )
+    return _event_record(store, event_id, payload)
+
+
+def _revoke(store, principal_id: str, key_id: str, *, reason: str = "compromised"):
+    if reason not in {
+        "compromised",
+        "superseded",
+        "decommissioned",
+        "policy",
+        "unspecified",
+    }:
+        reason = "unspecified"
+    payload = make_revocation_payload(
+        trust_domain_id=store.trust_domain_id,
+        principal_id=principal_id,
+        key_id=key_id,
+        reason=reason,
+        authorized_by=_authorized(store),
+    )
+    event_id = append_trust_log_event(
+        _writer_mgr(store),
+        keys=store.handle._keys,
+        genesis_document=store.genesis_document,
+        transition=PRINCIPAL_KEY_REVOKED,
+        payload=payload,
+        entity_kind="principal",
+        entity_id=principal_entity_uuid(principal_id),
+        principal_id=REGISTRAR_PRINCIPAL,
+        authority="registrar",
+    )
+    return _event_record(store, event_id, payload)
 
 
 class TestCriterion12RebuildReproducesTheProjection:
@@ -152,38 +375,25 @@ class TestCriterion12RebuildReproducesTheProjection:
 
         _enrol(trust_store, "agent:alice", alice, writer=writer)
         _enrol(trust_store, "agent:bob", bob, writer=writer)
-        store_trust_log_event(
+        _rotate(
             trust_store,
-            transition=PRINCIPAL_KEY_ROTATED,
-            payload=make_rotation_payload(
-                trust_domain_id=trust_store.trust_domain_id,
-                principal_id="agent:alice",
-                key=alice2,
-                supersedes_key_id=alice.key_id,
-                superseded_key=alice,
-                not_before="2026-08-21T00:00:00.000000Z",
-            ),
-            signing_key=writer,
-            entity_id=principal_entity_uuid("agent:alice"),
+            "agent:alice",
+            alice,
+            alice2,
             occurred_at="2026-08-21T00:00:00.000000Z",
+            not_before="2026-08-21T00:00:00.000000Z",
         )
-        store_trust_log_event(
+        _revoke(
             trust_store,
-            transition=PRINCIPAL_KEY_REVOKED,
-            payload=make_revocation_payload(
-                trust_domain_id=trust_store.trust_domain_id,
-                principal_id="agent:bob",
-                key_id=bob.key_id,
-                reason="compromised",
-            ),
-            signing_key=writer,
-            entity_id=principal_entity_uuid("agent:bob"),
-            occurred_at="2026-08-22T00:00:00.000000Z",
+            "agent:bob",
+            bob.key_id,
         )
 
         mgr = _mgr(trust_store)
         try:
-            first = rebuild_projection(mgr, project=trust_store.project)
+            first = rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert first.applied is True
             assert first.events_replayed == 4
             assert first.events_by_transition == {
@@ -195,12 +405,16 @@ class TestCriterion12RebuildReproducesTheProjection:
             assert len(after_first) == 3  # alice x2 (one superseded), bob x1
 
             # THE criterion: rebuilding again reproduces the identical table.
-            second = rebuild_projection(mgr, project=trust_store.project)
+            second = rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert second.consistent is True, second.differences
             assert _snapshot(trust_store) == after_first
 
             # ...and a dry run agrees, having written nothing.
-            check = check_projection_consistent(mgr, project=trust_store.project)
+            check = check_projection_consistent(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert check.consistent is True
             assert check.applied is False
             assert _snapshot(trust_store) == after_first
@@ -214,7 +428,9 @@ class TestCriterion12RebuildReproducesTheProjection:
 
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             from regista._principal_keys import get_active_key
 
             entry = get_active_key(mgr, "agent:carol")
@@ -231,23 +447,18 @@ class TestCriterion12RebuildReproducesTheProjection:
         old = TrustLogKey.mint("pk_dave_1")
         new = TrustLogKey.mint("pk_dave_2")
         _enrol(trust_store, "agent:dave", old, writer=writer)
-        store_trust_log_event(
+        _rotate(
             trust_store,
-            transition=PRINCIPAL_KEY_ROTATED,
-            payload=make_rotation_payload(
-                trust_domain_id=trust_store.trust_domain_id,
-                principal_id="agent:dave",
-                key=new,
-                supersedes_key_id=old.key_id,
-                superseded_key=old,
-                not_before="2026-08-25T00:00:00.000000Z",
-            ),
-            signing_key=writer,
-            entity_id=principal_entity_uuid("agent:dave"),
+            "agent:dave",
+            old,
+            new,
+            not_before="2026-08-25T00:00:00.000000Z",
         )
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             from regista._principal_keys import list_principal_keys
 
             rows = {k.key_id: k for k in list_principal_keys(mgr, "agent:dave")}
@@ -262,7 +473,9 @@ class TestCriterion12RebuildReproducesTheProjection:
     def test_a_rebuild_of_an_empty_store_is_a_clean_no_op(self, trust_store):
         mgr = _mgr(trust_store)
         try:
-            report = rebuild_projection(mgr, project=trust_store.project)
+            report = rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert report.events_replayed == 0
             assert report.rows_rebuilt == 0
             assert report.consistent is True
@@ -289,7 +502,9 @@ class TestLegacyUnsourcedRowsAreLeftAlone:
             before = projection_summary(mgr)
             assert before == {"legacy_unsourced": 1, "v6_sourced": 0}
 
-            report = rebuild_projection(mgr, project=trust_store.project)
+            report = rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert report.legacy_unsourced_preserved == 1
 
             after = projection_summary(mgr)
@@ -310,7 +525,9 @@ class TestLegacyUnsourcedRowsAreLeftAlone:
         mgr = _mgr(trust_store)
         try:
             seed_legacy_principal_key(mgr, "legacy-only", b"\x0a" * 32, "ed25519")
-            report = check_projection_consistent(mgr, project=trust_store.project)
+            report = check_projection_consistent(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert report.consistent is True
             assert report.differences == ()
             assert report.legacy_unsourced_preserved == 1
@@ -336,18 +553,7 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         writer = TrustLogKey.mint("pk-trust-log")
         key = TrustLogKey.mint("pk_evan_1")
         enrol = _enrol(trust_store, "agent:evan", key, writer=writer)
-        revoke = store_trust_log_event(
-            trust_store,
-            transition=PRINCIPAL_KEY_REVOKED,
-            payload=make_revocation_payload(
-                trust_domain_id=trust_store.trust_domain_id,
-                principal_id="agent:evan",
-                key_id=key.key_id,
-                reason="compromised",
-            ),
-            signing_key=writer,
-            entity_id=principal_entity_uuid("agent:evan"),
-        )
+        revoke = _revoke(trust_store, "agent:evan", key.key_id)
         return key, enrol, revoke
 
     def _reactivate(self, store, principal_id):
@@ -365,7 +571,9 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         self._revoked_store(trust_store)
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             ok = _check_projection_consistent(DSN, trust_store.project, require_ssl=False)
             assert ok.status == "ok", ok.detail
         finally:
@@ -376,7 +584,7 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
 
         check = _check_projection_consistent(DSN, trust_store.project, require_ssl=False)
         # A FAILURE, not a warning, in production posture (§5.9 rule 3).
-        assert check.status == "fail"
+        assert check.status == "fail", check.detail
         assert "diverge" in check.detail
         assert "status" in check.detail
 
@@ -384,9 +592,13 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         self._revoked_store(trust_store)
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             self._reactivate(trust_store, "agent:evan")
-            report = check_projection_consistent(mgr, project=trust_store.project)
+            report = check_projection_consistent(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert report.consistent is False
             assert len(report.differences) == 1
             diff = report.differences[0]
@@ -402,14 +614,18 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         self._revoked_store(trust_store)
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             self._reactivate(trust_store, "agent:evan")
             from regista._principal_keys import list_principal_keys
 
             assert [k.status for k in list_principal_keys(mgr, "agent:evan")] == [
                 "active"
             ]
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             rows = list_principal_keys(mgr, "agent:evan")
             assert [k.status for k in rows] == ["revoked"]
             assert rows[0].revoked_reason == "compromised"
@@ -429,7 +645,9 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         key, enrol, _revoke = self._revoked_store(trust_store)
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             self._reactivate(trust_store, "agent:evan")
 
             # Re-read the key out of the stored signed event, ignoring the table.
@@ -469,7 +687,9 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         self._revoked_store(trust_store)
         mgr = _mgr(trust_store)
         try:
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
         finally:
             mgr.close()
         with psycopg.connect(trust_store.dsn, autocommit=True) as conn:
@@ -479,7 +699,7 @@ class TestCriterion13HandEditChangesNoVerificationOutcome:
         from regista._doctor import _check_projection_consistent
 
         check = _check_projection_consistent(DSN, trust_store.project, require_ssl=False)
-        assert check.status == "fail"
+        assert check.status == "fail", check.detail
 
 
 class TestCriterion17BypassNamesAreGone:
@@ -576,7 +796,10 @@ class TestRebuildRefusesAnUnmigratedStore:
         mgr = _mgr(trust_store)
         try:
             with pytest.raises(RegistaError) as exc_info:
-                rebuild_projection(mgr, project=trust_store.project)
+                rebuild_projection(
+                    mgr, project=trust_store.project,
+                    genesis_document=trust_store.genesis_document,
+                )
             assert exc_info.value.code is ErrorCode.MIGRATION_REQUIRED
             assert exc_info.value.detail["reason"] == "projection_columns_absent"
         finally:
@@ -594,37 +817,6 @@ class TestRebuildRefusesAnUnmigratedStore:
         # "Cannot check" is not "diverged" — an un-upgraded store must not look
         # corrupt.
         assert check.status == "skip"
-
-
-class TestEnrolmentWithoutPublicKeyIsRejectedAtRebuild:
-    """§9.16 again, from the storage side: a bad event cannot become a good row."""
-
-    def test_an_enrolment_event_lacking_public_key_fails_the_rebuild(
-        self, trust_store,
-    ):
-        writer = TrustLogKey.mint("pk-trust-log")
-        key = TrustLogKey.mint("pk_bad")
-        payload = make_enrollment_payload(
-            trust_domain_id=trust_store.trust_domain_id,
-            principal_id="agent:bad",
-            key=key,
-            omit_public_key=True,
-        )
-        store_trust_log_event(
-            trust_store,
-            transition=PRINCIPAL_KEY_ENROLLED,
-            payload=payload,
-            signing_key=writer,
-            entity_id=principal_entity_uuid("agent:bad"),
-        )
-        mgr = _mgr(trust_store)
-        try:
-            with pytest.raises(RegistaError) as exc_info:
-                rebuild_projection(mgr, project=trust_store.project)
-            assert exc_info.value.code is ErrorCode.TRUST_LOG_PAYLOAD_INVALID
-            assert "public_key" in exc_info.value.detail["missing"]
-        finally:
-            mgr.close()
 
 
 class TestRebuildAndTheSanctionedWriterIntersect:
@@ -803,10 +995,14 @@ class TestRebuildAndTheSanctionedWriterIntersect:
                 )
             assert len(list_principal_keys(mgr, "agent:ceremony")) == 1
 
-            report = check_projection_consistent(mgr, project=trust_store.project)
+            report = check_projection_consistent(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             assert report.consistent is True, report.differences
 
-            rebuild_projection(mgr, project=trust_store.project)
+            rebuild_projection(
+                mgr, project=trust_store.project, genesis_document=trust_store.genesis_document
+            )
             after = list_principal_keys(mgr, "agent:ceremony")
             assert len(after) == 1, (
                 "an applied rebuild deleted a row whose source event is in the store"
@@ -907,42 +1103,30 @@ class TestSourceEventHashShapeIsValidated:
 
 
 class TestCeremonyPathRoundTrip:
-    """The acceptance evidence for B1/B1-prime: drive ``commit()`` and rebuild it.
+    """The acceptance evidence for B1/B1-prime: join and rebuild a ceremony.
 
     Regression for the P2.2 review's B1-prime finding. The round-trip test in the class
-    above hand-crafts the applier call, so it could not catch ``_commit_key`` reading
-    per-row values from different sources than the rebuild derives:
+    above hand-crafts the applier call, so it could not catch the ceremony and rebuild
+    reading per-row values from different sources:
 
     * ``trust_domain_id`` was never passed (row NULL vs the payload's real UUID),
     * ``valid_from`` came from a second, later clock read than the payload's
       ``not_before``,
-    * a revocation used the raw ``operation.reason`` while the payload carried one
-      mapped into the closed §5.7 set.
+    * a revocation carried a reason mapped into the closed §5.7 set.
 
     Each was a permanent ``field_mismatch``. This test drives the ceremony's actual
     code path and asserts every compared column reproduces byte-for-byte.
 
-    **Nothing is stubbed any more.** While P1.7 was outstanding this class stubbed the
-    append gate, because ``commit()`` appends through the legacy writer and P1.2
-    refuses that on both sides of genesis. P1.7's writer landed, so the ceremony now
-    runs on an ordinary project with a genuinely open v6 epoch and its event is
-    signed, key-bound and chained by ``_v6_writer.append_v6_event``.
-
-    **Known topology debt, stated rather than hidden.** ``commit()`` appends
-    ``principal_key_enrolled`` — a *trust-log* transition (§5.3) — to the **project**
-    chain, because that is where the only production append path leads. §5.2 puts it
-    on the trust-log chain, and §5.9's column split (``source_event_hash`` = the
-    trust-log event, ``acceptance_event_hash`` = the project event) says the same.
-    Relocating it needs a production trust-log writer, which does not exist: the
-    trust-log chain is written only by ``tests/_trust_log_fixtures``, and
-    ``append_v6_event`` cannot serve it because a trust-log project has no
-    ``project_identity`` (its genesis is ``trust_domain_established``, not
-    ``project_initialized``). So this class asserts the writer/rebuild contract on one
-    chain, which is what production does today; the cross-chain correction is tracked
-    separately and is not claimed here.
+    **Two chains are explicit.** The trust-log writer records the lifecycle fact in
+    its own schema; the ordinary project records ``principal_key_accepted``. The
+    coordinator verifies both chains and joins them by exact event hashes before
+    materializing the projection. This prevents a project-local acceptance or a raw
+    hash from becoming trust-domain evidence.
     """
 
-    def _project_with_identity(self, trust_store, tmp_path):
+    def _project_with_identity(
+        self, trust_store, tmp_path, *, accepted_principals=None
+    ):
         """A SECOND, ORDINARY project with a real v6 epoch — not the trust log.
 
         This used to build a ``Regista`` on ``trust_store.project`` and INSERT a fake
@@ -965,95 +1149,252 @@ class TestCeremonyPathRoundTrip:
         from regista import Regista
 
         project = f"p22_ceremony_{uuid.uuid4().hex[:8]}"
-        # The ceremony's own actors, which are NOT in ACTOR_PRINCIPALS: `commit()`
-        # signs as `human:requester`, and the enrolled subject is `agent:ceremony`.
-        # A keyset missing either is refused with ACTOR_SIGNER_MISMATCH, which is
-        # correct and is not worked around.
+        # The ceremony's own actors are not in ACTOR_PRINCIPALS: the project accepts
+        # the requester, while the enrolled subject is accepted after the trust-log
+        # lifecycle event exists and can be named by its exact hash.
         principals = (*ACTOR_PRINCIPALS, "human:requester", "agent:ceremony")
         keyset = make_v6_keyset(tmp_path, principals=principals, filename="ceremony_keys.json")
         handle = Regista.create_project(DSN, project, keyset.path)
         open_v6_epoch(
             handle,
             keyset,
-            principals=principals,
+            principals=accepted_principals
+            or (*ACTOR_PRINCIPALS, "human:requester"),
             trust_domain_id=trust_store.trust_domain_id,
         )
         return handle, keyset
 
-    def _run_ceremony(self, sub, *, reason="policy"):
-        """Full ``commit()`` through the REAL v6 writer — no stubs at all.
+    def _rebuild_ceremony_projection(
+        self, trust_store, sub, evidence, *, dry_run=False
+    ):
+        return rebuild_projection_from_trust_log(
+            sub._mgr,
+            trust_store.handle._mgr,
+            project=sub.project,
+            genesis_document=trust_store.genesis_document,
+            dry_run=dry_run,
+            acceptance_by_principal={"agent:ceremony": evidence},
+        )
 
-        Three monkeypatches used to stand in for the P1.7 append gate
-        (``v6_epoch_open`` → False, ``check_legacy_append`` / ``admit_legacy_append``
-        → no-ops). All three are gone: with the project's epoch genuinely open, the
-        legacy funnel routes to ``_v6_writer.append_v6_event``, so the ceremony's
-        event is signed, key-bound and chained for real. Payload construction,
-        validation, the appliers and the rebuild were always real; now the append is
-        too.
+    def test_two_chain_acceptance_evidence_is_distinct_and_verified(
+        self, trust_store, tmp_path
+    ):
+        """The coordinator joins two independently signed chains by exact hashes."""
+        from _v6_fixtures import ACTOR_PRINCIPALS, accept_key, project_identity_of
+
+        from regista._trust_log_writer import verify_trust_log_chain
+        from regista._trust_projection import (
+            rebuild_projection_from_trust_log,
+            verify_project_acceptance,
+        )
+
+        sub, keyset = self._project_with_identity(
+            trust_store,
+            tmp_path,
+            accepted_principals=(*ACTOR_PRINCIPALS, "human:requester"),
+        )
+        try:
+            project_key = keyset.key_for("agent:ceremony")
+            trust_key = TrustLogKey(
+                key_id=project_key.key_id,
+                seed=project_key.seed,
+                public_key=project_key.public_key,
+                fingerprint=project_key.fingerprint,
+            )
+            trust_event = _enrol(
+                trust_store,
+                "agent:ceremony",
+                trust_key,
+                writer=TrustLogKey.mint("unused-fixture-writer"),
+            )
+
+            project_genesis = SimpleNamespace(
+                to_dict=lambda: {
+                    "event_hash": project_identity_of(sub).genesis_event_hash_text
+                }
+            )
+            acceptance = accept_key(
+                sub,
+                keyset,
+                project_genesis,
+                "agent:ceremony",
+                trust_event_hash=trust_event.event_hash,
+            )
+            with sub._mgr.transaction() as conn:
+                evidence = verify_project_acceptance(
+                    conn,
+                    event_hash=acceptance.event_hash_text,
+                    public_key=keyset.bootstrap.public_key,
+                )
+
+            with trust_store.handle._mgr.transaction() as conn:
+                verified = verify_trust_log_chain(conn, trust_store.genesis_document)
+            assert any(
+                item.event_hash == trust_event.event_hash
+                for item in verified.verified
+            )
+            assert evidence.event_hash == acceptance.event_hash_text
+            assert evidence.event_hash != trust_event.event_hash
+
+            report = rebuild_projection_from_trust_log(
+                sub._mgr,
+                trust_store.handle._mgr,
+                project=sub.project,
+                genesis_document=trust_store.genesis_document,
+                acceptance_by_principal={"agent:ceremony": evidence},
+            )
+            assert report.events_replayed == 1
+            from regista._principal_keys import get_active_key
+
+            projected = get_active_key(sub._mgr, "agent:ceremony")
+            assert projected.source_event_hash == trust_event.event_hash
+            assert projected.acceptance_event_hash == acceptance.event_hash_text
+            assert projected.source_event_hash != projected.acceptance_event_hash
+        finally:
+            project = sub.project
+            sub.close()
+            drop_project_schema(DSN, project)
+
+    def test_raw_acceptance_hash_is_refused_at_the_cross_schema_seam(
+        self, trust_store, tmp_path
+    ):
+        sub, keyset = self._project_with_identity(trust_store, tmp_path)
+        try:
+            self._run_ceremony(trust_store, sub, keyset)
+            with pytest.raises(RegistaError) as exc_info:
+                rebuild_projection_from_trust_log(
+                    sub._mgr,
+                    trust_store.handle._mgr,
+                    project=sub.project,
+                    genesis_document=trust_store.genesis_document,
+                    acceptance_by_principal={
+                        "agent:ceremony": "sha256:" + "0" * 64
+                    },
+                )
+            assert exc_info.value.detail["reason"] == "acceptance_evidence_unstructured"
+        finally:
+            project = sub.project
+            sub.close()
+            drop_project_schema(DSN, project)
+
+    def test_acceptance_must_be_on_the_current_head_to_genesis_path(
+        self, trust_store, tmp_path
+    ):
+        from _v6_fixtures import ACTOR_PRINCIPALS, accept_key, project_identity_of
+
+        sub, keyset = self._project_with_identity(
+            trust_store,
+            tmp_path,
+            accepted_principals=(*ACTOR_PRINCIPALS, "human:requester"),
+        )
+        try:
+            project_key = keyset.key_for("agent:ceremony")
+            trust_key = TrustLogKey(
+                key_id=project_key.key_id,
+                seed=project_key.seed,
+                public_key=project_key.public_key,
+                fingerprint=project_key.fingerprint,
+            )
+            trust_event = _enrol(
+                trust_store,
+                "agent:ceremony",
+                trust_key,
+                writer=TrustLogKey.mint("unused-fixture-writer"),
+            )
+            project_genesis = SimpleNamespace(
+                to_dict=lambda: {
+                    "event_hash": project_identity_of(sub).genesis_event_hash_text
+                }
+            )
+            acceptance = accept_key(
+                sub,
+                keyset,
+                project_genesis,
+                "agent:ceremony",
+                trust_event_hash=trust_event.event_hash,
+            )
+            with sub._mgr.transaction() as conn:
+                conn.execute(
+                    "UPDATE event_chain_head SET head_hash = %s WHERE id = TRUE",
+                    [bytes.fromhex(project_genesis.to_dict()["event_hash"][7:])],
+                )
+                with pytest.raises(RegistaError) as exc_info:
+                    verify_project_acceptance(
+                        conn,
+                        event_hash=acceptance.event_hash_text,
+                        public_key=keyset.bootstrap.public_key,
+                    )
+            assert exc_info.value.code is ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED
+            assert exc_info.value.detail["reason"] == "acceptance_not_on_project_head_chain"
+        finally:
+            project = sub.project
+            sub.close()
+            drop_project_schema(DSN, project)
+
+    def _run_ceremony(self, trust_store, sub, keyset):
+        """Complete enrollment through the two-chain ceremony boundary.
+
+        The trust log supplies the lifecycle fact and the ordinary project supplies
+        the signed local acceptance. The coordinator must join them by their exact
+        hashes before it may materialize ``principal_keys``.
         """
-        import nacl.signing
+        from _v6_fixtures import accept_key, project_identity_of
 
-        from regista.principal_lifecycle import (
-            Approval,
-            CustodyMode,
-            EnrollmentRequest,
-            PossessionProof,
-            PrincipalKind,
-            PrincipalLifecycle,
-            ProofFormat,
+        project_key = keyset.key_for("agent:ceremony")
+        trust_key = TrustLogKey(
+            key_id=project_key.key_id,
+            seed=project_key.seed,
+            public_key=project_key.public_key,
+            fingerprint=project_key.fingerprint,
         )
-
-        private_key = nacl.signing.SigningKey.generate()
-        public_key = bytes(private_key.verify_key)
-        lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
-        request = EnrollmentRequest(
-            principal_id="agent:ceremony",
-            principal_kind=PrincipalKind.AGENT,
-            actor_id="human:requester",
-            public_key=public_key,
-            scheme="ed25519",
-            custody_mode=CustodyMode.FILE,
-            reason=reason,
-            requested_authority="root",
-            policy_version="v1",
+        trust_event = _enrol(
+            trust_store,
+            "agent:ceremony",
+            trust_key,
+            writer=TrustLogKey.mint("unused-fixture-writer"),
         )
-        operation = lifecycle.prepare_enrollment(request, idempotency_key="idem-rt")
-        challenge = lifecycle.issue_possession_challenge(operation.operation_id)
-        lifecycle.submit_possession(
-            operation.operation_id,
-            PossessionProof(
-                format=ProofFormat.SIGNATURE_V1,
-                challenge_id=challenge.challenge_id,
-                operation_id=challenge.operation_id,
-                operation_digest=operation.digest.value,
-                signature=private_key.sign(challenge.signing_bytes()).signature,
-            ),
+        project_genesis = SimpleNamespace(
+            to_dict=lambda: {
+                "event_hash": project_identity_of(sub).genesis_event_hash_text
+            }
         )
-        lifecycle.record_approval(
-            operation.operation_id,
-            Approval(
-                approver_id="human:approver",
-                approver_kind="human",
-                approval_digest=operation.digest.value,
-            ),
+        acceptance = accept_key(
+            sub,
+            keyset,
+            project_genesis,
+            "agent:ceremony",
+            trust_event_hash=trust_event.event_hash,
         )
-        receipt = lifecycle.commit(
-            operation.operation_id, expected_digest=operation.digest.value
+        with sub._mgr.transaction() as conn:
+            evidence = verify_project_acceptance(
+                conn,
+                event_hash=acceptance.event_hash_text,
+                public_key=keyset.bootstrap.public_key,
+            )
+        report = self._rebuild_ceremony_projection(
+            trust_store, sub, evidence
         )
-        return receipt, public_key
+        assert report.applied is True
+        assert report.events_replayed == 1
+        receipt = SimpleNamespace(key_id=project_key.key_id)
+        return receipt, project_key.public_key, trust_event, evidence
 
     def test_the_ceremony_path_round_trips_byte_for_byte(
         self, trust_store, tmp_path,
     ):
         sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            receipt, public_key = self._run_ceremony(sub)
+            receipt, public_key, _trust_event, evidence = self._run_ceremony(
+                trust_store, sub, _keyset
+            )
 
             before = _snapshot(sub)
             assert len(before) == 1, "the ceremony must have written exactly one row"
 
             # No divergence: the ceremony's row is what the rebuild derives.
-            report = check_projection_consistent(sub._mgr, project=sub.project)
+            report = self._rebuild_ceremony_projection(
+                trust_store, sub, evidence, dry_run=True
+            )
             assert report.consistent is True, (
                 "the ceremony's own row diverges from a rebuild of its own event: "
                 f"{[(d.kind, d.fields) for d in report.differences]}"
@@ -1061,11 +1402,65 @@ class TestCeremonyPathRoundTrip:
             assert report.events_replayed == 1
 
             # ...and an applied rebuild reproduces every compared column exactly.
-            rebuild_projection(sub._mgr, project=sub.project)
+            self._rebuild_ceremony_projection(trust_store, sub, evidence)
             after = _snapshot(sub)
             assert after == before, "an applied rebuild rewrote the ceremony's row"
             assert receipt.key_id
             assert before[0][3] == public_key  # public_key column
+        finally:
+            _sub_project = sub.project
+            sub.close()
+            drop_project_schema(DSN, _sub_project)
+
+    def test_rebuild_without_acceptance_evidence_cannot_erase_existing_hash(
+        self, trust_store, tmp_path
+    ):
+        sub, keyset = self._project_with_identity(trust_store, tmp_path)
+        try:
+            _receipt, _public_key, _trust_event, evidence = self._run_ceremony(
+                trust_store, sub, keyset
+            )
+            with pytest.raises(RegistaError) as exc_info:
+                rebuild_projection_from_trust_log(
+                    sub._mgr,
+                    trust_store.handle._mgr,
+                    project=sub.project,
+                    genesis_document=trust_store.genesis_document,
+                )
+            assert exc_info.value.detail["reason"] == "acceptance_evidence_required"
+
+            from regista._principal_keys import get_active_key
+
+            projected = get_active_key(sub._mgr, "agent:ceremony")
+            assert projected.acceptance_event_hash == evidence.event_hash
+        finally:
+            _sub_project = sub.project
+            sub.close()
+            drop_project_schema(DSN, _sub_project)
+
+    def test_archived_project_acceptance_remains_rebuildable(
+        self, trust_store, tmp_path
+    ):
+        sub, keyset = self._project_with_identity(trust_store, tmp_path)
+        try:
+            _receipt, _public_key, _trust_event, evidence = self._run_ceremony(
+                trust_store, sub, keyset
+            )
+            with sub._mgr.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO events_archive SELECT * FROM events "
+                    "WHERE transition = 'principal_key_accepted'"
+                )
+                conn.execute(
+                    "DELETE FROM events WHERE transition = 'principal_key_accepted'"
+                )
+
+            report = self._rebuild_ceremony_projection(trust_store, sub, evidence)
+            assert report.consistent is True
+            from regista._principal_keys import get_active_key
+
+            projected = get_active_key(sub._mgr, "agent:ceremony")
+            assert projected.acceptance_event_hash == evidence.event_hash
         finally:
             _sub_project = sub.project
             sub.close()
@@ -1077,7 +1472,7 @@ class TestCeremonyPathRoundTrip:
 
         sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            self._run_ceremony(sub)
+            self._run_ceremony(trust_store, sub, _keyset)
             entry = get_active_key(sub._mgr, "agent:ceremony")
             assert entry.trust_domain_id == trust_store.trust_domain_id
             assert entry.source_event_hash is not None
@@ -1091,28 +1486,21 @@ class TestCeremonyPathRoundTrip:
         self, trust_store, tmp_path,
     ):
         """One clock read, not two: the row's valid_from IS the payload's not_before."""
-        import json as _json
-
         from regista._principal_keys import get_active_key
 
         sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            self._run_ceremony(sub)
-            entry = get_active_key(sub._mgr, "agent:ceremony")
-            # The ceremony's event is on the ORDINARY project's chain, which is where
-            # the only production append path leads (see the class docstring's
-            # topology note). Reading it from the trust-log schema found nothing.
-            with psycopg.connect(DSN, autocommit=True) as conn:
-                conn.execute(f'SET search_path TO "{sub.project}"')
-                row = conn.execute(
-                    "SELECT payload FROM events WHERE transition = %s",
-                    [PRINCIPAL_KEY_ENROLLED],
-                ).fetchone()
-            assert row is not None, (
-                "the ceremony appended no principal_key_enrolled event to the "
-                "project chain"
+            _receipt, _public_key, trust_event, _evidence = self._run_ceremony(
+                trust_store, sub, _keyset
             )
-            payload = row[0] if not isinstance(row[0], str) else _json.loads(row[0])
+            entry = get_active_key(sub._mgr, "agent:ceremony")
+            with trust_store.handle._mgr.transaction() as conn:
+                row = conn.execute(
+                    "SELECT payload FROM events WHERE event_id = %s",
+                    [uuid.UUID(trust_event.event_id)],
+                ).fetchone()
+            assert row is not None, "the ceremony appended no trust-log enrollment"
+            payload = row["payload"]
             from regista._trust_log import parse_principal_key_enrolled
 
             parsed = parse_principal_key_enrolled(payload)
@@ -1134,42 +1522,18 @@ class TestCeremonyPathRoundTrip:
         any out-of-set reason diverged on ``revoked_reason`` forever. Both sides now
         take the mapped value from the payload.
         """
-        from regista.principal_lifecycle import (
-            Approval,
-            PrincipalKind,
-            PrincipalLifecycle,
-            RevocationRequest,
-        )
-
         sub, _keyset = self._project_with_identity(trust_store, tmp_path)
         try:
-            receipt, _public_key = self._run_ceremony(sub)
-
-            lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
-            request = RevocationRequest(
-                principal_id="agent:ceremony",
-                principal_kind=PrincipalKind.AGENT,
-                actor_id="human:requester",
-                key_id=receipt.key_id,
-                # Deliberately NOT in the closed §5.7 set.
+            receipt, _public_key, _trust_event, evidence = self._run_ceremony(
+                trust_store, sub, _keyset
+            )
+            _revoke(
+                trust_store,
+                "agent:ceremony",
+                receipt.key_id,
                 reason="operator-said-so",
-                requested_authority="root",
-                policy_version="v1",
             )
-            operation = lifecycle.prepare_revocation(
-                request, idempotency_key="idem-rev"
-            )
-            lifecycle.record_approval(
-                operation.operation_id,
-                Approval(
-                    approver_id="human:approver",
-                    approver_kind="human",
-                    approval_digest=operation.digest.value,
-                ),
-            )
-            lifecycle.commit(
-                operation.operation_id, expected_digest=operation.digest.value
-            )
+            self._rebuild_ceremony_projection(trust_store, sub, evidence)
 
             from regista._principal_keys import list_principal_keys
 
@@ -1179,11 +1543,13 @@ class TestCeremonyPathRoundTrip:
             assert rows[0].revoked_reason == "unspecified"
 
             before = _snapshot(sub)
-            report = check_projection_consistent(sub._mgr, project=sub.project)
+            report = self._rebuild_ceremony_projection(
+                trust_store, sub, evidence, dry_run=True
+            )
             assert report.consistent is True, (
                 f"{[(d.kind, d.fields) for d in report.differences]}"
             )
-            rebuild_projection(sub._mgr, project=sub.project)
+            self._rebuild_ceremony_projection(trust_store, sub, evidence)
             assert _snapshot(sub) == before
         finally:
             _sub_project = sub.project

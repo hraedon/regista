@@ -101,7 +101,7 @@ transitions and positions:
 
 | Event | Position | External authorisation |
 |---|---|---|
-| `trust_domain_established` | trust-log genesis, first v6 event | Its hash equals `trust_genesis.trust_log.initial_head_event_hash`; the genesis document verifies at root threshold; the event signing key is a genesis root key. |
+| `trust_domain_established` | trust-log genesis, first v6 event | **A-prime (supersedes the prior "hash equals `initial_head_event_hash`" wording):** the genesis document must carry a null `trust_log.initial_head_event_hash` (`genesis_head_must_be_null`); the event is chain position 1 with `key_binding = null`; its payload's `genesis_document_digest` matches the published-document digest and its detached `root_signatures` meet the initial root threshold; the envelope signer is a genesis root (transport, not authority). The event hash is pinned by the checkpoint. |
 | `project_cryptographic_epoch_started` | unique first v6 event in a legacy project | The payload's `bootstrap_key_acceptance` resolves through the pinned genesis and a verified trust-log checkpoint; the event signer is exactly that accepted key. |
 | `project_initialized` | genesis of a project created directly in v6 | Same as the cutover checkpoint, with an empty previous epoch. |
 
@@ -508,7 +508,8 @@ The following are not editorial differences; each changes accepted bytes or a ve
    (`V6-ENVELOPE.md:80-109,121-127`); WI-277 requires 16 and a producer block. A's vector is stale.
 5. **Entity registry:** A allows only work item/project; B requires principal/trust-domain/project
    instance and inconsistently says project-system (`V6-ENVELOPE.md:111-119`;
-   `TRUST-DOMAIN.md:759-793`). Resolved by the six-value shared registry.
+   `TRUST-DOMAIN.md:759-793`). Resolved by the six-value shared registry (amended to seven by
+   `WI-305 B` — `spec` added).
 6. **Null workflow:** A requires transition null while the checkpoint requires a named transition
    (`V6-ENVELOPE.md:182-189`; `CUTOVER-CLASSIFICATION.md:261-265`). Resolved by separating
    workflow evaluation from lifecycle transition naming.

@@ -739,27 +739,32 @@ def validate_key_binding_bootstrap(
     transition: str,
     key_binding_event_hash: str | None,
     *,
-    event_hash: str | None = None,
-    genesis_initial_head_event_hash: str | None = None,
+    event_seq: int | None = None,
+    payload: Mapping[str, Any] | None = None,
+    genesis_document: Mapping[str, Any] | None = None,
+    root_public_keys: Mapping[str, bytes] | None = None,
     signer_fingerprint: str | None = None,
-    genesis_root_fingerprints: Sequence[str] = (),
 ) -> None:
-    """Enforce Bootstrap A: which trust-log event may carry a null key binding.
+    """A-prime Bootstrap A: which trust-log event may carry a null key binding.
 
-    ``trust_domain_established`` is the first v6 event in the log and has no
-    predecessor acceptance to point at, so it carries
-    ``signing.key_binding_event_hash = null``. It is authorised **externally**: its
-    hash equals ``trust_genesis.trust_log.initial_head_event_hash``, the genesis
-    document verifies at root threshold, and the signing key is a genesis root key.
+    ``trust_domain_established`` is the first v6 event in the log and the only one
+    with a null ``signing.key_binding_event_hash`` (Resolution 1). Its authorisation
+    is **external** and is proven here, on presented evidence, with no absent-
+    evidence pass:
 
-    This is the **only** null permitted in the trust log. A null on any other event
-    is refused with reason ``KEY_BINDING_BOOTSTRAP_NOT_PERMITTED`` (Resolution 1's
-    exact spelling). A non-null hash on ``trust_domain_established`` is equally
-    refused: the genesis event has nothing preceding it to name.
+    * the event is chain position 1;
+    * the pinned genesis document fully threshold-verifies and carries a **null**
+      ``trust_log.initial_head_event_hash`` (the genesis event hash is pinned later
+      by the checkpoint, not by the document);
+    * the event payload is a strict ``trust_domain_established`` restatement whose
+      ``genesis_document_digest`` equals the recomputed digest over the exact
+      published document bytes (A-prime);
+    * the envelope signer's fingerprint is a genesis root (transport attribution);
+    * the payload's detached ``root_signatures`` meet the initial root threshold over
+      ``root_signature_input(payload)`` — the authority proof; and no earlier event
+      precedes it.
 
-    Note the two other Resolution 1 null positions —
-    ``project_cryptographic_epoch_started`` and ``project_initialized`` — are
-    *project*-chain bootstraps (Bootstrap B), validated by ``_genesis.py``, not here.
+    None of these is waved through: absent evidence is a named refusal.
     """
     if key_binding_event_hash is not None:
         _require_pattern(
@@ -788,35 +793,89 @@ def validate_key_binding_bootstrap(
             transition=transition,
         )
 
-    # The null is in the one permitted position; now the external authorisation
-    # must actually hold. Absent evidence is a refusal, not a pass.
     _require_authority(
-        event_hash is not None and genesis_initial_head_event_hash is not None,
-        "Bootstrap A requires both the event hash and the genesis document's "
-        "trust_log.initial_head_event_hash to check them against each other",
+        genesis_document is not None and payload is not None,
+        "Bootstrap A requires the pinned genesis document and the "
+        "trust_domain_established payload; absent evidence is refused",
         "bootstrap_evidence_not_presented",
-        event_hash_present=event_hash is not None,
-        genesis_head_present=genesis_initial_head_event_hash is not None,
+        genesis_document_present=genesis_document is not None,
+        payload_present=payload is not None,
+    )
+    assert genesis_document is not None and payload is not None
+
+    from ._trust_domain import (
+        GovernanceState,
+        genesis_document_digest,
+        parse_trust_genesis,
+        verify_trust_genesis,
+    )
+
+    doc = parse_trust_genesis(genesis_document)
+    report = verify_trust_genesis(genesis_document)
+    _require_authority(
+        report.signatures_verified >= report.root_governance.threshold,
+        f"{report.signatures_verified} verified genesis document signature(s); "
+        f"threshold is {report.root_governance.threshold}",
+        "genesis_document_threshold_not_met",
+        verified=report.signatures_verified,
+        threshold=report.root_governance.threshold,
     )
     _require_authority(
-        event_hash == genesis_initial_head_event_hash,
-        "trust_domain_established hash does not equal the genesis document's "
-        "trust_log.initial_head_event_hash",
-        "bootstrap_head_mismatch",
-        event_hash=event_hash,
-        genesis_initial_head_event_hash=genesis_initial_head_event_hash,
+        genesis_document.get("trust_log", {}).get("initial_head_event_hash") is None,
+        "a v1 trust genesis must carry trust_log.initial_head_event_hash = null; "
+        "the genesis event hash is pinned by the checkpoint, not the document",
+        "genesis_head_must_be_null",
     )
     _require_authority(
-        signer_fingerprint is not None,
-        "Bootstrap A requires the signing key's fingerprint to check it is a "
-        "genesis root key",
-        "bootstrap_signer_not_presented",
+        event_seq is not None,
+        "Bootstrap A requires the event's chain position",
+        "bootstrap_event_seq_not_presented",
     )
     _require_authority(
-        signer_fingerprint in set(genesis_root_fingerprints),
+        event_seq == 1,
+        "trust_domain_established must be the first event in the log (chain "
+        "position 1)",
+        "bootstrap_event_not_position_one",
+        event_seq=event_seq,
+    )
+    established = parse_trust_domain_established(payload)
+    recomputed_digest = genesis_document_digest(genesis_document)
+    _require_authority(
+        established.genesis_document_digest == recomputed_digest,
+        "the event payload's genesis_document_digest disagrees with the recomputed "
+        "digest over the published genesis document bytes",
+        "genesis_document_digest_mismatch",
+        stated=established.genesis_document_digest,
+        recomputed=recomputed_digest,
+    )
+    document_roots = {s.fingerprint for s in doc.signers}
+    _require_authority(
+        signer_fingerprint is not None and signer_fingerprint in document_roots,
         "trust_domain_established is not signed by a genesis root key",
         "bootstrap_signer_not_a_root_key",
         signer_fingerprint=signer_fingerprint,
+    )
+    _require_authority(
+        root_public_keys is not None,
+        "Bootstrap A requires the genesis root public keys to verify the detached "
+        "payload signatures",
+        "bootstrap_root_keys_not_presented",
+    )
+    assert root_public_keys is not None
+    governance = GovernanceState(
+        threshold=doc.initial_governance.threshold,
+        signer_fingerprints=tuple(s.fingerprint for s in doc.signers),
+    )
+    verified = verify_root_threshold(
+        payload, governance, root_public_keys
+    )
+    _require_authority(
+        len(verified) >= doc.initial_governance.threshold,
+        f"{len(verified)} verified root signature(s); initial threshold is "
+        f"{doc.initial_governance.threshold}",
+        "root_threshold_not_met",
+        verified=len(verified),
+        threshold=doc.initial_governance.threshold,
     )
 
 
@@ -875,6 +934,7 @@ class TrustDomainEstablished:
     initial_governance: Mapping[str, Any]
     genesis_document_digest: str
     trust_log_project_instance_id: str
+    root_signatures: tuple[RootSignature, ...]
 
     @property
     def governance_state(self) -> GovernanceState:
@@ -1265,6 +1325,7 @@ _ESTABLISHED_KEYS = frozenset(
         "initial_governance",
         "genesis_document_digest",
         "trust_log_project_instance_id",
+        "root_signatures",
     }
 )
 
@@ -1366,6 +1427,7 @@ def parse_trust_domain_established(payload: Mapping[str, Any]) -> TrustDomainEst
         trust_log_project_instance_id=_require_uuid(
             raw["trust_log_project_instance_id"], "trust_log_project_instance_id"
         ),
+        root_signatures=_parse_root_signatures(raw["root_signatures"], "root_signatures"),
     )
 
 

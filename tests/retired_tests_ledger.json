@@ -1,535 +1,535 @@
 {
- "description": "Retired-test ledger (SUITE-RECONCILIATION.md §2.2). Every test node deleted from the suite after the epoch reconciliation must be recorded here, keyed by its exact former node ID, with a disposition: 'dies_with_v5' (the invariant is v5/HMAC mechanics the epoch reset deletes), 'deleted_by: P1.4' (the subsystem is deleted outright), or 'coverage_owed: <work item>' (the invariant reappears in v6; coverage is owed there). tests/test_retired_tests_ledger.py enforces this against the committed pre-reconciliation inventory: a node cannot vanish without an entry.",
+ "description": "Retired-test ledger (SUITE-RECONCILIATION.md \u00a72.2). Every test node deleted from the suite after the epoch reconciliation must be recorded here, keyed by its exact former node ID, with a disposition: 'dies_with_v5' (the invariant is v5/HMAC mechanics the epoch reset deletes), 'deleted_by: P1.4' (the subsystem is deleted outright), or 'coverage_owed: <work item>' (the invariant reappears in v6; coverage is owed there). tests/test_retired_tests_ledger.py enforces this against the committed pre-reconciliation inventory: a node cannot vanish without an entry.",
  "entries": [
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_list_batches_empty",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_list_batches_requires_admin",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_list_batches_with_status_filter",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_trigger_requires_admin",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_trigger_without_tsa_config",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/sidecar/test_sidecar.py::TestTimestampRoutes::test_verify_batch_requires_admin",
    "disposition": "deleted_by: P1.4",
-   "invariant": "sidecar /timestamp/* routes — deleted with the timestamping subsystem"
+   "invariant": "sidecar /timestamp/* routes \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorCLI::test_anchor_status_lists_receipts",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorCLI::test_anchor_submit_file_provider",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorCLI::test_anchor_verify_confirmed_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorCLI::test_anchor_verify_unknown_receipt_exits_nonzero",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptRoundTrip::test_round_trip_with_none_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptRoundTrip::test_to_dict_and_from_dict_round_trips",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptsMigration::test_anchor_receipts_columns",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptsMigration::test_anchor_receipts_table_exists",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptsMigration::test_indexes_exist",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptsMigration::test_retryable_status_accepted",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchorReceiptsMigration::test_status_check_constraint",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringHashAgility::test_anchor_verifies_with_sha384_events",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringHashAgility::test_anchor_verify_fails_if_sha384_hash_recomputed_as_sha256",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_get_anchor_receipt_not_found_raises",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_list_anchor_receipts_filters_by_status",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_trigger_anchoring_advances_latest_confirmed_seq",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_trigger_anchoring_creates_confirmed_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_trigger_anchoring_returns_none_when_no_new_events",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_trigger_anchoring_without_provider_raises",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_upgrade_pending_anchors_noop_for_file",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_confirmed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered_actor",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered_envelope",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered_payload",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered_prev_global_hash",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringIntegration::test_verify_anchor_receipt_failed_for_tampered_signature",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPayloadMutationIntegration::test_payload_canonical_hash_mismatch_detected",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPayloadMutationIntegration::test_payload_only_mutation_not_detected_by_anchor",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPersistenceHelpers::test_create_and_get_anchor_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPersistenceHelpers::test_latest_confirmed_seq_returns_zero_when_empty",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPersistenceHelpers::test_list_anchor_receipts_with_filters",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPersistenceHelpers::test_update_anchor_receipt_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestAnchoringPersistenceHelpers::test_update_anchor_receipt_rejects_unknown_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_changes_with_chain_head",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_changes_with_envelope_version",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_changes_with_hash_algorithm",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_changes_with_project",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_changes_with_seq",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_is_deterministic",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_no_binding_collision",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestComputeContentAnchor::test_compute_content_anchor_no_binding_collision_digits",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestCreateAnchorReceiptConflictPersistence::test_does_not_downgrade_confirmed_to_retryable",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestCreateAnchorReceiptConflictPersistence::test_returns_existing_row_on_conflict",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestCreateAnchorReceiptConflictPersistence::test_upgrades_retryable_to_confirmed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_creates_directory_if_missing",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_submit_writes_log_line_and_returns_confirmed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_upgrade_is_noop",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_verify_returns_confirmed_for_real_submission",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_verify_returns_failed_for_tampered_root",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestFileAnchorProvider::test_verify_returns_failed_when_log_missing",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestMaintenanceAnchoring::test_maintenance_creates_anchor_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestMaintenanceAnchoring::test_maintenance_skips_anchoring_without_provider",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_accepts_list_of_calendar_urls",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_default_calendar_url_used",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_soft_import_raises_when_missing",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_submit_returns_pending_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_upgrade_returns_confirmed_when_calendar_confirms",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_upgrade_stays_pending_when_not_confirmed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_verify_returns_confirmed_for_attested_proof",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_verify_returns_failed_for_garbage_proof",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_verify_returns_failed_when_receipt_bytes_none",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestOpenTimestampsProvider::test_verify_returns_pending_for_partial_proof",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestRFC3161AnchorProvider::test_submit_returns_confirmed_with_token",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestRFC3161AnchorProvider::test_upgrade_is_noop",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestRFC3161AnchorProvider::test_verify_fails_for_tampered_root",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestRFC3161AnchorProvider::test_verify_fails_when_receipt_bytes_none",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestRFC3161AnchorProvider::test_verify_passes_for_matching_root",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestTriggerAnchoringFailurePersistence::test_retry_exceeds_max_failures_marks_failed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestTriggerAnchoringFailurePersistence::test_retry_failed_anchors_resucceeds",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestTriggerAnchoringFailurePersistence::test_submit_failure_persists_retryable_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestTriggerAnchoringPendingReceiptIntegration::test_failed_submit_leaves_retryable_receipt",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestTriggerAnchoringPendingReceiptIntegration::test_pending_receipt_exists_during_submit",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchor::test_verify_content_anchor_rejects_missing_binding_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchor::test_verify_content_anchor_rejects_missing_target_seq",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchorChainIntegrity::test_genesis_single_event_passes",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchorChainIntegrity::test_tampered_prev_global_event_hash_detected",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchorChainIntegrity::test_valid_chain_passes",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchorPayloadHash::test_payload_canonical_hash_mismatch_detected",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_anchoring.py::TestVerifyContentAnchorPayloadHash::test_valid_payload_canonical_hash_passes",
    "disposition": "deleted_by: P1.4",
-   "invariant": "external transparency-log anchoring (_anchoring.py) — subsystem deleted, zero anchor_receipts estate-wide"
+   "invariant": "external transparency-log anchoring (_anchoring.py) \u2014 subsystem deleted, zero anchor_receipts estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_dry_run_includes_work_item_ids",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_dry_run_writes_nothing",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_list_segments",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_list_segments_filter_archived",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_list_segments_includes_work_item_ids",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_live_work_item_not_sealed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_multi_seal_interleaved_live_and_terminal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_no_events_returns_count_zero",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_no_new_segment_when_all_sealed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_non_genesis_segment_verifies",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_replay_bridges_multiple_segments",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_replay_with_sealed_segment_no_orphan_warnings",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_seal_after_work_item_becomes_terminal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_seal_creates_segment_and_signed_event",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_spanning_entity_no_bug",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_verify_chain_gap_events_archived",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_verify_chain_two_segments_links_through_seal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_verify_nonexistent_segment_raises",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_verify_passes",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_archive_segments.py::TestSealSegment::test_verify_reports_seal_signature",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment sealing/verification (_archive_segments.py) — subsystem deleted, zero event_segments estate-wide"
+   "invariant": "archive segment sealing/verification (_archive_segments.py) \u2014 subsystem deleted, zero event_segments estate-wide"
   },
   {
    "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_allow_unverified_opts_into_exit_0",
@@ -541,147 +541,147 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "CLI export exit 0 means exported AND verifiable; an unverifiable store exits 3 (artifact still written)",
-   "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)"
+   "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 \u00a79.7)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[inverted]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[since-negative]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[until-negative]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[until-zero]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_hide_tail_truncation",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_invented_window_must_also_drop_the_events",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_non_integer_window_reads_as_unbounded",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_real_windowed_export_satisfies_its_own_window",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle declared-window gate (_verify_declared_window) — deleted per BUNDLE-V3.md §8 (signing the claim deletes the heuristic)"
+   "invariant": "bundle declared-window gate (_verify_declared_window) \u2014 deleted per BUNDLE-V3.md \u00a78 (signing the claim deletes the heuristic)"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_creates_valid_json",
    "disposition": "deleted_by: P1.4",
-   "invariant": "v2 bundle document shape (anchor_receipts/segments sections) — sections deleted; v3 statement replaces the format at P3.3"
+   "invariant": "v2 bundle document shape (anchor_receipts/segments sections) \u2014 sections deleted; v3 statement replaces the format at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_includes_anchor_receipts",
    "disposition": "deleted_by: P1.4",
-   "invariant": "anchor receipt export section — anchors deleted"
+   "invariant": "anchor receipt export section \u2014 anchors deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_with_since_seq",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "since_seq is an exclusive lower bound on the exported global_seq window",
-   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); window bounds re-covered at P3.3"
+   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md \u00a73.5); window bounds re-covered at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_chunked_exports_both_verify_offline",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "a corpus split into chunks yields disjoint, jointly-complete, independently verifiable bundles",
-   "carry_forward": "v3 chunk plan + preflight comparison (BUNDLE-V3.md §9.2); re-covered at P3.3"
+   "carry_forward": "v3 chunk plan + preflight comparison (BUNDLE-V3.md \u00a79.2); re-covered at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_mid_chain_chunk_excludes_receipts_and_verifies",
    "disposition": "deleted_by: P1.4",
-   "invariant": "anchor-receipt slicing for chunked exports (_slice_receipts_to_verifiable) — anchors deleted"
+   "invariant": "anchor-receipt slicing for chunked exports (_slice_receipts_to_verifiable) \u2014 anchors deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_prefix_chunk_keeps_only_receipts_it_can_prove",
    "disposition": "deleted_by: P1.4",
-   "invariant": "anchor-receipt slicing for chunked exports (_slice_receipts_to_verifiable) — anchors deleted"
+   "invariant": "anchor-receipt slicing for chunked exports (_slice_receipts_to_verifiable) \u2014 anchors deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_since_and_until_form_a_window",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "since/until together bound the exported window exactly",
-   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
+   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md \u00a73.5); re-covered at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestExportBounds::test_until_seq_is_an_inclusive_upper_bound",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "until_seq is an inclusive upper bound on the exported window",
-   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
+   "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md \u00a73.5); re-covered at P3.3"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_clean_bundle_has_no_count_errors",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_non_integer_manifest_count_fails_closed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_public_key_count_divergence_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_segment_count_divergence_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_tail_truncation_with_stale_manifest_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_truncation_with_doctored_manifest_fails_on_segment_anchor",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_v1_bundle_may_omit_the_v2_only_count",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_v2_bundle_missing_a_count_fails_closed",
    "disposition": "deleted_by: P1.4",
-   "invariant": "manifest count agreement (_verify_manifest_counts) — deleted per BUNDLE-V3.md §8 (signed scope/section_digests replace it)"
+   "invariant": "manifest count agreement (_verify_manifest_counts) \u2014 deleted per BUNDLE-V3.md \u00a78 (signed scope/section_digests replace it)"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineAnchorHashAgility::test_offline_anchor_verifies_with_sha384_events",
    "disposition": "deleted_by: P1.4",
-   "invariant": "offline anchor verification (_verify_anchor_offline) — anchors deleted"
+   "invariant": "offline anchor verification (_verify_anchor_offline) \u2014 anchors deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "actor↔signer binding mismatch fails closed",
-   "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification"
+   "invariant": "actor\u2194signer binding mismatch fails closed",
+   "carry_forward": "v6 principal\u2194key binding verification (key_binding_event_hash / trust log) in bundle verification"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
@@ -707,174 +707,174 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "relabelling an event's scheme_id is a scheme_mismatch against the trusted key, not a verifier selector",
-   "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)"
+   "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (\u00a73.1)"
   },
   {
    "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
-   "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
+   "invariant": "a format-version downgrade to v1 cannot silently pass \u2014 skipped is reported and verified=False",
+   "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 \u00a76)"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_receipt_listing_orders_oldest_target_first",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_slice_segments_keeps_overlap_drops_outside",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_slice_segments_keeps_unbounded_rows",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_head_hash_fails_segment_chain",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_intermediate_hash_fails_segment_chain",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_tampered_seal_event_removed_fails_segment_chain",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_two_segment_bundle_verifies_segment_chain",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_isolating_segment_b_keeps_it_without_incoming_seal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_straddling_seal_gap_self_verifies",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_sweep_self_verifies",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentChainOfflineVerification::test_windowed_export_window_starting_inside_first_segment_keeps_both_linked",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_overlapping_segment_ranges_fail",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_segment_fully_inside_a_window_is_still_checked",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_sole_segment_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_terminal_event_count_alone_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_tampered_terminal_segment_fails_multi_segment",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_terminal_segment_boundary_inflation_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentRecordAnchoring::test_window_truncated_segment_metadata_is_not_checkable",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_clean_multi_segment_bundle_still_reconciles",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_count_band_rejects_inflation_without_the_seal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_count_band_rejects_zero_without_the_seal",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_event_id_rewrite_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_global_seq_shift_fails_multi_segment[negative]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_first_global_seq_shift_fails_multi_segment[zero]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_injected_free_floating_seal_is_not_an_anchor",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_seal_event_deleted_from_full_export_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_seal_payload_carries_the_structural_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_sole_segment_first_global_seq_shifted_to_zero_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestSegmentSealReconciliation::test_work_item_ids_and_count_rewritten_together_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) — deleted per BUNDLE-V3.md §8"
+   "invariant": "bundle segment machinery (_bundle.py window/segment/seal verification) \u2014 deleted per BUNDLE-V3.md \u00a78"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyArchiveChain::test_verify_chain_detects_broken_link",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment chain verification (verify_archive_chain) — subsystem deleted"
+   "invariant": "archive segment chain verification (verify_archive_chain) \u2014 subsystem deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyArchiveChain::test_verify_chain_no_segments",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment chain verification (verify_archive_chain) — subsystem deleted"
+   "invariant": "archive segment chain verification (verify_archive_chain) \u2014 subsystem deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyArchiveChain::test_verify_chain_with_segments",
    "disposition": "deleted_by: P1.4",
-   "invariant": "archive segment chain verification (verify_archive_chain) — subsystem deleted"
+   "invariant": "archive segment chain verification (verify_archive_chain) \u2014 subsystem deleted"
   },
   {
    "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
@@ -886,7 +886,7 @@
   {
    "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_anchor_mismatch",
    "disposition": "deleted_by: P1.4",
-   "invariant": "offline anchor verification (_verify_anchor_offline) — anchors deleted"
+   "invariant": "offline anchor verification (_verify_anchor_offline) \u2014 anchors deleted"
   },
   {
    "node_id": "tests/test_cli_integration.py::TestPrincipalRotate::test_rotate_json_shape",
@@ -926,22 +926,22 @@
   {
    "node_id": "tests/test_doctor.py::TestAnchoringStaleReceipts::test_ok_when_no_stale_receipts",
    "disposition": "deleted_by: P1.4",
-   "invariant": "doctor stale-anchor-receipt check — doctor no longer reports on subsystems that do not exist"
+   "invariant": "doctor stale-anchor-receipt check \u2014 doctor no longer reports on subsystems that do not exist"
   },
   {
    "node_id": "tests/test_doctor.py::TestAnchoringStaleReceipts::test_recent_pending_receipt_is_not_stale",
    "disposition": "deleted_by: P1.4",
-   "invariant": "doctor stale-anchor-receipt check — doctor no longer reports on subsystems that do not exist"
+   "invariant": "doctor stale-anchor-receipt check \u2014 doctor no longer reports on subsystems that do not exist"
   },
   {
    "node_id": "tests/test_doctor.py::TestAnchoringStaleReceipts::test_skip_when_anchor_table_absent",
    "disposition": "deleted_by: P1.4",
-   "invariant": "doctor stale-anchor-receipt check — doctor no longer reports on subsystems that do not exist"
+   "invariant": "doctor stale-anchor-receipt check \u2014 doctor no longer reports on subsystems that do not exist"
   },
   {
    "node_id": "tests/test_doctor.py::TestAnchoringStaleReceipts::test_warn_when_receipt_stuck_beyond_threshold",
    "disposition": "deleted_by: P1.4",
-   "invariant": "doctor stale-anchor-receipt check — doctor no longer reports on subsystems that do not exist"
+   "invariant": "doctor stale-anchor-receipt check \u2014 doctor no longer reports on subsystems that do not exist"
   },
   {
    "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_does_not_break_replay",
@@ -955,7 +955,7 @@
    "disposition": "coverage_owed",
    "work_item": "WI-293",
    "invariant": "the principal entity id is uuid5(NAMESPACE_OID, 'principal:' + id) and stays stable",
-   "carry_forward": "asserted directly on the derivation (test_the_principal_entity_id_derivation_is_unchanged) — TRUST-DOMAIN §5.2 requires keeping the v1 derivation"
+   "carry_forward": "asserted directly on the derivation (test_the_principal_entity_id_derivation_is_unchanged) \u2014 TRUST-DOMAIN \u00a75.2 requires keeping the v1 derivation"
   },
   {
    "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_idempotent_re_enroll_no_duplicate_event",
@@ -969,14 +969,14 @@
    "disposition": "coverage_owed",
    "work_item": "WI-293",
    "invariant": "enrolment issues a keypair, registers the public key, and emits a signed enrolment event",
-   "carry_forward": "returns as a signed principal_key_enrolled event carrying public_key bytes (TRUST-DOMAIN §5.5) once P1.7 provides the v6 append path; the refusal is asserted now"
+   "carry_forward": "returns as a signed principal_key_enrolled event carrying public_key bytes (TRUST-DOMAIN \u00a75.5) once P1.7 provides the v6 append path; the refusal is asserted now"
   },
   {
    "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_self_heal_re_emits_event_after_gap",
    "disposition": "coverage_owed",
    "work_item": "WI-293",
    "invariant": "a registry row with no enrolment event is repaired by re-emitting the event",
-   "carry_forward": "structurally impossible after §5.9 rule 2: the applier requires source_event_hash, so a row cannot exist without its event — the gap this healed cannot form"
+   "carry_forward": "structurally impossible after \u00a75.9 rule 2: the applier requires source_event_hash, so a row cannot exist without its event \u2014 the gap this healed cannot form"
   },
   {
    "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_idempotent",
@@ -1006,7 +1006,7 @@
    "invariant": "in-memory parity: corrupted project-chain link reports a chain break",
    "carry_forward": "in-memory v6 project-chain tamper detection (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_an_in_memory_project_chain_rewrite_is_reported_as_a_break",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_global_event_chain.py::test_bc300_replay_detects_global_chain_tamper",
@@ -1015,61 +1015,61 @@
    "invariant": "a rewritten project-chain row link is reported as a chain break by replay",
    "carry_forward": "v6 project-chain tamper detection (link is signed; row rewrite reconciles INVALID)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_a_rewritten_project_chain_link_is_reported_as_a_chain_break",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_global_event_chain.py::test_global_chain_links_events_across_work_items",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "one project-wide chain links events across work items; head pointer tracks the tail — asserted via v5 sha256(env||sig) and event_chain_head",
+   "invariant": "one project-wide chain links events across work items; head pointer tracks the tail \u2014 asserted via v5 sha256(env||sig) and event_chain_head",
    "carry_forward": "v6 previous_project_event_hash chain across entities + global-chain head sentinel",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_the_project_chain_links_across_work_items_and_the_head_tracks_the_tail",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_global_event_chain.py::test_global_chain_survives_global_seq_gaps",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "the chain links by hash, immune to global_seq gaps — asserted via the v5 formula",
-   "carry_forward": "v6: order/completeness come only from hash links, never global_seq contiguity (§4.1)",
+   "invariant": "the chain links by hash, immune to global_seq gaps \u2014 asserted via the v5 formula",
+   "carry_forward": "v6: order/completeness come only from hash links, never global_seq contiguity (\u00a74.1)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_the_project_chain_survives_global_seq_gaps",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_append_event_api_persists_prev_hash",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "the public append API persists the entity-chain link — asserted via the v5 hash formula",
+   "invariant": "the public append API persists the entity-chain link \u2014 asserted via the v5 hash formula",
    "carry_forward": "P1.7 writer persists v6 entity-chain links on append",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_the_public_append_api_persists_the_v6_entity_chain_link",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_broken_chain_detected",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "a rewritten entity-chain row link is both a verification halt and a structural chain break",
-   "carry_forward": "v6: prev link is inside the signed envelope; row rewrite → reconciliation halt + chain break",
+   "carry_forward": "v6: prev link is inside the signed envelope; row rewrite \u2192 reconciliation halt + chain break",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_a_rewritten_entity_chain_link_is_both_invalid_and_a_chain_break",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_multi_event_chain",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "every event in a multi-event chain links to its predecessor — v5 formula asserted per link",
+   "invariant": "every event in a multi-event chain links to its predecessor \u2014 v5 formula asserted per link",
    "carry_forward": "multi-event v6 entity chain integrity",
    "covered_by": "tests/test_p17_v6_writer.py::TestSemanticConformance::test_the_entity_chain_links_by_signed_v6_event_hash",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChain::test_second_event_includes_prev_hash",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "event N's prev link equals the predecessor's hash — asserted as sha256(envelope||signature), the v5 formula",
-   "carry_forward": "entity-chain link commits to the predecessor's v6 event_hash (domain-tagged formula, §5.3)",
+   "invariant": "event N's prev link equals the predecessor's hash \u2014 asserted as sha256(envelope||signature), the v5 formula",
+   "carry_forward": "entity-chain link commits to the predecessor's v6 event_hash (domain-tagged formula, \u00a75.3)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_the_postgres_entity_link_uses_the_v6_formula_not_the_v5_one",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_chain_without_keys",
@@ -1083,7 +1083,7 @@
    "invariant": "in-memory multi-event chain, v5 formula per link",
    "carry_forward": "in-memory v6 entity chain (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_entity_chain_links_every_event_by_v6_event_hash",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC233HashChainInMemory::test_second_event_includes_prev_hash",
@@ -1092,7 +1092,7 @@
    "invariant": "in-memory: prev link equals v5 sha256(envelope||signature)",
    "carry_forward": "in-memory v6 entity-chain link (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_entity_link_uses_the_v6_formula_not_the_v5_one",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_in_memory",
@@ -1101,49 +1101,49 @@
    "invariant": "in-memory parity: envelope deletion halts",
    "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_deleting_an_in_memory_envelope_is_unverifiable_not_a_silent_pass",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_hash_chain.py::TestBC311ReplayChainFields::test_replay_succeeds_with_missing_envelope_postgres",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "nulling canonical_envelope on a signed row halts replay (the row contradicts its own crypto material)",
-   "carry_forward": "envelope deletion on a v6 row is detected and halts (stored bytes are the artifact, §9.2)",
+   "carry_forward": "envelope deletion on a v6 row is detected and halts (stored bytes are the artifact, \u00a79.2)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_deleting_the_canonical_envelope_halts_replay",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_migrations_021_026.py::TestMigration022AdversarialReviewFixes::test_tsp_batches_status_check",
    "disposition": "deleted_by: P1.4",
-   "invariant": "tsp_batches status CHECK constraint — table dropped by migration 045"
+   "invariant": "tsp_batches status CHECK constraint \u2014 table dropped by migration 045"
   },
   {
    "node_id": "tests/test_plan009.py::TestMaintenanceTimestampBatchSweep::test_does_not_sweep_recent_pending",
    "disposition": "deleted_by: P1.4",
-   "invariant": "maintenance stale-timestamp-batch sweep — deleted with the timestamping subsystem"
+   "invariant": "maintenance stale-timestamp-batch sweep \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/test_plan009.py::TestMaintenanceTimestampBatchSweep::test_sweeps_stale_pending_batches",
    "disposition": "deleted_by: P1.4",
-   "invariant": "maintenance stale-timestamp-batch sweep — deleted with the timestamping subsystem"
+   "invariant": "maintenance stale-timestamp-batch sweep \u2014 deleted with the timestamping subsystem"
   },
   {
    "node_id": "tests/test_plan024_global_chain.py::TestPlan024ConcurrentGlobalChain::test_concurrent_raw_appends_replay_clean",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "concurrent raw appends produce an unbroken project chain — verified by a local walk hardcoding the v5 hash formula",
+   "invariant": "concurrent raw appends produce an unbroken project chain \u2014 verified by a local walk hardcoding the v5 hash formula",
    "carry_forward": "concurrent v6 appends serialize onto one unbroken project chain",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_concurrent_appends_serialize_onto_one_unbroken_project_chain",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_global_seq_matches_chain_order_with_cache1",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
-   "invariant": "with CACHE 1, global_seq order matches chain-link order — checked by a helper hardcoding the v5 formula",
+   "invariant": "with CACHE 1, global_seq order matches chain-link order \u2014 checked by a helper hardcoding the v5 formula",
    "carry_forward": "global_seq allocation order consistent with v6 project-chain order (operational, CACHE 1)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_global_seq_order_matches_chain_order_under_cache_one",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_detects_orphan",
@@ -1152,7 +1152,7 @@
    "invariant": "a forged project-chain row link halts verification and is reported as an orphan chain break",
    "carry_forward": "v6 hash-walk orphan detection + signed-link reconciliation",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_a_forged_project_chain_link_is_reported_as_an_orphan_chain_break",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_plan024_global_chain.py::TestPlan024VerifierHashWalk::test_hash_walk_no_genesis_reports_orphans",
@@ -1161,7 +1161,7 @@
    "invariant": "corrupting the genesis link leaves no root and every event is reported orphaned",
    "carry_forward": "v6: genesis is a signed claim; a store with no reachable genesis fails verification loudly",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster2ChainIntegrity::test_corrupting_the_genesis_link_leaves_no_root_and_orphans_everything",
-   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md §5.3/§4.1)"
+   "covered_in": "P1.7 (WI-289 cluster 2; entity- and project-chain integrity, V6-ENVELOPE.md \u00a75.3/\u00a74.1)"
   },
   {
    "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_register_via_facade",
@@ -1203,18 +1203,18 @@
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "a jsonb payload key-reorder in the row is not drift/tamper (stored envelope is authoritative)",
-   "carry_forward": "v6 row reconciliation compares payload as canonical JCS bytes (V6-ENVELOPE §9.2) — key reorder is not a mismatch",
+   "carry_forward": "v6 row reconciliation compares payload as canonical JCS bytes (V6-ENVELOPE \u00a79.2) \u2014 key reorder is not a mismatch",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_replay_survives_a_payload_key_reorder",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_signature_verification_uses_stored_envelope",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "signature verification verifies the exact stored envelope bytes, with every signed field reconciled against the row",
-   "carry_forward": "v6 verification over stored canonical bytes (JCS fixed point, §5.4) + full row agreement (§9.1)",
+   "carry_forward": "v6 verification over stored canonical bytes (JCS fixed point, \u00a75.4) + full row agreement (\u00a79.1)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_the_stored_bytes_are_the_artifact_and_every_signed_field_reconciles",
-   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md §3.1/§5.4)"
+   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md \u00a73.1/\u00a75.4)"
   },
   {
    "node_id": "tests/test_signing.py::TestAC26JsonbDriftSurvival::test_transition_event_signature_verifies_with_stored_envelope",
@@ -1223,7 +1223,7 @@
    "invariant": "transition events' signatures verify against the stored envelope (incl. entity_kind/hash_alg row fields)",
    "carry_forward": "same as above, for workflow-transition events",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_workflow_transition_event_verifies_against_its_stored_envelope",
-   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md §3.1/§5.4)"
+   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md \u00a73.1/\u00a75.4)"
   },
   {
    "node_id": "tests/test_signing_ed25519.py::TestEd25519KeyRotation::test_events_signed_with_active_key_scheme",
@@ -1246,177 +1246,177 @@
   {
    "node_id": "tests/test_timestamping.py::TestBC228UTCTimestamps::test_trigger_timestamping_confirmed_branch_tz_aware",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBC228UTCTimestamps::test_trigger_timestamping_failed_batch_has_tz_aware_submitted_at",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBC316ConcurrentTimestamping::test_failed_batch_allows_reselection",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBC316ConcurrentTimestamping::test_pending_batch_allows_non_overlapping_events",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBC316ConcurrentTimestamping::test_pending_batch_prevents_reselection",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBuildTsr::test_build_tsr_includes_nonce_by_default",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestBuildTsr::test_build_tsr_uses_configured_hash",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_empty_raises",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_exclusion_fails",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_inclusion_proof",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_odd_count",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_power_of_two",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_root_deterministic",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestMerkleTree::test_single_event",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestPlan014GlobalSeq::test_global_seq_monotonic_across_work_items",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestPlan014GlobalSeq::test_replay_merkle_root_mismatch_multi_wi",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestPlan014GlobalSeq::test_replay_verify_timestamps_multi_wi",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestPlan014GlobalSeq::test_trigger_timestamping_selects_by_global_seq",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestReplayVerifyTimestamps::test_verify_timestamps_false_no_warnings",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestReplayVerifyTimestamps::test_verify_timestamps_invalid_token_warns",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestReplayVerifyTimestamps::test_verify_timestamps_merkle_root_mismatch_warns",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestReplayVerifyTimestamps::test_verify_timestamps_true_uncovered_events_warns",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestReplayVerifyTimestamps::test_verify_timestamps_valid_token_no_extra_warnings",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTSAConfig::test_custom_batch_size",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTSAConfig::test_defaults",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTSAConfig::test_tsa_cert_path_field_exists",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTSASubmission::test_submit_posts_to_tsa_url",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTSASubmission::test_submit_raises_on_http_error",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestTimestampBatchToDict::test_to_dict_serializes_all_fields",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_empty_token_returns_false",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_matching_imprint_returns_true",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_mismatched_imprint_returns_false",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_sha384_imprint",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_short_token_returns_false",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_timestamping.py::TestVerifyTsaToken::test_verify_substring_false_positive_blocked",
    "disposition": "deleted_by: P1.4",
-   "invariant": "RFC 3161 timestamping (_timestamping.py) — subsystem deleted, zero tsp_batches estate-wide"
+   "invariant": "RFC 3161 timestamping (_timestamping.py) \u2014 subsystem deleted, zero tsp_batches estate-wide"
   },
   {
    "node_id": "tests/test_webhooks_archive.py::TestArchiveEvents::test_archive_actual",
@@ -1478,41 +1478,41 @@
   {
    "node_id": "tests/test_wi229_cli_contract.py::TestJsonExitCodeAudit::test_exit_is_decided_outside_the_format_branch[archive verify-chain-cmd_archive_verify_chain]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "CLI json-exit-code audit of `archive verify`/`verify-chain` — verbs deleted with archive segments"
+   "invariant": "CLI json-exit-code audit of `archive verify`/`verify-chain` \u2014 verbs deleted with archive segments"
   },
   {
    "node_id": "tests/test_wi229_cli_contract.py::TestJsonExitCodeAudit::test_exit_is_decided_outside_the_format_branch[archive verify-cmd_archive_verify]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "CLI json-exit-code audit of `archive verify`/`verify-chain` — verbs deleted with archive segments"
+   "invariant": "CLI json-exit-code audit of `archive verify`/`verify-chain` \u2014 verbs deleted with archive segments"
   },
   {
    "node_id": "tests/test_wi229_cli_contract.py::TestVerifyVerbsJsonExitCode::test_archive_verify_exits_nonzero_when_unverified[json]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "CLI `archive verify` exit-code contract — verb deleted with archive segments"
+   "invariant": "CLI `archive verify` exit-code contract \u2014 verb deleted with archive segments"
   },
   {
    "node_id": "tests/test_wi229_cli_contract.py::TestVerifyVerbsJsonExitCode::test_archive_verify_exits_nonzero_when_unverified[text]",
    "disposition": "deleted_by: P1.4",
-   "invariant": "CLI `archive verify` exit-code contract — verb deleted with archive segments"
+   "invariant": "CLI `archive verify` exit-code contract \u2014 verb deleted with archive segments"
   },
   {
    "node_id": "tests/test_wi229_cli_contract.py::TestVerifyVerbsJsonExitCode::test_archive_verify_still_zero_when_verified",
    "disposition": "deleted_by: P1.4",
-   "invariant": "CLI `archive verify` exit-code contract — verb deleted with archive segments"
+   "invariant": "CLI `archive verify` exit-code contract \u2014 verb deleted with archive segments"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_broken_work_item_entity_alias_fails_verification",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "repointing the unsigned work_item_id column away from entity_id fails verification (ENTITY_ALIAS_MISMATCH)",
-   "carry_forward": "v6 keeps work_item_id constrained == entity.id, unsigned (§7.3/§9.2)",
+   "carry_forward": "v6 keeps work_item_id constrained == entity.id, unsigned (\u00a77.3/\u00a79.2)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_broken_work_item_entity_alias_is_invalid",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_a_missing_envelope_on_a_consistent_row_is_counted_not_halted",
    "disposition": "dies_with_v5",
-   "invariant": "a legitimately envelopeless pre-002 row (v1-shape, re-signed) is UNVERIFIABLE — counted, not halted"
+   "invariant": "a legitimately envelopeless pre-002 row (v1-shape, re-signed) is UNVERIFIABLE \u2014 counted, not halted"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_deleting_an_envelope_halts_because_the_row_contradicts_itself",
@@ -1521,16 +1521,16 @@
    "invariant": "nulling canonical_envelope on a signed row halts (row contradicts its own signature/hash)",
    "carry_forward": "v6 envelope-deletion detection",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_deleting_the_canonical_envelope_is_invalid_and_names_the_absence",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_global_seq_rewrite_is_not_reported_as_a_mismatch",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "global_seq rewrite is never a verification mismatch",
-   "carry_forward": "v6: global_seq is never compared and never authenticated (§4.1/§9.2)",
+   "carry_forward": "v6: global_seq is never compared and never authenticated (\u00a74.1/\u00a79.2)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_global_seq_rewrite_is_never_a_mismatch",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_payload_key_reorder_is_not_tamper",
@@ -1539,7 +1539,7 @@
    "invariant": "jsonb key reorder of payload is not tamper",
    "carry_forward": "v6 payload reconciliation via canonical JCS bytes",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_payload_key_reorder_in_the_row_is_not_tamper",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_payload",
@@ -1548,7 +1548,7 @@
    "invariant": "replay halts when a row payload was rewritten",
    "carry_forward": "v6 replay halts on payload mismatch",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_replay_halts_on_a_rewritten_payload",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_a_rewritten_transition",
@@ -1557,25 +1557,25 @@
    "invariant": "replay halts when a row transition was rewritten",
    "carry_forward": "v6 replay halts on row/envelope disagreement",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_replay_halts_on_a_rewritten_transition",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_replay_halts_on_an_unknown_envelope_schema",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "an unrecognizable stored envelope shape halts replay",
-   "carry_forward": "v6 strict parsing rejects unknown envelope shapes (§8) and replay halts",
+   "carry_forward": "v6 strict parsing rejects unknown envelope shapes (\u00a78) and replay halts",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_an_unknown_stored_envelope_shape_halts_replay_and_is_invalid",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_id-attacker-actor_id]",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "rewriting actor_id fails verification",
-   "carry_forward": "v6 row reconciliation: actor.principal_id ↔ actor_id",
+   "carry_forward": "v6 row reconciliation: actor.principal_id \u2194 actor_id",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_kind-human-actor_kind]",
@@ -1584,7 +1584,7 @@
    "invariant": "rewriting actor_kind fails verification",
    "carry_forward": "v6 row reconciliation: actor.kind",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[actor_metadata-{\"role\": \"admin\"}-actor_metadata]",
@@ -1593,7 +1593,7 @@
    "invariant": "rewriting actor_metadata fails verification",
    "carry_forward": "v6 row reconciliation: actor.metadata (JCS bytes)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[hash_alg-sha-512-hash_alg]",
@@ -1602,7 +1602,7 @@
    "invariant": "rewriting hash_alg fails verification",
    "carry_forward": "v6 row reconciliation: chain.hash_algorithm",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[key_id-other-key-key_id]",
@@ -1611,7 +1611,7 @@
    "invariant": "rewriting key_id fails verification (key resolution uses the envelope value)",
    "carry_forward": "v6 row reconciliation: signing.key_id; resolution from envelope only",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md §3.1/§5.4)"
+   "covered_in": "P1.7 (WI-289 cluster 3; signature over stored canonical bytes, V6-ENVELOPE.md \u00a73.1/\u00a75.4)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[payload-{\"rewritten\": true}-payload]",
@@ -1620,16 +1620,16 @@
    "invariant": "rewriting the payload row column fails verification",
    "carry_forward": "v6 row reconciliation: payload as canonical JCS bytes",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[transition-approve-transition]",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "rewriting the transition row column fails verification with a named mismatch",
-   "carry_forward": "v6 row reconciliation: transition (§9.2)",
+   "carry_forward": "v6 row reconciliation: transition (\u00a79.2)",
    "covered_by": "tests/test_p17_v6_verifier_boundary.py::TestAgainstARealEpoch::test_a_real_row_rewrite_is_still_caught_by_reconciliation",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_name-other_wf-workflow_name]",
@@ -1638,7 +1638,7 @@
    "invariant": "rewriting workflow_name fails verification",
    "carry_forward": "v6 row reconciliation: workflow.name",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_row_column_rewrite_fails_verification[workflow_version-9-workflow_version]",
@@ -1647,25 +1647,25 @@
    "invariant": "rewriting workflow_version fails verification",
    "carry_forward": "v6 row reconciliation: workflow.version",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_rewritten_signed_row_column_is_invalid_and_named",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rendering_in_another_timezone_is_not_tamper",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "timezone re-rendering of the same instant is not tamper",
-   "carry_forward": "v6 timestamp comparison is instant-based, not text-based (§2.3/§9.2)",
+   "carry_forward": "v6 timestamp comparison is instant-based, not text-based (\u00a72.3/\u00a79.2)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_re_rendering_the_timestamp_in_another_timezone_is_not_tamper",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestEndToEndPostgres::test_timestamp_rewrite_fails_verification",
    "disposition": "coverage_owed",
    "work_item": "WI-289",
    "invariant": "a +1s timestamp rewrite fails verification",
-   "carry_forward": "v6 row reconciliation: occurred_at ↔ timestamp (instant equality)",
+   "carry_forward": "v6 row reconciliation: occurred_at \u2194 timestamp (instant equality)",
    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster1RowReconciliation::test_a_timestamp_rewrite_of_one_second_is_invalid",
-   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md §9.1/§9.2)"
+   "covered_in": "P1.7 (WI-289 cluster 1; row reconciliation, V6-ENVELOPE.md \u00a79.1/\u00a79.2)"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_envelope_deletion_halts_like_postgres",
@@ -1674,7 +1674,7 @@
    "invariant": "in-memory parity: envelope deletion halts",
    "carry_forward": "in-memory v6 envelope-deletion detection (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_the_in_memory_envelope_deletion_verdict_matches_the_postgres_one",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_in_memory_row_rewrite_halts_replay",
@@ -1683,7 +1683,7 @@
    "invariant": "in-memory parity: row rewrite halts replay",
    "carry_forward": "in-memory v6 row-reconciliation halt (D2 parity suite)",
    "covered_by": "tests/test_wi287_inmem_parity.py::TestWI289Cluster6::test_an_in_memory_row_rewrite_halts_verification",
-   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md §2.3(a))"
+   "covered_in": "WI-287 (D2 in-memory parity; SUITE-RECONCILIATION.md \u00a72.3(a))"
   },
   {
    "node_id": "tests/test_wi267_row_authentication.py::TestInMemoryBackendParity::test_keyless_in_memory_reports_unverifiable",
@@ -1702,7 +1702,7 @@
    "disposition": "coverage_owed",
    "work_item": "WI-293",
    "invariant": "registering an ed25519 witness enrols its key into principal_keys",
-   "carry_forward": "CUT from 0.6.0 (§7/D-7): the enrolment was an unsourced projection write; refusal asserted in TestRegisterEd25519WitnessIsRefused"
+   "carry_forward": "CUT from 0.6.0 (\u00a77/D-7): the enrolment was an unsourced projection write; refusal asserted in TestRegisterEd25519WitnessIsRefused"
   },
   {
    "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_enrolled_key_discoverable_via_principals_facade",
@@ -1723,7 +1723,7 @@
    "disposition": "coverage_owed",
    "work_item": "WI-293",
    "invariant": "an hmac witness enrols no principal key",
-   "carry_forward": "retained as TestRegisterEd25519WitnessIsRefused.test_hmac_witness_registration_still_works — webhook delivery is preserved as non-evidentiary transport"
+   "carry_forward": "retained as TestRegisterEd25519WitnessIsRefused.test_hmac_witness_registration_still_works \u2014 webhook delivery is preserved as non-evidentiary transport"
   },
   {
    "node_id": "tests/test_witness_key_enrollment.py::TestRevokeOnUnregister::test_unregister_hmac_witness_no_principal_change",
@@ -1773,6 +1773,441 @@
    "work_item": "WI-293",
    "invariant": "a wrong-length ed25519 key is an INVALID_ARGUMENT, checked before capability",
    "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_cross_lineage_agent_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports independently_reviewed after a signed distinct-lineage review and agent acceptance",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_cross_lineage_agent_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_cross_lineage_human_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports independently_and_accepted after a signed distinct-lineage review and human acceptance",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_cross_lineage_human_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_cross_lineage_pass",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports independently_reviewed after a signed distinct-lineage review pass",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_cross_lineage_pass",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_same_lineage_agent_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance remains self_reviewed after a signed same-lineage review and agent acceptance",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_same_lineage_agent_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_same_lineage_human_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports human_accepted after a signed same-lineage review and human acceptance",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_same_lineage_human_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_after_same_lineage_pass",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance remains self_reviewed after a signed same-lineage review pass",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_after_same_lineage_pass",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_at_creation",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports none for a newly created work item",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_at_creation",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_close_from_open",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports none for direct close_from_open",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_close_from_open",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_assurance_in_review",
+   "disposition": "coverage_owed",
+    "invariant": "v6 compute_assurance reports none while a work item is in review before an adversarial pass",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_assurance_in_review",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_gate_rationale_strict_profile",
+   "disposition": "coverage_owed",
+    "invariant": "v6 gate_rationale identifies an acknowledged same-lineage review as not permitted under strict profile",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_gate_rationale_strict_profile",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_gate_rationale_via_api",
+   "disposition": "coverage_owed",
+    "invariant": "v6 gate_rationale API exposes the signed reviewer claim and process-level author lineage",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_gate_rationale_via_api",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_strict_workflow_allows_cross_lineage_agent_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 strict workflow allows an agent acceptance after a signed distinct-lineage review",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_allows_cross_lineage_agent_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_strict_workflow_allows_same_lineage_human_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 strict workflow allows a human acceptance after a signed acknowledged same-lineage review",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_allows_same_lineage_human_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_strict_workflow_allows_undeclared_reviewer_human_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 strict workflow uses an explicit conservative reviewer claim and allows human acceptance",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_allows_undeclared_reviewer_human_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_strict_workflow_rejects_same_lineage_agent_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 strict workflow rejects an agent acceptance after a signed acknowledged same-lineage review",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_rejects_same_lineage_agent_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_assurance.py::TestComputeAssuranceAPI::test_strict_workflow_rejects_undeclared_reviewer_agent_accept",
+   "disposition": "coverage_owed",
+    "invariant": "v6 strict workflow rejects an agent acceptance after the conservative same-lineage reviewer claim",
+    "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_rejects_undeclared_reviewer_agent_accept",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestDelegationIntegration::test_agent_on_behalf_of_adversarial_passer_cannot_accept",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestDelegationIntegration::test_agent_on_behalf_of_author_cannot_adversarial_pass",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestFullReviewCycle::test_multi_cycle_independence",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_adversarial_passer_cannot_accept",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_agent_self_close_after_cross_lineage_review",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_finding_only_workflow_allows_author_to_request_changes",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_finding_only_workflow_request_changes_still_requires_note",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_human_accept_after_agent_review",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_same_lineage_adversarial_review_without_ack_rejected",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_self_review_at_adversarial_review_rejected",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestReviewerDelegationLineage::test_end_to_end_delegated_same_lineage_review_blocked",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestStrictFlowIntegration::test_agent_accept_rejected_not_human",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_plan023_review_validators.py::TestStrictFlowIntegration::test_human_accept_after_agent_review",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestKeyRotationHistoricalVerification::test_rotated_key_still_verifies_old_events",
+    "disposition": "coverage_owed",
+    "work_item": "WI-289",
+    "invariant": "a historical v6 event remains verifiable after its principal rotates to a new key",
+    "carry_forward": "v6 key lifecycle keeps historical key evidence valid without retroactive rotation",
+    "covered_by": "tests/test_wi289_v6_counterparts.py::TestCluster5KeyLifecycle::test_a_historical_event_remains_verifiable_after_rotation",
+    "covered_in": "P1.7 (WI-289 cluster 5; historical key verification under the v6 key lifecycle)"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_ed25519_key_id_mismatch_rejected",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_event_after_valid_to_rejected",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_forged_actor_with_victim_id_caught",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_forged_hmac_event_caught",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_no_principal_keys_backward_compat",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_revoked_key_error_distinguished",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_revoked_principal_key_warning",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_rotated_key_old_event_passes",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_rotated_key_old_event_still_verifies",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestReplayPrincipalBinding::test_valid_ed25519_event_passes",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestVerifyEventPrincipalBinding::test_hmac_event_fails_scheme_mismatch",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestVerifyEventPrincipalBinding::test_matching_principal_verifies",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_signer_binding.py::TestVerifyEventPrincipalBinding::test_unregistered_signer_fails",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestConformanceAcrossBackends::test_actor_kind_prior_events_on_behalf_of_equal",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_accepts_when_principal_is_not_author",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_rejects_when_principal_is_author",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_accepts_when_principal_is_not_author",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_rejects_when_principal_is_author",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestOnBehalfOfInMemory::test_recorded_on_behalf_of",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestPostgresOnBehalfOf::test_recorded_on_behalf_of",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestSerializationRoundTrip::test_round_trip_preserves_new_fields",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfInMemory::test_event_records_original_not_mutated_chain",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfPostgres::test_event_records_original_not_mutated_chain",
+   "disposition": "coverage_owed",
+   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestCollapsedBranchIsSplit::test_asymmetric_event_from_unregistered_actor_fails",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestCollapsedBranchIsSplit::test_error_says_unregistered_signer",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestHmacOnlyDeploymentStaysGreen::test_hmac_only_chain_reports_no_binding_failures",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestHmacOnlyDeploymentStaysGreen::test_unregistered_actor_alongside_registered_one_is_skipped",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReplayCatchesCrossProjectKey::test_binding_failure_names_the_unregistered_key",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReplayCatchesCrossProjectKey::test_cross_project_key_is_a_binding_failure",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReplayCatchesCrossProjectKey::test_strict_binding_makes_replay_exit_nonzero",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_cli_opt_out_is_labelled_not_verified",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_cli_replay_verifies_by_default",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_in_memory_backend_never_claims_verification",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_unverified_report_says_so",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_verified_report_publishes_the_zero",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestClaimEventsRecordActorMetadata::test_claim_acquired_records_actor_metadata",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestClaimEventsRecordActorMetadata::test_claim_heartbeat_and_release_record_actor_metadata",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestClaimEventsRecordActorMetadata::test_claim_without_metadata_records_none",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestClaimEventsRecordActorMetadata::test_replay_verifies_claims_with_and_without_metadata",
+   "disposition": "dies_with_v5",
+   "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_claimed_item_passes_cross_lineage_review",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_heartbeat_with_lineage_does_not_poison_the_gate",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_unattributed_claim_still_requires_acknowledgment",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestDeriveAuthorsReadsClaimLineage::test_claim_acquired_with_lineage_declares_the_author",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_wi224_claim_lineage.py::TestDeriveAuthorsReadsClaimLineage::test_claim_acquired_without_lineage_still_flags_undeclared",
+   "disposition": "coverage_owed",
+   "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
+   "work_item": "WI-305"
   }
  ]
 }

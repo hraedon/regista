@@ -5,9 +5,10 @@
 
 Three rules govern what a rebuild may touch, and they are the whole design:
 
-1. **v6 rows only.** The rebuild replays the project's stored, signed
+1. **v6 rows only.** The rebuild replays the ordered, authority-verified trust-log
    ``principal_key_enrolled`` / ``principal_key_rotated`` / ``principal_key_revoked``
-   events and writes exactly the rows they imply.
+   events and writes exactly the rows they imply. A separate coordinator can import
+   that verified sequence into another project schema.
 2. **``legacy_unsourced`` rows are left alone.** There are no signed lifecycle events
    for the HMAC epoch (overlay change 3), so a rebuild cannot reconstruct them. *"A
    rebuild that empties them is a defect, and a rebuild that invents them is worse."*
@@ -16,45 +17,48 @@ Three rules govern what a rebuild may touch, and they are the whole design:
 Where the events come from
 --------------------------
 
-The ordinary production v6 append path does not exist yet — that is P1.7. This module
-therefore reads **stored** events out of the project's ``events`` (and
-``events_archive``) tables and never writes one. It is a pure consumer: give it a
-store, it tells you what the projection should be.
-
-Ordering is by ``event_seq`` within the entity, then ``global_seq`` — the stored
-materialisation of append order. §5.10's hash-linked chain traversal is the
-*verifier's* ordering rule and lands with the v6 verifier (P1.7-adjacent, §9 criteria
-14/15); a rebuild reading its own store is entitled to that store's recorded order,
-and :func:`rebuild_projection` reports the ordering basis it used so a caller can
-tell the difference.
+The default :func:`rebuild_projection` entry point verifies the trust-log chain in the
+same schema before staging any projection mutation. For the estate topology, use
+:func:`rebuild_projection_from_trust_log` to verify the trust-log schema and apply its
+ordered result to a separate project schema, binding any project-chain acceptance by
+its exact event hash. The projection is never used as verification evidence.
 """
 
 from __future__ import annotations
 
 import uuid as _uuid
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from ._connection import ConnectionManager, DictConn
 from ._errors import ErrorCode, RegistaError
 from ._principal_keys import (
     LEGACY_UNSOURCED,
     PROJECTION_VERSION,
-    _apply_enrollment_projection,
-    _apply_revocation_projection,
-    _apply_rotation_projection,
 )
+from ._signing import compute_v6_event_hash
 from ._signing_scheme import is_v6_scheme
 from ._trust_log import (
     PRINCIPAL_KEY_ENROLLED,
     PRINCIPAL_KEY_REVOKED,
     PRINCIPAL_KEY_ROTATED,
-    PROJECTION_DRIVING_TRANSITIONS,
-    parse_principal_key_enrolled,
-    parse_principal_key_revoked,
-    parse_principal_key_rotated,
+    TRUST_DOMAIN_ESTABLISHED,
+    TRUST_LOG_TRANSITIONS,
+)
+from ._v6_referents import (
+    MappingReferents,
+    MaterialCompleteness,
+    referent_from_bytes,
+    walk_project_chain,
+)
+from ._v6_writer import validate_key_acceptance_payload
+from ._verification import (
+    EventRow,
+    StaticKeyResolver,
+    TrustedKeySource,
+    verify_event_strict,
 )
 
 #: Columns that make up a row's comparable identity. ``registered_by`` is included:
@@ -88,7 +92,7 @@ class RowDifference:
 
     principal_id: str
     key_id: str
-    kind: str  # "only_live" | "only_rebuilt" | "field_mismatch"
+    kind: str  # "only_live" | "only_rebuilt" | "field_mismatch" | legacy collision
     fields: tuple[str, ...] = ()
     live: Mapping[str, Any] | None = None
     rebuilt: Mapping[str, Any] | None = None
@@ -135,6 +139,24 @@ class RebuildReport:
             "differences": [d.to_dict() for d in self.differences],
             "skipped_events": [dict(s) for s in self.skipped_events],
         }
+
+
+@dataclass(frozen=True)
+class VerifiedAcceptance:
+    """Caller-supplied, cryptographically verified project acceptance evidence.
+
+    The event hash alone is not evidence: a coordinator must obtain this record from
+    :func:`verify_project_acceptance`, which checks the signed project row and its
+    predecessor chain. Rebuild validates the record again before inserting it into a
+    projection, so fabricated hashes cannot enter through the cross-schema seam.
+    """
+
+    event_hash: str
+    principal_id: str
+    key_id: str
+    project_instance_id: str
+    trust_domain_id: str
+    signer_public_key: bytes
 
 
 # ---------------------------------------------------------------------------
@@ -197,14 +219,32 @@ def _event_hash_text(row: Mapping[str, Any]) -> str | None:
     return "sha256:" + _hashlib.sha256(bytes(envelope) + bytes(signature)).hexdigest()
 
 
-def read_lifecycle_events(conn: DictConn) -> list[dict[str, Any]]:
-    """Stored ``principal_key_*`` events, in recorded append order.
+def read_lifecycle_events(_conn: DictConn) -> NoReturn:
+    """Deprecated refusal for the removed unverified projection read path."""
+    warnings.warn(
+        "read_lifecycle_events is deprecated; use verified trust-log rebuilds instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    raise RegistaError(
+        ErrorCode.INVALID_ARGUMENT,
+        "unverified lifecycle reads were removed; use rebuild_projection with a pinned "
+        "trust genesis document",
+        {"reason": "unverified_projection_read_removed"},
+    )
 
-    Reads live events and archived events, so archiving a segment does not silently
-    shrink the projection (the archive is part of the log, not a deletion).
-    """
-    transitions = sorted(PROJECTION_DRIVING_TRANSITIONS)
-    rows: list[dict[str, Any]] = []
+
+def _acceptance_refusal(reason: str, message: str, **detail: Any) -> RegistaError:
+    return RegistaError(
+        ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+        message,
+        {"reason": reason, **detail},
+    )
+
+
+def _project_chain_material(conn: DictConn) -> tuple[MappingReferents, str]:
+    """Present the complete live/archive project chain and its stored head."""
+    events: dict[str, Any] = {}
     for relation in ("events", "events_archive"):
         exists = conn.execute(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
@@ -213,122 +253,193 @@ def read_lifecycle_events(conn: DictConn) -> list[dict[str, Any]]:
         ).fetchone()
         if not exists or not exists["present"]:
             continue
-        fetched = conn.execute(
-            f"SELECT event_id, entity_kind, entity_id, event_seq, global_seq, "
-            f"transition, payload, timestamp, canonical_envelope, signature, "
-            f"scheme_id, actor_id FROM {relation} "
-            "WHERE transition = ANY(%s) ORDER BY global_seq",
-            [transitions],
+        rows = conn.execute(
+            f"SELECT canonical_envelope, signature FROM {relation} "
+            "WHERE canonical_envelope IS NOT NULL AND signature IS NOT NULL"
         ).fetchall()
-        rows.extend(dict(r) for r in fetched)
-    rows.sort(key=lambda r: (int(r["global_seq"]) if r["global_seq"] is not None else 0,
-                             int(r["event_seq"]) if r["event_seq"] is not None else 0))
-    return rows
+        for row in rows:
+            referent = referent_from_bytes(row["canonical_envelope"], row["signature"])
+            if referent is not None:
+                events.setdefault(referent.event_hash, referent)
 
-
-# ---------------------------------------------------------------------------
-# Replay
-# ---------------------------------------------------------------------------
-
-
-def _as_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    raise RegistaError(
-        ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
-        f"expected a timestamp, got {type(value).__name__}",
-        {"reason": "not_a_timestamp"},
+    head_row = conn.execute(
+        "SELECT head_hash FROM event_chain_head WHERE id = TRUE"
+    ).fetchone()
+    if head_row is None or head_row["head_hash"] is None:
+        raise _acceptance_refusal(
+            "acceptance_project_chain_head_missing",
+            "project acceptance verification requires a stored project-chain head",
+        )
+    head = "sha256:" + bytes(head_row["head_hash"]).hex()
+    return (
+        MappingReferents(
+            events=events,
+            material_completeness=MaterialCompleteness.COMPLETE_STORE,
+            label="project acceptance coordinator",
+        ),
+        head,
     )
 
 
-def _replay_into(
-    conn: DictConn,
-    events: Sequence[Mapping[str, Any]],
-    *,
-    table: str,
-) -> tuple[int, dict[str, int], list[dict[str, Any]]]:
-    """Apply ``events`` to ``table`` via the private appliers, in order.
+def _require_acceptance_on_project_head_chain(
+    event_hash: str,
+    head: str,
+    referents: MappingReferents,
+) -> None:
+    path = tuple(walk_project_chain(head, referents))
+    if not path or path[-1].previous_project_event_hash is not None:
+        raise _acceptance_refusal(
+            "acceptance_project_chain_orphan",
+            "the project-chain head cannot be walked back to project genesis",
+            event_hash=event_hash,
+            head=head,
+        )
 
-    Deliberately reuses the **same** appliers the write path uses. A rebuild with its
-    own INSERT statements would be a second, drifting definition of the projection —
-    and then "the rebuild matches" would only mean the two copies of the logic agree.
+    path_hashes = {event.event_hash for event in path}
+    if event_hash not in path_hashes:
+        raise _acceptance_refusal(
+            "acceptance_not_on_project_head_chain",
+            "project acceptance is not on the single predecessor path from the "
+            "project-chain head to project genesis",
+            event_hash=event_hash,
+            head=head,
+        )
+
+    successors: dict[str, list[str]] = {}
+    for event in referents.events.values():
+        predecessor = event.previous_project_event_hash
+        if predecessor is not None:
+            successors.setdefault(predecessor, []).append(event.event_hash)
+    forks = {
+        predecessor: children
+        for predecessor, children in successors.items()
+        if len(children) > 1
+    }
+    if forks:
+        raise _acceptance_refusal(
+            "acceptance_project_chain_fork",
+            "the project store contains a predecessor with multiple successors",
+            forks=forks,
+        )
+    orphaned = sorted(set(referents.events) - path_hashes)
+    if orphaned:
+        raise _acceptance_refusal(
+            "acceptance_project_chain_orphan",
+            "the project store contains v6 events outside the head-to-genesis path",
+            orphaned_event_hashes=orphaned,
+        )
+
+
+def verify_project_acceptance(
+    conn: DictConn,
+    *,
+    event_hash: str,
+    public_key: bytes,
+) -> VerifiedAcceptance:
+    """Verify one project-chain ``principal_key_accepted`` event.
+
+    This is the trust boundary for the cross-schema coordinator. It verifies the
+    signed row, row/envelope reconciliation, and the project predecessor chain using
+    the supplied public key; callers must still bind the returned acceptance to the
+    corresponding trust-log lifecycle event during rebuild.
     """
-    by_transition: dict[str, int] = {}
-    skipped: list[dict[str, Any]] = []
-    replayed = 0
-    for row in events:
-        transition = str(row["transition"])
-        payload = row["payload"]
-        source_event_hash = _event_hash_text(row)
-        if source_event_hash is None:
-            # A lifecycle transition with no v6 envelope is a legacy-epoch event; it
-            # is not lifecycle evidence and cannot source a v6 row (overlay change 3).
-            skipped.append(
-                {
-                    "event_id": str(row.get("event_id")),
-                    "transition": transition,
-                    "reason": "no_v6_envelope",
-                }
-            )
+    if (
+        not isinstance(event_hash, str)
+        or len(event_hash) != 71
+        or not event_hash.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in event_hash[7:])
+    ):
+        raise _acceptance_refusal(
+            "acceptance_event_hash_malformed",
+            "project acceptance evidence carries a malformed event hash",
+        )
+    if not isinstance(public_key, bytes) or len(public_key) != 32:
+        raise _acceptance_refusal(
+            "acceptance_public_key_malformed",
+            "project acceptance evidence requires a 32-byte Ed25519 public key",
+        )
+
+    matching: dict[str, Any] | None = None
+    for relation in ("events", "events_archive"):
+        exists = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = %s) AS present",
+            [relation],
+        ).fetchone()
+        if not exists or not exists["present"]:
             continue
-        if not isinstance(payload, Mapping):
-            skipped.append(
-                {
-                    "event_id": str(row.get("event_id")),
-                    "transition": transition,
-                    "reason": "payload_not_an_object",
-                }
-            )
-            continue
-        occurred_at = _as_datetime(row["timestamp"])
-        if transition == PRINCIPAL_KEY_ENROLLED:
-            parsed = parse_principal_key_enrolled(payload)
-            _apply_enrollment_projection(
-                conn,
-                parsed.principal_id,
-                parsed.key.public_key,
-                parsed.key.scheme_id,
-                source_event_hash=source_event_hash,
-                valid_from=parsed.not_before,
-                valid_to=parsed.not_after,
-                registered_at=occurred_at,
-                key_id=parsed.key.key_id,
-                registered_by=parsed.authorized_by.principal_id,
-                trust_domain_id=parsed.trust_domain_id,
-                _table=table,
-            )
-        elif transition == PRINCIPAL_KEY_ROTATED:
-            rotated = parse_principal_key_rotated(payload)
-            _apply_rotation_projection(
-                conn,
-                rotated.principal_id,
-                rotated.key.public_key,
-                rotated.key.scheme_id,
-                source_event_hash=source_event_hash,
-                valid_from=rotated.not_before,
-                valid_to=rotated.not_after,
-                registered_at=occurred_at,
-                key_id=rotated.key.key_id,
-                registered_by=rotated.authorized_by.principal_id,
-                trust_domain_id=rotated.trust_domain_id,
-                _table=table,
-            )
-        elif transition == PRINCIPAL_KEY_REVOKED:
-            revoked = parse_principal_key_revoked(payload)
-            _apply_revocation_projection(
-                conn,
-                revoked.principal_id,
-                revoked.key_id,
-                source_event_hash=source_event_hash,
-                revoked_at=revoked.revoked_at,
-                reason=revoked.reason,
-                _table=table,
-            )
-        else:  # pragma: no cover - PROJECTION_DRIVING_TRANSITIONS is closed
-            raise AssertionError(f"unhandled transition {transition!r}")
-        by_transition[transition] = by_transition.get(transition, 0) + 1
-        replayed += 1
-    return replayed, by_transition, skipped
+        rows = conn.execute(
+            f"SELECT * FROM {relation} WHERE transition = %s",
+            ["principal_key_accepted"],
+        ).fetchall()
+        for raw in rows:
+            row = dict(raw)
+            if not row.get("canonical_envelope") or not row.get("signature"):
+                continue
+            computed = "sha256:" + compute_v6_event_hash(
+                bytes(row["canonical_envelope"]), bytes(row["signature"])
+            ).hex()
+            if computed == event_hash:
+                matching = row
+                break
+        if matching is not None:
+            break
+    if matching is None:
+        raise _acceptance_refusal(
+            "acceptance_event_not_found",
+            "project acceptance evidence names no stored signed acceptance event",
+            event_hash=event_hash,
+        )
+
+    referents, head = _project_chain_material(conn)
+    result = verify_event_strict(
+        EventRow.from_mapping(matching),
+        keys=StaticKeyResolver(
+            material=bytes(public_key),
+            scheme_id="ed25519",
+            source=TrustedKeySource.SUPPLIED_PUBLIC_KEY,
+        ),
+        referents=referents,
+    )
+    if not result.ok or not result.signature_valid or not result.row_reconciled:
+        raise _acceptance_refusal(
+            "acceptance_signature_or_row_invalid",
+            "project acceptance evidence does not verify as a fully authenticated "
+            "signed reconciled event",
+            event_hash=event_hash,
+            verification_ok=result.ok,
+            signature_valid=result.signature_valid,
+            row_reconciled=result.row_reconciled,
+            mismatched_fields=[m.field for m in result.mismatched_fields],
+            reasons=[str(reason) for reason in result.reasons],
+        )
+    if result.prev_global_event_hash_ok is not True:
+        raise _acceptance_refusal(
+            "acceptance_project_chain_invalid",
+            "project acceptance evidence does not verify its predecessor chain",
+            event_hash=event_hash,
+        )
+    _require_acceptance_on_project_head_chain(event_hash, head, referents)
+
+    from ._verification import parse_v6_envelope_strict
+
+    envelope = parse_v6_envelope_strict(bytes(matching["canonical_envelope"]))
+    payload = envelope.get("payload")
+    if not isinstance(payload, Mapping):
+        raise _acceptance_refusal(
+            "acceptance_payload_not_object",
+            "project acceptance event carries no object payload",
+            event_hash=event_hash,
+        )
+    validate_key_acceptance_payload(payload)
+    return VerifiedAcceptance(
+        event_hash=event_hash,
+        principal_id=str(payload["principal_id"]),
+        key_id=str(payload["key_id"]),
+        project_instance_id=str(payload["project_instance_id"]),
+        trust_domain_id=str(payload["trust_domain_id"]),
+        signer_public_key=bytes(public_key),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,99 +535,456 @@ def _diff(
 # ---------------------------------------------------------------------------
 
 
+def _stored_trust_log_event_count(conn: DictConn) -> int:
+    """Count a stored trust log without requiring a genesis document.
+
+    A project chain may contain legacy lifecycle transitions with the same names. It
+    is a trust log only when ``trust_domain_established`` is present; without that
+    genesis none of those rows is eligible for verified projection replay.
+    """
+    total = 0
+    genesis = 0
+    for relation in ("events", "events_archive"):
+        exists = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = %s) AS present",
+            [relation],
+        ).fetchone()
+        if not exists or not exists["present"]:
+            continue
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {relation} WHERE transition = ANY(%s)",
+            [sorted(TRUST_LOG_TRANSITIONS)],
+        ).fetchone()
+        total += int(row["n"]) if row else 0
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {relation} WHERE transition = %s",
+            [TRUST_DOMAIN_ESTABLISHED],
+        ).fetchone()
+        genesis += int(row["n"]) if row else 0
+    return total if genesis else 0
+
+
+def _require_genesis_for_nonempty_log(event_count: int) -> RegistaError:
+    return RegistaError(
+        ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
+        "a pinned trust genesis document is required when the trust log contains "
+        "stored events",
+        {
+            "reason": "genesis_document_required",
+            "trust_log_events": event_count,
+        },
+    )
+
+
+def _verified_trust_log_events(
+    conn: DictConn,
+    genesis_document: Mapping[str, Any] | None,
+) -> Sequence[Any]:
+    """Return verified events, allowing only the explicitly empty-log exception."""
+    if genesis_document is None:
+        event_count = _stored_trust_log_event_count(conn)
+        if event_count:
+            raise _require_genesis_for_nonempty_log(event_count)
+        return ()
+    from ._trust_log_writer import verify_trust_log_chain
+
+    return verify_trust_log_chain(conn, genesis_document).verified
+
+
 def rebuild_projection(
     mgr: ConnectionManager,
     *,
     project: str,
+    genesis_document: Mapping[str, Any] | None = None,
     dry_run: bool = False,
+    acceptance_by_principal: Mapping[str, VerifiedAcceptance] | None = None,
 ) -> RebuildReport:
-    """Rebuild the v6 rows of ``principal_keys`` from signed events alone.
+    """Rebuild ``principal_keys`` from wallet sources alone.
 
-    With ``dry_run=True`` nothing is written: the rebuild happens in a temp table,
-    the result is diffed against the live projection, and the report says what would
-    change. Without it, the same diff is computed and then the v6 rows are replaced
-    by the rebuilt ones **in one transaction**.
-
-    ``legacy_unsourced`` rows are never read, never written, never deleted — only
-    counted, so the report can state how many survived.
+    The single verified trust-log walk (``verify_trust_log_chain``) produces the
+    ordered, authority-verified lifecycle events; anything unverified raises here,
+    **before** any projection mutation. Stage into a temp table, diff, then (unless
+    ``dry_run``) replace the tracked rows in one transaction. A failure leaves the
+    prior projection untouched.
     """
     with mgr.transaction() as conn:
         _require_projection_schema(conn, project)
-        events = read_lifecycle_events(conn)
-
-        legacy_count_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM principal_keys WHERE source_event_hash IS NULL"
-        ).fetchone()
-        legacy_before = int(legacy_count_row["n"]) if legacy_count_row else 0
-
-        conn.execute(f"DROP TABLE IF EXISTS {_TEMP_TABLE}")
-        conn.execute(
-            f"CREATE TEMP TABLE {_TEMP_TABLE} "
-            "(LIKE principal_keys INCLUDING DEFAULTS INCLUDING CONSTRAINTS)"
-        )
-        replayed, by_transition, skipped = _replay_into(conn, events, table=_TEMP_TABLE)
-
-        live = _fetch_rows(conn, "principal_keys", v6_only=True)
-        rebuilt = _fetch_rows(conn, _TEMP_TABLE, v6_only=True)
-        differences = _diff(live, rebuilt)
-
-        applied = False
-        if not dry_run:
-            # Replace only the v6 rows. The legacy rows are not in the DELETE's scope
-            # at all, which is the structural form of "leave legacy_unsourced alone".
-            conn.execute("DELETE FROM principal_keys WHERE source_event_hash IS NOT NULL")
-            columns = ", ".join(_COMPARED_COLUMNS)
-            conn.execute(
-                f"INSERT INTO principal_keys ({columns}) "
-                f"SELECT {columns} FROM {_TEMP_TABLE} WHERE source_event_hash IS NOT NULL"
-            )
-            applied = True
-
-        legacy_after_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM principal_keys WHERE source_event_hash IS NULL"
-        ).fetchone()
-        legacy_after = int(legacy_after_row["n"]) if legacy_after_row else 0
-        # The preservation invariant, asserted rather than assumed: a rebuild that
-        # dropped a legacy row would otherwise look like a success.
-        if legacy_after != legacy_before:
-            raise RegistaError(
-                ErrorCode.PRINCIPAL_KEYS_PROJECTION_DIVERGED,
-                f"rebuild changed the legacy_unsourced row count for {project!r}: "
-                f"{legacy_before} -> {legacy_after}. A rebuild that empties them is a "
-                "defect and one that invents them is worse (TRUST-DOMAIN.md §5.9).",
-                {
-                    "reason": "legacy_unsourced_row_count_changed",
-                    "project": project,
-                    "before": legacy_before,
-                    "after": legacy_after,
-                },
-            )
-
-        conn.execute(f"DROP TABLE IF EXISTS {_TEMP_TABLE}")
-
-        return RebuildReport(
+        return _rebuild_verified_in_transaction(
+            conn,
             project=project,
+            verified=_verified_trust_log_events(conn, genesis_document),
             dry_run=dry_run,
-            events_replayed=replayed,
-            events_by_transition=by_transition,
-            rows_rebuilt=len(rebuilt),
-            legacy_unsourced_preserved=legacy_after,
-            ordering_basis="stored_append_order(global_seq,event_seq)",
-            differences=differences,
-            applied=applied,
-            skipped_events=tuple(skipped),
+            acceptance_by_principal=acceptance_by_principal,
         )
+
+
+def rebuild_projection_from_trust_log(
+    projection_mgr: ConnectionManager,
+    trust_log_mgr: ConnectionManager,
+    *,
+    project: str,
+    genesis_document: Mapping[str, Any] | None = None,
+    dry_run: bool = False,
+    acceptance_by_principal: Mapping[str, VerifiedAcceptance] | None = None,
+) -> RebuildReport:
+    """Coordinate a verified trust-log replay into a separate project schema."""
+    with trust_log_mgr.transaction() as trust_conn:
+        verified = _verified_trust_log_events(trust_conn, genesis_document)
+    return rebuild_projection_from_verified_chain(
+        projection_mgr,
+        project=project,
+        verified=verified,
+        dry_run=dry_run,
+        acceptance_by_principal=acceptance_by_principal,
+    )
+
+
+def rebuild_projection_from_verified_chain(
+    mgr: ConnectionManager,
+    *,
+    project: str,
+    verified: Sequence[Any],
+    dry_run: bool = False,
+    acceptance_by_principal: Mapping[str, VerifiedAcceptance] | None = None,
+) -> RebuildReport:
+    """Apply a chain already verified by an explicit trust-log coordinator."""
+    with mgr.transaction() as conn:
+        _require_projection_schema(conn, project)
+        return _rebuild_verified_in_transaction(
+            conn,
+            project=project,
+            verified=verified,
+            dry_run=dry_run,
+            acceptance_by_principal=acceptance_by_principal,
+        )
+
+
+def _rebuild_verified_in_transaction(
+    conn: DictConn,
+    *,
+    project: str,
+    verified: Sequence[Any],
+    dry_run: bool,
+    acceptance_by_principal: Mapping[str, VerifiedAcceptance] | None,
+) -> RebuildReport:
+    for principal_id, evidence in (acceptance_by_principal or {}).items():
+        if not isinstance(evidence, VerifiedAcceptance):
+            raise _acceptance_refusal(
+                "acceptance_evidence_unstructured",
+                "acceptance_by_principal must contain VerifiedAcceptance records, not raw hashes",
+                principal_id=principal_id,
+            )
+    live_all = _fetch_rows(conn, "principal_keys", v6_only=False)
+    legacy = {
+        key: row for key, row in live_all.items() if row["source_event_hash"] is None
+    }
+    live_v6 = {
+        key: row for key, row in live_all.items() if row["source_event_hash"] is not None
+    }
+    if not verified and live_v6 and not dry_run:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            "refusing to replace a populated v6 projection without verified lifecycle "
+            "evidence",
+            {
+                "reason": "verified_lifecycle_evidence_missing",
+                "project": project,
+                "live_v6_rows": len(live_v6),
+            },
+        )
+    legacy_before = len(legacy)
+
+    conn.execute(f"DROP TABLE IF EXISTS {_TEMP_TABLE}")
+    conn.execute(
+        f"CREATE TEMP TABLE {_TEMP_TABLE} "
+        "(LIKE principal_keys INCLUDING DEFAULTS INCLUDING CONSTRAINTS)"
+    )
+    replayed, by_transition = _apply_verified(
+        conn, verified, table=_TEMP_TABLE, acceptances=acceptance_by_principal
+    )
+
+    live = live_v6
+    rebuilt = _fetch_rows(conn, _TEMP_TABLE, v6_only=True)
+    collision_keys = sorted(set(legacy) & set(rebuilt))
+    collision_differences = tuple(
+        RowDifference(
+            principal_id=key[0],
+            key_id=key[1],
+            kind="legacy_v6_pk_collision",
+            fields=("primary_key",),
+            live=legacy[key],
+            rebuilt=rebuilt[key],
+        )
+        for key in collision_keys
+    )
+    differences = _diff(
+        {key: row for key, row in live.items() if key not in collision_keys},
+        {key: row for key, row in rebuilt.items() if key not in collision_keys},
+    ) + collision_differences
+
+    acceptance_evidence_lost = sorted(
+        key
+        for key in set(live) & set(rebuilt)
+        if live[key]["acceptance_event_hash"] is not None
+        and rebuilt[key]["acceptance_event_hash"] is None
+    )
+    if acceptance_evidence_lost and not dry_run:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED,
+            "refusing to discard project-acceptance evidence during projection rebuild",
+            {
+                "reason": "acceptance_evidence_required",
+                "project": project,
+                "principals": [
+                    {"principal_id": principal_id, "key_id": key_id}
+                    for principal_id, key_id in acceptance_evidence_lost
+                ],
+            },
+        )
+
+    if collision_keys and not dry_run:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_DIVERGED,
+            "the rebuilt v6 projection collides with legacy_unsourced primary-key "
+            "rows; refusing to delete or overwrite the legacy rows",
+            {
+                "reason": "legacy_v6_primary_key_collision",
+                "project": project,
+                "collisions": [
+                    {"principal_id": principal_id, "key_id": key_id}
+                    for principal_id, key_id in collision_keys
+                ],
+            },
+        )
+
+    applied = False
+    if not dry_run:
+        conn.execute("DELETE FROM principal_keys WHERE source_event_hash IS NOT NULL")
+        columns = ", ".join(_COMPARED_COLUMNS)
+        conn.execute(
+            f"INSERT INTO principal_keys ({columns}) "
+            f"SELECT {columns} FROM {_TEMP_TABLE} WHERE source_event_hash IS NOT NULL"
+        )
+        applied = True
+
+    legacy_after_row = conn.execute(
+        "SELECT COUNT(*) AS n FROM principal_keys WHERE source_event_hash IS NULL"
+    ).fetchone()
+    legacy_after = int(legacy_after_row["n"]) if legacy_after_row else 0
+    if legacy_after != legacy_before:
+        raise RegistaError(
+            ErrorCode.PRINCIPAL_KEYS_PROJECTION_DIVERGED,
+            f"rebuild changed the legacy_unsourced row count for {project!r}: "
+            f"{legacy_before} -> {legacy_after}",
+            {"reason": "legacy_unsourced_row_count_changed", "project": project},
+        )
+
+    conn.execute(f"DROP TABLE IF EXISTS {_TEMP_TABLE}")
+    return RebuildReport(
+        project=project,
+        dry_run=dry_run,
+        events_replayed=replayed,
+        events_by_transition=by_transition,
+        rows_rebuilt=len(rebuilt),
+        legacy_unsourced_preserved=legacy_after,
+        ordering_basis="verified_predecessor_chain",
+        differences=differences,
+        applied=applied,
+        skipped_events=(),
+    )
+
+
+def _apply_verified(
+    conn: DictConn,
+    verified: Sequence[Any],
+    *,
+    table: str,
+    acceptances: Mapping[str, VerifiedAcceptance] | None,
+) -> tuple[int, dict[str, int]]:
+    from ._principal_keys import (
+        _apply_enrollment_projection,
+        _apply_revocation_projection,
+        _apply_rotation_projection,
+    )
+    from ._trust_log import (
+        parse_principal_key_enrolled,
+        parse_principal_key_revoked,
+        parse_principal_key_rotated,
+    )
+
+    if acceptances is None:
+        acceptances = {}
+    by_transition: dict[str, int] = {}
+    replayed = 0
+    for record in verified:
+        payload = record.payload
+        occurred_at = record.occurred_at
+        if record.transition == PRINCIPAL_KEY_ENROLLED:
+            parsed = parse_principal_key_enrolled(payload)
+            acceptance_hash = _acceptance_hash_for_record(
+                conn,
+                acceptances,
+                parsed.principal_id,
+                parsed,
+                record.event_hash,
+            )
+            _apply_enrollment_projection(
+                conn,
+                parsed.principal_id,
+                parsed.key.public_key,
+                parsed.key.scheme_id,
+                source_event_hash=record.event_hash,
+                valid_from=parsed.not_before,
+                valid_to=parsed.not_after,
+                registered_at=occurred_at,
+                key_id=parsed.key.key_id,
+                registered_by=parsed.authorized_by.principal_id,
+                trust_domain_id=_trust_domain_id_text(record),
+                acceptance_event_hash=acceptance_hash,
+                _table=table,
+            )
+        elif record.transition == PRINCIPAL_KEY_ROTATED:
+            rotated = parse_principal_key_rotated(payload)
+            _apply_rotation_projection(
+                conn,
+                rotated.principal_id,
+                rotated.key.public_key,
+                rotated.key.scheme_id,
+                source_event_hash=record.event_hash,
+                valid_from=rotated.not_before,
+                valid_to=rotated.not_after,
+                registered_at=occurred_at,
+                key_id=rotated.key.key_id,
+                registered_by=rotated.authorized_by.principal_id,
+                trust_domain_id=_trust_domain_id_text(record),
+                _table=table,
+            )
+        elif record.transition == PRINCIPAL_KEY_REVOKED:
+            revoked = parse_principal_key_revoked(payload)
+            _apply_revocation_projection(
+                conn,
+                revoked.principal_id,
+                revoked.key_id,
+                source_event_hash=record.event_hash,
+                revoked_at=revoked.revoked_at,
+                reason=revoked.reason,
+                _table=table,
+            )
+        else:
+            raise AssertionError(f"unhandled verified lifecycle transition {record.transition!r}")
+        by_transition[record.transition] = by_transition.get(record.transition, 0) + 1
+        replayed += 1
+    return replayed, by_transition
+
+
+def _acceptance_hash_for_record(
+    conn: DictConn,
+    acceptances: Mapping[str, VerifiedAcceptance] | None,
+    principal_id: str,
+    parsed: Any,
+    trust_event_hash: str,
+) -> str | None:
+    if acceptances is None:
+        return None
+    evidence = acceptances.get(principal_id)
+    if evidence is None:
+        return None
+    if not isinstance(evidence, VerifiedAcceptance):
+        raise _acceptance_refusal(
+            "acceptance_evidence_unstructured",
+            "acceptance_by_principal must contain VerifiedAcceptance records, not raw hashes",
+            principal_id=principal_id,
+        )
+    verified = verify_project_acceptance(
+        conn,
+        event_hash=evidence.event_hash,
+        public_key=evidence.signer_public_key,
+    )
+    if (
+        verified.principal_id != principal_id
+        or verified.key_id != parsed.key.key_id
+        or verified.project_instance_id != _project_instance_id(conn)
+        or verified.trust_domain_id != parsed.trust_domain_id
+    ):
+        raise _acceptance_refusal(
+            "acceptance_evidence_binding_mismatch",
+            "project acceptance evidence does not bind to the trust-log enrollment",
+            principal_id=principal_id,
+            acceptance_event_hash=verified.event_hash,
+            trust_event_hash=trust_event_hash,
+        )
+    acceptance_payload = _acceptance_payload_by_hash(conn, verified.event_hash)
+    if acceptance_payload.get("trust_event_hash") != trust_event_hash:
+        raise _acceptance_refusal(
+            "acceptance_trust_event_mismatch",
+            "project acceptance does not name the verified trust-log enrollment",
+            principal_id=principal_id,
+            acceptance_event_hash=verified.event_hash,
+            trust_event_hash=trust_event_hash,
+        )
+    return verified.event_hash
+
+
+def _project_instance_id(conn: DictConn) -> str:
+    row = conn.execute(
+        "SELECT project_instance_id FROM project_identity WHERE id = TRUE"
+    ).fetchone()
+    if row is None:
+        raise _acceptance_refusal(
+            "project_identity_missing",
+            "project acceptance verification requires the project's v6 identity",
+        )
+    return str(row["project_instance_id"])
+
+
+def _acceptance_payload_by_hash(conn: DictConn, event_hash: str) -> Mapping[str, Any]:
+    from ._verification import parse_v6_envelope_strict
+
+    for relation in ("events", "events_archive"):
+        exists = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = %s) AS present",
+            [relation],
+        ).fetchone()
+        if not exists or not exists["present"]:
+            continue
+        rows = conn.execute(
+            f"SELECT canonical_envelope, signature FROM {relation} WHERE transition = %s",
+            ["principal_key_accepted"],
+        ).fetchall()
+        for row in rows:
+            if not row["canonical_envelope"] or not row["signature"]:
+                continue
+            candidate = "sha256:" + compute_v6_event_hash(
+                bytes(row["canonical_envelope"]), bytes(row["signature"])
+            ).hex()
+            if candidate == event_hash:
+                envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
+                payload = envelope.get("payload")
+                if isinstance(payload, Mapping):
+                    return payload
+    raise _acceptance_refusal(
+        "acceptance_event_not_found",
+        "verified project acceptance disappeared during projection",
+        event_hash=event_hash,
+    )
+
+
+def _trust_domain_id_text(record: Any) -> str:
+    return str(record.payload.get("trust_domain_id") or "")
 
 
 def check_projection_consistent(
-    mgr: ConnectionManager, *, project: str
+    mgr: ConnectionManager,
+    *,
+    project: str,
+    genesis_document: Mapping[str, Any] | None = None,
 ) -> RebuildReport:
-    """§5.9 rule 3: rebuild into a temp table and diff. Never writes.
-
-    Returns the report; the caller decides the posture. ``regista doctor`` treats any
-    divergence as **fail**, not warn.
-    """
-    return rebuild_projection(mgr, project=project, dry_run=True)
+    """Verified dry-run: same primitive as a live rebuild, diff only, never writes."""
+    return rebuild_projection(
+        mgr, project=project, genesis_document=genesis_document, dry_run=True
+    )
 
 
 def projection_summary(mgr: ConnectionManager) -> dict[str, int]:
@@ -539,8 +1007,12 @@ __all__: Sequence[str] = [
     "PROJECTION_VERSION",
     "RebuildReport",
     "RowDifference",
+    "VerifiedAcceptance",
     "check_projection_consistent",
     "projection_summary",
     "read_lifecycle_events",
     "rebuild_projection",
+    "rebuild_projection_from_trust_log",
+    "rebuild_projection_from_verified_chain",
+    "verify_project_acceptance",
 ]

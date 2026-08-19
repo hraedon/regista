@@ -6,6 +6,55 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- **`spec` becomes the seventh v6 entity kind (WI-305 B).** `V6_ENTITY_KINDS` in
+  `regista._verification` amends the closed §1.2 registry from six values to seven by
+  adding `spec`, exactly as the owner-delegated decision prescribed: closure rejects
+  unknown kinds, it does not preserve the numeral six. Because `sign_spec` writes a
+  `spec`/`spec_signed` event through the same v6 writer, this unblocks the whole
+  `spec` entity in a clean epoch. Two changes beyond the registry itself were required
+  and landed with it: the verifier's null-`workflow` admission rule must admit `spec`
+  (`_verification._validate_v6_object`), and `tests/test_spec_entity.py` was migrated
+  to the v6 epoch recipe (dedicated canonical principals, ``open_v6_epoch``,
+  `entity_kinds=("work_item","principal","workflow","spec")` acceptance scopes). The
+  frozen contracts amend consistently: `V6-ENVELOPE.md` §1.2 / DD-7 and
+  `TRUST-DOMAIN.md` §5.2.
+
+- **The reviewer's model lineage is a canonical assertion in the signed review-verdict
+  payload (WI-305 A).** A reviewer's role-specific `model_lineage` now lives in
+  `payload.reviewer_claims.model_lineage` (``REVIEW-VERDICTS.md`` §2.2) — the v6
+  vehicle, since `actor.metadata` may not carry `model_lineage` and the process-level
+  `producer` block (§1.8) is one value per process. At **ingress** — in
+  `adversarial_review` and `human_gate` — a review-verdict that declares a
+  `reviewer_claims` object must carry a canonical `model_lineage`; an absent,
+  malformed, or unknown value raises `INVALID_MODEL_LINEAGE`
+  (`regista._lineage.require_canonical_reviewer_lineage`) instead of being silently
+  read as undeclared. At **read time** the gate consumes the payload claim
+  (`verdict_reviewer_lineage` / `reviewer_model_lineage`), with a narrow legacy
+  fallback to the per-event lineage only for persisted pre-verdict events. New helpers
+  in `regista._lineage`; `tests/test_wi305_reviewer_lineage_payload.py` pins the
+  vehicle (closed-registry ingress rejection, precedence, gate classification from the
+  payload alone) and `tests/test_wi305_v6_review_gate.py` pins it over a genuine v6
+  epoch (author lineage via the `producer` block, reviewer lineage via the signed
+  verdict).
+
+- **WI-305 C: `principal_binding_verified` reports the acceptance-chain binding on a
+  v6 epoch.** `ReplayReport.principal_binding_verified` is now True on a clean v6 epoch
+  (the §5.10 acceptance-chain binding executed over presented evidence), independent
+  of the legacy `verify_principal_binding` flag, and the legacy `principal_keys`-row
+  probe is gated off for v6 rows (`_replay`). The manifest emptied from 112 to the
+  26 WI-008 delegation nodes, and the pre-epoch HMAC / `on_behalf_of` /
+  actor_metadata-lineage review nodes were triaged counterpart-first into
+  `tests/retired_tests_ledger.json` (74 ledger entries) with their surviving
+  invariants carried into the v6 gate tests.
+
+- **The Wi-295 trust-genesis vector corrected to the WI-280/WI-292 shape.**
+  `tools/make_v6_vectors.py`'s `case_trust_genesis` and `tests/vectors/v6/trust-genesis.json`
+  now emit governance and custody **outside** `binding_core` (a sorted top-level
+  `initial_custody` keyed by fingerprint, a top-level `initial_governance`), base64
+  signer public keys, and a 64-hex `nonce`, matching `_trust_domain`'s strict production
+  schema. Regeneration is deterministic; `tests/test_v6_vectors.py` and
+  `tests/test_trust_domain.py` reproduce it byte-for-byte.
+
 - **The v6 verifier boundary (P1.7 phase 2), in `regista._verification` and the new
   `regista._v6_referents`.** `verify_event_strict` used to return
   `INVALID`/`envelope_schema_incomplete` for **every** v6 row — clean or tampered — so

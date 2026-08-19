@@ -1826,6 +1826,17 @@ def cmd_trust_verify_genesis(args: argparse.Namespace) -> None:
     print("verdict: VALID")
 
 
+def _load_genesis_document(path: str | None) -> dict[str, Any] | None:
+    import os
+
+    from ._trust_genesis_file import load_trust_genesis_document
+
+    configured_path = (
+        path if path is not None else os.environ.get("REGISTRA_TRUST_GENESIS_PATH")
+    )
+    return load_trust_genesis_document(configured_path)
+
+
 def cmd_trust_rebuild_projection(args: argparse.Namespace) -> None:
     """Rebuild ``principal_keys`` from signed events alone (§5.9 rule 4).
 
@@ -1834,11 +1845,14 @@ def cmd_trust_rebuild_projection(args: argparse.Namespace) -> None:
     when a dry run finds divergence, so it is usable as a check in a pipeline.
     """
     dsn, project, hmac_key_path = _require_config(args)
+    genesis_document = _load_genesis_document(args.genesis)
     from regista._trust_projection import rebuild_projection
 
     sub = Regista(dsn, project, hmac_key_path)
     try:
-        report = rebuild_projection(sub._mgr, project=project, dry_run=args.dry_run)
+        report = rebuild_projection(
+            sub._mgr, project=project, genesis_document=genesis_document, dry_run=args.dry_run
+        )
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
         return
@@ -2461,6 +2475,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Rebuild into a temp table and report the diff; write nothing. "
         "Exits non-zero if the live projection has diverged.",
+    )
+    trust_rebuild.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (A-prime; optional only for "
+        "an empty trust log; otherwise REGISTRA_TRUST_GENESIS_PATH may supply it)",
     )
     # Also SUPPRESS: `regista --json trust rebuild-projection` must stay JSON.
     # A store_true default of False here would silently override the global flag.

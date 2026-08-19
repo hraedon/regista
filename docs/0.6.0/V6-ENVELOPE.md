@@ -47,7 +47,7 @@ report it rather than choosing.
 |---|---|---|
 | §1.1 — 15 required top-level keys | WI-277 producer block (overlay change 5, collision 4) | §1.1, row 16 and §1.8 |
 | §1.1/§4.3 — `model_lineage` under `actor.metadata` | overlay change 5, collision 20 | §1.8 — `producer.model_lineage`, never duplicated |
-| §1.2 — `entity.kind ∈ {work_item, project}` | collision 5 | §1.2 — the six-value shared registry |
+| §1.2 — `entity.kind ∈ {work_item, project}` | collision 5, WI-305 B | §1.2 — the seven-value shared registry |
 | §1.4 — `key_binding_event_hash` is a required string resolving to `principal_key_accepted` | overlay change 4, Resolution 1, collisions 1–3 | §1.4 and §3.5 — `string \| null`, three bootstrap positions, three anchor types |
 | §1.6 — `workflow == null` ⇒ `transition == null` | overlay change 6, Resolution 3, collision 6 | §1.6 — `transition` is required non-empty on every v6 event |
 | §1.6/§9.3 M1 — `NOT NULL` workflow columns | Resolution 3 | §9.3 M1 is now a **hard prerequisite of the first v6 append**, not an accompanying change |
@@ -148,6 +148,10 @@ reconciliation bug.
 > (two homes for one concept produced WI-257 and WI-250). `actor.metadata` MUST NOT contain any
 > of `harness`, `harness_version`, `model`, `model_lineage` — see §1.8 and §8.4 rule 7.
 
+> **SUPERSEDED — WI-305 B (2026-08-18).** The closed registry amends to **seven** kinds by
+> adding `spec`. See the §1.2 note below. Closure rejects unknown kinds; it does not preserve
+> the numeral six.
+
 `len(keys(top)) == 16`, exactly. Any additional key is a rejection, not a forward-compatibility
 tolerance (§8).
 
@@ -155,20 +159,24 @@ tolerance (§8).
 
 | Field | Type | Required | Meaning | Rule |
 |---|---|---|---|---|
-| `kind` | string | yes | Entity class | One of the closed six-value registry below. Adding a kind is a schema change (§8.4). |
+| `kind` | string | yes | Entity class | One of the closed seven-value registry below. Adding a kind is a schema change (§8.4). |
 | `id` | string | yes | Entity identity | Lowercase canonical UUID text. |
 
-> **SUPERSEDED — `RECONCILIATION.md` Resolution 4 / collision 5.** The closed set is not
-> `{work_item, project}`. The shared entity-kind registry is exactly:
+> **SUPERSEDED — `RECONCILIATION.md` Resolution 4 / collision 5 / WI-305 B.**
+> The closed set is not `{work_item, project}`. The shared entity-kind registry is exactly:
 >
 > ```
-> work_item | project | principal | trust_domain | project_instance | workflow
+> work_item | project | principal | trust_domain | project_instance | workflow | spec
 > ```
 >
 > `project_system` is prose and is **never** a wire value. This registry is shared with
 > `TRUST-DOMAIN.md` §5.2–§5.3 (which requires `principal`, `trust_domain` and
-> `project_instance`) and with §1.9 of this document (`workflow`). One registry, six values, no
-> per-document additions.
+> `project_instance`), with §1.9 of this document (`workflow`), and — since WI-305 B — with the
+> `spec` entity (`sign_spec`, Plan 025 WI-4.3), which is a live, signed, UUID-addressed,
+> independently readable lifecycle chain just like the others. `spec` events carry a **null**
+> `workflow` the same way `project`, `principal`, `trust_domain`, `project_instance` and
+> `workflow` do; in particular `entity.kind = "spec"` is not `work_item`, so no workflow binding
+> is required or present. One registry, seven values, no per-document additions.
 >
 > The cutover checkpoint's `entity.kind` is `project` and its `entity.id` is **exactly
 > `project_instance_id`** (`CUTOVER-CLASSIFICATION.md` §4.2).
@@ -201,7 +209,7 @@ tolerance (§8).
 >
 > | Event | Position | What authorises it externally |
 > |---|---|---|
-> | `trust_domain_established` | trust-log genesis, first v6 event | Its hash equals `trust_genesis.trust_log.initial_head_event_hash`; the genesis document verifies at root threshold; the signing key is a genesis root key. |
+> | `trust_domain_established` | trust-log genesis, first v6 event | **A-prime (supersedes the prior "hash equals `initial_head_event_hash`" wording):** the genesis document must carry a null `trust_log.initial_head_event_hash` (`genesis_head_must_be_null`); the event is chain position 1 with `key_binding = null`; its payload is a strict restatement whose `genesis_document_digest` matches the published-document digest and whose detached `root_signatures` meet the initial root threshold; the envelope signer is a genesis root (transport, not authority). The event hash is pinned by the checkpoint, not the document. |
 > | `project_cryptographic_epoch_started` | unique first v6 event of a legacy project | The payload's `bootstrap_key_acceptance` resolves through the pinned genesis and a verified trust-log checkpoint; the event signer is exactly that accepted key. |
 > | `project_initialized` | genesis of a project created directly in v6 | Same, with an empty previous epoch. |
 >
@@ -1431,9 +1439,9 @@ will disagree about validity.
 
 **DD-7 — `entity.kind` is a closed set and the checkpoint lives on a `project` entity.** §1.2.
 The architecture says "a project-system entity" without naming the kind. **Overlay: the closed
-set is six values** (`work_item`, `project`, `principal`, `trust_domain`, `project_instance`,
-`workflow`), not two — `RECONCILIATION.md` collision 5. The decision to close the set at all
-stands; its membership was wrong.
+set is seven values** (`work_item`, `project`, `principal`, `trust_domain`, `project_instance`,
+`workflow`, `spec`), not two — `RECONCILIATION.md` collision 5, amended by WI-305 B. The
+decision to close the set at all stands; its membership was wrong.
 
 **DD-8 — `authorization.credentials` elements are `{credential_id, credential_hash}` objects,
 not bare hash strings.** §1.5.1. The id makes a credential locatable in a bundle section without

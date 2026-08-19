@@ -2,41 +2,26 @@
   "category": "genesis",
   "description": "Trust-domain genesis: core_digest \u2192 trust_domain_id (UUIDv5) + genesis...",
   "expected": {
-    "core_canonical_bytes": "{\"created_at\":\"2026-08-20T00:00:00.000000Z\",\"governance\":{\"mode\":\"solo_effective\",\"signer_count\":2,\"threshold\":1},\"nonce\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"signers\":[{\"custody\":{\"attestation\":null,\"declared_holder\":\"human:itadmin\",\"declared_mode\":\"offline-host\"},\"fingerprint\":\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\",\"public_key\":\"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"scheme_id\":\"ed25519\",\"signer_id\":\"root-a\"},{\"custody\":{\"attestation\":null,\"declared_holder\":\"human:itadmin\",\"declared_mode\":\"offline-airgapped\"},\"fingerprint\":\"ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827\",\"public_key\":\"8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"scheme_id\":\"ed25519\",\"signer_id\":\"root-b\"}],\"type\":\"regista.trust-genesis.core\",\"version\":1}",
-    "core_canonical_len": 952,
-    "genesis_signature_hex": "839c80133248aa2db749913b41a4f6808d5331465d467339879d9cb1b310a6f65b7f2b7fbc3f5dc2aea416f44460ea15d9a2e84d556d6985b55eb7e085a8780b",
-    "trust_domain_core_digest": "sha256:99f20054c18c797ea63fc738b97da64e4509001ea1b620ed35040df3849b3152",
-    "trust_domain_id": "4ff98cc9-663f-5868-a4fd-939f3e3bace3"
+    "core_canonical_bytes": "{\"created_at\":\"2026-08-20T00:00:00.000000Z\",\"nonce\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"signers\":[{\"fingerprint\":\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\",\"public_key\":\"iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=\",\"scheme_id\":\"ed25519\",\"signer_id\":\"root-a\"},{\"fingerprint\":\"ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827\",\"public_key\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"scheme_id\":\"ed25519\",\"signer_id\":\"root-b\"}],\"type\":\"regista.trust-genesis.core\",\"version\":1}",
+    "core_canonical_len": 581,
+    "genesis_signature_hex": "7ab42d7d59e306a505eaba557348fd8adeba23c96fc79343e6dc97c1d3190befb22479ad4bfa11a081263edcac03d30102a6c9d03bbeaad071d721225af01b00",
+    "trust_domain_core_digest": "sha256:1fd3a08c25d88cd703cd57dc520a0ef2dbdbf72ddc35978d61f026a38ebd240d",
+    "trust_domain_id": "1ec96a89-5138-5b89-9e32-13ad67f52a67"
   },
   "input": {
     "binding_core": {
       "created_at": "2026-08-20T00:00:00.000000Z",
-      "governance": {
-        "mode": "solo_effective",
-        "signer_count": 2,
-        "threshold": 1
-      },
-      "nonce": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "nonce": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "signers": [
         {
-          "custody": {
-            "attestation": null,
-            "declared_holder": "human:itadmin",
-            "declared_mode": "offline-host"
-          },
           "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
-          "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
           "scheme_id": "ed25519",
           "signer_id": "root-a"
         },
         {
-          "custody": {
-            "attestation": null,
-            "declared_holder": "human:itadmin",
-            "declared_mode": "offline-airgapped"
-          },
           "fingerprint": "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827",
-          "public_key": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
           "scheme_id": "ed25519",
           "signer_id": "root-b"
         }
@@ -47,32 +32,17 @@
     "genesis_document_minus_extras": {
       "binding_core": {
         "created_at": "2026-08-20T00:00:00.000000Z",
-        "governance": {
-          "mode": "solo_effective",
-          "signer_count": 2,
-          "threshold": 1
-        },
-        "nonce": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "nonce": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "signers": [
           {
-            "custody": {
-              "attestation": null,
-              "declared_holder": "human:itadmin",
-              "declared_mode": "offline-host"
-            },
             "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
-            "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+            "public_key": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
             "scheme_id": "ed25519",
             "signer_id": "root-a"
           },
           {
-            "custody": {
-              "attestation": null,
-              "declared_holder": "human:itadmin",
-              "declared_mode": "offline-airgapped"
-            },
             "fingerprint": "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827",
-            "public_key": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+            "public_key": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
             "scheme_id": "ed25519",
             "signer_id": "root-b"
           }
@@ -80,14 +50,33 @@
         "type": "regista.trust-genesis.core",
         "version": 1
       },
+      "initial_custody": [
+        {
+          "attestation": null,
+          "declared_holder": "human:itadmin",
+          "declared_mode": "offline-host",
+          "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e"
+        },
+        {
+          "attestation": null,
+          "declared_holder": "human:itadmin",
+          "declared_mode": "offline-airgapped",
+          "fingerprint": "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827"
+        }
+      ],
+      "initial_governance": {
+        "mode": "solo_effective",
+        "signer_count": 2,
+        "threshold": 1
+      },
       "publication": {
         "bootstrap": "direct-exchange",
         "kind": "git",
         "path": "trust-domain.json",
         "url": "https://github.example/regista-attestations"
       },
-      "trust_domain_core_digest": "sha256:99f20054c18c797ea63fc738b97da64e4509001ea1b620ed35040df3849b3152",
-      "trust_domain_id": "4ff98cc9-663f-5868-a4fd-939f3e3bace3",
+      "trust_domain_core_digest": "sha256:1fd3a08c25d88cd703cd57dc520a0ef2dbdbf72ddc35978d61f026a38ebd240d",
+      "trust_domain_id": "1ec96a89-5138-5b89-9e32-13ad67f52a67",
       "trust_log": {
         "initial_head_event_hash": null,
         "project_instance_id": "11111111-2222-3333-4444-555555555555",

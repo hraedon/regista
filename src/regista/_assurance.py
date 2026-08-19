@@ -5,7 +5,7 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Any
 
-from ._lineage import event_model_lineage, is_model_lineage
+from ._lineage import is_model_lineage, reviewer_model_lineage
 from ._review_validators import (
     KIND_AGENT,
     KIND_OPAQUE,
@@ -78,7 +78,7 @@ def same_lineage(author_lineages: set[str], reviewer_lineage: str | None) -> boo
 
 
 def _event_lineage(event: Any) -> str | None:
-    return event_model_lineage(event)
+    return reviewer_model_lineage(event)
 
 
 def _weakest(first: LineageRelation, second: LineageRelation) -> LineageRelation:
@@ -144,7 +144,7 @@ def review_lineage_relation(
     ctx (both expose ``actor_metadata`` and ``on_behalf_of``).
     """
     claims: list[LineageRelation] = []
-    proxy_lineage = _event_lineage(review_event)
+    proxy_lineage = reviewer_model_lineage(review_event)
     if proxy_lineage is not None:
         claims.append(lineage_relation(author_lineages, proxy_lineage))
     elif getattr(review_event, "actor_kind", None) == "agent":

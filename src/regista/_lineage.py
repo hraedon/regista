@@ -55,6 +55,75 @@ def declared_model_lineage(value: object) -> str | None:
     return value if is_model_lineage(value) else None
 
 
+#: The review-verdict payload member carrying the reviewer's role-specific model
+#: lineage (``REVIEW-VERDICTS.md`` §2.2, ``reviewer_claims.model_lineage``).
+_REVIEWER_CLAIMS_KEY = "reviewer_claims"
+_REVIEWER_LINEAGE_KEY = "model_lineage"
+
+
+def verdict_reviewer_lineage(payload: Any) -> str | None:
+    """The reviewer's claimed lineage in a review-verdict ``payload``, or None.
+
+    Reads ``payload.reviewer_claims.model_lineage`` (``REVIEW-VERDICTS.md``
+    §2.2) and validates it against the closed lineage registry in the same
+    ``declared_model_lineage`` sense as ``actor_metadata``: an unvalidated or
+    absent value declares nothing and reads as absent yet again, never as an
+    invented distinct lineage. A payload that is not a review-verdict (no
+    ``reviewer_claims`` object) contributes nothing.
+    """
+    if not isinstance(payload, dict):
+        return None
+    claims = payload.get(_REVIEWER_CLAIMS_KEY)
+    if not isinstance(claims, dict):
+        return None
+    return declared_model_lineage(claims.get(_REVIEWER_LINEAGE_KEY))
+
+
+def reviewer_model_lineage(event: Any) -> str | None:
+    """The reviewer's *effective* claimed lineage for ``event`` (WI-305 A).
+
+    Prefers the signed review-verdict payload's ``reviewer_claims.model_lineage``
+    — the v6 vehicle, where the role-specific assertion lives and where
+    ``actor.metadata`` may not carry ``model_lineage`` at all — and falls back
+    to the legacy per-event lineage (``actor_metadata``/``producer``) for events
+    written before the verdict carried the claim. ``event`` is anything
+    event-shaped: a stored event or a validator ``ctx`` (both expose a
+    ``payload``).
+    """
+    claimed = verdict_reviewer_lineage(getattr(event, "payload", None))
+    if claimed is not None:
+        return claimed
+    return event_model_lineage(event)
+
+
+def require_canonical_reviewer_lineage(payload: Any) -> None:
+    """Reject at ingress a review-verdict whose reviewer lineage claim is not canonical.
+
+    A review-verdict payload that declares a ``reviewer_claims`` object MUST carry
+    a canonical ``model_lineage`` (one of ``MODEL_LINEAGE_FAMILIES``). An absent,
+    malformed, or unknown value raises ``INVALID_MODEL_LINEAGE`` rather than being
+    silently read as undeclared: a signed verdict may not carry a lineage the
+    cross-lineage gate would fail closed on at read time. A payload with no
+    ``reviewer_claims`` block declares nothing and passes.
+    """
+    if not isinstance(payload, dict):
+        return
+    claims = payload.get(_REVIEWER_CLAIMS_KEY)
+    if claims is None:
+        return
+    value = claims.get(_REVIEWER_LINEAGE_KEY) if isinstance(claims, dict) else claims
+    if not is_model_lineage(value):
+        raise RegistaError(
+            ErrorCode.INVALID_MODEL_LINEAGE,
+            "reviewer_claims.model_lineage must be a canonical model lineage",
+            detail={
+                "field": "reviewer_claims.model_lineage",
+                "model_lineage": value,
+                "allowed": sorted(MODEL_LINEAGE_FAMILIES),
+            },
+        )
+
+
 def validate_model_lineage(value: object, *, field: str) -> str:
     if not is_model_lineage(value):
         raise RegistaError(

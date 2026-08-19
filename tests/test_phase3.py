@@ -305,6 +305,7 @@ class TestContinueOnRevokedReplay:
             )
             assert report.halted == 0
             assert report.warnings >= 1
+            assert report.principal_binding_verified is False
 
     def test_public_replay_api_accepts_flag(self, regista):
         wi, _ = regista.create_work_item(
