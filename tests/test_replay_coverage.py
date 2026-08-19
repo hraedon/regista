@@ -16,6 +16,14 @@ DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 
+#: WI-315: the epoch-boundary trigger (migration 049) refuses a non-v6 events
+#: insert once the epoch is open. Several tests below deliberately seed a corrupt
+#: legacy row to prove that REPLAY still halts on it -- a defense-in-depth layer
+#: beneath the trigger. Only that trigger is toggled (031's entity_id trigger stays
+#: enabled), so the seeded row is byte-identical to what these tests injected before.
+_DISABLE_EPOCH_TRIGGER = "ALTER TABLE events DISABLE TRIGGER events_enforce_v6_epoch_boundary"
+_ENABLE_EPOCH_TRIGGER = "ALTER TABLE events ENABLE TRIGGER events_enforce_v6_epoch_boundary"
+
 
 #: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
 WORKER = "agent:worker"
@@ -242,6 +250,11 @@ class TestReplayOrphanEvents:
         from psycopg.sql import SQL
         orphan_id = uuid.uuid4()
         with raw_transaction(regista) as conn:
+            # This deliberately fabricates a corrupt (orphan, non-v6) row to prove
+            # replay HALTS on it -- a layer beneath the WI-315 epoch-boundary trigger,
+            # which would otherwise refuse exactly this insert. Seed it under a
+            # disabled trigger so the row (and replay's view of it) is unchanged.
+            conn.execute(_DISABLE_EPOCH_TRIGGER)
             conn.execute(
                 SQL(
                     "INSERT INTO events "
@@ -261,6 +274,7 @@ class TestReplayOrphanEvents:
                     b'\x00', b'\x00', b'\x00',
                 ],
             )
+            conn.execute(_ENABLE_EPOCH_TRIGGER)
 
         report = regista.replay()
         assert report.halted >= 1
@@ -334,7 +348,10 @@ class TestReplayKeyFailurePaths:
                 "WHERE work_item_id = %s",
                 [wi.work_item_id],
             )
-            # Insert an event at seq=2 claiming workflow v999 which no longer exists
+            # Insert an event at seq=2 claiming workflow v999 which no longer exists.
+            # This is a deliberately-corrupt legacy row seeded to prove replay halts;
+            # the WI-315 trigger would refuse it, so seed under a disabled trigger.
+            conn.execute(_DISABLE_EPOCH_TRIGGER)
             conn.execute(
                 "INSERT INTO events "
                 "(event_id, work_item_id, event_seq, actor_id, actor_kind, "
@@ -346,6 +363,7 @@ class TestReplayKeyFailurePaths:
                 [new_event_id, wi.work_item_id,
                  psycopg.types.json.Jsonb(payload), c_hash, sig, env],
             )
+            conn.execute(_ENABLE_EPOCH_TRIGGER)
             # Also bump all existing events to v999 so the first events pass
             conn.execute(
                 "UPDATE events SET workflow_version = 999 WHERE work_item_id = %s",
@@ -391,6 +409,10 @@ class TestReplayKeyFailurePaths:
                 "WHERE work_item_id = %s",
                 [wi.work_item_id],
             )
+            # Deliberately-corrupt legacy row (invalid from-state) seeded to prove
+            # replay halts; the WI-315 trigger would refuse it, so seed it under a
+            # disabled trigger.
+            conn.execute(_DISABLE_EPOCH_TRIGGER)
             conn.execute(
                 "INSERT INTO events "
                 "(event_id, work_item_id, event_seq, actor_id, actor_kind, "
@@ -401,6 +423,7 @@ class TestReplayKeyFailurePaths:
                 [new_event_id, wi.work_item_id,
                  psycopg.types.json.Jsonb(payload or {}), c_hash, sig, env],
             )
+            conn.execute(_ENABLE_EPOCH_TRIGGER)
 
         report = regista.replay()
         assert report.halted >= 1
