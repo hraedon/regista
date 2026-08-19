@@ -109,14 +109,26 @@ class TestEventStorage:
         )
 
         with _raw_conn(schema) as conn:
+            # This synthetic row exercises partition/table routing, not envelope
+            # validation. The module fixture opens the v6 epoch, so the WI-315
+            # epoch-boundary trigger (migration 049) now requires a v6
+            # canonical_envelope on any post-genesis insert; carry a minimal one so
+            # the routing assertion still gets its row.
             conn.execute(
                 "INSERT INTO events ("
                 "event_id, work_item_id, event_seq, actor_id, actor_kind, "
                 "key_id, workflow_name, workflow_version, timestamp, transition, "
-                "payload_canonical_hash, signature"
+                "payload_canonical_hash, signature, canonical_envelope"
                 ") VALUES (%s, %s, 999, 'agent-1', 'agent', 'test', "
-                "'partition_test', 1, %s, 'test', %s, %s)",
-                [event_id, wi.work_item_id, far_future, b"hash", b"sig"],
+                "'partition_test', 1, %s, 'test', %s, %s, %s)",
+                [
+                    event_id,
+                    wi.work_item_id,
+                    far_future,
+                    b"hash",
+                    b"sig",
+                    b'{"type":"regista.event","version":6}',
+                ],
             )
             row = conn.execute(
                 "SELECT tableoid::regclass::text AS table_name "

@@ -127,13 +127,18 @@ class TestReplayUsesRepeatableRead:
                         "VALUES (%s, %s, 'work_item', %s, 'sha-256', "
                         "%s, %s, 'agent:worker', 'agent', NULL, 'test-key', "
                         "'test_workflow', 1, now(), 'escalated', NULL, "
-                        "'\\x00', '\\x00', '\\x00')",
+                        # WI-315: post-genesis inserts must carry a v6
+                        # canonical_envelope; this concurrent-write probe never has
+                        # its envelope read by the isolated replay, so a minimal one
+                        # suffices.
+                        "'\\x00', '\\x00', %s)",
                         [
                             str(uuid.uuid4()),
                             str(wi_id),
                             str(wi_id),
                             len(all_events) + 1,
                             next_global_seq,
+                            b'{"type":"regista.event","version":6}',
                         ],
                     )
                     writer_conn.execute(

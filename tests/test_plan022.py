@@ -731,7 +731,11 @@ class TestIntegrationEntityFields:
                     [
                         uuid.uuid4(), wi.work_item_id, wi.work_item_id,
                         psycopg.types.json.Jsonb({}),
-                        b"\x00" * 32, b"\x00" * 32, b"\x00" * 32,
+                        # WI-315: the epoch-boundary trigger requires a v6
+                        # canonical_envelope; carry one so the row reaches the
+                        # entity-uniqueness index (the constraint under test).
+                        b"\x00" * 32, b"\x00" * 32,
+                        b'{"type":"regista.event","version":6}',
                     ],
                 )
         assert "events_entity_event_seq_key" in str(exc_info.value).lower() or \
