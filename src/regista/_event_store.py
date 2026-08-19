@@ -14,7 +14,7 @@ from ._contract import (
     check_key_role_policy,
     validate_actor_metadata,
     validate_delegation_chain,
-    validate_entity_kind,
+    validate_event_entity_kind,
     validate_json_safe_value,
 )
 from ._errors import ErrorCode, RegistaError
@@ -83,6 +83,8 @@ class V6AppendRequest:
     workflow_version: int | None
     expected_event_seq: int | None
     key_id: str | None
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = ()
+    occurred_at: datetime | None = None
 
 
 def _v6_request(
@@ -100,6 +102,8 @@ def _v6_request(
     expected_event_seq: int | None,
     on_behalf_of: dict[str, Any] | None,
     key_id: str | None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
+    occurred_at: datetime | None = None,
 ) -> V6AppendRequest:
     """Translate the legacy append signature into the v6 one, or refuse.
 
@@ -150,7 +154,114 @@ def _v6_request(
         workflow_version=workflow_version if has_workflow else None,
         expected_event_seq=expected_event_seq,
         key_id=key_id,
+        action_delegation_credentials=action_delegation_credentials,
+        occurred_at=occurred_at,
     )
+
+
+def _check_action_delegation_idempotency(
+    existing_event: Event,
+    credentials: tuple[dict[str, Any] | bytes, ...],
+    *,
+    source: Any | None = None,
+    stored_documents: tuple[bytes, ...] = (),
+) -> None:
+    """Keep event-id idempotency bound to immutable credential bytes."""
+
+    from ._action_delegation import ActionDelegationError, parse_action_delegation
+
+    try:
+        parsed = tuple(parse_action_delegation(item) for item in credentials)
+        incoming = tuple(
+            (str(credential.credential_id), credential.credential_hash)
+            for credential in parsed
+        )
+        incoming_documents = tuple(credential.canonical_document for credential in parsed)
+    except (ActionDelegationError, TypeError, ValueError) as exc:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            f"the action-delegation credential document is invalid: {exc}",
+        ) from exc
+
+    existing_references: tuple[tuple[str, str], ...] = ()
+    if existing_event.canonical_envelope:
+        from ._verification import V6EnvelopeError, parse_v6_envelope_strict
+
+        try:
+            envelope = parse_v6_envelope_strict(bytes(existing_event.canonical_envelope))
+        except (V6EnvelopeError, TypeError, ValueError) as exc:
+            raise RegistaError(
+                ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                "event_id is already bound to an envelope whose authorization cannot "
+                "be compared safely",
+            ) from exc
+        authorization = envelope["authorization"]
+        existing_references = tuple(
+            (str(reference["credential_id"]), str(reference["credential_hash"]))
+            for reference in authorization["credentials"]
+        )
+    if incoming != existing_references:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            "event_id is already bound to different action-delegation references",
+        )
+    if existing_references and source is not None:
+        stored_documents = _stored_action_delegation_documents(source, existing_references)
+    if existing_references and (
+        source is None
+        or
+        len(stored_documents) != len(existing_references)
+        or any(
+            incoming_document != stored_document
+            for incoming_document, stored_document in zip(
+                incoming_documents, stored_documents, strict=True
+            )
+        )
+    ):
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            "event_id is already bound to different action-delegation credential bytes",
+        )
+
+
+def _stored_action_delegation_documents(
+    source: Any,
+    references: tuple[tuple[str, str], ...],
+) -> tuple[bytes, ...]:
+    """Load immutable evidence for an existing event-id retry.
+
+    The in-memory and PostgreSQL stores deliberately expose the same check, but
+    their row access differs.  Missing or mismatched evidence is a collision,
+    not permission to compare references only.
+    """
+
+    documents: list[bytes] = []
+    if isinstance(source, InMemoryEventStore):
+        rows = source.v6_rows.action_delegation_credentials.values()
+        by_hash = {str(row["credential_hash"]): row for row in rows}
+        for credential_id, credential_hash in references:
+            row = by_hash.get(credential_hash)
+            if row is None or str(row["credential_id"]) != credential_id:
+                raise RegistaError(
+                    ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                    "existing action-delegation evidence cannot be resolved safely",
+                )
+            documents.append(bytes(row["canonical_document"]))
+        return tuple(documents)
+
+    for credential_id, credential_hash in references:
+        row = source.execute(
+            "SELECT credential_id, credential_hash, canonical_document "
+            "FROM action_delegation_credentials WHERE credential_hash = %s",
+            [credential_hash],
+        ).fetchone()
+        if row is None or str(row["credential_id"]) != credential_id:
+            raise RegistaError(
+                ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                "existing action-delegation evidence cannot be resolved safely",
+            )
+        documents.append(bytes(row["canonical_document"]))
+    return tuple(documents)
 
 
 def append_event(
@@ -170,6 +281,8 @@ def append_event(
     _key_id: str | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
+    occurred_at: datetime | None = None,
 ) -> Event:
     # The epoch fork. Before genesis this raises GENESIS_REQUIRED exactly as it did
     # on main — which is what keeps every epoch_blocked manifest entry's recorded
@@ -192,13 +305,15 @@ def append_event(
                 expected_event_seq=expected_event_seq,
                 on_behalf_of=on_behalf_of,
                 key_id=_key_id,
+                action_delegation_credentials=action_delegation_credentials,
+                occurred_at=occurred_at,
             )
         )
     store.check_legacy_append()
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
-    validate_entity_kind(entity_kind)
+    validate_event_entity_kind(entity_kind, transition)
     event_seq = store.allocate_seq(work_item_id, entity_kind=entity_kind)
 
     existing_evt = store.find_by_event_id(event_id)
@@ -488,6 +603,11 @@ class InMemoryEventStore:
             payload=_idem_payload,
         )
         if existing is not None:
+            _check_action_delegation_idempotency(
+                existing,
+                request.action_delegation_credentials,
+                source=self,
+            )
             return existing
         if request.expected_event_seq is not None:
             check_expected_seq(
@@ -495,7 +615,7 @@ class InMemoryEventStore:
                 request.expected_event_seq,
             )
         validate_actor_metadata(request.actor_metadata)
-        validate_entity_kind(request.entity_kind)
+        validate_event_entity_kind(request.entity_kind, request.transition)
 
         with self.v6_manager.transaction() as conn:
             append_v6_event(
@@ -513,6 +633,8 @@ class InMemoryEventStore:
                 key_id=request.key_id,
                 workflow_name=request.workflow_name,
                 workflow_version=request.workflow_version,
+                action_delegation_credentials=request.action_delegation_credentials,
+                occurred_at=request.occurred_at,
             )
         appended = self.find_by_event_id(request.event_id)
         if appended is None:
@@ -687,6 +809,11 @@ class PostgresEventStore:
             payload=_idem_payload,
         )
         if existing is not None:
+            _check_action_delegation_idempotency(
+                existing,
+                request.action_delegation_credentials,
+                source=self._conn,
+            )
             return existing
         if request.expected_event_seq is not None:
             check_expected_seq(
@@ -694,7 +821,7 @@ class PostgresEventStore:
                 request.expected_event_seq,
             )
         validate_actor_metadata(request.actor_metadata)
-        validate_entity_kind(request.entity_kind)
+        validate_event_entity_kind(request.entity_kind, request.transition)
 
         append_v6_event(
             self._conn,
@@ -711,6 +838,8 @@ class PostgresEventStore:
             key_id=request.key_id,
             workflow_name=request.workflow_name,
             workflow_version=request.workflow_version,
+            action_delegation_credentials=request.action_delegation_credentials,
+            occurred_at=request.occurred_at,
         )
         if request.entity_kind == "work_item":
             self._conn.execute(

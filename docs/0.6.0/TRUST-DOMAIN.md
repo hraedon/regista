@@ -1473,6 +1473,13 @@ credential minted for key administration sign business events, which is the shap
 }
 ```
 
+`signature.value` is canonical RFC 4648 base64 with padding. Hexadecimal signature values are
+invalid. Credential documents are retained as immutable evidence in
+`action_delegation_credentials`: the first event that references a credential and the credential
+row commit in one transaction. Re-presenting byte-identical evidence is idempotent; reusing either
+the `credential_id` or `credential_hash` for different canonical bytes is refused. The evidence is
+not a trust root.
+
 Signature input and hash use **two distinct domains** (`V6-ENVELOPE.md` §6.1):
 
 ```text
@@ -1490,6 +1497,11 @@ Validity rules, all checked by the verifier, all fail-closed:
   parent's on every axis.
 - An **expired** credential (`not_after` at or before the event's chain position) and a
   **revoked** credential are invalid, not degraded.
+- Validity timestamps compare with the candidate event's signed `occurred_at`. Issuance,
+  key-binding and revocation precedence is established only by the project predecessor chain.
+- `max_uses` counts preceding project-chain event references to the exact credential hash plus the
+  candidate event. Every credential in a chain is charged. The append path evaluates the final use
+  while holding the project chain-head lock.
 - `action_delegation_revoked` is a **signed project event**, and ordering is **project-chain
   ordering** — never `global_seq`, never wall-clock comparison across chains.
 - The chain must begin at a directly trusted or authorised principal and end at

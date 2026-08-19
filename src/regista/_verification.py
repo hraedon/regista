@@ -53,6 +53,11 @@ from enum import StrEnum
 from typing import Any, Final, Protocol
 from uuid import UUID
 
+from ._action_delegation import (
+    DelegationVerificationStatus,
+    VerifiedActionDelegation,
+    verify_action_delegation_chain,
+)
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._lineage import MODEL_LINEAGE_FAMILIES
@@ -81,6 +86,7 @@ from ._v6_referents import (
     MaterialCompleteness,
     ReferentEvent,
     ReferentResolver,
+    credential_material_claim,
     resolve_completeness,
     walk_project_chain,
 )
@@ -102,6 +108,7 @@ __all__ = [
     "Backend",
     "BundleKeyResolver",
     "CheckpointBinding",
+    "DelegationVerificationStatus",
     "EnvelopeVersion",
     "EpochPosition",
     "EventRow",
@@ -125,6 +132,7 @@ __all__ = [
     "V6VerificationResult",
     "VerificationPolicy",
     "VerificationResult",
+    "VerifiedActionDelegation",
     "classify_envelope",
     "parse_envelope_strict",
     "parse_v6_envelope_strict",
@@ -898,6 +906,22 @@ def _validate_v6_object(
         _v6_validate_workflow_registration_payload(envelope, envelope["payload"])
     elif transition == "workflow_retired":
         _v6_validate_workflow_retirement_payload(envelope, envelope["payload"])
+    elif transition == "action_delegation_revoked":
+        from ._action_delegation import (
+            ActionDelegationError,
+            parse_action_delegation_revocation,
+        )
+
+        _v6_require(entity["kind"] == "project", "delegation revocation entity kind mismatch")
+        _v6_require(workflow is None, "delegation revocation must not carry workflow binding")
+        _v6_require(
+            authorization == {"mode": "direct", "credentials": []},
+            "delegation revocation must use direct authorization",
+        )
+        try:
+            parse_action_delegation_revocation(envelope["payload"])
+        except (ActionDelegationError, TypeError, ValueError) as exc:
+            raise _v6_error(f"action delegation revocation payload is invalid: {exc}") from exc
 
     try:
         canonical = canonicalize(dict(envelope))
@@ -1320,6 +1344,11 @@ class VerificationResult:
     key_binding: KeyBinding = KeyBinding.UNRESOLVED
     revocation_status: RevocationStatus = RevocationStatus.UNKNOWN
     producer_consistency: ProducerConsistency = ProducerConsistency.NOT_APPLICABLE
+    delegated_authorization: bool = False
+    delegation_verification: DelegationVerificationStatus = (
+        DelegationVerificationStatus.NOT_APPLICABLE
+    )
+    authorization_principals: frozenset[str] = frozenset()
     #: The resolved key-binding anchor's event hash, for reports and for a caller
     #: that wants to fetch the anchor. ``None`` when no anchor was resolved.
     key_binding_event_hash: str | None = None
@@ -1406,6 +1435,20 @@ class VerificationResult:
 
         if self.envelope_version is not EnvelopeVersion.V6:
             return
+
+        if self.delegated_authorization and (
+            self.applicability is Applicability.FULLY_AUTHENTICATED
+            and self.delegation_verification is not DelegationVerificationStatus.VERIFIED
+        ):
+            fail("a delegated v6 event is never FULLY_AUTHENTICATED without a verified chain")
+        if not self.delegated_authorization and (
+            self.delegation_verification is not DelegationVerificationStatus.NOT_APPLICABLE
+        ):
+            fail("a direct v6 event must report delegation_verification=not_applicable")
+        if self.delegation_verification is DelegationVerificationStatus.VERIFIED and (
+            not self.delegated_authorization or not self.authorization_principals
+        ):
+            fail("verified delegation requires delegated mode and participating principals")
 
         if self.key_binding is KeyBinding.LEGACY_UNBOUND:
             fail("legacy_unbound is the HMAC epoch's binding and never a v6 event's")
@@ -1501,6 +1544,9 @@ class VerificationResult:
             # exists to avoid.
             parts.append(f"key_binding={self.key_binding.value}")
             parts.append(f"trust_root={self.trust_root.value}")
+            parts.append(
+                f"delegation_verification={self.delegation_verification.value}"
+            )
             if self.revocation_status is not RevocationStatus.NOT_REVOKED:
                 parts.append(f"revocation={self.revocation_status.value}")
             if self.unbound_properties:
@@ -1558,6 +1604,9 @@ class VerificationResult:
             "key_binding_event_hash": self.key_binding_event_hash,
             "revocation_status": self.revocation_status.value,
             "producer_consistency": self.producer_consistency.value,
+            "delegated_authorization": self.delegated_authorization,
+            "delegation_verification": self.delegation_verification.value,
+            "authorization_principals": sorted(self.authorization_principals),
             "applicability": self.applicability.value,
             "accepted": self.accepted,
             "reasons": [r.value for r in self.reasons],
@@ -2945,7 +2994,10 @@ def _resolve_v6_key_binding(
     entity_kinds = scopes.get("entity_kinds")
     transitions = scopes.get("transitions")
     entity_kind = str(envelope["entity"]["kind"])
-    if not isinstance(entity_kinds, list) or entity_kind not in entity_kinds:
+    delegation_revocation = transition == "action_delegation_revoked"
+    if not delegation_revocation and (
+        not isinstance(entity_kinds, list) or entity_kind not in entity_kinds
+    ):
         findings.contradicts(
             FailureReason.KEY_BINDING_MISMATCH,
             f"the acceptance at {anchor_hash} does not hold scope for "
@@ -2955,7 +3007,7 @@ def _resolve_v6_key_binding(
         return KeyBinding.MISMATCHED, anchor
     # `transitions: null` is the spec's own spelling for "any transition" and is NOT
     # the same as an empty list, which authorises nothing.
-    if transitions is not None and (
+    if not delegation_revocation and transitions is not None and (
         not isinstance(transitions, list) or transition not in transitions
     ):
         findings.contradicts(
@@ -3067,6 +3119,20 @@ def _resolve_v6_trust_root(
             findings.note_unbound(UNBOUND_EXTERNAL_TRUST_PIN)
         findings.note_unbound(UNBOUND_ROOT_GOVERNANCE)
         return root, RevocationStatus.UNKNOWN
+
+    if enrolment.project_instance_id == str(envelope["project_instance_id"]):
+        findings.contradicts(
+            FailureReason.KEY_BINDING_MISMATCH,
+            "the acceptance trust_event_hash resolves to the project chain rather "
+            "than the separate trust-log chain (§5.10 step 5)",
+        )
+        return TrustRoot.TRUST_LOG_ONLY, RevocationStatus.UNKNOWN
+    if enrolment.trust_domain_id != str(envelope["trust_domain_id"]):
+        findings.contradicts(
+            FailureReason.TRUST_DOMAIN_MISMATCH,
+            "the acceptance trust_event_hash resolves to a different trust domain",
+        )
+        return TrustRoot.TRUST_LOG_ONLY, RevocationStatus.UNKNOWN
 
     if enrolment.transition not in (_PRINCIPAL_KEY_ENROLLED, _PRINCIPAL_KEY_ROTATED):
         findings.contradicts(
@@ -3188,33 +3254,168 @@ def _check_v6_workflow_referent(
 
 
 def _check_v6_delegation(
-    envelope: Mapping[str, Any], *, findings: _Findings
-) -> None:
-    """``TRUST-DOMAIN.md`` §5.12, to exactly the extent 0.6.0 can check it.
+    envelope: Mapping[str, Any],
+    *,
+    chain: _ChainContext,
+    referents: ReferentResolver,
+    completeness: MaterialCompleteness,
+    findings: _Findings,
+    credential_completeness: MaterialCompleteness | None = None,
+) -> VerifiedActionDelegation:
+    """§5.11 for the delegation referents: credentials, and the ancestry they need.
 
-    ``authorization.mode == "delegated"`` requires a full credential-chain validation
-    over the **documents**, and an action-delegation document is not an event: there
-    is no channel in the presented material that carries one, and WI-008 has not
-    landed. So a delegated v6 event is reported ``UNVERIFIABLE`` with the chain named
-    as unbound, and can never be ``FULLY_AUTHENTICATED``. Inventing a credential
-    channel here, or treating "no documents presented" as "chain fine", are the two
-    wrong answers; ``DELEGATION_CHAIN_INVALID`` stays defined for the presented
-    contradiction that becomes reachable when WI-008 lands.
+    ``credential_completeness`` is the material's claim about its **credential**
+    section, which is not the same claim as ``completeness`` (see
+    :class:`~._v6_referents.ReferentResolver`). ``None`` means "the event claim
+    governs", the same convention ``resolve_completeness``'s override uses, and it is
+    what a caller holding a single mapping of everything means.
     """
 
     authorization = envelope["authorization"]
     if authorization["mode"] != "delegated":
-        return
+        return VerifiedActionDelegation(DelegationVerificationStatus.NOT_APPLICABLE)
+    credential_claim = credential_completeness or completeness
     credentials = authorization["credentials"] or []
-    findings.cannot_say(
-        FailureReason.DELEGATION_CHAIN_INVALID,
-        f"authorization.mode is 'delegated' with {len(credentials)} credential "
-        "reference(s), and action-delegation credential documents are not part of "
-        "the presented material in this release (TRUST-DOMAIN.md §5.12 / WI-008). "
-        "The chain is therefore unestablished, which is reported rather than "
-        "assumed.",
-        unbound=UNBOUND_DELEGATION_CHAIN,
+    resolved: list[Any] = []
+    resolver = getattr(referents, "resolve_action_credential", None)
+    for reference in credentials:
+        credential = (
+            resolver(reference["credential_hash"])
+            if callable(resolver)
+            else None
+        )
+        if credential is None:
+            detail = (
+                f"action-delegation credential {reference['credential_hash']} is absent "
+                f"from {referents.describe()}"
+            )
+            if credential_claim is MaterialCompleteness.COMPLETE_STORE:
+                findings.contradicts(FailureReason.DELEGATION_CHAIN_INVALID, detail)
+                return VerifiedActionDelegation(
+                    DelegationVerificationStatus.INVALID, reason=detail
+                )
+            findings.cannot_say(
+                FailureReason.DELEGATION_CHAIN_INVALID,
+                detail,
+                unbound=UNBOUND_DELEGATION_CHAIN,
+            )
+            return VerifiedActionDelegation(
+                DelegationVerificationStatus.UNVERIFIABLE, reason=detail
+            )
+        resolved.append(credential)
+    ancestors = [
+        event
+        for event_hash in chain.reachable
+        if (event := referents.resolve_referent(event_hash)) is not None
+    ]
+    result = verify_action_delegation_chain(
+        envelope=envelope,
+        references=credentials,
+        credentials=resolved,
+        ancestors=ancestors,
+        referents=referents,
+        material_complete=completeness is MaterialCompleteness.COMPLETE_STORE,
     )
+    # WI-308: everything the chain decides about a credential *beyond its signature* is
+    # decided from the ancestors above — that the issuer's key binding precedes the use,
+    # that no revocation does, that `max_uses` was not exhausted. Truncated material
+    # cannot answer any of those in the negative, so a `verified` read off a gapped
+    # chain is absence of evidence wearing a verdict: a hidden prefix is exactly where
+    # the earlier uses and the revocation would be. `_check_v6_workflow_referent` makes
+    # this same distinction for its referent, and this check ignored it.
+    #
+    # A contradiction survives it, deliberately: truncation can only ever *remove*
+    # ancestors, so it cannot manufacture a bad signature, a widened scope or a broken
+    # parent link, and "contradiction outranks absence" (see `_Findings`) is not
+    # suspended by a gap. The ancestry questions that truncation genuinely muddies
+    # already route through `_missing_evidence`, which reports them as unverifiable on
+    # incomplete material rather than as facts.
+    if (
+        result.status is DelegationVerificationStatus.VERIFIED
+        and chain.truncated
+        and completeness is not MaterialCompleteness.COMPLETE_STORE
+    ):
+        detail = (
+            "the action-delegation chain verifies against the presented ancestors, but "
+            "that chain is truncated and the material does not claim completeness "
+            f"({referents.describe()}); an unpresented prefix is where a prior use or a "
+            "revocation of these credentials would be, so their standing at this event "
+            "cannot be shown (TRUST-DOMAIN.md §5.11 row 1)"
+        )
+        findings.cannot_say(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            detail,
+            unbound=UNBOUND_DELEGATION_CHAIN,
+        )
+        # No principals travel with it: they are read off credentials whose *standing*
+        # is what could not be shown, and reporting them would be the fail-open this
+        # branch exists to close, one field further down.
+        return VerifiedActionDelegation(
+            DelegationVerificationStatus.UNVERIFIABLE, reason=detail
+        )
+    if result.status is DelegationVerificationStatus.UNVERIFIABLE:
+        findings.cannot_say(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            result.reason or "action-delegation evidence is incomplete",
+            unbound=UNBOUND_DELEGATION_CHAIN,
+        )
+    elif not result.verified:
+        findings.contradicts(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            result.reason or "action-delegation chain is invalid",
+        )
+    return result
+
+
+def _check_v6_action_revocation_authority(
+    envelope: Mapping[str, Any],
+    *,
+    referents: ReferentResolver,
+    completeness: MaterialCompleteness,
+    findings: _Findings,
+    credential_completeness: MaterialCompleteness | None = None,
+) -> None:
+    if envelope["transition"] != "action_delegation_revoked":
+        return
+    from types import SimpleNamespace
+
+    from ._action_delegation import (
+        action_delegation_revocation_authorized,
+        parse_action_delegation_revocation,
+    )
+
+    credential_id, credential_hash = parse_action_delegation_revocation(envelope["payload"])
+    credential = referents.resolve_action_credential(credential_hash)
+    if credential is None:
+        # Same referent class, same claim, same reason as `_check_v6_delegation`: a
+        # bundle that transports no credential section cannot call one absent.
+        detail = f"revoked credential {credential_hash} is absent from {referents.describe()}"
+        if (credential_completeness or completeness) is MaterialCompleteness.COMPLETE_STORE:
+            findings.contradicts(FailureReason.DELEGATION_CHAIN_INVALID, detail)
+        else:
+            findings.cannot_say(
+                FailureReason.DELEGATION_CHAIN_INVALID,
+                detail,
+                unbound=UNBOUND_DELEGATION_CHAIN,
+            )
+        return
+    if str(credential.credential_id) != credential_id:
+        findings.contradicts(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            "action delegation revocation credential_id does not match the "
+            "credential resolved by credential_hash",
+        )
+        return
+    event = SimpleNamespace(
+        actor_principal_id=envelope["actor"]["principal_id"],
+        envelope=envelope,
+    )
+    if not action_delegation_revocation_authorized(event, credential, referents):
+        findings.contradicts(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            "action delegation revocation signer is neither the issuer nor a "
+            "directly trusted project authority",
+        )
 
 
 def _check_v6_producer(
@@ -3276,6 +3477,12 @@ def _verify_v6_row(
     v6_semantics: dict[str, Any] = {
         "attribution": Attribution.INDIVIDUAL,
         "trust_domain_id": str(envelope["trust_domain_id"]),
+        "delegated_authorization": envelope["authorization"]["mode"] == "delegated",
+        "delegation_verification": (
+            DelegationVerificationStatus.UNVERIFIABLE
+            if envelope["authorization"]["mode"] == "delegated"
+            else DelegationVerificationStatus.NOT_APPLICABLE
+        ),
     }
     trusted = keys.resolve(signing["key_id"])
     if trusted is None:
@@ -3413,6 +3620,12 @@ def _verify_v6_row(
         bytes(row.canonical_envelope or b""), bytes(row.signature or b"")
     ).hex()
     completeness = resolve_completeness(referents.completeness, policy.material_completeness)
+    # The credential section carries its own claim (see `ReferentResolver`), and the
+    # policy override is the caller's tighten-only claim about the material as a whole,
+    # so it applies to both.
+    credential_completeness = resolve_completeness(
+        credential_material_claim(referents), policy.material_completeness
+    )
     findings = _Findings()
 
     # (a) Caller pins. A contradiction of something the caller pinned out of band
@@ -3468,7 +3681,23 @@ def _verify_v6_row(
         completeness=completeness,
         findings=findings,
     )
-    _check_v6_delegation(envelope, findings=findings)
+    delegation = _check_v6_delegation(
+        envelope,
+        chain=chain_context,
+        referents=referents,
+        completeness=completeness,
+        credential_completeness=credential_completeness,
+        findings=findings,
+    )
+    common["delegation_verification"] = delegation.status
+    common["authorization_principals"] = delegation.participating_principals
+    _check_v6_action_revocation_authority(
+        envelope,
+        referents=referents,
+        completeness=completeness,
+        credential_completeness=credential_completeness,
+        findings=findings,
+    )
     producer_consistency = _check_v6_producer(envelope, policy=policy, findings=findings)
 
     # (f) Epoch position and checkpoint binding. Both are derived from the material

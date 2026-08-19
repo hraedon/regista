@@ -212,7 +212,26 @@ class ReviewRejected(ValueError):  # noqa: N818
         self.detail = detail or {}
 
 
+def _authorization_participants(ctx: Any) -> set[str]:
+    """Principals the *candidate* event's own delegation chain names.
+
+    This is the WI-008 authorization chain that authorized the transition being
+    validated, as verified by the writer before the validator runs. It is a set of
+    acting identities exactly as ``actor_id`` and ``on_behalf_of.principal_id`` are,
+    which is why every independence gate has to compare against it and not only
+    against them.
+    """
+
+    evidence = getattr(ctx, "authorization_evidence", None)
+    if evidence is None or getattr(evidence, "status", None) != "verified":
+        return set()
+    return set(getattr(evidence, "participating_principals", frozenset()))
+
+
 def _check_separation_of_duties(ctx: Any, author_ids: set[str], gate: str) -> None:
+    author_ids.update(
+        getattr(ctx, "prior_authorization_principals", frozenset())
+    )
     if ctx.actor_id in author_ids:
         raise ReviewRejected(
             f"{gate}: the reviewer must differ from every actor who "
@@ -230,6 +249,19 @@ def _check_separation_of_duties(ctx: Any, author_ids: set[str], gate: str) -> No
                     "actor_id": ctx.actor_id,
                     "principal_id": principal_id,
                     "authors": sorted(author_ids),
+                },
+            )
+    participants = _authorization_participants(ctx)
+    if participants:
+        conflicts = participants & author_ids
+        if conflicts:
+            raise ReviewRejected(
+                f"{gate}: an action-delegation participant is an author",
+                detail={
+                    "actor_id": ctx.actor_id,
+                    "authorization_principals": sorted(participants),
+                    "authors": sorted(author_ids),
+                    "conflicts": sorted(conflicts),
                 },
             )
 
@@ -437,11 +469,30 @@ def human_gate(
 
     if getattr(ctx, "transition_name", None) == "accept":
         pass_ids = _adversarial_pass_identities(ctx.prior_events)
+        pass_ids.update(
+            getattr(
+                ctx,
+                "prior_adversarial_pass_authorization_principals",
+                frozenset(),
+            )
+        )
         delegation = getattr(ctx, "on_behalf_of", None)
         acceptor_principal = (
             delegation.get("principal_id") if isinstance(delegation, dict) else None
         )
-        if ctx.actor_id in pass_ids or (acceptor_principal and acceptor_principal in pass_ids):
+        # WI-008 round two: the accepting event's OWN authorization chain is an
+        # acceptor identity too, and it was the one this gate never compared. Since
+        # `on_behalf_of` cannot be written inside a v6 epoch at all
+        # (``_event_store.py``'s refusal), a WI-008 credential is the only surviving
+        # delegation vehicle — so comparing `actor_id` and `on_behalf_of` alone let one
+        # principal issue the credential for the adversarial pass AND the credential
+        # for the acceptance and still reach `done`, which is precisely the
+        # two-stage independence this gate exists to enforce.
+        acceptor_ids = {ctx.actor_id} | _authorization_participants(ctx)
+        if acceptor_principal:
+            acceptor_ids.add(acceptor_principal)
+        conflicts = acceptor_ids & pass_ids
+        if conflicts:
             raise ReviewRejected(
                 "human_gate: the final accepter must differ from every actor who "
                 "performed an adversarial pass on this item (two-stage independence "
@@ -449,6 +500,7 @@ def human_gate(
                 detail={
                     "actor_id": ctx.actor_id,
                     "adversarial_pass_identities": sorted(pass_ids),
+                    "conflicting_identities": sorted(conflicts),
                 },
             )
 

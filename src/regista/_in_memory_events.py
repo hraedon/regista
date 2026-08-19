@@ -8,7 +8,7 @@ from ._contract import (
     Jsonb,
     check_append_blocked,
     check_reserved_transition,
-    validate_entity_kind,
+    validate_event_entity_kind,
     validate_mutation_params,
     validate_read_events_filters,
     validate_work_item_exists,
@@ -37,8 +37,9 @@ def in_memory_append_event(
     on_behalf_of: dict[str, Any] | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> Event:
-    validate_entity_kind(entity_kind)
+    validate_event_entity_kind(entity_kind, transition)
     if event_id is None:
         event_id = uuid.uuid4()
     validate_mutation_params(
@@ -86,6 +87,7 @@ def in_memory_append_event(
         _key_id=key_id,
         entity_kind=entity_kind,
         hash_alg=hash_alg,
+        action_delegation_credentials=action_delegation_credentials,
     )
 
 

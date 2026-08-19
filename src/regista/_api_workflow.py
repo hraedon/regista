@@ -240,6 +240,7 @@ class WorkflowApiMixin(_RegistaBase):
         expected_event_seq: int | None = None,
         on_behalf_of: dict[str, Any] | None = None,
         key_id: str | None = None,
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> Event:
         """Execute a workflow-defined state transition.
 
@@ -283,6 +284,7 @@ class WorkflowApiMixin(_RegistaBase):
             on_behalf_of=on_behalf_of,
             strict_roles=self._strict_roles,
             key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
         )
         self._try_create_witness_receipts(evt)
         return evt
@@ -302,6 +304,7 @@ class WorkflowApiMixin(_RegistaBase):
         on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> Event:
         """Append a free-form event to the work-item log.
 
@@ -319,8 +322,10 @@ class WorkflowApiMixin(_RegistaBase):
             payload: Optional JSONB payload.
             event_id: UUIDv4 idempotency key.
             expected_event_seq: Optimistic-concurrency check.
-            entity_kind: Entity kind (``"work_item"``, ``"note"``,
-                ``"spec"``, ``"principal"``, ``"session"``, ``"segment"``).
+            entity_kind: A member of the closed v6 entity-kind registry.
+            action_delegation_credentials: Ordered action-delegation credential
+                documents. Their hashes enter the signed event; documents are
+                verified and stored transactionally as immutable evidence.
             hash_alg: Hash algorithm for signing (default ``"sha-256"``).
 
         Returns:
@@ -344,6 +349,32 @@ class WorkflowApiMixin(_RegistaBase):
             on_behalf_of=on_behalf_of,
             entity_kind=entity_kind,
             hash_alg=hash_alg,
+            action_delegation_credentials=action_delegation_credentials,
+        )
+        self._try_create_witness_receipts(evt)
+        return evt
+
+    def revoke_action_delegation(
+        self,
+        credential_id: uuid.UUID,
+        credential_hash: str,
+        actor_id: str,
+        *,
+        reason: str,
+        actor_kind: str = "human",
+        actor_metadata: dict[str, Any] | None = None,
+        key_id: str | None = None,
+        event_id: uuid.UUID | None = None,
+    ) -> Event:
+        evt = self.events.revoke_action_delegation(
+            credential_id,
+            credential_hash,
+            actor_id,
+            reason=reason,
+            actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
+            key_id=key_id,
+            event_id=event_id,
         )
         self._try_create_witness_receipts(evt)
         return evt

@@ -52,6 +52,7 @@ than trusting this docstring.
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -105,9 +106,17 @@ _IDENTITY_COLUMNS: Final[tuple[str, ...]] = (
 #: absent: there is no in-memory archive, and ``_genesis._archived_count``
 #: already treats an absent relation as zero, so reporting it missing is the
 #: truthful answer rather than a fabricated empty table.
-_RELATIONS: Final[frozenset[str]] = frozenset({"events", "project_identity", "event_chain_head"})
+_RELATIONS: Final[frozenset[str]] = frozenset(
+    {
+        "events",
+        "project_identity",
+        "event_chain_head",
+        "action_delegation_credentials",
+    }
+)
 
 _WS_RE = re.compile(r"\s+")
+_SHA256_TEXT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FOR_UPDATE_RE = re.compile(r"\s+FOR\s+UPDATE$", re.IGNORECASE)
 _SELECT_RE = re.compile(
     r"^SELECT\s+(?P<cols>.+?)\s+FROM\s+(?P<table>\"?[a-z_]+\"?)"
@@ -206,6 +215,7 @@ class InMemoryV6Rows:
         self.store = store
         self.project_identity: dict[str, Any] | None = None
         self.head_event_id: uuid.UUID | None = None
+        self.action_delegation_credentials: dict[str, dict[str, Any]] = {}
 
     @property
     def head_hash(self) -> bytes | None:
@@ -340,6 +350,8 @@ class InMemoryV6Connection:
             rows = self._rows.identity_rows()
         elif table == "event_chain_head":
             rows = self._rows.chain_head_rows()
+        elif table == "action_delegation_credentials":
+            rows = list(self._rows.action_delegation_credentials.values())
         else:
             raise _refuse(text, f"relation {table!r} is not modelled in memory")
 
@@ -507,6 +519,44 @@ class InMemoryV6Connection:
                 head_event if head_event is None else uuid.UUID(str(head_event))
             )
             return _Result([])
+        if table == "action_delegation_credentials":
+            credential_id = str(assigned["credential_id"])
+            credential_hash = str(assigned["credential_hash"])
+            first_event_hash = str(assigned["first_event_hash"])
+            if not _SHA256_TEXT_RE.fullmatch(credential_hash):
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "action_delegation_credentials.credential_hash has invalid shape",
+                )
+            if not _SHA256_TEXT_RE.fullmatch(first_event_hash):
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    "action_delegation_credentials.first_event_hash has invalid shape",
+                )
+            canonical_document = bytes(assigned["canonical_document"])
+            existing_by_id = self._rows.action_delegation_credentials.get(credential_id)
+            existing_by_hash = next(
+                (
+                    row
+                    for row in self._rows.action_delegation_credentials.values()
+                    if row["credential_hash"] == credential_hash
+                ),
+                None,
+            )
+            existing = existing_by_id or existing_by_hash
+            if existing is not None:
+                if (
+                    str(existing["credential_id"]) != credential_id
+                    or existing["credential_hash"] != credential_hash
+                    or bytes(existing["canonical_document"]) != canonical_document
+                ):
+                    raise RegistaError(
+                        ErrorCode.ACTION_DELEGATION_CREDENTIAL_CONFLICT,
+                        "credential_id or credential_hash is already bound to different bytes",
+                    )
+                return _Result([])
+            self._rows.action_delegation_credentials[credential_id] = dict(assigned)
+            return _Result([])
         raise _refuse(text, f"relation {table!r} is not modelled in memory")
 
     def _insert_event(self, text: str, assigned: Mapping[str, Any]) -> int:
@@ -640,23 +690,25 @@ class InMemoryV6ConnectionManager:
 
     def __init__(self, rows: InMemoryV6Rows) -> None:
         self._rows = rows
+        self._lock = threading.RLock()
 
     @contextmanager
     def transaction(self) -> Generator[InMemoryV6Connection, None, None]:
-        conn = InMemoryV6Connection(self._rows)
-        try:
-            yield conn
-        except Exception as exc:
-            if conn.writes:
-                raise RegistaError(
-                    ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY,
-                    "an in-memory v6 transaction failed after writing and cannot "
-                    "roll back; rollback is Postgres-only "
-                    "(SUITE-RECONCILIATION.md §2.3(a)) and a silent partial commit "
-                    f"is refused instead of faked. Original failure: {exc!r}",
-                    detail={"writes": conn.writes, "original": repr(exc)},
-                ) from exc
-            raise
+        with self._lock:
+            conn = InMemoryV6Connection(self._rows)
+            try:
+                yield conn
+            except Exception as exc:
+                if conn.writes:
+                    raise RegistaError(
+                        ErrorCode.PARITY_BOUNDARY_POSTGRES_ONLY,
+                        "an in-memory v6 transaction failed after writing and cannot "
+                        "roll back; rollback is Postgres-only "
+                        "(SUITE-RECONCILIATION.md §2.3(a)) and a silent partial commit "
+                        f"is refused instead of faked. Original failure: {exc!r}",
+                        detail={"writes": conn.writes, "original": repr(exc)},
+                    ) from exc
+                raise
 
     @contextmanager
     def read_only_transaction(self) -> Generator[InMemoryV6Connection, None, None]:

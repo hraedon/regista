@@ -101,6 +101,12 @@ def validate_entity_kind(entity_kind: str) -> None:
         )
 
 
+def validate_event_entity_kind(entity_kind: str, transition: str | None) -> None:
+    if entity_kind == "project" and transition == "action_delegation_revoked":
+        return
+    validate_entity_kind(entity_kind)
+
+
 def validate_ttl(ttl_seconds: int) -> None:
     if ttl_seconds <= 0:
         raise RegistaError(

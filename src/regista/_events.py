@@ -16,7 +16,7 @@ from ._contract import (
     check_key_role_policy,
     validate_actor_metadata,
     validate_delegation_chain,
-    validate_entity_kind,
+    validate_event_entity_kind,
     validate_json_safe_value,
 )
 from ._errors import ErrorCode, RegistaError
@@ -248,6 +248,8 @@ def _append_v6_through_writer(
     event_id: uuid.UUID,
     on_behalf_of: dict[str, Any] | None,
     key_id: str | None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
+    occurred_at: datetime | None = None,
 ) -> Event:
     """Route one direct-SQL append through the real v6 writer.
 
@@ -276,6 +278,7 @@ def _append_v6_through_writer(
         expected_event_seq=None,
         on_behalf_of=on_behalf_of,
         key_id=key_id,
+        action_delegation_credentials=action_delegation_credentials,
     )
     append_v6_event(
         conn,
@@ -292,6 +295,8 @@ def _append_v6_through_writer(
         key_id=request.key_id,
         workflow_name=request.workflow_name,
         workflow_version=request.workflow_version,
+        action_delegation_credentials=request.action_delegation_credentials,
+        occurred_at=occurred_at,
     )
     appended = _read_event_by_id(conn, request.event_id)
     if appended is None:  # pragma: no cover - the writer inserted it or raised
@@ -319,6 +324,7 @@ def append_event(
     _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
     entity_kind: str = "work_item",
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> Event:
     from ._genesis import admit_legacy_append, check_legacy_append
 
@@ -350,6 +356,13 @@ def append_event(
             payload=_idem,
         )
         if existing is not None:
+            from ._event_store import _check_action_delegation_idempotency
+
+            _check_action_delegation_idempotency(
+                existing,
+                action_delegation_credentials,
+                source=conn,
+            )
             return existing
         appended = _append_v6_through_writer(
             conn,
@@ -366,6 +379,7 @@ def append_event(
             event_id=event_id,
             on_behalf_of=on_behalf_of,
             key_id=_key_id,
+            action_delegation_credentials=action_delegation_credentials,
         )
         if entity_kind == "work_item":
             conn.execute(
@@ -382,7 +396,7 @@ def append_event(
     am = actor_metadata.value if actor_metadata is not None else None
     validate_actor_metadata(am)
     validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
-    validate_entity_kind(entity_kind)
+    validate_event_entity_kind(entity_kind, transition)
     key_entry = key_set.resolve_signing_key(actor_id, key_id=_key_id)
     key_id = key_entry.key_id
     check_key_role_policy(key_entry.role, transition)
@@ -408,6 +422,13 @@ def append_event(
         payload=_idem_payload,
     )
     if existing is not None:
+        from ._event_store import _check_action_delegation_idempotency
+
+        _check_action_delegation_idempotency(
+            existing,
+            action_delegation_credentials,
+            source=conn,
+        )
         return existing
 
     if entity_kind == "work_item":
@@ -610,6 +631,8 @@ def _append_v6_transition(
     on_behalf_of: dict[str, Any] | None,
     _prelocked_wi: dict[str, Any] | None,
     _key_id: str | None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...],
+    occurred_at: datetime,
 ) -> Event:
     """The v6 half of :func:`append_transition_event`.
 
@@ -640,6 +663,13 @@ def _append_v6_transition(
         payload=stored_payload if payload is not None else None,
     )
     if existing is not None:
+        from ._event_store import _check_action_delegation_idempotency
+
+        _check_action_delegation_idempotency(
+            existing,
+            action_delegation_credentials,
+            source=conn,
+        )
         return existing
 
     check_expected_seq(wi_row["next_event_seq"], expected_event_seq)
@@ -659,6 +689,8 @@ def _append_v6_transition(
         event_id=event_id,
         on_behalf_of=on_behalf_of,
         key_id=_key_id,
+        action_delegation_credentials=action_delegation_credentials,
+        occurred_at=occurred_at,
     )
 
     merged_fields = wi_row["custom_fields"]
@@ -715,10 +747,13 @@ def append_transition_event(
     on_behalf_of: dict[str, Any] | None = None,
     _prelocked_wi: dict[str, Any] | None = None,
     _key_id: str | None = None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
+    occurred_at: datetime | None = None,
 ) -> Event:
     from ._genesis import admit_legacy_append, check_legacy_append
 
     if _v6_epoch_open(conn):
+        resolved_occurred_at = occurred_at or datetime.now(UTC)
         return _append_v6_transition(
             conn,
             work_item_id,
@@ -736,6 +771,8 @@ def append_transition_event(
             on_behalf_of=on_behalf_of,
             _prelocked_wi=_prelocked_wi,
             _key_id=_key_id,
+            action_delegation_credentials=action_delegation_credentials,
+            occurred_at=resolved_occurred_at,
         )
 
     check_legacy_append(conn, writer="events.append_transition_event")

@@ -633,6 +633,11 @@ def _verify_event_signatures(
     unverifiable_count = 0
     errors_unverifiable: list[str] = []
     resolver = BundleKeyResolver(keys_by_id)
+    # No credential section is passed because bundle v2 has none to pass: WI-289/P3.3
+    # adds `sections.action_delegation_credentials` in v3, and until then a delegated
+    # event here is *unverifiable* from bundle evidence rather than invalid
+    # (BUNDLE-V3.md §9 item 6). `from_bundle`'s default states that, and it is a
+    # different state from an empty v3 section — see its docstring.
     referents = BundleReferents.from_bundle(manifest or {}, events)
     effective_policy = policy or DEFAULT_POLICY
 

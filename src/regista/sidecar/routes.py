@@ -36,6 +36,7 @@ from .models import (
     RemoveLinkRequest,
     ReplayRequest,
     RequeueDeadLetteredHookRequest,
+    RevokeActionDelegationRequest,
     SignSpecRequest,
     TransitionRequest,
     UnregisterActorRoleRequest,
@@ -157,6 +158,7 @@ def register_routes(
             expected_event_seq=body.expected_event_seq,
             on_behalf_of=body.on_behalf_of,
             entity_kind=body.entity_kind,
+            action_delegation_credentials=tuple(body.action_delegation_credentials),
         )
         return _serialize(result)
 
@@ -174,8 +176,26 @@ def register_routes(
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
             expected_event_seq=body.expected_event_seq,
             on_behalf_of=body.on_behalf_of,
+            action_delegation_credentials=tuple(body.action_delegation_credentials),
         )
         return _serialize(result)
+
+    @router.post("/action_delegation/revoke")
+    def revoke_action_delegation(
+        body: RevokeActionDelegationRequest, request: Request
+    ) -> Any:
+        actor = get_actor(request)
+        return _serialize(
+            regista.revoke_action_delegation(
+                _parse_uuid(body.credential_id),
+                body.credential_hash,
+                actor.actor_id,
+                reason=body.reason,
+                actor_kind=body.actor_kind,
+                actor_metadata=body.actor_metadata,
+                event_id=_parse_uuid(body.event_id) if body.event_id else None,
+            )
+        )
 
     @router.post("/read_events")
     def read_events(body: ReadEventsRequest, request: Request) -> Any:
@@ -643,4 +663,3 @@ def register_routes(
         }
 
     app.include_router(router)
-

@@ -1725,11 +1725,7 @@ class TestWorkflowReferent:
 
 
 class TestDelegation:
-    def test_a_delegated_event_is_never_fully_authenticated(self, healthy) -> None:
-        """§5.12 requires validating a credential **document** chain, and an
-        action-delegation document is not an event: no channel in the presented
-        material carries one, and WI-008 has not landed. So the chain is reported
-        unestablished. "No documents presented" is never read as "chain fine"."""
+    def test_complete_material_missing_delegation_document_is_invalid(self, healthy) -> None:
 
         corpus, _genesis, _ordinary = healthy
         acceptance = corpus.events[2]
@@ -1751,10 +1747,10 @@ class TestDelegation:
             },
         )
         result = verify(event, corpus)
-        assert result.applicability is Applicability.UNVERIFIABLE, result.summary()
+        assert result.applicability is Applicability.INVALID, result.summary()
         assert result.ok is False
         assert FailureReason.DELEGATION_CHAIN_INVALID in result.reasons
-        assert "delegation_chain" in result.unbound_properties
+        assert "delegation_chain" not in result.unbound_properties
 
 
 class TestProducerPolicy:

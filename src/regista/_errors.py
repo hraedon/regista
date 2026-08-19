@@ -153,6 +153,8 @@ class ErrorCode(StrEnum):
     # KEY_BINDING_UNRESOLVED: "revoked" and "never accepted" are different facts and
     # an operator's response to each is different.
     KEY_ACCEPTANCE_REVOKED = "KEY_ACCEPTANCE_REVOKED"
+    ACTION_DELEGATION_INVALID = "ACTION_DELEGATION_INVALID"
+    ACTION_DELEGATION_CREDENTIAL_CONFLICT = "ACTION_DELEGATION_CREDENTIAL_CONFLICT"
 
     # The in-memory v6 parity boundary (WI-287, SUITE-RECONCILIATION.md §2.3(a)).
     # Locking, rollback, persistence and concurrency remain Postgres-only, and the

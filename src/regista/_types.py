@@ -737,6 +737,14 @@ class ReplayReportEntry:
 
 
 @dataclass(frozen=True)
+class AuthorizationEvidence:
+    mode: str
+    status: str
+    credential_hashes: tuple[str, ...] = ()
+    participating_principals: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class ValidatorContext:
     """Context passed to a sync transition validator (runs in-transition).
 
@@ -767,6 +775,15 @@ class ValidatorContext:
     prior_events: tuple[Event, ...]
     on_behalf_of: dict[str, Any] | None = None
     validator_params: dict[str, Any] | None = None
+    authorization_evidence: AuthorizationEvidence = AuthorizationEvidence(
+        mode="direct", status="not_applicable"
+    )
+    prior_authorization_principals: frozenset[str] = frozenset()
+    # Verified principals from earlier delegated ``adversarial_pass`` events.
+    # This is separate from prior_authorization_principals: review participants
+    # are not work-item authors, but still participate in final-acceptance
+    # independence.
+    prior_adversarial_pass_authorization_principals: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -788,6 +805,20 @@ class ValidatorContext:
             d["on_behalf_of"] = self.on_behalf_of
         if self.validator_params is not None:
             d["validator_params"] = self.validator_params
+        d["authorization_evidence"] = {
+            "mode": self.authorization_evidence.mode,
+            "status": self.authorization_evidence.status,
+            "credential_hashes": list(self.authorization_evidence.credential_hashes),
+            "participating_principals": sorted(
+                self.authorization_evidence.participating_principals
+            ),
+        }
+        d["prior_authorization_principals"] = sorted(
+            self.prior_authorization_principals
+        )
+        d["prior_adversarial_pass_authorization_principals"] = sorted(
+            self.prior_adversarial_pass_authorization_principals
+        )
         return d
 
     @classmethod
@@ -810,6 +841,28 @@ class ValidatorContext:
             ),
             on_behalf_of=data.get("on_behalf_of"),
             validator_params=data.get("validator_params"),
+            authorization_evidence=AuthorizationEvidence(
+                mode=data.get("authorization_evidence", {}).get("mode", "direct"),
+                status=data.get("authorization_evidence", {}).get(
+                    "status", "not_applicable"
+                ),
+                credential_hashes=tuple(
+                    data.get("authorization_evidence", {}).get(
+                        "credential_hashes", []
+                    )
+                ),
+                participating_principals=frozenset(
+                    data.get("authorization_evidence", {}).get(
+                        "participating_principals", []
+                    )
+                ),
+            ),
+            prior_authorization_principals=frozenset(
+                data.get("prior_authorization_principals", [])
+            ),
+            prior_adversarial_pass_authorization_principals=frozenset(
+                data.get("prior_adversarial_pass_authorization_principals", [])
+            ),
         )
 
 

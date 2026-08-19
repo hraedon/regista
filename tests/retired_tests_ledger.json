@@ -1886,16 +1886,95 @@
     "covered_by": "tests/test_wi305_v6_assurance.py::TestV6ComputeAssuranceAPI::test_strict_workflow_rejects_undeclared_reviewer_agent_accept",
    "work_item": "WI-305"
   },
-  {
-   "node_id": "tests/test_plan023_review_validators.py::TestDelegationIntegration::test_agent_on_behalf_of_adversarial_passer_cannot_accept",
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_append_event_rejects_nan_in_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the in-memory v6 append path rejects malformed action-delegation credentials at ingress",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_append_rejects_malformed_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_append_event_with_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the in-memory v6 append path verifies and persists a delegated action",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_append_event_with_verified_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_reads_return_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the in-memory read path round-trips only the signed action-delegation reference",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_read_round_trip_preserves_credential_reference",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_replay_signature_still_verifies",
+    "disposition": "coverage_owed",
+    "invariant": "an in-memory event carrying delegated authorization remains signature-verifiable",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_replay_signature_still_verifies",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_replay_with_on_behalf_of_no_drift",
+    "disposition": "coverage_owed",
+    "invariant": "in-memory replay of delegated authorization has no drift",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_replay_with_verified_credential_has_no_drift",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestInMemoryRegistaOnBehalfOf::test_transition_with_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the in-memory workflow transition path verifies scoped delegated authorization",
+    "covered_by": "tests/test_plan010_integration.py::TestInMemoryActionDelegation::test_transition_with_verified_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestPostgresAppendEventOnBehalfOf::test_append_event_round_trips_via_read",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres read path round-trips only the signed action-delegation reference",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresActionDelegationCounterparts::test_append_event_round_trips_via_read",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestPostgresAppendEventOnBehalfOf::test_append_event_with_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres v6 append path verifies and persists a delegated action",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresActionDelegationCounterparts::test_append_event_with_verified_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestPostgresAppendEventOnBehalfOf::test_append_event_without_on_behalf_of_is_none",
+    "disposition": "coverage_owed",
+    "invariant": "a Postgres append without delegation remains an explicitly direct authorization",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresActionDelegationCounterparts::test_append_event_without_delegation_is_direct",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestPostgresTransitionOnBehalfOf::test_transition_rejects_invalid_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres workflow transition path rejects malformed action-delegation credentials",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresActionDelegationCounterparts::test_transition_rejects_invalid_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan010_integration.py::TestPostgresTransitionOnBehalfOf::test_transition_with_on_behalf_of",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres workflow transition path verifies scoped delegated authorization",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresActionDelegationCounterparts::test_transition_with_verified_credential",
+    "work_item": "WI-008"
+   },
+   {
+    "node_id": "tests/test_plan023_review_validators.py::TestDelegationIntegration::test_agent_on_behalf_of_adversarial_passer_cannot_accept",
    "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+    "invariant": "a verified delegation participant is included in the adversarial-review separation-of-duties author set",
+    "covered_by": "tests/test_wi008_action_delegation.py::TestInMemoryReviewActionDelegation::test_review_rejects_a_verified_delegation_participant_who_is_an_author",
    "work_item": "WI-008"
   },
   {
    "node_id": "tests/test_plan023_review_validators.py::TestDelegationIntegration::test_agent_on_behalf_of_author_cannot_adversarial_pass",
    "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+    "invariant": "an adversarial review is rejected when a verified delegation participant is an author",
+    "covered_by": "tests/test_wi008_action_delegation.py::TestInMemoryReviewActionDelegation::test_review_rejects_a_verified_delegation_participant_who_is_an_author",
    "work_item": "WI-008"
   },
   {
@@ -2043,29 +2122,33 @@
    "disposition": "dies_with_v5",
    "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_accepts_when_principal_is_not_author",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_accepts_when_principal_is_not_author",
+    "disposition": "coverage_owed",
+    "invariant": "review permits a verified delegation chain whose participants are disjoint from the authors",
+    "covered_by": "tests/test_wi008_action_delegation.py::TestInMemoryReviewActionDelegation::test_review_accepts_disjoint_verified_delegation_participants",
    "work_item": "WI-008"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_rejects_when_principal_is_author",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenario::test_rejects_when_principal_is_author",
+    "disposition": "coverage_owed",
+    "invariant": "review rejects a verified delegation chain whose participants include an author",
+    "covered_by": "tests/test_wi008_action_delegation.py::TestInMemoryReviewActionDelegation::test_review_rejects_a_verified_delegation_participant_who_is_an_author",
    "work_item": "WI-008"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_accepts_when_principal_is_not_author",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
-   "work_item": "WI-008"
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_accepts_when_principal_is_not_author",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres review path permits a verified delegation chain whose participants are disjoint from the authors",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresReviewActionDelegation::test_review_accepts_disjoint_verified_delegation_participants",
+    "work_item": "WI-008"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_rejects_when_principal_is_author",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
-   "work_item": "WI-008"
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestDelegationSelfReviewScenarioPostgres::test_rejects_when_principal_is_author",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres review path consumes the same verified participant separation contract",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresReviewActionDelegation::test_review_rejects_a_verified_delegation_participant_who_is_an_author",
+    "work_item": "WI-008"
   },
   {
    "node_id": "tests/test_validator_context_enrichment.py::TestOnBehalfOfInMemory::test_recorded_on_behalf_of",
@@ -2082,17 +2165,19 @@
    "disposition": "dies_with_v5",
    "invariant": "v5-only mechanic refused by the v6 envelope at ingress"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfInMemory::test_event_records_original_not_mutated_chain",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
-   "work_item": "WI-008"
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfInMemory::test_event_records_original_not_mutated_chain",
+    "disposition": "coverage_owed",
+    "invariant": "the in-memory validator path does not mutate the signed authorization reference",
+    "covered_by": "tests/test_wi008_action_delegation.py::TestInMemoryReviewActionDelegation::test_validator_cannot_mutate_signed_authorization_reference",
+    "work_item": "WI-008"
   },
-  {
-   "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfPostgres::test_event_records_original_not_mutated_chain",
-   "disposition": "coverage_owed",
-   "invariant": "delegation resurfaces as v6 authorization.credentials (WI-008); no v6 vehicle in this pass",
-   "work_item": "WI-008"
+   {
+    "node_id": "tests/test_validator_context_enrichment.py::TestValidatorCannotMutateOnBehalfOfPostgres::test_event_records_original_not_mutated_chain",
+    "disposition": "coverage_owed",
+    "invariant": "the Postgres validator path does not mutate the signed authorization reference",
+    "covered_by": "tests/test_wi008_action_delegation_postgres.py::TestPostgresReviewActionDelegation::test_validator_cannot_mutate_signed_authorization_reference",
+    "work_item": "WI-008"
   },
   {
    "node_id": "tests/test_wi223_principal_binding.py::TestCollapsedBranchIsSplit::test_asymmetric_event_from_unregistered_actor_fails",
@@ -2208,6 +2293,39 @@
    "disposition": "coverage_owed",
    "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
    "work_item": "WI-305"
+  },
+  {
+   "node_id": "tests/test_lineage.py::TestOrdinaryDelegationUndeclared::test_end_to_end_delegated_undeclared_principal_blocks_review",
+   "disposition": "coverage_owed",
+    "invariant": "the action-delegation document carries no principal-kind or model-lineage claim",
+    "covered_by": "tests/test_wi008_action_delegation.py::test_action_delegation_has_no_principal_kind_or_lineage_claim",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_replay_coverage.py::TestBC095InMemoryReplaySignatureVerification::test_in_memory_no_key_set_skips_verification",
+   "disposition": "dies_with_v5",
+   "invariant": "unsigned no-key replay is a v5-only mechanic; v6 events require Ed25519 evidence"
+  },
+  {
+   "node_id": "tests/test_wi262_principal_kind_ingress.py::TestCanonicalisation::test_canonical_value_reaches_the_stored_event",
+   "disposition": "coverage_owed",
+    "invariant": "the closed action-delegation document rejects an added principal_kind member",
+   "covered_by": "tests/test_wi008_action_delegation.py::test_unknown_document_member_is_refused",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_wi262_principal_kind_ingress.py::TestIngressEndToEnd::test_transition_rejects_unknown_principal_kind",
+   "disposition": "coverage_owed",
+    "invariant": "action-delegation credential parsing rejects principal_kind rather than accepting a new field",
+   "covered_by": "tests/test_wi008_action_delegation.py::test_unknown_document_member_is_refused",
+   "work_item": "WI-008"
+  },
+  {
+   "node_id": "tests/test_wi262_principal_kind_ingress.py::TestIngressEndToEnd::test_recognised_kind_still_writes",
+   "disposition": "coverage_owed",
+    "invariant": "a verified action-delegation chain authorizes the scoped action without a principal-kind claim",
+    "covered_by": "tests/test_wi008_action_delegation.py::test_verified_chain_authorizes_exact_action",
+   "work_item": "WI-008"
   }
  ]
 }

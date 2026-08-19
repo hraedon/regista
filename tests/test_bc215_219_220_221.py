@@ -302,20 +302,21 @@ class TestBC219DelegationChainFields:
 
 class TestBC220ClientTimestamp:
     def test_client_timestamp_set_in_event(self, tmp_path: Path) -> None:
-        from regista._event_store import InMemoryEventStore, append_event
-        store = InMemoryEventStore()
-        work_item_id = uuid.uuid4()
-        store.bind({
-            work_item_id: {
-                "next_event_seq": 1,
-                "last_event_seq": 0,
-                "last_event_at": datetime.now(UTC),
-            },
-        })
-        evt = append_event(
-            store, work_item_id, "actor", "agent", None,
-            "wf", 1, "t", None, uuid.uuid4(),
-            key_set=None, on_behalf_of=None,
+        from regista.testing import InMemoryRegista
+        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+        keyset = make_v6_keyset(tmp_path, principals=("agent:actor",))
+        sub = InMemoryRegista(project="bc220_client", hmac_key_path=keyset.path)
+        open_v6_epoch(sub, keyset, principals=("agent:actor",))
+        sub.register_workflow(
+            "name: wf\nversion: 1\nregista_version: 5.0.0\n"
+            "states:\n  - name: open\n    initial: true\n    terminal: true\n"
+            "work_item_types:\n  - name: item\n    custom_fields: []\n"
+            "transitions: []\nroles: []\nlink_types: []\n"
+        )
+        wi, _ = sub.create_work_item("wf", "item", "agent:actor")
+        evt = sub.append_event(
+            wi.work_item_id, "agent:actor", transition="note", payload={}
         )
         assert evt.timestamp is not None
 

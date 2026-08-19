@@ -71,6 +71,7 @@ class _RegistaBase:
             on_behalf_of: dict[str, Any] | None = None,
             entity_kind: str = "work_item",
             hash_alg: str = "sha-256",
+            action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
         ) -> Event: ...
 
         def read_events(

@@ -367,6 +367,7 @@ class EventOps:
         on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> Event:
         from ._events_api import append_event as _impl
 
@@ -377,11 +378,56 @@ class EventOps:
             key_id=key_id,
             transition=transition,
             payload=payload,
+            action_delegation_credentials=action_delegation_credentials,
             event_id=event_id,
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
             entity_kind=entity_kind,
             hash_alg=hash_alg,
+        )
+
+    def revoke_action_delegation(
+        self,
+        credential_id: uuid.UUID,
+        credential_hash: str,
+        actor_id: str,
+        *,
+        reason: str,
+        actor_kind: str = "human",
+        actor_metadata: dict[str, Any] | None = None,
+        key_id: str | None = None,
+        event_id: uuid.UUID | None = None,
+    ) -> Event:
+        from ._events_api import append_event as _impl
+        from ._v6_writer import read_project_identity
+
+        with self._mgr.transaction() as conn:
+            identity = read_project_identity(conn)
+        if identity is None:
+            raise RegistaError(
+                ErrorCode.GENESIS_REQUIRED,
+                "action delegation revocation requires an open v6 epoch",
+            )
+        return _impl(
+            self._mgr,
+            self._keys,
+            self._metrics,
+            self._project,
+            identity.project_instance_id,
+            actor_id,
+            actor_kind,
+            actor_metadata=actor_metadata,
+            key_id=key_id,
+            transition="action_delegation_revoked",
+            payload={
+                "type": "regista.action-delegation-revocation",
+                "version": 1,
+                "credential_id": str(credential_id),
+                "credential_hash": credential_hash,
+                "reason": reason,
+            },
+            event_id=event_id,
+            entity_kind="project",
         )
 
     def read(

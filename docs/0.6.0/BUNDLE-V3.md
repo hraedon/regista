@@ -621,6 +621,12 @@ WI-269 flagged the real cost: 38 `assert not verified` sites, of which ~33 sit o
    `complete-store` bundle is invalid** — not a warning, not a smaller bundle. A
    `contiguous-range` bundle names each dependency that falls outside its scope, and a verifier
    reports it as outside scope rather than treating its absence as satisfaction.
+   P3.3/WI-289 will carry action-delegation documents in a closed
+   `sections.action_delegation_credentials` section covered by the signed section digest. Each
+   document will be addressed only by its recomputed action-delegation hash. A complete-store v3
+   artifact missing a referenced credential will be invalid; a partial artifact that names the
+   missing dependency will be unverifiable. Bundle v2 does not transport credentials, and delegated
+   audit from bundle-v2 evidence is therefore unverifiable rather than silently trusted.
 7. **HMAC-era export is a normal success.** With v3, exporting from an 86%-HMAC store produces a bundle whose statement signature is externally verifiable. `--allow-unverified` (`src/regista/_cli.py:990`) is deleted; the exit code is driven by the `applicability` the export's own self-verification reached, and `legacy_checkpoint_bound` is exit 0.
 
 ---
