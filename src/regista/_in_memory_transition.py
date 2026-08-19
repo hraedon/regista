@@ -20,7 +20,7 @@ from ._event_store import InMemoryEventStore
 from ._event_store import append_event as _store_append
 from ._hooks import run_validator
 from ._keys import KeySet
-from ._types import Event, ValidatorContext
+from ._types import AuthorizationEvidence, Event, ValidatorContext
 from ._workflow import validate_field_update
 
 
@@ -47,6 +47,7 @@ def in_memory_transition(
     expected_event_seq: int | None = None,
     on_behalf_of: dict[str, Any] | None = None,
     strict_roles: bool = False,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> tuple[Event, int]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -104,6 +105,24 @@ def in_memory_transition(
         _validate_refs_in_memory(work_items, wf_data, wi["work_item_type"], custom_fields)
 
     new_state = transition_def["to_state"]
+    resolved_occurred_at = datetime.now(UTC)
+    authorization_evidence = AuthorizationEvidence(
+        mode="direct", status="not_applicable"
+    )
+    if action_delegation_credentials:
+        from ._in_mem_genesis import _as_conn
+        from ._transition import _verify_validator_authorization
+
+        with store.v6_manager.transaction() as connection:
+            authorization_evidence = _verify_validator_authorization(
+                _as_conn(connection),
+                work_item_id=work_item_id,
+                workflow_name=wi["workflow_name"],
+                transition_name=transition_name,
+                actor_id=actor_id,
+                credentials=action_delegation_credentials,
+                occurred_at=resolved_occurred_at,
+            )
 
     am_jsonb = Jsonb(actor_metadata) if actor_metadata is not None else None
 
@@ -126,6 +145,23 @@ def in_memory_transition(
                 key=lambda e: e.event_seq,
             )[-VALIDATOR_HISTORY_LIMIT:]
         )
+        from ._in_mem_genesis import _as_conn
+        from ._transition import (
+            _verified_prior_adversarial_pass_authorization_principals,
+            _verified_prior_authorization_principals,
+        )
+
+        with store.v6_manager.transaction() as connection:
+            prior_authorization_principals = (
+                _verified_prior_authorization_principals(
+                    _as_conn(connection), prior_events
+                )
+            )
+            prior_adversarial_pass_authorization_principals = (
+                _verified_prior_adversarial_pass_authorization_principals(
+                    _as_conn(connection), prior_events
+                )
+            )
         ctx = ValidatorContext(
             work_item_id=work_item_id,
             workflow_name=wi["workflow_name"],
@@ -144,6 +180,11 @@ def in_memory_transition(
                 dict(on_behalf_of) if on_behalf_of is not None else None
             ),
             validator_params=transition_def.get("validator_params"),
+            authorization_evidence=authorization_evidence,
+            prior_authorization_principals=prior_authorization_principals,
+            prior_adversarial_pass_authorization_principals=(
+                prior_adversarial_pass_authorization_principals
+            ),
         )
         run_validator(validator_name, handler, ctx)
 
@@ -168,6 +209,8 @@ def in_memory_transition(
         key_set=key_set,
         on_behalf_of=on_behalf_of,
         _key_id=key_id,
+        action_delegation_credentials=action_delegation_credentials,
+        occurred_at=resolved_occurred_at,
     )
 
     wi["current_state"] = new_state

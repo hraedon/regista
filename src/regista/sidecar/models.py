@@ -52,6 +52,7 @@ class AppendEventRequest(BaseModel):
     expected_event_seq: int | None = None
     on_behalf_of: dict[str, Any] | None = None
     entity_kind: Literal["work_item"] = "work_item"
+    action_delegation_credentials: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TransitionRequest(BaseModel):
@@ -65,6 +66,17 @@ class TransitionRequest(BaseModel):
     event_id: str | None = None
     expected_event_seq: int | None = None
     on_behalf_of: dict[str, Any] | None = None
+    action_delegation_credentials: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RevokeActionDelegationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential_id: str
+    credential_hash: str
+    reason: str = Field(min_length=1)
+    actor_kind: Literal["human", "agent", "system"] = "human"
+    actor_metadata: dict[str, Any] | None = None
+    event_id: str | None = None
 
 
 class ReadEventsRequest(BaseModel):

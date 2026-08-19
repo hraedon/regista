@@ -140,52 +140,7 @@ class TestCanonicalisation:
         validate_delegation_chain(delegation)
         assert delegation["principal_kind"] == canonical
 
-    def test_canonical_value_reaches_the_stored_event(self):
-        sub = _sub("wi262_canonical")
-        try:
-            wi, _ = sub.create_work_item(
-                workflow_name="wi262_review", work_item_type="issue",
-                actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            sub.transition(
-                wi.work_item_id, "start", "proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-                on_behalf_of={"principal_id": "boss", "principal_kind": " Human "},
-            )
-            events = sub.read_events(work_item_id=wi.work_item_id, limit=100)
-            start = next(e for e in events if e.transition == "start")
-            assert start.on_behalf_of["principal_kind"] == "human"
-        finally:
-            sub.close()
-
-
 class TestIngressEndToEnd:
-    def test_transition_rejects_unknown_principal_kind(self):
-        sub = _sub("wi262_ingress_reject")
-        try:
-            wi, _ = sub.create_work_item(
-                workflow_name="wi262_review", work_item_type="issue",
-                actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            with pytest.raises(RegistaError) as exc_info:
-                sub.transition(
-                    wi.work_item_id, "start", "proxy-agent",
-                    actor_kind="agent",
-                    actor_metadata={"model_lineage": "glm"},
-                    on_behalf_of={
-                        "principal_id": "hidden",
-                        "principal_kind": "ai-agent",
-                    },
-                )
-            assert exc_info.value.code == ErrorCode.INVALID_PRINCIPAL_KIND
-            # The write never happened.
-            assert sub.get_work_item(wi.work_item_id).current_state == "open"
-        finally:
-            sub.close()
-
     def test_legacy_stored_kind_still_fails_closed_at_the_gate(self):
         # Validation applies to NEW writes. An event written before it existed
         # can still carry "ai-agent", so the gate must fail closed on it rather
@@ -205,38 +160,3 @@ class TestIngressEndToEnd:
         assert "ai-agent" in kinds
         assert lineages == {"glm"}
         assert undeclared is True
-
-    def test_recognised_kind_still_writes(self):
-        sub = _sub("wi262_ingress_accept")
-        try:
-            wi, _ = sub.create_work_item(
-                workflow_name="wi262_review", work_item_type="issue",
-                actor_id="proxy-agent", actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            sub.transition(
-                wi.work_item_id, "start", "proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-                on_behalf_of={
-                    "principal_id": "delegated-agent",
-                    "principal_kind": "agent",
-                    "principal_lineage": "deepseek",
-                },
-            )
-            sub.transition(
-                wi.work_item_id, "submit_for_review", "proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            # Every identity declared a lineage and the reviewer differs from
-            # all of them: still no acknowledgment required.
-            sub.transition(
-                wi.work_item_id, "adversarial_pass", "kimi-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "kimi"},
-                payload=REVIEW_NOTE,
-            )
-            assert sub.get_work_item(wi.work_item_id).current_state == "done"
-        finally:
-            sub.close()

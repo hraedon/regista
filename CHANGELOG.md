@@ -6,6 +6,12 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- **Action delegation (WI-008).** Added strict `regista.action-delegation/v1` base64 Ed25519
+  credentials, immutable transactional credential evidence, v6 writer/verifier/replay resolution,
+  project-chain revocation and use-limit enforcement, immutable validator evidence, review
+  separation-of-duties integration, and Postgres/in-memory/sidecar ingress parity. Signed portable
+  credential transport remains P3.3/WI-289 work; bundle-v2 delegated audit is unverifiable.
+
 - **`spec` becomes the seventh v6 entity kind (WI-305 B).** `V6_ENTITY_KINDS` in
   `regista._verification` amends the closed §1.2 registry from six values to seven by
   adding `spec`, exactly as the owner-delegated decision prescribed: closure rejects

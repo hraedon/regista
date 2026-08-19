@@ -1,177 +1,130 @@
+"""WI-008 in-memory counterparts for the retired pre-v6 delegation tests."""
+
 from __future__ import annotations
 
-import uuid
+import json
 from pathlib import Path
 
 import pytest
 
-from regista import Regista
+from regista._action_delegation import action_delegation_hash
 from regista._errors import ErrorCode, RegistaError
-from regista.testing import InMemoryRegista
-
-_KEY_PATH = str(Path(__file__).parent / "test_keys.json")
-_WF = (Path(__file__).parent / "test_workflow.yaml").read_text()
-
-
-@pytest.fixture
-def sub(request) -> Regista:
-    from regista.testing import drop_project_schema
-
-    dsn = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-    project = f"test_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(dsn, project, hmac_key_path=_KEY_PATH)
-
-    def teardown():
-        sub.close()
-        drop_project_schema(dsn, project)
-
-    request.addfinalizer(teardown)
-    return sub
+from tests._wi008_fixtures import (
+    ACTION_SUBJECT,
+    action_delegation_document,
+    copy_action_delegation_document,
+    in_memory_action_project,
+)
 
 
 @pytest.fixture
-def imsub(request) -> InMemoryRegista:
-    return InMemoryRegista(project="test", hmac_key_path=_KEY_PATH)
+def action_project(tmp_path: Path):
+    project = in_memory_action_project(tmp_path)
+    try:
+        yield project
+    finally:
+        project.instance.close()
 
 
-def _register_and_create(sub: Regista) -> uuid.UUID:
-    sub.register_workflow(_WF)
-    sub.register_actor_role("actor_a", "agent")
-    wi, _evt = sub.work_items.create(
-        "test_workflow", "feature", "actor_a",
-        custom_fields={"title": "test"},
-        actor_metadata={"role": "agent"},
-    )
-    return wi.work_item_id
-
-
-class TestPostgresAppendEventOnBehalfOf:
-    def test_append_event_with_on_behalf_of(self, sub: Regista) -> None:
-        wid = _register_and_create(sub)
-        evt = sub.append_event(
-            wid, "actor_a",
-            on_behalf_of={"principal_id": "alice"},
+class TestInMemoryActionDelegation:
+    def test_append_event_with_verified_credential(self, action_project) -> None:
+        document = action_delegation_document(action_project)
+        event = action_project.instance.append_event(
+            action_project.work_item.work_item_id,
+            ACTION_SUBJECT,
+            transition="note_added",
+            payload={"note": "delegated"},
+            action_delegation_credentials=(document,),
         )
-        assert evt.on_behalf_of == {"principal_id": "alice"}
 
-    def test_append_event_without_on_behalf_of_is_none(self, sub: Regista) -> None:
-        wid = _register_and_create(sub)
-        evt = sub.append_event(wid, "actor_a")
-        assert evt.on_behalf_of is None
+        envelope = json.loads(bytes(event.canonical_envelope))
+        assert envelope["authorization"]["mode"] == "delegated"
+        assert envelope["authorization"]["credentials"] == [
+            {
+                "credential_id": document["credential_id"],
+                "credential_hash": action_delegation_hash(document),
+            }
+        ]
 
-    def test_append_event_round_trips_via_read(self, sub: Regista) -> None:
-        wid = _register_and_create(sub)
-        sub.append_event(
-            wid, "actor_a",
-            on_behalf_of={"principal_id": "alice", "scope": ["read"]},
+    def test_transition_with_verified_credential(self, action_project) -> None:
+        document = action_delegation_document(
+            action_project,
+            transition="delegated_transition",
         )
-        evts = sub.read_events(work_item_id=wid)
-        assert evts[-1].on_behalf_of == {"principal_id": "alice", "scope": ["read"]}
+        event = action_project.instance.transition(
+            action_project.work_item.work_item_id,
+            "delegated_transition",
+            ACTION_SUBJECT,
+            action_delegation_credentials=(document,),
+        )
 
+        assert event.transition == "delegated_transition"
+        assert action_project.instance.get_work_item(
+            action_project.work_item.work_item_id
+        ).current_state == "done"
 
-class TestPostgresTransitionOnBehalfOf:
-    def test_transition_with_on_behalf_of(self, sub: Regista) -> None:
-        wid = _register_and_create(sub)
-        evt = sub.transition(
-            wid, "start", "actor_a",
-            actor_metadata={"role": "agent"},
-            on_behalf_of={"principal_id": "bob"},
+    def test_read_round_trip_preserves_credential_reference(self, action_project) -> None:
+        document = action_delegation_document(action_project)
+        action_project.instance.append_event(
+            action_project.work_item.work_item_id,
+            ACTION_SUBJECT,
+            transition="note_added",
+            payload={"note": "round trip"},
+            action_delegation_credentials=(document,),
         )
-        assert evt.on_behalf_of == {"principal_id": "bob"}
 
-    def test_transition_rejects_invalid_on_behalf_of(self, sub: Regista) -> None:
-        wid = _register_and_create(sub)
-        with pytest.raises(RegistaError) as exc:
-            sub.transition(
-                wid, "start", "actor_a",
-                actor_metadata={"role": "agent"},
-                on_behalf_of={"principal_id": ""},
-            )
-        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        event = action_project.instance.read_events(
+            work_item_id=action_project.work_item.work_item_id
+        )[-1]
+        envelope = json.loads(bytes(event.canonical_envelope))
+        assert envelope["authorization"]["credentials"] == [
+            {
+                "credential_id": document["credential_id"],
+                "credential_hash": action_delegation_hash(document),
+            }
+        ]
+        assert "signature" not in envelope["authorization"]["credentials"][0]
 
+    def test_replay_signature_still_verifies(self, action_project) -> None:
+        document = action_delegation_document(action_project)
+        event = action_project.instance.append_event(
+            action_project.work_item.work_item_id,
+            ACTION_SUBJECT,
+            transition="note_added",
+            payload={"note": "verify"},
+            action_delegation_credentials=(document,),
+        )
 
-class TestInMemoryRegistaOnBehalfOf:
-    def test_append_event_with_on_behalf_of(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
-        )
-        evt = imsub.append_event(
-            wi.work_item_id, "actor_a",
-            on_behalf_of={"principal_id": "alice"},
-        )
-        assert evt.on_behalf_of == {"principal_id": "alice"}
+        assert action_project.instance.verify_event_signature(event)
+        verification = action_project.instance.verify_event_result(event)
+        assert verification.delegated_authorization is True
+        assert verification.delegation_verification.value == "verified"
 
-    def test_transition_with_on_behalf_of(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
+    def test_replay_with_verified_credential_has_no_drift(self, action_project) -> None:
+        document = action_delegation_document(action_project)
+        action_project.instance.append_event(
+            action_project.work_item.work_item_id,
+            ACTION_SUBJECT,
+            transition="note_added",
+            payload={"note": "replay"},
+            action_delegation_credentials=(document,),
         )
-        evt = imsub.transition(
-            wi.work_item_id, "start", "actor_a",
-            actor_metadata={"role": "agent"},
-            on_behalf_of={"principal_id": "carol"},
-        )
-        assert evt.on_behalf_of == {"principal_id": "carol"}
 
-    def test_reads_return_on_behalf_of(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
-        )
-        imsub.append_event(
-            wi.work_item_id, "actor_a",
-            on_behalf_of={"principal_id": "alice"},
-        )
-        evts = imsub.read_events(work_item_id=wi.work_item_id)
-        assert evts[-1].on_behalf_of == {"principal_id": "alice"}
-
-    def test_replay_with_on_behalf_of_no_drift(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
-        )
-        imsub.transition(
-            wi.work_item_id, "start", "actor_a",
-            actor_metadata={"role": "agent"},
-            on_behalf_of={"principal_id": "alice"},
-        )
-        report = imsub.replay()
+        report = action_project.instance.replay()
+        assert report.halted == 0
         assert report.replayed_drift == 0
 
-    def test_replay_signature_still_verifies(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
-        )
-        imsub.transition(
-            wi.work_item_id, "start", "actor_a",
-            actor_metadata={"role": "agent"},
-            on_behalf_of={"principal_id": "alice"},
-        )
-        report = imsub.replay()
-        assert report.replayed_ok == 1
+    def test_append_rejects_malformed_credential(self, action_project) -> None:
+        document = action_delegation_document(action_project)
+        malformed = copy_action_delegation_document(document)
+        malformed["principal_kind"] = "agent"
 
-    def test_append_event_rejects_nan_in_on_behalf_of(self, imsub: InMemoryRegista) -> None:
-        imsub.register_workflow(_WF)
-        wi, _evt = imsub.create_work_item(
-            "test_workflow", "feature", "actor_a",
-            custom_fields={"title": "test"},
-            actor_metadata={"role": "agent"},
-        )
-        with pytest.raises(RegistaError) as exc:
-            imsub.append_event(
-                wi.work_item_id, "actor_a",
-                on_behalf_of={"score": float("nan")},
+        with pytest.raises(RegistaError) as exc_info:
+            action_project.instance.append_event(
+                action_project.work_item.work_item_id,
+                ACTION_SUBJECT,
+                transition="note_added",
+                payload={"note": "must reject"},
+                action_delegation_credentials=(malformed,),
             )
-        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert exc_info.value.code is ErrorCode.ACTION_DELEGATION_INVALID

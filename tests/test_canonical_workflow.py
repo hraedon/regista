@@ -20,6 +20,16 @@ from regista.testing import InMemoryRegista
 TESTS_DIR = Path(__file__).parent
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
 REVIEW_NOTE = {"review_note": "looks good"}
+V6_PRINCIPALS = ("agent:author", "agent:glm-agent", "agent:kimi-agent", "human:paul")
+
+
+def _v6_sub(tmp_path: Path, project: str) -> InMemoryRegista:
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    keyset = make_v6_keyset(tmp_path, principals=V6_PRINCIPALS)
+    sub = InMemoryRegista(project=project, hmac_key_path=keyset.path)
+    open_v6_epoch(sub, keyset, principals=V6_PRINCIPALS)
+    return sub
 
 
 def test_canonical_yaml_parses_and_validates():
@@ -58,37 +68,37 @@ def _canonical_item_in_review(sub: InMemoryRegista):
     wi, _ = sub.create_work_item(
         workflow_name="canonical",
         work_item_type="breadcrumb",
-        actor_id="author",
+        actor_id="agent:author",
         actor_kind="agent",
-        actor_metadata={"model_lineage": "glm", "role": "agent"},
+        actor_metadata={"role": "agent"},
         custom_fields={"title": "finding path"},
     )
     identity = {
         "actor_kind": "agent",
-        "actor_metadata": {"model_lineage": "glm", "role": "agent"},
+        "actor_metadata": {"role": "agent"},
     }
-    sub.transition(wi.work_item_id, "start", "author", **identity)
-    sub.transition(wi.work_item_id, "submit_for_review", "author", **identity)
+    sub.transition(wi.work_item_id, "start", "agent:author", **identity)
+    sub.transition(wi.work_item_id, "submit_for_review", "agent:author", **identity)
     return wi.work_item_id, identity
 
 
-def test_canonical_request_changes_runs_note_requirement_end_to_end():
-    sub = InMemoryRegista(project="test_canonical_findings", hmac_key_path=KEY_PATH)
+def test_canonical_request_changes_runs_note_requirement_end_to_end(tmp_path: Path):
+    sub = _v6_sub(tmp_path, "test_canonical_findings")
     sub.register_workflow(canonical_workflow_yaml())
     wi_id, identity = _canonical_item_in_review(sub)
 
     sub.transition(
         wi_id,
         "request_changes",
-        "author",
+        "agent:author",
         payload={"review_note": "The failure path is not transactional."},
         **identity,
     )
     assert sub.get_work_item(wi_id).current_state == "in_progress"
 
 
-def test_canonical_request_changes_without_note_fails_closed():
-    sub = InMemoryRegista(project="test_canonical_finding_note", hmac_key_path=KEY_PATH)
+def test_canonical_request_changes_without_note_fails_closed(tmp_path: Path):
+    sub = _v6_sub(tmp_path, "test_canonical_finding_note")
     sub.register_workflow(canonical_workflow_yaml())
     wi_id, identity = _canonical_item_in_review(sub)
 
@@ -96,7 +106,7 @@ def test_canonical_request_changes_without_note_fails_closed():
         sub.transition(
             wi_id,
             "request_changes",
-            "author",
+            "agent:author",
             payload={},
             **identity,
         )
@@ -104,32 +114,29 @@ def test_canonical_request_changes_without_note_fails_closed():
 
 @pytest.mark.parametrize("workflow_version", [1, 2])
 def test_persisted_canonical_request_changes_uses_finding_semantics(
-    workflow_version: int,
+    workflow_version: int, tmp_path: Path,
 ):
     legacy = canonical_workflow_yaml().replace(
         "version: 3", f"version: {workflow_version}", 1
     ).replace(
         "    validator_params:\n      finding_only: true\n", "", 1
     )
-    sub = InMemoryRegista(
-        project=f"test_canonical_v{workflow_version}_finding",
-        hmac_key_path=KEY_PATH,
-    )
+    sub = _v6_sub(tmp_path, f"test_canonical_v{workflow_version}_finding")
     sub.register_workflow(legacy)
     wi_id, identity = _canonical_item_in_review(sub)
 
     sub.transition(
         wi_id,
         "request_changes",
-        "author",
+        "agent:author",
         payload={"review_note": "The failure path is not transactional."},
         **identity,
     )
     assert sub.get_work_item(wi_id).current_state == "in_progress"
 
 
-def test_missing_builtin_validator_fails_closed_in_memory():
-    sub = InMemoryRegista(project="test_canonical_missing_validator", hmac_key_path=KEY_PATH)
+def test_missing_builtin_validator_fails_closed_in_memory(tmp_path: Path):
+    sub = _v6_sub(tmp_path, "test_canonical_missing_validator")
     sub.register_workflow(canonical_workflow_yaml())
     sub._validators.pop("adversarial_review")
     wi_id, identity = _canonical_item_in_review(sub)
@@ -138,7 +145,7 @@ def test_missing_builtin_validator_fails_closed_in_memory():
         sub.transition(
             wi_id,
             "request_changes",
-            "author",
+            "agent:author",
             payload=REVIEW_NOTE,
             **identity,
         )
@@ -146,35 +153,42 @@ def test_missing_builtin_validator_fails_closed_in_memory():
     assert sub.get_work_item(wi_id).current_state == "in_review"
 
 
-def test_canonical_supports_mixed_agent_human_chain_to_done():
+def test_canonical_supports_mixed_agent_human_chain_to_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """The north star at the regista level: one item, agent work + human accept."""
-    sub = InMemoryRegista(project="test_canonical_chain", hmac_key_path=KEY_PATH)
+    sub = _v6_sub(tmp_path, "test_canonical_chain")
     sub.register_workflow(canonical_workflow_yaml())
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-model")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "glm")
 
     # Agent (glm lineage) creates and works a breadcrumb item.
     wi, _ = sub.create_work_item(
         workflow_name="canonical",
         work_item_type="breadcrumb",
-        actor_id="glm-agent",
+        actor_id="agent:glm-agent",
         actor_kind="agent",
-        actor_metadata={"model_lineage": "glm", "role": "agent"},
+        actor_metadata={"role": "agent"},
         custom_fields={"title": "converge the workflow"},
     )
     aid = wi.work_item_id
-    glm = {"actor_kind": "agent", "actor_metadata": {"model_lineage": "glm", "role": "agent"}}
-    sub.transition(aid, "start", "glm-agent", **glm)
-    sub.transition(aid, "submit_for_review", "glm-agent", **glm)
+    glm = {"actor_kind": "agent", "actor_metadata": {"role": "agent"}}
+    sub.transition(aid, "start", "agent:glm-agent", **glm)
+    sub.transition(aid, "submit_for_review", "agent:glm-agent", **glm)
 
     # A cross-lineage agent reviewer (kimi) passes the adversarial gate.
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "kimi")
     sub.transition(
-        aid, "adversarial_pass", "kimi-agent",
-        actor_kind="agent", actor_metadata={"model_lineage": "kimi", "role": "agent"},
-        payload=REVIEW_NOTE,
+        aid, "adversarial_pass", "agent:kimi-agent",
+        actor_kind="agent", actor_metadata={"role": "agent"},
+        payload={**REVIEW_NOTE, "reviewer_claims": {"model_lineage": "kimi"}},
     )
 
     # A human accepts (relaxed gate; the accepter is distinct from every author).
+    monkeypatch.delenv("REGISTA_PRODUCER_MODEL", raising=False)
+    monkeypatch.delenv("REGISTA_PRODUCER_MODEL_LINEAGE", raising=False)
     sub.transition(
-        aid, "accept", "paul",
+        aid, "accept", "human:paul",
         actor_kind="human", actor_metadata={"role": "human"}, payload=REVIEW_NOTE,
     )
 

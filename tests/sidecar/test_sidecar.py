@@ -387,6 +387,21 @@ class TestIdempotency:
         assert resp1.json()["event_id"] == resp2.json()["event_id"]
 
 
+class TestActionDelegation:
+    def test_revoke_route_reaches_runtime_facade(self, client, auth_headers):
+        resp = client.post(
+            "/v1/action_delegation/revoke",
+            json={
+                "credential_id": str(uuid.uuid4()),
+                "credential_hash": "sha256:" + "1" * 64,
+                "reason": "fixture credential is absent",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "ACTION_DELEGATION_INVALID"
+
+
 class TestActorRoles:
     def test_register_role(self, client, auth_headers):
         resp = client.post(

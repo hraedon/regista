@@ -870,7 +870,10 @@ def case_delegation_credential() -> dict[str, Any]:
     cred_hash = domain_digest_framed(DOMAINS["delegation_hash"], b)
     signed_document = {
         **doc_no_sig,
-        "signature": {"scheme_id": "ed25519", "value": signature.hex()},
+        "signature": {
+            "scheme_id": "ed25519",
+            "value": base64.b64encode(signature).decode("ascii"),
+        },
     }
     return {
         "category": "delegation",
@@ -881,6 +884,7 @@ def case_delegation_credential() -> dict[str, Any]:
             "canonical_len": len(b),
             "signature_input_domain": DOMAINS["delegation_signing"].decode("utf-8"),
             "signature_hex": signature.hex(),
+            "signature_base64": base64.b64encode(signature).decode("ascii"),
             "credential_hash": cred_hash,
             # Both domains frame `d = JCS(document - signature)`; `credential_hash` is
             # NOT over the assembled document (TRUST-DOMAIN §5.12). The assembled form is

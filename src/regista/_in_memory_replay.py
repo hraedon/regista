@@ -237,6 +237,10 @@ def in_memory_replay(
         ((evt.canonical_envelope, evt.signature) for evt in store.all_events()),
         completeness=MaterialCompleteness.COMPLETE_STORE,
         label="in-memory project store",
+        action_delegation_credentials=(
+            row["document"]
+            for row in store.v6_rows.action_delegation_credentials.values()
+        ),
     )
 
     if verify_principal_binding:

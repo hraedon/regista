@@ -18,7 +18,7 @@ from ._contract import (
     validate_delegation_chain as _validate_delegation_chain,
 )
 from ._contract import (
-    validate_entity_kind,
+    validate_event_entity_kind,
 )
 from ._contract import (
     validate_mutation_params as _validate_mutation_params,
@@ -51,10 +51,11 @@ def append_event(
     key_id: str | None = None,
     entity_kind: str = "work_item",
     hash_alg: str = "sha-256",
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> Event:
     timer = OpTimer(project, "append_event")
     try:
-        validate_entity_kind(entity_kind)
+        validate_event_entity_kind(entity_kind, transition)
         if event_id is None:
             event_id = uuid.uuid4()
         _validate_mutation_params(
@@ -126,6 +127,7 @@ def append_event(
                 _key_id=key_id,
                 entity_kind=entity_kind,
                 hash_alg=hash_alg,
+                action_delegation_credentials=action_delegation_credentials,
             )
 
         metrics.inc("events_appended", project)

@@ -10,7 +10,7 @@ import yaml
 from ._contract import (
     Jsonb,
     validate_delegation_chain,
-    validate_entity_kind,
+    validate_event_entity_kind,
 )
 from ._errors import ErrorCode, RegistaError
 from ._in_mem_base import _InMemoryBase
@@ -188,10 +188,11 @@ class InMemWorkflowMixin(_InMemoryBase):
         on_behalf_of: dict[str, Any] | None = None,
         entity_kind: str = "work_item",
         hash_alg: str = "sha-256",
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> Event:
         from ._in_memory_events import in_memory_append_event
 
-        validate_entity_kind(entity_kind)
+        validate_event_entity_kind(entity_kind, transition)
         validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         evt = in_memory_append_event(
             self._store, self._work_items, self._workflows, self._key_set,
@@ -204,6 +205,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             on_behalf_of=on_behalf_of,
             entity_kind=entity_kind,
             hash_alg=hash_alg,
+            action_delegation_credentials=action_delegation_credentials,
         )
         self._try_create_witness_receipts(evt)
         return evt
@@ -222,6 +224,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         event_id: uuid.UUID | None = None,
         expected_event_seq: int | None = None,
         on_behalf_of: dict[str, Any] | None = None,
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> Event:
         from ._in_memory_transition import in_memory_transition
 
@@ -239,6 +242,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             expected_event_seq=expected_event_seq,
             on_behalf_of=on_behalf_of,
             strict_roles=self._strict_roles,
+            action_delegation_credentials=action_delegation_credentials,
         )
         self._hook_id_counter = new_counter
         self._try_create_witness_receipts(evt)
@@ -267,6 +271,50 @@ class InMemWorkflowMixin(_InMemoryBase):
             limit=limit,
             before_seq=before_seq,
         )
+
+    def revoke_action_delegation(
+        self,
+        credential_id: uuid.UUID,
+        credential_hash: str,
+        actor_id: str,
+        *,
+        reason: str,
+        actor_kind: str = "human",
+        actor_metadata: dict[str, Any] | None = None,
+        key_id: str | None = None,
+        event_id: uuid.UUID | None = None,
+    ) -> Event:
+        from ._in_memory_events import in_memory_append_event
+
+        identity = self._store.v6_rows.project_identity
+        if identity is None:
+            raise RegistaError(
+                ErrorCode.GENESIS_REQUIRED,
+                "action delegation revocation requires an open v6 epoch",
+            )
+        event = in_memory_append_event(
+            self._store,
+            self._work_items,
+            self._workflows,
+            self._key_set,
+            identity["project_instance_id"],
+            actor_id,
+            actor_kind,
+            actor_metadata,
+            key_id=key_id,
+            transition="action_delegation_revoked",
+            payload={
+                "type": "regista.action-delegation-revocation",
+                "version": 1,
+                "credential_id": str(credential_id),
+                "credential_hash": credential_hash,
+                "reason": reason,
+            },
+            event_id=event_id,
+            entity_kind="project",
+        )
+        self._try_create_witness_receipts(event)
+        return event
 
     def read_events_since(
         self,

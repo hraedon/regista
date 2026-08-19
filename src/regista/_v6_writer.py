@@ -51,6 +51,14 @@ from uuid import UUID
 import psycopg.types.json
 from psycopg.sql import SQL
 
+from ._action_delegation import (
+    ACTION_DELEGATION_REVOKED,
+    ActionDelegationCredential,
+    ActionDelegationError,
+    parse_action_delegation,
+    parse_action_delegation_revocation,
+    verify_action_delegation_chain,
+)
 from ._connection import DictConn
 from ._datetime_utils import parse_v6_occurred_at, v6_occurred_at
 from ._errors import ErrorCode, RegistaError
@@ -1032,6 +1040,51 @@ def _require_authority_may_accept(anchor: KeyBindingAnchor, *, actor_id: str) ->
         )
 
 
+def _authorize_action_delegation_revocation(
+    conn: DictConn,
+    payload: Mapping[str, Any],
+    *,
+    actor_id: str,
+    anchor: KeyBindingAnchor,
+) -> None:
+    credential_id, credential_hash = parse_action_delegation_revocation(payload)
+    row = conn.execute(
+        SQL(
+            "SELECT document FROM action_delegation_credentials "
+            "WHERE credential_id = %s AND credential_hash = %s"
+        ),
+        [UUID(credential_id), credential_hash],
+    ).fetchone()
+    if row is None:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "action delegation revocation target is not stored",
+        )
+    try:
+        credential = parse_action_delegation(row["document"])
+    except (ActionDelegationError, TypeError, ValueError) as exc:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "stored action delegation credential is malformed",
+        ) from exc
+    if (
+        str(credential.credential_id) != credential_id
+        or credential.credential_hash != credential_hash
+    ):
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "stored action delegation credential disagrees with its immutable index",
+        )
+    if actor_id == credential.issuer_principal_id:
+        return
+    if anchor.kind == "bootstrap" and anchor.scopes.may_accept_keys:
+        return
+    raise RegistaError(
+        ErrorCode.ACTION_DELEGATION_INVALID,
+        "only the credential issuer or a directly trusted project authority may revoke",
+    )
+
+
 def find_acceptance_revocations(conn: DictConn) -> dict[str, int]:
     """Map ``acceptance_event_hash`` -> the ``global_seq`` that revoked it.
 
@@ -1279,6 +1332,7 @@ def check_producer_authorization(
     anchor: KeyBindingAnchor,
     policy: Sequence[ProducerPolicyEntry] | None = None,
     key_fingerprint: str | None = None,
+    scope_already_authorized: bool = False,
 ) -> str:
     """Admission gate 2 — reconcile ``producer`` against scopes, lineage, policy.
 
@@ -1301,7 +1355,9 @@ def check_producer_authorization(
     Returns the ``producer_consistency`` verdict for the result model.
     """
 
-    if not anchor.scopes.permits(entity_kind=entity_kind, transition=transition):
+    if not scope_already_authorized and not anchor.scopes.permits(
+        entity_kind=entity_kind, transition=transition
+    ):
         raise RegistaError(
             ErrorCode.PRODUCER_NOT_AUTHORIZED,
             f"the accepted key {anchor.key_id!r} does not hold scope for "
@@ -1520,6 +1576,7 @@ def build_v6_envelope(
     occurred_at: datetime,
     previous_entity_event_hash: str | None,
     previous_project_event_hash: str | None,
+    authorization_credentials: Sequence[ActionDelegationCredential] = (),
 ) -> dict[str, Any]:
     """Assemble all sixteen required members in one place (``V6-ENVELOPE.md`` §1.1)."""
 
@@ -1541,7 +1598,16 @@ def build_v6_envelope(
             "key_id": key_id,
             "key_binding_event_hash": key_binding_event_hash,
         },
-        "authorization": {"mode": "direct", "credentials": []},
+        "authorization": {
+            "mode": "delegated" if authorization_credentials else "direct",
+            "credentials": [
+                {
+                    "credential_id": str(credential.credential_id),
+                    "credential_hash": credential.credential_hash,
+                }
+                for credential in authorization_credentials
+            ],
+        },
         "workflow": None if workflow is None else workflow.as_envelope_member(),
         "occurred_at": v6_occurred_at(occurred_at),
         "transition": transition,
@@ -1574,6 +1640,7 @@ def append_v6_event(
     entity_seq: int | None = None,
     occurred_at: datetime | None = None,
     producer_policy: Sequence[ProducerPolicyEntry] | None = None,
+    action_delegation_credentials: Sequence[Mapping[str, Any] | bytes] = (),
 ) -> V6Append:
     """Append one ordinary v6 event behind both admission gates.
 
@@ -1618,7 +1685,6 @@ def append_v6_event(
             "'' / 0 workflow sentinels are refused: v6 would sign the falsehood "
             "(V6-ENVELOPE.md §1.6)",
         )
-
     identity = require_v6_epoch(conn, writer="v6_writer.append_v6_event")
     head_hash = _lock_global_chain_head(conn)
     if head_hash is None:
@@ -1626,6 +1692,29 @@ def append_v6_event(
             ErrorCode.GENESIS_REQUIRED,
             "v6_writer.append_v6_event refused: project_identity exists but the "
             "global chain head is empty, so there is no genesis event to chain from",
+        )
+
+    parsed_credentials: tuple[ActionDelegationCredential, ...]
+    try:
+        parsed_credentials = tuple(
+            parse_action_delegation(document)
+            for document in action_delegation_credentials
+        )
+    except (ActionDelegationError, TypeError, ValueError) as exc:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            f"the action-delegation credential document is invalid: {exc}",
+        ) from exc
+    if parsed_credentials and (entity_kind != "work_item" or workflow_name is None):
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "action-delegation credentials may authorize only workflow-bound work-item "
+            "actions; lifecycle and project events require their own signed authority",
+            detail={
+                "entity_kind": entity_kind,
+                "workflow_name": workflow_name,
+                "transition": transition,
+            },
         )
 
     key_entry = _writer_key(key_set, principal_id=actor_id, key_id=key_id)
@@ -1654,6 +1743,32 @@ def append_v6_event(
             payload, field="revoked_by", actor_id=actor_id, key_id=key_entry.key_id
         )
         _require_authority_may_accept(anchor, actor_id=actor_id)
+    elif transition == ACTION_DELEGATION_REVOKED:
+        if entity_kind != "project" or workflow_name is not None:
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                "action_delegation_revoked is a project lifecycle event without a workflow",
+            )
+        if not isinstance(payload, Mapping):
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                "action_delegation_revoked requires an object payload",
+            )
+        try:
+            parse_action_delegation_revocation(payload)
+        except ActionDelegationError as exc:
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                f"action_delegation_revoked payload is invalid: {exc}",
+            ) from exc
+        _authorize_action_delegation_revocation(
+            conn, payload, actor_id=actor_id, anchor=anchor
+        )
+    if parsed_credentials and transition == ACTION_DELEGATION_REVOKED:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "action delegation cannot authorize its own revocation lifecycle",
+        )
 
     workflow: WorkflowBinding | None = None
     if workflow_name is not None and workflow_version is not None:
@@ -1669,6 +1784,7 @@ def append_v6_event(
         anchor=anchor,
         policy=producer_policy,
         key_fingerprint=key_entry.fingerprint(),
+        scope_already_authorized=transition == ACTION_DELEGATION_REVOKED,
     )
 
     resolved_seq = (
@@ -1700,7 +1816,27 @@ def append_v6_event(
         occurred_at=resolved_time,
         previous_entity_event_hash=previous_entity,
         previous_project_event_hash="sha256:" + head_hash.hex(),
+        authorization_credentials=parsed_credentials,
     )
+    if parsed_credentials:
+        from ._v6_referents import store_referents, walk_project_chain
+
+        material = store_referents(conn, label="writer transaction")
+        ancestors = tuple(
+            walk_project_chain(envelope["chain"]["previous_project_event_hash"], material)
+        )
+        delegation = verify_action_delegation_chain(
+            envelope=envelope,
+            references=envelope["authorization"]["credentials"],
+            credentials=parsed_credentials,
+            ancestors=ancestors,
+            referents=material,
+        )
+        if not delegation.verified:
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                delegation.reason or "action-delegation chain is invalid",
+            )
     # The named grammar-enforcement mechanism (TRUST-DOMAIN.md §2.7 row 4). It
     # runs BEFORE signing so a non-canonical actor id never reaches key material,
     # and it is what the P2.3 AST tripwire in
@@ -1735,6 +1871,114 @@ def append_v6_event(
             "the v6 writer produced bytes that do not verify under its own key",
             detail={"errors": list(verification.errors)},
         )
+
+    credential_exists: dict[str, bool] = {}
+    for credential in parsed_credentials:
+        existing_by_id = conn.execute(
+            SQL(
+                "SELECT credential_id, credential_hash, canonical_document FROM "
+                "action_delegation_credentials WHERE credential_id = %s"
+            ),
+            [credential.credential_id],
+        ).fetchall()
+        existing_by_hash = conn.execute(
+            SQL(
+                "SELECT credential_id, credential_hash, canonical_document FROM "
+                "action_delegation_credentials WHERE credential_hash = %s"
+            ),
+            [credential.credential_hash],
+        ).fetchall()
+        existing = existing_by_id + [
+            item
+            for item in existing_by_hash
+            if item["credential_id"] not in {
+                candidate["credential_id"] for candidate in existing_by_id
+            }
+        ]
+        if existing and any(
+            str(item["credential_id"]) != str(credential.credential_id)
+            or item["credential_hash"] != credential.credential_hash
+            or bytes(item["canonical_document"]) != credential.canonical_document
+            for item in existing
+        ):
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_CREDENTIAL_CONFLICT,
+                "credential_id or credential_hash is already bound to different bytes",
+                detail={
+                    "credential_id": str(credential.credential_id),
+                    "credential_hash": credential.credential_hash,
+                },
+            )
+        credential_exists[credential.credential_hash] = bool(existing)
+
+    # Reserve evidence before inserting the event. Postgres serialises the unique
+    # credential key under concurrent appends; ``DO NOTHING`` makes a byte-identical
+    # re-presentation succeed after the first transaction commits, while the
+    # read-back below still refuses a same-id/hash binding to different bytes. The
+    # in-memory branch is already serialized by its transaction lock and deliberately
+    # keeps its narrower INSERT grammar.
+    for credential, _ in zip(
+        parsed_credentials, action_delegation_credentials, strict=True
+    ):
+        if credential_exists[credential.credential_hash]:
+            continue
+        import json
+
+        document = json.loads(credential.canonical_document)
+        insert_sql = (
+            "INSERT INTO action_delegation_credentials "
+            "(credential_id, credential_hash, document, canonical_document, "
+            "first_event_id, first_event_hash) VALUES (%s, %s, %s, %s, %s, %s)"
+        )
+        if getattr(conn, "provides_transactional_isolation", True):
+            insert_sql += " ON CONFLICT DO NOTHING"
+        conn.execute(
+            SQL(insert_sql),
+            [
+                credential.credential_id,
+                credential.credential_hash,
+                psycopg.types.json.Jsonb(document),
+                credential.canonical_document,
+                resolved_event_id,
+                "sha256:" + signed.event_hash.hex(),
+            ],
+        )
+        if getattr(conn, "provides_transactional_isolation", True):
+            concurrent_by_id = conn.execute(
+                SQL(
+                    "SELECT credential_id, credential_hash, canonical_document "
+                    "FROM action_delegation_credentials WHERE credential_id = %s"
+                ),
+                [credential.credential_id],
+            ).fetchall()
+            concurrent_by_hash = conn.execute(
+                SQL(
+                    "SELECT credential_id, credential_hash, canonical_document "
+                    "FROM action_delegation_credentials WHERE credential_hash = %s"
+                ),
+                [credential.credential_hash],
+            ).fetchall()
+            concurrent_rows = concurrent_by_id + [
+                item
+                for item in concurrent_by_hash
+                if item["credential_id"] not in {
+                    candidate["credential_id"] for candidate in concurrent_by_id
+                }
+            ]
+            if any(
+                str(item["credential_id"]) != str(credential.credential_id)
+                or item["credential_hash"] != credential.credential_hash
+                or bytes(item["canonical_document"]) != credential.canonical_document
+                for item in concurrent_rows
+            ):
+                raise RegistaError(
+                    ErrorCode.ACTION_DELEGATION_CREDENTIAL_CONFLICT,
+                    "credential_id or credential_hash is already bound to different bytes",
+                    detail={
+                        "credential_id": str(credential.credential_id),
+                        "credential_hash": credential.credential_hash,
+                    },
+                )
 
     stored_time = parse_v6_occurred_at(envelope["occurred_at"])
     inserted = conn.execute(

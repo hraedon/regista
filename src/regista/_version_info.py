@@ -10,7 +10,7 @@ from ._integrity import REGISTA_VERSION
 # 47: schema version is the highest migration number. 045 drops the dead subsystem
 # tables (P1.4, on main); 046 adds the §5.9 projection columns to principal_keys and
 # 047 the v2 possession-challenge fields to lifecycle_challenges (both P2.2).
-SCHEMA_VERSION: int = 47
+SCHEMA_VERSION: int = 48
 ENVELOPE_VERSION: int = 5
 
 

@@ -26,11 +26,12 @@ from ._contract import (
 from ._contract import (
     validate_mutation_params as _validate_mutation_params,
 )
+from ._datetime_utils import v6_occurred_at
 from ._errors import ErrorCode, RegistaError
 from ._events import append_transition_event as _append_transition_event
 from ._keys import KeySet
 from ._observability import Metrics, OpTimer
-from ._types import Event, ValidatorContext
+from ._types import AuthorizationEvidence, Event, ValidatorContext
 
 log = structlog.get_logger()
 
@@ -55,6 +56,7 @@ def transition(
     on_behalf_of: dict[str, Any] | None = None,
     strict_roles: bool = False,
     key_id: str | None = None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> Event:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -127,6 +129,16 @@ def transition(
                 validate_work_item_refs(conn, defn, wi_row["work_item_type"], custom_fields)
 
             new_state = transition_def["to_state"]
+            resolved_occurred_at = datetime.now(UTC)
+            authorization_evidence = _verify_validator_authorization(
+                conn,
+                work_item_id=work_item_id,
+                workflow_name=wi_row["workflow_name"],
+                transition_name=transition_name,
+                actor_id=actor_id,
+                credentials=action_delegation_credentials,
+                occurred_at=resolved_occurred_at,
+            )
 
             validator_name = transition_def.get("validator")
             if validator_name:
@@ -139,6 +151,14 @@ def transition(
                     prior_events = tuple(read_events_by_work_item(
                         conn, work_item_id, limit=VALIDATOR_HISTORY_LIMIT,
                     ))
+                    prior_authorization_principals = (
+                        _verified_prior_authorization_principals(conn, prior_events)
+                    )
+                    prior_adversarial_pass_authorization_principals = (
+                        _verified_prior_adversarial_pass_authorization_principals(
+                            conn, prior_events
+                        )
+                    )
                     ctx = ValidatorContext(
                         work_item_id=work_item_id,
                         workflow_name=wi_row["workflow_name"],
@@ -157,6 +177,13 @@ def transition(
                             dict(on_behalf_of) if on_behalf_of is not None else None
                         ),
                         validator_params=transition_def.get("validator_params"),
+                        authorization_evidence=authorization_evidence,
+                        prior_authorization_principals=(
+                            prior_authorization_principals
+                        ),
+                        prior_adversarial_pass_authorization_principals=(
+                            prior_adversarial_pass_authorization_principals
+                        ),
                     )
                     try:
                         run_validator(
@@ -206,6 +233,8 @@ def transition(
                 release_claim=True,
                 on_behalf_of=on_behalf_of,
                 _key_id=key_id,
+                action_delegation_credentials=action_delegation_credentials,
+                occurred_at=resolved_occurred_at,
             )
 
             hook_names = transition_def.get("hooks", [])
@@ -236,3 +265,182 @@ def transition(
             metrics.inc("transitions_rejected", project)
         timer.log("rejected", work_item_id=str(work_item_id))
         raise
+
+
+def _verify_validator_authorization(
+    conn: Any,
+    *,
+    work_item_id: uuid.UUID,
+    workflow_name: str,
+    transition_name: str,
+    actor_id: str,
+    credentials: tuple[dict[str, Any] | bytes, ...],
+    occurred_at: datetime,
+) -> AuthorizationEvidence:
+    if not credentials:
+        return AuthorizationEvidence(mode="direct", status="not_applicable")
+    from ._action_delegation import (
+        ActionDelegationError,
+        parse_action_delegation,
+        verify_action_delegation_chain,
+    )
+    from ._events import _lock_global_chain_head
+    from ._v6_referents import store_referents, walk_project_chain
+    from ._v6_writer import require_v6_epoch
+
+    identity = require_v6_epoch(conn, writer="transition.validator_authorization")
+    head = _lock_global_chain_head(conn)
+    if head is None:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "delegated transition has no project chain head",
+        )
+    try:
+        parsed = tuple(parse_action_delegation(item) for item in credentials)
+    except (ActionDelegationError, TypeError, ValueError) as exc:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            f"the action-delegation credential document is invalid: {exc}",
+        ) from exc
+    references = [
+        {
+            "credential_id": str(item.credential_id),
+            "credential_hash": item.credential_hash,
+        }
+        for item in parsed
+    ]
+    envelope = {
+        "project_instance_id": str(identity.project_instance_id),
+        "trust_domain_id": str(identity.trust_domain_id),
+        "actor": {"principal_id": actor_id},
+        "entity": {"kind": "work_item", "id": str(work_item_id)},
+        "workflow": {"name": workflow_name},
+        "transition": transition_name,
+        "occurred_at": v6_occurred_at(occurred_at),
+        "authorization": {"mode": "delegated", "credentials": references},
+    }
+    material = store_referents(conn, label="validator transaction")
+    ancestors = tuple(walk_project_chain("sha256:" + head.hex(), material))
+    try:
+        result = verify_action_delegation_chain(
+            envelope=envelope,
+            references=references,
+            credentials=parsed,
+            ancestors=ancestors,
+            referents=material,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            "action-delegation verification failed closed",
+        ) from exc
+    if not result.verified:
+        raise RegistaError(
+            ErrorCode.ACTION_DELEGATION_INVALID,
+            result.reason or "action-delegation chain is invalid",
+        )
+    return AuthorizationEvidence(
+        mode="delegated",
+        status=result.status.value,
+        credential_hashes=result.credential_hashes,
+        participating_principals=result.participating_principals,
+    )
+
+
+def _verified_prior_authorization_principals(
+    conn: Any, events: tuple[Event, ...]
+) -> frozenset[str]:
+    return _verified_prior_delegation_principals(
+        conn,
+        events,
+        include_event=lambda event: event.transition not in {
+            "accept",
+            "request_changes",
+            "adversarial_pass",
+            "reject",
+            "comment",
+        },
+    )
+
+
+def _verified_prior_adversarial_pass_authorization_principals(
+    conn: Any, events: tuple[Event, ...]
+) -> frozenset[str]:
+    """Re-verify delegated adversarial-pass participants for final acceptance."""
+
+    return _verified_prior_delegation_principals(
+        conn,
+        events,
+        include_event=lambda event: event.transition == "adversarial_pass",
+        include_actor=True,
+    )
+
+
+def _verified_prior_delegation_principals(
+    conn: Any,
+    events: tuple[Event, ...],
+    *,
+    include_event: Any,
+    include_actor: bool = False,
+) -> frozenset[str]:
+    from ._action_delegation import verify_action_delegation_chain
+    from ._v6_referents import store_referents, walk_project_chain
+    from ._verification import V6EnvelopeError, parse_v6_envelope_strict
+
+    material = store_referents(conn, label="validator prior-event evidence")
+    principals: set[str] = set()
+    for event in events:
+        if not include_event(event):
+            continue
+        if not event.canonical_envelope:
+            continue
+        try:
+            envelope = parse_v6_envelope_strict(bytes(event.canonical_envelope))
+        except (V6EnvelopeError, TypeError, ValueError):
+            continue
+        authorization = envelope["authorization"]
+        if authorization["mode"] != "delegated":
+            continue
+        references = authorization["credentials"]
+        credentials = []
+        for reference in references:
+            credential = material.resolve_action_credential(
+                reference["credential_hash"]
+            )
+            if credential is None:
+                raise RegistaError(
+                    ErrorCode.ACTION_DELEGATION_INVALID,
+                    "validator prior-event delegation evidence is missing",
+                )
+            credentials.append(credential)
+        ancestors = tuple(
+            walk_project_chain(
+                envelope["chain"]["previous_project_event_hash"], material
+            )
+        )
+        try:
+            result = verify_action_delegation_chain(
+                envelope=envelope,
+                references=references,
+                credentials=credentials,
+                ancestors=ancestors,
+                referents=material,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                "validator prior-event delegation verification failed closed",
+            ) from exc
+        if not result.verified:
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                result.reason or "validator prior-event delegation is invalid",
+            )
+        principals.update(result.participating_principals)
+        if include_actor:
+            principals.add(event.actor_id)
+            if isinstance(event.on_behalf_of, dict):
+                principal_id = event.on_behalf_of.get("principal_id")
+                if isinstance(principal_id, str) and principal_id:
+                    principals.add(principal_id)
+    return frozenset(principals)

@@ -213,6 +213,9 @@ class ReviewRejected(ValueError):  # noqa: N818
 
 
 def _check_separation_of_duties(ctx: Any, author_ids: set[str], gate: str) -> None:
+    author_ids.update(
+        getattr(ctx, "prior_authorization_principals", frozenset())
+    )
     if ctx.actor_id in author_ids:
         raise ReviewRejected(
             f"{gate}: the reviewer must differ from every actor who "
@@ -230,6 +233,20 @@ def _check_separation_of_duties(ctx: Any, author_ids: set[str], gate: str) -> No
                     "actor_id": ctx.actor_id,
                     "principal_id": principal_id,
                     "authors": sorted(author_ids),
+                },
+            )
+    evidence = getattr(ctx, "authorization_evidence", None)
+    if evidence is not None and getattr(evidence, "status", None) == "verified":
+        participants = set(getattr(evidence, "participating_principals", frozenset()))
+        conflicts = participants & author_ids
+        if conflicts:
+            raise ReviewRejected(
+                f"{gate}: an action-delegation participant is an author",
+                detail={
+                    "actor_id": ctx.actor_id,
+                    "authorization_principals": sorted(participants),
+                    "authors": sorted(author_ids),
+                    "conflicts": sorted(conflicts),
                 },
             )
 
@@ -437,6 +454,13 @@ def human_gate(
 
     if getattr(ctx, "transition_name", None) == "accept":
         pass_ids = _adversarial_pass_identities(ctx.prior_events)
+        pass_ids.update(
+            getattr(
+                ctx,
+                "prior_adversarial_pass_authorization_principals",
+                frozenset(),
+            )
+        )
         delegation = getattr(ctx, "on_behalf_of", None)
         acceptor_principal = (
             delegation.get("principal_id") if isinstance(delegation, dict) else None

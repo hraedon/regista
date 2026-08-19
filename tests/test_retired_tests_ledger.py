@@ -100,6 +100,31 @@ def test_ledger_entries_are_well_formed(inventory: set[str], full_collection: se
             )
 
 
+def test_coverage_owed_entries_point_to_collected_coverage(
+    full_collection: set[str],
+) -> None:
+    """Every promised replacement must be a real, collected test node."""
+    ledger = json.loads(LEDGER_PATH.read_text())
+    for entry in ledger["entries"]:
+        if entry.get("disposition") != "coverage_owed":
+            continue
+        node_id = entry["node_id"]
+        covered_by = entry.get("covered_by")
+        if not covered_by and entry.get("work_item") != "WI-008":
+            # Older ledger tranches predate the optional replacement pointer.
+            # WI-008 is the first tranche whose coverage contract requires one.
+            continue
+        assert isinstance(covered_by, str) and covered_by, (
+            f"{node_id}: coverage_owed requires a covered_by test node"
+        )
+        collected = covered_by in full_collection or any(
+            node.startswith(covered_by + "[") for node in full_collection
+        )
+        assert collected, (
+            f"{node_id}: covered_by node is not collected: {covered_by}"
+        )
+
+
 def test_no_test_vanishes_without_a_disposition(
     inventory: set[str], full_collection: set[str]
 ) -> None:

@@ -248,6 +248,7 @@
         "canonical_bytes",
         "canonical_len",
         "credential_hash",
+        "signature_base64",
         "signature_hex",
         "signature_input_domain",
         "signed_document"

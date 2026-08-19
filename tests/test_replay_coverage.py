@@ -624,19 +624,6 @@ class TestBC095InMemoryReplaySignatureVerification:
         report = s.replay()
         assert report.halted >= 1
 
-    def test_in_memory_no_key_set_skips_verification(self):
-        s = InMemoryRegista(project="test")
-        s.register_workflow_file(WORKFLOW_PATH)
-
-        _wi, _ = s.create_work_item(
-            "test_workflow", "feature", "agent-1",
-            custom_fields={"title": "no keys"},
-        )
-
-        report = s.replay()
-        assert report.replayed_ok >= 1
-        assert report.halted == 0
-
     def test_in_memory_replay_verifies_and_detects_drift(self, keyset):
         s = _in_memory(keyset)
 

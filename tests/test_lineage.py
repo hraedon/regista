@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,8 +53,13 @@ work_item_types:
 """
 
 
-def _new_store(project: str) -> InMemoryRegista:
-    sub = InMemoryRegista(project=project, hmac_key_path=KEY_PATH)
+def _new_store(project: str, tmp_path: Path) -> InMemoryRegista:
+    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+
+    principals = ("agent:agent-notes", "agent:gpt-agent", "agent:kimi-agent")
+    keyset = make_v6_keyset(tmp_path, principals=principals)
+    sub = InMemoryRegista(project=project, hmac_key_path=keyset.path)
+    open_v6_epoch(sub, keyset, principals=principals)
     sub.register_workflow(_REVIEW_WORKFLOW)
     return sub
 
@@ -430,45 +436,6 @@ class TestOrdinaryDelegationUndeclared:
         )
         adversarial_review(ctx)
 
-    def test_end_to_end_delegated_undeclared_principal_blocks_review(self):
-        sub = _new_store("wi257_ordinary_delegation")
-        try:
-            wi, _ = sub.create_work_item(
-                workflow_name="wi248_review",
-                work_item_type="issue",
-                actor_id="proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            # An ordinary declared proxy records work for an agent principal
-            # that declares no lineage.
-            sub.transition(
-                wi.work_item_id, "start", "proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-                on_behalf_of={
-                    "principal_id": "hidden-agent",
-                    "principal_kind": "agent",
-                },
-            )
-            sub.transition(
-                wi.work_item_id, "submit_for_review", "proxy-agent",
-                actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
-            )
-            with pytest.raises(RegistaError) as exc_info:
-                sub.transition(
-                    wi.work_item_id, "adversarial_pass", "kimi-agent",
-                    actor_kind="agent",
-                    actor_metadata={"model_lineage": "kimi"},
-                    payload=REVIEW_NOTE,
-                )
-            assert "not confirmed distinct" in str(exc_info.value)
-            assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
-        finally:
-            sub.close()
-
-
 class TestDegenerateDelegationValues:
     """WI-257 follow-up (PR #31 review B1/B2): ``if principal_lineage:`` and
     ``principal_kind == "agent"`` are only as strong as the values reaching
@@ -678,26 +645,29 @@ class TestClaimLineagePropagationIntegration:
     through acquire_claim; this locks the contract so a lineage-bearing claim is
     visible to derive_authors and the cross-lineage gate."""
 
-    def test_acquire_claim_propagates_lineage_to_event(self):
-        sub = _new_store("wi248_claim_prop")
+    def test_acquire_claim_propagates_lineage_to_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        sub = _new_store("wi248_claim_prop", tmp_path)
         try:
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-model")
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "glm")
             wi, _ = sub.create_work_item(
                 workflow_name="wi248_review",
                 work_item_type="issue",
-                actor_id="agent-notes",
+                actor_id="agent:agent-notes",
                 actor_kind="agent",
             )
-            # The claimant declares its lineage via actor_metadata.
             sub.acquire_claim(
-                wi.work_item_id, "gpt-agent",
+                wi.work_item_id, "agent:gpt-agent",
                 ttl_seconds=300,
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
             )
             events = sub.read_events(work_item_id=wi.work_item_id, limit=100)
             claim_events = [e for e in events if e.transition == "claim_acquired"]
             assert len(claim_events) == 1
-            assert claim_events[0].actor_metadata == {"model_lineage": "glm"}
+            envelope = json.loads(bytes(claim_events[0].canonical_envelope))
+            assert envelope["producer"]["model_lineage"] == "glm"
 
             _ids, kinds, lineages, undeclared = derive_authors(events)
             assert "glm" in lineages
@@ -706,19 +676,23 @@ class TestClaimLineagePropagationIntegration:
         finally:
             sub.close()
 
-    def test_claim_without_lineage_still_flags_undeclared(self):
+    def test_claim_without_lineage_still_flags_undeclared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         # A model agent that claims WITHOUT declaring lineage is a genuine
         # undeclared agent author and must still be flagged.
-        sub = _new_store("wi248_claim_no_lineage")
+        sub = _new_store("wi248_claim_no_lineage", tmp_path)
         try:
+            monkeypatch.delenv("REGISTA_PRODUCER_MODEL", raising=False)
+            monkeypatch.delenv("REGISTA_PRODUCER_MODEL_LINEAGE", raising=False)
             wi, _ = sub.create_work_item(
                 workflow_name="wi248_review",
                 work_item_type="issue",
-                actor_id="agent-notes",
+                actor_id="agent:agent-notes",
                 actor_kind="agent",
             )
             sub.acquire_claim(
-                wi.work_item_id, "gpt-agent",
+                wi.work_item_id, "agent:gpt-agent",
                 ttl_seconds=300,
                 actor_kind="agent",
             )
@@ -728,40 +702,44 @@ class TestClaimLineagePropagationIntegration:
         finally:
             sub.close()
 
-    def test_cross_lineage_review_passes_after_claim_with_lineage(self):
+    def test_cross_lineage_review_passes_after_claim_with_lineage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         # Full acceptance scenario through the real validator: file by the
         # service identity, claim with lineage, then a cross-lineage adversarial
         # pass WITHOUT the acknowledgment flag must succeed.
-        sub = _new_store("wi248_claim_full")
+        sub = _new_store("wi248_claim_full", tmp_path)
         try:
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-model")
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "glm")
             wi, _ = sub.create_work_item(
                 workflow_name="wi248_review",
                 work_item_type="issue",
-                actor_id="agent-notes",
+                actor_id="agent:agent-notes",
                 actor_kind="agent",
             )
             sub.acquire_claim(
-                wi.work_item_id, "gpt-agent",
+                wi.work_item_id, "agent:gpt-agent",
                 ttl_seconds=300,
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
-                wi.work_item_id, "start", "gpt-agent",
+                wi.work_item_id, "start", "agent:gpt-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
             )
             sub.transition(
-                wi.work_item_id, "submit_for_review", "gpt-agent",
+                wi.work_item_id, "submit_for_review", "agent:gpt-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "glm"},
             )
             # Cross-lineage reviewer, no ack flag -> must pass.
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "kimi")
             sub.transition(
-                wi.work_item_id, "adversarial_pass", "kimi-agent",
+                wi.work_item_id, "adversarial_pass", "agent:kimi-agent",
                 actor_kind="agent",
-                actor_metadata={"model_lineage": "kimi"},
-                payload=REVIEW_NOTE,
+                payload={
+                    **REVIEW_NOTE,
+                    "reviewer_claims": {"model_lineage": "kimi"},
+                },
             )
             assert sub.get_work_item(wi.work_item_id).current_state == "done"
         finally:

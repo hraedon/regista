@@ -9,6 +9,19 @@ import structlog
 
 from . import _config as _config
 from . import secrets as secrets
+from ._action_delegation import (
+    ActionDelegationCredential as ActionDelegationCredential,
+)
+from ._action_delegation import ActionDelegationError as ActionDelegationError
+from ._action_delegation import ActionDelegationScope as ActionDelegationScope
+from ._action_delegation import (
+    DelegationVerificationStatus as DelegationVerificationStatus,
+)
+from ._action_delegation import (
+    VerifiedActionDelegation as VerifiedActionDelegation,
+)
+from ._action_delegation import action_delegation_hash as action_delegation_hash
+from ._action_delegation import parse_action_delegation as parse_action_delegation
 from ._api_async import AsyncApiMixin
 from ._api_claim import ClaimApiMixin
 from ._api_external import ExternalApiMixin
@@ -54,6 +67,7 @@ from ._types import (
 from ._types import (
     ActorRole as ActorRole,
 )
+from ._types import AuthorizationEvidence as AuthorizationEvidence
 from ._types import (
     Claim as Claim,
 )

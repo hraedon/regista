@@ -64,6 +64,10 @@ class InMemOpsMixin(_InMemoryBase):
             ((e.canonical_envelope, e.signature) for e in self._store.all_events()),
             completeness=MaterialCompleteness.COMPLETE_STORE,
             label="in-memory project store",
+            action_delegation_credentials=(
+                row["document"]
+                for row in self._store.v6_rows.action_delegation_credentials.values()
+            ),
         )
         if public_key is not None:
             scheme_id: str | None = None

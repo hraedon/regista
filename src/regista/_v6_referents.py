@@ -60,6 +60,7 @@ __all__ = [
     "ReferentResolver",
     "ReferentSummary",
     "StoreReferents",
+    "credential_from_document",
     "referent_from_bytes",
     "store_referents",
 ]
@@ -277,6 +278,9 @@ class ReferentResolver(Protocol):
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         """The presented event whose v6 hash is ``event_hash``, or ``None``."""
 
+    def resolve_action_credential(self, credential_hash: str) -> Any | None:
+        """The presented action-delegation credential addressed by its recomputed hash."""
+
     def describe(self) -> str:
         """A short label for the verdict detail, so a report names its own scope."""
 
@@ -303,6 +307,9 @@ class NoReferents:
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         return None
 
+    def resolve_action_credential(self, credential_hash: str) -> Any | None:
+        return None
+
     def describe(self) -> str:
         return "no presented material (single row)"
 
@@ -322,6 +329,7 @@ class MappingReferents:
     """
 
     events: Mapping[str, ReferentEvent]
+    action_credentials: Mapping[str, Any] = field(default_factory=dict)
     material_completeness: MaterialCompleteness = MaterialCompleteness.UNDECLARED
     label: str = "presented event mapping"
 
@@ -331,6 +339,9 @@ class MappingReferents:
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         return self.events.get(event_hash)
+
+    def resolve_action_credential(self, credential_hash: str) -> Any | None:
+        return self.action_credentials.get(credential_hash)
 
     def describe(self) -> str:
         return f"{self.label} ({len(self.events)} v6 events, {self.completeness.value})"
@@ -342,13 +353,26 @@ class MappingReferents:
         *,
         completeness: MaterialCompleteness = MaterialCompleteness.UNDECLARED,
         label: str = "presented event mapping",
+        action_delegation_credentials: Iterable[
+            Mapping[str, Any] | bytes | memoryview
+        ] = (),
     ) -> MappingReferents:
         events: dict[str, ReferentEvent] = {}
         for envelope, signature in pairs:
             referent = referent_from_bytes(envelope, signature)
             if referent is not None:
                 events[referent.event_hash] = referent
-        return cls(events=events, material_completeness=completeness, label=label)
+        credential_index: dict[str, Any] = {}
+        for document in action_delegation_credentials:
+            credential = credential_from_document(document)
+            if credential is not None:
+                credential_index[credential.credential_hash] = credential
+        return cls(
+            events=events,
+            action_credentials=credential_index,
+            material_completeness=completeness,
+            label=label,
+        )
 
 
 #: How many full envelopes one store resolver may hold materialized at a time.
@@ -473,10 +497,12 @@ class StoreReferents:
 
     rows: Any
     label: str = "open project store"
+    credential_rows: Any | None = None
     _index: dict[str, ReferentEvent] | None = field(default=None, init=False, repr=False)
     _budget: _MaterializationBudget = field(
         default_factory=_MaterializationBudget, init=False, repr=False
     )
+    _credential_index: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def completeness(self) -> MaterialCompleteness:
@@ -537,6 +563,17 @@ class StoreReferents:
             self._index = self._build()
         return self._index.get(event_hash)
 
+    def resolve_action_credential(self, credential_hash: str) -> Any | None:
+        if self._credential_index is None:
+            self._credential_index = {}
+            if self.credential_rows is not None:
+                for row in self.credential_rows():
+                    document = row.get("document")
+                    credential = credential_from_document(document)
+                    if credential is not None:
+                        self._credential_index[credential.credential_hash] = credential
+        return self._credential_index.get(credential_hash)
+
     def describe(self) -> str:
         indexed = "unindexed" if self._index is None else f"{len(self._index)} v6 events"
         return f"{self.label} ({indexed}, {self.completeness.value})"
@@ -560,6 +597,7 @@ class BundleReferents:
     events: Mapping[str, ReferentEvent]
     material_completeness: MaterialCompleteness
     event_count: int
+    action_credentials: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def completeness(self) -> MaterialCompleteness:
@@ -567,6 +605,9 @@ class BundleReferents:
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         return self.events.get(event_hash)
+
+    def resolve_action_credential(self, credential_hash: str) -> Any | None:
+        return self.action_credentials.get(credential_hash)
 
     def describe(self) -> str:
         return (
@@ -579,6 +620,7 @@ class BundleReferents:
         cls,
         manifest: Mapping[str, Any],
         events: Sequence[Mapping[str, Any] | Any],
+        action_delegation_credentials: Sequence[Mapping[str, Any] | bytes] = (),
     ) -> BundleReferents:
         """Index a bundle's events and derive its completeness claim.
 
@@ -612,6 +654,11 @@ class BundleReferents:
             referent = referent_from_bytes(envelope, signature)
             if referent is not None:
                 indexed[referent.event_hash] = referent
+        credential_index: dict[str, Any] = {}
+        for document in action_delegation_credentials:
+            credential = credential_from_document(document)
+            if credential is not None:
+                credential_index[credential.credential_hash] = credential
         return cls(
             events=indexed,
             material_completeness=(
@@ -620,6 +667,7 @@ class BundleReferents:
                 else MaterialCompleteness.COMPLETE_STORE
             ),
             event_count=counted,
+            action_credentials=credential_index,
         )
 
 
@@ -656,7 +704,14 @@ def store_referents(conn: Any, *, label: str = "project store") -> StoreReferent
 
     from psycopg.sql import SQL
 
-    statement = SQL("SELECT canonical_envelope, signature FROM events")
+    statement = (
+        SQL("SELECT canonical_envelope, signature FROM events")
+        if getattr(conn, "provides_transactional_isolation", True) is False
+        else SQL(
+            "SELECT canonical_envelope, signature FROM events "
+            "UNION ALL SELECT canonical_envelope, signature FROM events_archive"
+        )
+    )
 
     def rows() -> Iterator[Mapping[str, Any]]:
         cursor_factory = getattr(conn, "cursor", None)
@@ -674,7 +729,32 @@ def store_referents(conn: Any, *, label: str = "project store") -> StoreReferent
                 scan.execute(statement)
                 yield from scan
 
-    return StoreReferents(rows=rows, label=label)
+    def credential_rows() -> Iterator[Mapping[str, Any]]:
+        try:
+            yield from conn.execute(
+                SQL("SELECT document FROM action_delegation_credentials")
+            ).fetchall()
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                return
+            if getattr(conn, "provides_transactional_isolation", True) is False:
+                return
+            raise
+
+    return StoreReferents(rows=rows, label=label, credential_rows=credential_rows)
+
+
+def credential_from_document(document: Mapping[str, Any] | bytes | memoryview | None) -> Any | None:
+    if document is None:
+        return None
+    from ._action_delegation import ActionDelegationError, parse_action_delegation
+
+    try:
+        if isinstance(document, memoryview):
+            document = bytes(document)
+        return parse_action_delegation(document)
+    except (ActionDelegationError, TypeError, ValueError):
+        return None
 
 
 def walk_project_chain(
