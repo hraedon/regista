@@ -204,12 +204,17 @@ Building on `ARCHITECTURE-0.6.0.md:558-599`. Additions and changes marked **[+]*
 > legacy events, no v6 envelope) keep the tolerant present-only behaviour of
 > `_lineage.require_canonical_reviewer_lineage`: a legacy verdict may omit
 > `reviewer_claims` and fall back to the legacy per-event lineage vehicle
-> (`actor_metadata`). **Scope.** The requirement binds the `adversarial_review`
-> validator's positive path — the transition that asserts and consumes reviewer
-> lineage for the cross-lineage distinctness decision. It does **not** bind
-> `request_changes` (a negative verdict, per the WI-284 amendment above) nor the
-> `human_gate` `accept` path: a final human accepter carries no model lineage, and
-> the accept verdict is not read as a reviewer-lineage source (the human gate
+> (`actor_metadata`). **Scope.** The requirement binds every verdict that reaches
+> the `adversarial_review` validator's distinctness-gate path — that is, any
+> verdict that is **not** `finding_only` (and not a persisted canonical v1/v2
+> `request_changes`, per the WI-284 amendment above), because that path consumes
+> the reviewer's lineage for the cross-lineage distinctness decision. In the
+> canonical workflow this is `adversarial_pass` alone: `request_changes` there is
+> `finding_only` and early-returns before the check, so it is not bound. A custom
+> workflow's non-`finding_only` `request_changes` **is** bound — correctly, since
+> it too consumes reviewer lineage at that gate. The requirement does **not** bind
+> the `human_gate` `accept` path: a final human accepter carries no model lineage,
+> and the accept verdict is not read as a reviewer-lineage source (the human gate
 > reads the deciding **pass's** signed claim, which this amendment now guarantees
 > is present). `human_gate` retains the present-only `require_canonical_reviewer_lineage`
 > check, so a present-but-non-canonical block is still rejected there.

@@ -283,3 +283,51 @@ class TestPostEpochRequiresReviewerClaims:
             payload={"review_note": "looks good"},
         )
         adversarial_review(ctx)  # no raise — legacy fallback still works
+
+    def test_empty_prior_events_reads_as_pre_epoch(self) -> None:
+        # Boundary: with no prior events there is no v6 envelope to detect, so
+        # _is_post_epoch is False and the tolerant path applies. This is
+        # unreachable for a real adversarial_pass (create/submit precede
+        # in_review), but pin the boundary so the "any v6 prior ⇒ epoch open"
+        # signal cannot silently start requiring the block on an empty history.
+        ctx = _ctx(
+            [],
+            "r1",
+            actor_metadata={"model_lineage": "kimi"},
+            payload={"review_note": "looks good"},
+        )
+        adversarial_review(ctx)  # no raise — empty history is not post-epoch
+
+    def test_post_epoch_non_finding_only_request_changes_is_bound(self) -> None:
+        # The requirement binds any verdict that reaches the distinctness-gate
+        # path, not the transition name: a non-finding_only request_changes in a
+        # v6 epoch consumes reviewer lineage there and so must carry the block.
+        # (In the canonical workflow request_changes is finding_only and never
+        # reaches this check; a custom workflow's non-finding_only one does.)
+        from regista._errors import ErrorCode, RegistaError
+
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "needs work"},
+        )
+        ctx.transition_name = "request_changes"
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_finding_only_request_changes_is_not_bound(self) -> None:
+        # The finding_only negative verdict early-returns before the WI-307
+        # check (the canonical-workflow shape), so it may omit reviewer_claims.
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "needs work"},
+        )
+        ctx.transition_name = "request_changes"
+        ctx.current_state = "in_review"
+        ctx.new_state = "in_progress"
+        ctx.validator_params = {"finding_only": True}
+        adversarial_review(ctx)  # no raise — finding_only is exempt
