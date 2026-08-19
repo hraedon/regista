@@ -124,6 +124,54 @@ def require_canonical_reviewer_lineage(payload: Any) -> None:
         )
 
 
+def require_present_canonical_reviewer_lineage(payload: Any) -> None:
+    """Post-epoch (WI-307): the ``reviewer_claims`` lineage vehicle is MANDATORY.
+
+    ``require_canonical_reviewer_lineage`` validates ``reviewer_claims`` only when
+    the block is present, so a review verdict could omit it entirely and let
+    ``reviewer_model_lineage`` fall back to the actor/producer lineage — a
+    cross-lineage claim the reviewer never signed in its role-specific payload.
+    That fallback weakens the WI-305 A contract that reviewer lineage rides the
+    signed ``reviewer_claims`` block (``REVIEW-VERDICTS.md`` §2.2). Inside the v6
+    epoch the block is required: an omitted, empty, null, or non-canonical
+    ``reviewer_claims.model_lineage`` fails closed with ``INVALID_MODEL_LINEAGE``
+    at ingress, before the verdict is accepted. Pre-epoch (persisted legacy)
+    verdicts keep the tolerant present-only semantics of
+    ``require_canonical_reviewer_lineage``.
+    """
+    claims = payload.get(_REVIEWER_CLAIMS_KEY) if isinstance(payload, dict) else None
+    value = claims.get(_REVIEWER_LINEAGE_KEY) if isinstance(claims, dict) else None
+    if not is_model_lineage(value):
+        raise RegistaError(
+            ErrorCode.INVALID_MODEL_LINEAGE,
+            "reviewer_claims.model_lineage is required for a review verdict "
+            "written in the v6 epoch and must be a canonical model lineage",
+            detail={
+                "field": "reviewer_claims.model_lineage",
+                "model_lineage": value,
+                "allowed": sorted(MODEL_LINEAGE_FAMILIES),
+            },
+        )
+
+
+def event_has_v6_envelope(event: Any) -> bool:
+    """True if ``event`` carries a v6 canonical envelope (``version == 6``).
+
+    The per-event v6 signal already used by ``raw_event_model_lineage`` to decide
+    whether the lineage lives in the envelope ``producer`` block. An event with no
+    ``canonical_envelope`` — a persisted legacy row, or a pre-signing validator
+    context — is not v6.
+    """
+    canonical_envelope = getattr(event, "canonical_envelope", None)
+    if canonical_envelope is None:
+        return False
+    try:
+        parsed = json.loads(canonical_envelope)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("version") == 6
+
+
 def validate_model_lineage(value: object, *, field: str) -> str:
     if not is_model_lineage(value):
         raise RegistaError(

@@ -17,6 +17,7 @@ proves the reviewer role-specific assertion can cross the gate.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -163,3 +164,170 @@ class TestGateConsumesPayloadLineage:
             },
         )
         adversarial_review(ctx)  # ack present -> admitted
+
+
+def _v6_evt(
+    transition: str,
+    actor_id: str,
+    *,
+    actor_kind: str = "agent",
+) -> SimpleNamespace:
+    """A v6-enveloped author event: its ``canonical_envelope`` carries version 6.
+
+    That marker is the post-epoch signal ``_review_validators._is_post_epoch``
+    reads (a work item worked inside the clean epoch has an all-v6 prior history).
+    The envelope is minimal on purpose — this exercises epoch DETECTION, not
+    lineage extraction (the Postgres-backed ``test_wi305_v6_review_gate`` proves
+    the end-to-end lineage path over a genuine epoch).
+    """
+    return SimpleNamespace(
+        transition=transition,
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        actor_metadata=None,
+        on_behalf_of=None,
+        payload=None,
+        canonical_envelope=json.dumps({"version": 6}).encode("utf-8"),
+    )
+
+
+class TestPostEpochRequiresReviewerClaims:
+    """WI-307: inside the v6 epoch the reviewer_claims block is mandatory."""
+
+    def test_post_epoch_pass_omitting_reviewer_claims_fails_closed(self) -> None:
+        from regista._errors import ErrorCode, RegistaError
+
+        # Prior events carry v6 envelopes -> post-epoch. Payload omits the
+        # reviewer_claims key entirely, which the present-only check would have
+        # tolerated (fall back to producer lineage). It must now fail closed.
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "looks good"},
+        )
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_post_epoch_omission_is_not_launderable_by_acknowledgment(self) -> None:
+        # The sharp regression: on the parent, a post-epoch pass could OMIT
+        # reviewer_claims and still pass by asserting same_lineage_acknowledged,
+        # laundering a verdict whose reviewer lineage was never signed in the
+        # role-specific payload. WI-307 fails it closed at ingress, before the
+        # acknowledgment path is ever consulted.
+        from regista._errors import ErrorCode, RegistaError
+
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "looks good", "same_lineage_acknowledged": True},
+        )
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_post_epoch_pass_with_null_reviewer_claims_fails_closed(self) -> None:
+        from regista._errors import ErrorCode, RegistaError
+
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "looks good", "reviewer_claims": None},
+        )
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_post_epoch_pass_with_canonical_reviewer_claims_passes(self) -> None:
+        # Post-epoch (v6 prior event) pass carrying a canonical reviewer_claims
+        # block is admitted. A human author means no agent-author ack gate, so
+        # this isolates the WI-307 requirement: reviewer_claims present + canonical.
+        ctx = _ctx(
+            [_v6_evt("created", "a1", actor_kind="human")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "looks good", "reviewer_claims": {"model_lineage": "kimi"}},
+        )
+        adversarial_review(ctx)  # no raise
+
+    def test_post_epoch_present_but_noncanonical_still_fails_wi305(self) -> None:
+        # The WI-305 A present-but-non-canonical rejection must still hold post-epoch.
+        from regista._errors import ErrorCode, RegistaError
+
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={
+                "review_note": "looks good",
+                "reviewer_claims": {"model_lineage": "not-a-family"},
+            },
+        )
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_pre_epoch_legacy_pass_without_reviewer_claims_still_passes(self) -> None:
+        # Legacy-shaped prior events (no canonical_envelope) -> pre-epoch. The
+        # reviewer's lineage rides the legacy vehicle (actor_metadata) and is
+        # distinct from the author, so the pass is admitted WITHOUT a
+        # reviewer_claims block: the compatibility carve-out is preserved.
+        author = [_evt("created", "a1", actor_metadata={"model_lineage": "glm"})]
+        ctx = _ctx(
+            author,
+            "r1",
+            actor_metadata={"model_lineage": "kimi"},
+            payload={"review_note": "looks good"},
+        )
+        adversarial_review(ctx)  # no raise — legacy fallback still works
+
+    def test_empty_prior_events_reads_as_pre_epoch(self) -> None:
+        # Boundary: with no prior events there is no v6 envelope to detect, so
+        # _is_post_epoch is False and the tolerant path applies. This is
+        # unreachable for a real adversarial_pass (create/submit precede
+        # in_review), but pin the boundary so the "any v6 prior ⇒ epoch open"
+        # signal cannot silently start requiring the block on an empty history.
+        ctx = _ctx(
+            [],
+            "r1",
+            actor_metadata={"model_lineage": "kimi"},
+            payload={"review_note": "looks good"},
+        )
+        adversarial_review(ctx)  # no raise — empty history is not post-epoch
+
+    def test_post_epoch_non_finding_only_request_changes_is_bound(self) -> None:
+        # The requirement binds any verdict that reaches the distinctness-gate
+        # path, not the transition name: a non-finding_only request_changes in a
+        # v6 epoch consumes reviewer lineage there and so must carry the block.
+        # (In the canonical workflow request_changes is finding_only and never
+        # reaches this check; a custom workflow's non-finding_only one does.)
+        from regista._errors import ErrorCode, RegistaError
+
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "needs work"},
+        )
+        ctx.transition_name = "request_changes"
+        with pytest.raises(RegistaError) as exc:
+            adversarial_review(ctx)
+        assert exc.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+
+    def test_finding_only_request_changes_is_not_bound(self) -> None:
+        # The finding_only negative verdict early-returns before the WI-307
+        # check (the canonical-workflow shape), so it may omit reviewer_claims.
+        ctx = _ctx(
+            [_v6_evt("created", "a1")],
+            "r1",
+            actor_metadata=None,
+            payload={"review_note": "needs work"},
+        )
+        ctx.transition_name = "request_changes"
+        ctx.current_state = "in_review"
+        ctx.new_state = "in_progress"
+        ctx.validator_params = {"finding_only": True}
+        adversarial_review(ctx)  # no raise — finding_only is exempt
