@@ -1738,14 +1738,15 @@ _REGISTRAR_DELEGATED_KEYS = frozenset(
 )
 
 
-def replay_custody_declarations(
-    declarations: Sequence[tuple[TrustDomainCustodyDeclared, str]],
-) -> TrustDomainCustodyDeclared | None:
-    """Replay custody corrections in order, enforcing the WI-292 monotone rules.
+def admit_custody_declaration(
+    current: tuple[TrustDomainCustodyDeclared, str] | None,
+    declaration: TrustDomainCustodyDeclared,
+) -> None:
+    """Enforce the WI-292 monotone custody rules for one declaration.
 
-    Takes ``(declaration, its_own_digest)`` pairs in chain order and returns the
-    current declaration, or ``None`` for an empty sequence. Two rules the individual
-    payload cannot check:
+    ``current`` is the current replayed head as a ``(declaration, its_own_digest)``
+    pair, or ``None`` when no custody correction has been recorded yet. Two rules the
+    individual payload cannot check on its own:
 
     * ``declaration_seq`` must increase by exactly one, starting at 1. A gap would
       mean a correction is missing from the presented material; a repeat or a
@@ -1753,29 +1754,49 @@ def replay_custody_declarations(
     * ``supersedes_declaration_digest`` must name the **immediately preceding**
       declaration. Naming an older one would silently discard the corrections
       between, which is a rewrite wearing a correction's clothes.
+
+    WI-314: the writer's admission gate calls this against the trust log's current
+    replayed state *before* the event is durably appended, so a malformed correction
+    is refused fail-closed rather than wedging the log; :func:`replay_custody_declarations`
+    calls it at verification time. Sharing this one function keeps both sides raising
+    the *identical* named error for the same violation.
     """
-    previous: TrustDomainCustodyDeclared | None = None
-    previous_digest: str | None = None
-    for index, (declaration, digest) in enumerate(declarations):
-        expected_seq = index + 1
-        _require(
-            declaration.declaration_seq == expected_seq,
-            f"custody declaration_seq must increase by one from 1; expected "
-            f"{expected_seq}, got {declaration.declaration_seq}",
-            "custody_seq_not_contiguous",
-            expected=expected_seq,
-            stated=declaration.declaration_seq,
-        )
-        _require(
-            declaration.supersedes_declaration_digest == previous_digest,
-            "custody supersedes_declaration_digest must name the immediately "
-            "preceding declaration",
-            "custody_supersedes_wrong_predecessor",
-            expected=previous_digest,
-            stated=declaration.supersedes_declaration_digest,
-        )
-        previous, previous_digest = declaration, digest
-    return previous
+    expected_seq = (current[0].declaration_seq if current is not None else 0) + 1
+    previous_digest = current[1] if current is not None else None
+    _require(
+        declaration.declaration_seq == expected_seq,
+        f"custody declaration_seq must increase by one from 1; expected "
+        f"{expected_seq}, got {declaration.declaration_seq}",
+        "custody_seq_not_contiguous",
+        expected=expected_seq,
+        stated=declaration.declaration_seq,
+    )
+    _require(
+        declaration.supersedes_declaration_digest == previous_digest,
+        "custody supersedes_declaration_digest must name the immediately "
+        "preceding declaration",
+        "custody_supersedes_wrong_predecessor",
+        expected=previous_digest,
+        stated=declaration.supersedes_declaration_digest,
+    )
+
+
+def replay_custody_declarations(
+    declarations: Sequence[tuple[TrustDomainCustodyDeclared, str]],
+) -> TrustDomainCustodyDeclared | None:
+    """Replay custody corrections in order, enforcing the WI-292 monotone rules.
+
+    Takes ``(declaration, its_own_digest)`` pairs in chain order and returns the
+    current declaration, or ``None`` for an empty sequence. Each step is admitted by
+    :func:`admit_custody_declaration` against the running head, so this and the
+    writer's write-time gate (WI-314) enforce exactly the same rules with the same
+    named errors.
+    """
+    current: tuple[TrustDomainCustodyDeclared, str] | None = None
+    for declaration, digest in declarations:
+        admit_custody_declaration(current, declaration)
+        current = (declaration, digest)
+    return current[0] if current is not None else None
 
 
 def parse_registrar_delegated(payload: Mapping[str, Any]) -> RegistrarDelegated:
@@ -2465,6 +2486,7 @@ __all__: Sequence[str] = [
     "TrustDomainCustodyDeclared",
     "TrustDomainEstablished",
     "TrustRootRotated",
+    "admit_custody_declaration",
     "apply_root_rotation",
     "authorize_lifecycle_operation",
     "check_principal_grammar",
