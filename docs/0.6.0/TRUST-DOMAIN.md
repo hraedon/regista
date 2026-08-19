@@ -40,7 +40,7 @@ choice to make.
 | §4.4 — `publish` has no signed-document input | collision 17 | §4.4 — `regista trust publish --kind <kind> --input <signed.json> --repo <clone> [--push]` |
 | §4.1/§4.5 — "a rewrite is detectable" | collision 18 | §4.1 — a coherent rewrite is **not** detectable from a fresh clone; detection needs a prior clone, commit or digest |
 | §4.6 — `accept_hmac_prefix` | Resolution 4 | §4.6 — `accept_legacy_shared_secret_events`; the legacy region is mixed, not a prefix |
-| §5.2/§5.3 — entity kinds, trust-log genesis | Resolution 1, collisions 3, 5 | §5.2 — six-value shared registry; genesis-only root-threshold rule |
+| §5.2/§5.3 — entity kinds, trust-log genesis | Resolution 1, collisions 3, 5, WI-305 B | §5.2 — seven-value shared registry; genesis-only root-threshold rule |
 | §5.5 — enrolment payload | WI-273 | §5.5 — enrolment **must carry public key bytes**; a fingerprint alone makes the projection unrebuildable |
 | §5.8 — the first acceptance signs itself | Resolution 1 (Bootstrap B), collision 2 | §5.8 — withdrawn; the checkpoint/initialisation event is the first anchor |
 | §5.9 — `principal_keys` rebuilt from signed lifecycle events | overlay change 3 | §5.9 — rebuild is valid **only for the v6 epoch**; legacy resolution is a labelled compatibility input, never lifecycle evidence |
@@ -1044,19 +1044,35 @@ One estate-wide project (`ARCHITECTURE-0.6.0.md:343`), with:
      principal/key events; witness events are cut from 0.6.0 and retained only in §7; `kind = "trust_domain"`, `id = trust_domain_id` for root and
   domain-level events; `kind = "project_instance"`, `id = project_instance_id` for registrations.
 
-> **AMENDED — `RECONCILIATION.md` Resolution 1 and collision 5.** Two rules:
+> **AMENDED — `RECONCILIATION.md` Resolution 1 and collision 5, and `WI-305 B`.**
+> Two rules:
 >
-> 1. **The entity-kind registry is shared and closed at six values** — `work_item`, `project`,
->    `principal`, `trust_domain`, `project_instance`, `workflow` (`V6-ENVELOPE.md` §1.2).
+> 1. **The entity-kind registry is shared and closed at seven values** — `work_item`, `project`,
+>    `principal`, `trust_domain`, `project_instance`, `workflow`, `spec`
+>    (`V6-ENVELOPE.md` §1.2; `spec` added by WI-305 B).
 >    `project_system` (used in §5.3's catalogue row for `trust_log_checkpoint_observed`) is
 >    prose, **never a wire value**; that event's entity kind is `project`.
-> 2. **The trust-log genesis exception.** `trust_domain_established` is the first v6 event in the
->    log and has no predecessor acceptance to point at, so it carries
->    `signing.key_binding_event_hash = null`. It is authorised **externally**: its hash equals
->    `trust_genesis.trust_log.initial_head_event_hash`, the genesis document verifies at root
->    threshold, and the signing key is a genesis root key. This is Bootstrap A; it is the *only*
->    null permitted in the trust log, and it is what resolves the "universal project acceptance
->    has no predecessor" circularity (collision 3).
+> 2. **The trust-log genesis exception (A-prime, owner-approved + Fable-adjudicated).**
+>    `trust_domain_established` is the first v6 event in the log and the only one with
+>    `signing.key_binding_event_hash = null`. It is authorised externally on presented evidence,
+>    **not** by hash-equality to the document's head: a v1 genesis document MUST carry
+>    `trust_log.initial_head_event_hash = null` (named `genesis_head_must_be_null`), because the
+>    genesis event hash is unknowable until the event is written and is **pinned by the
+>    checkpoint** (§4.3), not by the document. The event's authority is proven by: chain position
+>    1; the pinned document fully threshold-verifying with a null head; the payload's
+>    `genesis_document_digest` equalling the recomputed digest over the exact published document
+>    bytes; the payload being a strict restatement whose detached `root_signatures` meet the
+>    initial root threshold (`verify_root_threshold`); and the envelope signer being a genesis
+>    root (transport attribution, never the authority proof).
+>
+>    **Fixed-point rationale.** `initial_head_event_hash` must be null because it names the genesis
+>    event's own hash, which commits (through `genesis_document_digest`) back to the document the
+>    field is part of — a genuine fixed point if taken as an input. Making it the checkpoint's
+>    *output* breaks the cycle: the document is signed with a null head, the event is written and
+>    hashed, and the resulting hash is published through a `trust_log_checkpoint_published`
+>    document (§4.3). Every prior statement that `trust_domain_established`'s hash *equals*
+>    `trust_genesis.trust_log.initial_head_event_hash` is superseded by this note (and by the
+>    mirroring notes in `V6-ENVELOPE.md` §1.5 and `RECONCILIATION.md` Resolution 1).
 
 **Entity id scoping note.** `principal_entity_id` is `uuid5(NAMESPACE_OID, "principal:" + id)`
 (`_principal_keys.py:53-54`) and is therefore *not* trust-domain-scoped: the same principal id in

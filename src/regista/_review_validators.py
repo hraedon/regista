@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from ._lineage import declared_model_lineage, event_model_lineage
+from ._lineage import (
+    declared_model_lineage,
+    event_model_lineage,
+    require_canonical_reviewer_lineage,
+    reviewer_model_lineage,
+)
 
 _REVIEW_VERDICTS = frozenset({"accept", "request_changes", "adversarial_pass", "reject"})
 _NON_AUTHOR_TRANSITIONS = _REVIEW_VERDICTS | {"comment"}
@@ -257,6 +262,8 @@ def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
 def adversarial_review(ctx: Any) -> None:
     from ._assurance import LineageRelation, review_lineage_relation
 
+    require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
+
     params = getattr(ctx, "validator_params", None) or {}
     finding_only = params.get("finding_only", False)
     if not isinstance(finding_only, bool):
@@ -297,9 +304,7 @@ def adversarial_review(ctx: Any) -> None:
     _check_separation_of_duties(ctx, author_ids, "adversarial_review")
     _require_review_note(ctx, "adversarial_review")
 
-    reviewer_lineage = declared_lineage(
-        (getattr(ctx, "actor_metadata", None) or {}).get("model_lineage")
-    )
+    reviewer_lineage = reviewer_model_lineage(ctx)
     # WI-262: "is there an agent mind behind this review?" is not answered by
     # the proxy's actor_kind alone. A HUMAN proxy recording a pass on behalf of
     # an agent principal is an agent review with a human typing it, and the
@@ -362,6 +367,8 @@ def human_gate(
     require_human: bool = False,
     require_human_on_same_lineage: bool = False,
 ) -> None:
+    require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
+
     if require_human:
         if ctx.actor_kind != "human":
             raise ReviewRejected(
@@ -385,7 +392,7 @@ def human_gate(
         # latter is an escalation trigger: with no pass at all there is no
         # same-lineage review to catch. Distinguish via the pass's existence.
         last_pass = _last_adversarial_pass(ctx.prior_events)
-        reviewer_lineage = _event_lineage(last_pass) if last_pass is not None else None
+        reviewer_lineage = reviewer_model_lineage(last_pass) if last_pass is not None else None
         (
             _author_ids,
             _author_kinds,

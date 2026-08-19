@@ -1,0 +1,1379 @@
+"""WI-301 trust-log writer: threshold-rooted authority, genesis, max_operations.
+
+A separate-project trust-log store, pinned genesis, threshold root authority via
+``payload.root_signatures``, registrar authority with atomic ``max_operations``,
+predecessor-link ordering, and fail-closed replay verification.
+"""
+
+from __future__ import annotations
+
+import base64
+import copy
+import json
+import threading
+import uuid
+
+import nacl.signing
+import psycopg
+import pytest
+from _helpers import DSN
+from _trust_fixtures import mint_genesis
+
+from regista import Regista
+from regista._errors import ErrorCode, RegistaError
+from regista._trust_log_writer import (
+    append_trust_log_event,
+    chain_order,
+    read_trust_log_rows,
+    replay_trust_state,
+    write_trust_genesis,
+)
+from regista.testing import drop_project_schema
+from tests._trust_log_fixtures import (
+    TrustLogKey,
+    make_enrollment_payload,
+    make_possession_challenge,
+    make_registrar_delegation_payload,
+    make_registrar_revocation_payload,
+    make_revocation_payload,
+    make_rotation_payload,
+    persist_consumed_possession_challenge,
+)
+
+pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
+
+ROOT = "service:root-a"
+ROOT_B = "service:root-b"
+REGISTRAR = "service:registrar-1"
+
+
+@pytest.fixture(autouse=True)
+def _producer_env():
+    import os
+
+    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
+    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
+    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+
+
+def _tlogkey(key_id: str, seed: bytes) -> TrustLogKey:
+    sk = nacl.signing.SigningKey(seed)
+    return TrustLogKey(
+        key_id=key_id,
+        seed=seed,
+        public_key=bytes(sk.verify_key),
+        fingerprint=_fingerprint(bytes(sk.verify_key)),
+    )
+
+
+def _fingerprint(public_key: bytes) -> str:
+    from regista._principal_keys import _compute_fingerprint
+
+    return _compute_fingerprint(public_key, "ed25519")
+
+
+def _write_key_file(path, entries: dict[str, bytes]) -> str:
+    payload = {"keys": []}
+    for principal_id, seed in entries.items():
+        sk = nacl.signing.SigningKey(seed)
+        key_id = {
+            ROOT: "k_root-a",
+            ROOT_B: "k_root-b",
+            REGISTRAR: "k_registrar",
+        }.get(principal_id, "k_" + uuid.uuid4().hex[:8])
+        payload["keys"].append(
+            {
+                "key_id": key_id,
+                "scheme": "ed25519",
+                "alg": "Ed25519",
+                "secret": base64.b64encode(seed).decode("ascii"),
+                "encoding": "base64",
+                "public_key": base64.b64encode(bytes(sk.verify_key)).decode("ascii"),
+                "principal_id": principal_id,
+                "role": "actor",
+                "status": "active",
+            }
+        )
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _make_environment(tmp_path, *, threshold=1, signer_count=2):
+    fixture = mint_genesis(
+        threshold=threshold,
+        signer_count=signer_count,
+        seeds=[bytes([i]) * 32 for i in range(1, signer_count + 1)],
+    )
+    root_seed = fixture.seeds[fixture.signer_ids[0]]
+    second_seed = fixture.seeds.get(fixture.signer_ids[1]) if signer_count > 1 else None
+    entries = {ROOT: root_seed}
+    if second_seed is not None:
+        entries[ROOT_B] = second_seed
+    entries[REGISTRAR] = bytes([9]) * 32
+    key_file = _write_key_file(tmp_path / "keys.json", entries)
+    project = f"wi301_{uuid.uuid4().hex[:8]}"
+    handle = Regista.create_project(DSN, project, hmac_key_path=key_file)
+    return fixture, handle, key_file, project
+
+
+def _close(handle, project):
+    handle.close()
+    drop_project_schema(DSN, project)
+
+
+def _root_keys(fixture, signer_ids=("root-a",)):
+    keys = []
+    for signer_id in signer_ids:
+        seed = fixture.seeds[signer_id]
+        keys.append(_tlogkey("k_" + signer_id, seed))
+    return keys
+
+
+def _delegate(handle, fixture, *, threshold=1, root_keys=None, max_operations=2):
+    roots = root_keys if root_keys is not None else _root_keys(fixture)
+    registrar_key = _tlogkey("k_registrar", bytes([9]) * 32)
+    payload = make_registrar_delegation_payload(
+        trust_domain_id=fixture.trust_domain_id,
+        registrar_principal_id=REGISTRAR,
+        key=registrar_key,
+        max_operations=max_operations,
+        root_keys=roots,
+        not_before="2026-01-01T00:00:00.000000Z",
+        not_after="2027-01-01T00:00:00.000000Z",
+    )
+    return append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=fixture.document,
+        transition="registrar_delegated",
+        payload=payload,
+        entity_kind="trust_domain",
+        entity_id=uuid.UUID(fixture.trust_domain_id),
+        principal_id=ROOT,
+        authority="root",
+    )
+
+
+
+def _delegated_hash(handle):
+    from regista._trust_log_writer import _row_event_hash, chain_order, read_trust_log_rows
+
+    with handle._mgr.transaction() as conn:
+        order = chain_order(read_trust_log_rows(conn))
+    for row in order:
+        if str(row["transition"]) == "registrar_delegated":
+            return _row_event_hash(row)
+    raise AssertionError("no registrar_delegated event found")
+
+
+def _enrollment_material(
+    handle,
+    fixture,
+    *,
+    principal="agent:alice",
+    delegation_hash=None,
+    challenge=None,
+    key=None,
+    authorized_by=None,
+):
+    key = key or TrustLogKey.mint(f"pk_{uuid.uuid4().hex[:8]}")
+    challenge = challenge or make_possession_challenge(
+        trust_domain_id=fixture.trust_domain_id,
+        principal_id=principal,
+        fingerprint=key.fingerprint,
+        project=handle._mgr.project,
+    )
+    payload = make_enrollment_payload(
+        trust_domain_id=fixture.trust_domain_id,
+        principal_id=principal,
+        key=key,
+        authorized_by=authorized_by or _make_auth(REGISTRAR, delegation_hash),
+        challenge=challenge,
+    )
+    return payload, challenge
+
+
+def _enroll(
+    handle,
+    fixture,
+    *,
+    registrar=True,
+    principal="agent:alice",
+    delegation_hash=None,
+    persist_challenge=True,
+    challenge=None,
+    key=None,
+    authorized_by=None,
+):
+    payload, challenge = _enrollment_material(
+        handle,
+        fixture,
+        principal=principal,
+        delegation_hash=delegation_hash,
+        challenge=challenge,
+        key=key,
+        authorized_by=authorized_by,
+    )
+    if persist_challenge:
+        with handle._mgr.transaction() as conn:
+            persist_consumed_possession_challenge(
+                conn,
+                challenge,
+                payload["possession_proof"]["signature"],
+            )
+    return _append_enrollment(
+        handle,
+        fixture,
+        principal=principal,
+        payload=payload,
+        registrar=registrar,
+    )
+
+
+def _append_enrollment(handle, fixture, *, principal, payload, registrar=True):
+    return append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=fixture.document,
+        transition="principal_key_enrolled",
+        payload=payload,
+        entity_kind="principal",
+        entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal),
+        principal_id=REGISTRAR if registrar else ROOT,
+        authority="registrar" if registrar else "root",
+    )
+
+
+def _rotation_material(
+    handle,
+    fixture,
+    *,
+    principal,
+    key,
+    supersedes_key_id,
+    superseded_key=None,
+    mode="dual",
+    recovery_reason=None,
+    root_keys=None,
+    delegation_hash=None,
+    authorized_by=None,
+):
+    challenge = make_possession_challenge(
+        trust_domain_id=fixture.trust_domain_id,
+        principal_id=principal,
+        fingerprint=key.fingerprint,
+        project=handle._mgr.project,
+    )
+    payload = make_rotation_payload(
+        trust_domain_id=fixture.trust_domain_id,
+        principal_id=principal,
+        key=key,
+        supersedes_key_id=supersedes_key_id,
+        superseded_key=superseded_key,
+        mode=mode,
+        recovery_reason=recovery_reason,
+        root_keys=root_keys,
+        authorized_by=authorized_by or _make_auth(REGISTRAR, delegation_hash),
+        challenge=challenge,
+    )
+    return payload, challenge
+
+
+def _append_rotation(handle, fixture, *, principal, payload, authority, actor_id):
+    return append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=fixture.document,
+        transition="principal_key_rotated",
+        payload=payload,
+        entity_kind="principal",
+        entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal),
+        principal_id=actor_id,
+        authority=authority,
+    )
+
+
+def _persist_challenge(handle, challenge, payload, *, used=True):
+    with handle._mgr.transaction() as conn:
+        persist_consumed_possession_challenge(
+            conn,
+            challenge,
+            payload["possession_proof"]["signature"],
+            used=used,
+        )
+
+
+def _make_auth(principal, delegation_hash):
+    if delegation_hash is None:
+        return {
+            "authority": "registrar",
+            "principal_id": principal,
+            "key_id": "k_registrar",
+            "delegation_event_hash": None,
+        }
+    return {
+        "authority": "registrar",
+        "principal_id": principal,
+        "key_id": "k_registrar",
+        "delegation_event_hash": delegation_hash,
+    }
+
+
+def _make_root_auth(principal=ROOT, key_id="k_root-a"):
+    return {
+        "authority": "root",
+        "principal_id": principal,
+        "key_id": key_id,
+        "delegation_event_hash": None,
+    }
+
+
+def _signed_genesis_payload(fixture, signer_ids=("root-a",)):
+    from regista._trust_log import root_signature_input
+    from regista._trust_log_writer import build_trust_domain_established_payload
+
+    payload = build_trust_domain_established_payload(fixture.document)
+    message = root_signature_input(payload)
+    signatures = []
+    for signer_id in signer_ids:
+        seed = fixture.seeds[signer_id]
+        sig = nacl.signing.SigningKey(seed).sign(message).signature
+        signatures.append(
+            {
+                "signer_id": signer_id,
+                "fingerprint": fixture.fingerprints[signer_id],
+                "signature": base64.b64encode(sig).decode("ascii"),
+            }
+        )
+    payload["root_signatures"] = signatures
+    return payload
+
+
+class TestGenesis:
+    def test_genesis_writes_and_payload_parses(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            genesis_id = write_trust_genesis(
+                handle._mgr, keys=handle._keys, genesis_document=fixture.document,
+                payload=_signed_genesis_payload(fixture), root_principal_id=ROOT,
+            )
+            assert genesis_id
+            from regista._trust_log import parse_trust_domain_established
+
+            with handle._mgr.transaction() as conn:
+                order = chain_order(read_trust_log_rows(conn))
+            assert [r["transition"] for r in order] == ["trust_domain_established"]
+            payload = order[0]["payload"]
+            parsed = parse_trust_domain_established(payload)
+            assert str(parsed.trust_domain_id) == fixture.trust_domain_id
+        finally:
+            _close(handle, project)
+
+    def test_double_genesis_refused(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document,
+                                payload=_signed_genesis_payload(fixture),
+                                root_principal_id=ROOT)
+            with pytest.raises(RegistaError) as exc:
+                write_trust_genesis(handle._mgr, keys=handle._keys,
+                                    genesis_document=fixture.document,
+                                    payload=_signed_genesis_payload(fixture),
+                                    root_principal_id=ROOT)
+            assert exc.value.code is ErrorCode.GENESIS_ALREADY_WRITTEN
+            with pytest.raises(RegistaError) as exc:
+                append_trust_log_event(
+                    handle._mgr, keys=handle._keys, genesis_document=fixture.document,
+                    transition="trust_domain_established", payload={},
+                    entity_kind="trust_domain", entity_id=uuid.uuid4(),
+                    principal_id=ROOT, authority="root",
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_PAYLOAD_INVALID
+        finally:
+            _close(handle, project)
+
+
+    def test_genesis_digest_equals_canonical_publication_bytes(self, tmp_path):
+        import hashlib
+
+        from regista._jcs import canonicalize
+        from regista._trust_domain import genesis_document_digest
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            payload = _signed_genesis_payload(fixture)
+            expected = genesis_document_digest(fixture.document)
+            assert payload["genesis_document_digest"] == expected
+            assert expected == "sha256:" + hashlib.sha256(
+                canonicalize(fixture.document)
+            ).hexdigest()
+        finally:
+            _close(handle, project)
+
+
+    def test_non_null_pinned_head_is_named_invalid(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            doc = copy.deepcopy(fixture.document)
+            doc["trust_log"]["initial_head_event_hash"] = "sha256:" + "ff" * 32
+            with pytest.raises(RegistaError) as exc:
+                write_trust_genesis(handle._mgr, keys=handle._keys,
+                                    genesis_document=doc, root_principal_id=ROOT)
+            assert exc.value.code is ErrorCode.TRUST_GENESIS_SCHEMA_INVALID
+            assert exc.value.detail["reason"] == "genesis_head_must_be_null"
+        finally:
+            _close(handle, project)
+
+
+class TestRootThreshold:
+    def test_threshold_met_positive(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path, threshold=2, signer_count=2)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document,
+                                payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
+                                root_principal_id=ROOT)
+            _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a", "root-b")))
+        finally:
+            _close(handle, project)
+
+    def test_threshold_not_met_negative(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path, threshold=2, signer_count=2)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document,
+                                payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
+                                root_principal_id=ROOT)
+            with pytest.raises(RegistaError) as exc:
+                _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a",)))
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+        finally:
+            _close(handle, project)
+
+
+
+    def test_one_of_two_genesis_root_signatures_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path, threshold=2, signer_count=2)
+        try:
+            with pytest.raises(RegistaError) as exc:
+                write_trust_genesis(
+                    handle._mgr, keys=handle._keys, genesis_document=fixture.document,
+                    payload=_signed_genesis_payload(fixture, ("root-a",)),
+                    root_principal_id=ROOT,
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "root_threshold_not_met"
+        finally:
+            _close(handle, project)
+
+
+class TestRegistrarMaxOperations:
+    def test_max_operations_enforced_sequential(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document, root_principal_id=ROOT)
+            _delegate(handle, fixture, max_operations=2)
+            _enroll(handle, fixture, principal="agent:c1", delegation_hash=_delegated_hash(handle))
+            _enroll(handle, fixture, principal="agent:c2", delegation_hash=_delegated_hash(handle))
+            with pytest.raises(RegistaError) as exc:
+                _enroll(handle, fixture, principal="agent:c3",
+                        delegation_hash=_delegated_hash(handle))
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+        finally:
+            _close(handle, project)
+
+    def test_two_concurrent_final_ops_only_one_succeeds(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document, root_principal_id=ROOT)
+            _delegate(handle, fixture, max_operations=1)
+            second = Regista(DSN, project, hmac_key_path=_kf)
+            results: list[bool] = []
+            errors: list[RegistaError] = []
+            lock = threading.Lock()
+
+            def _attempt(h):
+                try:
+                    _enroll(h, fixture, principal="agent:race", delegation_hash=_delegated_hash(h))
+                    with lock:
+                        results.append(True)
+                except RegistaError as e:
+                    with lock:
+                        errors.append(e)
+
+            t1 = threading.Thread(target=_attempt, args=(handle,))
+            t2 = threading.Thread(target=_attempt, args=(second,))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            assert len(results) == 1
+            assert len(errors) == 1
+            assert errors[0].code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            second.close()
+        finally:
+            _close(handle, project)
+
+
+class TestRegistrarRevocationReplay:
+    def test_root_revocation_must_name_the_current_live_delegation(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            payload = make_registrar_revocation_payload(
+                trust_domain_id=fixture.trust_domain_id,
+                key_id="k_registrar",
+                delegation_event_hash="sha256:" + "f" * 64,
+                root_keys=_root_keys(fixture),
+            )
+            append_trust_log_event(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                transition="registrar_revoked",
+                payload=payload,
+                entity_kind="trust_domain",
+                entity_id=uuid.UUID(fixture.trust_domain_id),
+                principal_id=ROOT,
+                authority="root",
+            )
+
+            with handle._mgr.transaction() as conn:
+                with pytest.raises(RegistaError) as exc_info:
+                    replay_trust_state(conn, fixture.document)
+            assert exc_info.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc_info.value.detail["reason"] == (
+                "registrar_revocation_delegation_mismatch"
+            )
+
+            # A later registrar event must not make the mismatched revocation a no-op.
+            with pytest.raises(RegistaError) as exc_info:
+                _enroll(
+                    handle,
+                    fixture,
+                    principal="agent:after-bad-revocation",
+                    delegation_hash=_delegated_hash(handle),
+                )
+            assert exc_info.value.detail["reason"] == (
+                "registrar_revocation_delegation_mismatch"
+            )
+        finally:
+            _close(handle, project)
+
+    def test_root_revocation_without_a_live_target_is_refused(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            payload = make_registrar_revocation_payload(
+                trust_domain_id=fixture.trust_domain_id,
+                registrar_principal_id="service:missing-registrar",
+                key_id="k_missing",
+                delegation_event_hash="sha256:" + "a" * 64,
+                root_keys=_root_keys(fixture),
+            )
+            append_trust_log_event(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                transition="registrar_revoked",
+                payload=payload,
+                entity_kind="trust_domain",
+                entity_id=uuid.UUID(fixture.trust_domain_id),
+                principal_id=ROOT,
+                authority="root",
+            )
+            with handle._mgr.transaction() as conn:
+                with pytest.raises(RegistaError) as exc_info:
+                    replay_trust_state(conn, fixture.document)
+            assert exc_info.value.detail["reason"] == (
+                "registrar_revocation_target_missing"
+            )
+        finally:
+            _close(handle, project)
+
+
+class TestPrincipalKeyStatusReplay:
+    def test_revoked_key_remains_verifiable_but_cannot_dual_rotate(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:compromised"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            old = TrustLogKey.mint("pk_compromised_old")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=old,
+            )
+            revoke_payload = make_revocation_payload(
+                trust_domain_id=fixture.trust_domain_id,
+                principal_id=principal,
+                key_id=old.key_id,
+                authorized_by=_make_auth(REGISTRAR, delegation_hash),
+            )
+            append_trust_log_event(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                transition="principal_key_revoked",
+                payload=revoke_payload,
+                entity_kind="principal",
+                entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal),
+                principal_id=REGISTRAR,
+                authority="registrar",
+            )
+
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
+            assert state.principal_key_status[(principal, old.key_id)] == "revoked"
+
+            new = TrustLogKey.mint("pk_compromised_new")
+            rotation_payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id=old.key_id,
+                superseded_key=old,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge, rotation_payload)
+            with pytest.raises(RegistaError) as exc_info:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=rotation_payload,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc_info.value.detail["reason"] == "superseded_key_revoked"
+        finally:
+            _close(handle, project)
+
+
+class TestPossessionAdmission:
+    def test_missing_challenge_is_denied_before_registrar_count(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=1)
+            with pytest.raises(RegistaError) as exc:
+                _enroll(
+                    handle,
+                    fixture,
+                    principal="agent:missing",
+                    delegation_hash=_delegated_hash(handle),
+                    persist_challenge=False,
+                )
+            assert exc.value.detail["reason"] == "possession_challenge_not_found"
+            _enroll(
+                handle,
+                fixture,
+                principal="agent:after-missing",
+                delegation_hash=_delegated_hash(handle),
+            )
+        finally:
+            _close(handle, project)
+
+    def test_missing_challenge_table_is_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            with handle._mgr.transaction() as conn:
+                conn.execute("DROP TABLE lifecycle_challenges")
+            with pytest.raises(RegistaError) as exc:
+                _enroll(
+                    handle,
+                    fixture,
+                    principal="agent:no-table",
+                    delegation_hash=_delegated_hash(handle),
+                    persist_challenge=False,
+                )
+            assert exc.value.detail["reason"] == "possession_challenge_table_missing"
+        finally:
+            _close(handle, project)
+
+    def test_unconsumed_challenge_is_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            payload, challenge = _enrollment_material(
+                handle,
+                fixture,
+                principal="agent:unconsumed",
+                delegation_hash=_delegated_hash(handle),
+            )
+            with handle._mgr.transaction() as conn:
+                persist_consumed_possession_challenge(
+                    conn,
+                    challenge,
+                    payload["possession_proof"]["signature"],
+                    used=False,
+                )
+            with pytest.raises(RegistaError) as exc:
+                append_trust_log_event(
+                    handle._mgr,
+                    keys=handle._keys,
+                    genesis_document=fixture.document,
+                    transition="principal_key_enrolled",
+                    payload=payload,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID, "regista.principal:agent:unconsumed"
+                    ),
+                    principal_id=REGISTRAR,
+                    authority="registrar",
+                )
+            assert exc.value.detail["reason"] == "possession_challenge_not_consumed"
+        finally:
+            _close(handle, project)
+
+    def test_proof_signature_mismatch_is_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            payload, challenge = _enrollment_material(
+                handle,
+                fixture,
+                principal="agent:proof-mismatch",
+                delegation_hash=_delegated_hash(handle),
+            )
+            with handle._mgr.transaction() as conn:
+                persist_consumed_possession_challenge(
+                    conn,
+                    challenge,
+                    payload["possession_proof"]["signature"],
+                )
+                conn.execute(
+                    "UPDATE lifecycle_challenges SET proof_signature = %s "
+                    "WHERE challenge_id = %s",
+                    ["A" * len(payload["possession_proof"]["signature"]), challenge.challenge_id],
+                )
+            with pytest.raises(RegistaError) as exc:
+                append_trust_log_event(
+                    handle._mgr,
+                    keys=handle._keys,
+                    genesis_document=fixture.document,
+                    transition="principal_key_enrolled",
+                    payload=payload,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID, "regista.principal:agent:proof-mismatch"
+                    ),
+                    principal_id=REGISTRAR,
+                    authority="registrar",
+                )
+            assert exc.value.detail["reason"] == "possession_proof_signature_mismatch"
+        finally:
+            _close(handle, project)
+
+    def test_mutated_signed_challenge_field_is_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            payload, challenge = _enrollment_material(
+                handle,
+                fixture,
+                principal="agent:mutated-challenge",
+                delegation_hash=_delegated_hash(handle),
+            )
+            with handle._mgr.transaction() as conn:
+                persist_consumed_possession_challenge(
+                    conn,
+                    challenge,
+                    payload["possession_proof"]["signature"],
+                )
+                conn.execute(
+                    "UPDATE lifecycle_challenges SET operation_digest = %s "
+                    "WHERE challenge_id = %s",
+                    ["sha256:" + "1" * 64, challenge.challenge_id],
+                )
+            with pytest.raises(RegistaError) as exc:
+                append_trust_log_event(
+                    handle._mgr,
+                    keys=handle._keys,
+                    genesis_document=fixture.document,
+                    transition="principal_key_enrolled",
+                    payload=payload,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID, "regista.principal:agent:mutated-challenge"
+                    ),
+                    principal_id=REGISTRAR,
+                    authority="registrar",
+                )
+            assert exc.value.detail["reason"] == "possession_proof_verification_failed"
+        finally:
+            _close(handle, project)
+
+    def test_expired_challenge_is_denied_at_admission(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture)
+            key = TrustLogKey.mint("pk_expired")
+            challenge = make_possession_challenge(
+                trust_domain_id=fixture.trust_domain_id,
+                principal_id="agent:expired",
+                fingerprint=key.fingerprint,
+                project=handle._mgr.project,
+                issued_at="2026-01-01T00:00:00.000000Z",
+                expires_at="2026-01-01T00:05:00.000000Z",
+            )
+            payload = make_enrollment_payload(
+                trust_domain_id=fixture.trust_domain_id,
+                principal_id="agent:expired",
+                key=key,
+                authorized_by=_make_auth(REGISTRAR, _delegated_hash(handle)),
+                challenge=challenge,
+            )
+            with handle._mgr.transaction() as conn:
+                persist_consumed_possession_challenge(
+                    conn,
+                    challenge,
+                    payload["possession_proof"]["signature"],
+                )
+            with pytest.raises(RegistaError) as exc:
+                append_trust_log_event(
+                    handle._mgr,
+                    keys=handle._keys,
+                    genesis_document=fixture.document,
+                    transition="principal_key_enrolled",
+                    payload=payload,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID, "regista.principal:agent:expired"
+                    ),
+                    principal_id=REGISTRAR,
+                    authority="registrar",
+                )
+            assert exc.value.detail["reason"] == "possession_challenge_expired_at_admission"
+        finally:
+            _close(handle, project)
+
+
+class TestRotationAdmission:
+    def test_valid_dual_rotation_requires_and_verifies_superseded_key(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:dual-valid"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=2)
+            delegation_hash = _delegated_hash(handle)
+            old = TrustLogKey.mint("pk_dual_old")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=old,
+            )
+            new = TrustLogKey.mint("pk_dual_new")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id=old.key_id,
+                superseded_key=old,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge, payload)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
+            assert state.principal_public_keys[(principal, new.key_id)] == new.public_key
+        finally:
+            _close(handle, project)
+
+    def test_bad_dual_signature_does_not_consume_last_registrar_operation(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:dual-bad-signature"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=2)
+            delegation_hash = _delegated_hash(handle)
+            old = TrustLogKey.mint("pk_bad_old")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=old,
+            )
+            impostor = TrustLogKey.mint("pk_impostor")
+            bad_new = TrustLogKey.mint("pk_bad_new")
+            bad_payload, bad_challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=bad_new,
+                supersedes_key_id=old.key_id,
+                superseded_key=impostor,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, bad_challenge, bad_payload)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=bad_payload,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc.value.detail["reason"] == "old_key_signature_invalid"
+
+            good_new = TrustLogKey.mint("pk_good_new")
+            good_payload, good_challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=good_new,
+                supersedes_key_id=old.key_id,
+                superseded_key=old,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, good_challenge, good_payload)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=good_payload,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+        finally:
+            _close(handle, project)
+
+    def test_missing_superseded_key_is_denied_before_operation_increment(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:dual-missing"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=2)
+            delegation_hash = _delegated_hash(handle)
+            old = TrustLogKey.mint("pk_existing")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=old,
+            )
+            new = TrustLogKey.mint("pk_missing_new")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id="pk_not_in_chain",
+                superseded_key=old,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge, payload)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc.value.detail["reason"] == "superseded_public_key_unavailable"
+        finally:
+            _close(handle, project)
+
+    def test_valid_root_recovery_uses_current_root_threshold(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:recovered"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            new = TrustLogKey.mint("pk_recovered")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id="pk_lost",
+                mode="recovery",
+                recovery_reason="key-lost",
+                root_keys=_root_keys(fixture),
+                authorized_by=_make_root_auth(),
+            )
+            _persist_challenge(handle, challenge, payload)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload,
+                authority="root",
+                actor_id=ROOT,
+            )
+        finally:
+            _close(handle, project)
+
+    def test_below_threshold_recovery_is_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path, threshold=2, signer_count=2)
+        principal = "agent:recovery-threshold"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
+                root_principal_id=ROOT,
+            )
+            new = TrustLogKey.mint("pk_recovery_threshold")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id="pk_lost",
+                mode="recovery",
+                recovery_reason="key-lost",
+                root_keys=_root_keys(fixture),
+                authorized_by=_make_root_auth(),
+            )
+            payload["root_signatures"] = payload["root_signatures"][:1]
+            _persist_challenge(handle, challenge, payload)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload,
+                    authority="root",
+                    actor_id=ROOT,
+                )
+            assert exc.value.detail["reason"] == "root_threshold_not_met"
+        finally:
+            _close(handle, project)
+
+    def test_registrar_cannot_authorize_recovery(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:registrar-recovery"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=1)
+            delegation_hash = _delegated_hash(handle)
+            new = TrustLogKey.mint("pk_registrar_recovery")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id="pk_lost",
+                mode="recovery",
+                recovery_reason="key-compromised",
+                root_keys=_root_keys(fixture),
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge, payload)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc.value.detail["reason"] == "recovery_requires_root_authority"
+        finally:
+            _close(handle, project)
+
+    @pytest.mark.parametrize(
+        ("label", "authorized_by", "reason"),
+        [
+            (
+                "actor",
+                {
+                    "authority": "registrar",
+                    "principal_id": "service:other",
+                    "key_id": "k_registrar",
+                    "delegation_event_hash": "DELEGATION",
+                },
+                "authorized_by_actor_mismatch",
+            ),
+            (
+                "key",
+                {
+                    "authority": "registrar",
+                    "principal_id": REGISTRAR,
+                    "key_id": "k_wrong",
+                    "delegation_event_hash": "DELEGATION",
+                },
+                "authorized_by_key_id_mismatch",
+            ),
+            (
+                "delegation",
+                {
+                    "authority": "registrar",
+                    "principal_id": REGISTRAR,
+                    "key_id": "k_registrar",
+                    "delegation_event_hash": "sha256:" + "b" * 64,
+                },
+                "authorized_by_delegation_mismatch",
+            ),
+            (
+                "authority",
+                {
+                    "authority": "root",
+                    "principal_id": REGISTRAR,
+                    "key_id": "k_registrar",
+                    "delegation_event_hash": None,
+                },
+                "authorized_by_authority_mismatch",
+            ),
+        ],
+    )
+    def test_authorized_by_fields_must_match_exactly(
+        self, tmp_path, label, authorized_by, reason
+    ):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=10)
+            delegation_hash = _delegated_hash(handle)
+            authorized_by = dict(authorized_by)
+            if authorized_by["delegation_event_hash"] == "DELEGATION":
+                authorized_by["delegation_event_hash"] = delegation_hash
+            principal = "agent:auth-" + label
+            payload, challenge = _enrollment_material(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                authorized_by=authorized_by,
+            )
+            _persist_challenge(handle, challenge, payload)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload,
+                    registrar=True,
+                )
+            assert exc.value.detail["reason"] == reason
+        finally:
+            _close(handle, project)
+
+
+class TestReplayVerifies:
+    def test_malformed_stored_occurred_at_has_a_named_failure(self):
+        from regista._trust_log_writer import _envelope_occurred_at
+
+        with pytest.raises(RegistaError) as exc_info:
+            _envelope_occurred_at({"occurred_at": "not-a-timestamp"})
+        assert exc_info.value.code is ErrorCode.TRUST_LOG_PAYLOAD_INVALID
+        assert exc_info.value.detail["reason"] == "occurred_at_malformed"
+
+    def test_tampered_stored_event_denied(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        try:
+            write_trust_genesis(handle._mgr, keys=handle._keys,
+                                genesis_document=fixture.document, root_principal_id=ROOT)
+            _delegate(handle, fixture)
+            with handle._mgr.transaction() as conn:
+                victim = conn.execute(
+                    "SELECT event_id, canonical_envelope FROM events "
+                    "WHERE transition = 'registrar_delegated' LIMIT 1"
+                ).fetchone()
+                assert victim is not None
+                tampered = bytearray(bytes(victim["canonical_envelope"]))
+                tampered[-2] ^= 0x01
+                conn.execute(
+                    "UPDATE events SET canonical_envelope = %s WHERE event_id = %s",
+                    [bytes(tampered), victim["event_id"]],
+                )
+            with pytest.raises(RegistaError) as exc:
+                with handle._mgr.transaction() as conn:
+                    replay_trust_state(conn, fixture.document)
+            assert exc.value.code in (
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
+            )
+        finally:
+            _close(handle, project)
+
+    def test_stored_below_threshold_recovery_is_denied_on_replay(self, tmp_path):
+        """Replay must enforce recovery threshold, not only append admission.
+
+        The row is first written with valid root evidence, then rewritten as an
+        attacker could rewrite a stored payload: the envelope and signature are
+        recomputed, but only one of the two required root signatures remains.
+        This exercises the persisted-row replay path directly rather than merely
+        re-testing the append gate.
+        """
+
+        from regista._signing import sign_v6_envelope
+        from regista._verification import parse_v6_envelope_strict
+
+        fixture, handle, _kf, project = _make_environment(
+            tmp_path, threshold=2, signer_count=2
+        )
+        principal = "agent:stored-recovery-threshold"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
+                root_principal_id=ROOT,
+            )
+            new = TrustLogKey.mint("pk_stored_recovery_threshold")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id="pk_lost",
+                mode="recovery",
+                recovery_reason="key-lost",
+                root_keys=_root_keys(fixture, ("root-a", "root-b")),
+                authorized_by=_make_root_auth(),
+            )
+            _persist_challenge(handle, challenge, payload)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload,
+                authority="root",
+                actor_id=ROOT,
+            )
+
+            with handle._mgr.transaction() as conn:
+                row = conn.execute(
+                    "SELECT event_id, canonical_envelope FROM events "
+                    "WHERE transition = 'principal_key_rotated' ORDER BY global_seq DESC LIMIT 1"
+                ).fetchone()
+                assert row is not None
+                envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
+                envelope["payload"]["root_signatures"] = envelope["payload"][
+                    "root_signatures"
+                ][:1]
+                signed = sign_v6_envelope(envelope, fixture.seeds["root-a"])
+                conn.execute(
+                    "UPDATE events SET payload = %s, payload_canonical_hash = %s, "
+                    "signature = %s, canonical_envelope = %s WHERE event_id = %s",
+                    [
+                        psycopg.types.json.Jsonb(envelope["payload"]),
+                        signed.payload_canonical_hash,
+                        signed.signature,
+                        signed.canonical_envelope,
+                        row["event_id"],
+                    ],
+                )
+                conn.execute(
+                    "UPDATE event_chain_head SET head_hash = %s WHERE id = TRUE",
+                    [signed.event_hash],
+                )
+
+            with pytest.raises(RegistaError) as exc_info:
+                with handle._mgr.transaction() as conn:
+                    replay_trust_state(conn, fixture.document)
+            assert exc_info.value.detail["reason"] == "root_threshold_not_met"
+        finally:
+            _close(handle, project)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -1047,15 +1047,27 @@ class PrincipalKeyOps:
             {"reason": "direct_projection_write", "operation": "revoke"},
         )
 
-    def rebuild_projection(self, *, dry_run: bool = False) -> dict[str, Any]:
-        """Rebuild the v6 rows from signed events alone (§5.9 rule 4).
+    def rebuild_projection(
+        self,
+        *,
+        genesis_document: Mapping[str, Any] | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Rebuild v6 rows from the verified trust-log chain (§5.9 rule 4).
 
-        ``legacy_unsourced`` rows are left untouched. With ``dry_run`` the rebuild
-        happens in a temp table and only the diff is reported.
+        A missing genesis document is allowed only for an empty trust log; once any
+        trust-log event exists, rows that cannot be authority-verified halt the
+        rebuild. ``legacy_unsourced`` rows are untouched; with ``dry_run`` only the
+        diff is reported.
         """
         from ._trust_projection import rebuild_projection as _impl
 
-        report = _impl(self._mgr, project=self._project, dry_run=dry_run)
+        report = _impl(
+            self._mgr,
+            project=self._project,
+            genesis_document=genesis_document,
+            dry_run=dry_run,
+        )
         return report.to_dict()
 
     def projection_summary(self) -> dict[str, int]:

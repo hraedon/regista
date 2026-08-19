@@ -119,13 +119,13 @@ def _anchor_entry() -> dict[str, Any]:
 # committed vector byte-for-byte. tests/test_v6_vectors.py::test_trust_genesis
 # keeps its independent reimplementation; this test imports the module instead.
 #
-# LOUD NOTE on the vector's shape: tests/vectors/v6/trust-genesis.json predates
-# the WI-280 overlay — its binding_core still embeds a `governance` block and its
-# public keys are hex, both retired from the production schema (§3.2 + WI-280,
-# base64-raw-32). The derivation (§3.3: JCS + domain tag + u64be framing + UUIDv5)
-# is shape-agnostic over the mapping, so the production functions reproduce the
-# frozen bytes exactly; the strict parser meanwhile REJECTS that legacy shape
-# (see test_wi280_governance_inside_binding_core_rejected).
+# NOTE ON THE VECTOR'S SHAPE: tests/vectors/v6/trust-genesis.json is generated
+# by tools/make_v6_vectors.py in the WI-280/WI-292 shape — binding_core carries
+# base64 signer public keys and no governance; custody lives in a sorted
+# top-level initial_custody keyed by fingerprint; initial_governance is signed
+# top-level state outside the derivation. The derivation (§3.3: JCS + domain
+# tag + u64be framing + UUIDv5) is shape-agnostic over the mapping, so this class
+# reproduces the committed bytes without restating the schema.
 # ---------------------------------------------------------------------------
 
 

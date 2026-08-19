@@ -4,10 +4,11 @@ import hashlib
 import uuid
 
 import pytest
-from _helpers import DSN, KEY_PATH
+from _helpers import DSN
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
+from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
 SPEC_YAML = """\
 name: test-project
@@ -31,20 +32,40 @@ work_item_types:
 
 SPEC_MD = "# Test Project\n\nA test spec."
 
+#: The principals that sign spec events in this file (v6 requires a canonical
+#: actor with an accepted key; ``sign_spec`` routes through the v6 writer).
+SPEC_SPECIFIER = "human:specifier"
+SPEC_AUDITOR = "human:auditor"
+SPEC_PRINCIPALS = (SPEC_SPECIFIER, SPEC_AUDITOR)
+
+WORKFLOW_PATH = "tests/test_workflow.yaml"
+
 
 def _spec_md_hash() -> str:
     return hashlib.sha256(SPEC_MD.encode()).hexdigest()
 
 
 @pytest.fixture
-def spec_project():
+def spec_project(tmp_path_factory):
     from regista.testing import drop_project_schema
 
+    keyset = make_v6_keyset(
+        tmp_path_factory.mktemp("spec_keys"),
+        principals=(*SPEC_PRINCIPALS, "agent:worker"),
+    )
     project = f"spec_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, KEY_PATH)
-    yield sub
-    sub.close()
-    drop_project_schema(DSN, project)
+    sub = Regista.create_project(DSN, project, keyset.path)
+    try:
+        open_v6_epoch(
+            sub,
+            keyset,
+            principals=(*SPEC_PRINCIPALS, "agent:worker"),
+            entity_kinds=("work_item", "principal", "workflow", "spec"),
+        )
+        yield sub
+    finally:
+        sub.close()
+        drop_project_schema(DSN, project)
 
 
 class TestSignSpecPostgres:
@@ -54,7 +75,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         assert evt.entity_kind == "spec"
         assert evt.transition == "spec_signed"
@@ -70,7 +92,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
             spec_id=spec_id,
         )
         assert evt.effective_entity_id == spec_id
@@ -82,7 +105,8 @@ class TestSignSpecPostgres:
                 spec_yaml="",
                 spec_md_hash=_spec_md_hash(),
                 spec_schema_version="1.0",
-                actor_id="test-actor",
+                actor_id=SPEC_SPECIFIER,
+                actor_kind="human",
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -93,7 +117,8 @@ class TestSignSpecPostgres:
                 spec_yaml=SPEC_YAML,
                 spec_md_hash=_spec_md_hash(),
                 spec_schema_version="",
-                actor_id="test-actor",
+                actor_id=SPEC_SPECIFIER,
+                actor_kind="human",
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -104,7 +129,8 @@ class TestSignSpecPostgres:
                 spec_yaml=SPEC_YAML,
                 spec_md_hash="",
                 spec_schema_version="1.0",
-                actor_id="test-actor",
+                actor_id=SPEC_SPECIFIER,
+                actor_kind="human",
             )
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
 
@@ -114,7 +140,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="999.0-unknown",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         assert evt.entity_kind == "spec"
         assert evt.payload["spec_schema_version"] == "999.0-unknown"
@@ -125,7 +152,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
             known_spec_schema_versions=frozenset({"1.0"}),
         )
 
@@ -135,13 +163,15 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="actor-1",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="2.0",
-            actor_id="actor-2",
+            actor_id=SPEC_AUDITOR,
+            actor_kind="human",
         )
         events = sub.read_spec_events()
         assert len(events) == 2
@@ -154,14 +184,16 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="actor-1",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
             spec_id=spec_id,
         )
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="2.0",
-            actor_id="actor-2",
+            actor_id=SPEC_AUDITOR,
+            actor_kind="human",
             spec_id=uuid.uuid4(),
         )
         events = sub.read_spec_events(spec_id=spec_id)
@@ -179,7 +211,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         report = sub.replay()
         assert report.halted == 0
@@ -191,7 +224,8 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         assert evt.signature is not None
         assert evt.payload_canonical_hash is not None
@@ -206,13 +240,15 @@ class TestSignSpecPostgres:
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="actor-1",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         evt2 = sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="actor-2",
+            actor_id=SPEC_AUDITOR,
+            actor_kind="human",
         )
         assert evt1.event_seq == 1
         assert evt2.event_seq == 1
@@ -220,17 +256,19 @@ class TestSignSpecPostgres:
 
     def test_spec_does_not_interfere_with_work_items(self, spec_project):
         sub = spec_project
-        sub.register_workflow(open("tests/test_workflow.yaml").read())
+        sub.register_workflow_file(WORKFLOW_PATH)
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="system",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         wi, _evt = sub.create_work_item(
             workflow_name="test_workflow",
             work_item_type="feature",
-            actor_id="agent-1",
+            actor_id="agent:worker",
+            actor_kind="agent",
             custom_fields={"title": "post-spec"},
         )
         assert wi is not None
@@ -239,60 +277,76 @@ class TestSignSpecPostgres:
 
 
 class TestSignSpecInMemory:
-    def test_in_memory_sign_spec(self):
-        from regista._in_memory import InMemoryRegista
+    @pytest.fixture
+    def spec_project(self, tmp_path_factory):
+        from regista.testing import InMemoryRegista
 
-        sub = InMemoryRegista(KEY_PATH)
+        keyset = make_v6_keyset(
+            tmp_path_factory.mktemp("spec_mem_keys"),
+            principals=SPEC_PRINCIPALS,
+        )
+        instance = InMemoryRegista(
+            project="spec_mem", hmac_key_path=keyset.path
+        )
+        open_v6_epoch(
+            instance,
+            keyset,
+            principals=SPEC_PRINCIPALS,
+            entity_kinds=("work_item", "principal", "workflow", "spec"),
+        )
+        yield instance
+
+    def test_in_memory_sign_spec(self, spec_project):
+        sub = spec_project
         evt = sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         assert evt.entity_kind == "spec"
         assert evt.transition == "spec_signed"
         assert evt.payload["spec_yaml"] == SPEC_YAML
 
-    def test_in_memory_read_spec_events(self):
-        from regista._in_memory import InMemoryRegista
-
-        sub = InMemoryRegista(KEY_PATH)
+    def test_in_memory_read_spec_events(self, spec_project):
+        sub = spec_project
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="actor-1",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="2.0",
-            actor_id="actor-2",
+            actor_id=SPEC_AUDITOR,
+            actor_kind="human",
         )
         events = sub.read_spec_events()
         assert len(events) == 2
 
-    def test_in_memory_unknown_version_stored(self):
-        from regista._in_memory import InMemoryRegista
-
-        sub = InMemoryRegista(KEY_PATH)
+    def test_in_memory_unknown_version_stored(self, spec_project):
+        sub = spec_project
         evt = sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="unknown-999",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         assert evt.payload["spec_schema_version"] == "unknown-999"
 
-    def test_in_memory_replay_includes_spec(self):
-        from regista._in_memory import InMemoryRegista
-
-        sub = InMemoryRegista(KEY_PATH)
+    def test_in_memory_replay_includes_spec(self, spec_project):
+        sub = spec_project
         sub.sign_spec(
             spec_yaml=SPEC_YAML,
             spec_md_hash=_spec_md_hash(),
             spec_schema_version="1.0",
-            actor_id="test-actor",
+            actor_id=SPEC_SPECIFIER,
+            actor_kind="human",
         )
         report = sub.replay()
         assert report.halted == 0

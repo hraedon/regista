@@ -476,6 +476,39 @@ class TestRevocationAtWriteTime:
         assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_REVOKED
         assert exc.value.detail["revoked_acceptances"] == [accepted.event_hash_text]
 
+    def test_an_archived_acceptance_remains_a_usable_anchor(
+        self, project, keyset, genesis
+    ):
+        accepted = self._accept(project, keyset, genesis)
+        with project._mgr.transaction() as conn:
+            conn.execute(
+                "INSERT INTO events_archive SELECT * FROM events WHERE event_id = %s",
+                [accepted.event_id],
+            )
+            conn.execute("DELETE FROM events WHERE event_id = %s", [accepted.event_id])
+            anchor = resolve_key_binding_anchor(
+                conn, principal_id=WORKER, key_id=keyset.key_for(WORKER).key_id
+            )
+        assert anchor.event_hash == accepted.event_hash_text
+
+    def test_an_archived_revocation_still_blocks_its_acceptance(
+        self, project, keyset, genesis
+    ):
+        accepted = self._accept(project, keyset, genesis)
+        revoked = self._revoke(project, keyset, genesis, accepted)
+        with project._mgr.transaction() as conn:
+            conn.execute(
+                "INSERT INTO events_archive SELECT * FROM events WHERE event_id = %s",
+                [revoked.event_id],
+            )
+            conn.execute("DELETE FROM events WHERE event_id = %s", [revoked.event_id])
+            with pytest.raises(RegistaError) as exc:
+                resolve_key_binding_anchor(
+                    conn, principal_id=WORKER, key_id=keyset.key_for(WORKER).key_id
+                )
+        assert exc.value.code is ErrorCode.KEY_ACCEPTANCE_REVOKED
+        assert exc.value.detail["revoked_acceptances"] == [accepted.event_hash_text]
+
     def test_a_revoked_principal_cannot_append(self, project, keyset, genesis):
         accepted = self._accept(project, keyset, genesis)
         self._revoke(project, keyset, genesis, accepted)

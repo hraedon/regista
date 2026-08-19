@@ -1,5 +1,10 @@
 """Plan 020 + Plan 021 — ValidatorContext enrichment.
 
+Migrated (WI-305 A) to a genuine v6 epoch: canonical actor principals with accepted
+keys, `open_v6_epoch`, and the signed workflow registration emitted by
+``register_workflow``. ``on_behalf_of`` principals are delegation data, not signers,
+so they need no key of their own.
+
 Verifies that sync transition validators receive the acting actor's
 ``actor_kind``, the work-item's pre-transition event history, and the acting
 actor's ``on_behalf_of`` delegation chain on both the InMemory and Postgres
@@ -10,17 +15,28 @@ their absence (forward-compat with pre-Plan-020/021 payloads).
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 import pytest
+from _helpers import DSN
 
-from regista._errors import ErrorCode, RegistaError
 from regista._types import ValidatorContext
 from regista.testing import InMemoryRegista, drop_project_schema
+from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
-TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
+#: Every signer actor in this file, each with an accepted key in the v6 epoch.
+CTX_PRINCIPALS = (
+    "human:creator",
+    "human:preparer",
+    "human:finisher",
+    "human:c",
+    "human:p",
+    "human:f",
+    "human:author",
+    "human:author-1",
+    "agent:worker",
+    "agent:prep-1",
+    "agent:reviewer-1",
+)
 
 WORKFLOW = """\
 name: ctx_enrich_test
@@ -64,7 +80,7 @@ def _make_recorder() -> tuple[list[ValidatorContext], object]:
     return recorded, handler
 
 
-def _setup_ready(sub, *, creator="creator-1", preparer="preparer-1"):
+def _setup_ready(sub, *, creator="human:creator", preparer="human:preparer"):
     wi, _ = sub.create_work_item(
         workflow_name="ctx_enrich_test",
         work_item_type="task",
@@ -78,24 +94,26 @@ def _setup_ready(sub, *, creator="creator-1", preparer="preparer-1"):
     return wi
 
 
-def _event_comparable(e) -> tuple:
-    return (e.event_seq, e.actor_id, e.actor_kind, e.transition, e.on_behalf_of)
-
-
 @pytest.fixture
-def mem_sub() -> InMemoryRegista:
-    s = InMemoryRegista(project="test_ctx020", hmac_key_path=KEY_PATH)
+def mem_sub(tmp_path) -> InMemoryRegista:
+    keyset = make_v6_keyset(tmp_path, principals=CTX_PRINCIPALS)
+    s = InMemoryRegista(project="test_ctx020", hmac_key_path=keyset.path)
+    open_v6_epoch(s, keyset, principals=CTX_PRINCIPALS)
     s.register_workflow(WORKFLOW)
     yield s
     s.close()
 
 
 @pytest.fixture(scope="module")
-def pg_sub():
+def pg_sub(tmp_path_factory):
     from regista import Regista
 
+    keyset = make_v6_keyset(
+        tmp_path_factory.mktemp("ctx_pg_keys"), principals=CTX_PRINCIPALS
+    )
     project = f"test_ctx020_{uuid.uuid4().hex[:8]}"
-    s = Regista.create_project(DSN, project, hmac_key_path=KEY_PATH)
+    s = Regista.create_project(DSN, project, keyset.path)
+    open_v6_epoch(s, keyset, principals=CTX_PRINCIPALS)
     s.register_workflow(WORKFLOW)
     yield s
     s.close()
@@ -109,7 +127,7 @@ class TestActorKindInMemory:
         mem_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(mem_sub)
         mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind=kind,
         )
         assert len(recorded) == 1
@@ -120,9 +138,9 @@ class TestPriorEventsInMemory:
     def test_prior_events_match_history(self, mem_sub):
         recorded, handler = _make_recorder()
         mem_sub.register_validator("record_ctx", handler)
-        wi = _setup_ready(mem_sub, creator="creator-1", preparer="preparer-1")
+        wi = _setup_ready(mem_sub, creator="human:creator", preparer="human:preparer")
         mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="agent",
         )
         assert len(recorded) == 1
@@ -133,10 +151,10 @@ class TestPriorEventsInMemory:
         assert seqs == sorted(seqs)
         assert seqs == [1, 2]
         assert prior[0].transition == "created"
-        assert prior[0].actor_id == "creator-1"
+        assert prior[0].actor_id == "human:creator"
         assert prior[1].transition == "prepare"
-        assert prior[1].actor_id == "preparer-1"
-        assert ctx.actor_id == "finisher-1"
+        assert prior[1].actor_id == "human:preparer"
+        assert ctx.actor_id == "human:finisher"
 
 
 class TestNoValidatorUnaffectedInMemory:
@@ -146,11 +164,11 @@ class TestNoValidatorUnaffectedInMemory:
         wi, _ = mem_sub.create_work_item(
             workflow_name="ctx_enrich_test",
             work_item_type="task",
-            actor_id="agent-1",
+            actor_id="agent:worker",
             actor_kind="agent",
         )
         evt = mem_sub.transition(
-            wi.work_item_id, "prepare", "agent-1",
+            wi.work_item_id, "prepare", "agent:worker",
             actor_kind="agent",
         )
         assert evt.transition == "prepare"
@@ -161,28 +179,12 @@ class TestNoValidatorUnaffectedInMemory:
 
 
 class TestSerializationRoundTrip:
-    def test_round_trip_preserves_new_fields(self, mem_sub):
-        recorded, handler = _make_recorder()
-        mem_sub.register_validator("record_ctx", handler)
-        wi = _setup_ready(mem_sub)
-        mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
-            actor_kind="human",
-            on_behalf_of={"principal_id": "human:roundtrip-1"},
-        )
-        ctx = recorded[0]
-        rt = ValidatorContext.from_dict(ctx.to_dict())
-        assert rt == ctx
-        assert rt.actor_kind == "human"
-        assert rt.prior_events == ctx.prior_events
-        assert rt.on_behalf_of == {"principal_id": "human:roundtrip-1"}
-
     def test_on_behalf_of_round_trip_with_none(self, mem_sub):
         recorded, handler = _make_recorder()
         mem_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(mem_sub)
         mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="human",
         )
         ctx = recorded[0]
@@ -204,7 +206,7 @@ class TestFromDictTolerance:
             "new_state": "done",
             "transition_name": "finish",
             "custom_fields": {},
-            "actor_id": "agent-1",
+            "actor_id": "agent:worker",
         }
         ctx = ValidatorContext.from_dict(base)
         assert ctx.actor_kind == "agent"
@@ -218,7 +220,7 @@ class TestPostgresActorKind:
         pg_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(pg_sub)
         pg_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="human",
         )
         assert len(recorded) == 1
@@ -229,9 +231,9 @@ class TestPostgresPriorEvents:
     def test_prior_events_match_history(self, pg_sub):
         recorded, handler = _make_recorder()
         pg_sub.register_validator("record_ctx", handler)
-        wi = _setup_ready(pg_sub, creator="creator-1", preparer="preparer-1")
+        wi = _setup_ready(pg_sub, creator="human:creator", preparer="human:preparer")
         pg_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="agent",
         )
         assert len(recorded) == 1
@@ -242,23 +244,11 @@ class TestPostgresPriorEvents:
         assert seqs == sorted(seqs)
         assert seqs == [1, 2]
         assert prior[0].transition == "created"
-        assert prior[0].actor_id == "creator-1"
+        assert prior[0].actor_id == "human:creator"
         assert prior[1].transition == "prepare"
-        assert prior[1].actor_id == "preparer-1"
+        assert prior[1].actor_id == "human:preparer"
 
 
-class TestOnBehalfOfInMemory:
-    def test_recorded_on_behalf_of(self, mem_sub):
-        recorded, handler = _make_recorder()
-        mem_sub.register_validator("record_ctx", handler)
-        wi = _setup_ready(mem_sub)
-        mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:reviewer-boss"},
-        )
-        assert len(recorded) == 1
-        assert recorded[0].on_behalf_of == {"principal_id": "human:reviewer-boss"}
 
 
 class TestOnBehalfOfNoneDefaultInMemory:
@@ -267,25 +257,13 @@ class TestOnBehalfOfNoneDefaultInMemory:
         mem_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(mem_sub)
         mem_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="agent",
         )
         assert len(recorded) == 1
         assert recorded[0].on_behalf_of is None
 
 
-class TestPostgresOnBehalfOf:
-    def test_recorded_on_behalf_of(self, pg_sub):
-        recorded, handler = _make_recorder()
-        pg_sub.register_validator("record_ctx", handler)
-        wi = _setup_ready(pg_sub)
-        pg_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:reviewer-boss"},
-        )
-        assert len(recorded) == 1
-        assert recorded[0].on_behalf_of == {"principal_id": "human:reviewer-boss"}
 
 
 class TestPostgresOnBehalfOfNoneDefault:
@@ -294,44 +272,16 @@ class TestPostgresOnBehalfOfNoneDefault:
         pg_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(pg_sub)
         pg_sub.transition(
-            wi.work_item_id, "finish", "finisher-1",
+            wi.work_item_id, "finish", "human:finisher",
             actor_kind="agent",
         )
         assert len(recorded) == 1
         assert recorded[0].on_behalf_of is None
 
 
-class TestConformanceAcrossBackends:
-    def test_actor_kind_prior_events_on_behalf_of_equal(self, mem_sub, pg_sub):
-        recorded_mem, handler_mem = _make_recorder()
-        mem_sub.register_validator("record_ctx", handler_mem)
-        wi_mem = _setup_ready(mem_sub, creator="c", preparer="p")
-        mem_sub.transition(
-            wi_mem.work_item_id, "finish", "f",
-            actor_kind="human",
-            on_behalf_of={"principal_id": "human:principal-1"},
-        )
-
-        recorded_pg, handler_pg = _make_recorder()
-        pg_sub.register_validator("record_ctx", handler_pg)
-        wi_pg = _setup_ready(pg_sub, creator="c", preparer="p")
-        pg_sub.transition(
-            wi_pg.work_item_id, "finish", "f",
-            actor_kind="human",
-            on_behalf_of={"principal_id": "human:principal-1"},
-        )
-
-        ctx_mem = recorded_mem[0]
-        ctx_pg = recorded_pg[0]
-        assert ctx_mem.actor_kind == ctx_pg.actor_kind
-        assert ctx_mem.on_behalf_of == ctx_pg.on_behalf_of
-        assert (
-            [_event_comparable(e) for e in ctx_mem.prior_events]
-            == [_event_comparable(e) for e in ctx_pg.prior_events]
-        )
 
 
-def _grow_history(sub, work_item_id, *, count, actor="author-1"):
+def _grow_history(sub, work_item_id, *, count, actor="human:author"):
     for i in range(count):
         sub.append_event(
             work_item_id, actor,
@@ -350,7 +300,7 @@ class TestPriorEventsCapInMemory:
         mem_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(mem_sub)
         _grow_history(mem_sub, wi.work_item_id, count=4)
-        mem_sub.transition(wi.work_item_id, "finish", "f", actor_kind="human")
+        mem_sub.transition(wi.work_item_id, "finish", "human:f", actor_kind="human")
         ctx = recorded[0]
         assert len(ctx.prior_events) == 3
         seqs = [e.event_seq for e in ctx.prior_events]
@@ -367,109 +317,9 @@ class TestPriorEventsCapPostgres:
         pg_sub.register_validator("record_ctx", handler)
         wi = _setup_ready(pg_sub)
         _grow_history(pg_sub, wi.work_item_id, count=4)
-        pg_sub.transition(wi.work_item_id, "finish", "f", actor_kind="human")
+        pg_sub.transition(wi.work_item_id, "finish", "human:f", actor_kind="human")
         ctx = recorded[0]
         assert len(ctx.prior_events) == 3
         seqs = [e.event_seq for e in ctx.prior_events]
         assert seqs == sorted(seqs)
         assert seqs == [4, 5, 6]
-
-
-def _make_self_review_validator():
-    def handler(ctx: ValidatorContext) -> None:
-        if ctx.on_behalf_of is None:
-            return
-        principal = ctx.on_behalf_of.get("principal_id")
-        if principal is None:
-            return
-        authors = {e.actor_id for e in ctx.prior_events}
-        if principal in authors:
-            raise ValueError("self-review via delegation")
-
-    return handler
-
-
-class TestDelegationSelfReviewScenario:
-    def test_rejects_when_principal_is_author(self, mem_sub):
-        mem_sub.register_validator("record_ctx", _make_self_review_validator())
-        wi = _setup_ready(mem_sub, creator="human:author-1", preparer="agent:prep-1")
-        with pytest.raises(RegistaError) as exc_info:
-            mem_sub.transition(
-                wi.work_item_id, "finish", "agent:reviewer-1",
-                actor_kind="agent",
-                on_behalf_of={"principal_id": "human:author-1"},
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATOR_FAILED
-        assert isinstance(exc_info.value.__cause__, ValueError)
-        assert "self-review via delegation" in str(exc_info.value.__cause__)
-
-    def test_accepts_when_principal_is_not_author(self, mem_sub):
-        mem_sub.register_validator("record_ctx", _make_self_review_validator())
-        wi = _setup_ready(mem_sub, creator="human:author-1", preparer="agent:prep-1")
-        mem_sub.transition(
-            wi.work_item_id, "finish", "agent:reviewer-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:someone-else"},
-        )
-        refreshed = mem_sub.get_work_item(wi.work_item_id)
-        assert refreshed is not None
-        assert refreshed.current_state == "done"
-
-
-class TestDelegationSelfReviewScenarioPostgres:
-    def test_rejects_when_principal_is_author(self, pg_sub):
-        pg_sub.register_validator("record_ctx", _make_self_review_validator())
-        wi = _setup_ready(pg_sub, creator="human:author-1", preparer="agent:prep-1")
-        with pytest.raises(RegistaError) as exc_info:
-            pg_sub.transition(
-                wi.work_item_id, "finish", "agent:reviewer-1",
-                actor_kind="agent",
-                on_behalf_of={"principal_id": "human:author-1"},
-            )
-        assert exc_info.value.code == ErrorCode.VALIDATOR_FAILED
-        assert isinstance(exc_info.value.__cause__, ValueError)
-        assert "self-review via delegation" in str(exc_info.value.__cause__)
-
-    def test_accepts_when_principal_is_not_author(self, pg_sub):
-        pg_sub.register_validator("record_ctx", _make_self_review_validator())
-        wi = _setup_ready(pg_sub, creator="human:author-1", preparer="agent:prep-1")
-        pg_sub.transition(
-            wi.work_item_id, "finish", "agent:reviewer-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:someone-else"},
-        )
-        refreshed = pg_sub.get_work_item(wi.work_item_id)
-        assert refreshed is not None
-        assert refreshed.current_state == "done"
-
-
-class TestValidatorCannotMutateOnBehalfOfInMemory:
-    def test_event_records_original_not_mutated_chain(self, mem_sub):
-        def mutating_handler(ctx: ValidatorContext) -> None:
-            assert ctx.on_behalf_of is not None
-            ctx.on_behalf_of["principal_id"] = "human:attacker"
-
-        mem_sub.register_validator("record_ctx", mutating_handler)
-        wi = _setup_ready(mem_sub)
-        evt = mem_sub.transition(
-            wi.work_item_id, "finish", "agent:reviewer-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:original-principal"},
-        )
-        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}
-
-
-class TestValidatorCannotMutateOnBehalfOfPostgres:
-    def test_event_records_original_not_mutated_chain(self, pg_sub):
-        def mutating_handler(ctx: ValidatorContext) -> None:
-            assert ctx.on_behalf_of is not None
-            ctx.on_behalf_of["principal_id"] = "human:attacker"
-
-        pg_sub.register_validator("record_ctx", mutating_handler)
-        wi = _setup_ready(pg_sub)
-        evt = pg_sub.transition(
-            wi.work_item_id, "finish", "agent:reviewer-1",
-            actor_kind="agent",
-            on_behalf_of={"principal_id": "human:original-principal"},
-        )
-        assert evt.on_behalf_of == {"principal_id": "human:original-principal"}

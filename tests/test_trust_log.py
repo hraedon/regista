@@ -21,7 +21,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from _trust_fixtures import mint_co_signed, mint_solo
+from _trust_fixtures import mint_co_signed, mint_genesis, mint_solo
 from _trust_log_fixtures import (
     TrustLogKey,
     make_authorized_by,
@@ -420,20 +420,44 @@ class TestDualRotation:
 
 
 class TestBootstrapANullKeyBinding:
-    """§5.2 AMENDED / Resolution 1: exactly one null is permitted in the trust log."""
+    """A-prime Bootstrap A / Resolution 1: exactly one null is permitted, and the
+    genesis event's authority is proven on presented evidence."""
+
+    def _root_key(self, fixture, signer_id=None):
+        signer_id = signer_id or fixture.signer_ids[0]
+        return TrustLogKey(
+            key_id="k_" + signer_id,
+            seed=fixture.seeds[signer_id],
+            public_key=fixture.public_keys[signer_id],
+            fingerprint=fixture.fingerprints[signer_id],
+        )
+
+    def _payload(self, fixture, signer_ids=("root-a",)):
+        keys = [self._root_key(fixture, s) for s in signer_ids]
+        return make_trust_domain_established_payload(fixture.document, root_keys=keys)
+
+    def _root_pub(self, fixture):
+        return {
+            fixture.fingerprints[s]: fixture.public_keys[s]
+            for s in fixture.signer_ids
+        }
+
+    def _call(self, fixture, *, event_seq=1, payload=None, signer=None, document=None):
+        payload = payload if payload is not None else self._payload(fixture)
+        signer = signer if signer is not None else fixture.signer_ids[0]
+        return validate_key_binding_bootstrap(
+            TRUST_DOMAIN_ESTABLISHED,
+            None,
+            event_seq=event_seq,
+            payload=payload,
+            genesis_document=document or fixture.document,
+            root_public_keys=self._root_pub(fixture),
+            signer_fingerprint=fixture.fingerprints[signer],
+        )
 
     def test_trust_domain_established_with_a_valid_bootstrap_is_accepted(self):
         fixture = mint_solo()
-        head = "sha256:" + "1" * 64
-        root_fp = fixture.fingerprints[fixture.signer_ids[0]]
-        validate_key_binding_bootstrap(
-            TRUST_DOMAIN_ESTABLISHED,
-            None,
-            event_hash=head,
-            genesis_initial_head_event_hash=head,
-            signer_fingerprint=root_fp,
-            genesis_root_fingerprints=[root_fp],
-        )
+        self._call(fixture)
 
     @pytest.mark.parametrize(
         "transition",
@@ -450,40 +474,59 @@ class TestBootstrapANullKeyBinding:
         with pytest.raises(RegistaError) as exc_info:
             validate_key_binding_bootstrap(transition, None)
         assert exc_info.value.code is ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED
-        # Resolution 1's exact spelling.
         assert _reason(exc_info) == "KEY_BINDING_BOOTSTRAP_NOT_PERMITTED"
 
-    def test_bootstrap_whose_hash_is_not_the_genesis_head_is_refused(self):
+    def test_event_not_at_position_one_is_refused(self):
         fixture = mint_solo()
-        root_fp = fixture.fingerprints[fixture.signer_ids[0]]
         with pytest.raises(RegistaError) as exc_info:
-            validate_key_binding_bootstrap(
-                TRUST_DOMAIN_ESTABLISHED,
-                None,
-                event_hash="sha256:" + "2" * 64,
-                genesis_initial_head_event_hash="sha256:" + "1" * 64,
-                signer_fingerprint=root_fp,
-                genesis_root_fingerprints=[root_fp],
-            )
-        assert exc_info.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
-        assert _reason(exc_info) == "bootstrap_head_mismatch"
+            self._call(fixture, event_seq=2)
+        assert _reason(exc_info) == "bootstrap_event_not_position_one"
 
     def test_bootstrap_not_signed_by_a_genesis_root_key_is_refused(self):
         fixture = mint_solo()
         stranger = TrustLogKey.mint("stranger")
-        head = "sha256:" + "1" * 64
         with pytest.raises(RegistaError) as exc_info:
             validate_key_binding_bootstrap(
                 TRUST_DOMAIN_ESTABLISHED,
                 None,
-                event_hash=head,
-                genesis_initial_head_event_hash=head,
+                event_seq=1,
+                payload=self._payload(fixture),
+                genesis_document=fixture.document,
+                root_public_keys=self._root_pub(fixture),
                 signer_fingerprint=stranger.fingerprint,
-                genesis_root_fingerprints=[
-                    fixture.fingerprints[fixture.signer_ids[0]]
-                ],
             )
         assert _reason(exc_info) == "bootstrap_signer_not_a_root_key"
+
+    def test_threshold_not_met_is_refused(self):
+
+        fixture = mint_genesis(
+            threshold=2, signer_count=2, seeds=[bytes([i]) * 32 for i in range(1, 3)]
+        )
+        with pytest.raises(RegistaError) as exc_info:
+            self._call(fixture, payload=self._payload(fixture, ("root-a",)))
+        assert _reason(exc_info) == "root_threshold_not_met"
+
+    def test_threshold_met_two_of_two_is_accepted(self):
+        fixture = mint_genesis(
+            threshold=2, signer_count=2, seeds=[bytes([i]) * 32 for i in range(1, 3)]
+        )
+        self._call(fixture, payload=self._payload(fixture, ("root-a", "root-b")))
+
+    def test_genesis_document_digest_mutation_is_refused(self):
+        import copy
+        import hashlib
+
+        from regista._jcs import canonicalize
+
+        fixture = mint_solo()
+        doc = copy.deepcopy(fixture.document)
+        doc["binding_core"]["nonce"] = "f" * 64
+        doc["trust_domain_core_digest"] = "sha256:" + hashlib.sha256(
+            canonicalize(doc["binding_core"])
+        ).hexdigest()
+        with pytest.raises(RegistaError) as exc_info:
+            self._call(fixture, document=doc)
+        assert _reason(exc_info) in ("genesis_document_digest_mismatch", "core_digest_mismatch")
 
     def test_bootstrap_with_no_evidence_presented_is_refused_not_waved_through(self):
         with pytest.raises(RegistaError) as exc_info:

@@ -23,6 +23,7 @@ from ._verification import (
     V6_ENTITY_KINDS,
     AbsentEnvelopeProbe,
     Applicability,
+    EnvelopeVersion,
     EventRow,
     FailureReason,
     KeySetResolver,
@@ -531,6 +532,9 @@ def _replay_inner(
     total_chain_breaks = 0
     total_principal_binding_failures = 0
     total_unverifiable = 0
+    v6_binding_checked = False
+    v6_binding_verified = True
+    legacy_binding_checked = False
     non_work_item_groups = 0
 
     # WI-217: the event log is streamed one entity at a time through a
@@ -644,6 +648,7 @@ def _replay_inner(
         nonlocal ok_count, drift_count, halted_count
         nonlocal total_warnings, total_chain_breaks, total_principal_binding_failures
         nonlocal total_unverifiable
+        nonlocal v6_binding_checked, v6_binding_verified, legacy_binding_checked
 
         # Only work-item entities have a projection row to rebuild.  Other
         # entity kinds (spec, principal) keep their own `event_seq` space —
@@ -667,6 +672,9 @@ def _replay_inner(
                 wi_chain_breaks,
                 wi_pb_failures,
                 wi_unverifiable,
+                wi_v6_binding_checked,
+                wi_v6_binding_verified,
+                wi_legacy_binding_checked,
             ) = _replay_work_item(
                 conn,
                 wi_id,
@@ -680,6 +688,9 @@ def _replay_inner(
             total_chain_breaks += wi_chain_breaks
             total_principal_binding_failures += wi_pb_failures
             total_unverifiable += wi_unverifiable
+            v6_binding_checked = v6_binding_checked or wi_v6_binding_checked
+            v6_binding_verified = v6_binding_verified and wi_v6_binding_verified
+            legacy_binding_checked = legacy_binding_checked or wi_legacy_binding_checked
         except _ReplayHaltError as e:
             halted_count += 1
             # Findings made before the halt survive it — see _ReplayHaltError.
@@ -918,7 +929,15 @@ def _replay_inner(
         chain_breaks=total_chain_breaks,
         unverifiable=total_unverifiable,
         principal_binding_failures=total_principal_binding_failures,
-        principal_binding_verified=verify_principal_binding,
+        # A report may claim a binding check only when a verifier actually ran.
+        # v6's acceptance-chain check is mandatory and independent of the legacy
+        # principal_keys probe. A halt or an unresolved v6 binding invalidates the
+        # claim even if an earlier work item verified cleanly.
+        principal_binding_verified=(
+            v6_binding_checked and v6_binding_verified and halted_count == 0
+            if v6_binding_checked
+            else verify_principal_binding and legacy_binding_checked and halted_count == 0
+        ),
         non_work_item_groups_verified=non_work_item_groups,
         entries=store.report_entries(),
     )
@@ -992,10 +1011,14 @@ def _replay_work_item(
     *,
     verify_principal_binding: bool = False,
     referents: ReferentResolver,
-) -> tuple[dict[str, Any], int, int, int, int]:
-    """Returns ``(state, warnings, chain_breaks, principal_binding_failures,
-    unverifiable)``. The last three are deliberately distinct counters — see
-    :class:`~regista._types.ReplayReport`.
+) -> tuple[dict[str, Any], int, int, int, int, bool, bool, bool]:
+    """Return replay state and binding-check outcomes.
+
+    The tuple is ``(state, warnings, chain_breaks, principal_binding_failures,
+    unverifiable, v6_binding_checked, v6_binding_verified,
+    legacy_binding_checked)``. The counters remain deliberately distinct — see
+    :class:`~regista._types.ReplayReport`. The two binding booleans prevent a caller
+    from reporting a check merely because a project identity or a CLI flag exists.
     """
     state = None
     custom_fields: dict[str, Any] = {}
@@ -1010,6 +1033,9 @@ def _replay_work_item(
     chain_breaks = 0
     principal_binding_failures = 0
     unverifiable = 0
+    v6_binding_checked = False
+    v6_binding_verified = True
+    legacy_binding_checked = False
 
     _principal_key_cache: dict[str, list[Any]] = {}
     # Resolved once per work item rather than per event: the scheme registry is
@@ -1041,6 +1067,7 @@ def _replay_work_item(
             chain_breaks += 1
 
         key_entry = None
+        unknown_key_skipped = False
         try:
             key_entry = key_set.verify_key_status(
                 evt["key_id"],
@@ -1058,6 +1085,7 @@ def _replay_work_item(
                     key_id=evt["key_id"],
                 )
             elif e.code == ErrorCode.UNKNOWN_KEY_ID and continue_on_revoked:
+                unknown_key_skipped = True
                 warnings += 1
                 log.warning(
                     "replay.unknown_key_skipped",
@@ -1080,6 +1108,11 @@ def _replay_work_item(
                 referents=referents,
                 policy=DEFAULT_POLICY,
             )
+            if verification.envelope_version is EnvelopeVersion.V6:
+                v6_binding_checked = True
+                v6_binding_verified = (
+                    v6_binding_verified and verification.principal_binding_verified
+                )
             if verification.applicability is Applicability.INVALID:
                 raise _ReplayHaltError(
                     f"Signature verification failed for event {evt['event_id']} "
@@ -1145,7 +1178,20 @@ def _replay_work_item(
                         detail=verification.summary(),
                     )
 
-        if verify_principal_binding:
+        if unknown_key_skipped:
+            # `continue_on_revoked` is a salvage option, not a verification result.
+            # A skipped event leaves its signer/binding unresolved. Mark the v6
+            # aggregate as evaluated-but-unverified so an epoch whose every event was
+            # skipped cannot fall through to the legacy binding branch.
+            v6_binding_checked = True
+            v6_binding_verified = False
+
+        # The legacy registry probe is a v1-v5 compatibility path. A v6 event's
+        # principal binding is established by verify_event_strict over the
+        # acceptance chain, never by consulting principal_keys.
+        if verify_principal_binding and (
+            key_entry is None or verification.envelope_version is not EnvelopeVersion.V6
+        ):
             from ._principal_keys import list_principal_keys_for_conn
 
             actor_id = evt["actor_id"]
@@ -1178,6 +1224,7 @@ def _replay_work_item(
             if pk_entries or _requires_principal_registration(
                 evt, _asym_schemes, key_entry,
             ):
+                legacy_binding_checked = True
                 pb_result = verify_event_dict_principal_binding(evt, pk_entries)
                 if not pb_result.verified:
                     warnings += 1
@@ -1286,17 +1333,26 @@ def _replay_work_item(
 
         prev_evt = evt
 
-    return {
-        "current_state": state,
-        "custom_fields": custom_fields,
-        "needs_review": needs_review,
-        "not_before": not_before,
-        "last_event_seq": last_seq,
-        "attempt_number": attempt_number,
-        "claimed_by": claimed_by,
-        "claim_expires_at": claim_expires_at,
-        "claim_coalesce_threshold": claim_coalesce_threshold,
-    }, warnings, chain_breaks, principal_binding_failures, unverifiable
+    return (
+        {
+            "current_state": state,
+            "custom_fields": custom_fields,
+            "needs_review": needs_review,
+            "not_before": not_before,
+            "last_event_seq": last_seq,
+            "attempt_number": attempt_number,
+            "claimed_by": claimed_by,
+            "claim_expires_at": claim_expires_at,
+            "claim_coalesce_threshold": claim_coalesce_threshold,
+        },
+        warnings,
+        chain_breaks,
+        principal_binding_failures,
+        unverifiable,
+        v6_binding_checked,
+        v6_binding_verified,
+        legacy_binding_checked,
+    )
 
 
 def _states_match(replayed: dict[str, Any], live: dict[str, Any]) -> bool:

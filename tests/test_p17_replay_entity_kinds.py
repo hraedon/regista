@@ -8,7 +8,7 @@ report would have had to either fail or weaken its assertion.
 
 The corrected contract, and what each assertion here falsifies:
 
-* an entity kind in the **CLOSED** six-value registry (``V6-ENVELOPE.md`` §1.2)
+* an entity kind in the **CLOSED** seven-value registry (``V6-ENVELOPE.md`` §1.2)
   other than ``work_item`` is a spec-legal chain member: no halt, no warning,
   counted by name in ``ReplayReport.non_work_item_groups_verified``;
 * an entity kind **outside** that registry halts, fail-closed, exactly as an
@@ -51,7 +51,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
 
 
 def test_the_closed_registry_is_one_registry() -> None:
-    """Three modules used to hand-copy the six values. A replay that halts on
+    """Three modules used to hand-copy the seven values. A replay that halts on
     "not in the registry" is only as trustworthy as the registry being singular —
     two registries that drift make the halt a coin toss."""
 
@@ -64,6 +64,7 @@ def test_the_closed_registry_is_one_registry() -> None:
         "trust_domain",
         "project_instance",
         "workflow",
+        "spec",
     }
 
 

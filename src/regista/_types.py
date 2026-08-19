@@ -628,7 +628,12 @@ class ReplayReport:
     #: Whether the principal-binding check actually ran. WI-223: a zero
     #: ``principal_binding_failures`` is only an affirmative claim when this is
     #: True. When the check did not run, ``0`` means "not checked" — surfaces
-    #: must not render it as a pass.
+    #: must not render it as a pass. On a v6 epoch this reports that the
+    #: acceptance-chain binding check executed against presented evidence
+    #: (``TRUST-DOMAIN.md`` §5.10); the legacy ``principal_keys``-row probe is a
+    #: v5-only concept and is controlled separately by the
+    #: ``verify_principal_binding`` flag. Trust-root quality is a separate
+    #: result-model axis.
     principal_binding_verified: bool = False
     #: Entity groups from the CLOSED v6 entity-kind registry other than
     #: ``work_item`` — ``project``, ``principal``, ``trust_domain``,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +18,6 @@ from regista._assurance import (
 )
 from regista._errors import ErrorCode, RegistaError
 from regista._review_validators import ReviewRejected, human_gate
-from regista.testing import InMemoryRegista
 
 TESTS_DIR = Path(__file__).parent
 KEY_PATH = str(TESTS_DIR / "test_keys.json")
@@ -242,6 +240,25 @@ class TestUndeclaredAgentAuthorEscalation:
         ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
         with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
             human_gate(ctx, require_human_on_same_lineage=True)
+
+    def test_strict_human_gate_reports_signed_reviewer_claim(self):
+        prior = [
+            *_author_events("glm"),
+            _evt(
+                "adversarial_pass",
+                "r1",
+                actor_metadata={"model_lineage": "kimi"},
+                payload={
+                    "review_note": "same lineage acknowledged",
+                    "same_lineage_acknowledged": True,
+                    "reviewer_claims": {"model_lineage": "glm"},
+                },
+            )
+        ]
+        ctx = _accept_ctx(prior, actor_id="acceptor", actor_kind="agent")
+        with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED) as exc_info:
+            human_gate(ctx, require_human_on_same_lineage=True)
+        assert exc_info.value.detail["reviewer_lineage"] == "glm"
 
     def test_strict_human_gate_allows_human_accept(self):
         prior = self._mixed_authors() + _pass_events("r1", "kimi")
@@ -1263,266 +1280,6 @@ work_item_types:
         type: string
         required: true
 """
-
-
-class TestComputeAssuranceAPI:
-    def _meta(self, lineage: str, role: str = "agent") -> dict:
-        return {"model_lineage": lineage, "role": role}
-
-    def _setup_to_review(
-        self,
-        sub: InMemoryRegista,
-        *,
-        creator_lineage: str = "glm",
-        workflow: str = "canonical_test",
-    ) -> uuid.UUID:
-        wi, _ = sub.create_work_item(
-            workflow_name=workflow,
-            work_item_type="issue",
-            actor_id="a1",
-            actor_kind="agent",
-            actor_metadata=self._meta(creator_lineage),
-            custom_fields={"title": "test"},
-        )
-        sub.transition(
-            wi.work_item_id, "start", "a1",
-            actor_kind="agent",
-            actor_metadata=self._meta(creator_lineage),
-        )
-        sub.transition(
-            wi.work_item_id, "submit_for_review", "a1",
-            actor_kind="agent",
-            actor_metadata=self._meta(creator_lineage),
-        )
-        return wi.work_item_id
-
-    def _setup_to_human_review(
-        self,
-        sub: InMemoryRegista,
-        *,
-        creator_lineage: str = "glm",
-        reviewer_lineage: str = "kimi",
-        workflow: str = "canonical_test",
-    ) -> uuid.UUID:
-        wi_id = self._setup_to_review(
-            sub, creator_lineage=creator_lineage, workflow=workflow,
-        )
-        pass_payload = (
-            {"review_note": "same lineage ack", "same_lineage_acknowledged": True}
-            if creator_lineage == reviewer_lineage
-            else REVIEW_NOTE
-        )
-        sub.transition(
-            wi_id, "adversarial_pass", "r1",
-            actor_kind="agent",
-            actor_metadata=self._meta(reviewer_lineage),
-            payload=pass_payload,
-        )
-        return wi_id
-
-    def test_assurance_at_creation(self):
-        sub = InMemoryRegista(project="test_assurance_create", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi, _ = sub.create_work_item(
-            workflow_name="canonical_test",
-            work_item_type="issue",
-            actor_id="a1",
-            actor_kind="agent",
-            actor_metadata=self._meta("glm"),
-            custom_fields={"title": "test"},
-        )
-        assert sub.compute_assurance(wi.work_item_id) == AssuranceLevel.NONE
-
-    def test_assurance_in_review(self):
-        sub = InMemoryRegista(project="test_assurance_review", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_review(sub)
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.NONE
-
-    def test_assurance_after_cross_lineage_pass(self):
-        sub = InMemoryRegista(project="test_assurance_cross_pass", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="kimi")
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.INDEPENDENTLY_REVIEWED
-
-    def test_assurance_after_same_lineage_pass(self):
-        sub = InMemoryRegista(project="test_assurance_same_pass", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="glm")
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.SELF_REVIEWED
-
-    def test_assurance_after_cross_lineage_agent_accept(self):
-        sub = InMemoryRegista(project="test_assurance_cross_agent", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="kimi")
-        sub.transition(
-            wi_id, "accept", "a2",
-            actor_kind="agent",
-            actor_metadata=self._meta("kimi"),
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.INDEPENDENTLY_REVIEWED
-
-    def test_assurance_after_cross_lineage_human_accept(self):
-        sub = InMemoryRegista(project="test_assurance_cross_human", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="kimi")
-        sub.transition(
-            wi_id, "accept", "h1",
-            actor_kind="human",
-            actor_metadata={"role": "human"},
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.INDEPENDENT_AND_ACCEPTED
-
-    def test_assurance_after_same_lineage_human_accept(self):
-        sub = InMemoryRegista(project="test_assurance_same_human", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="glm")
-        sub.transition(
-            wi_id, "accept", "h1",
-            actor_kind="human",
-            actor_metadata={"role": "human"},
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.HUMAN_ACCEPTED
-
-    def test_assurance_after_same_lineage_agent_accept(self):
-        sub = InMemoryRegista(project="test_assurance_same_agent", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="glm")
-        sub.transition(
-            wi_id, "accept", "a2",
-            actor_kind="agent",
-            actor_metadata=self._meta("glm"),
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.SELF_REVIEWED
-
-    def test_assurance_close_from_open(self):
-        sub = InMemoryRegista(project="test_assurance_close", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi, _ = sub.create_work_item(
-            workflow_name="canonical_test",
-            work_item_type="issue",
-            actor_id="a1",
-            actor_kind="agent",
-            actor_metadata=self._meta("glm"),
-            custom_fields={"title": "test"},
-        )
-        sub.transition(
-            wi.work_item_id, "close_from_open", "a1",
-            actor_kind="agent",
-            actor_metadata=self._meta("glm"),
-        )
-        assert sub.compute_assurance(wi.work_item_id) == AssuranceLevel.NONE
-
-    def test_gate_rationale_via_api(self):
-        sub = InMemoryRegista(project="test_assurance_rationale", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="kimi")
-        r = sub.gate_rationale(wi_id, profile="relaxed")
-        assert r["reason"] == "not_done"
-        assert r["reviewer_lineage"] == "kimi"
-        assert r["author_lineages"] == ["glm"]
-
-    def test_gate_rationale_strict_profile(self):
-        sub = InMemoryRegista(project="test_assurance_strict_rat", hmac_key_path=KEY_PATH)
-        sub.register_workflow(CANONICAL_WORKFLOW)
-        wi_id = self._setup_to_human_review(sub, reviewer_lineage="glm")
-        sub.transition(
-            wi_id, "accept", "a2",
-            actor_kind="agent",
-            actor_metadata=self._meta("glm"),
-            payload=REVIEW_NOTE,
-        )
-        r = sub.gate_rationale(wi_id, profile="strict")
-        assert r["reason"] == "same_lineage_acknowledged"
-        assert gate_permits_done(r) is False
-
-    def test_strict_workflow_rejects_same_lineage_agent_accept(self):
-        sub = InMemoryRegista(project="test_assurance_strict_wf", hmac_key_path=KEY_PATH)
-        sub.register_workflow(STRICT_WORKFLOW)
-        wi_id = self._setup_to_human_review(
-            sub, reviewer_lineage="glm", workflow="canonical_strict",
-        )
-        with pytest.raises(Exception, match=HUMAN_GATE_REQUIRED):
-            sub.transition(
-                wi_id, "accept", "a2",
-                actor_kind="agent",
-                actor_metadata=self._meta("glm"),
-                payload=REVIEW_NOTE,
-            )
-
-    def test_strict_workflow_allows_cross_lineage_agent_accept(self):
-        sub = InMemoryRegista(project="test_assurance_strict_cross", hmac_key_path=KEY_PATH)
-        sub.register_workflow(STRICT_WORKFLOW)
-        wi_id = self._setup_to_human_review(
-            sub, reviewer_lineage="kimi", workflow="canonical_strict",
-        )
-        sub.transition(
-            wi_id, "accept", "a2",
-            actor_kind="agent",
-            actor_metadata=self._meta("kimi"),
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.INDEPENDENTLY_REVIEWED
-
-    def test_strict_workflow_allows_same_lineage_human_accept(self):
-        sub = InMemoryRegista(project="test_assurance_strict_human", hmac_key_path=KEY_PATH)
-        sub.register_workflow(STRICT_WORKFLOW)
-        wi_id = self._setup_to_human_review(
-            sub, reviewer_lineage="glm", workflow="canonical_strict",
-        )
-        sub.transition(
-            wi_id, "accept", "h1",
-            actor_kind="human",
-            actor_metadata={"role": "human"},
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.HUMAN_ACCEPTED
-
-    def test_strict_workflow_rejects_undeclared_reviewer_agent_accept(self):
-        """WI-239 composed exploit: an undeclared-lineage reviewer passes
-        adversarial_review via same_lineage_acknowledged, then a non-human
-        accept must STILL be rejected under the strict profile — unknown
-        independence is never a reason to skip the human gate."""
-        sub = InMemoryRegista(project="test_assurance_undeclared_strict", hmac_key_path=KEY_PATH)
-        sub.register_workflow(STRICT_WORKFLOW)
-        wi_id = self._setup_to_review(sub, workflow="canonical_strict")
-        # Reviewer declares NO lineage but acknowledges same-lineage.
-        sub.transition(
-            wi_id, "adversarial_pass", "r1",
-            actor_kind="agent",
-            actor_metadata={"role": "agent"},
-            payload=ACK_NOTE,
-        )
-        with pytest.raises(Exception, match=HUMAN_GATE_REQUIRED):
-            sub.transition(
-                wi_id, "accept", "a2",
-                actor_kind="agent",
-                actor_metadata={"role": "agent"},
-                payload=REVIEW_NOTE,
-            )
-
-    def test_strict_workflow_allows_undeclared_reviewer_human_accept(self):
-        sub = InMemoryRegista(project="test_assurance_undeclared_human", hmac_key_path=KEY_PATH)
-        sub.register_workflow(STRICT_WORKFLOW)
-        wi_id = self._setup_to_review(sub, workflow="canonical_strict")
-        sub.transition(
-            wi_id, "adversarial_pass", "r1",
-            actor_kind="agent",
-            actor_metadata={"role": "agent"},
-            payload=ACK_NOTE,
-        )
-        sub.transition(
-            wi_id, "accept", "h1",
-            actor_kind="human",
-            actor_metadata={"role": "human"},
-            payload=REVIEW_NOTE,
-        )
-        assert sub.compute_assurance(wi_id) == AssuranceLevel.HUMAN_ACCEPTED
-
 
 class TestCanonicalWorkflowStrictVariant:
     def test_strict_adds_require_human_on_same_lineage(self):

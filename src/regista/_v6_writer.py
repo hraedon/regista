@@ -442,35 +442,62 @@ def _anchor_from_row(row: Mapping[str, Any]) -> KeyBindingAnchor:
 
 
 def _anchor_candidate_rows(conn: DictConn) -> list[dict[str, Any]]:
-    """Every stored anchor event, newest first on the project chain.
+    """Every stored anchor event, newest first **by chain position**.
 
-    ``global_seq`` orders the query only; it never *decides* anything — the
-    caller's correctness comes from "this row exists and precedes the append we
-    are about to make", and every existing row precedes it by construction
-    because the append has not happened yet. ``TRUST-DOMAIN.md`` §5.10 step 3's
-    chain-traversal requirement is a *verifier* obligation over material that
-    may be adversarial; at write time the writer is appending to the head, so
-    every committed anchor is behind it.
+    Currentness is predecessor-link traversal, never ``global_seq`` (WI-301 req 1).
+    The walk starts at the global chain head and follows each event's
+    ``prev_global_event_hash`` backward, so an anchor's place in the returned list is
+    its distance from the head — which is the only "newest" that matters to the
+    caller (``resolve_key_binding_anchor`` picks the most recent live acceptance for
+    its scopes). A link that does not resolve to another stored event stops the walk
+    so a missing link cannot strand a newer anchor behind a hole.
     """
 
-    rows = conn.execute(
-        SQL(
-            "SELECT event_id, transition, canonical_envelope, signature, global_seq "
-            "FROM events WHERE transition = ANY(%s) ORDER BY global_seq DESC"
-        ),
-        [sorted(_ANCHOR_TRANSITIONS)],
-    ).fetchall()
+    from ._events import _lock_global_chain_head
     from ._signing import compute_v6_event_hash
 
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not row["canonical_envelope"] or not row["signature"]:
+    head = _lock_global_chain_head(conn)
+    if head is None:
+        return []
+
+    by_hash: dict[bytes, dict[str, Any]] = {}
+    for relation in ("events", "events_archive"):
+        if not _relation_exists(conn, relation):
             continue
-        enriched = dict(row)
-        enriched["event_hash"] = compute_v6_event_hash(
+        rows = conn.execute(
+            SQL(
+                "SELECT event_id, transition, canonical_envelope, signature, "
+                f"prev_global_event_hash, global_seq FROM {relation}"
+            )
+        ).fetchall()
+        for row in rows:
+            if not row["canonical_envelope"] or not row["signature"]:
+                continue
+            by_hash[compute_v6_event_hash(
+                bytes(row["canonical_envelope"]), bytes(row["signature"])
+            )] = dict(row)
+
+    order: list[dict[str, Any]] = []
+    cur = head
+    seen: set[bytes] = set()
+    while cur in by_hash and cur not in seen:
+        row = by_hash[cur]
+        seen.add(cur)
+        order.append(row)
+        nxt = row["prev_global_event_hash"]
+        if nxt is None:
+            break
+        cur = bytes(nxt)
+
+    out: list[dict[str, Any]] = []
+    for row in order:
+        if row["transition"] not in _ANCHOR_TRANSITIONS:
+            continue
+        row = dict(row)
+        row["event_hash"] = compute_v6_event_hash(
             bytes(row["canonical_envelope"]), bytes(row["signature"])
         )
-        out.append(enriched)
+        out.append(row)
     return out
 
 
@@ -1013,26 +1040,69 @@ def find_acceptance_revocations(conn: DictConn) -> dict[str, int]:
     "between ``A`` and ``E``" question, which needs positions rather than a boolean.
     """
 
-    rows = conn.execute(
-        SQL(
-            "SELECT canonical_envelope, global_seq FROM events WHERE transition = %s "
-            "ORDER BY global_seq ASC"
-        ),
-        [PRINCIPAL_KEY_ACCEPTANCE_REVOKED],
-    ).fetchall()
+    rows: list[dict[str, Any]] = []
+    for relation in ("events", "events_archive"):
+        if not _relation_exists(conn, relation):
+            continue
+        rows.extend(
+            dict(row)
+            for row in conn.execute(
+                SQL(
+                    "SELECT canonical_envelope, global_seq FROM "
+                    f"{relation} WHERE transition = %s"
+                ),
+                [PRINCIPAL_KEY_ACCEPTANCE_REVOKED],
+            ).fetchall()
+        )
+    rows.sort(key=lambda row: int(row["global_seq"]))
     revoked: dict[str, int] = {}
     for row in rows:
         if not row["canonical_envelope"]:
-            continue
+            raise RegistaError(
+                ErrorCode.V6_ENVELOPE_INVALID,
+                "a principal_key_acceptance_revoked row has no canonical envelope; a "
+                "revocation that cannot be parsed cannot be skipped, because skipping "
+                "it would silently re-admit the acceptance it revoked",
+                {
+                    "reason": "malformed_revocation_envelope",
+                    "global_seq": int(row["global_seq"]),
+                },
+            )
         try:
             envelope = parse_v6_envelope_strict(bytes(row["canonical_envelope"]))
-        except (V6EnvelopeError, TypeError, ValueError):
-            continue
+        except (V6EnvelopeError, TypeError, ValueError) as exc:
+            raise RegistaError(
+                ErrorCode.V6_ENVELOPE_INVALID,
+                "a principal_key_acceptance_revoked envelope does not parse; it cannot "
+                "be ignored in the revocation check (fail closed, never skip)",
+                {
+                    "reason": "unparseable_revocation_envelope",
+                    "global_seq": int(row["global_seq"]),
+                },
+            ) from exc
         payload = envelope["payload"]
         if not isinstance(payload, Mapping):
-            continue
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
+                "a principal_key_acceptance_revoked envelope carries a non-object "
+                "payload; the revocation cannot be evaluated",
+                {
+                    "reason": "revocation_payload_not_object",
+                    "global_seq": int(row["global_seq"]),
+                },
+            )
         target = payload.get("acceptance_event_hash")
-        if isinstance(target, str) and target not in revoked:
+        if not isinstance(target, str) or not target:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
+                "a principal_key_acceptance_revoked payload names no acceptance_event_hash; "
+                "the revocation cannot be treated as revoking nothing",
+                {
+                    "reason": "revocation_target_missing",
+                    "global_seq": int(row["global_seq"]),
+                },
+            )
+        if target not in revoked:
             revoked[target] = int(row["global_seq"])
     return revoked
 

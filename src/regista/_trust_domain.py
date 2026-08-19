@@ -399,6 +399,18 @@ def genesis_signature_input(document: Mapping[str, Any]) -> bytes:
     return TRUST_GENESIS_SIGNING_DOMAIN + struct.pack(">Q", len(sig_bytes)) + sig_bytes
 
 
+def genesis_document_digest(document: Mapping[str, Any]) -> str:
+    """``sha256:`` + hex of JCS over the **complete published** genesis document.
+
+    The A-prime (owner-approved, Fable-adjudicated) digest: the digest a trust_domain_established
+    payload restates covers the exact bytes an operator publishes — the whole
+    document including ``signatures``/``countersignatures``/``anchors`` — computed
+    once here and reused by the payload builder, the bootstrap validator and the
+    verifier so the three can never disagree.
+    """
+    return "sha256:" + hashlib.sha256(canonicalize(document)).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Governance mode derivation (§3.4 table)
 # ---------------------------------------------------------------------------
@@ -984,13 +996,15 @@ def parse_trust_genesis(
     trust_log_raw = document["trust_log"]
     _require_keys(trust_log_raw, _TRUST_LOG_KEYS, "trust_log")
     head = trust_log_raw["initial_head_event_hash"]
-    if head is not None:
-        head = _require_pattern(
-            head,
-            _DIGEST_RE,
-            "trust_log.initial_head_event_hash",
-            "sha256:<64 lowercase hex characters> or null",
-        )
+    _require(
+        head is None,
+        ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+        "trust_log.initial_head_event_hash must be null on a v1 trust genesis: the "
+        "genesis event hash is unknown until the event is written and is pinned later "
+        "by the checkpoint (§4.3), not by the genesis document",
+        "genesis_head_must_be_null",
+        head=head,
+    )
     trust_log = TrustLogBlock(
         project_instance_id=_require_uuid(
             trust_log_raw["project_instance_id"], "trust_log.project_instance_id"
@@ -998,7 +1012,7 @@ def parse_trust_genesis(
         project_name_hint=_require_string(
             trust_log_raw["project_name_hint"], "trust_log.project_name_hint"
         ),
-        initial_head_event_hash=head,
+        initial_head_event_hash=None,
     )
     publication_raw = document["publication"]
     _require_keys(publication_raw, _PUBLICATION_KEYS, "publication")

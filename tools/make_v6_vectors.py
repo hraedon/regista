@@ -52,6 +52,7 @@ Design rules followed here, all from the frozen spec set:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import struct
@@ -891,40 +892,55 @@ def case_delegation_credential() -> dict[str, Any]:
 
 
 def case_trust_genesis() -> dict[str, Any]:
+    # WI-280 / WI-292 shape (TRUST-DOMAIN.md §3.2): binding_core carries
+    # cryptographic identity only — base64 signer public keys, no governance, no
+    # custody. Governance and custody are signed top-level state outside the core
+    # (``initial_governance``, a sorted ``initial_custody`` keyed by fingerprint).
+    #
+    # ``canonicalize`` sorts objects by UTF-16BE code unit, so the committed
+    # ``initial_custody`` is presented in the deterministic key order regardless of
+    # the declaration order below.
     binding_core = {
         "type": "regista.trust-genesis.core",
         "version": 1,
-        "governance": {
-            "mode": "solo_effective",
-            "threshold": 1,
-            "signer_count": 2,
-        },
         "signers": [
             {
                 "signer_id": "root-a",
                 "scheme_id": "ed25519",
-                "public_key": PUB.hex(),
+                "public_key": base64.b64encode(PUB).decode("ascii"),
                 "fingerprint": TEST_FINGERPRINT,
-                "custody": {
-                    "declared_mode": "offline-host",
-                    "declared_holder": "human:itadmin",
-                    "attestation": None,
-                },
             },
             {
                 "signer_id": "root-b",
                 "scheme_id": "ed25519",
-                "public_key": PUB2.hex(),
+                "public_key": base64.b64encode(PUB2).decode("ascii"),
                 "fingerprint": TEST_FINGERPRINT_2,
-                "custody": {
-                    "declared_mode": "offline-airgapped",
-                    "declared_holder": "human:itadmin",
-                    "attestation": None,
-                },
             },
         ],
         "created_at": "2026-08-20T00:00:00.000000Z",
-        "nonce": "0123456789abcdef" * 8,
+        "nonce": "0123456789abcdef" * 4,
+    }
+    initial_custody = sorted(
+        [
+            {
+                "fingerprint": TEST_FINGERPRINT,
+                "declared_mode": "offline-host",
+                "declared_holder": "human:itadmin",
+                "attestation": None,
+            },
+            {
+                "fingerprint": TEST_FINGERPRINT_2,
+                "declared_mode": "offline-airgapped",
+                "declared_holder": "human:itadmin",
+                "attestation": None,
+            },
+        ],
+        key=lambda e: e["fingerprint"],
+    )
+    initial_governance = {
+        "mode": "solo_effective",
+        "threshold": 1,
+        "signer_count": 2,
     }
     core_bytes = canonicalize(binding_core)
     core_digest = domain_digest_framed(DOMAINS["trust_genesis_core"], core_bytes)
@@ -939,6 +955,8 @@ def case_trust_genesis() -> dict[str, Any]:
         "type": "regista.trust-genesis",
         "version": 1,
         "binding_core": binding_core,
+        "initial_custody": initial_custody,
+        "initial_governance": initial_governance,
         "trust_domain_core_digest": trust_domain_core_digest,
         "trust_domain_id": trust_domain_id,
         "trust_log": {

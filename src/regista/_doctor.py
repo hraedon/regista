@@ -624,6 +624,14 @@ def _check_principal_registration(
 # ---------------------------------------------------------------------------
 
 
+def _operator_genesis_document() -> dict[str, Any] | None:
+    import os
+
+    from ._trust_genesis_file import load_trust_genesis_document
+
+    return load_trust_genesis_document(os.environ.get("REGISTRA_TRUST_GENESIS_PATH"))
+
+
 def _check_projection_consistent(
     dsn: str, project: str, require_ssl: bool
 ) -> DoctorCheck:
@@ -647,12 +655,48 @@ def _check_projection_consistent(
 
     mgr = None
     try:
+        genesis_document = _operator_genesis_document()
+        if genesis_document is not None:
+            from ._trust_domain import parse_trust_genesis, verify_trust_genesis
+
+            # Validate the configured pin before inspecting the store. An invalid
+            # operator file is a doctor failure even when the trust log is empty.
+            parse_trust_genesis(genesis_document)
+            verify_trust_genesis(genesis_document)
+
         from ._connection import ConnectionManager
-        from ._trust_projection import check_projection_consistent
+        from ._trust_projection import (
+            _stored_trust_log_event_count,
+            check_projection_consistent,
+        )
 
         mgr = ConnectionManager(dsn, project, require_ssl=require_ssl)
         mgr.open()
-        report = check_projection_consistent(mgr, project=project)
+        with mgr.transaction() as conn:
+            event_count = _stored_trust_log_event_count(conn)
+        if not event_count:
+            return DoctorCheck(
+                name=name,
+                status="skip",
+                detail=(
+                    "trust log has no stored events; projection verification is not "
+                    "applicable"
+                ),
+            )
+        if genesis_document is None:
+            return DoctorCheck(
+                name=name,
+                status="fail",
+                detail=(
+                    f"trust log contains {event_count} stored event(s), but no "
+                    "pinned genesis document is configured "
+                    "(REGISTRA_TRUST_GENESIS_PATH unset); the projection is "
+                    "unverifiable"
+                ),
+            )
+        report = check_projection_consistent(
+            mgr, project=project, genesis_document=genesis_document
+        )
     except RegistaError as e:
         # Migration 046 not applied yet is a "cannot check", not a "diverged".
         # Reporting it as a failure would make an un-upgraded store look corrupt.
@@ -665,7 +709,13 @@ def _check_projection_consistent(
                     "pending); nothing to check"
                 ),
             )
-        return DoctorCheck(name=name, status="fail", detail=f"{e.code}")
+        reason = e.detail.get("reason") if e.detail is not None else None
+        suffix = f" ({reason})" if reason else ""
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=f"{e.code}: {e.message}{suffix}",
+        )
     except Exception as e:
         return DoctorCheck(name=name, status="fail", detail=_sanitize_error(e))
     finally:

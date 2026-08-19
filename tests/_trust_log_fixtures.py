@@ -1,19 +1,7 @@
-"""Test fixtures for trust-domain-log events (P2.2).
+"""Test fixtures for trust-domain-log events and durable possession evidence.
 
-Builds spec-shaped ``regista.trust-genesis`` roots (via :mod:`tests._trust_fixtures`)
-and **signed v6 trust-log events**, then stores them the way ``tests/test_genesis.py``
-stores v6 events: sign the canonical envelope with an ephemeral Ed25519 key and INSERT
-the row.
-
-Why direct inserts and not a writer: the ordinary production v6 append path does not
-exist yet — that is P1.7's package, and P1.2 deliberately refuses every writer on both
-sides of genesis. Inventing a parallel production write path here would be exactly the
-thing P2.2 is not allowed to do. So these helpers produce *spec-shaped stored rows*
-and nothing else; the rebuild under test consumes stored events, so that is all it
-needs.
-
-Everything here uses **ephemeral test keys**, minted per call. Nothing touches a real
-key store, and no root private key material is generated or handled.
+The stored-row helpers use ephemeral Ed25519 keys and direct inserts for replay tests;
+WI301/WI303 writer fixtures also persist the consumed challenge that backs each event.
 """
 
 from __future__ import annotations
@@ -31,7 +19,6 @@ from typing import Any
 import nacl.signing
 import psycopg
 
-from regista._jcs import canonicalize
 from regista._principal_keys import _compute_fingerprint
 from regista._signing import compute_v6_event_hash, sign_v6_envelope
 from regista._trust_log import (
@@ -137,15 +124,20 @@ def make_possession_challenge(
     trust_domain_id: str,
     principal_id: str,
     fingerprint: str,
+    project: str = TRUST_LOG_NAME_HINT,
+    operation_id: str | None = None,
+    operation_digest: str | None = None,
     request: dict[str, Any] | None = None,
     challenge_id: str | None = None,
     verifier_nonce: str | None = None,
+    issued_at: str | None = None,
+    expires_at: str | None = None,
 ) -> PossessionChallengeV2:
     return PossessionChallengeV2(
         challenge_id=challenge_id or str(uuid.uuid4()),
-        operation_id=str(uuid.uuid4()),
-        operation_digest="sha256:" + "0" * 64,
-        project=TRUST_LOG_NAME_HINT,
+        operation_id=operation_id or str(uuid.uuid4()),
+        operation_digest=operation_digest or "sha256:" + "0" * 64,
+        project=project,
         trust_domain_id=trust_domain_id,
         principal_id=principal_id,
         fingerprint=fingerprint,
@@ -156,8 +148,8 @@ def make_possession_challenge(
         enrollment_request_digest=enrollment_request_digest(
             request if request is not None else {"principal_id": principal_id}
         ),
-        issued_at=_ts(),
-        expires_at=_ts(300),
+        issued_at=issued_at or _ts(),
+        expires_at=expires_at or _ts(300),
     )
 
 
@@ -234,6 +226,61 @@ def make_enrollment_payload(
     if omit_public_key:
         del payload["public_key"]
     return payload
+
+
+def persist_consumed_possession_challenge(
+    conn: Any,
+    challenge: PossessionChallengeV2,
+    proof_signature: str,
+    *,
+    used: bool = True,
+) -> None:
+    conn.execute(
+        "INSERT INTO lifecycle_operations "
+        "(operation_id, idempotency_key, operation_type, state, project, principal_id, "
+        "principal_kind, actor_id, reason, requested_authority, policy_version, "
+        "digest_value, digest_algorithm, digest_version, public_key, fingerprint, "
+        "scheme, custody_mode, old_key_id, identity_binding_digest, protected_options, "
+        "created_at, expires_at) "
+        "VALUES (%s, %s, 'enrollment', 'awaiting_approval', %s, %s, 'agent', "
+        "'service:registrar-1', 'fixture', 'registrar', 'fixture', %s, 'sha-256', "
+        "'fixture', NULL, %s, %s, 'file', NULL, NULL, '{}'::jsonb, %s, %s) "
+        "ON CONFLICT (operation_id) DO NOTHING",
+        [
+            uuid.UUID(challenge.operation_id),
+            "fixture-" + challenge.challenge_id,
+            challenge.project,
+            challenge.principal_id,
+            challenge.operation_digest,
+            challenge.fingerprint,
+            challenge.scheme,
+            challenge.issued_at,
+            challenge.expires_at,
+        ],
+    )
+    conn.execute(
+        "INSERT INTO lifecycle_challenges "
+        "(challenge_id, operation_id, operation_digest, project, principal_id, "
+        "fingerprint, scheme, verifier_nonce, issued_at, expires_at, used, kind, "
+        "trust_domain_id, enrollment_request_digest, proof_signature) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'possession', %s, %s, %s)",
+        [
+            uuid.UUID(challenge.challenge_id),
+            uuid.UUID(challenge.operation_id),
+            challenge.operation_digest,
+            challenge.project,
+            challenge.principal_id,
+            challenge.fingerprint,
+            challenge.scheme,
+            challenge.verifier_nonce,
+            challenge.issued_at,
+            challenge.expires_at,
+            used,
+            uuid.UUID(challenge.trust_domain_id),
+            challenge.enrollment_request_digest,
+            proof_signature,
+        ],
+    )
 
 
 def make_rotation_payload(
@@ -374,6 +421,38 @@ def make_registrar_delegation_payload(
     return payload
 
 
+def make_registrar_revocation_payload(
+    *,
+    trust_domain_id: str,
+    registrar_principal_id: str = "service:registrar-1",
+    key_id: str = "pk_registrar_1",
+    delegation_event_hash: str,
+    reason: str = "compromised",
+    root_keys: list[TrustLogKey] | None = None,
+) -> dict[str, Any]:
+    """A §5.4 ``registrar_revoked`` payload, root-threshold signed."""
+    payload: dict[str, Any] = {
+        "type": "regista.registrar-revocation",
+        "version": 1,
+        "trust_domain_id": trust_domain_id,
+        "registrar_principal_id": registrar_principal_id,
+        "key_id": key_id,
+        "delegation_event_hash": delegation_event_hash,
+        "reason": reason,
+        "root_signatures": [],
+    }
+    message = root_signature_input(payload)
+    payload["root_signatures"] = [
+        {
+            "signer_id": f"root-{chr(ord('a') + i)}",
+            "fingerprint": root_key.fingerprint,
+            "signature": _b64(root_key.sign(message)),
+        }
+        for i, root_key in enumerate(root_keys or [])
+    ]
+    return payload
+
+
 def make_root_rotation_payload(
     *,
     trust_domain_id: str,
@@ -418,25 +497,44 @@ def make_root_rotation_payload(
 
 def make_trust_domain_established_payload(
     genesis_document: dict[str, Any],
+    root_keys: list[TrustLogKey] | None = None,
 ) -> dict[str, Any]:
-    """A §5.2 ``trust_domain_established`` payload restating the genesis identity.
+    """A §5.2 A-prime ``trust_domain_established`` payload restating the genesis.
 
-    The restatement is a byte-exact copy of ``binding_core`` — never a rebuilt one —
-    so this fixture keeps working when WI-292 moves custody out of ``binding_core``.
+    ``genesis_document_digest`` is the recomputed digest over the exact published
+    genesis bytes (the shared ``genesis_document_digest``). When ``root_keys`` are
+    supplied the payload carries detached root signatures over
+    ``root_signature_input(payload)``; otherwise it ends with an empty
+    ``root_signatures`` array (structurally valid; threshold is a verify-time rule).
     """
-    return {
+    from regista._trust_domain import genesis_document_digest
+    from regista._trust_log import root_signature_input
+
+    payload: dict[str, Any] = {
         "type": "regista.trust-domain-established",
         "version": 1,
         "trust_domain_id": genesis_document["trust_domain_id"],
         "trust_domain_core_digest": genesis_document["trust_domain_core_digest"],
         "binding_core": copy.deepcopy(genesis_document["binding_core"]),
         "initial_governance": copy.deepcopy(genesis_document["initial_governance"]),
-        "genesis_document_digest": "sha256:"
-        + hashlib.sha256(canonicalize(genesis_document)).hexdigest(),
+        "genesis_document_digest": genesis_document_digest(genesis_document),
         "trust_log_project_instance_id": genesis_document["trust_log"][
             "project_instance_id"
         ],
     }
+    signatures: list[dict[str, Any]] = []
+    if root_keys:
+        message = root_signature_input(payload)
+        signatures = [
+            {
+                "signer_id": key.principal_id if hasattr(key, "principal_id") else key.key_id,
+                "fingerprint": key.fingerprint,
+                "signature": _b64(key.sign(message)),
+            }
+            for key in root_keys
+        ]
+    payload["root_signatures"] = signatures
+    return payload
 
 
 def make_custody_declaration_payload(
@@ -673,7 +771,9 @@ def open_trust_log(
     return store_trust_log_event(
         store,
         transition="trust_domain_established",
-        payload=make_trust_domain_established_payload(genesis_document),
+        payload=make_trust_domain_established_payload(
+            genesis_document, root_keys=[root_key]
+        ),
         signing_key=root_key,
         entity_id=store.trust_domain_id,
         key_binding_event_hash=None,
