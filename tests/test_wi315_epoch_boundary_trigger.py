@@ -108,6 +108,25 @@ def test_trigger_rejects_v5_envelope_after_genesis(tmp_path) -> None:
         drop_project_schema(DSN, project)
 
 
+def test_trigger_rejects_string_version_after_genesis(tmp_path) -> None:
+    """A forged envelope with a JSON STRING "6" version is refused. ``->>`` renders
+    both integer 6 and string "6" as '6', so the discriminator compares ``version`` as
+    JSON (``-> 'version' = '6'::jsonb``); no genuine v6 writer emits a string version."""
+    regista, project = _open_epoch_project(tmp_path)
+    try:
+        forged = b'{"type":"regista.event","version":"6"}'
+        with regista._mgr.connect() as conn:
+            with pytest.raises(psycopg.Error) as excinfo:
+                with conn.transaction():
+                    _raw_insert(conn, canonical_envelope=forged)
+            assert excinfo.value.sqlstate == _SQLSTATE
+            assert "non-v6 events insert" in str(excinfo.value)
+            conn.rollback()
+    finally:
+        regista.close()
+        drop_project_schema(DSN, project)
+
+
 def test_trigger_allows_v6_envelope_after_genesis(tmp_path) -> None:
     """A well-formed v6 envelope insert still succeeds once the epoch is open."""
     regista, project = _open_epoch_project(tmp_path)

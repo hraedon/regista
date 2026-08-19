@@ -33,7 +33,14 @@
 --     even evaluated.
 --
 -- This is additive defense-in-depth; it does not replace the library-level
--- ``check_legacy_append`` logic.
+-- ``check_legacy_append`` logic. It is a boundary guard, NOT a full envelope
+-- validator: it proves an insert is v6-SHAPED (type/version), while signature/hash
+-- validity remains the library's job on the write path.
+--
+-- ``events_archive`` is deliberately NOT guarded: it is a copy-only sink written
+-- solely by ``INSERT INTO events_archive SELECT * FROM events`` (``_archive.py``),
+-- i.e. rows already validated on their original ``events`` insert. The live v6 chain
+-- (``global_seq``/``prev_global_event_hash``) exists only in ``events``.
 
 CREATE OR REPLACE FUNCTION regista_enforce_v6_epoch_boundary()
 RETURNS trigger
@@ -66,8 +73,12 @@ BEGIN
             USING ERRCODE = 'RG315';
     END;
 
+    -- ``version`` is compared as JSON, not text: ``->>`` renders both integer 6 and
+    -- string "6" as '6', so a text compare would admit a forged ``"version":"6"``.
+    -- Every genuine v6 writer emits the JSON integer 6, so ``-> 'version' = '6'::jsonb``
+    -- accepts exactly the integer form and rejects the string form (WI-315 review).
     IF envelope_json->>'type' IS DISTINCT FROM 'regista.event'
-       OR envelope_json->>'version' IS DISTINCT FROM '6' THEN
+       OR envelope_json->'version' IS DISTINCT FROM '6'::jsonb THEN
         RAISE EXCEPTION 'v6 epoch boundary violation: refusing a non-v6 events insert (type=%, version=%) after the project opened its v6 epoch (event_id=%)', envelope_json->>'type', envelope_json->>'version', NEW.event_id
             USING ERRCODE = 'RG315';
     END IF;
