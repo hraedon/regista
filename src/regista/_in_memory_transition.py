@@ -147,19 +147,22 @@ def in_memory_transition(
         )
         from ._in_mem_genesis import _as_conn
         from ._transition import (
+            _prior_event_delegation_material,
             _verified_prior_adversarial_pass_authorization_principals,
             _verified_prior_authorization_principals,
         )
 
         with store.v6_manager.transaction() as connection:
+            conn = _as_conn(connection)
+            prior_material = _prior_event_delegation_material(conn)
             prior_authorization_principals = (
                 _verified_prior_authorization_principals(
-                    _as_conn(connection), prior_events
+                    conn, prior_events, material=prior_material
                 )
             )
             prior_adversarial_pass_authorization_principals = (
                 _verified_prior_adversarial_pass_authorization_principals(
-                    _as_conn(connection), prior_events
+                    conn, prior_events, material=prior_material
                 )
             )
         ctx = ValidatorContext(

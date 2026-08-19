@@ -151,12 +151,15 @@ def transition(
                     prior_events = tuple(read_events_by_work_item(
                         conn, work_item_id, limit=VALIDATOR_HISTORY_LIMIT,
                     ))
+                    prior_material = _prior_event_delegation_material(conn)
                     prior_authorization_principals = (
-                        _verified_prior_authorization_principals(conn, prior_events)
+                        _verified_prior_authorization_principals(
+                            conn, prior_events, material=prior_material
+                        )
                     )
                     prior_adversarial_pass_authorization_principals = (
                         _verified_prior_adversarial_pass_authorization_principals(
-                            conn, prior_events
+                            conn, prior_events, material=prior_material
                         )
                     )
                     ctx = ValidatorContext(
@@ -348,11 +351,12 @@ def _verify_validator_authorization(
 
 
 def _verified_prior_authorization_principals(
-    conn: Any, events: tuple[Event, ...]
+    conn: Any, events: tuple[Event, ...], *, material: Any | None = None
 ) -> frozenset[str]:
     return _verified_prior_delegation_principals(
         conn,
         events,
+        material=material,
         include_event=lambda event: event.transition not in {
             "accept",
             "request_changes",
@@ -364,16 +368,30 @@ def _verified_prior_authorization_principals(
 
 
 def _verified_prior_adversarial_pass_authorization_principals(
-    conn: Any, events: tuple[Event, ...]
+    conn: Any, events: tuple[Event, ...], *, material: Any | None = None
 ) -> frozenset[str]:
     """Re-verify delegated adversarial-pass participants for final acceptance."""
 
     return _verified_prior_delegation_principals(
         conn,
         events,
+        material=material,
         include_event=lambda event: event.transition == "adversarial_pass",
         include_actor=True,
     )
+
+
+def _prior_event_delegation_material(conn: Any) -> Any:
+    """One resolver for a validator's whole prior-event pass, built once.
+
+    A ``StoreReferents`` index costs one scan of the store, so the two prior-principal
+    questions a review gate asks (authors, adversarial-pass participants) paid for two
+    scans of the same unchanged material. Both take this as ``material``.
+    """
+
+    from ._v6_referents import store_referents
+
+    return store_referents(conn, label="validator prior-event evidence")
 
 
 def _verified_prior_delegation_principals(
@@ -382,12 +400,14 @@ def _verified_prior_delegation_principals(
     *,
     include_event: Any,
     include_actor: bool = False,
+    material: Any | None = None,
 ) -> frozenset[str]:
     from ._action_delegation import verify_action_delegation_chain
-    from ._v6_referents import store_referents, walk_project_chain
+    from ._v6_referents import walk_project_chain
     from ._verification import V6EnvelopeError, parse_v6_envelope_strict
 
-    material = store_referents(conn, label="validator prior-event evidence")
+    if material is None:
+        material = _prior_event_delegation_material(conn)
     principals: set[str] = set()
     for event in events:
         if not include_event(event):

@@ -46,7 +46,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
 from ._errors import ErrorCode, RegistaError
 
@@ -60,7 +60,9 @@ __all__ = [
     "ReferentResolver",
     "ReferentSummary",
     "StoreReferents",
+    "authorization_credential_hashes",
     "credential_from_document",
+    "credential_material_claim",
     "referent_from_bytes",
     "store_referents",
 ]
@@ -102,6 +104,20 @@ _COMPLETENESS_STRICTNESS: Final[dict[MaterialCompleteness, int]] = {
 }
 
 
+def credential_material_claim(referents: Any) -> MaterialCompleteness:
+    """What ``referents`` claims about its action-delegation credential coverage.
+
+    Falls back to the material's event claim for a resolver that does not state one
+    separately — which is the behaviour every resolver had before the claim was split,
+    and the right reading for material that is one undifferentiated mapping.
+    """
+
+    claim = getattr(referents, "credential_completeness", None)
+    if isinstance(claim, MaterialCompleteness):
+        return claim
+    return cast(MaterialCompleteness, referents.completeness)
+
+
 def resolve_completeness(
     material: MaterialCompleteness, override: MaterialCompleteness | None
 ) -> MaterialCompleteness:
@@ -126,9 +142,39 @@ def resolve_completeness(
     return override
 
 
+#: Shared empty answer for the overwhelmingly common direct-authorization event, so
+#: carrying the authorization pre-read below costs a pointer rather than an object on
+#: every event in the log.
+_NO_CREDENTIAL_HASHES: Final[frozenset[str]] = frozenset()
+
+
+def authorization_credential_hashes(envelope: Mapping[str, Any]) -> frozenset[str]:
+    """The action-delegation credential hashes an envelope's authorization names.
+
+    Defensive about shape rather than strict: the callers are a resolver indexing
+    presented material and a verifier walking ancestors, and neither may turn an
+    unexpected authorization block into an exception at an unrelated call site. A
+    strict-parsed v6 envelope always satisfies the shape (``V6_AUTHORIZATION_KEYS``
+    with a validated ``credentials`` array), so the guards only fire on material that
+    reached here without that parse.
+    """
+
+    authorization = envelope.get("authorization")
+    if not isinstance(authorization, Mapping):
+        return _NO_CREDENTIAL_HASHES
+    credentials = authorization.get("credentials")
+    if not isinstance(credentials, list) or not credentials:
+        return _NO_CREDENTIAL_HASHES
+    return frozenset(
+        item["credential_hash"]
+        for item in credentials
+        if isinstance(item, Mapping) and isinstance(item.get("credential_hash"), str)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReferentSummary:
-    """The six signed members :class:`ReferentEvent`'s accessors read, held eagerly.
+    """The seven signed members :class:`ReferentEvent`'s accessors read, held eagerly.
 
     Every one of these is read while *deciding* about a referent — its transition, its
     scope, its position on the chain — and none of them is the referent's content. The
@@ -141,6 +187,18 @@ class ReferentSummary:
     one trust domain, a handful of principals and key ids, so interning makes the
     per-event cost the two things that genuinely differ — the chain link and the
     addressing hash.
+
+    ``authorization_credential_hashes`` earns its place here for the same reason as the
+    other six, established by measurement (WI-008 round two). The delegation verifier
+    asks *every* ancestor which credentials it consumed, to count a credential's uses
+    against ``max_uses``; reaching that through ``envelope`` made each of those
+    questions a full store re-scan (:class:`_LazyEnvelope`), so one delegated append
+    cost a scan per ancestor per credential — measured at 6.2 s for a single append on
+    an 805-event project, twice per append, with the global chain-head lock held. It is
+    a *decision* about the referent, not the referent's content, and it is derived from
+    the same strict-parsed envelope, so it is a pre-read exactly as the rest are. The
+    hashes alone are carried rather than the whole block: the count is all any caller
+    reads, and an empty answer is shared.
     """
 
     transition: str
@@ -149,6 +207,7 @@ class ReferentSummary:
     actor_principal_id: str
     signing_key_id: str
     previous_project_event_hash: str | None
+    authorization_credential_hashes: frozenset[str]
 
     @classmethod
     def from_envelope(cls, envelope: Mapping[str, Any]) -> ReferentSummary:
@@ -164,6 +223,7 @@ class ReferentSummary:
             previous_project_event_hash=(
                 None if previous is None else str(previous)
             ),
+            authorization_credential_hashes=authorization_credential_hashes(envelope),
         )
 
 
@@ -227,6 +287,12 @@ class ReferentEvent:
         return None if value is None else str(value)
 
     @property
+    def authorization_credential_hashes(self) -> frozenset[str]:
+        if self.summary is not None:
+            return self.summary.authorization_credential_hashes
+        return authorization_credential_hashes(self.envelope)
+
+    @property
     def payload(self) -> Mapping[str, Any]:
         payload = self.envelope["payload"]
         return payload if isinstance(payload, Mapping) else {}
@@ -275,6 +341,19 @@ class ReferentResolver(Protocol):
     def completeness(self) -> MaterialCompleteness:
         """What this material claims about its own coverage (§5.11)."""
 
+    @property
+    def credential_completeness(self) -> MaterialCompleteness:
+        """What it claims about its **action-delegation credential** coverage.
+
+        A separate claim because it is a separate section of the artifact, and the two
+        genuinely differ: a bundle v2 transports every event and no credential at all
+        (``BUNDLE-V3.md`` §9 item 6), so a delegated event in one is *unverifiable*
+        from bundle evidence — "unverifiable rather than silently trusted" — and
+        emphatically not invalid, which is what reading the event-side claim for a
+        credential question made it. §5.11's two rows apply per referent class; this
+        member is which row a *credential* referent gets.
+        """
+
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         """The presented event whose v6 hash is ``event_hash``, or ``None``."""
 
@@ -302,6 +381,10 @@ class NoReferents:
 
     @property
     def completeness(self) -> MaterialCompleteness:
+        return MaterialCompleteness.UNDECLARED
+
+    @property
+    def credential_completeness(self) -> MaterialCompleteness:
         return MaterialCompleteness.UNDECLARED
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
@@ -335,6 +418,12 @@ class MappingReferents:
 
     @property
     def completeness(self) -> MaterialCompleteness:
+        return self.material_completeness
+
+    @property
+    def credential_completeness(self) -> MaterialCompleteness:
+        # A caller who assembles the mapping chooses what goes in it, credentials
+        # included, so its claim about the material is a claim about both sections.
         return self.material_completeness
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
@@ -508,6 +597,16 @@ class StoreReferents:
     def completeness(self) -> MaterialCompleteness:
         return MaterialCompleteness.COMPLETE_STORE
 
+    @property
+    def credential_completeness(self) -> MaterialCompleteness:
+        # An open store holds the credential table beside the events, so it claims the
+        # same completeness for both — unless it was constructed without a credential
+        # read at all, in which case it presents no credential material and may not
+        # call a credential it was never given the means to find "absent".
+        if self.credential_rows is None:
+            return MaterialCompleteness.UNDECLARED
+        return MaterialCompleteness.COMPLETE_STORE
+
     def load_envelope(self, event_hash: str) -> Mapping[str, Any]:
         """Re-read and parse the one envelope addressed by ``event_hash``.
 
@@ -592,16 +691,30 @@ class BundleReferents:
     criterion 15 testable now.
 
     ``declared-selection`` is cut from 0.6.0, so there is no third case.
+
+    The credential section gets its **own** claim, and it defaults to "not transported"
+    because that is what bundle v2 is: `BUNDLE-V3.md` §9 item 6 puts action-delegation
+    documents in a v3 section that does not exist yet, and says in as many words that
+    "bundle v2 does not transport credentials, and delegated audit from bundle-v2
+    evidence is therefore unverifiable rather than silently trusted". Reading the
+    event-side ``complete-store`` claim for a credential question instead reported an
+    intact, legitimately delegated event as ``INVALID`` — under a "Signature
+    verification failed" headline about a signature that verified.
     """
 
     events: Mapping[str, ReferentEvent]
     material_completeness: MaterialCompleteness
     event_count: int
     action_credentials: Mapping[str, Any] = field(default_factory=dict)
+    credential_material_completeness: MaterialCompleteness = MaterialCompleteness.UNDECLARED
 
     @property
     def completeness(self) -> MaterialCompleteness:
         return self.material_completeness
+
+    @property
+    def credential_completeness(self) -> MaterialCompleteness:
+        return self.credential_material_completeness
 
     def resolve_referent(self, event_hash: str) -> ReferentEvent | None:
         return self.events.get(event_hash)
@@ -612,7 +725,8 @@ class BundleReferents:
     def describe(self) -> str:
         return (
             f"audit bundle ({self.event_count} events, "
-            f"{len(self.events)} v6-addressable, {self.completeness.value})"
+            f"{len(self.events)} v6-addressable, {self.completeness.value}, "
+            f"credentials {self.credential_completeness.value})"
         )
 
     @classmethod
@@ -620,13 +734,21 @@ class BundleReferents:
         cls,
         manifest: Mapping[str, Any],
         events: Sequence[Mapping[str, Any] | Any],
-        action_delegation_credentials: Sequence[Mapping[str, Any] | bytes] = (),
+        action_delegation_credentials: Sequence[Mapping[str, Any] | bytes] | None = None,
     ) -> BundleReferents:
-        """Index a bundle's events and derive its completeness claim.
+        """Index a bundle's events and derive its completeness claims.
 
         ``events`` may be dicts (as read from the artifact) or ``Event`` objects (as
         the offline verifier holds them); both expose ``canonical_envelope`` and
         ``signature``, so one accessor covers the two.
+
+        ``action_delegation_credentials`` is ``None`` — *the artifact carries no
+        credential section* — rather than empty, and the two are different facts. Only
+        a format that transports credentials can say "this credential is absent from a
+        complete section"; a bundle v2 has no section to be absent from, so ``None``
+        is the honest default and the only one a v2 caller can truthfully pass. An
+        empty sequence is a v3 artifact whose section is genuinely empty, and a
+        credential referenced against *that* is a false completeness claim.
         """
 
         windowed = (
@@ -655,19 +777,25 @@ class BundleReferents:
             if referent is not None:
                 indexed[referent.event_hash] = referent
         credential_index: dict[str, Any] = {}
-        for document in action_delegation_credentials:
+        for document in action_delegation_credentials or ():
             credential = credential_from_document(document)
             if credential is not None:
                 credential_index[credential.credential_hash] = credential
+        completeness = (
+            MaterialCompleteness.CONTIGUOUS_RANGE
+            if windowed
+            else MaterialCompleteness.COMPLETE_STORE
+        )
         return cls(
             events=indexed,
-            material_completeness=(
-                MaterialCompleteness.CONTIGUOUS_RANGE
-                if windowed
-                else MaterialCompleteness.COMPLETE_STORE
-            ),
+            material_completeness=completeness,
             event_count=counted,
             action_credentials=credential_index,
+            credential_material_completeness=(
+                MaterialCompleteness.UNDECLARED
+                if action_delegation_credentials is None
+                else completeness
+            ),
         )
 
 

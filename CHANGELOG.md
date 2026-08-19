@@ -213,6 +213,58 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Fixed
 
+- **Two-stage review independence was bypassable by a *delegated* acceptance (WI-008
+  round two).** The `human_gate` accept branch folded prior delegated
+  adversarial-pass principals into the identities an accepter may not be, then compared
+  them against `ctx.actor_id` and `on_behalf_of.principal_id` only — never against the
+  accepting event's own `authorization_evidence.participating_principals`. Since
+  `on_behalf_of` cannot be written inside a v6 epoch at all, a WI-008 credential is the
+  only surviving delegation vehicle, so one principal could issue the credential
+  authorizing the adversarial pass *and* the credential authorizing the acceptance,
+  through two different terminal subjects, and reach `done` with a two-stage review that
+  had a single authorizing principal. The gate now refuses any intersection between the
+  prior-pass identities and the accepting event's whole acting set.
+
+- **One delegated append cost a store scan per ancestor, inside the chain-head lock
+  (WI-008 round two).** `verify_action_delegation_chain` counted a credential's uses by
+  reading `event.envelope["authorization"]` for every ancestor; for `StoreReferents` any
+  envelope access re-reads and re-parses the row from the store, so a single delegated
+  append cost O(N) envelope loads and O(N²) row hashing — measured at 6.2 s for one
+  append on an 805-event project, twice per append, with `_lock_global_chain_head` held
+  across both, blocking every other append in the project. `ReferentSummary` now carries
+  the authorization block's credential hashes eagerly, beside the six members it already
+  held, and the counter reads that: 1,610 envelope loads → 2, and the same append is
+  0.35 s. A validator's two prior-principal questions also share one resolver instead of
+  building an index each. `max_uses` counts exactly the same references as before.
+
+- **A bundle reported a legitimately delegated event as INVALID, under a false
+  headline.** `BundleReferents` claims `complete-store` over its *events*, and the
+  delegation check read that claim for a *credential* question — so a credential the
+  bundle could not possibly transport became "absent from material that claims
+  completeness", which `_bundle` then reported as "Signature verification failed" about
+  a signature that verified. Credential coverage is now a separate claim on the resolver
+  (`credential_completeness`), defaulting to "not transported" for a bundle v2 exactly as
+  `BUNDLE-V3.md` §9 item 6 describes, so delegated audit from bundle-v2 evidence is
+  UNVERIFIABLE — and an artifact that does transport a section is still held to it.
+
+- **The delegation sub-verdict could read `verified` off a truncated chain (WI-308).**
+  `_check_v6_delegation` built its ancestors from `chain.reachable` and never consulted
+  `chain.truncated`, unlike `_check_v6_workflow_referent`. Everything the chain decides
+  beyond the credential's signature is decided from ancestors — that the issuer's binding
+  precedes the use, that no revocation does, that `max_uses` is not exhausted — and an
+  unpresented prefix is exactly where a prior use or a revocation would be. A verified
+  chain over truncated material that does not claim completeness is now UNVERIFIABLE; a
+  contradiction still outranks the gap.
+
+- **`RegistaError` escaped the delegation verifier's fail-closed contract (WI-309).**
+  `get_scheme("ed25519")` raises `SIGNING_SCHEME_NOT_FOUND` when the extra is absent and
+  `StoreReferents.load_envelope` raises `MATERIAL_CHANGED_UNDER_VERIFICATION` when the
+  material moves under the pass; neither was in `verify_action_delegation_chain`'s except
+  tuple, so both escaped mid-walk and halted a replay instead of being reported. Both are
+  now verdicts, and UNVERIFIABLE rather than INVALID: an audit environment that cannot
+  check Ed25519 has learned nothing about the signature. Any other `RegistaError` is a
+  fact about the presented input and stays INVALID.
+
 - **System-authored events could not be written in a clean v6 epoch at all.**
   Auto-escalation (`escalated`), hook dead-lettering (`hook_dead_lettered`) and
   recurrence firing were appended with a bare `actor_id="system"` /

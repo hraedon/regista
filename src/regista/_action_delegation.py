@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Any, Final, cast
 
 from ._datetime_utils import parse_v6_occurred_at
+from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._signing_scheme import get_scheme
 
@@ -57,6 +58,15 @@ _SIGNATURE_KEYS: Final = frozenset({"scheme_id", "value"})
 _REFERENCE_KEYS: Final = frozenset({"credential_id", "credential_hash"})
 _REVOCATION_KEYS: Final = frozenset(
     {"type", "version", "credential_id", "credential_hash", "reason"}
+)
+#: RegistaErrors that mean "this verifier could not look", not "the credential is bad"
+#: (WI-309). Both are raised from inside the chain walk by machinery the walk depends
+#: on — the signing-scheme registry and the referent resolver — never by the credential.
+_UNVERIFIABLE_ERROR_CODES: Final = frozenset(
+    {
+        ErrorCode.SIGNING_SCHEME_NOT_FOUND,
+        ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION,
+    }
 )
 _ADMINISTRATIVE_TRANSITIONS: Final = frozenset(
     {
@@ -412,6 +422,30 @@ def credential_acceptance(binding: Any) -> Mapping[str, Any] | None:
     return acceptance if isinstance(acceptance, Mapping) else None
 
 
+def _consumed_credential_hashes(event: Any) -> frozenset[str]:
+    """Which credentials an ancestor's authorization block consumed.
+
+    Asked of every ancestor, for every credential in the chain, to count uses against
+    ``max_uses`` — so how it is asked is load bearing. A presented referent answers
+    from its eagerly-held summary (:class:`~._v6_referents.ReferentSummary`); reading
+    ``event.envelope`` instead made each question re-read and re-parse a whole envelope
+    from the store, which turned one delegated append into a store scan per ancestor
+    (O(N²) in the project's event count, twice per append, under the global chain-head
+    lock — WI-008 round two). The envelope fallback remains for ancestors that are not
+    presented referents, so the counted set is unchanged either way.
+    """
+
+    hashes = getattr(event, "authorization_credential_hashes", None)
+    if isinstance(hashes, frozenset):
+        return hashes
+    envelope = getattr(event, "envelope", None)
+    if not isinstance(envelope, Mapping):
+        return frozenset()
+    from ._v6_referents import authorization_credential_hashes
+
+    return authorization_credential_hashes(envelope)
+
+
 def _missing_evidence(
     reason: str, *, complete: bool
 ) -> VerifiedActionDelegation:
@@ -723,20 +757,8 @@ def verify_action_delegation_chain(
                             "action delegation revocation signer is not authorized",
                         )
                         revoked = True
-                event_envelope = getattr(event, "envelope", None)
-                authorization = (
-                    event_envelope.get("authorization")
-                    if isinstance(event_envelope, Mapping)
-                    else None
-                )
-                if isinstance(authorization, Mapping):
-                    event_refs = authorization.get("credentials")
-                    if isinstance(event_refs, list) and any(
-                        isinstance(item, Mapping)
-                        and item.get("credential_hash") == credential.credential_hash
-                        for item in event_refs
-                    ):
-                        uses += 1
+                if credential.credential_hash in _consumed_credential_hashes(event):
+                    uses += 1
             _require(not revoked, "credential was revoked before use")
             _require(
                 credential.max_uses is None or uses <= credential.max_uses,
@@ -763,6 +785,31 @@ def verify_action_delegation_chain(
             status=DelegationVerificationStatus.VERIFIED,
             credential_hashes=tuple(item.credential_hash for item in credentials),
             participating_principals=frozenset(principals),
+        )
+    except RegistaError as exc:
+        # WI-309. This verifier's contract is that every outcome is a verdict — a replay
+        # halting on an exception from the middle of a chain walk is not one — and two
+        # RegistaErrors reach here that the tuple below never named. Neither is a
+        # statement about the credential, so neither may be reported as INVALID:
+        #
+        # * SIGNING_SCHEME_NOT_FOUND — `get_scheme("ed25519")` in
+        #   `verify_action_delegation_signature`, raised when the ed25519 extra is not
+        #   installed. An audit environment that cannot *check* Ed25519 has learned
+        #   nothing about the signature; calling it invalid would condemn every
+        #   delegated event in the log on the strength of a missing dependency.
+        # * MATERIAL_CHANGED_UNDER_VERIFICATION — `StoreReferents.load_envelope`, raised
+        #   when a row the resolver indexed is no longer presented. The material broke,
+        #   not the credential.
+        #
+        # Anything else is a refusal raised while parsing or resolving what the caller
+        # presented, which is a fact about that input, so it stays INVALID.
+        return VerifiedActionDelegation(
+            status=(
+                DelegationVerificationStatus.UNVERIFIABLE
+                if exc.code in _UNVERIFIABLE_ERROR_CODES
+                else DelegationVerificationStatus.INVALID
+            ),
+            reason=str(exc),
         )
     except (
         ActionDelegationError,

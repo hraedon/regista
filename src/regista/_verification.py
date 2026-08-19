@@ -86,6 +86,7 @@ from ._v6_referents import (
     MaterialCompleteness,
     ReferentEvent,
     ReferentResolver,
+    credential_material_claim,
     resolve_completeness,
     walk_project_chain,
 )
@@ -3259,10 +3260,21 @@ def _check_v6_delegation(
     referents: ReferentResolver,
     completeness: MaterialCompleteness,
     findings: _Findings,
+    credential_completeness: MaterialCompleteness | None = None,
 ) -> VerifiedActionDelegation:
+    """§5.11 for the delegation referents: credentials, and the ancestry they need.
+
+    ``credential_completeness`` is the material's claim about its **credential**
+    section, which is not the same claim as ``completeness`` (see
+    :class:`~._v6_referents.ReferentResolver`). ``None`` means "the event claim
+    governs", the same convention ``resolve_completeness``'s override uses, and it is
+    what a caller holding a single mapping of everything means.
+    """
+
     authorization = envelope["authorization"]
     if authorization["mode"] != "delegated":
         return VerifiedActionDelegation(DelegationVerificationStatus.NOT_APPLICABLE)
+    credential_claim = credential_completeness or completeness
     credentials = authorization["credentials"] or []
     resolved: list[Any] = []
     resolver = getattr(referents, "resolve_action_credential", None)
@@ -3277,7 +3289,7 @@ def _check_v6_delegation(
                 f"action-delegation credential {reference['credential_hash']} is absent "
                 f"from {referents.describe()}"
             )
-            if completeness is MaterialCompleteness.COMPLETE_STORE:
+            if credential_claim is MaterialCompleteness.COMPLETE_STORE:
                 findings.contradicts(FailureReason.DELEGATION_CHAIN_INVALID, detail)
                 return VerifiedActionDelegation(
                     DelegationVerificationStatus.INVALID, reason=detail
@@ -3304,6 +3316,43 @@ def _check_v6_delegation(
         referents=referents,
         material_complete=completeness is MaterialCompleteness.COMPLETE_STORE,
     )
+    # WI-308: everything the chain decides about a credential *beyond its signature* is
+    # decided from the ancestors above — that the issuer's key binding precedes the use,
+    # that no revocation does, that `max_uses` was not exhausted. Truncated material
+    # cannot answer any of those in the negative, so a `verified` read off a gapped
+    # chain is absence of evidence wearing a verdict: a hidden prefix is exactly where
+    # the earlier uses and the revocation would be. `_check_v6_workflow_referent` makes
+    # this same distinction for its referent, and this check ignored it.
+    #
+    # A contradiction survives it, deliberately: truncation can only ever *remove*
+    # ancestors, so it cannot manufacture a bad signature, a widened scope or a broken
+    # parent link, and "contradiction outranks absence" (see `_Findings`) is not
+    # suspended by a gap. The ancestry questions that truncation genuinely muddies
+    # already route through `_missing_evidence`, which reports them as unverifiable on
+    # incomplete material rather than as facts.
+    if (
+        result.status is DelegationVerificationStatus.VERIFIED
+        and chain.truncated
+        and completeness is not MaterialCompleteness.COMPLETE_STORE
+    ):
+        detail = (
+            "the action-delegation chain verifies against the presented ancestors, but "
+            "that chain is truncated and the material does not claim completeness "
+            f"({referents.describe()}); an unpresented prefix is where a prior use or a "
+            "revocation of these credentials would be, so their standing at this event "
+            "cannot be shown (TRUST-DOMAIN.md §5.11 row 1)"
+        )
+        findings.cannot_say(
+            FailureReason.DELEGATION_CHAIN_INVALID,
+            detail,
+            unbound=UNBOUND_DELEGATION_CHAIN,
+        )
+        # No principals travel with it: they are read off credentials whose *standing*
+        # is what could not be shown, and reporting them would be the fail-open this
+        # branch exists to close, one field further down.
+        return VerifiedActionDelegation(
+            DelegationVerificationStatus.UNVERIFIABLE, reason=detail
+        )
     if result.status is DelegationVerificationStatus.UNVERIFIABLE:
         findings.cannot_say(
             FailureReason.DELEGATION_CHAIN_INVALID,
@@ -3324,6 +3373,7 @@ def _check_v6_action_revocation_authority(
     referents: ReferentResolver,
     completeness: MaterialCompleteness,
     findings: _Findings,
+    credential_completeness: MaterialCompleteness | None = None,
 ) -> None:
     if envelope["transition"] != "action_delegation_revoked":
         return
@@ -3337,8 +3387,10 @@ def _check_v6_action_revocation_authority(
     credential_id, credential_hash = parse_action_delegation_revocation(envelope["payload"])
     credential = referents.resolve_action_credential(credential_hash)
     if credential is None:
+        # Same referent class, same claim, same reason as `_check_v6_delegation`: a
+        # bundle that transports no credential section cannot call one absent.
         detail = f"revoked credential {credential_hash} is absent from {referents.describe()}"
-        if completeness is MaterialCompleteness.COMPLETE_STORE:
+        if (credential_completeness or completeness) is MaterialCompleteness.COMPLETE_STORE:
             findings.contradicts(FailureReason.DELEGATION_CHAIN_INVALID, detail)
         else:
             findings.cannot_say(
@@ -3568,6 +3620,12 @@ def _verify_v6_row(
         bytes(row.canonical_envelope or b""), bytes(row.signature or b"")
     ).hex()
     completeness = resolve_completeness(referents.completeness, policy.material_completeness)
+    # The credential section carries its own claim (see `ReferentResolver`), and the
+    # policy override is the caller's tighten-only claim about the material as a whole,
+    # so it applies to both.
+    credential_completeness = resolve_completeness(
+        credential_material_claim(referents), policy.material_completeness
+    )
     findings = _Findings()
 
     # (a) Caller pins. A contradiction of something the caller pinned out of band
@@ -3628,6 +3686,7 @@ def _verify_v6_row(
         chain=chain_context,
         referents=referents,
         completeness=completeness,
+        credential_completeness=credential_completeness,
         findings=findings,
     )
     common["delegation_verification"] = delegation.status
@@ -3636,6 +3695,7 @@ def _verify_v6_row(
         envelope,
         referents=referents,
         completeness=completeness,
+        credential_completeness=credential_completeness,
         findings=findings,
     )
     producer_consistency = _check_v6_producer(envelope, policy=policy, findings=findings)

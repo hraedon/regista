@@ -19,6 +19,7 @@ from regista._action_delegation import (
 )
 from regista._datetime_utils import v6_occurred_at
 from regista._errors import ErrorCode, RegistaError
+from regista._review_validators import ReviewRejected
 from tests._wi008_fixtures import (
     ACTION_AUTHOR,
     ACTION_FINAL_ACCEPTOR,
@@ -124,6 +125,112 @@ def test_in_memory_two_stage_accept_rejects_prior_delegation_issuer(tmp_path) ->
         ).current_state == "done"
     finally:
         project.instance.close()
+
+
+ACCEPT_ISSUER = "human:accept-issuer"
+DELEGATED_ACCEPT_PRINCIPALS = (*TWO_STAGE_PRINCIPALS, ACCEPT_ISSUER)
+
+
+def _delegated_accept_project(tmp_path, *, postgres: bool = False):
+    if postgres:
+        from tests._wi008_fixtures import postgres_action_project
+
+        return postgres_action_project(
+            tmp_path,
+            project_prefix="wi008_delegated_accept",
+            principals=DELEGATED_ACCEPT_PRINCIPALS,
+            workflow=TWO_STAGE_REVIEW_WORKFLOW,
+            workflow_name="wi008_two_stage_review",
+            creator=ACTION_AUTHOR,
+        )
+    return in_memory_action_project(
+        tmp_path,
+        project="wi008_delegated_accept_memory",
+        principals=DELEGATED_ACCEPT_PRINCIPALS,
+        workflow=TWO_STAGE_REVIEW_WORKFLOW,
+        workflow_name="wi008_two_stage_review",
+        creator=ACTION_AUTHOR,
+    )
+
+
+def _accept_credential(project: Any, *, issuer: str) -> dict[str, Any]:
+    return action_delegation_document(
+        project,
+        issuer=issuer,
+        subject=ACTION_FINAL_ACCEPTOR,
+        transition="accept",
+        workflow_name="wi008_two_stage_review",
+    )
+
+
+def _assert_delegated_accept_independence(project: Any) -> None:
+    """Two-stage independence must hold through the accepting event's OWN chain.
+
+    The bypass this pins: `on_behalf_of` cannot be written inside a v6 epoch, so a
+    WI-008 credential is the only surviving delegation vehicle — and the accept gate
+    compared `pass_ids` against `actor_id` and `on_behalf_of` alone. One principal could
+    therefore issue the credential authorizing the adversarial pass AND the credential
+    authorizing the acceptance, through two different terminal subjects, and reach
+    `done` with a two-stage review that had one authorizing principal.
+    """
+
+    _run_two_stage_review(project)
+    with pytest.raises(RegistaError) as exc_info:
+        project.instance.transition(
+            project.work_item.work_item_id,
+            "accept",
+            ACTION_FINAL_ACCEPTOR,
+            actor_kind="human",
+            payload=_accept_payload(),
+            action_delegation_credentials=(
+                _accept_credential(project, issuer=ACTION_REVIEW_ISSUER),
+            ),
+        )
+    assert exc_info.value.code is ErrorCode.VALIDATOR_FAILED
+    assert "adversarial pass" in exc_info.value.message
+    # Named in the refusal's detail, which is the part that shows the conflict was found
+    # through the accepting event's own delegation chain: this principal is neither the
+    # actor nor an `on_behalf_of` subject, and those two were all the gate compared.
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, ReviewRejected)
+    assert cause.detail["conflicting_identities"] == [ACTION_REVIEW_ISSUER]
+    assert project.instance.get_work_item(
+        project.work_item.work_item_id
+    ).current_state == "post_review"
+
+    # The gate refuses the *overlap*, not delegation: an independent issuer authorizing
+    # the same acceptor still accepts. Without this half the check above would pass
+    # equally well for a gate that had simply stopped allowing delegated acceptances.
+    project.instance.transition(
+        project.work_item.work_item_id,
+        "accept",
+        ACTION_FINAL_ACCEPTOR,
+        actor_kind="human",
+        payload=_accept_payload(),
+        action_delegation_credentials=(
+            _accept_credential(project, issuer=ACCEPT_ISSUER),
+        ),
+    )
+    assert project.instance.get_work_item(
+        project.work_item.work_item_id
+    ).current_state == "done"
+
+
+def test_in_memory_two_stage_accept_rejects_delegated_accept_by_pass_issuer(
+    tmp_path,
+) -> None:
+    project = _delegated_accept_project(tmp_path)
+    try:
+        _assert_delegated_accept_independence(project)
+    finally:
+        project.instance.close()
+
+
+def test_postgres_two_stage_accept_rejects_delegated_accept_by_pass_issuer(
+    tmp_path,
+) -> None:
+    with _delegated_accept_project(tmp_path, postgres=True) as project:
+        _assert_delegated_accept_independence(project)
 
 
 def test_postgres_two_stage_accept_rejects_prior_delegation_issuer(tmp_path) -> None:
@@ -333,6 +440,72 @@ def test_postgres_event_id_retry_compares_credential_bytes(
         assert exc_info.value.code is ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD
 
 
+def _delegated_append_envelope_loads(tmp_path, monkeypatch, *, filler: int) -> int:
+    """Envelope re-reads charged to one delegated append over a ``filler``-event chain."""
+
+    from regista import _v6_referents as referents_module
+
+    loads = {"count": 0}
+    original = referents_module.StoreReferents.load_envelope
+
+    def counted(self, event_hash):
+        loads["count"] += 1
+        return original(self, event_hash)
+
+    monkeypatch.setattr(referents_module.StoreReferents, "load_envelope", counted)
+
+    project = in_memory_action_project(
+        tmp_path, project=f"wi008_append_cost_{filler}"
+    )
+    try:
+        for index in range(filler):
+            project.instance.append_event(
+                project.work_item.work_item_id,
+                "agent:delegated-worker",
+                transition="note_added",
+                payload={"n": index},
+            )
+        document = action_delegation_document(project)
+        loads["count"] = 0
+        project.instance.append_event(
+            project.work_item.work_item_id,
+            "agent:delegated-worker",
+            transition="note_added",
+            action_delegation_credentials=(document,),
+        )
+        return loads["count"]
+    finally:
+        project.instance.close()
+
+
+def test_delegated_append_envelope_loads_do_not_track_the_chain(
+    tmp_path, monkeypatch
+) -> None:
+    """One delegated append must not re-read an envelope per ancestor.
+
+    The `uses` counter asks every ancestor which credentials it consumed, and reading
+    that through `ReferentEvent.envelope` made each question a full store re-scan: one
+    append cost O(N) envelope loads and O(N²) row hashing, twice over, with the global
+    chain-head lock held (measured at 6.2 s for a single append on an 805-event
+    project). Counting loads rather than timing is the point — the defect is the load
+    per ancestor, and a wall-clock assertion would be a flake with a threshold.
+    """
+
+    small_dir = tmp_path / "small"
+    large_dir = tmp_path / "large"
+    small_dir.mkdir()
+    large_dir.mkdir()
+    small = _delegated_append_envelope_loads(small_dir, monkeypatch, filler=40)
+    large = _delegated_append_envelope_loads(large_dir, monkeypatch, filler=160)
+    assert small == large, (
+        f"envelope loads track the chain length: {small} at 40 filler events, "
+        f"{large} at 160"
+    )
+    # A handful of trust-plane referents (the issuer's key acceptance) are legitimately
+    # materialized per verification pass; an ancestor-shaped term is not.
+    assert large <= 8
+
+
 def test_in_memory_writer_rejects_second_use_after_max_uses(tmp_path) -> None:
     project = in_memory_action_project(tmp_path)
     try:
@@ -433,6 +606,84 @@ def test_postgres_rejects_same_credential_id_with_different_bytes(tmp_path) -> N
                 action_delegation_credentials=(second,),
             )
         assert exc_info.value.code is ErrorCode.ACTION_DELEGATION_CREDENTIAL_CONFLICT
+
+
+def _bundle_delegation_verdict(project: Any, event: Any, **from_bundle_kwargs: Any):
+    from regista._v6_referents import BundleReferents
+    from regista._verification import (
+        DEFAULT_POLICY,
+        EventRow,
+        KeySetResolver,
+        verify_event_strict,
+    )
+
+    referents = BundleReferents.from_bundle(
+        {}, list(project.instance._store.all_events()), **from_bundle_kwargs
+    )
+    result = verify_event_strict(
+        EventRow.from_event(event),
+        keys=KeySetResolver(project.instance._keys),
+        referents=referents,
+        policy=DEFAULT_POLICY,
+    )
+    return referents, result
+
+
+def test_bundle_without_credential_section_is_unverifiable_not_invalid(tmp_path) -> None:
+    """A bundle v2 cannot transport credentials, so it cannot condemn one either.
+
+    ``BUNDLE-V3.md`` §9 item 6 and the CHANGELOG both say what the verdict must be:
+    "bundle v2 does not transport credentials, and delegated audit from bundle-v2
+    evidence is therefore unverifiable rather than silently trusted". Reading the
+    event-side ``complete-store`` claim for a credential question instead made an intact
+    delegated event ``INVALID``, which `_bundle.py` then reported to an operator as
+    "Signature verification failed" — about a signature that verified.
+    """
+
+    from regista._v6_referents import MaterialCompleteness
+    from regista._verification import Applicability, FailureReason
+
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(project)
+        event = project.instance.append_event(
+            project.work_item.work_item_id,
+            "agent:delegated-worker",
+            actor_kind="agent",
+            transition="note_added",
+            action_delegation_credentials=(document,),
+        )
+
+        referents, result = _bundle_delegation_verdict(project, event)
+        assert referents.completeness is MaterialCompleteness.COMPLETE_STORE
+        assert referents.credential_completeness is MaterialCompleteness.UNDECLARED
+        assert result.applicability is Applicability.UNVERIFIABLE
+        assert result.delegation_verification is (
+            DelegationVerificationStatus.UNVERIFIABLE
+        )
+        assert FailureReason.DELEGATION_CHAIN_INVALID in result.reasons
+        assert result.accepted is False
+
+        # A transported section is a claim, and an empty one is a false claim about a
+        # credential the event references — the v3 row of the same table, and the reason
+        # "not transported" has to be a distinct state from "transported and empty".
+        _empty, strict = _bundle_delegation_verdict(
+            project, event, action_delegation_credentials=[]
+        )
+        assert strict.applicability is Applicability.INVALID
+        assert strict.delegation_verification is DelegationVerificationStatus.INVALID
+
+        # And a section carrying the credential verifies, which is what makes the
+        # unverifiable verdict above a statement about the artifact's format rather
+        # than about this event.
+        _carried, verified = _bundle_delegation_verdict(
+            project, event, action_delegation_credentials=[document]
+        )
+        assert verified.delegation_verification is (
+            DelegationVerificationStatus.VERIFIED
+        )
+    finally:
+        project.instance.close()
 
 
 def test_partial_material_missing_issuer_binding_is_unverifiable(tmp_path) -> None:
@@ -730,6 +981,152 @@ def test_chain_rejects_candidate_scope_mismatch_each_axis(
         result = _verify_chain(project, [document])
         assert not result.verified
         assert "scope" in (result.reason or "")
+    finally:
+        project.instance.close()
+
+
+def _delegation_check_material(project: Any, document: dict[str, Any], **kwargs: Any):
+    """A `_check_v6_delegation` call's four arguments, over one real credential."""
+
+    from regista._v6_referents import MaterialCompleteness
+    from regista._verification import _ChainContext
+
+    parsed = parse_action_delegation(document)
+    ancestors, references, envelope, referents = _chain_material(
+        project, [document], **kwargs
+    )
+    envelope = {
+        **envelope,
+        "authorization": {"mode": "delegated", "credentials": references},
+    }
+    material = SimpleNamespace(
+        resolve_referent=referents.resolve_referent,
+        resolve_action_credential=lambda credential_hash: (
+            parsed if credential_hash == parsed.credential_hash else None
+        ),
+        describe=lambda: "windowed replay material",
+        completeness=MaterialCompleteness.CONTIGUOUS_RANGE,
+    )
+    chain = _ChainContext(
+        reachable=tuple(event.event_hash for event in ancestors),
+        revoked_acceptances=frozenset(),
+        bootstrap=None,
+        latest_checkpoint_observation=None,
+        truncated=False,
+    )
+    return envelope, material, chain
+
+
+def test_delegation_check_downgrades_verified_on_truncated_material(tmp_path) -> None:
+    """WI-308: a delegation sub-verdict may not read `verified` off a gapped chain.
+
+    Every question the chain answers beyond the credential's signature is answered from
+    ancestors — that the issuer's binding precedes the use, that no revocation does,
+    that `max_uses` is not exhausted — and an unpresented prefix is exactly where a
+    prior use or a revocation would sit. `_check_v6_workflow_referent` already made this
+    distinction for its own referent; this check ignored `chain.truncated` entirely.
+    """
+
+    import dataclasses
+
+    from regista._v6_referents import MaterialCompleteness
+    from regista._verification import _check_v6_delegation, _Findings
+
+    project = _chain_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project, issuer=CHAIN_ROOT, subject=CHAIN_WORKER
+        )
+        envelope, material, intact = _delegation_check_material(
+            project, document, actor=CHAIN_WORKER
+        )
+        gapped = dataclasses.replace(intact, truncated=True)
+
+        findings = _Findings()
+        whole = _check_v6_delegation(
+            envelope,
+            chain=intact,
+            referents=material,
+            completeness=MaterialCompleteness.CONTIGUOUS_RANGE,
+            findings=findings,
+        )
+        assert whole.status is DelegationVerificationStatus.VERIFIED
+        assert findings.applicability.value == "fully_authenticated"
+
+        findings = _Findings()
+        truncated = _check_v6_delegation(
+            envelope,
+            chain=gapped,
+            referents=material,
+            completeness=MaterialCompleteness.CONTIGUOUS_RANGE,
+            findings=findings,
+        )
+        assert truncated.status is DelegationVerificationStatus.UNVERIFIABLE
+        assert findings.unverifiable is True
+        assert findings.invalid is False
+        assert "truncated" in (truncated.reason or "")
+
+        # The completeness half of the same branch: material that claims to be the whole
+        # store contradicts itself by being truncated, and that contradiction is
+        # `_walk_chain_context`'s to report, not a reason to withhold this verdict.
+        findings = _Findings()
+        complete = _check_v6_delegation(
+            envelope,
+            chain=gapped,
+            referents=material,
+            completeness=MaterialCompleteness.COMPLETE_STORE,
+            findings=findings,
+        )
+        assert complete.status is DelegationVerificationStatus.VERIFIED
+    finally:
+        project.instance.close()
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (
+            ErrorCode.SIGNING_SCHEME_NOT_FOUND,
+            DelegationVerificationStatus.UNVERIFIABLE,
+        ),
+        (
+            ErrorCode.MATERIAL_CHANGED_UNDER_VERIFICATION,
+            DelegationVerificationStatus.UNVERIFIABLE,
+        ),
+        (ErrorCode.ACTION_DELEGATION_INVALID, DelegationVerificationStatus.INVALID),
+    ],
+    ids=lambda value: value.value if hasattr(value, "value") else None,
+)
+def test_chain_reports_regista_error_instead_of_raising(
+    tmp_path, monkeypatch, code: ErrorCode, expected: DelegationVerificationStatus
+) -> None:
+    """WI-309: every outcome is a verdict, including the ones from the machinery.
+
+    `get_scheme("ed25519")` raises `SIGNING_SCHEME_NOT_FOUND` when the extra is absent,
+    and `StoreReferents.load_envelope` raises `MATERIAL_CHANGED_UNDER_VERIFICATION` when
+    the material moves under the pass. Neither was in the except tuple, so both escaped
+    the chain walk and halted a replay; and neither is a statement about the credential,
+    so neither may arrive as INVALID — a missing dependency would otherwise condemn
+    every delegated event in the log. Both codes are injected at the scheme lookup, the
+    one place inside the walk that is reachable synchronously; what is pinned is the
+    code → status mapping and that nothing escapes.
+    """
+
+    import regista._action_delegation as action_delegation
+
+    def raising(*_args: Any, **_kwargs: Any):
+        raise RegistaError(code, "injected")
+
+    monkeypatch.setattr(action_delegation, "get_scheme", raising)
+
+    project = _chain_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project, issuer=CHAIN_ROOT, subject=CHAIN_WORKER
+        )
+        result = _verify_chain(project, [document], actor=CHAIN_WORKER)
+        assert result.status is expected
+        assert "injected" in (result.reason or "")
     finally:
         project.instance.close()
 
