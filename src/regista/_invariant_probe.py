@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 import re
-from collections.abc import Iterable
+import tempfile
+import uuid
+from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -16,6 +23,7 @@ from ._connection import validate_project_name
 from ._contract import validate_actor_metadata, validate_delegation_chain
 from ._errors import ErrorCode, RegistaError
 from ._genesis import first_write_admission, validate_load_bearing_fields
+from ._keys import KeySet
 from ._lineage import MODEL_LINEAGE_FAMILIES
 
 
@@ -436,6 +444,464 @@ def _probe_first_write_admission() -> tuple[bool, str]:
     )
 
 
+# ---------------------------------------------------------------------------
+# regista.actor_boundary_signing (WI-326)
+#
+# The genesis gate requires a *behavioral* proof that signing happens at the
+# actor boundary, and states the property it wants observed: that no
+# service-held keyset can sign as arbitrary principals.
+#
+# SCOPE LIMIT, SO THIS IS NOT READ AS MORE THAN IT IS. Plan 023 R-10 has two
+# sentences. This check proves the second — that a keyset cannot sign as a
+# principal it is not bound to — which is the one the gate's own wording asks a
+# probe to observe. It does NOT prove the first in its strongest form, that
+# private key material never leaves the actor: a process holding principal P's
+# key can still sign as P, and that is by construction of the current writers.
+# Moving custody out of process is `regista.client_signer` and the lifecycle
+# possession ceremony, not something a probe can assert. Anyone reading a green
+# check here should read it as "no arbitrary-principal signing", not "no
+# service-held keys".
+#
+# agent-suite's operator contract (Plan 023 R-10) is explicit that
+# "key-file or configuration inspection is not evidence" — so nothing below
+# reads a key file's ``principal_id`` and reports it. Instead the probe builds a
+# synthetic keyset that deliberately holds exactly one usable actor key, bound to
+# ONE principal, and then attempts real signing writes as a DIFFERENT principal
+# through the unmodified production paths, observing the named refusal.
+#
+# The two attempted paths are the two that sign an event onto a project chain:
+#   * ``_genesis.append_v6_genesis``  — opens the epoch
+#   * ``_v6_writer.append_v6_event``  — every ordinary event thereafter
+# Between them they cover the actor-boundary comparison in ``_genesis_key`` and
+# the one in ``_v6_writer._writer_key`` — and the latter is the *same function*
+# ``_trust_log_writer`` imports and calls for trust-log genesis and trust-log
+# appends (``_trust_log_writer.py`` line 69's import), so proving it here proves
+# it for that writer too. Not covered: the verification-side
+# ``_principal_keys.verify_principal_binding``, which is a read path and refuses
+# under the same code but is not a signing attempt.
+# Both are driven here over ``_in_memory_v6.InMemoryV6Connection``, the WI-287
+# D2 parity backend, whose whole design point is that those two functions run
+# **unmodified** against it (see that module's docstring: "byte-for-byte the
+# Postgres implementation, executing over a different row store"). So the code
+# refusing the unbound principal here is the code production writes with.
+#
+# WHY A SYNTHETIC STORE, STATED PLAINLY. The invariant proven is a LIBRARY
+# property — where the signing boundary is enforced — not a property of any
+# particular store's contents. The probe also runs against ``REGISTA_DSN`` in
+# gate context and must not write a durable row anywhere, and a signing proof
+# necessarily *writes* (the positive control has to produce a real signature and
+# a real event, or the refusals prove nothing about a path that can sign at all).
+# Those two facts point the same way: the behavioral attempt runs against an
+# ephemeral in-memory epoch. The check reports this in its ``basis`` field
+# rather than letting a reader assume the live store was exercised.
+#
+# WHAT WOULD MAKE THIS VACUOUS, AND WHY IT ISN'T. A check that only observed
+# "the unbound principal was refused" could be satisfied by a keyset that simply
+# had no key to offer. So the probe first asserts the opposite: that
+# ``KeySet.resolve_signing_key`` *does* hand the service's own key to an
+# arbitrary principal (it falls through to ``active_key()`` when the principal
+# has no key of its own). The service-held keyset is therefore willing; the
+# actor-boundary comparison in ``_writer_key`` / ``_genesis_key`` is the only
+# thing that refuses. That is the invariant, and it is why the positive control
+# and the willingness assertion are part of the proof rather than decoration.
+# ---------------------------------------------------------------------------
+
+#: The single principal the probe's synthetic keyset binds a usable actor key to.
+#: A ``service:`` id on purpose — this stands in for exactly the thing the
+#: invariant forbids, a service holding signing material.
+_BOUNDARY_KEY_HOLDER = "service:regista-invariant-probe"
+
+#: The principals the probe attempts to sign AS. Nothing in the keyset is bound to
+#: either, so every attempt below is an unbound-principal signing attempt. Two of
+#: them, of two different §2.1 principal kinds, because the claim under test is
+#: "cannot sign as *arbitrary* principals" — one id would leave open the reading
+#: that only same-kind impersonation is refused.
+_BOUNDARY_UNBOUND_SERVICE = "service:regista-invariant-probe-unbound"
+_BOUNDARY_UNBOUND_AGENT = "agent:regista-invariant-probe-unbound"
+
+#: A principal whose key IS bound to it but carries role ``auditor``. Covers the
+#: role-mismatch half of the requirement ("the key is absent/role-mismatched").
+_BOUNDARY_AUDITOR = "agent:regista-invariant-probe-auditor"
+
+#: ``occurred_at`` for the synthetic envelopes. A fixed literal, matching
+#: ``_probe_load_bearing_fields``: genesis validation does not check freshness, so
+#: a clock read would add a dependency that can only fail, never inform.
+_BOUNDARY_OCCURRED_AT = "2026-08-08T12:34:56.123456Z"
+
+
+def _boundary_digest(tag: str) -> str:
+    """A well-formed ``sha256:<64 hex>`` fixture digest for a synthetic envelope."""
+    return "sha256:" + hashlib.sha256(("regista.actor_boundary/" + tag).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class _BoundaryKey:
+    principal_id: str
+    key_id: str
+    role: str
+    seed: bytes
+    public_key: bytes
+
+    @property
+    def public_key_b64(self) -> str:
+        return base64.b64encode(self.public_key).decode("ascii")
+
+    @property
+    def fingerprint(self) -> str:
+        return "ed25519:sha256:" + hashlib.sha256(self.public_key).hexdigest()
+
+
+def _generate_boundary_key(principal_id: str, role: str) -> _BoundaryKey:
+    from nacl.signing import SigningKey
+
+    signing_key = SigningKey.generate()
+    public_key = bytes(signing_key.verify_key)
+    return _BoundaryKey(
+        principal_id=principal_id,
+        key_id="pk_probe_" + hashlib.sha256(public_key).hexdigest()[:16],
+        role=role,
+        seed=bytes(signing_key),
+        public_key=public_key,
+    )
+
+
+def _write_boundary_keyset(
+    directory: Path,
+    keys: Iterable[_BoundaryKey],
+    env_vars: dict[str, str],
+) -> Path:
+    """Write a real ``KeySet`` key file whose secrets live only in process env.
+
+    Two reasons the seeds go through ``secret_ref: env:...`` rather than inline.
+    First, a freshly generated Ed25519 private seed should not touch the
+    filesystem at all when it does not have to — the file this writes carries
+    public material and a reference, nothing more. Second, an inline secret makes
+    ``KeySet._load`` log ``keys.plaintext_at_rest`` at WARNING, and this probe is
+    on a five-minute schedule: 288 warnings a day naming a throwaway key would be
+    pure noise in front of the one that would matter.
+
+    ``env_vars`` is filled in for the caller to unset — see
+    :func:`_probe_actor_boundary_signing`'s ``finally``.
+    """
+    entries: list[dict[str, Any]] = []
+    for key in keys:
+        # Randomized per call: no ambient variable can collide with it, so the
+        # probe cannot be perturbed by the environment it happens to run in.
+        var = "REGISTA_INVARIANT_PROBE_SEED_" + uuid.uuid4().hex
+        env_vars[var] = base64.b64encode(key.seed).decode("ascii")
+        entries.append(
+            {
+                "key_id": key.key_id,
+                "scheme": "ed25519",
+                "alg": "Ed25519",
+                "secret_ref": f"env:{var}",
+                "encoding": "base64",
+                "public_key": key.public_key_b64,
+                "principal_id": key.principal_id,
+                "role": key.role,
+                "status": "active",
+            }
+        )
+    target = directory / "actor_boundary_probe_keys.json"
+    target.write_text(json.dumps({"keys": entries}), encoding="utf-8")
+    return target
+
+
+def _boundary_genesis_envelope(
+    *,
+    actor_id: str,
+    actor_kind: str,
+    signing_key: _BoundaryKey,
+) -> dict[str, Any]:
+    """A complete ``project_initialized`` envelope for the synthetic epoch.
+
+    ``actor_id`` and ``signing_key`` are independent parameters *on purpose*: the
+    whole point is to be able to declare an actor the signing key is not bound to
+    and watch the writer refuse it.
+    """
+    project = str(uuid.uuid4())
+    checkpoint = {
+        "checkpoint_seq": 1,
+        "head_event_hash": _boundary_digest("checkpoint-head"),
+        "document_digest": _boundary_digest("checkpoint-doc"),
+    }
+    return {
+        "type": "regista.event",
+        "version": 6,
+        "project_instance_id": project,
+        "trust_domain_id": str(uuid.uuid4()),
+        "event_id": str(uuid.uuid4()),
+        "entity": {"kind": "project", "id": project},
+        "entity_seq": 1,
+        "actor": {"principal_id": actor_id, "kind": actor_kind, "metadata": None},
+        "signing": {
+            "scheme_id": "ed25519",
+            "key_id": signing_key.key_id,
+            "key_binding_event_hash": None,
+        },
+        "authorization": {"mode": "direct", "credentials": []},
+        "workflow": None,
+        "occurred_at": _BOUNDARY_OCCURRED_AT,
+        "transition": "project_initialized",
+        "payload": {
+            "trust_domain_core_digest": _boundary_digest("trust-domain-core"),
+            "genesis_document_digest": _boundary_digest("genesis-document"),
+            "trust_log_checkpoint": dict(checkpoint),
+            "previous_epoch": {
+                "event_count": 0,
+                "genesis_event_hash": None,
+                "head_event_hash": None,
+                "head_hash_construction": "sha256(canonical_envelope||signature)",
+                "max_global_seq": None,
+                "scheme_counts": {},
+            },
+            "bootstrap_key_acceptance": {
+                "principal_id": actor_id,
+                "key_id": signing_key.key_id,
+                "scheme_id": "ed25519",
+                "public_key": signing_key.public_key_b64,
+                "fingerprint": signing_key.fingerprint,
+                "trust_event_hash": _boundary_digest("trust-event"),
+                "trust_log_checkpoint": dict(checkpoint),
+                "scopes": {
+                    "entity_kinds": ["project", "principal", "workflow", "work_item"],
+                    "transitions": None,
+                    "may_accept_keys": True,
+                    "may_sign_checkpoints": True,
+                    "may_sign_bundles": False,
+                },
+            },
+        },
+        "chain": {
+            "hash_algorithm": "sha-256",
+            "previous_entity_event_hash": None,
+            "previous_project_event_hash": None,
+        },
+        "producer": {
+            "harness": "regista-invariant-probe",
+            "harness_version": "1",
+            "model": None,
+            "model_lineage": None,
+        },
+    }
+
+
+def _probe_actor_boundary_signing() -> tuple[bool, str]:
+    """Attempt real signing writes as a principal no key is bound to.
+
+    Returns ``(ok, detail)``. ``ok`` is true only when every attempt below
+    behaved: the two positive controls signed, and every unbound / role-mismatched
+    attempt was refused with its **named** error code. Any other outcome — a
+    refusal under a different code, an acceptance, or an unexpected exception —
+    returns false with a reason, because the only safe reading of "something
+    happened here that this probe does not model" is that the invariant is
+    unproven.
+    """
+    try:
+        return _run_actor_boundary_attempts()
+    except RegistaError as exc:
+        return False, f"the boundary probe itself was refused with {exc.code}"
+    except Exception as exc:
+        # Deliberately bare: a probe that cannot complete has not proven the
+        # invariant, and the only safe status for "unproven" is fail.
+        return False, f"the boundary probe raised {type(exc).__name__} and proved nothing"
+
+
+def _run_actor_boundary_attempts() -> tuple[bool, str]:
+    holder = _generate_boundary_key(_BOUNDARY_KEY_HOLDER, "actor")
+    auditor = _generate_boundary_key(_BOUNDARY_AUDITOR, "auditor")
+    env_vars: dict[str, str] = {}
+    with tempfile.TemporaryDirectory(prefix="regista-actor-boundary-") as directory:
+        try:
+            # Order matters: KeySet's ``active_key()`` fallback returns the FIRST
+            # active entry, so the holder must be written first for the
+            # service-held-keyset fallback the check relies on to be its key.
+            key_file = _write_boundary_keyset(Path(directory), (holder, auditor), env_vars)
+            os.environ.update(env_vars)
+            return _attempt_boundary_writes(
+                KeySet(str(key_file)), holder=holder, auditor=auditor
+            )
+        finally:
+            for var in env_vars:
+                os.environ.pop(var, None)
+
+
+def _boundary_epoch(key_set: KeySet) -> Any:
+    """An ephemeral in-memory v6 connection manager: no Postgres, no durable row."""
+    from ._event_store import InMemoryEventStore
+    from ._in_memory_v6 import InMemoryV6ConnectionManager
+
+    store = InMemoryEventStore()
+    store.bind_keys(key_set)
+    return InMemoryV6ConnectionManager(store.v6_rows)
+
+
+def _boundary_event_count(manager: Any) -> int:
+    with manager.read_only_transaction() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
+    return 0 if row is None else int(row["n"])
+
+
+def _attempt_boundary_writes(
+    key_set: KeySet,
+    *,
+    holder: _BoundaryKey,
+    auditor: _BoundaryKey,
+) -> tuple[bool, str]:
+    from ._genesis import append_v6_genesis
+    from ._v6_writer import Producer, append_v6_event
+
+    # (0) The keyset is WILLING. Without this the refusals below could just mean
+    # "there was no key to sign with", which proves nothing about the boundary.
+    # ``resolve_signing_key`` finds no key bound to these principals and falls
+    # through to ``active_key()`` — the holder's, since it is written first in the
+    # key file — which is precisely the service-held-keyset shape under test.
+    for unbound in (_BOUNDARY_UNBOUND_SERVICE, _BOUNDARY_UNBOUND_AGENT):
+        offered = key_set.resolve_signing_key(unbound)
+        if offered.key_id != holder.key_id:
+            return False, (
+                "the synthetic service keyset did not offer its own key to an "
+                f"unbound principal (offered {offered.key_id!r} for {unbound!r}), so "
+                "the attempts below could not distinguish an enforced boundary from "
+                "an absent key"
+            )
+
+    # The two genesis envelopes are the SAME object with one field changed — the
+    # actor's principal id (and its echo in the acceptance block, which §5.8
+    # requires to equal it). Derived by copy rather than built twice so "the only
+    # difference is who is claimed to be acting" is a fact about the code and not
+    # a claim in a comment.
+    bound_genesis = _boundary_genesis_envelope(
+        actor_id=holder.principal_id, actor_kind="system", signing_key=holder
+    )
+    unbound_genesis = deepcopy(bound_genesis)
+    unbound_genesis["actor"]["principal_id"] = _BOUNDARY_UNBOUND_SERVICE
+    unbound_genesis["payload"]["bootstrap_key_acceptance"]["principal_id"] = (
+        _BOUNDARY_UNBOUND_SERVICE
+    )
+
+    # (1) Unbound-principal GENESIS: append_v6_genesis must refuse before signing.
+    refused = _boundary_epoch(key_set)
+    with refused.transaction() as conn:
+        outcome = _expect_refusal(
+            lambda: append_v6_genesis(conn, key_set, unbound_genesis, gate_passed=True),
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            "unbound-principal genesis",
+        )
+    if outcome is not None:
+        return False, outcome
+    if _boundary_event_count(refused) != 0:
+        return False, "the refused unbound-principal genesis still wrote an event"
+
+    # (2) Positive control: the SAME keyset, the same code path, the same envelope
+    # bar the actor, signing as the principal the key IS bound to. Opens the epoch
+    # attempt (3) needs, and shows the refusal above is the boundary rather than a
+    # path that cannot sign at all.
+    epoch = _boundary_epoch(key_set)
+    with epoch.transaction() as conn:
+        written = append_v6_genesis(conn, key_set, bound_genesis, gate_passed=True)
+    if not getattr(written, "signature", b""):
+        return False, "the bound-principal genesis produced no signature"
+
+    producer = Producer(
+        harness="regista-invariant-probe",
+        harness_version="1",
+        model=None,
+        model_lineage=None,
+    )
+
+    def append(actor_id: str, actor_kind: str, key_id: str | None) -> Any:
+        with epoch.transaction() as conn:
+            return append_v6_event(
+                conn,
+                key_set,
+                entity_kind="work_item",
+                entity_id=uuid.uuid4(),
+                transition="work_item_created",
+                actor_id=actor_id,
+                actor_kind=actor_kind,
+                producer=producer,
+                key_id=key_id,
+            )
+
+    # (3) Unbound-principal ORDINARY EVENT, twice: once letting the keyset choose
+    # (it falls through to the service's own key — the exact "service-held keyset
+    # signs as anyone" shape the gate is asking about), once naming that key
+    # explicitly so no resolution rule can be credited with the refusal.
+    before = _boundary_event_count(epoch)
+    attempts: tuple[tuple[str, str, str, str | None, ErrorCode], ...] = (
+        (
+            "unbound-principal append (agent id, keyset chose the service key)",
+            _BOUNDARY_UNBOUND_AGENT,
+            "agent",
+            None,
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+        ),
+        (
+            "unbound-principal append (service id, service key named explicitly)",
+            _BOUNDARY_UNBOUND_SERVICE,
+            "system",
+            holder.key_id,
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+        ),
+        (
+            "role-mismatched append (auditor key, bound principal)",
+            auditor.principal_id,
+            "agent",
+            auditor.key_id,
+            ErrorCode.KEY_ROLE_NOT_PERMITTED,
+        ),
+    )
+    for label, actor_id, actor_kind, key_id, expected in attempts:
+        outcome = _expect_refusal(
+            partial(append, actor_id, actor_kind, key_id), expected, label
+        )
+        if outcome is not None:
+            return False, outcome
+    if _boundary_event_count(epoch) != before:
+        return False, "a refused unbound-principal append still wrote an event"
+
+    # (4) Second positive control: the bound principal CAN append an ordinary
+    # event. So attempt (3) failed on the actor boundary specifically, not on
+    # something that would have refused any append at all.
+    signed = append(holder.principal_id, "system", None)
+    if not getattr(signed, "signature", b""):
+        return False, "the bound-principal append produced no signature"
+
+    return True, (
+        f"{len(attempts) + 1} unbound/role-mismatched signing attempts were refused "
+        f"with their named codes ({ErrorCode.ACTOR_SIGNER_MISMATCH.value}, "
+        f"{ErrorCode.KEY_ROLE_NOT_PERMITTED.value}) by append_v6_genesis and "
+        "append_v6_event, while the same keyset signed genesis and an ordinary "
+        "event as the principal its key is bound to; the keyset had offered that "
+        "same key to the unbound principal, so the boundary is what refused"
+    )
+
+
+def _expect_refusal(
+    attempt: Callable[[], object], expected: ErrorCode, label: str
+) -> str | None:
+    """Run ``attempt``; return ``None`` if it raised ``expected``, else a reason.
+
+    Deliberately narrow: a refusal under some *other* code is a failure, not a
+    pass. Defence in depth means a weakened actor boundary would still be caught
+    further down the writer (by key-binding anchor resolution, say) — under a
+    different name. Accepting "refused somehow" would let the boundary rot while
+    this check stayed green, which is the whole failure mode WI-326 exists to
+    close.
+    """
+    try:
+        attempt()
+    except RegistaError as exc:
+        if exc.code is expected:
+            return None
+        return (
+            f"{label} was refused with {exc.code.value}, not the named "
+            f"{expected.value}"
+        )
+    return f"{label} was ACCEPTED; the actor signing boundary is not enforced"
+
+
 def discover_projects(dsn: str) -> list[str]:
     with psycopg.connect(dsn, connect_timeout=5) as conn:
         rows = conn.execute(
@@ -602,11 +1068,18 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
     closed_registry, registry_detail = _measure_closed_registry()
     load_bearing_ok, load_bearing_detail = _probe_load_bearing_fields()
     first_write_ok, first_write_detail = _probe_first_write_admission()
+    boundary_ok, boundary_detail = _probe_actor_boundary_signing()
     store_fingerprint = postgres_database_fingerprint(dsn)
     return {
         "component": "regista",
         "probe_version": 1,
-        "ok": closed_registry and load_bearing_ok and first_write_ok and not errors,
+        "ok": (
+            closed_registry
+            and load_bearing_ok
+            and first_write_ok
+            and boundary_ok
+            and not errors
+        ),
         "checks": [
             {
                 "id": "regista.store_invariant_measurements",
@@ -629,6 +1102,23 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
                 "id": "regista.first_write_admission",
                 "status": "pass" if first_write_ok else "fail",
                 "detail": first_write_detail,
+            },
+            {
+                "id": "regista.actor_boundary_signing",
+                "status": "pass" if boundary_ok else "fail",
+                "detail": boundary_detail,
+                # Said out loud rather than left to be assumed: this one check
+                # does NOT observe the store named by the DSN. It is a behavioral
+                # attempt against an ephemeral in-memory v6 epoch, because what it
+                # proves is a library property (where the signing boundary is
+                # enforced) and because proving it requires *writing* — which the
+                # probe may never do to a real store. The code exercised is the
+                # unmodified production signing path; see the WI-326 block above.
+                "basis": "behavioral_attempt_ephemeral_epoch",
+                "paths_proven": [
+                    "regista._genesis.append_v6_genesis",
+                    "regista._v6_writer.append_v6_event",
+                ],
             },
         ],
     }
