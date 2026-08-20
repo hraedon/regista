@@ -3099,7 +3099,15 @@ def cmd_trust_delegate_registrar(args: argparse.Namespace) -> None:
     and a named refusal (revoke first) when its terms differ, so a re-delegation never
     silently forks; and the cleartext root seed synthesised for the writer is removed in a
     ``finally`` with a loud warning if the unlink fails. No authority check is weakened —
-    the writer re-runs the full root-threshold verification inside its own transaction.
+    the writer re-runs the full root-threshold verification inside its own transaction, and
+    the no-live-fork invariant is re-enforced at the durable writer AND at replay (not only
+    in this CLI pre-check), so a direct writer call or two concurrent runs cannot fork it.
+
+    Idempotency caveat (N1): the default ``--not-before``/``--not-after`` anchor to
+    call-time ``now()`` at microsecond resolution. A byte-identical re-run WITHOUT pinned
+    windows therefore differs from the incumbent and is refused
+    ``registrar_already_delegated_live`` (fail-safe, not a no-op). Pin BOTH bounds to make
+    a re-run idempotent.
     """
     import nacl.signing
 
@@ -4194,13 +4202,18 @@ def main(argv: list[str] | None = None) -> None:
     trust_deleg.add_argument(
         "--not-before",
         default=None,
-        help="Delegation validity start (microsecond UTC Z form); default: now - 1h",
+        help="Delegation validity start (microsecond UTC Z form); default: now - 1h. "
+        "NOTE: idempotent re-runs require pinning BOTH --not-before and --not-after — "
+        "the defaults anchor to call-time now() at microsecond resolution, so a "
+        "byte-identical re-run WITHOUT pinned windows differs and is refused "
+        "(registrar_already_delegated_live), which is fail-safe, not a no-op.",
     )
     trust_deleg.add_argument(
         "--not-after",
         default=None,
         help="Delegation validity end (microsecond UTC Z form); default: now + 365d "
-        "(must be <= 400 days after --not-before per §5.4)",
+        "(must be <= 400 days after --not-before per §5.4). Pin this together with "
+        "--not-before for an idempotent re-run (see --not-before).",
     )
     trust_deleg.add_argument(
         "--max-operations",

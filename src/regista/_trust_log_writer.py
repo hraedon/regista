@@ -605,6 +605,13 @@ def verify_trust_log_chain(
             _treq(verify_root_threshold(payload, governance, root_keys), governance)
             delegated = parse_registrar_delegated(payload)
             _check_payload_trust_domain(delegated, identity.trust_domain_id)
+            # B1 (PR #59 review): a forked log — a second LIVE registrar_delegated for the
+            # same principal with no intervening registrar_revoked and differing terms — is
+            # DETECTED here (named error) rather than silently resolved last-write-wins. A
+            # revoked incumbent (registrars[pid].revoked) allows a fresh delegation, and
+            # byte-identical terms are a no-op, so legitimate revoke -> re-delegate is
+            # untouched. Runs before the state mutation below so the poison never lands.
+            _check_registrar_delegation_no_live_fork(delegated, registrars)
             reg_keys[delegated.registrar_principal_id] = delegated.key.public_key
             reg_binding[delegated.registrar_principal_id] = _row_event_hash(row)
             ops.setdefault(delegated.registrar_principal_id, 0)
@@ -1179,6 +1186,63 @@ def _check_enrollment_binds_fresh_key(
                 "active_key_id": k_id,
             },
         )
+
+
+def _check_registrar_delegation_no_live_fork(
+    delegated: Any,
+    registrars: Mapping[str, RegistrarState],
+) -> None:
+    """No two LIVE conflicting registrar delegations for one principal (B1, PR #59).
+
+    ``registrar_delegated`` naming a principal that ALREADY holds a live delegation whose
+    terms differ (key material/key_id, scopes, validity window, or ``max_operations``)
+    forks the credential — two events, and a last-write-wins replay would silently pick
+    the later term set (scope widening, key swap). §5.4's supported refresh path is to
+    ``registrar_revoked`` the incumbent first, THEN delegate afresh. Enforced here so the
+    invariant holds at the DURABLE layer — writer admission AND replay — not only in the
+    CLI pre-check (which runs in a separate, already-closed transaction and cannot bind a
+    direct ``append_trust_log_event`` caller or two honest concurrent delegations).
+
+    Fail-closed policy, mirroring the CLI live-check exactly:
+
+    * No incumbent, or the incumbent is REVOKED -> allowed (revoke -> re-delegate works).
+    * A live incumbent with BYTE-IDENTICAL terms -> idempotent no-op, allowed.
+    * A live incumbent with DIFFERING terms -> refused with ``registrar_already_delegated_live``.
+
+    This guard is specific to ``registrar_delegated``; revocation, rotation and enrolment
+    are untouched.
+    """
+    principal_id = getattr(delegated, "registrar_principal_id", None)
+    if not isinstance(principal_id, str):
+        return
+    existing = registrars.get(principal_id)
+    if existing is None or existing.revoked:
+        return
+    key = getattr(delegated, "key", None)
+    new_public = getattr(key, "public_key", None) if key is not None else None
+    new_key_id = getattr(key, "key_id", None) if key is not None else None
+    identical = (
+        existing.public_key == new_public
+        and existing.key_id == new_key_id
+        and existing.scopes == frozenset(getattr(delegated, "scopes", ()))
+        and existing.max_operations == getattr(delegated, "max_operations", None)
+        and existing.not_before == getattr(delegated, "not_before", None)
+        and existing.not_after == getattr(delegated, "not_after", None)
+    )
+    if identical:
+        return
+    raise RegistaError(
+        ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+        f"{principal_id!r} already has a live registrar delegation "
+        f"(event {existing.delegated_event_hash}) whose terms differ from the requested "
+        "ones; a registrar cannot be re-delegated while live (§5.4). Revoke the existing "
+        "delegation (registrar_revoked) first, then delegate again.",
+        {
+            "reason": "registrar_already_delegated_live",
+            "registrar_principal_id": principal_id,
+            "existing_delegation_event_hash": existing.delegated_event_hash,
+        },
+    )
 
 
 def _remember_principal_key_revocation(
@@ -1905,6 +1969,19 @@ def _resolve_authority(
         # never reaches the durable log. Replay re-checks the same invariant.
         _check_enrollment_binds_fresh_key(
             parsed, state.principal_public_keys, state.principal_key_status
+        )
+    if transition == REGISTRAR_DELEGATED:
+        # Write-time admission of the B1 fork invariant (PR #59 review): a second LIVE
+        # registrar delegation for the same principal with differing terms forks the
+        # credential — the writer previously admitted it and replay resolved it
+        # last-write-wins (silent scope/key widening). Enforced here, in the shared
+        # append path, in-transaction against the state replayed under the chain-head
+        # lock, so a direct `append_trust_log_event` caller — and two honest concurrent
+        # `delegate-registrar` runs — cannot bypass the CLI live-check. A revoked prior
+        # delegation allows a fresh one (revoke -> re-delegate); byte-identical terms are
+        # an idempotent no-op. Replay re-checks the same invariant.
+        _check_registrar_delegation_no_live_fork(
+            parse_registrar_delegated(payload or {}), state.registrars
         )
     if authority == _ROOT:
         if key.fingerprint() not in state.governance.signer_fingerprints:
