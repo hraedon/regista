@@ -321,14 +321,14 @@ CLI). `private_key_dir` is meaningful only for the `file` backend.
 ```json
 {
   "component": "regista",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "reachable": true,
-  "schema_version": 38,
+  "schema_version": 49,
   "projects": [{"name": "my_project"}],
   "checks": [
     {"name": "db:reachable", "status": "ok", "detail": "connected"},
-    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 38"},
-    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 38, envelope 4"},
+    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 49"},
+    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 49, envelope 6"},
     {"name": "version:signing_schemes", "status": "ok", "detail": "Available: ed25519, hmac-sha256"}
   ]
 }
@@ -371,8 +371,8 @@ pin against:
 ```json
 {
   "component": "regista",
-  "library_version": "0.5.1",
-  "schema_version": 38,
+  "library_version": "0.6.0",
+  "schema_version": 49,
   "canonical_workflow_version": "3",
   "envelope_version": 6,
   "canonical_workflow_hash": "sha256hex...",
