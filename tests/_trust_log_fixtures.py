@@ -33,12 +33,33 @@ from regista._trust_log import (
 _VECTOR = Path(__file__).parent / "vectors" / "v6" / "bootstrap-project-initialized.json"
 
 TRUST_LOG_NAME_HINT = "regista_trust"
-DEFAULT_OCCURRED_AT = "2026-08-20T00:00:00.000000Z"
 
 
 def _ts(offset_seconds: int = 0) -> str:
-    base = datetime(2026, 8, 20, tzinfo=UTC) + timedelta(seconds=offset_seconds)
+    """A fixture timestamp anchored to real ``now`` plus ``offset_seconds``.
+
+    The trust-log writer admits a possession challenge only if its ``expires_at`` is
+    still in the future relative to ``datetime.now(UTC)`` (``_trust_log_writer.py``
+    :961 append admission, :1761 the append path's ``admission_at``). A *fixed* base
+    (this was ``datetime(2026, 8, 20)``) therefore made every challenge a time bomb:
+    once real wall-clock time passed base + 5 min, admission failed for the whole
+    suite with ``possession_challenge_expired_at_admission``. Anchoring the base to
+    ``now`` keeps each challenge "recently issued" relative to the admission moment,
+    while the ``offset_seconds`` argument preserves the *relative* spacing the fixture
+    chains rely on (issued_at at 0, expires_at at +300, revoked_at at +60, …). This
+    clock never feeds a committed vector — the ``tests/vectors/`` envelopes carry
+    their own fixed ``occurred_at`` — so relative time introduces no nondeterminism
+    into any hash-pinned assertion. Deliberately-expired negative fixtures pass an
+    explicit past ``expires_at`` and stay expired regardless of this anchor.
+    """
+    base = datetime.now(UTC) + timedelta(seconds=offset_seconds)
     return base.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
+# Anchored once at import so every event in a single fixture chain shares one
+# ``occurred_at`` (deterministic within a run), while still moving with the clock
+# across runs so it never falls behind a challenge's live admission window.
+DEFAULT_OCCURRED_AT = _ts()
 
 
 def _b64(raw: bytes) -> str:
@@ -401,11 +422,9 @@ def make_registrar_delegation_payload(
             "principal_key_revoked",
         ],
         "not_before": not_before or _ts(),
-        "not_after": not_after or (
-            (datetime(2026, 8, 20, tzinfo=UTC) + timedelta(days=90)).strftime(
-                "%Y-%m-%dT%H:%M:%S.%f"
-            ) + "Z"
-        ),
+        # 90 days ahead of the (now-anchored) base, so the delegation window stays
+        # open across runs rather than expiring at a fixed 2026-11-18.
+        "not_after": not_after or _ts(90 * 24 * 60 * 60),
         "max_operations": max_operations,
         "root_signatures": [],
     }

@@ -68,7 +68,15 @@ from regista.testing import drop_project_schema, seed_legacy_principal_key
 
 ROOT_PRINCIPAL = "service:root-a"
 REGISTRAR_PRINCIPAL = "service:registrar-1"
-DEFAULT_EVENT_TIME = "2026-08-20T00:00:00.000000Z"
+# This module drives the *production* writer, whose possession-challenge admission
+# compares against real ``datetime.now(UTC)``. Its local ``_challenge`` helper anchors
+# the challenge window to the event time, so the event time itself must track the wall
+# clock — a fixed base (was ``2026-08-20``) expired the challenge once real time moved
+# past base + 5 min. Anchored once at import; ``LATER_EVENT_TIME`` keeps the deliberate
+# one-day gap that orders a rotation after its enrollment.
+_NOW = datetime.now(UTC)
+DEFAULT_EVENT_TIME = _NOW.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+LATER_EVENT_TIME = (_NOW + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 _COLUMNS = (
     "principal_id, key_id, scheme, public_key, fingerprint, status, valid_from, "
@@ -380,8 +388,8 @@ class TestCriterion12RebuildReproducesTheProjection:
             "agent:alice",
             alice,
             alice2,
-            occurred_at="2026-08-21T00:00:00.000000Z",
-            not_before="2026-08-21T00:00:00.000000Z",
+            occurred_at=LATER_EVENT_TIME,
+            not_before=LATER_EVENT_TIME,
         )
         _revoke(
             trust_store,
@@ -983,8 +991,15 @@ class TestRebuildAndTheSanctionedWriterIntersect:
                     key.public_key,
                     "ed25519",
                     source_event_hash=event.event_hash,
-                    valid_from=datetime(2026, 8, 20, tzinfo=UTC),
-                    registered_at=datetime(2026, 8, 20, tzinfo=UTC),
+                    # Match what the rebuild derives (_trust_projection.py:838,840):
+                    # valid_from is the payload's not_before, registered_at is the
+                    # event's occurred_at. Taking both from the event keeps the row
+                    # consistent with the now-anchored fixture clock rather than a
+                    # fixed date that only happened to equal the old midnight base.
+                    valid_from=datetime.fromisoformat(
+                        event.payload["not_before"].replace("Z", "+00:00")
+                    ),
+                    registered_at=datetime.fromisoformat(event.occurred_at),
                     key_id=key.key_id,
                     # registered_by MUST be the event's authorized_by.principal_id:
                     # that is what the rebuild derives it from, and PrincipalLifecycle
