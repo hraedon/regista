@@ -66,8 +66,12 @@ class TestVersions:
         if versions_list:
             assert SCHEMA_VERSION == max(versions_list)
 
-    def test_envelope_version_remains_5_until_v6_is_writable(self):
-        assert ENVELOPE_VERSION == 5
+    def test_envelope_version_is_6_now_that_v6_is_the_write_path(self):
+        # P1.7 (#50) landed the v6 ordinary-event writer and 0.6.0 removed the
+        # legacy write path, so the sole envelope version this library writes —
+        # the "writable envelope version" reported by `regista version` and
+        # `regista doctor` — is now 6.
+        assert ENVELOPE_VERSION == 6
 
 
 class TestCLIVersion:
