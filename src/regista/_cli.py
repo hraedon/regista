@@ -1930,6 +1930,86 @@ def _synthesize_root_keyset_file(
     return path
 
 
+def _warn_root_seed_not_removed(path: str, err: Exception) -> None:
+    """Loudly report a failed unlink of the synthesized root-seed file.
+
+    The file holds the estate ROOT SEED in cleartext. If it cannot be removed the
+    operator must know *which* file was left behind and delete it by hand — this must
+    never be swallowed silently (deepseek N1). Both a stderr banner and a structured
+    error log are emitted so neither a human nor a log scraper misses it.
+    """
+    banner = (
+        f"CRITICAL: could not remove the synthesized root-seed file {path!r} "
+        f"({err}); it holds the estate ROOT SEED in cleartext. Delete it MANUALLY now."
+    )
+    print(banner, file=sys.stderr)
+    try:  # pragma: no cover - logging must never mask the banner
+        structlog.get_logger().error(
+            "trust_init_log.root_seed_not_removed", path=path, error=str(err)
+        )
+    except Exception:
+        pass
+
+
+def _probe_trust_log_state(dsn: str, project: str) -> tuple[bool, bool]:
+    """Probe the trust-log store: ``(schema_exists, already_initialized)``.
+
+    Runs BEFORE any write, purely to drive the dry-run plan and the friendly
+    idempotency refusal. It fails CLOSED with a named :class:`RegistaError`
+    (``TRUST_LOG_STORE_UNAVAILABLE``) rather than leaking a raw psycopg traceback when
+    (a) the DSN is unreachable — with a short ``connect_timeout`` so this fails fast
+    instead of hanging on the pool's default 30s wait — or (b) the target namespace is
+    occupied by a non-trust-log project (present schema, no ``events`` table →
+    ``UndefinedTable``). Both violate the fail-closed CLI contract if surfaced raw
+    (Opus NB-2 / deepseek N5).
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.sql import SQL, Identifier
+
+    from regista._connection import validate_project_name
+
+    schema = validate_project_name(project)
+    try:
+        with psycopg.connect(
+            dsn, connect_timeout=5, row_factory=dict_row, autocommit=True
+        ) as conn:
+            schema_row = conn.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                [schema],
+            ).fetchone()
+            schema_exists = schema_row is not None
+            already_initialized = False
+            if schema_exists:
+                conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS n FROM events WHERE transition = %s",
+                        ["trust_domain_established"],
+                    ).fetchone()
+                except psycopg.errors.UndefinedTable as exc:
+                    raise RegistaError(
+                        ErrorCode.TRUST_LOG_STORE_UNAVAILABLE,
+                        f"schema {schema!r} exists but has no `events` table: the "
+                        "namespace is occupied by something other than a trust-log "
+                        "project. Refusing to initialize a trust log into a schema that "
+                        "already belongs to a different project; choose an empty or "
+                        "trust-log --project.",
+                        {"reason": "schema_not_a_trust_log", "project": schema},
+                    ) from exc
+                already_initialized = bool(row and int(row["n"]) > 0)
+            return schema_exists, already_initialized
+    except RegistaError:
+        raise
+    except (psycopg.OperationalError, psycopg.Error) as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_STORE_UNAVAILABLE,
+            f"could not reach the trust-log store to probe schema {schema!r}: {exc}. "
+            "Check --dsn / REGISTA_DSN and that the database is reachable.",
+            {"reason": "store_unreachable", "project": schema},
+        ) from exc
+
+
 def cmd_trust_init_log(args: argparse.Namespace) -> None:
     """Write the estate-wide trust log's genesis ``trust_domain_established`` event.
 
@@ -1945,10 +2025,14 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
     ``GENESIS_ALREADY_WRITTEN``); and ``--dry-run`` writes nothing. There is deliberately
     no ``--force``: re-initializing a trust log would fork its genesis, which is never a
     safe operation — an already-initialized log is a hard refusal, not an overwrite.
+
+    The genesis event's ``actor_id`` (``--root-principal-id``) is an operator assertion,
+    NOT cryptographically bound to the root signer. It defaults from the genesis's signed
+    ``initial_custody`` declared_holder so the common path binds it to a signed field; an
+    explicit override is trusted rather than proven. Closing that gap is tracked by WI-320.
     """
     import nacl.signing
 
-    from regista._connection import ConnectionManager
     from regista._principal_keys import _compute_fingerprint
     from regista._principals import classify_principal_id
     from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
@@ -1991,7 +2075,39 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             {"reason": "root_key_not_a_genesis_signer", "fingerprint": fingerprint},
         )
 
+    # The genesis actor is an operator assertion, NOT cryptographically bound to the
+    # signer (WI-320 tracks closing that gap). Interim binding (Opus NB-1 / deepseek N2):
+    # when --root-principal-id is omitted, DEFAULT it from the genesis's SIGNED
+    # initial_custody declared_holder, so the common path binds the actor to a signed
+    # field rather than a free operator choice. Only default when there is exactly ONE
+    # custody entry AND its holder is already a canonical principal id — otherwise the
+    # operator must choose explicitly rather than us guessing.
     root_principal_id = args.root_principal_id
+    actor_source = "operator_override"
+    if root_principal_id is None:
+        actor_source = "declared_holder"
+        if len(doc.initial_custody) != 1:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"the genesis declares {len(doc.initial_custody)} custody entries, so "
+                "the root actor cannot be inferred; pass --root-principal-id explicitly "
+                "to name the genesis event's actor",
+                {
+                    "reason": "custody_ambiguous_for_actor_default",
+                    "custody_count": len(doc.initial_custody),
+                },
+            )
+        holder = doc.initial_custody[0].declared_holder
+        if not classify_principal_id(holder).canonical:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"the genesis's declared_holder {holder!r} is not a canonical "
+                "kind:subject principal id, so it cannot be used as the root actor; "
+                "pass --root-principal-id explicitly",
+                {"reason": "declared_holder_not_canonical"},
+            )
+        root_principal_id = holder
+
     if not classify_principal_id(root_principal_id).canonical:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -2002,9 +2118,29 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
         )
 
     # The trust log is one estate-wide project whose first event is
-    # trust_domain_established (§5.2). Its schema name defaults to the document's
-    # project_name_hint ("regista_trust"); an explicit --project overrides it.
-    project = project_cfg or doc.trust_log.project_name_hint
+    # trust_domain_established (§5.2). Its schema name is the document's SIGNED
+    # project_name_hint ("regista_trust"). An explicit/ambient project (--project or
+    # REGISTA_PROJECT) may only SELECT that same schema — never redirect the genesis
+    # into a different one. REGISTA_PROJECT is commonly set for other commands, and
+    # letting it silently override the signed hint could write the estate genesis into
+    # the WRONG schema, inviting a second (different-doc) init elsewhere = two trust
+    # domains for one estate (deepseek N3). So a mismatch is a hard refusal.
+    hint = doc.trust_log.project_name_hint
+    if project_cfg is not None and project_cfg != hint:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"the configured project {project_cfg!r} (--project or REGISTA_PROJECT) "
+            f"differs from the genesis document's signed project_name_hint {hint!r}; "
+            "refusing to write the estate genesis into a schema the document did not "
+            f"name. Pass --project {hint} to match the document, or unset "
+            "REGISTA_PROJECT.",
+            {
+                "reason": "project_precedence_conflict",
+                "configured_project": project_cfg,
+                "project_name_hint": hint,
+            },
+        )
+    project = project_cfg or hint
 
     # A single --key seed can only supply ONE root signature. A k-of-n domain needs
     # detached signatures from multiple offline roots (the A-prime path), which this
@@ -2024,22 +2160,10 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
 
     # Probe the store: does the schema exist, and is a trust_domain_established event
     # already present? Used for the dry-run plan and for a friendly idempotency refusal
-    # ahead of the writer's own authoritative guard.
-    schema_exists = False
-    already_initialized = False
-    probe = ConnectionManager(dsn, project)
-    try:
-        probe.open()
-        schema_exists = probe.schema_exists()
-        if schema_exists:
-            with probe.transaction() as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM events WHERE transition = %s",
-                    ["trust_domain_established"],
-                ).fetchone()
-            already_initialized = bool(row and int(row["n"]) > 0)
-    finally:
-        probe.close()
+    # ahead of the writer's own authoritative guard. Fails closed with a named
+    # RegistaError (never a raw traceback) if the store is unreachable or the namespace
+    # is occupied by a non-trust-log project (Opus NB-2 / deepseek N5).
+    schema_exists, already_initialized = _probe_trust_log_state(dsn, project)
 
     plan = {
         "action": "trust-init-log",
@@ -2048,6 +2172,7 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
         "project_instance_id": str(doc.trust_log.project_instance_id),
         "transition": "trust_domain_established",
         "root_principal_id": root_principal_id,
+        "root_principal_source": actor_source,
         "root_signer_id": signer.signer_id,
         "root_fingerprint": fingerprint,
         "threshold": threshold,
@@ -2055,18 +2180,17 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
         "already_initialized": already_initialized,
     }
 
-    if already_initialized:
-        raise RegistaError(
-            ErrorCode.GENESIS_ALREADY_WRITTEN,
-            f"the trust log in schema {project!r} already carries a "
-            "trust_domain_established event; refusing to re-initialize (a second "
-            "genesis would fork the trust domain)",
-            {"reason": "genesis_already_written", "project": project},
-        )
+    # A real run refuses an already-initialized log (a second genesis would fork the
+    # trust domain). --dry-run must REPORT that same would-outcome rather than claim
+    # would_write:True — it probes the real state and mirrors the refusal (deepseek N4).
+    refuse_reason = "genesis_already_written" if already_initialized else None
 
     if args.dry_run:
+        would_write = refuse_reason is None
         plan["dry_run"] = True
-        plan["would_write"] = True
+        plan["would_write"] = would_write
+        if refuse_reason is not None:
+            plan["would_refuse_reason"] = refuse_reason
         if json_mode:
             _dump_json(plan)
         else:
@@ -2076,11 +2200,23 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             print(f"  trust_domain_id:         {doc.trust_domain_id}")
             print(f"  project_instance_id:     {doc.trust_log.project_instance_id}")
             print("  event to write:          trust_domain_established")
-            print(f"  root principal:          {root_principal_id}")
+            print(f"  root principal:          {root_principal_id} ({actor_source})")
             print(f"  root signer_id:          {signer.signer_id}")
             print(f"  root fingerprint:        {fingerprint}")
             print(f"  governance threshold:    {threshold}")
+            print(f"  would write:             {would_write}")
+            if refuse_reason is not None:
+                print(f"  would refuse (reason):   {refuse_reason}")
         return
+
+    if already_initialized:
+        raise RegistaError(
+            ErrorCode.GENESIS_ALREADY_WRITTEN,
+            f"the trust log in schema {project!r} already carries a "
+            "trust_domain_established event; refusing to re-initialize (a second "
+            "genesis would fork the trust domain)",
+            {"reason": "genesis_already_written", "project": project},
+        )
 
     # (3)-(4) Prepare the trust-log project schema (create + migrate if new) and write
     # the genesis event. write_trust_genesis runs entirely inside one transaction and
@@ -2105,12 +2241,18 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             root_principal_id=root_principal_id,
         )
     finally:
-        if handle is not None:
-            handle.close()
+        # Delete the cleartext root-seed file FIRST and independently of handle.close()
+        # (deepseek N1): if close() raises — e.g. a broken pool after a write failure —
+        # the seed must still be removed, and a failed unlink must be LOUD, never
+        # silently swallowed. handle.close() runs in this inner finally so it still
+        # happens even if the unlink (or its warning) raises.
         try:
             os.unlink(key_file)
-        except OSError:
-            pass
+        except OSError as unlink_err:
+            _warn_root_seed_not_removed(key_file, unlink_err)
+        finally:
+            if handle is not None:
+                handle.close()
 
     result = {
         "ok": True,
@@ -2755,9 +2897,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     trust_init.add_argument(
         "--root-principal-id",
-        required=True,
-        help="Canonical kind:subject principal id to bind the root key to; becomes "
-        "the genesis event's actor (e.g. service:root-a)",
+        default=None,
+        help="Canonical kind:subject principal id recorded as the genesis event's "
+        "actor (e.g. service:root-a). OPTIONAL: when omitted it defaults from the "
+        "genesis's SIGNED initial_custody declared_holder (requires exactly one custody "
+        "entry whose holder is a canonical principal id). NOTE: this actor is an "
+        "UNAUTHENTICATED operator assertion — it is NOT cryptographically bound to the "
+        "root signature, so an explicit override is trusted, not proven. Cryptographic "
+        "binding is tracked by WI-320.",
     )
     # SUPPRESS (see rebuild-projection): a subparser --project/--json with a None/False
     # default would clobber the global value the top-level parser already set.
