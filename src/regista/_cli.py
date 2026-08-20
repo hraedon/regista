@@ -2976,6 +2976,435 @@ def cmd_trust_enroll(args: argparse.Namespace) -> None:
     )
 
 
+# --- WI-321 (3/3): `regista trust delegate-registrar` — root delegates registrar power -
+#
+# The missing middle link of the v6 provisioning chain: root-genesis (`trust init-log`)
+# -> ROOT delegates a registrar (THIS command) -> the registrar enrols host keys
+# (`trust enroll`). Enrolment is registrar-authorised, so until a root-signed
+# ``registrar_delegated`` event exists in the trust log nothing can be enrolled. Before
+# this command that event was only reachable from test-internal helpers
+# (``make_registrar_delegation_payload`` + ``append_trust_log_event``); this wires the
+# existing root-authorised write to an operator CLI. It DOES touch the database.
+
+
+def _default_registrar_scopes() -> list[str]:
+    """The default registrar scope set: the key-lifecycle administration transitions.
+
+    A registrar's authority is lifecycle administration only (§5.4); it never extends to
+    writing work-item events (that is §5.12's separate action-delegation credential).
+    The default grants the three key-lifecycle transitions — enrol, rotate, revoke — the
+    common per-host provisioning set. ``principal_registered`` is left out of the default
+    (grant it explicitly with ``--scope`` when a registrar must also register principals).
+    """
+    from regista._trust_log import (
+        PRINCIPAL_KEY_ENROLLED,
+        PRINCIPAL_KEY_REVOKED,
+        PRINCIPAL_KEY_ROTATED,
+    )
+
+    return [PRINCIPAL_KEY_ENROLLED, PRINCIPAL_KEY_ROTATED, PRINCIPAL_KEY_REVOKED]
+
+
+def _parse_scope_args(raw_scopes: list[str] | None) -> list[str]:
+    """Normalise repeatable/comma-joined ``--scope`` values to a de-duplicated list.
+
+    Accepts ``--scope a --scope b`` and ``--scope a,b`` (and any mix). Order is
+    preserved and duplicates are collapsed; membership in the registrar scope set is
+    validated downstream by ``parse_registrar_delegated`` so a bad scope is a named
+    refusal, not a silent drop. Returns the lifecycle default when nothing is given.
+    """
+    if not raw_scopes:
+        return _default_registrar_scopes()
+    out: list[str] = []
+    for chunk in raw_scopes:
+        for token in chunk.split(","):
+            scope = token.strip()
+            if scope and scope not in out:
+                out.append(scope)
+    if not out:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--scope was given but resolved to no transitions",
+            {"reason": "empty_scope_set"},
+        )
+    return out
+
+
+def _resolve_trust_root_actor(doc: Any, override: str | None) -> tuple[str, str]:
+    """Resolve the root actor principal id for a root-authorised trust-log write.
+
+    Mirrors ``trust init-log`` exactly: when ``--root-principal-id`` is omitted, default
+    it from the genesis's SIGNED ``initial_custody`` declared_holder — but only when there
+    is exactly ONE custody entry whose holder is already a canonical principal id.
+    Otherwise the operator must name it explicitly. The actor is an UNAUTHENTICATED
+    operator assertion (WI-320), not cryptographically bound to the root signature; it
+    still has to be a well-formed canonical id because it is recorded permanently.
+    """
+    from regista._principals import classify_principal_id
+
+    root_principal_id = override
+    source = "operator_override"
+    if root_principal_id is None:
+        source = "declared_holder"
+        if len(doc.initial_custody) != 1:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"the genesis declares {len(doc.initial_custody)} custody entries, so "
+                "the root actor cannot be inferred; pass --root-principal-id explicitly "
+                "to name the delegation event's actor",
+                {
+                    "reason": "custody_ambiguous_for_actor_default",
+                    "custody_count": len(doc.initial_custody),
+                },
+            )
+        holder = doc.initial_custody[0].declared_holder
+        if not classify_principal_id(holder).canonical:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"the genesis's declared_holder {holder!r} is not a canonical "
+                "kind:subject principal id, so it cannot be used as the root actor; "
+                "pass --root-principal-id explicitly",
+                {"reason": "declared_holder_not_canonical"},
+            )
+        root_principal_id = holder
+
+    if not classify_principal_id(root_principal_id).canonical:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"--root-principal-id {root_principal_id!r} is not a canonical "
+            "kind:subject principal id (TRUST-DOMAIN.md §2.1); the event's actor is "
+            "recorded permanently and must be well-formed",
+            {"reason": "root_principal_id_not_canonical"},
+        )
+    return root_principal_id, source
+
+
+def cmd_trust_delegate_registrar(args: argparse.Namespace) -> None:
+    """Delegate registrar power under ROOT authority (§5.4 ``registrar_delegated``).
+
+    Root genesis (``trust init-log``) is written; this command lets the estate ROOT grant
+    a principal the scoped, expiring authority to administer key lifecycle — the authority
+    ``trust enroll`` then requires. It takes the ROOT authorising seed (whose fingerprint
+    must be a genesis signer), the registrar's principal id + granted public key/key_id,
+    the scope of transitions the registrar may authorise, and a validity window, builds
+    the root-signed ``registrar_delegated`` payload, and appends it through the trust-log
+    writer in one transaction.
+
+    Fail-closed by construction: the trust log must be initialised (else
+    ``TRUST_LOG_STORE_UNAVAILABLE``); the root key must be a current genesis signer (else
+    ``ACTOR_SIGNER_MISMATCH``); a k-of-n genesis (threshold > 1) is refused because a
+    single ``--key`` seed cannot meet the threshold (like ``init-log``); the payload is
+    parsed and root-threshold-verified BEFORE any write; ``--dry-run`` writes nothing; a
+    live registrar delegation for the same principal is a clean no-op when byte-identical
+    and a named refusal (revoke first) when its terms differ, so a re-delegation never
+    silently forks; and the cleartext root seed synthesised for the writer is removed in a
+    ``finally`` with a loud warning if the unlink fails. No authority check is weakened —
+    the writer re-runs the full root-threshold verification inside its own transaction.
+    """
+    import nacl.signing
+
+    from regista._connection import ConnectionManager
+    from regista._principal_keys import _compute_fingerprint
+    from regista._trust_log import (
+        REGISTRAR_MAX_VALIDITY,
+        parse_registrar_delegated,
+        refuse_registrar_delegating_registrar,
+        root_signature_input,
+        verify_root_threshold,
+    )
+    from regista._trust_log_writer import append_trust_log_event, replay_trust_state
+
+    json_mode = getattr(args, "json", False)
+    dsn, genesis_document, doc, project = _enroll_resolve_target(args)
+
+    # (1) Validate the registrar identity + granted key material. The public key is the
+    # artifact the enrol verifier will check the registrar's own signatures against.
+    _enroll_require_canonical(args.registrar_principal_id)
+    registrar_public = _enroll_public_key(args.registrar_public_key)
+    registrar_fingerprint = _compute_fingerprint(registrar_public, "ed25519")
+    scopes = _parse_scope_args(args.scope)
+
+    # (2) The authorising key must be a CURRENT root signer. Derive its fingerprint from
+    # the seed and match it against binding_core — a wrong key is refused before any write.
+    # These genesis-intrinsic checks (signer, threshold) run BEFORE the store probe, exactly
+    # as `init-log` does: they depend only on the document, so a wrong key or a k-of-n
+    # domain is refused deterministically whether or not the log has been initialised.
+    seed = _read_ed25519_seed(args.key)
+    root_public = bytes(nacl.signing.SigningKey(seed).verify_key)
+    root_fingerprint = _compute_fingerprint(root_public, "ed25519")
+    signer = doc.signer_by_fingerprint(root_fingerprint)
+    if signer is None:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"the root key (fingerprint {root_fingerprint}) is not a signer in the "
+            "genesis document's binding_core; refusing to sign a registrar delegation "
+            "with a key the domain never committed to",
+            {"reason": "root_key_not_a_genesis_signer", "fingerprint": root_fingerprint},
+        )
+
+    # (3) A single --key seed supplies exactly ONE root signature. A k-of-n domain needs
+    # detached signatures from multiple offline roots, which this CLI cannot collect.
+    # Refuse rather than write a delegation this key alone cannot authorise (like init-log).
+    threshold = doc.initial_governance.threshold
+    if threshold != 1:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+            f"this trust domain needs {threshold} root signatures (k-of-n), but "
+            "`trust delegate-registrar` signs with a single --key. Build the "
+            "registrar_delegated payload offline, collect the detached root signatures, "
+            "and append it via the trust-log writer instead.",
+            {"reason": "threshold_exceeds_single_key", "threshold": threshold},
+        )
+
+    # (4) The trust log must already carry its genesis, else there is nothing to delegate
+    # into. Reuses the shared TRUST_LOG_STORE_UNAVAILABLE refusal.
+    _enroll_require_initialized(dsn, project)
+
+    root_principal_id, actor_source = _resolve_trust_root_actor(
+        doc, args.root_principal_id
+    )
+
+    # (5) Validity window: anchored to CALL-TIME now() (never a fixed date — the trust
+    # fixtures were bitten by exactly that time-bomb). Defaults: opens an hour back to
+    # absorb clock skew so the registrar can act immediately, closes a year ahead
+    # (comfortably inside the §5.4 400-day bound). Explicit --not-before/--not-after
+    # override; their format is validated by parse_registrar_delegated below.
+    now = datetime.now(UTC)
+    not_before = args.not_before or _iso_micro_z(now - timedelta(hours=1))
+    not_after = args.not_after or _iso_micro_z(now + timedelta(days=365))
+
+    max_operations = args.max_operations
+
+    # (6) Assemble the §5.4 payload and sign it under ROOT authority: each detached root
+    # signature covers root_signature_input(payload) (the framed authorization core).
+    payload: dict[str, Any] = {
+        "type": "regista.registrar-delegation",
+        "version": 1,
+        "trust_domain_id": doc.trust_domain_id,
+        "registrar_principal_id": args.registrar_principal_id,
+        "key_id": args.registrar_key_id,
+        "scheme_id": "ed25519",
+        "public_key": base64.b64encode(registrar_public).decode("ascii"),
+        "fingerprint": registrar_fingerprint,
+        "scopes": scopes,
+        "not_before": not_before,
+        "not_after": not_after,
+        "max_operations": max_operations,
+        "root_signatures": [],
+    }
+    signature = nacl.signing.SigningKey(seed).sign(root_signature_input(payload)).signature
+    payload["root_signatures"] = [
+        {
+            "signer_id": signer.signer_id,
+            "fingerprint": root_fingerprint,
+            "signature": base64.b64encode(signature).decode("ascii"),
+        }
+    ]
+
+    # (7) Verify-before-write: parse the payload (structural §5.4 rules — scope set,
+    # mandatory bounded not_after, window ordering, key material/fingerprint agreement,
+    # max_operations) so a malformed delegation is refused here with a named error, before
+    # the store is touched. Raises RegistaError, surfaced by main()'s handler.
+    parsed = parse_registrar_delegated(payload)
+
+    # (8) Replay the live trust state for the root-threshold pre-check and the
+    # re-delegation / registrar-cannot-delegate guards. append_trust_log_event re-runs the
+    # authority check in-transaction; this front-loads it so dry-run reports the true
+    # outcome and a bad delegation is refused before the write path.
+    mgr = ConnectionManager(dsn, project)
+    already_delegated_noop = False
+    existing_hash: str | None = None
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            state = replay_trust_state(conn, genesis_document)
+    finally:
+        mgr.close()
+
+    # Root-threshold pre-check against the CURRENT governance/root keys (mirrors the
+    # writer). A signature that does not verify, or a fingerprint no longer in the signer
+    # set, is refused here rather than deep inside the writer.
+    verify_root_threshold(payload, state.governance, state.root_public_keys)
+
+    live_registrars = {
+        pid for pid, entry in state.registrars.items() if not entry.revoked
+    }
+    existing = state.registrars.get(args.registrar_principal_id)
+    if existing is not None and not existing.revoked:
+        identical = (
+            existing.public_key == registrar_public
+            and existing.key_id == args.registrar_key_id
+            and existing.scopes == frozenset(scopes)
+            and existing.max_operations == max_operations
+            and existing.not_before == parsed.not_before
+            and existing.not_after == parsed.not_after
+        )
+        existing_hash = existing.delegated_event_hash
+        if identical:
+            already_delegated_noop = True
+        else:
+            # A live delegation with DIFFERENT terms already exists. Appending a second
+            # would fork the credential (which term set is authoritative?). §5.4 forbids
+            # naming a principal that is already a registrar; the legitimate re-delegation
+            # path is to revoke the existing delegation first, then delegate afresh. Refuse
+            # cleanly and point the operator at that flow rather than forking silently.
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"{args.registrar_principal_id!r} already has a live registrar "
+                f"delegation (event {existing.delegated_event_hash}) whose terms differ "
+                "from the requested ones; a registrar cannot be re-delegated while live "
+                "(§5.4). Revoke the existing delegation (registrar_revoked) first, then "
+                "delegate again.",
+                {
+                    "reason": "registrar_already_delegated_live",
+                    "registrar_principal_id": args.registrar_principal_id,
+                    "existing_delegation_event_hash": existing.delegated_event_hash,
+                },
+            )
+    else:
+        # Structural §5.4 guard: registrar_delegated must not name a principal that is
+        # already a LIVE registrar. A revoked prior delegation does not count (revoke →
+        # re-delegate is the supported window/key refresh path), so only live ids are
+        # passed. In the not-live case this passes trivially; belt-and-braces.
+        refuse_registrar_delegating_registrar(
+            parsed, existing_registrar_principal_ids=sorted(live_registrars)
+        )
+
+    window_days = (parsed.not_after - parsed.not_before).days
+    plan = {
+        "action": "trust-delegate-registrar",
+        "project": project,
+        "trust_domain_id": doc.trust_domain_id,
+        "transition": "registrar_delegated",
+        "registrar_principal_id": args.registrar_principal_id,
+        "registrar_key_id": args.registrar_key_id,
+        "registrar_fingerprint": registrar_fingerprint,
+        "scopes": scopes,
+        "not_before": not_before,
+        "not_after": not_after,
+        "validity_days": window_days,
+        "max_operations": max_operations,
+        "max_validity_days": REGISTRAR_MAX_VALIDITY.days,
+        "authority": "root",
+        "root_principal_id": root_principal_id,
+        "root_principal_source": actor_source,
+        "root_signer_id": signer.signer_id,
+        "root_fingerprint": root_fingerprint,
+    }
+
+    if args.dry_run:
+        would_write = not already_delegated_noop
+        plan["dry_run"] = True
+        plan["would_write"] = would_write
+        if already_delegated_noop:
+            plan["already_delegated"] = True
+            plan["existing_delegation_event_hash"] = existing_hash
+        if json_mode:
+            _dump_json(plan)
+        else:
+            print("trust delegate-registrar: dry-run (nothing written)")
+            print(f"  project:                 {project}")
+            print(f"  trust_domain_id:         {doc.trust_domain_id}")
+            print(f"  registrar principal:     {args.registrar_principal_id}")
+            print(f"  registrar key_id:        {args.registrar_key_id}")
+            print(f"  registrar fingerprint:   {registrar_fingerprint}")
+            print(f"  scopes:                  {', '.join(scopes)}")
+            print(f"  validity window:         {not_before} .. {not_after} ({window_days}d)")
+            print(f"  max operations:          {max_operations}")
+            print(f"  authority:               root {root_principal_id} ({actor_source})")
+            print(f"  root signer_id:          {signer.signer_id}")
+            print(f"  would write:             {would_write}")
+            if already_delegated_noop:
+                print(f"  already delegated:       {existing_hash} (no-op)")
+        return
+
+    # Idempotent no-op: an identical live delegation already exists. Re-running is safe and
+    # writes nothing rather than forking the credential.
+    if already_delegated_noop:
+        result = {
+            "ok": True,
+            "already_delegated": True,
+            "transition": "registrar_delegated",
+            "project": project,
+            "trust_domain_id": doc.trust_domain_id,
+            "registrar_principal_id": args.registrar_principal_id,
+            "registrar_key_id": args.registrar_key_id,
+            "delegation_event_hash": existing_hash,
+        }
+        if json_mode:
+            _dump_json(result)
+        else:
+            print(
+                f"Registrar {args.registrar_principal_id} already has this exact "
+                f"delegation ({existing_hash}); nothing to do."
+            )
+        return
+
+    # (9) Append the root-signed registrar_delegated event through the trust-log-native
+    # writer. It re-verifies the root threshold and refuses on any authority failure inside
+    # its own single transaction, so a failure here appends nothing — never a partial
+    # delegation. The synthesized key file binds the root seed to the root actor principal
+    # (the writer resolves the signing key by principal_id) and is deleted in the finally.
+    key_file = _synthesize_root_keyset_file(
+        seed=seed,
+        public_key=root_public,
+        principal_id=root_principal_id,
+        key_id=f"k_{signer.signer_id}",
+    )
+    handle: Regista | None = None
+    try:
+        handle = Regista(dsn, project, key_file)
+        event_id = append_trust_log_event(
+            handle._mgr,
+            keys=handle._keys,
+            genesis_document=genesis_document,
+            transition="registrar_delegated",
+            payload=payload,
+            entity_kind="trust_domain",
+            entity_id=uuid.UUID(doc.trust_domain_id),
+            principal_id=root_principal_id,
+            authority="root",
+        )
+    finally:
+        try:
+            os.unlink(key_file)
+        except OSError as unlink_err:
+            _warn_root_seed_not_removed(key_file, unlink_err)
+        finally:
+            if handle is not None:
+                handle.close()
+
+    result = {
+        "ok": True,
+        "already_delegated": False,
+        "event_id": event_id,
+        "transition": "registrar_delegated",
+        "project": project,
+        "trust_domain_id": doc.trust_domain_id,
+        "registrar_principal_id": args.registrar_principal_id,
+        "registrar_key_id": args.registrar_key_id,
+        "registrar_fingerprint": registrar_fingerprint,
+        "scopes": scopes,
+        "not_before": not_before,
+        "not_after": not_after,
+        "max_operations": max_operations,
+        "authority": "root",
+        "root_principal_id": root_principal_id,
+    }
+    if json_mode:
+        _dump_json(result)
+    else:
+        print("trust delegate-registrar: registrar_delegated written")
+        print(f"  event_id:                {event_id}")
+        print(f"  project (schema):        {project}")
+        print(f"  registrar principal:     {args.registrar_principal_id}")
+        print(f"  registrar key_id:        {args.registrar_key_id}")
+        print(f"  scopes:                  {', '.join(scopes)}")
+        print(f"  validity window:         {not_before} .. {not_after}")
+        print(f"  authority:               root {root_principal_id}")
+        print("  the registrar may now authorise `regista trust enroll`")
+
+
 def cmd_spec_sign(args: argparse.Namespace) -> None:
     import hashlib
 
@@ -3714,6 +4143,94 @@ def main(argv: list[str] | None = None) -> None:
         "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
     )
     trust_enroll.set_defaults(func=cmd_trust_enroll)
+
+    # WI-321 (3/3): the missing middle link — ROOT delegates registrar power. Genesis
+    # (init-log) is written and hosts want to enrol (enroll), but enrolment is
+    # registrar-authorised: without a root-signed registrar_delegated event nothing can be
+    # enrolled. This command writes that event. It DOES touch the database.
+    trust_deleg = trust_sub.add_parser(
+        "delegate-registrar",
+        help="Delegate scoped, expiring registrar authority under root (§5.4)",
+    )
+    trust_deleg.add_argument(
+        "--registrar-principal-id",
+        required=True,
+        help="Canonical kind:subject principal id being granted registrar authority "
+        "(e.g. service:registrar-1)",
+    )
+    trust_deleg.add_argument(
+        "--registrar-public-key",
+        required=True,
+        help="Base64-encoded 32-byte Ed25519 public key of the registrar's key",
+    )
+    trust_deleg.add_argument(
+        "--registrar-key-id",
+        required=True,
+        help="key_id granted to the registrar (1-128 chars of [A-Za-z0-9._:-])",
+    )
+    trust_deleg.add_argument(
+        "--key",
+        required=True,
+        help="Path to the ROOT authorising 32-byte Ed25519 seed (64 hex chars or "
+        "base64); its fingerprint must be a current genesis signer",
+    )
+    trust_deleg.add_argument(
+        "--root-principal-id",
+        default=None,
+        help="Canonical kind:subject principal id recorded as the delegation event's "
+        "actor (e.g. service:root-a). OPTIONAL: defaults from the genesis's SIGNED "
+        "initial_custody declared_holder (requires exactly one custody entry whose "
+        "holder is canonical). NOTE: an UNAUTHENTICATED operator assertion, not bound to "
+        "the root signature (WI-320).",
+    )
+    trust_deleg.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="A transition the registrar may authorise; repeatable and comma-joinable. "
+        "Default: principal_key_enrolled,principal_key_rotated,principal_key_revoked. "
+        "Must be within the registrar lifecycle-administration scope set (§5.4).",
+    )
+    trust_deleg.add_argument(
+        "--not-before",
+        default=None,
+        help="Delegation validity start (microsecond UTC Z form); default: now - 1h",
+    )
+    trust_deleg.add_argument(
+        "--not-after",
+        default=None,
+        help="Delegation validity end (microsecond UTC Z form); default: now + 365d "
+        "(must be <= 400 days after --not-before per §5.4)",
+    )
+    trust_deleg.add_argument(
+        "--max-operations",
+        type=int,
+        default=None,
+        help="Optional cap on the number of lifecycle operations the registrar may "
+        "authorise under this delegation (>= 1; default: unbounded)",
+    )
+    trust_deleg.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTRA_TRUST_GENESIS_PATH)",
+    )
+    # SUPPRESS (see rebuild-projection/init-log): a subparser --project/--json with a
+    # None/False default would clobber the global value the top-level parser already set.
+    trust_deleg.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Trust-log project (schema); defaults to the global --project, else the "
+        "genesis document's project_name_hint (regista_trust)",
+    )
+    trust_deleg.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify and print the plan; write NOTHING",
+    )
+    trust_deleg.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
+    )
+    trust_deleg.set_defaults(func=cmd_trust_delegate_registrar)
 
     # spec (Plan 025 WI-4.3)
     spec_parser = subs.add_parser("spec", help="Spec entity commands")
