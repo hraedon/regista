@@ -272,7 +272,11 @@ def _rebuild(env) -> None:
         argparse.Namespace(
             dsn=DSN,
             project=env["project"],
-            hmac_key_path=None,
+            # Self-contained: rebuild-projection opens a Regista handle that needs a
+            # key path; supply the fixture's keyfile rather than relying on an ambient
+            # REGISTA_KEY_PATH (present locally, absent in CI — the cause of the
+            # [UNKNOWN_KEY_ID] hmac_key_path is required failure).
+            hmac_key_path=env["keyfile"],
             genesis=env["genesis"],
             dry_run=False,
             json=False,
@@ -337,7 +341,8 @@ def test_enroll_end_to_end_then_projection_shows_key(env):
         argparse.Namespace(
             dsn=DSN,
             project=env["project"],
-            hmac_key_path=None,
+            # Self-contained: supply the fixture keyfile (not an ambient REGISTA_KEY_PATH).
+            hmac_key_path=env["keyfile"],
             genesis=env["genesis"],
             dry_run=False,
             json=False,
