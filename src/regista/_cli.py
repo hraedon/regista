@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
 
 import structlog
@@ -1607,6 +1607,13 @@ def cmd_signer_sign_possession(args: argparse.Namespace) -> None:
             verifier_nonce=challenge_data["verifier_nonce"],
             issued_at=_parse_iso(challenge_data["issued_at"]),
             expires_at=_parse_iso(challenge_data["expires_at"]),
+            # v2 fields (§5.5): the client must sign the challenge EXACTLY as issued,
+            # including trust_domain_id and enrollment_request_digest, or the framed
+            # signing bytes differ from the verifier's and a trust-log enrollment
+            # (`regista trust enroll`) rejects the proof as unverifiable. They default
+            # to None so a v1 challenge that omits them still signs the v1 bytes.
+            trust_domain_id=challenge_data.get("trust_domain_id"),
+            enrollment_request_digest=challenge_data.get("enrollment_request_digest"),
         )
         proof = signer.sign_possession(challenge)
         if args.json:
@@ -2274,6 +2281,629 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
         print(f"  root principal:          {root_principal_id}")
 
 
+# --- WI-319 (2/3): `regista trust enroll` — the v6-native enrollment verifier -------
+#
+# Piece 1 (`trust init-log`) wrote the trust log's genesis; a key can now be enrolled
+# INTO it. This is the VERIFIER/COMMIT counterpart of the client `signer` commands: it
+# consumes the possession proof the enrollee produced and appends a signed
+# `principal_key_enrolled` event through the trust-log-native writer
+# (`_trust_log_writer.append_trust_log_event`), which is the ONLY writer the trust-log
+# project accepts (its genesis is `trust_domain_established`, not an ordinary v6 epoch,
+# so the `PrincipalLifecycle` commit path — which requires an accepted key-binding
+# anchor — cannot append here). Enrolment is registrar-authorised: §5.5's
+# `principal_key_enrolled` payload has no `root_signatures` slot (only rotation does),
+# so a live `registrar_delegated` scoped to `principal_key_enrolled` is the authority.
+#
+# The ceremony is two phased because possession requires the ENROLLEE's private key,
+# which the verifier must never hold:
+#   1. `trust enroll --issue-challenge --principal <id> --public-key <b64>`
+#        issues a fresh v2 possession challenge, persists it (unused), prints its JSON.
+#   2. enrollee: `signer sign-possession --challenge <that JSON>` -> a possession proof.
+#   3. `trust enroll --principal <id> --public-key <b64> --proof-file <proof>
+#        --key <registrar seed> --registrar-principal-id <id>`
+#        verifies the proof, consumes the challenge, and appends the signed event.
+# `rebuild-projection` then materialises the key into `principal_keys` (§5.9).
+
+
+def _iso_micro_z(value: datetime) -> str:
+    """The microsecond-UTC ``...Z`` timestamp form the §5.5 parsers require."""
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
+def _enroll_public_key(value: str) -> bytes:
+    """Decode a base64 Ed25519 public key argument to its 32 raw bytes, fail-closed."""
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--public-key must be a base64-encoded 32-byte Ed25519 public key",
+            {"reason": "public_key_not_base64"},
+        ) from exc
+    if len(raw) != 32:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"--public-key must decode to 32 bytes, got {len(raw)}",
+            {"reason": "public_key_wrong_length", "length": len(raw)},
+        )
+    return raw
+
+
+def _enroll_require_canonical(principal_id: str) -> str:
+    """Return the canonical principal kind, or refuse a non-canonical id (§2.1)."""
+    from regista._principals import classify_principal_id
+
+    classification = classify_principal_id(principal_id)
+    if not classification.canonical or classification.kind is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{principal_id!r} is not a canonical kind:subject principal id "
+            "(TRUST-DOMAIN.md §2.1)",
+            {"reason": "principal_id_not_canonical", "principal_id": principal_id},
+        )
+    return classification.kind
+
+
+def _enroll_resolve_target(args: argparse.Namespace) -> tuple[str, dict[str, Any], Any, str]:
+    """Resolve (dsn, genesis_document, parsed genesis, project) for an enroll command.
+
+    Mirrors `trust init-log`'s precedence: the trust-log schema is the document's SIGNED
+    ``project_name_hint``; an explicit/ambient project may only SELECT that same schema,
+    never redirect enrolment into a foreign one.
+    """
+    from regista._trust_domain import parse_trust_genesis
+
+    dsn, project_cfg, _ = _resolve_config(args)
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --dsn or REGISTA_DSN",
+            {"reason": "dsn_absent"},
+        )
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no genesis document: pass --genesis PATH or set REGISTRA_TRUST_GENESIS_PATH",
+            {"reason": "genesis_document_absent"},
+        )
+    doc = parse_trust_genesis(genesis_document)
+    hint = doc.trust_log.project_name_hint
+    if project_cfg is not None and project_cfg != hint:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"the configured project {project_cfg!r} differs from the genesis "
+            f"document's signed project_name_hint {hint!r}; pass --project {hint} or "
+            "unset REGISTA_PROJECT",
+            {"reason": "project_precedence_conflict"},
+        )
+    return dsn, genesis_document, doc, (project_cfg or hint)
+
+
+def _enroll_require_initialized(dsn: str, project: str) -> None:
+    """Refuse cleanly if the trust log's genesis has not been written yet."""
+    _schema_exists, already_initialized = _probe_trust_log_state(dsn, project)
+    if not already_initialized:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_STORE_UNAVAILABLE,
+            f"the trust log in schema {project!r} has no trust_domain_established "
+            "genesis; run `regista trust init-log` before enrolling a key into it",
+            {"reason": "trust_log_not_initialized", "project": project},
+        )
+
+
+def _enroll_persist_challenge(conn: Any, challenge: Any) -> None:
+    """Insert the (operation, unused possession-challenge) rows the ceremony needs.
+
+    A ``lifecycle_challenges`` row FK-references ``lifecycle_operations`` (migration 043),
+    so a placeholder operation is inserted first. The trust-log writer's possession
+    admission (`_verify_possession_evidence`) reads the challenge row back by
+    ``challenge_id``; the operation carries no lifecycle semantics here — it exists only
+    to satisfy the foreign key.
+    """
+    conn.execute(
+        "INSERT INTO lifecycle_operations "
+        "(operation_id, idempotency_key, operation_type, state, project, principal_id, "
+        "principal_kind, actor_id, reason, requested_authority, policy_version, "
+        "digest_value, digest_algorithm, digest_version, protected_options, "
+        "created_at, expires_at) "
+        "VALUES (%s, %s, 'enrollment', 'awaiting_proof', %s, %s, %s, %s, "
+        "'trust-log enrollment', 'registrar', 'trust-log', %s, 'sha-256', '1', "
+        "'{}'::jsonb, %s, %s) "
+        "ON CONFLICT (operation_id) DO NOTHING",
+        [
+            uuid.UUID(challenge.operation_id),
+            "trust-enroll-" + challenge.challenge_id,
+            challenge.project,
+            challenge.principal_id,
+            challenge.principal_kind,
+            challenge.principal_id,
+            challenge.operation_digest,
+            challenge.issued_at,
+            challenge.expires_at,
+        ],
+    )
+    conn.execute(
+        "INSERT INTO lifecycle_challenges "
+        "(challenge_id, operation_id, operation_digest, project, principal_id, "
+        "fingerprint, scheme, verifier_nonce, issued_at, expires_at, used, kind, "
+        "trust_domain_id, enrollment_request_digest, proof_signature) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, 'possession', %s, %s, NULL)",
+        [
+            uuid.UUID(challenge.challenge_id),
+            uuid.UUID(challenge.operation_id),
+            challenge.operation_digest,
+            challenge.project,
+            challenge.principal_id,
+            challenge.fingerprint,
+            challenge.scheme,
+            challenge.verifier_nonce,
+            challenge.issued_at,
+            challenge.expires_at,
+            uuid.UUID(challenge.trust_domain_id),
+            challenge.enrollment_request_digest,
+        ],
+    )
+
+
+class _EnrollChallenge:
+    """The issued possession challenge, carrying the enrollee kind alongside §5.5 fields."""
+
+    def __init__(self, *, challenge: Any, principal_kind: str) -> None:
+        self.v2 = challenge
+        self.principal_kind = principal_kind
+
+    def __getattr__(self, name: str) -> Any:  # delegate §5.5 fields to the v2 object
+        return getattr(self.v2, name)
+
+
+def _issue_enroll_challenge(
+    args: argparse.Namespace, *, dsn: str, project: str, doc: Any, json_mode: bool
+) -> None:
+    import secrets
+
+    from regista._connection import ConnectionManager
+    from regista._principal_keys import _compute_fingerprint
+    from regista._trust_log import PossessionChallengeV2, enrollment_request_digest
+
+    principal_kind = _enroll_require_canonical(args.principal)
+    public_key = _enroll_public_key(args.public_key)
+    fingerprint = _compute_fingerprint(public_key, "ed25519")
+    now = datetime.now(UTC)
+    ttl_minutes = args.ttl_minutes if args.ttl_minutes is not None else 30
+    challenge = PossessionChallengeV2(
+        challenge_id=str(uuid.uuid4()),
+        operation_id=str(uuid.uuid4()),
+        # No durable lifecycle operation backs a trust-log enrolment; the digest is a
+        # well-formed placeholder (the possession binding rests on the challenge fields
+        # and the verifier_nonce, not on this value).
+        operation_digest="sha256:" + "0" * 64,
+        project=project,
+        trust_domain_id=doc.trust_domain_id,
+        principal_id=args.principal,
+        fingerprint=fingerprint,
+        scheme="ed25519",
+        verifier_nonce=secrets.token_bytes(32).hex(),
+        enrollment_request_digest=enrollment_request_digest({"principal_id": args.principal}),
+        issued_at=_iso_micro_z(now),
+        expires_at=_iso_micro_z(now + timedelta(minutes=ttl_minutes)),
+    )
+    wrapped = _EnrollChallenge(challenge=challenge, principal_kind=principal_kind)
+
+    if args.dry_run:
+        plan = {
+            "action": "trust-enroll-issue-challenge",
+            "dry_run": True,
+            "would_write": True,
+            "project": project,
+            "principal_id": args.principal,
+            "fingerprint": fingerprint,
+            "trust_domain_id": doc.trust_domain_id,
+            "challenge_id": challenge.challenge_id,
+        }
+        if json_mode:
+            _dump_json(plan)
+        else:
+            print("trust enroll --issue-challenge: dry-run (nothing written)")
+            print(f"  project:          {project}")
+            print(f"  principal:        {args.principal}")
+            print(f"  fingerprint:      {fingerprint}")
+            print(f"  challenge_id:     {challenge.challenge_id}")
+        return
+
+    mgr = ConnectionManager(dsn, project)
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            _enroll_persist_challenge(conn, wrapped)
+    finally:
+        mgr.close()
+
+    if json_mode:
+        # The challenge object itself, in the exact shape `signer sign-possession`
+        # consumes (§5.5 v2, including trust_domain_id + enrollment_request_digest).
+        _dump_json(challenge.to_dict())
+    else:
+        print(f"Issued possession challenge {challenge.challenge_id} for {args.principal}:")
+        print("  hand the JSON below to the enrollee for `regista signer sign-possession`:")
+        print(json.dumps(challenge.to_dict(), indent=2, sort_keys=True))
+
+
+def _load_stored_challenge(conn: Any, challenge_id: str) -> Any:
+    from regista._trust_log import PossessionChallengeV2
+
+    try:
+        cid = uuid.UUID(challenge_id)
+    except (ValueError, AttributeError) as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"the proof names a malformed challenge_id {challenge_id!r}",
+            {"reason": "challenge_id_malformed"},
+        ) from exc
+    row = conn.execute(
+        "SELECT challenge_id, operation_id, operation_digest, project, principal_id, "
+        "fingerprint, scheme, verifier_nonce, issued_at, expires_at, used, "
+        "trust_domain_id, enrollment_request_digest, proof_signature "
+        "FROM lifecycle_challenges WHERE challenge_id = %s AND kind = 'possession'",
+        [cid],
+    ).fetchone()
+    if row is None:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+            f"no possession challenge {challenge_id!r} is on record; issue one with "
+            "`regista trust enroll --issue-challenge` first",
+            {"reason": "possession_challenge_not_found", "challenge_id": challenge_id},
+        )
+    challenge = PossessionChallengeV2(
+        challenge_id=str(row["challenge_id"]),
+        operation_id=str(row["operation_id"]),
+        operation_digest=row["operation_digest"],
+        project=row["project"],
+        trust_domain_id=str(row["trust_domain_id"]),
+        principal_id=row["principal_id"],
+        fingerprint=row["fingerprint"],
+        scheme=row["scheme"],
+        verifier_nonce=row["verifier_nonce"],
+        enrollment_request_digest=row["enrollment_request_digest"],
+        issued_at=_iso_micro_z(row["issued_at"]),
+        expires_at=_iso_micro_z(row["expires_at"]),
+    )
+    return challenge, bool(row["used"])
+
+
+def _commit_enroll(
+    args: argparse.Namespace,
+    *,
+    dsn: str,
+    genesis_document: dict[str, Any],
+    doc: Any,
+    project: str,
+    json_mode: bool,
+) -> None:
+    import nacl.signing
+
+    from regista._connection import ConnectionManager
+    from regista._principal_keys import _compute_fingerprint, principal_entity_id
+    from regista._trust_log import (
+        POSSESSION_DOMAIN_V2,
+        verify_possession_proof_v2,
+    )
+    from regista._trust_log_writer import append_trust_log_event, replay_trust_state
+
+    principal_kind = _enroll_require_canonical(args.principal)
+    public_key = _enroll_public_key(args.public_key)
+    fingerprint = _compute_fingerprint(public_key, "ed25519")
+    _enroll_require_canonical(args.registrar_principal_id)
+
+    # The authorising key is the registrar's delegated key. Derive its fingerprint from
+    # the supplied seed so a wrong key is refused against the replayed delegation.
+    seed = _read_ed25519_seed(args.key)
+    registrar_public = bytes(nacl.signing.SigningKey(seed).verify_key)
+    registrar_fingerprint = _compute_fingerprint(registrar_public, "ed25519")
+
+    # Read the possession proof the enrollee produced (`signer sign-possession`).
+    proof_text = args.proof
+    if proof_text is None and args.proof_file:
+        try:
+            proof_text = open(args.proof_file, encoding="utf-8").read()
+        except OSError as exc:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"cannot read --proof-file: {exc}",
+                {"reason": "proof_file_unreadable"},
+            ) from exc
+    if proof_text is None:
+        proof_text = sys.stdin.read()
+    if not proof_text or not proof_text.strip():
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no possession proof provided (use --proof, --proof-file, or stdin)",
+            {"reason": "possession_proof_absent"},
+        )
+    try:
+        proof_data = json.loads(proof_text)
+        proof_challenge_id = proof_data["challenge_id"]
+        proof_signature = base64.b64decode(proof_data["signature"], validate=True)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "the possession proof is not the JSON `signer sign-possession` emits "
+            "(needs challenge_id + base64 signature)",
+            {"reason": "possession_proof_malformed"},
+        ) from exc
+
+    _enroll_require_initialized(dsn, project)
+
+    mgr = ConnectionManager(dsn, project)
+    plan_only = args.dry_run
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            state = replay_trust_state(conn, genesis_document)
+            challenge, already_used = _load_stored_challenge(conn, proof_challenge_id)
+
+        # The challenge must be for THIS principal and key, or the proof binds nothing.
+        if challenge.principal_id != args.principal:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"the challenge names principal {challenge.principal_id!r}, not "
+                f"{args.principal!r}",
+                {"reason": "possession_challenge_principal_mismatch"},
+            )
+        if challenge.fingerprint != fingerprint:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                "the challenge was issued for a different key than --public-key",
+                {"reason": "possession_challenge_fingerprint_mismatch"},
+            )
+
+        # Resolve the registrar's live delegation from the replayed trust state and
+        # verify the supplied key IS the delegated key. `append_trust_log_event` re-runs
+        # the full authority check; this front-loads it so an unauthorised key is
+        # refused BEFORE the challenge is consumed.
+        entry = state.registrars.get(args.registrar_principal_id)
+        if entry is None or entry.revoked:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"{args.registrar_principal_id!r} has no live registrar delegation in "
+                "the trust log; only a delegated registrar (or root, out of scope here) "
+                "may authorise an enrolment",
+                {"reason": "no_live_registrar_delegation"},
+            )
+        if _compute_fingerprint(entry.public_key, "ed25519") != registrar_fingerprint:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                "the --key seed is not the registrar's delegated key",
+                {"reason": "authorizing_key_not_the_delegated_key"},
+            )
+        if "principal_key_enrolled" not in entry.scopes:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"the registrar delegation does not scope principal_key_enrolled "
+                f"(scopes: {sorted(entry.scopes)})",
+                {"reason": "enrolment_out_of_registrar_scope"},
+            )
+
+        # Idempotency: if this principal already has an ACTIVE key with these exact
+        # public bytes, enrolling again is a clean no-op — never a duplicate or a fork.
+        for (p_id, k_id), pub in state.principal_public_keys.items():
+            if (
+                p_id == args.principal
+                and pub == public_key
+                and state.principal_key_status.get((p_id, k_id)) == "active"
+            ):
+                result = {
+                    "ok": True,
+                    "already_enrolled": True,
+                    "project": project,
+                    "principal_id": args.principal,
+                    "key_id": k_id,
+                    "fingerprint": fingerprint,
+                }
+                if json_mode:
+                    _dump_json(result)
+                else:
+                    print(
+                        f"Principal {args.principal} already has this key enrolled and "
+                        f"active (key_id {k_id}); nothing to do."
+                    )
+                return
+
+        key_id = "pk_" + uuid.uuid4().hex[:16]
+        payload: dict[str, Any] = {
+            "type": "regista.key-enrollment",
+            "version": 1,
+            "trust_domain_id": doc.trust_domain_id,
+            "principal_id": args.principal,
+            "principal_kind": principal_kind,
+            "key_id": key_id,
+            "scheme_id": "ed25519",
+            "public_key": base64.b64encode(public_key).decode("ascii"),
+            "fingerprint": fingerprint,
+            "not_before": _iso_micro_z(datetime.now(UTC)),
+            "not_after": None,
+            "possession_proof": {
+                "domain": POSSESSION_DOMAIN_V2,
+                "challenge_id": challenge.challenge_id,
+                "verifier_nonce": challenge.verifier_nonce,
+                "enrollment_request_digest": challenge.enrollment_request_digest,
+                "signature": base64.b64encode(proof_signature).decode("ascii"),
+            },
+            "authorized_by": {
+                "authority": "registrar",
+                "principal_id": args.registrar_principal_id,
+                "key_id": entry.key_id,
+                "delegation_event_hash": entry.delegated_event_hash,
+            },
+            "custody": {
+                "declared_backend": args.custody_backend or "operator",
+                "declared_policy_ref": args.policy_ref or "policy://trust/enrollment/v1",
+            },
+            "supersedes_key_id": None,
+        }
+
+        # Verify the possession proof against the stored challenge BEFORE consuming it —
+        # a wrong or absent proof is refused here, with nothing written and the challenge
+        # left unburned. (`append_trust_log_event` verifies it again against the durable
+        # consumed row; this is the fail-closed pre-check.)
+        verify_possession_proof_v2(payload, challenge)
+
+        plan = {
+            "action": "trust-enroll",
+            "project": project,
+            "trust_domain_id": doc.trust_domain_id,
+            "transition": "principal_key_enrolled",
+            "principal_id": args.principal,
+            "principal_kind": principal_kind,
+            "key_id": key_id,
+            "fingerprint": fingerprint,
+            "authority": "registrar",
+            "registrar_principal_id": args.registrar_principal_id,
+            "delegation_event_hash": entry.delegated_event_hash,
+            "challenge_id": challenge.challenge_id,
+        }
+
+        if plan_only:
+            plan["dry_run"] = True
+            plan["would_write"] = True
+            if already_used:
+                # A real run would refuse a re-used challenge; mirror that in the plan.
+                plan["would_write"] = False
+                plan["would_refuse_reason"] = "possession_challenge_already_used"
+            if json_mode:
+                _dump_json(plan)
+            else:
+                print("trust enroll: dry-run (nothing written)")
+                print(f"  project:                 {project}")
+                print(f"  principal:               {args.principal}")
+                print(f"  key_id:                  {key_id}")
+                print(f"  fingerprint:             {fingerprint}")
+                print(f"  authority:               registrar {args.registrar_principal_id}")
+                print(f"  delegation_event_hash:   {entry.delegated_event_hash}")
+                print(f"  would write:             {plan.get('would_write')}")
+                if plan.get("would_refuse_reason"):
+                    print(f"  would refuse (reason):   {plan['would_refuse_reason']}")
+            return
+
+        # Consume the challenge single-use (used=false -> true, recording the verified
+        # proof signature). The conditional UPDATE is the atomic single-use guard: a
+        # second concurrent (or replayed) commit finds zero rows and is refused, so the
+        # same challenge can never back two enrolments.
+        with mgr.transaction() as conn:
+            consumed = conn.execute(
+                "UPDATE lifecycle_challenges SET used = true, proof_signature = %s "
+                "WHERE challenge_id = %s AND used = false",
+                [
+                    base64.b64encode(proof_signature).decode("ascii"),
+                    uuid.UUID(challenge.challenge_id),
+                ],
+            ).rowcount
+        if consumed != 1:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"possession challenge {challenge.challenge_id!r} was already consumed; "
+                "issue a fresh challenge to re-enrol",
+                {"reason": "possession_challenge_already_used"},
+            )
+    finally:
+        mgr.close()
+
+    # Append the signed principal_key_enrolled event through the trust-log-native writer,
+    # authorised as the registrar. The writer re-verifies possession (against the now
+    # durably-consumed challenge) and the registrar authority inside its own single
+    # transaction, so a failure here appends nothing — never a partial enrolment.
+    key_file = _synthesize_root_keyset_file(
+        seed=seed,
+        public_key=registrar_public,
+        principal_id=args.registrar_principal_id,
+        key_id=entry.key_id,
+    )
+    handle: Regista | None = None
+    try:
+        handle = Regista(dsn, project, key_file)
+        event_id = append_trust_log_event(
+            handle._mgr,
+            keys=handle._keys,
+            genesis_document=genesis_document,
+            transition="principal_key_enrolled",
+            payload=payload,
+            entity_kind="principal",
+            entity_id=principal_entity_id(args.principal),
+            principal_id=args.registrar_principal_id,
+            authority="registrar",
+        )
+    finally:
+        try:
+            os.unlink(key_file)
+        except OSError as unlink_err:
+            _warn_root_seed_not_removed(key_file, unlink_err)
+        finally:
+            if handle is not None:
+                handle.close()
+
+    result = {
+        "ok": True,
+        "already_enrolled": False,
+        "event_id": event_id,
+        "transition": "principal_key_enrolled",
+        "project": project,
+        "trust_domain_id": doc.trust_domain_id,
+        "principal_id": args.principal,
+        "key_id": key_id,
+        "fingerprint": fingerprint,
+        "authority": "registrar",
+        "registrar_principal_id": args.registrar_principal_id,
+    }
+    if json_mode:
+        _dump_json(result)
+    else:
+        print("trust enroll: principal_key_enrolled written")
+        print(f"  event_id:                {event_id}")
+        print(f"  project (schema):        {project}")
+        print(f"  principal:               {args.principal}")
+        print(f"  key_id:                  {key_id}")
+        print(f"  fingerprint:             {fingerprint}")
+        print(f"  authority:               registrar {args.registrar_principal_id}")
+        print("  run `regista trust rebuild-projection` to materialise principal_keys")
+
+
+def cmd_trust_enroll(args: argparse.Namespace) -> None:
+    """Enrol a principal's Ed25519 key into the estate trust log (§5.5).
+
+    Two modes. ``--issue-challenge`` issues a fresh v2 possession challenge for a
+    principal + public key and prints it (phase 1). The default mode consumes the
+    possession proof the enrollee produced from that challenge and appends the signed
+    ``principal_key_enrolled`` event under a registrar's delegated authority (phase 2).
+    Fail-closed throughout: the trust log must be initialised; the authorising key must
+    be a live registrar's delegated key; the possession proof must verify; the challenge
+    is single-use; and re-enrolling an already-active key is a clean no-op.
+    """
+    json_mode = getattr(args, "json", False)
+    dsn, genesis_document, doc, project = _enroll_resolve_target(args)
+
+    if args.issue_challenge:
+        _enroll_require_initialized(dsn, project)
+        _issue_enroll_challenge(args, dsn=dsn, project=project, doc=doc, json_mode=json_mode)
+        return
+
+    for name in ("key", "registrar_principal_id"):
+        if getattr(args, name, None) is None:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"--{name.replace('_', '-')} is required to commit an enrolment "
+                "(omit it only with --issue-challenge)",
+                {"reason": "missing_commit_argument", "argument": name},
+            )
+    _commit_enroll(
+        args,
+        dsn=dsn,
+        genesis_document=genesis_document,
+        doc=doc,
+        project=project,
+        json_mode=json_mode,
+    )
+
+
 def cmd_spec_sign(args: argparse.Namespace) -> None:
     import hashlib
 
@@ -2923,6 +3553,95 @@ def main(argv: list[str] | None = None) -> None:
         "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
     )
     trust_init.set_defaults(func=cmd_trust_init_log)
+
+    # WI-319 (2/3): enrol a principal's Ed25519 key INTO the initialised trust log.
+    # The v6-native verifier/commit counterpart of the `signer` client commands. Two
+    # phases: `--issue-challenge` prints a possession challenge; the default commits the
+    # enrollee's proof as a registrar-authorised principal_key_enrolled event.
+    trust_enroll = trust_sub.add_parser(
+        "enroll",
+        help="Enrol a principal key into the trust log (§5.5); registrar-authorised",
+    )
+    trust_enroll.add_argument(
+        "--principal",
+        required=True,
+        help="Enrollee canonical kind:subject principal id (e.g. agent:host-01)",
+    )
+    trust_enroll.add_argument(
+        "--public-key",
+        required=True,
+        help="Enrollee's base64-encoded 32-byte Ed25519 public key (from "
+        "`regista signer generate`)",
+    )
+    trust_enroll.add_argument(
+        "--issue-challenge",
+        action="store_true",
+        help="Phase 1: issue and persist a fresh possession challenge, print its JSON, "
+        "and exit. Hand the JSON to the enrollee for `regista signer sign-possession`.",
+    )
+    trust_enroll.add_argument(
+        "--ttl-minutes",
+        type=int,
+        default=None,
+        help="Possession-challenge validity window in minutes (default 30); "
+        "--issue-challenge only",
+    )
+    trust_enroll.add_argument(
+        "--proof",
+        default=None,
+        help="Phase 2: the possession proof JSON from `signer sign-possession` "
+        "(else --proof-file, else stdin)",
+    )
+    trust_enroll.add_argument(
+        "--proof-file",
+        default=None,
+        help="Phase 2: path to the possession proof JSON",
+    )
+    trust_enroll.add_argument(
+        "--key",
+        default=None,
+        help="Phase 2: path to the authorising registrar's 32-byte Ed25519 seed "
+        "(64 hex chars or base64); must be the key of a live registrar delegation",
+    )
+    trust_enroll.add_argument(
+        "--registrar-principal-id",
+        default=None,
+        help="Phase 2: canonical principal id of the delegated registrar authorising "
+        "this enrolment (e.g. service:registrar-1)",
+    )
+    trust_enroll.add_argument(
+        "--custody-backend",
+        default=None,
+        help="Declared custody backend recorded on the event "
+        "(vault/azure/windows/file/operator; default operator)",
+    )
+    trust_enroll.add_argument(
+        "--policy-ref",
+        default=None,
+        help="Declared custody policy reference recorded on the event",
+    )
+    trust_enroll.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTRA_TRUST_GENESIS_PATH)",
+    )
+    # SUPPRESS (see rebuild-projection/init-log): a subparser --project/--json with a
+    # None/False default would clobber the global value the top-level parser already set.
+    trust_enroll.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Trust-log project (schema); defaults to the global --project, else the "
+        "genesis document's project_name_hint (regista_trust)",
+    )
+    trust_enroll.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify and print the plan; write NOTHING",
+    )
+    trust_enroll.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
+    )
+    trust_enroll.set_defaults(func=cmd_trust_enroll)
 
     # spec (Plan 025 WI-4.3)
     spec_parser = subs.add_parser("spec", help="Spec entity commands")
