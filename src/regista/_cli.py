@@ -1298,9 +1298,16 @@ _CLI_PROJECTION_REFUSAL = (
     "  4. commit  (appends the signed event and applies the projection atomically)\n\n"
     "That ceremony is deliberately multi-step and needs material a single "
     "non-interactive CLI invocation does not have: the enrolling private key for the "
-    "possession proof, and a second principal's approval. Driving it from the CLI is "
-    "not wired up in 0.6.0 — see `regista trust rebuild-projection` for the read/"
-    "repair side."
+    "possession proof, and a second principal's approval. Driving THIS ordinary-project "
+    "flow from the CLI is not wired up in 0.6.0 — see `regista trust rebuild-projection` "
+    "for the read/repair side.\n\n"
+    "The shipped write path for the estate trust log is `regista trust enroll`, which "
+    "uses a DIFFERENT, registrar-scoped authority model (TRUST-DOMAIN.md §5.5): a live "
+    "registrar's delegation IS the authority to enrol, so there is no separate approval "
+    "step — the delegation, granted under root authority, already carries it. It still "
+    "requires the enrollee's possession proof, and it never writes the projection "
+    "directly: it appends a signed `principal_key_enrolled` event that "
+    "`rebuild-projection` materialises."
 )
 
 
@@ -2484,7 +2491,14 @@ def _issue_enroll_challenge(
         fingerprint=fingerprint,
         scheme="ed25519",
         verifier_nonce=secrets.token_bytes(32).hex(),
-        enrollment_request_digest=enrollment_request_digest({"principal_id": args.principal}),
+        # Bind BOTH the principal and the key fingerprint being enrolled (N5, PR #58):
+        # the digest is stored on the challenge and echoed in the possession proof, which
+        # the verifier checks for equality — folding the fingerprint in makes the proof
+        # inseparable from the exact key it enrols (defence in depth). Nothing recomputes
+        # this from principal_id alone, so widening the bound request is safe.
+        enrollment_request_digest=enrollment_request_digest(
+            {"principal_id": args.principal, "fingerprint": fingerprint}
+        ),
         issued_at=_iso_micro_z(now),
         expires_at=_iso_micro_z(now + timedelta(minutes=ttl_minutes)),
     )
@@ -2657,6 +2671,25 @@ def _commit_enroll(
                 {"reason": "possession_challenge_fingerprint_mismatch"},
             )
 
+        # Refuse an expired challenge cleanly BEFORE the single-use consume. Without
+        # this, an expired challenge would be burned by the UPDATE and only then
+        # rejected by the writer's admission check — losing the challenge for a retry
+        # and reporting a downstream reason. `challenge.expires_at` is the always-µs-Z
+        # form `_load_stored_challenge` emits.
+        challenge_expires_at = datetime.strptime(
+            challenge.expires_at, "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=UTC)
+        if datetime.now(UTC) >= challenge_expires_at:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"possession challenge {challenge.challenge_id!r} has expired "
+                f"(expired at {challenge.expires_at}); issue a fresh challenge to enrol",
+                {
+                    "reason": "possession_challenge_expired",
+                    "challenge_id": challenge.challenge_id,
+                },
+            )
+
         # Resolve the registrar's live delegation from the replayed trust state and
         # verify the supplied key IS the delegated key. `append_trust_log_event` re-runs
         # the full authority check; this front-loads it so an unauthorised key is
@@ -2708,6 +2741,35 @@ def _commit_enroll(
                         f"active (key_id {k_id}); nothing to do."
                     )
                 return
+
+        # Enrolment BINDS a principal's key where there is none. If the principal already
+        # has a live key whose bytes differ from the one offered, this is NOT an
+        # enrolment — it is a key change, which §5.6 handles as a ROTATION with dual
+        # authorization (the outgoing key's signature). Silently writing a second
+        # `principal_key_enrolled` would let the projection supersede the incumbent key
+        # WITHOUT that dual proof, so a single registrar could seize any principal's
+        # identity. Refuse and direct the operator to `trust rotate`. (The same-key
+        # short-circuit above keeps re-enrolling an already-active key an idempotent
+        # no-op.) The writer enforces the same invariant so a direct append cannot
+        # bypass this.
+        for (p_id, k_id), pub in state.principal_public_keys.items():
+            if (
+                p_id == args.principal
+                and pub != public_key
+                and state.principal_key_status.get((p_id, k_id)) == "active"
+            ):
+                raise RegistaError(
+                    ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                    f"principal {args.principal!r} already has an active key "
+                    f"(key_id {k_id}); enrolment binds a key where there is none. "
+                    "Changing an existing key is a rotation (§5.6) — use `regista trust "
+                    "rotate`, which requires the outgoing key's dual authorization.",
+                    {
+                        "reason": "enrollment_key_already_present",
+                        "principal_id": args.principal,
+                        "active_key_id": k_id,
+                    },
+                )
 
         key_id = "pk_" + uuid.uuid4().hex[:16]
         payload: dict[str, Any] = {
@@ -2870,13 +2932,23 @@ def _commit_enroll(
 def cmd_trust_enroll(args: argparse.Namespace) -> None:
     """Enrol a principal's Ed25519 key into the estate trust log (§5.5).
 
+    Authority model: this is a REGISTRAR-authorised path, distinct from the
+    ordinary-project ``PrincipalLifecycle`` ceremony (which gates on a distinct
+    approver). A live registrar's delegation — granted under root authority — IS the
+    authority to enrol, so there is deliberately NO separate approval step here; the
+    delegation carries it. The enrollee's possession proof is still required, and the
+    projection is still materialised from the signed event by ``rebuild-projection``,
+    never written directly.
+
     Two modes. ``--issue-challenge`` issues a fresh v2 possession challenge for a
     principal + public key and prints it (phase 1). The default mode consumes the
     possession proof the enrollee produced from that challenge and appends the signed
     ``principal_key_enrolled`` event under a registrar's delegated authority (phase 2).
     Fail-closed throughout: the trust log must be initialised; the authorising key must
     be a live registrar's delegated key; the possession proof must verify; the challenge
-    is single-use; and re-enrolling an already-active key is a clean no-op.
+    is single-use and must be unexpired; re-enrolling an already-active key is a clean
+    no-op; and enrolling a DIFFERENT key over a principal that already has a live key is
+    refused — that is a §5.6 rotation (use ``trust rotate``), not an enrolment.
     """
     json_mode = getattr(args, "json", False)
     dsn, genesis_document, doc, project = _enroll_resolve_target(args)

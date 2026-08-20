@@ -21,7 +21,7 @@ import contextlib
 import io
 import json
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nacl.signing
 import pytest
@@ -223,12 +223,12 @@ def env(tmp_path):
     drop_project_schema(DSN, project)
 
 
-def _make_enrollee(tmp_path):
+def _make_enrollee(tmp_path, *, sub="custody"):
     """A custodied enrollee key via the real client signer; returns (public_b64, ref)."""
     from regista.client_signer import ClientSigner
 
     signer = ClientSigner.generate(
-        ENROLLEE, backend="file", private_key_dir=str(tmp_path / "custody")
+        ENROLLEE, backend="file", private_key_dir=str(tmp_path / sub)
     )
     return signer.identity.to_dict()["public_key"], signer.identity.secret_ref
 
@@ -248,6 +248,36 @@ def _issue_and_sign(env, public_b64, secret_ref, *, principal=ENROLLEE):
     challenge = json.loads(challenge_out)
     proof = _sign_possession_via_cli(env["tmp_path"], secret_ref, json.dumps(challenge))
     return challenge, proof
+
+
+def _commit_enroll(env, public_b64, proof, *, registrar=REGISTRAR):
+    """Drive the phase-2 verifier/commit for an already-signed proof; returns result dict."""
+    return json.loads(
+        _capture(
+            cmd_trust_enroll,
+            _ns(
+                project=env["project"],
+                genesis=env["genesis"],
+                public_key=public_b64,
+                proof=json.dumps(proof),
+                key=env["reg_seed_path"],
+                registrar_principal_id=registrar,
+            ),
+        )
+    )
+
+
+def _rebuild(env) -> None:
+    cmd_trust_rebuild_projection(
+        argparse.Namespace(
+            dsn=DSN,
+            project=env["project"],
+            hmac_key_path=None,
+            genesis=env["genesis"],
+            dry_run=False,
+            json=False,
+        )
+    )
 
 
 def _count_enrolled_events(project: str) -> int:
@@ -523,3 +553,96 @@ def test_dry_run_writes_nothing(env):
     # A dry run consumes nothing and writes nothing.
     assert _count_enrolled_events(env["project"]) == 0
     assert _challenge_used(env["project"], challenge["challenge_id"]) is False
+
+
+def test_enroll_different_key_on_active_principal_is_refused(env):
+    """B1 (PR #58): a DIFFERENT key for an already-active principal is NOT a silent
+    replacement. Enroll binds where there is none; changing a live key is a §5.6
+    rotation (dual authorization) — a single registrar must not seize an identity by
+    enrolling over it. Refused at the CLI with a named error, nothing consumed."""
+    # Key A: enrolled and materialised into the projection as the sole active key.
+    a_b64, a_ref = _make_enrollee(env["tmp_path"], sub="custody_a")
+    _c1, proof_a = _issue_and_sign(env, a_b64, a_ref)
+    first = _commit_enroll(env, a_b64, proof_a)
+    assert first["already_enrolled"] is False
+    _rebuild(env)
+    assert _count_enrolled_events(env["project"]) == 1
+
+    # Key B: a DIFFERENT key for the SAME principal, freshly challenged + proven.
+    b_b64, b_ref = _make_enrollee(env["tmp_path"], sub="custody_b")
+    assert b_b64 != a_b64
+    challenge_b, proof_b = _issue_and_sign(env, b_b64, b_ref)
+
+    with pytest.raises(RegistaError) as exc:
+        _commit_enroll(env, b_b64, proof_b)
+    assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+    assert exc.value.detail["reason"] == "enrollment_key_already_present"
+
+    # No second enrolment event, and B's challenge was NOT burned (fail-closed pre-check).
+    assert _count_enrolled_events(env["project"]) == 1
+    assert _challenge_used(env["project"], challenge_b["challenge_id"]) is False
+
+    # A is still the sole active key — B never displaced it.
+    mgr = ConnectionManager(DSN, env["project"])
+    try:
+        mgr.open()
+        entries = list_principal_keys(mgr, principal_id=ENROLLEE)
+    finally:
+        mgr.close()
+    active = [e for e in entries if e.status == "active"]
+    assert len(active) == 1
+    assert active[0].fingerprint == _compute_fingerprint(base64.b64decode(a_b64), "ed25519")
+
+
+def test_expired_challenge_is_refused_before_consume(env):
+    """N2 (PR #58): an expired possession challenge is refused with its own named error
+    BEFORE the single-use consume, so it is not burned then rejected downstream."""
+    public_b64, secret_ref = _make_enrollee(env["tmp_path"])
+    challenge, proof = _issue_and_sign(env, public_b64, secret_ref)
+
+    # Expire the stored challenge in the past (independent of its TTL).
+    mgr = ConnectionManager(DSN, env["project"])
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            conn.execute(
+                "UPDATE lifecycle_challenges SET expires_at = %s WHERE challenge_id = %s",
+                [datetime(2000, 1, 1, tzinfo=UTC), uuid.UUID(challenge["challenge_id"])],
+            )
+    finally:
+        mgr.close()
+
+    with pytest.raises(RegistaError) as exc:
+        _commit_enroll(env, public_b64, proof)
+    assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+    assert exc.value.detail["reason"] == "possession_challenge_expired"
+
+    # Nothing written and the challenge left UNCONSUMED (refused before the burn).
+    assert _count_enrolled_events(env["project"]) == 0
+    assert _challenge_used(env["project"], challenge["challenge_id"]) is False
+
+
+def test_microsecond_zero_challenge_enrolls(env, monkeypatch):
+    """N3 (PR #58): a challenge issued at a microsecond==0 boundary must still enrol.
+
+    The client re-frames the challenge it signs; if its timestamp formatter dropped the
+    fraction at us==0 while the verifier kept six digits, the signed bytes never matched
+    and enrolment always failed. Both sides now use the always-six-digit form."""
+
+    class _MicrosZeroClock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime.now(tz or UTC).replace(microsecond=0)
+
+    # us==0 for both the issued challenge and the commit's own clock reads.
+    monkeypatch.setattr("regista._cli.datetime", _MicrosZeroClock)
+
+    public_b64, secret_ref = _make_enrollee(env["tmp_path"])
+    challenge, proof = _issue_and_sign(env, public_b64, secret_ref)
+    assert challenge["issued_at"].endswith(".000000Z")
+    assert challenge["expires_at"].endswith(".000000Z")
+
+    result = _commit_enroll(env, public_b64, proof)
+    assert result["ok"] is True
+    assert result["already_enrolled"] is False
+    assert _count_enrolled_events(env["project"]) == 1

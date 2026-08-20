@@ -2410,7 +2410,12 @@ def _encode(value: bytes) -> str:
 
 
 def _format_time(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    # Always six fractional digits + trailing Z, matching the verifier's reconstruction
+    # (``_trust_log`` parses with ``%f`` and the CLI re-emits with the same form). Plain
+    # ``isoformat()`` OMITS the fraction when microsecond == 0 (``...:56Z`` not
+    # ``...:56.000000Z``), so a challenge issued at a µs==0 boundary framed one way here
+    # and the other way at verification would never match — enrolment would always fail.
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 
 __all__ = [

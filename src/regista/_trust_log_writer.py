@@ -1138,6 +1138,49 @@ def _remember_principal_key(
         principal_key_status[(principal_id, key.key_id)] = "active"
 
 
+def _check_enrollment_binds_fresh_key(
+    parsed: Any,
+    principal_public_keys: Mapping[tuple[str, str], bytes],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]],
+) -> None:
+    """Enrolment binds a principal's key where there is NONE (B1, PR #58).
+
+    ``principal_key_enrolled`` must not silently displace an incumbent key. If the
+    principal already has a live key whose bytes differ from the one offered, this is a
+    key CHANGE, which §5.6 handles as a ROTATION carrying the outgoing key's dual
+    authorization — never a bare enrolment. Enforced here, in the writer's admission
+    path, so a direct ``append_trust_log_event`` caller cannot bypass the CLI guard.
+    Re-enrolling the SAME bytes (same fingerprint) is left alone: it is an idempotent
+    no-op, not a change. This guard is specific to the enrol transition; rotation
+    (``principal_key_rotated``) legitimately supersedes and is untouched.
+    """
+    principal_id = getattr(parsed, "principal_id", None)
+    key = getattr(parsed, "key", None)
+    new_public = getattr(key, "public_key", None) if key is not None else None
+    if not isinstance(principal_id, str):
+        return
+    for (p_id, k_id), pub in principal_public_keys.items():
+        if p_id != principal_id:
+            continue
+        if principal_key_status.get((p_id, k_id)) != "active":
+            continue
+        if new_public is not None and pub == new_public:
+            # Same key material already active — idempotent, not a change.
+            continue
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+            f"principal {principal_id!r} already has an active key (key_id {k_id}); "
+            "principal_key_enrolled binds a key where there is none — changing an "
+            "existing key is a rotation (§5.6, principal_key_rotated with dual "
+            "authorization), which cannot be effected by an enrolment",
+            {
+                "reason": "enrollment_key_already_present",
+                "principal_id": principal_id,
+                "active_key_id": k_id,
+            },
+        )
+
+
 def _remember_principal_key_revocation(
     parsed: Any,
     principal_public_keys: Mapping[tuple[str, str], bytes],
@@ -1205,6 +1248,14 @@ def _verify_lifecycle(
         mode="replay",
         at_time=occurred_at,
     )
+    if transition == PRINCIPAL_KEY_ENROLLED:
+        # Defence in depth (B1, PR #58): the enrol transition may not displace an
+        # incumbent live key — that is a rotation. Enforced across every authority path
+        # (registrar and root) here, before any state mutation, so a non-CLI caller is
+        # bound by the same invariant.
+        _check_enrollment_binds_fresh_key(
+            parsed, principal_public_keys, principal_key_status
+        )
     if transition == PRINCIPAL_KEY_ROTATED and parsed.is_recovery:
         if binding != genesis_hash:
             raise RegistaError(
@@ -1845,6 +1896,15 @@ def _resolve_authority(
         _check_payload_trust_domain(
             parse_trust_domain_custody_declared(payload or {}),
             state.identity.trust_domain_id,
+        )
+    if transition == PRINCIPAL_KEY_ENROLLED and parsed is not None:
+        # Write-time admission of the B1 invariant (PR #58): enrolment binds a key where
+        # there is none. Enforced here — the shared append path for BOTH root and
+        # registrar authority — so a direct `append_trust_log_event` caller cannot write
+        # an enrol that displaces a live key (which is a §5.6 rotation), and the poison
+        # never reaches the durable log. Replay re-checks the same invariant.
+        _check_enrollment_binds_fresh_key(
+            parsed, state.principal_public_keys, state.principal_key_status
         )
     if authority == _ROOT:
         if key.fingerprint() not in state.governance.signer_fingerprints:
