@@ -112,7 +112,8 @@ def trust_store(tmp_path):
     genesis = mint_solo()
     genesis_path = tmp_path / "trust-genesis.json"
     genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")
-    os.environ["REGISTRA_TRUST_GENESIS_PATH"] = str(genesis_path)
+    os.environ["REGISTA_TRUST_GENESIS_PATH"] = str(genesis_path)
+    os.environ.pop("REGISTRA_TRUST_GENESIS_PATH", None)
     root_signer = genesis.signer_ids[0]
     root_key = TrustLogKey(
         key_id="pk_root_a",

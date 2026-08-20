@@ -1841,13 +1841,12 @@ def cmd_trust_verify_genesis(args: argparse.Namespace) -> None:
 
 
 def _load_genesis_document(path: str | None) -> dict[str, Any] | None:
-    import os
-
-    from ._trust_genesis_file import load_trust_genesis_document
-
-    configured_path = (
-        path if path is not None else os.environ.get("REGISTRA_TRUST_GENESIS_PATH")
+    from ._trust_genesis_file import (
+        load_trust_genesis_document,
+        trust_genesis_path_from_env,
     )
+
+    configured_path = path if path is not None else trust_genesis_path_from_env()
     return load_trust_genesis_document(configured_path)
 
 
@@ -2067,7 +2066,7 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
             "no genesis document: pass --genesis PATH or set "
-            "REGISTRA_TRUST_GENESIS_PATH",
+            "REGISTA_TRUST_GENESIS_PATH",
             {"reason": "genesis_document_absent"},
         )
     verify_trust_genesis(genesis_document)  # RegistaError -> exit 1, no write
@@ -2371,7 +2370,7 @@ def _enroll_resolve_target(args: argparse.Namespace) -> tuple[str, dict[str, Any
     if genesis_document is None:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
-            "no genesis document: pass --genesis PATH or set REGISTRA_TRUST_GENESIS_PATH",
+            "no genesis document: pass --genesis PATH or set REGISTA_TRUST_GENESIS_PATH",
             {"reason": "genesis_document_absent"},
         )
     doc = parse_trust_genesis(genesis_document)
@@ -4005,7 +4004,7 @@ def main(argv: list[str] | None = None) -> None:
         "--genesis",
         default=None,
         help="Path to the pinned trust-genesis JSON (A-prime; optional only for "
-        "an empty trust log; otherwise REGISTRA_TRUST_GENESIS_PATH may supply it)",
+        "an empty trust log; otherwise REGISTA_TRUST_GENESIS_PATH may supply it)",
     )
     # Also SUPPRESS: `regista --json trust rebuild-projection` must stay JSON.
     # A store_true default of False here would silently override the global flag.
@@ -4026,7 +4025,7 @@ def main(argv: list[str] | None = None) -> None:
         "--genesis",
         default=None,
         help="Path to the published, VALID trust-genesis JSON (or "
-        "REGISTRA_TRUST_GENESIS_PATH)",
+        "REGISTA_TRUST_GENESIS_PATH)",
     )
     trust_init.add_argument(
         "--key",
@@ -4132,7 +4131,7 @@ def main(argv: list[str] | None = None) -> None:
     trust_enroll.add_argument(
         "--genesis",
         default=None,
-        help="Path to the pinned trust-genesis JSON (or REGISTRA_TRUST_GENESIS_PATH)",
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH)",
     )
     # SUPPRESS (see rebuild-projection/init-log): a subparser --project/--json with a
     # None/False default would clobber the global value the top-level parser already set.
@@ -4225,7 +4224,7 @@ def main(argv: list[str] | None = None) -> None:
     trust_deleg.add_argument(
         "--genesis",
         default=None,
-        help="Path to the pinned trust-genesis JSON (or REGISTRA_TRUST_GENESIS_PATH)",
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH)",
     )
     # SUPPRESS (see rebuild-projection/init-log): a subparser --project/--json with a
     # None/False default would clobber the global value the top-level parser already set.

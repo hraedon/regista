@@ -4,6 +4,21 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **`REGISTRA_TRUST_GENESIS_PATH` was a misspelling (WI-324).** The product name carried
+  an extra `R`: two sites read the variable (`_cli.py:1849`, `_doctor.py:632`) and seven
+  more named the misspelling in help text and refusal messages, so every surface an
+  operator could consult told them the wrong name. Exporting the documented
+  `REGISTA_TRUST_GENESIS_PATH` therefore produced a **silent** miss and the
+  no-genesis posture: `trust enroll` refused for "no genesis document" and `doctor`'s
+  projection check reported the projection unverifiable, both while a valid pin sat in
+  the environment under the right name. Resolution now goes through one shared helper
+  (`_trust_genesis_file.trust_genesis_path_from_env`) that prefers the canonical spelling
+  and honours the misspelling as a **deprecated fallback with a stderr warning** — never
+  silently. A structural test refuses the typo's reappearance anywhere outside its own
+  deprecated-constant definition.
+
 ## [0.6.0] — 2026-08-19
 
 The 0.6.0 epoch-reset epoch: v6 signed envelopes, the Ed25519 trust domain,
