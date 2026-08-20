@@ -1533,3 +1533,301 @@ class TestEnrollmentBindsFreshKey:
             assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
         finally:
             _close(handle, project)
+
+
+# --- B1 (PR #59): no two live conflicting registrar delegations ---------------------
+
+
+def _delegation_payload(
+    fixture, *, key, not_before, not_after, scopes=None, max_operations=None
+):
+    return make_registrar_delegation_payload(
+        trust_domain_id=fixture.trust_domain_id,
+        registrar_principal_id=REGISTRAR,
+        key=key,
+        scopes=scopes,
+        max_operations=max_operations,
+        root_keys=_root_keys(fixture),
+        not_before=not_before,
+        not_after=not_after,
+    )
+
+
+def _append_delegation(handle, fixture, payload):
+    return append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=fixture.document,
+        transition="registrar_delegated",
+        payload=payload,
+        entity_kind="trust_domain",
+        entity_id=uuid.UUID(fixture.trust_domain_id),
+        principal_id=ROOT,
+        authority="root",
+    )
+
+
+def _count_delegations(handle):
+    with handle._mgr.transaction() as conn:
+        rows = read_trust_log_rows(conn)
+    return sum(1 for r in rows if str(r["transition"]) == "registrar_delegated")
+
+
+class TestRegistrarDelegationNoLiveFork:
+    """B1 (PR #59): "no two live conflicting registrars" is enforced at the DURABLE
+    layer, not only in the CLI pre-check.
+
+    A second ``registrar_delegated`` for a principal that already holds a live
+    delegation with differing terms forks the credential; the writer previously
+    admitted it and replay resolved it last-write-wins (silent scope/key widening). The
+    guard now sits in the shared append path (writer admission) AND in the verified
+    replay, so a direct ``append_trust_log_event`` — or two honest concurrent
+    delegations — cannot fork it, and a forked log is detected at verification. A
+    revoked prior delegation still allows a fresh one (revoke -> re-delegate), and
+    byte-identical terms remain idempotent.
+    """
+
+    def test_direct_append_second_live_delegation_is_refused(self, tmp_path):
+        """The DEMONSTRATED exploit: delegate key A (enrolled-only), then bypass the CLI
+        and directly append a SECOND root-signed delegation for the SAME principal with
+        key B and a wider scope. The writer must refuse it at admission — the poison
+        never lands, and replay still reports the original key-A/enrolled-only terms."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        nb, na = _ts(-24 * 60 * 60), _ts(365 * 24 * 60 * 60)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            key_a = _tlogkey("k_reg_a", bytes([21]) * 32)
+            _append_delegation(
+                handle,
+                fixture,
+                _delegation_payload(
+                    fixture,
+                    key=key_a,
+                    not_before=nb,
+                    not_after=na,
+                    scopes=["principal_key_enrolled"],
+                    max_operations=None,
+                ),
+            )
+            assert _count_delegations(handle) == 1
+
+            # A SECOND, validly root-signed delegation for the SAME principal, different
+            # key AND wider scope — the fork the CLI never sees.
+            key_b = _tlogkey("k_reg_b", bytes([22]) * 32)
+            with pytest.raises(RegistaError) as exc:
+                _append_delegation(
+                    handle,
+                    fixture,
+                    _delegation_payload(
+                        fixture,
+                        key=key_b,
+                        not_before=nb,
+                        not_after=na,
+                        scopes=[
+                            "principal_key_enrolled",
+                            "principal_key_rotated",
+                            "principal_key_revoked",
+                        ],
+                        max_operations=None,
+                    ),
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "registrar_already_delegated_live"
+
+            # The poison never landed: still one delegation, and the live registrar is
+            # unchanged (key A, enrolled-only) — no silent widening.
+            assert _count_delegations(handle) == 1
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            live = state.registrars[REGISTRAR]
+            assert live.revoked is False
+            assert live.public_key == key_a.public_key
+            assert live.scopes == frozenset({"principal_key_enrolled"})
+        finally:
+            _close(handle, project)
+
+    def test_identical_redelegation_direct_append_is_admitted(self, tmp_path):
+        """Byte-identical terms are not a fork: the durable guard admits them
+        (idempotent — mirrors the CLI no-op), so re-running is never wedged."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        nb, na = _ts(-24 * 60 * 60), _ts(365 * 24 * 60 * 60)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            key_a = _tlogkey("k_reg_a", bytes([21]) * 32)
+            payload = _delegation_payload(
+                fixture, key=key_a, not_before=nb, not_after=na, max_operations=3
+            )
+            _append_delegation(handle, fixture, payload)
+            # Identical terms (same key, scope, window, max_operations): admitted.
+            _append_delegation(handle, fixture, dict(payload))
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            live = state.registrars[REGISTRAR]
+            assert live.revoked is False
+            assert live.public_key == key_a.public_key
+            assert live.max_operations == 3
+        finally:
+            _close(handle, project)
+
+    def test_forked_log_is_refused_at_replay(self, tmp_path, monkeypatch):
+        """Defence in depth: a forked log (two live delegations, no intervening revoke)
+        that somehow reached the store is DETECTED at replay with a named error, not
+        silently resolved last-write-wins. The poison is written by disabling the
+        writer-admission guard only; the real guard is restored before replay."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        nb, na = _ts(-24 * 60 * 60), _ts(365 * 24 * 60 * 60)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            key_a = _tlogkey("k_reg_a", bytes([21]) * 32)
+            _append_delegation(
+                handle,
+                fixture,
+                _delegation_payload(fixture, key=key_a, not_before=nb, not_after=na),
+            )
+            key_b = _tlogkey("k_reg_b", bytes([22]) * 32)
+            second = _delegation_payload(
+                fixture, key=key_b, not_before=nb, not_after=na, max_operations=7
+            )
+            # Bypass the writer's admission guard to plant the fork, then restore it so
+            # the standalone replay is exercised with the real check in place.
+            import regista._trust_log_writer as _w
+
+            monkeypatch.setattr(
+                _w, "_check_registrar_delegation_no_live_fork", lambda *a, **k: None
+            )
+            _append_delegation(handle, fixture, second)
+            monkeypatch.undo()
+            assert _count_delegations(handle) == 2
+
+            with handle._mgr.transaction() as conn:
+                with pytest.raises(RegistaError) as exc:
+                    replay_trust_state(conn, fixture.document)
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "registrar_already_delegated_live"
+        finally:
+            _close(handle, project)
+
+    def test_revoke_then_redelegate_succeeds(self, tmp_path):
+        """The supported refresh path is untouched: revoke the live delegation, then a
+        FRESH delegation (different key/scope/window) for the same principal is admitted
+        and becomes the live registrar."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        nb, na = _ts(-24 * 60 * 60), _ts(365 * 24 * 60 * 60)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            key_a = _tlogkey("k_reg_a", bytes([21]) * 32)
+            _append_delegation(
+                handle,
+                fixture,
+                _delegation_payload(fixture, key=key_a, not_before=nb, not_after=na),
+            )
+            deleg_hash = _delegated_hash(handle)
+            # Revoke the live delegation (root threshold).
+            revoke = make_registrar_revocation_payload(
+                trust_domain_id=fixture.trust_domain_id,
+                registrar_principal_id=REGISTRAR,
+                key_id=key_a.key_id,
+                delegation_event_hash=deleg_hash,
+                root_keys=_root_keys(fixture),
+            )
+            append_trust_log_event(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                transition="registrar_revoked",
+                payload=revoke,
+                entity_kind="trust_domain",
+                entity_id=uuid.UUID(fixture.trust_domain_id),
+                principal_id=ROOT,
+                authority="root",
+            )
+            # A fresh delegation with DIFFERENT terms is now admitted (the prior is
+            # revoked), and replays as the live registrar.
+            key_b = _tlogkey("k_reg_b", bytes([22]) * 32)
+            _append_delegation(
+                handle,
+                fixture,
+                _delegation_payload(
+                    fixture,
+                    key=key_b,
+                    not_before=nb,
+                    not_after=na,
+                    scopes=["principal_key_enrolled"],
+                    max_operations=9,
+                ),
+            )
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            live = state.registrars[REGISTRAR]
+            assert live.revoked is False
+            assert live.public_key == key_b.public_key
+            assert live.scopes == frozenset({"principal_key_enrolled"})
+            assert live.max_operations == 9
+        finally:
+            _close(handle, project)
+
+    def test_two_concurrent_delegations_only_one_succeeds(self, tmp_path):
+        """Two honest, CONCURRENT delegations for the same principal with differing
+        terms hit the same fork with no bypass: the chain-head lock serialises them and
+        exactly one wins; the loser is refused ``registrar_already_delegated_live``."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        nb, na = _ts(-24 * 60 * 60), _ts(365 * 24 * 60 * 60)
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            second = Regista(DSN, project, hmac_key_path=_kf)
+            results: list[bool] = []
+            errors: list[RegistaError] = []
+            lock = threading.Lock()
+
+            def _attempt(h, max_ops):
+                key = _tlogkey(f"k_reg_{max_ops}", bytes([30 + max_ops]) * 32)
+                payload = _delegation_payload(
+                    fixture, key=key, not_before=nb, not_after=na, max_operations=max_ops
+                )
+                try:
+                    _append_delegation(h, fixture, payload)
+                    with lock:
+                        results.append(True)
+                except RegistaError as e:
+                    with lock:
+                        errors.append(e)
+
+            t1 = threading.Thread(target=_attempt, args=(handle, 3))
+            t2 = threading.Thread(target=_attempt, args=(second, 8))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            assert len(results) == 1
+            assert len(errors) == 1
+            assert errors[0].code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert errors[0].detail["reason"] == "registrar_already_delegated_live"
+            assert _count_delegations(handle) == 1
+            second.close()
+        finally:
+            _close(handle, project)
