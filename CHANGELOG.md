@@ -4,6 +4,14 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-19
+
+The 0.6.0 epoch-reset epoch: v6 signed envelopes, the Ed25519 trust domain,
+per-project genesis / epoch reset with no legacy write path, action-delegation
+credentials, the reviewer-lineage gate, and a database-level epoch-boundary
+guard. This is a hard cutover — see **Changed — BREAKING** — and it ships with an
+explicit residual-threat disclosure (**Security**, WI-007).
+
 ### Added
 
 - **Action delegation (WI-008).** Added strict `regista.action-delegation/v1` base64 Ed25519
@@ -468,6 +476,19 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed — BREAKING
 
+- **Per-project epoch reset — the hard cutover (Gate 0 / WI-270, #39).** 0.6.0 is a clean
+  break, not a compatible upgrade. When a project opens its v6 epoch it **discards the
+  legacy chain as a live write target**: the pre-epoch HMAC/v4/v5 history is bound once by
+  the cutover checkpoint and thereafter is read-only legacy evidence, never extended. There
+  is **no legacy write path** — `_genesis.check_legacy_append` / `admit_legacy_append` refuse
+  every v1-v5 writer with `V6_EPOCH_OPEN` once the epoch is open and with `GENESIS_REQUIRED`
+  before it, so **project genesis must be written before any ordinary event**. `on_behalf_of`
+  **cannot be written inside a v6 epoch at all**; delegated authority now travels only as a
+  WI-008 action-delegation credential. Each project resets independently — there is no global
+  flag day — and re-accepting a revoked `key_id` does not restore appendability (a
+  replacement key is a new key). The `ENVELOPE_VERSION` this library writes (reported by
+  `regista version` / `regista doctor`) advances from 5 to **6** as a consequence.
+
 - **Clean v6 project genesis:** fresh schemas now carry nullable workflow identity
   and a `project_identity` projection. `write_genesis()` requires an explicit
   passed conformance gate, complete load-bearing fields, an active Ed25519 actor
@@ -618,6 +639,95 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `regista doctor` adds a per-project `witness:key_enrollment:<project>`
   check that warns on an enrollment gap or pinned-key mismatch. The InMemory
   backend mirrors the same lifecycle.
+
+### Added — the Ed25519 trust domain (P2.1–P2.3)
+
+- **Trust-domain genesis, derivation and verification (P2.1, WI-291/WI-292, #45).** An estate's
+  trust root is an externally published, signed genesis document with a stable
+  `trust_domain_id` derived from its canonical core. Governance and custody live outside
+  `binding_core` (a sorted top-level `initial_custody` keyed by fingerprint and a top-level
+  `initial_governance`, WI-292), so custody attestation and countersignature fields can be
+  added later **without a new epoch**. `_trust_domain` carries the strict production schema
+  and its verification path.
+
+- **Trust log + signed key lifecycle (P2.2, WI-293, #47).** Principal key enrolment, rotation
+  and revocation are themselves signed events applied by event-driven appliers into a
+  **rebuildable** `principal_keys` projection. No verifier resolves a v6 key from that
+  projection — it is a projection, not a trust source (§5.9 rule 1) — so an `UPDATE` to the
+  table cannot forge, un-revoke, or re-fingerprint a key.
+
+- **Canonical principals (P2.3, WI-294, #46).** Principal identifiers follow the closed
+  `(human|agent|service):<subject>` grammar, with enrolment inversion, an alias contract, and
+  kind-conflict surfacing. A bare `"system"` / `"system:scheduler"` actor is no longer a
+  writable principal; system-authored events are attributed to the project bootstrap principal.
+
+- **Database-level v6 epoch-boundary guard (WI-315, migration 049, #54).** A `BEFORE INSERT`
+  trigger on `events` refuses any insert into an opened v6 epoch whose `canonical_envelope` is
+  not a v6 envelope (`type=regista.event`, `version=6`), raising SQLSTATE `RG315`. This is
+  additive defense-in-depth for the fleet cutover: a stale/misconfigured 0.5.5 client
+  repointed at a 0.6.0 store cannot silently append legacy rows into the v6 chain. The
+  discriminator is deliberately "is a v6 envelope", not "is not NULL" — 0.5.5's `sign_event`
+  *does* populate `canonical_envelope` with a v5 envelope, so a NULL-only guard would admit
+  the exact row it must refuse.
+
+- **Write-time admission for trust-domain custody corrections (WI-314, #55).** A custody
+  correction was validated only at replay time, so a malformed correction (a `declaration_seq`
+  gap, or a `supersedes` digest naming the wrong predecessor) could be durably appended
+  fail-open and then permanently wedge the trust log (every subsequent replay — and therefore
+  every append, which replays first — raised). The per-declaration monotone rules are now
+  extracted into `admit_custody_declaration()` and enforced at write time against the current
+  replayed custody head before the event is signed, mirroring the root-rotation pattern.
+
+### Removed
+
+- **The dead trust subsystems are deleted, not deprecated (P1.4, #44).** Anchoring, RFC 3161
+  timestamping, archive segments, and the bundle window/segment machinery are removed outright,
+  and migration 045 drops their tables. These were removed rather than repaired because they
+  returned positive verdicts without a trust anchor: RFC 3161 verification passed with no trust
+  anchor, the batch Merkle tree committed to `uuid.bytes` and therefore witnessed no content,
+  and the OpenTimestamps provider could not execute against the pinned library. 0.6.0 ships no
+  trusted-time or transparency-log guarantee in their place (disclosed below as R3/R4).
+
+### Security — residual threats (disclosed, WI-007)
+
+0.6.0 narrows "operator forgery" from one unbounded assumption to three named ones, and this
+release states plainly what it does and does not defend so the claim is not overstated. Source:
+`docs/0.6.0/OPERATOR-FORGERY.md` (§1, §5, §6).
+
+- **Defeated (A0, A1).** An attacker who is a remote API caller with no keys (**A0**), or who
+  has **arbitrary write access to the PostgreSQL store but holds no private keys** (**A1** — the
+  audit's threat model), cannot modify, insert, delete or reorder events, cannot alter key
+  lifecycle, cannot alter the workflow definitions replay uses, and cannot alter a signed
+  bundle, without detection by a verifier holding external Ed25519 trust material.
+
+- **Partially defeated (A2).** An attacker who additionally can read the private keys one
+  service credential can reach can forge only as the principals whose keys it reached — *and
+  only if* key custody enforces per-principal / per-class Vault policies. That custody
+  separation is a **declared property that no artifact evidences** (R8): with one credential
+  able to read every key, A2 collapses into A3.
+
+- **NOT defeated (A3–A6).** A host/root operator who controls the online keys, the code before
+  signing, the offline root, and the publication channel **can fabricate an internally valid
+  history**, and Ed25519 does not prevent it. In particular: a **first-time auditor holding no
+  prior pin has no leverage** against a key-holder who rewrites history — the publication
+  channel makes *substitution* detectable to a party holding a prior observation, it does not
+  make the *first* fingerprint honest (R3/A5); and two root signatures prove two keys, not two
+  people or two custodies (R2/A6).
+
+- **Declared, not verified.** Offline-root custody, co-signer independence, and actor/model
+  lineage are **signed assertions, not proofs**: a signature proves *who asserted*, never *what
+  generated the action* or *where the key lives*. `independently_reviewed` is policy evidence,
+  not cryptographic proof of independence. Cross-lineage, custody, and independence claims are
+  declared-not-verified for this release.
+
+- **Permanent legacy seam.** Pre-cutover HMAC events are bound by the cutover checkpoint but are
+  **not** independently attributable to individual principals, and the checkpoint binds *the
+  exact bytes the cutover signer committed to*, not a proof that pre-cutover history was honest
+  when created (R5/R6). This residual never closes for existing data; it only stops growing.
+
+WI-007 remains open by design, narrowed to the successor decisions R1/R2/R3 (hardware-attested
+root custody, custodian countersignature, transparency-log/anchor). See `OPERATOR-FORGERY.md`
+§5 for the verbatim-usable claims and §6 for what 0.6.0 must not claim.
 
 ## [0.5.5] — 2026-08-01
 

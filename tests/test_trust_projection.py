@@ -23,6 +23,7 @@ import base64
 import importlib
 import json
 import os
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -68,7 +69,29 @@ from regista.testing import drop_project_schema, seed_legacy_principal_key
 
 ROOT_PRINCIPAL = "service:root-a"
 REGISTRAR_PRINCIPAL = "service:registrar-1"
-DEFAULT_EVENT_TIME = "2026-08-20T00:00:00.000000Z"
+# This module drives the *production* writer, whose possession-challenge admission
+# compares each challenge's ``expires_at`` against ``max(datetime.now(UTC), occurred_at)``
+# at append (``_trust_log_writer.py`` :961 and :1761-1767). The prior fix (a756677)
+# anchored the event times to a module-import ``_NOW`` — but in a *full-suite* run pytest
+# imports this module at COLLECTION (t=0) and executes its tests ~10 min later, so a
+# window of ``import_time + 5 min`` was already expired at execution: a suite-position
+# time bomb (``possession_challenge_expired_at_admission``). The fix, mirroring
+# ``tests/_trust_log_fixtures.py::_ts()``, is to read ``now()`` per call at test
+# *execution* — never at import — via ``_now()``/``_event_ts()`` below, so issue and
+# admission are milliseconds apart by construction regardless of suite position. The
+# ``_now()`` indirection also lets a unit test prove the window tracks call time. Event
+# builders default to ``_event_ts()`` (≈ now); a rotation ordered after its enrollment
+# uses ``_event_ts(timedelta(days=1))`` (≈ now + 1 day), preserving the deliberate gap.
+
+
+def _now() -> datetime:
+    """Real wall-clock now, indirected so tests can prove call-time anchoring."""
+    return datetime.now(UTC)
+
+
+def _event_ts(offset: timedelta = timedelta(0)) -> str:
+    """A fixture event timestamp anchored to call-time ``now()`` plus ``offset``."""
+    return (_now() + offset).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 _COLUMNS = (
     "principal_id, key_id, scheme, public_key, fingerprint, status, valid_from, "
@@ -123,8 +146,13 @@ def trust_store(tmp_path):
         key=registrar_key,
         max_operations=100,
         root_keys=[root_key],
-        not_before="2026-01-01T00:00:00.000000Z",
-        not_after="2027-01-01T00:00:00.000000Z",
+        # Anchor the delegation window to call-time now, not fixed 2026/2027 dates: the
+        # registrar-liveness check (_trust_log_writer.py:1977) compares real now() against
+        # [not_before, not_after] at append AND replay requires each event's occurred_at
+        # inside it. A fixed not_after fired after 2027-01-01. now-1d..now+365d always
+        # brackets now and every event time this module emits (including the +1d rotation).
+        not_before=_event_ts(timedelta(days=-1)),
+        not_after=_event_ts(timedelta(days=365)),
     )
     append_trust_log_event(
         handle._mgr,
@@ -193,7 +221,7 @@ def _writer_mgr(store):
 
 
 def _event_time(occurred_at: str | None) -> datetime:
-    return datetime.fromisoformat((occurred_at or DEFAULT_EVENT_TIME).replace("Z", "+00:00"))
+    return datetime.fromisoformat((occurred_at or _event_ts()).replace("Z", "+00:00"))
 
 
 def _event_record(store, event_id: str, payload: dict) -> SimpleNamespace:
@@ -221,9 +249,16 @@ def _event_record(store, event_id: str, payload: dict) -> SimpleNamespace:
 
 
 def _challenge(store, principal_id: str, key: TrustLogKey, occurred_at: str | None):
+    # Anchor the window to call-time ``now()``, not to any module constant: admission
+    # admits only while ``expires_at`` is still ahead of ``max(now, occurred_at)`` at
+    # append (_trust_log_writer.py:961, :1761-1767). ``max(_now(), event_at)`` brackets
+    # BOTH real now-at-execution AND a deliberately future-dated event's occurred_at, so
+    # ``expires_at`` clears admission by construction — issue and admission are
+    # milliseconds apart regardless of how far collection preceded execution.
     event_at = _event_time(occurred_at)
-    issued_at = (event_at - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    expires_at = (event_at + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    admission_anchor = max(_now(), event_at)
+    issued_at = (admission_anchor - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    expires_at = (admission_anchor + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     return make_possession_challenge(
         trust_domain_id=store.trust_domain_id,
         principal_id=principal_id,
@@ -265,7 +300,7 @@ def _snapshot_of(dsn: str, project: str) -> list[tuple]:
 
 
 def _enrol(store, principal_id, key, *, writer, occurred_at=None, **kwargs):
-    occurred_at = occurred_at or DEFAULT_EVENT_TIME
+    occurred_at = occurred_at or _event_ts()
     challenge = _challenge(store, principal_id, key, occurred_at)
     payload = make_enrollment_payload(
         trust_domain_id=store.trust_domain_id,
@@ -303,7 +338,7 @@ def _rotate(
     occurred_at: str | None = None,
     **kwargs,
 ):
-    occurred_at = occurred_at or DEFAULT_EVENT_TIME
+    occurred_at = occurred_at or _event_ts()
     challenge = _challenge(store, principal_id, new_key, occurred_at)
     payload = make_rotation_payload(
         trust_domain_id=store.trust_domain_id,
@@ -375,13 +410,18 @@ class TestCriterion12RebuildReproducesTheProjection:
 
         _enrol(trust_store, "agent:alice", alice, writer=writer)
         _enrol(trust_store, "agent:bob", bob, writer=writer)
+        # One call-time value for both fields so the rotation is ordered a day after its
+        # enrollment (relative to now, not a module-import constant): occurred_at feeds
+        # the event's registered_at, not_before feeds valid_from, and the byte-for-byte
+        # rebuild derives each from these same events.
+        later = _event_ts(timedelta(days=1))
         _rotate(
             trust_store,
             "agent:alice",
             alice,
             alice2,
-            occurred_at="2026-08-21T00:00:00.000000Z",
-            not_before="2026-08-21T00:00:00.000000Z",
+            occurred_at=later,
+            not_before=later,
         )
         _revoke(
             trust_store,
@@ -452,7 +492,10 @@ class TestCriterion12RebuildReproducesTheProjection:
             "agent:dave",
             old,
             new,
-            not_before="2026-08-25T00:00:00.000000Z",
+            # A rotation dated a few days out, anchored to call-time now (was fixed
+            # 2026-08-25, which would fire once real time passed it): stays inside the
+            # registrar delegation window and orders after the enrollment.
+            not_before=_event_ts(timedelta(days=5)),
         )
         mgr = _mgr(trust_store)
         try:
@@ -983,8 +1026,15 @@ class TestRebuildAndTheSanctionedWriterIntersect:
                     key.public_key,
                     "ed25519",
                     source_event_hash=event.event_hash,
-                    valid_from=datetime(2026, 8, 20, tzinfo=UTC),
-                    registered_at=datetime(2026, 8, 20, tzinfo=UTC),
+                    # Match what the rebuild derives (_trust_projection.py:838,840):
+                    # valid_from is the payload's not_before, registered_at is the
+                    # event's occurred_at. Taking both from the event keeps the row
+                    # consistent with the now-anchored fixture clock rather than a
+                    # fixed date that only happened to equal the old midnight base.
+                    valid_from=datetime.fromisoformat(
+                        event.payload["not_before"].replace("Z", "+00:00")
+                    ),
+                    registered_at=datetime.fromisoformat(event.occurred_at),
                     key_id=key.key_id,
                     # registered_by MUST be the event's authorized_by.principal_id:
                     # that is what the rebuild derives it from, and PrincipalLifecycle
@@ -1555,3 +1605,75 @@ class TestCeremonyPathRoundTrip:
             _sub_project = sub.project
             sub.close()
             drop_project_schema(DSN, _sub_project)
+
+
+class TestPossessionChallengeIsSuitePositionIndependent:
+    """Completes a756677: the possession-challenge clock tracks call-time ``now()``.
+
+    The remaining bug the release fixed was subtle: this module used to derive the
+    challenge window from a module-import constant (``_NOW``). pytest imports the module
+    at COLLECTION but executes its tests minutes later in a full-suite run, so a window
+    of ``import_time + 5 min`` was already expired when the writer admitted at execution
+    (``_trust_log_writer.py`` :961, :1761-1767) → ``possession_challenge_expired_at_admission``.
+    An isolated run of just this module never exposes it, because collection and
+    execution are seconds apart. This test proves the fix without needing the database:
+    it drives ``_challenge`` through the ``_now()`` indirection and shows the window
+    follows the clock at the moment the helper *runs*, so a 10-minute collection→execution
+    gap can no longer expire it.
+    """
+
+    @staticmethod
+    def _expiry(challenge) -> datetime:
+        return datetime.fromisoformat(challenge.expires_at.replace("Z", "+00:00"))
+
+    def test_a_ten_minute_gap_no_longer_expires_the_challenge(self, monkeypatch):
+        mod = sys.modules[__name__]
+        store = SimpleNamespace(trust_domain_id=str(uuid.uuid4()), project="p_gap_demo")
+        key = SimpleNamespace(fingerprint="sha256:" + "a" * 64)
+
+        # Model COLLECTION: build a challenge with the clock pinned to t0. (Under the old
+        # code, ``_NOW`` was frozen here at import — this is exactly that instant.)
+        t0 = datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC)
+        monkeypatch.setattr(mod, "_now", lambda: t0)
+        at_collection = _challenge(store, "agent:x", key, None)
+        collect_expiry = self._expiry(at_collection)
+        assert collect_expiry == t0 + timedelta(minutes=5)
+
+        # Model EXECUTION ~10 min later. A full-suite gap DOES exceed the 5-min window,
+        # so a window frozen at collection would already be expired at admission — the
+        # bug was real:
+        t_exec = t0 + timedelta(minutes=10)
+        assert t_exec >= collect_expiry
+
+        # The fix: ``_challenge`` reads ``_now()`` when it RUNS. During a real suite it
+        # runs at execution, so advancing the clock and rebuilding yields a window that
+        # brackets execution-now — admission at t_exec succeeds:
+        monkeypatch.setattr(mod, "_now", lambda: t_exec)
+        at_execution = _challenge(store, "agent:x", key, None)
+        exec_expiry = self._expiry(at_execution)
+        assert exec_expiry == t_exec + timedelta(minutes=5)
+        assert exec_expiry > t_exec  # not expired at admission
+        # The window moved forward by exactly the gap — proof it tracks call-time now(),
+        # not a module-import anchor:
+        assert exec_expiry - collect_expiry == timedelta(minutes=10)
+
+    def test_a_future_dated_event_window_brackets_its_occurred_at(self, monkeypatch):
+        """The rotation ordered a day out (Criterion 12) must still admit.
+
+        For a future ``occurred_at`` the writer's admission anchor is
+        ``max(now, occurred_at) = occurred_at``; the challenge window must bracket THAT,
+        not merely real now.
+        """
+        mod = sys.modules[__name__]
+        store = SimpleNamespace(trust_domain_id=str(uuid.uuid4()), project="p_future")
+        key = SimpleNamespace(fingerprint="sha256:" + "b" * 64)
+
+        now = datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC)
+        monkeypatch.setattr(mod, "_now", lambda: now)
+        occurred_at = _event_ts(timedelta(days=1))  # ≈ now + 1 day
+        challenge = _challenge(store, "agent:x", key, occurred_at)
+        expiry = self._expiry(challenge)
+        occurred = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        admission_at = max(now, occurred)  # what the writer compares against
+        assert expiry > admission_at
+        assert expiry == occurred + timedelta(minutes=5)

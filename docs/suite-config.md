@@ -321,14 +321,14 @@ CLI). `private_key_dir` is meaningful only for the `file` backend.
 ```json
 {
   "component": "regista",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "reachable": true,
-  "schema_version": 38,
+  "schema_version": 49,
   "projects": [{"name": "my_project"}],
   "checks": [
     {"name": "db:reachable", "status": "ok", "detail": "connected"},
-    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 38"},
-    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 38, envelope 4"},
+    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 49"},
+    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 49, envelope 6"},
     {"name": "version:signing_schemes", "status": "ok", "detail": "Available: ed25519, hmac-sha256"}
   ]
 }
@@ -371,10 +371,10 @@ pin against:
 ```json
 {
   "component": "regista",
-  "library_version": "0.5.1",
-  "schema_version": 38,
+  "library_version": "0.6.0",
+  "schema_version": 49,
   "canonical_workflow_version": "3",
-  "envelope_version": 5,
+  "envelope_version": 6,
   "canonical_workflow_hash": "sha256hex...",
   "available_signing_schemes": ["ed25519", "hmac-sha256"]
 }
@@ -385,7 +385,7 @@ pin against:
 | `library_version` | The regista Python package version |
 | `schema_version` | The highest migration number (DB schema) |
 | `canonical_workflow_version` | The `version` field in `canonical.workflow.yaml` |
-| `envelope_version` | The latest signed-envelope format emitted by the standard append path (currently v5). Staged parser support does not advance this value until the required writable migration lands. |
+| `envelope_version` | The signed-envelope format the standard append path emits. In 0.6.0 this is **v6** — the v6 write path is the only writable path (there is no v5 write path in an opened epoch). |
 | `canonical_workflow_hash` | SHA-256 of the canonical workflow YAML bytes |
 | `available_signing_schemes` | Signing schemes registered in the runtime |
 

@@ -12,7 +12,15 @@ from ._integrity import REGISTA_VERSION
 # 047 the v2 possession-challenge fields to lifecycle_challenges (both P2.2); 048 adds
 # the action-delegation credential store; 049 adds the v6 epoch-boundary guard trigger.
 SCHEMA_VERSION: int = 49
-ENVELOPE_VERSION: int = 5
+# The envelope version this library WRITES (surfaced as "writable envelope" by
+# `regista version` / `regista doctor`). 0.6.0 removed the legacy write path:
+# post-genesis every ordinary event is stamped v6 by `_v6_writer.append_v6_event`
+# and legacy (v1-v5) writers are refused (`_genesis.check_legacy_append`). v6 is
+# therefore the sole writable version. It stayed 5 until the v6 writer landed
+# (P1.7, #50); it is 6 from 0.6.0 on. This is NOT the max legacy version and is
+# not consulted by the verifier — the verifier classifies each stored envelope
+# via `classify_envelope_version`.
+ENVELOPE_VERSION: int = 6
 
 
 @functools.lru_cache(maxsize=1)

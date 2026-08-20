@@ -31,6 +31,7 @@ from regista._trust_log_writer import (
 from regista.testing import drop_project_schema
 from tests._trust_log_fixtures import (
     TrustLogKey,
+    _ts,
     make_enrollment_payload,
     make_possession_challenge,
     make_registrar_delegation_payload,
@@ -139,8 +140,13 @@ def _delegate(handle, fixture, *, threshold=1, root_keys=None, max_operations=2)
         key=registrar_key,
         max_operations=max_operations,
         root_keys=roots,
-        not_before="2026-01-01T00:00:00.000000Z",
-        not_after="2027-01-01T00:00:00.000000Z",
+        # A wide window anchored to real ``now`` (a day back, a year ahead). The
+        # registrar-liveness check at admission compares the *current* wall clock
+        # against this window (_trust_log_writer.py:1977), so a fixed 2026/2027 span
+        # would fail once real time left it — the same time-bomb class as the
+        # possession-challenge clock.
+        not_before=_ts(-24 * 60 * 60),
+        not_after=_ts(365 * 24 * 60 * 60),
     )
     return append_trust_log_event(
         handle._mgr,

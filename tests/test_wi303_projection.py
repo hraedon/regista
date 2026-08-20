@@ -29,6 +29,7 @@ from regista._trust_projection import check_projection_consistent, rebuild_proje
 from regista.testing import drop_project_schema, seed_legacy_principal_key
 from tests._trust_log_fixtures import (
     TrustLogKey,
+    _ts,
     make_enrollment_payload,
     make_possession_challenge,
     make_registrar_delegation_payload,
@@ -200,8 +201,11 @@ def _delegate(handle, fixture, registrar):
         key=registrar,
         max_operations=100,
         root_keys=[_tlogkey("k_root", fixture.seeds[fixture.signer_ids[0]])],
-        not_before="2026-01-01T00:00:00.000000Z",
-        not_after="2027-01-01T00:00:00.000000Z",
+        # Wide window anchored to real ``now`` — registrar liveness is checked against
+        # the current wall clock at admission (_trust_log_writer.py:1977), so a fixed
+        # 2026/2027 span would eventually fall out of range (same time-bomb class).
+        not_before=_ts(-24 * 60 * 60),
+        not_after=_ts(365 * 24 * 60 * 60),
     )
     return append_trust_log_event(
         handle._mgr,
