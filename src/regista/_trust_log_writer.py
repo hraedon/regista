@@ -161,6 +161,16 @@ class VerifiedLifecycle:
 class VerifiedChain:
     verified: tuple[VerifiedLifecycle, ...]
     state: TrustState
+    #: WI-325: the chain's observable extent, reported by the SAME verified walk that
+    #: authenticated it. A caller that needs the trust log's head (to mint a
+    #: `trust_log_checkpoint`, say) must not re-walk the raw rows for it — that would
+    #: read a head this pass never authorised. ``event_count`` counts every stored
+    #: trust-log event the walk reached, genesis included; ``head_event_hash`` is the
+    #: last event in predecessor order. Both are always populated by
+    #: :func:`verify_trust_log_chain`; the defaults exist only so the dataclass stays
+    #: constructible in isolation.
+    head_event_hash: str = ""
+    event_count: int = 0
 
 
 def _parse_envelope(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -729,7 +739,15 @@ def verify_trust_log_chain(
             current_custody=current_custody,
             current_custody_digest=current_custody_digest,
         )
-    return VerifiedChain(verified=tuple(verified_lifecycle), state=state)
+    return VerifiedChain(
+        verified=tuple(verified_lifecycle),
+        state=state,
+        # `order` is the predecessor-ordered walk this function has just verified end
+        # to end (chain_order already refused a cycle, a duplicate predecessor and any
+        # stored event it could not reach), so its last member IS the verified head.
+        head_event_hash=_row_event_hash(order[-1]),
+        event_count=len(order),
+    )
 
 
 def _revoke(entry: RegistrarState) -> RegistrarState:

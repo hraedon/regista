@@ -6,7 +6,9 @@ import json
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, NoReturn
 
 import structlog
@@ -3412,6 +3414,949 @@ def cmd_trust_delegate_registrar(args: argparse.Namespace) -> None:
         print("  the registrar may now authorise `regista trust enroll`")
 
 
+# --- WI-325: `regista genesis init` — the per-project v6 epoch opener -------------
+#
+# The per-project analog of `trust init-log`, and the last missing link of the
+# EPOCH-RESET ceremony. Everything downstream of a project's genesis was already
+# CLI-reachable; the opener itself was Python-API-only (`Regista.initialize_epoch`),
+# and the only thing that ever built a `project_initialized` envelope lived in
+# tests/_v6_fixtures.py.
+#
+# Two things make this more than a wrapper:
+#
+#  1. It assembles the envelope from LIVE trust-log facts (`_genesis_open`), and
+#     verifies every one of them against the verified chain walk before signing. The
+#     writer (`_genesis.append_v6_genesis`) checks that the acceptance is internally
+#     consistent and that the signature verifies; nothing there checks that the
+#     enrolled key, the enrolment event hash or the checkpoint head are REAL. That
+#     check exists only here, because only here are the inputs still inputs.
+#
+#  2. It refuses to assert `gate_passed` without the EPOCH-RESET §5 verdict as
+#     evidence, bound to this store fingerprint and this project.
+#
+# Refusal semantics mirror `trust init-log`: verify before touch, a named refusal for
+# an already-opened epoch, an ACCURATE --dry-run that runs every check and writes
+# nothing, and no --force. Re-opening an epoch would fork a project's identity, which
+# is never a safe operation.
+
+
+def _probe_project_store_state(dsn: str, project: str) -> dict[str, Any]:
+    """Probe the TARGET project store before anything is written.
+
+    Fails CLOSED with a named error rather than a raw psycopg traceback when the DSN
+    is unreachable, the schema is absent, or the namespace holds something that is not
+    a migrated regista project. Deliberately separate from
+    :func:`_probe_trust_log_state`: that one asks "is this a trust log", this one asks
+    "is this an empty, migrated, un-opened project".
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.sql import SQL, Identifier
+
+    from regista._connection import validate_project_name
+
+    schema = validate_project_name(project)
+    try:
+        with psycopg.connect(
+            dsn, connect_timeout=5, row_factory=dict_row, autocommit=True
+        ) as conn:
+            schema_row = conn.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                [schema],
+            ).fetchone()
+            if schema_row is None:
+                raise RegistaError(
+                    ErrorCode.MIGRATION_REQUIRED,
+                    f"schema {schema!r} does not exist. `genesis init` opens an epoch in "
+                    "an ALREADY-PROVISIONED clean store; it does not create one. Run "
+                    f"`regista provision --project {schema}` first.",
+                    {"reason": "project_schema_absent", "project": schema},
+                )
+            conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
+            try:
+                events = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
+                identity = conn.execute(
+                    "SELECT COUNT(*) AS n FROM project_identity WHERE id = TRUE"
+                ).fetchone()
+                head = conn.execute(
+                    "SELECT head_hash FROM event_chain_head WHERE id = TRUE"
+                ).fetchone()
+            except psycopg.errors.UndefinedTable as exc:
+                raise RegistaError(
+                    ErrorCode.MIGRATION_REQUIRED,
+                    f"schema {schema!r} exists but lacks the clean-epoch baseline "
+                    "(events / project_identity / event_chain_head). Either the "
+                    "namespace belongs to something other than a regista project, or "
+                    "migrations have not been applied. Recreate it with "
+                    f"`regista provision --project {schema}` rather than importing "
+                    "legacy history into a v6 epoch.",
+                    {"reason": "project_schema_not_migrated", "project": schema},
+                ) from exc
+            archived = 0
+            arch_row = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE "
+                "table_schema = %s AND table_name = 'events_archive') AS present",
+                [schema],
+            ).fetchone()
+            if arch_row is not None and arch_row["present"]:
+                arch_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM events_archive"
+                ).fetchone()
+                archived = 0 if arch_count is None else int(arch_count["n"])
+            return {
+                "project": schema,
+                "schema_exists": True,
+                "live_event_count": 0 if events is None else int(events["n"]),
+                "archived_event_count": archived,
+                "identity_present": identity is not None and int(identity["n"]) > 0,
+                "head_present": head is not None and head["head_hash"] is not None,
+            }
+    except RegistaError:
+        raise
+    except (psycopg.OperationalError, psycopg.Error) as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_STORE_UNAVAILABLE,
+            f"could not reach the target store to probe schema {schema!r}: {exc}. "
+            "Check --dsn / REGISTA_DSN and that the database is reachable.",
+            {"reason": "store_unreachable", "project": schema},
+        ) from exc
+
+
+def _genesis_require_trust_log(dsn: str, trust_project: str) -> None:
+    """Refuse namedly when ``--trust-project`` does not name an initialised trust log."""
+    _schema_exists, initialized = _probe_trust_log_state(dsn, trust_project)
+    if not initialized:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_STORE_UNAVAILABLE,
+            f"schema {trust_project!r} carries no trust_domain_established genesis, so "
+            "there is no trust log to verify this project's genesis reference against. "
+            "Check --trust-project (it defaults to the genesis document's signed "
+            "project_name_hint), and run `regista trust init-log` if the estate's trust "
+            "log has not been initialised.",
+            {"reason": "trust_log_not_initialized", "project": trust_project},
+        )
+
+
+def _genesis_refusal_reason(state: Mapping[str, Any]) -> str | None:
+    """The would-refuse reason a real run would raise, or ``None``.
+
+    Computed from the probe so ``--dry-run`` reports the SAME outcome the real run
+    would reach instead of an optimistic ``would_write: true`` — the accuracy failure
+    the WI-319 review named (deepseek N4). The authoritative guard is still
+    ``_genesis.first_write_admission``, under the global-chain sentinel lock.
+    """
+    if state["identity_present"]:
+        return "project_identity_already_established"
+    if state["live_event_count"]:
+        return "live_events_already_exist"
+    if state["archived_event_count"]:
+        return "archived_events_already_exist"
+    if state["head_present"]:
+        return "chain_head_already_populated"
+    return None
+
+
+def _genesis_signing_key(key_path: str | None, enrolled: Any) -> Any:
+    """Resolve the local keyset entry that will sign, and prove it IS the enrolled key.
+
+    The writer resolves the key again (``_genesis._genesis_key``) and re-checks the
+    acceptance against it, so this is a preflight — but it is the preflight that turns
+    the live keyset/enrolment mismatch into an actionable message instead of an
+    ACTOR_SIGNER_MISMATCH from inside the writer. The specific failure worth naming:
+    a keyset entry that holds the byte-identical enrolled public key under a stale
+    ``key_id``/``principal_id`` label, which is what `keys adopt-enrollment` fixes.
+    """
+    from regista._keys import KeySet
+
+    if not key_path:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no signing keyset configured: pass --hmac-key-path or set REGISTA_KEY_PATH. "
+            "A v6 genesis is signed by the enrolled host key, which must be loadable "
+            "locally.",
+            {"reason": "key_path_absent"},
+        )
+    key_set = KeySet(key_path)
+    try:
+        entry = key_set.resolve_signing_key(enrolled.principal_id, key_id=enrolled.key_id)
+    except RegistaError as exc:
+        holder = next(
+            (
+                row
+                for row in key_set.describe_keys()
+                if row.get("fingerprint") == enrolled.fingerprint
+            ),
+            None,
+        )
+        if holder is not None:
+            raise RegistaError(
+                ErrorCode.ACTOR_SIGNER_MISMATCH,
+                f"the local keyset has no entry {enrolled.principal_id}/"
+                f"{enrolled.key_id}, but entry "
+                f"{holder.get('principal_id')!r}/{holder.get('key_id')!r} holds the "
+                "byte-identical enrolled public key under a different label. Relabel it "
+                f"with `regista keys adopt-enrollment --principal "
+                f"{enrolled.principal_id}` — no key material moves.",
+                {
+                    "reason": "enrolled_key_held_under_stale_label",
+                    "enrolled_principal_id": enrolled.principal_id,
+                    "enrolled_key_id": enrolled.key_id,
+                    "keyset_principal_id": holder.get("principal_id"),
+                    "keyset_key_id": holder.get("key_id"),
+                },
+            ) from exc
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"the local keyset has no usable entry for {enrolled.principal_id}/"
+            f"{enrolled.key_id}, and no entry holds that key's material at all. The "
+            "enrolled private key must be in this host's custody to open an epoch as "
+            "this principal.",
+            {
+                "reason": "enrolled_key_absent_from_keyset",
+                "enrolled_principal_id": enrolled.principal_id,
+                "enrolled_key_id": enrolled.key_id,
+            },
+        ) from exc
+    if entry.scheme != "ed25519":
+        raise RegistaError(
+            ErrorCode.GENESIS_INVALID,
+            f"keyset entry {entry.key_id!r} has scheme {entry.scheme!r}; a v6 genesis "
+            "requires Ed25519",
+            {"reason": "signing_key_not_ed25519", "scheme": entry.scheme},
+        )
+    if entry.public_key is None or entry.public_key != enrolled.public_key:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"keyset entry {enrolled.principal_id}/{enrolled.key_id} does not hold the "
+            "public key the trust log enrolled under that identity. Refusing to sign a "
+            "genesis whose acceptance would name key material this host does not have.",
+            {
+                "reason": "keyset_public_key_not_enrolled_key",
+                "principal_id": enrolled.principal_id,
+                "key_id": enrolled.key_id,
+            },
+        )
+    # The entry's public_key field is a DECLARATION. Derive the public key from the
+    # effective secret so the host is shown to hold the private half before anything is
+    # signed. The writer proves the same thing the hard way — it signs and then verifies
+    # under the bound public key (`_genesis.py:690-709`) — so this is a preflight for a
+    # clear message, not the only guard.
+    derived = _ed25519_public_from_secret(entry.secret)
+    if derived != enrolled.public_key:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"keyset entry {enrolled.principal_id}/{enrolled.key_id} declares the "
+            "enrolled public key, but its private material derives a different one (or "
+            "is not a 32-byte Ed25519 seed). This host cannot sign as the enrolled "
+            "identity; refusing before any signature is attempted.",
+            {
+                "reason": "keyset_secret_does_not_derive_enrolled_public_key",
+                "principal_id": enrolled.principal_id,
+                "key_id": enrolled.key_id,
+            },
+        )
+    return entry
+
+
+def cmd_genesis_init(args: argparse.Namespace) -> None:
+    """Open a project's clean v6 epoch: one signed ``project_initialized`` event.
+
+    The ordered ceremony, every step of which happens BEFORE any write:
+
+      1. resolve config; refuse without a DSN and a project
+      2. load and fully verify the pinned trust-genesis document
+      3. resolve the process-level producer identity (refuses if unset — never a
+         default, which would sign an invented harness name)
+      4. validate the EPOCH-RESET §5 gate report and bind it to this store + project
+      5. probe the target store: migrated, empty, epoch not yet opened
+      6. walk the LIVE trust log under verification and resolve the enrolled key, its
+         ``principal_key_enrolled`` hash, and the checkpoint triplet
+      7. resolve the local signing key and prove it is that enrolled key
+      8. measure the pre-genesis store state and build the envelope
+
+    ``--dry-run`` performs 1-8 and stops. There is no ``--force``: a project's genesis
+    establishes its permanent identity, so a second one would fork it.
+    """
+    from regista._connection import ConnectionManager
+    from regista._genesis_open import (
+        DEFAULT_SCOPE_ENTITY_KINDS,
+        build_project_initialized_envelope,
+        load_gate_evidence,
+        measure_previous_epoch,
+        resolve_trust_reference,
+        validate_scope_entity_kinds,
+    )
+    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+    from regista._v6_writer import resolve_producer
+
+    json_mode = getattr(args, "json", False)
+
+    # (1) Config. The target project is the one being opened; it is NEVER the trust
+    # log's schema, and confusing the two would write a project genesis into the
+    # estate's trust log.
+    dsn, project, key_path = _resolve_config(args)
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --dsn or REGISTA_DSN",
+            {"reason": "dsn_absent"},
+        )
+    if not project:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --project or REGISTA_PROJECT names the project "
+            "whose epoch is being opened",
+            {"reason": "project_absent"},
+        )
+
+    # (2) The pinned genesis document, fully verified. verify_trust_genesis raises on
+    # anything short of VALID, so an unverified document never reaches a write path.
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. A project epoch is opened INTO a trust domain; "
+            "without the pinned document there is nothing to verify the trust "
+            "reference against.",
+            {"reason": "genesis_document_absent"},
+        )
+    verify_trust_genesis(genesis_document)
+    doc = parse_trust_genesis(genesis_document)
+    trust_project = args.trust_project or doc.trust_log.project_name_hint
+    if trust_project == project:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"--project {project!r} is the trust log's own schema. `genesis init` opens "
+            "an ORDINARY project's epoch; the trust log's genesis is "
+            "`regista trust init-log` and its first event is trust_domain_established, "
+            "not project_initialized.",
+            {"reason": "target_project_is_trust_log", "project": project},
+        )
+
+    # A published checkpoint carries its OWN checkpoint_seq, so an explicit
+    # --checkpoint-seq alongside it is a contradiction. Refusing beats silently
+    # ignoring one of two conflicting operator instructions.
+    if args.trust_checkpoint is not None and args.checkpoint_seq != 1:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--checkpoint-seq applies only to a DERIVED checkpoint; a published "
+            "--trust-checkpoint document carries its own checkpoint_seq. Drop one of "
+            "the two rather than have the tool choose which instruction to ignore.",
+            {"reason": "checkpoint_seq_conflicts_with_published_checkpoint"},
+        )
+
+    # (3) Producer identity. Load-bearing and process-level by design: unset is a
+    # refusal naming the variables, never a default (V6-ENVELOPE.md §1.8).
+    producer = resolve_producer().as_envelope_member()
+
+    # Validate the operator's scope choice now, so a typo is a clear CLI refusal
+    # rather than a GENESIS_INVALID out of the writer.
+    entity_kinds = validate_scope_entity_kinds(
+        args.scope_entity_kind or list(DEFAULT_SCOPE_ENTITY_KINDS)
+    )
+
+    # (4) The §5 first-write verdict, as evidence bound to THIS target.
+    gate = load_gate_evidence(args.gate_report, dsn=dsn, project=project)
+
+    # (5) The target store, probed before touch.
+    state = _probe_project_store_state(dsn, project)
+    refuse_reason = _genesis_refusal_reason(state)
+
+    # The project's permanent identity. Minted here rather than inside the envelope
+    # builder so a --dry-run reports the same value a real run would write.
+    if args.project_instance_id is not None:
+        try:
+            project_instance_id = str(uuid.UUID(args.project_instance_id))
+        except ValueError as exc:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"--project-instance-id {args.project_instance_id!r} is not a UUID",
+                {"reason": "project_instance_id_not_uuid"},
+            ) from exc
+    else:
+        project_instance_id = str(uuid.uuid4())
+
+    # Refuse cleanly, with a named error, when the named schema is not an initialised
+    # trust log — the common consequence of a wrong --trust-project. Without this the
+    # failure surfaces from inside the chain walk as "empty_trust_log", which does not
+    # tell the operator that they pointed at the wrong schema.
+    _genesis_require_trust_log(dsn, trust_project)
+
+    # (6) The live trust log, walked under verification. `occurred_at` is fixed here
+    # and used for BOTH the enrolment validity-window check and the envelope's own
+    # timestamp, so the instant the key is proven live at is exactly the instant the
+    # event claims to have happened.
+    occurred_at = datetime.now(UTC)
+    trust_mgr = ConnectionManager(dsn, trust_project)
+    try:
+        trust_mgr.open()
+        # NOT `SET TRANSACTION READ ONLY`: the verified walk takes `SELECT ... FOR
+        # SHARE` row locks on `lifecycle_challenges` (the possession-evidence check,
+        # `_trust_log_writer._verify_possession_evidence`), and PostgreSQL forbids row
+        # locking in a read-only transaction. The transaction issues no
+        # data-modifying statement — every statement on this path is a SELECT.
+        with trust_mgr.transaction() as conn:
+            reference = resolve_trust_reference(
+                conn,
+                genesis_document,
+                principal_id=args.principal,
+                key_id=args.key_id,
+                expected_trust_event_hash=args.trust_event_hash,
+                expected_trust_domain_id=args.trust_domain_id,
+                at=occurred_at,
+                checkpoint_seq=args.checkpoint_seq,
+                published_checkpoint_path=args.trust_checkpoint,
+            )
+    finally:
+        trust_mgr.close()
+
+    # (7) The local signing key must BE the enrolled key.
+    _genesis_signing_key(key_path, reference.key)
+
+    # (8) Measure the pre-genesis store and build the envelope.
+    target_mgr = ConnectionManager(dsn, project)
+    try:
+        target_mgr.open()
+        with target_mgr.transaction() as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            previous_epoch = measure_previous_epoch(conn)
+    finally:
+        target_mgr.close()
+
+    envelope = build_project_initialized_envelope(
+        project_instance_id=project_instance_id,
+        reference=reference,
+        producer=producer,
+        previous_epoch=previous_epoch,
+        occurred_at=occurred_at,
+        scope_entity_kinds=entity_kinds,
+        may_sign_bundles=args.may_sign_bundles,
+    )
+
+    plan: dict[str, Any] = {
+        "action": "genesis-init",
+        "project": project,
+        "project_instance_id": project_instance_id,
+        "transition": "project_initialized",
+        "event_id": envelope["event_id"],
+        "occurred_at": envelope["occurred_at"],
+        "trust_log_project": trust_project,
+        "trust_reference": reference.to_dict(),
+        "gate": gate.to_dict(),
+        "producer": producer,
+        "scopes": envelope["payload"]["bootstrap_key_acceptance"]["scopes"],
+        "previous_epoch": previous_epoch.to_dict(),
+        "store": state,
+    }
+
+    if args.dry_run:
+        plan["dry_run"] = True
+        plan["would_write"] = refuse_reason is None
+        if refuse_reason is not None:
+            plan["would_refuse_reason"] = refuse_reason
+        # The derived observation document the checkpoint digest covers, so a dry run
+        # can be archived alongside the decision it informed.
+        plan["checkpoint_document"] = dict(reference.checkpoint.document)
+        if json_mode:
+            _dump_json(plan)
+        else:
+            _print_genesis_plan(plan, reference, refuse_reason)
+        return
+
+    if refuse_reason is not None:
+        raise RegistaError(
+            ErrorCode.GENESIS_ALREADY_WRITTEN,
+            f"project {project!r} has already opened an epoch or is not empty "
+            f"({refuse_reason}); refusing to write a second genesis. A project's "
+            "genesis establishes its permanent identity, so there is no --force.",
+            {"reason": refuse_reason, **state},
+        )
+
+    handle = Regista(dsn, project, key_path)
+    try:
+        # gate_passed is True only because load_gate_evidence proved the §5 verdict
+        # exists, passes, and is bound to this store and project. The writer re-runs
+        # first_write_admission under the global-chain sentinel lock, so the
+        # empty-store decision is made with the lock held, not from the probe above.
+        write = handle.initialize_epoch(envelope, gate_passed=True)
+        # Re-derive and verify the signed record without writing (EPOCH-RESET §5.1's
+        # read side). A genesis that cannot be read back is not an opened epoch.
+        recovered = handle.read_genesis()
+    finally:
+        handle.close()
+
+    if recovered is None or recovered.event_hash != write.event_hash:
+        raise RegistaError(
+            ErrorCode.GENESIS_RECOVERY_FAILED,
+            "the genesis was written but did not read back as the same signed event; "
+            "the epoch is in an unverified state and must be investigated before use",
+            {"reason": "post_write_recovery_mismatch", "project": project},
+        )
+
+    result = {
+        "ok": True,
+        "action": "genesis-init",
+        "project": project,
+        "transition": "project_initialized",
+        **write.to_dict(),
+        "trust_log_project": trust_project,
+        "checkpoint": reference.checkpoint.to_dict(),
+        "trust_event_hash": reference.key.trust_event_hash,
+        "gate": gate.to_dict(),
+        "verified_on_read": True,
+    }
+    if json_mode:
+        _dump_json(result)
+    else:
+        print("genesis init: project_initialized written; epoch OPEN")
+        print(f"  project (schema):        {project}")
+        print(f"  project_instance_id:     {write.project_instance_id}")
+        print(f"  trust_domain_id:         {write.trust_domain_id}")
+        print(f"  event_id:                {write.event_id}")
+        print(f"  event_hash:              sha256:{write.event_hash.hex()}")
+        print(f"  signing principal:       {write.principal_id}")
+        print(f"  signing key_id:          {write.key_id}")
+        print(f"  key fingerprint:         {write.key_fingerprint}")
+        print(f"  trust_event_hash:        {reference.key.trust_event_hash}")
+        print(
+            f"  checkpoint:              seq {reference.checkpoint.checkpoint_seq} "
+            f"({reference.checkpoint.source})"
+        )
+        print(f"  gate report:             {gate.path}")
+        print("  read back and verified:  yes")
+
+
+def _print_genesis_plan(
+    plan: Mapping[str, Any], reference: Any, refuse_reason: str | None
+) -> None:
+    print("genesis init: dry-run (nothing written)")
+    print(f"  project (schema):        {plan['project']}")
+    print(f"  project_instance_id:     {plan['project_instance_id']}")
+    print(f"  trust_domain_id:         {reference.trust_domain_id}")
+    print("  event to write:          project_initialized")
+    print(f"  event_id:                {plan['event_id']}")
+    print(f"  occurred_at:             {plan['occurred_at']}")
+    print(f"  trust log (schema):      {plan['trust_log_project']}")
+    print(f"  signing principal:       {reference.key.principal_id}")
+    print(f"  signing key_id:          {reference.key.key_id}")
+    print(f"  key fingerprint:         {reference.key.fingerprint}")
+    print(f"  trust_event_hash:        {reference.key.trust_event_hash}")
+    print(f"  enrolment window:        {reference.key.to_dict()['not_before']} .. "
+          f"{reference.key.to_dict()['not_after'] or '(open)'}")
+    print(f"  projection cross-check:  {reference.key.projection}")
+    print(f"  checkpoint source:       {reference.checkpoint.source}")
+    print(f"  checkpoint_seq:          {reference.checkpoint.checkpoint_seq}")
+    print(f"  checkpoint head:         {reference.checkpoint.head_event_hash}")
+    print(f"  checkpoint digest:       {reference.checkpoint.document_digest}")
+    if reference.checkpoint.source == "derived":
+        print("    NOTE: no published checkpoint document was supplied, so the digest")
+        print("    covers a LOCAL, UNSIGNED observation of the trust log made by this")
+        print("    process. Pass --trust-checkpoint PATH to reference a published one.")
+    print(f"  gate report:             {plan['gate']['path']}")
+    print(f"  gate findings passed:    {plan['gate']['findings']}")
+    print(f"  producer:                {plan['producer']['harness']} "
+          f"{plan['producer']['harness_version']}")
+    print(f"  acceptance entity kinds: {', '.join(plan['scopes']['entity_kinds'])}")
+    print(f"  may_sign_bundles:        {plan['scopes']['may_sign_bundles']}")
+    print(f"  store live events:       {plan['store']['live_event_count']}")
+    print(f"  store archived events:   {plan['store']['archived_event_count']}")
+    print(f"  epoch already open:      {plan['store']['identity_present']}")
+    print(f"  would write:             {plan['would_write']}")
+    if refuse_reason is not None:
+        print(f"  would refuse (reason):   {refuse_reason}")
+
+
+# --- WI-325: `regista keys adopt-enrollment` --------------------------------------
+#
+# The keyset/enrolment label gap, in the concrete: `trust enroll` records a key_id of
+# its own choosing in the trust log, but nothing writes back to the local keyset, and
+# `provision-principal` no longer mints keys. So a host can hold the enrolled PRIVATE
+# key under an older key_id/principal label and be unable to sign as the identity the
+# trust log knows — while the two entries are byte-identical key material.
+#
+# This command closes that with the narrowest possible write: it finds the keyset entry
+# whose PUBLIC KEY equals the enrolled one and rewrites exactly two fields, `key_id`
+# and `principal_id`. It never generates, moves, re-encodes or reads out private
+# material; it refuses on ambiguity; it backs the file up first; and it proves after
+# writing that the effective signing bytes are unchanged.
+
+
+def cmd_keys_adopt_enrollment(args: argparse.Namespace) -> None:
+    """Relabel the local keyset entry that already holds the enrolled key.
+
+    Fail-closed by construction: exactly one entry may match the enrolled public key,
+    the target ``key_id`` may not already be taken by a different entry, the matched
+    entry must be a usable Ed25519 actor key, and the post-write self-check must show
+    the effective key bytes are byte-identical. There is no ``--force``: two entries
+    holding the same key material is a custody question, not something to guess at.
+    """
+    import shutil
+    import stat
+    import tempfile
+
+    from regista._config import resolve as resolve_config
+    from regista._connection import ConnectionManager
+    from regista._doctor import _resolve_key_file_path
+    from regista._genesis_open import resolve_enrolled_key
+    from regista._keys import KeySet
+    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+
+    json_mode = getattr(args, "json", False)
+
+    dsn, _project, cli_key_path = _resolve_config(args)
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --dsn or REGISTA_DSN (the enrolled identity is "
+            "read from the live trust log, never from a flag)",
+            {"reason": "dsn_absent"},
+        )
+    key_path = cli_key_path or resolve_config().key_path
+    if not key_path:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no keyset configured: pass --hmac-key-path or set REGISTA_KEY_PATH",
+            {"reason": "key_path_absent"},
+        )
+    fs_path = _resolve_key_file_path(key_path)
+    if fs_path is None:
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"cannot resolve key path {key_path!r} to a filesystem path",
+            {"reason": "key_path_unresolvable"},
+        )
+
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH",
+            {"reason": "genesis_document_absent"},
+        )
+    verify_trust_genesis(genesis_document)
+    doc = parse_trust_genesis(genesis_document)
+    trust_project = args.trust_project or doc.trust_log.project_name_hint
+
+    _genesis_require_trust_log(dsn, trust_project)
+    mgr = ConnectionManager(dsn, trust_project)
+    try:
+        mgr.open()
+        # Not read-only, for the same reason as `genesis init`: the verified walk takes
+        # FOR SHARE row locks on lifecycle_challenges. No statement here modifies data.
+        with mgr.transaction() as conn:
+            enrolled = resolve_enrolled_key(
+                conn,
+                genesis_document,
+                principal_id=args.principal,
+                key_id=args.key_id,
+            )
+    finally:
+        mgr.close()
+
+    raw_text = Path(fs_path).read_text(encoding="utf-8")
+    document = json.loads(raw_text)
+    entries = document.get("keys")
+    if not isinstance(entries, list):
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            f"keyset {fs_path!r} has no 'keys' array",
+            {"reason": "keyset_malformed"},
+        )
+
+    # Match on the PUBLIC KEY BYTES, not on any label. That is the whole point: the
+    # labels are what disagree.
+    matches = [
+        (index, entry)
+        for index, entry in enumerate(entries)
+        if isinstance(entry, dict)
+        and isinstance(entry.get("public_key"), str)
+        and _decode_keyset_public_key(entry["public_key"]) == enrolled.public_key
+    ]
+    if not matches:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"no entry in {fs_path!r} holds the public key enrolled for "
+            f"{enrolled.principal_id}/{enrolled.key_id} (fingerprint "
+            f"{enrolled.fingerprint}). This command RELABELS an entry that already "
+            "holds the enrolled material; it never creates key material. The enrolled "
+            "private key must be brought into this host's custody first.",
+            {
+                "reason": "no_keyset_entry_holds_enrolled_key",
+                "principal_id": enrolled.principal_id,
+                "key_id": enrolled.key_id,
+                "fingerprint": enrolled.fingerprint,
+            },
+        )
+    if len(matches) > 1:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"{len(matches)} entries in {fs_path!r} hold the same enrolled public key "
+            f"({', '.join(str(e.get('key_id')) for _i, e in matches)}); refusing to "
+            "guess which one is the enrolled identity. Remove the duplicates first — "
+            "two entries for one key is a custody question, not a labelling one.",
+            {
+                "reason": "ambiguous_keyset_entries",
+                "key_ids": [str(e.get("key_id")) for _i, e in matches],
+            },
+        )
+
+    index, entry = matches[0]
+    old_key_id = str(entry.get("key_id"))
+    old_principal = entry.get("principal_id")
+    already = old_key_id == enrolled.key_id and old_principal == enrolled.principal_id
+
+    collision = next(
+        (
+            e
+            for i, e in enumerate(entries)
+            if i != index and isinstance(e, dict) and e.get("key_id") == enrolled.key_id
+        ),
+        None,
+    )
+    if collision is not None:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"keyset {fs_path!r} already has a DIFFERENT entry with key_id "
+            f"{enrolled.key_id!r} (principal {collision.get('principal_id')!r}). "
+            "Adopting the enrolled label would collide with it; resolve that entry "
+            "first.",
+            {"reason": "target_key_id_already_present", "key_id": enrolled.key_id},
+        )
+    if entry.get("scheme") != "ed25519":
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"keyset entry {old_key_id!r} declares scheme {entry.get('scheme')!r}; the "
+            "enrolled identity is Ed25519, so relabelling this entry would make the "
+            "keyset self-contradictory",
+            {"reason": "matched_entry_not_ed25519", "scheme": entry.get("scheme")},
+        )
+    if entry.get("role", "actor") != "actor" or entry.get("status", "active") != "active":
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"keyset entry {old_key_id!r} is role={entry.get('role', 'actor')!r} "
+            f"status={entry.get('status', 'active')!r}; a v6 genesis needs an ACTIVE "
+            "ACTOR key. Adopting the enrolled label onto an unusable entry would only "
+            "move the failure later. Fix role/status deliberately, by hand.",
+            {
+                "reason": "matched_entry_not_active_actor",
+                "role": entry.get("role", "actor"),
+                "status": entry.get("status", "active"),
+            },
+        )
+
+    # PREFLIGHT: the matched entry must actually hold the enrolled PRIVATE key. Matching
+    # on the public_key field only proves the entry DECLARES that key; deriving the
+    # public key from the effective secret proves the host can sign as it. Refusing here
+    # means the file is never touched for an entry that could not have been used anyway.
+    before_entry = KeySet(fs_path).get_key(old_key_id)
+    before_public = _ed25519_public_from_secret(before_entry.secret)
+    if before_public is None:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"keyset entry {old_key_id!r} does not hold a usable 32-byte Ed25519 seed, "
+            "so it cannot be the enrolled signing key however it is labelled. Nothing "
+            "was changed.",
+            {"reason": "matched_entry_secret_not_an_ed25519_seed", "key_id": old_key_id},
+        )
+    if before_public != enrolled.public_key:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"keyset entry {old_key_id!r} declares the enrolled public key but its "
+            "SECRET derives a different one — the entry's public_key field and its "
+            "private material disagree. Relabelling it would produce a keyset that "
+            "cannot sign as the identity it claims. Nothing was changed.",
+            {
+                "reason": "matched_entry_secret_does_not_match_declared_public_key",
+                "key_id": old_key_id,
+            },
+        )
+
+    changes: list[dict[str, Any]] = (
+        []
+        if already
+        else [
+            {"field": "key_id", "from": old_key_id, "to": enrolled.key_id},
+            {"field": "principal_id", "from": old_principal, "to": enrolled.principal_id},
+        ]
+    )
+    plan: dict[str, Any] = {
+        "action": "keys-adopt-enrollment",
+        "key_path": fs_path,
+        "principal_id": enrolled.principal_id,
+        "enrolled_key_id": enrolled.key_id,
+        "fingerprint": enrolled.fingerprint,
+        "trust_event_hash": enrolled.trust_event_hash,
+        "matched_entry": {"key_id": old_key_id, "principal_id": old_principal},
+        "already_adopted": already,
+        "changes": changes,
+    }
+
+    if already or args.dry_run:
+        plan["dry_run"] = bool(args.dry_run)
+        plan["would_write"] = bool(not already)
+        if json_mode:
+            _dump_json(plan)
+        else:
+            header = (
+                "keys adopt-enrollment: already adopted (nothing to do)"
+                if already
+                else "keys adopt-enrollment: dry-run (nothing written)"
+            )
+            print(header)
+            print(f"  keyset:                  {fs_path}")
+            print(f"  enrolled identity:       {enrolled.principal_id}/{enrolled.key_id}")
+            print(f"  fingerprint:             {enrolled.fingerprint}")
+            print(f"  matched entry:           {old_principal}/{old_key_id}")
+            for change in changes:
+                print(
+                    f"  would set {change['field']}: {change['from']!r} -> "
+                    f"{change['to']!r}"
+                )
+        return
+
+    # Back up BEFORE the write, preserving the original's mode (the file holds key
+    # material or a secret_ref; a 0644 backup of a 0600 keyset would be a real leak).
+    mode = stat.S_IMODE(Path(fs_path).stat().st_mode)
+    backup = f"{fs_path}.bak.{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
+    try:
+        shutil.copy2(fs_path, backup)
+        os.chmod(backup, mode)
+    except OSError as exc:
+        # No backup, no rewrite. A keyset edit without a recoverable original is not a
+        # risk worth taking for a convenience relabel, and a raw OSError here would read
+        # as though the rewrite had been attempted.
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"could not back up {fs_path!r} to {backup!r} ({exc}); refusing to rewrite "
+            "a keyset with no recoverable original. Nothing was changed.",
+            {"reason": "backup_failed", "key_path": fs_path, "backup": backup},
+        ) from exc
+
+    # Rewrite ONLY the two label fields. Every other field — secret, secret_ref,
+    # encoding, public_key, role, status — is carried through untouched, so no private
+    # material is re-encoded or moved.
+    entry["key_id"] = enrolled.key_id
+    entry["principal_id"] = enrolled.principal_id
+
+    directory = os.path.dirname(os.path.abspath(fs_path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".regista-keys-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=2, sort_keys=False)
+            handle.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, fs_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:  # pragma: no cover - cleanup must not mask the real failure
+            pass
+        raise
+
+    # POST-WRITE: prove custody did not change. The effective SECRET behind the NEW
+    # label must still derive the enrolled public key. This is what distinguishes a
+    # relabel from a key swap, and it is not hypothetical: `KeySet` resolves a per-key
+    # env override named REGISTA_HMAC_KEY_<KEY_ID>, so renaming the key_id changes WHICH
+    # variable supplies the secret — an entry whose real material arrived through an
+    # override keyed to the old label silently falls back to its inline `secret` after
+    # the rewrite. A relabel that swapped a project's signing key would be the worst
+    # possible outcome of a convenience command.
+    try:
+        after_entry = KeySet(fs_path).get_key(enrolled.key_id)
+    except RegistaError as exc:
+        # A bare KEY_LOAD_ERROR would leave the operator holding an unloadable keyset
+        # with no indication that the original survives.
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"post-write self-check failed: the relabelled keyset no longer loads "
+            f"({exc}). The original is preserved at {backup!r} — restore it.",
+            {"reason": "post_write_keyset_unloadable", "backup": backup},
+        ) from exc
+    after_public = _ed25519_public_from_secret(after_entry.secret)
+    if after_public != before_public or after_public != enrolled.public_key:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"post-write self-check failed: the private material behind "
+            f"{enrolled.key_id!r} no longer derives the enrolled public key, so the "
+            f"relabel changed which key this entry signs with rather than only its "
+            f"label. The original keyset is preserved at {backup!r} — restore it. "
+            "(A per-key REGISTA_HMAC_KEY_<KEY_ID> override tied to the old key_id is "
+            "the usual cause.)",
+            {
+                "reason": "post_write_secret_changed",
+                "backup": backup,
+                "key_id": enrolled.key_id,
+                "previous_key_id": old_key_id,
+            },
+        )
+    if after_entry.public_key != enrolled.public_key:
+        raise RegistaError(
+            ErrorCode.KEYSET_ADOPTION_REFUSED,
+            f"post-write self-check failed: the adopted entry's public_key field is not "
+            f"the enrolled key. The original keyset is preserved at {backup!r}.",
+            {"reason": "post_write_public_key_not_enrolled", "backup": backup},
+        )
+
+    result = {
+        **plan,
+        "ok": True,
+        "backup": backup,
+        "verified_private_key_unchanged": True,
+    }
+    if json_mode:
+        _dump_json(result)
+    else:
+        print("keys adopt-enrollment: entry relabelled to the enrolled identity")
+        print(f"  keyset:                  {fs_path}")
+        print(f"  backup:                  {backup}")
+        print(f"  key_id:                  {old_key_id} -> {enrolled.key_id}")
+        print(f"  principal_id:            {old_principal} -> {enrolled.principal_id}")
+        print(f"  fingerprint:             {enrolled.fingerprint}")
+        print("  private key unchanged:   yes (re-derived from the effective secret)")
+        print(f"  enrolled by event:       {enrolled.trust_event_hash}")
+
+
+def _ed25519_public_from_secret(secret: bytes) -> bytes | None:
+    """Derive the Ed25519 public key from a keyset entry's EFFECTIVE secret bytes.
+
+    This is the only honest way to ask "does this host actually hold the private half of
+    the enrolled key?". ``KeySet.describe_keys()``'s fingerprint cannot answer it: for an
+    asymmetric entry ``KeyEntry.fingerprint()`` digests the entry's ``public_key`` FIELD
+    (``_keys.py:72-74``), which is a declaration, not a derivation — so two entries with
+    the same ``public_key`` and different secrets fingerprint identically. Deriving from
+    the secret closes that gap.
+
+    Returns ``None`` rather than raising when the bytes are not a usable 32-byte seed;
+    the caller turns that into a named refusal. A 64-byte libsodium secret key is
+    deliberately NOT accepted by truncation — silently reinterpreting key material is
+    the effective-key trap WI-236 exists to prevent.
+    """
+    import nacl.signing
+
+    if len(secret) != 32:
+        return None
+    try:
+        return bytes(nacl.signing.SigningKey(secret).verify_key)
+    except (ValueError, TypeError):
+        return None
+
+
+def _decode_keyset_public_key(value: str) -> bytes | None:
+    """Best-effort base64 decode of a keyset ``public_key``; ``None`` when it is not.
+
+    Returning ``None`` rather than raising keeps a single unparseable entry from
+    blocking adoption for a keyset whose OTHER entries are fine — a malformed neighbour
+    is not evidence about the entry being adopted. ``None`` never compares equal to the
+    enrolled bytes, so an unparseable entry simply cannot match.
+    """
+    try:
+        return base64.b64decode(value, validate=True)
+    except ValueError:  # binascii.Error is a ValueError subclass
+        return None
+
+
 def cmd_spec_sign(args: argparse.Namespace) -> None:
     import hashlib
 
@@ -3777,6 +4722,50 @@ def main(argv: list[str] | None = None) -> None:
     keys_fp.add_argument("key_id", nargs="?", help="Only this key id")
     keys_fp.add_argument("--json", action="store_true", help="JSON output")
     keys_fp.set_defaults(func=cmd_keys_fingerprint)
+
+    # WI-325: relabel the local keyset entry that already holds the enrolled key.
+    # `trust enroll` chooses the trust log's key_id; nothing writes back to the keyset,
+    # so a host can hold the enrolled PRIVATE key under a stale label and be unable to
+    # sign as the identity the trust log knows. This rewrites exactly two label fields.
+    keys_adopt = keys_sub.add_parser(
+        "adopt-enrollment",
+        help="Relabel the keyset entry holding the enrolled public key to its "
+        "enrolled key_id/principal_id. Matches on public-key BYTES, never on a "
+        "label; refuses on ambiguity; backs the file up first; never generates, "
+        "moves or re-encodes private material",
+    )
+    keys_adopt.add_argument(
+        "--principal",
+        required=True,
+        help="Canonical kind:subject principal id whose enrolment to adopt "
+        "(e.g. agent:mvmcc03)",
+    )
+    keys_adopt.add_argument(
+        "--key-id",
+        default=None,
+        help="Adopt this specific enrolled key_id; required only when the principal "
+        "has more than one active enrolled key",
+    )
+    keys_adopt.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH)",
+    )
+    keys_adopt.add_argument(
+        "--trust-project",
+        default=None,
+        help="Trust-log schema to read the enrolment from; defaults to the genesis "
+        "document's signed project_name_hint (regista_trust)",
+    )
+    keys_adopt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve the enrolment, match the entry and print the plan; write NOTHING",
+    )
+    keys_adopt.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    keys_adopt.set_defaults(func=cmd_keys_adopt_enrollment)
 
     # assurance (Plan 027)
     assurance_parser = subs.add_parser(
@@ -4243,6 +5232,117 @@ def main(argv: list[str] | None = None) -> None:
         "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
     )
     trust_deleg.set_defaults(func=cmd_trust_delegate_registrar)
+
+    # WI-325: `genesis init` — open an ordinary project's clean v6 epoch. The
+    # per-project analog of `trust init-log`. Verify-before-touch, accurate --dry-run,
+    # no --force (a second genesis would fork the project's identity).
+    genesis_parser = subs.add_parser(
+        "genesis", help="Per-project v6 epoch genesis (EPOCH-RESET §5)"
+    )
+    genesis_sub = genesis_parser.add_subparsers(dest="subcommand")
+    genesis_init = genesis_sub.add_parser(
+        "init",
+        help="Open this project's clean v6 epoch: assemble, verify against the live "
+        "trust log, and write the single project_initialized genesis event",
+    )
+    genesis_init.add_argument(
+        "--principal",
+        required=True,
+        help="Canonical kind:subject principal id that signs the genesis; must have a "
+        "live, ACTIVE principal_key_enrolled in the trust log and its private key in "
+        "this host's keyset (e.g. agent:mvmcc03)",
+    )
+    genesis_init.add_argument(
+        "--gate-report",
+        default=None,
+        help="Path to the `agent-suite genesis-gate --json` report. REQUIRED: "
+        "EPOCH-RESET §5 makes the gate a precondition on the first write, so "
+        "gate_passed is never asserted without evidence that PASSES and is bound to "
+        "this store fingerprint and project. There is no override.",
+    )
+    genesis_init.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned, published trust-genesis JSON (or "
+        "REGISTA_TRUST_GENESIS_PATH)",
+    )
+    genesis_init.add_argument(
+        "--trust-project",
+        default=None,
+        help="Trust-log schema to verify the reference against; defaults to the "
+        "genesis document's signed project_name_hint (regista_trust)",
+    )
+    genesis_init.add_argument(
+        "--key-id",
+        default=None,
+        help="Sign with this specific enrolled key_id; required only when the "
+        "principal has more than one active enrolled key",
+    )
+    genesis_init.add_argument(
+        "--trust-event-hash",
+        default=None,
+        help="Assert the principal_key_enrolled event hash the acceptance will name. "
+        "Optional; when given it is VERIFIED against the trust log, never trusted",
+    )
+    genesis_init.add_argument(
+        "--trust-domain-id",
+        default=None,
+        help="Assert the trust domain being joined. Optional; verified against the "
+        "pinned genesis document",
+    )
+    genesis_init.add_argument(
+        "--trust-checkpoint",
+        default=None,
+        help="Path to a PUBLISHED regista.trust-checkpoint document to reference. When "
+        "omitted, a local unsigned observation of the live trust log is derived instead "
+        "and reported as source=derived",
+    )
+    genesis_init.add_argument(
+        "--checkpoint-seq",
+        type=int,
+        default=1,
+        help="checkpoint_seq for a DERIVED checkpoint (default 1; §5.8 requires >= 1). "
+        "Ignored when --trust-checkpoint supplies a published document",
+    )
+    genesis_init.add_argument(
+        "--project-instance-id",
+        default=None,
+        help="UUID to use as the project_instance_id; a fresh UUID4 by default. This "
+        "value is permanent — it is the project's identity",
+    )
+    genesis_init.add_argument(
+        "--scope-entity-kind",
+        action="append",
+        default=None,
+        help="An entity kind the bootstrap key's acceptance authorises; repeatable and "
+        "comma-joinable. Default: project,principal,workflow,work_item. 'project' is "
+        "mandatory — without it the acceptance does not authorise its own genesis",
+    )
+    genesis_init.add_argument(
+        "--may-sign-bundles",
+        action="store_true",
+        help="Grant may_sign_bundles in the bootstrap acceptance (default: false). "
+        "may_accept_keys and may_sign_checkpoints are always true — the writer "
+        "requires both",
+    )
+    # SUPPRESS (see rebuild-projection/init-log): a subparser --project/--json with a
+    # None/False default would clobber the global value the top-level parser already set.
+    genesis_init.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Project (schema) whose epoch is being opened; defaults to the global "
+        "--project / REGISTA_PROJECT",
+    )
+    genesis_init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run every check — gate evidence, store probe, live trust-log "
+        "verification, key resolution, envelope assembly — and write NOTHING",
+    )
+    genesis_init.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    genesis_init.set_defaults(func=cmd_genesis_init)
 
     # spec (Plan 025 WI-4.3)
     spec_parser = subs.add_parser("spec", help="Spec entity commands")

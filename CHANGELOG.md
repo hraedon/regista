@@ -4,6 +4,78 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **`regista genesis init` — the per-project v6 epoch opener (WI-325).** The per-project
+  analog of `trust init-log`, and the last step of the EPOCH-RESET ceremony that had no
+  CLI. `Regista.initialize_epoch()` was Python-API-only and consumed a finished,
+  ready-to-sign `project_initialized` envelope that nothing outside `tests/_v6_fixtures.py`
+  built. The new command assembles that envelope from **live trust-log facts** and
+  verifies every one of them before signing:
+
+  - the writing principal's enrolled key, its `principal_key_enrolled` event hash, and
+    its `active` status come from `verify_trust_log_chain`'s verified walk — not from a
+    `principal_keys` row. The projection is consulted only as a cross-check: a row that
+    *contradicts* the chain is a refusal (`projection_disagrees_with_chain`), an absent
+    row is not (§5.9 rule 1 — the projection is never the authority).
+  - the enrolment's validity window must contain the genesis instant.
+  - a key **rotated away** is refused even though `principal_key_status` still reports it
+    `active`. `_trust_log_writer._classify_rotation` records only the incoming key as
+    active and never flips the outgoing one, so an is-it-active test alone would resolve
+    a superseded key and sign a project's genesis with it. Supersession is read off the
+    `principal_key_rotated` events, per principal, and `--key-id` is not a way past it.
+  - a `trust_log_checkpoint` triplet is computed from the head that same verified walk
+    reached. `--trust-checkpoint PATH` accepts a published §4.3 checkpoint document and
+    reconciles its domain, project instance, genesis hash, head and event count against
+    the live log; with no such document a local **unsigned observation** is derived and
+    reported as `source: "derived"` rather than dressed up as a published checkpoint.
+  - an operator-claimed `--trust-event-hash` / `--trust-domain-id` is **verified, never
+    taken**. This closes the hole at `_genesis.py:396-423`, where those fields were only
+    shape-checked, so a project could be opened with a self-consistent but fabricated
+    trust reference.
+  - `--gate-report PATH` is required: the EPOCH-RESET §5 first-write verdict, as the
+    `agent-suite genesis-gate --json` report, which must be a supported version, say
+    `ok` **and** `epoch_may_open`, carry no non-passing finding, have healthy probes, and
+    be **bound to the target store's credential-free fingerprint and project**. There is
+    no default-true and no override — a PASS about another store is a real report about
+    the wrong thing.
+
+  Refusal semantics mirror `trust init-log`: verify-before-touch, a named
+  `GENESIS_ALREADY_WRITTEN` refusal for an already-opened epoch, a `--dry-run` that runs
+  every check (and reports the *same* would-refuse reason a real run would raise), and no
+  `--force`. A successful write is read back through `read_genesis()` and must re-verify.
+  Producer identity is a preflight refusal naming `REGISTA_PRODUCER_HARNESS` /
+  `_VERSION`, never a default.
+
+- **`regista keys adopt-enrollment` (WI-325).** `trust enroll` chooses the trust log's
+  `key_id` and nothing writes back to the local keyset, so a host can hold the enrolled
+  **private** key under a stale `key_id`/`principal_id` label and be unable to sign as
+  the identity the trust log knows. This finds the keyset entry whose **public-key bytes**
+  match the enrolment and rewrites exactly two label fields. It never generates, moves or
+  re-encodes private material; it refuses on ambiguity, on a `key_id` collision and on a
+  non-Ed25519 or non-active-actor entry; and it backs the file up, preserving mode,
+  before writing.
+
+  Both custody checks derive the public key from the entry's **effective secret** rather
+  than comparing `KeySet.describe_keys()` fingerprints. For an asymmetric entry
+  `KeyEntry.fingerprint()` digests the `public_key` *field* — a declaration, not a
+  derivation — so a fingerprint comparison cannot tell a correct entry from one that
+  declares the enrolled key while holding someone else's private half, and cannot notice
+  a secret changing at all. So: a **preflight** refuses before touching the file unless
+  the matched entry's secret derives the enrolled public key, and a **post-write**
+  self-check refuses (naming the backup) if it no longer does. The latter is not
+  hypothetical — `KeySet` resolves a per-key `REGISTA_HMAC_KEY_<KEY_ID>` override, so
+  renaming the key_id changes which variable supplies the secret.
+  `--dry-run` and idempotent re-runs write nothing.
+
+- `VerifiedChain` now reports `head_event_hash` and `event_count` from the same verified
+  walk that authenticated the chain, so a caller minting a checkpoint cannot read a head
+  the walk never authorised.
+
+- New error codes, each carrying a machine-readable `reason`:
+  `GENESIS_TRUST_REFERENCE_UNVERIFIED`, `GENESIS_GATE_EVIDENCE_INVALID`,
+  `KEYSET_ADOPTION_REFUSED`.
+
 ### Fixed
 
 - **`REGISTRA_TRUST_GENESIS_PATH` was a misspelling (WI-324).** The product name carried

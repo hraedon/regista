@@ -83,6 +83,18 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.GENESIS_SENTINEL_MISSING: 500,
     ErrorCode.GENESIS_INVALID: 400,
     ErrorCode.GENESIS_RECOVERY_FAILED: 500,
+    # WI-325. Like the trust verbs below, `genesis init` and `keys adopt-enrollment`
+    # are CLI-only (the sidecar exposes no epoch-opening endpoint), so these mappings
+    # exist to satisfy total coverage. 400 for the two evidence failures, matching the
+    # trust-document family below: the submitted material — a trust reference, a gate
+    # report — does not hold up, which is a defect in what was submitted. 409 for the
+    # keyset adoption, which is a conflict with local custody state, never a partial
+    # rewrite. (422 would read better for "well-formed but unattested", but the
+    # sidecar's status vocabulary is a closed set the meta-test enforces, and widening
+    # it for two CLI-only codes is not worth changing that contract.)
+    ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED: 400,
+    ErrorCode.GENESIS_GATE_EVIDENCE_INVALID: 400,
+    ErrorCode.KEYSET_ADOPTION_REFUSED: 409,
     ErrorCode.V6_EPOCH_OPEN: 409,
     # Trust-domain genesis (P2.1). These verbs are offline-only (the CLI never
     # contacts a database and the sidecar exposes no trust endpoint), so the
