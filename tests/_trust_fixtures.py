@@ -104,6 +104,7 @@ def mint_genesis(
     created_at: str = DEFAULT_CREATED_AT,
     nonce: str = DEFAULT_NONCE,
     project_instance_id: str = DEFAULT_PROJECT_INSTANCE_ID,
+    project_name_hint: str = "regista_trust",
     declared_mode: str = "offline-host",
     declared_holder: str = "human:test-owner",
 ) -> TrustRootFixture:
@@ -181,7 +182,7 @@ def mint_genesis(
         "trust_domain_id": trust_domain_id,
         "trust_log": {
             "project_instance_id": project_instance_id,
-            "project_name_hint": "regista_trust",
+            "project_name_hint": project_name_hint,
             "initial_head_event_hash": None,
         },
         "publication": {

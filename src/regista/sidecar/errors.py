@@ -105,6 +105,9 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.TRUST_LOG_PAYLOAD_INVALID: 400,
     ErrorCode.TRUST_LOG_AUTHORITY_INVALID: 403,
     ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED: 400,
+    # 503: the trust-log store is unreachable or the target schema is not a trust
+    # log — an infrastructure/config condition the caller cannot fix by reformatting.
+    ErrorCode.TRUST_LOG_STORE_UNAVAILABLE: 503,
     # 409: the caller asked for a write that this deployment structurally does not
     # perform any more (§5.9 rule 2). Not 400 — the request is well-formed; not 500
     # — nothing is broken. The state of the system conflicts with the request.

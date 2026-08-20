@@ -101,6 +101,11 @@ class ErrorCode(StrEnum):
     TRUST_LOG_PAYLOAD_INVALID = "TRUST_LOG_PAYLOAD_INVALID"
     TRUST_LOG_AUTHORITY_INVALID = "TRUST_LOG_AUTHORITY_INVALID"
     TRUST_LOG_BOOTSTRAP_NOT_PERMITTED = "TRUST_LOG_BOOTSTRAP_NOT_PERMITTED"
+    # The trust-log store could not be probed: the DSN is unreachable, or the target
+    # namespace is occupied by something other than a trust-log project (no `events`
+    # table). A CLI-surface refusal so `trust init-log` fails closed with a named error
+    # instead of leaking a raw psycopg traceback (WI-319 review hardening).
+    TRUST_LOG_STORE_UNAVAILABLE = "TRUST_LOG_STORE_UNAVAILABLE"
     # §5.9 rule 2: principal_keys is a projection. A write that is not driven by a
     # signed trust-log event is refused by name, not by review.
     PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED = "PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED"
