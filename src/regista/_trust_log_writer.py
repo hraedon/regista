@@ -53,6 +53,8 @@ from ._trust_log import (
     TRUST_LOG_TRANSITIONS,
     TRUST_ROOT_ROTATED,
     PossessionChallengeV2,
+    TrustDomainCustodyDeclared,
+    admit_custody_declaration,
     apply_root_rotation,
     classify_rotation_authority,
     parse_registrar_delegated,
@@ -132,6 +134,11 @@ class TrustState:
     principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]] = field(
         default_factory=dict
     )
+    # WI-292 §9(iv) / WI-314: the current replayed custody correction and its own
+    # event digest, so a correction's effect on custody is observable state and the
+    # writer can admit the next correction against the current head at write time.
+    current_custody: TrustDomainCustodyDeclared | None = None
+    current_custody_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -687,7 +694,8 @@ def verify_trust_log_chain(
             if record is not None:
                 verified_lifecycle.append(record)
 
-    replay_custody_declarations(custody_declarations)
+    current_custody = replay_custody_declarations(custody_declarations)
+    current_custody_digest = custody_declarations[-1][1] if custody_declarations else None
 
     for principal_id, entry in registrars.items():
         registrars[principal_id] = RegistrarState(
@@ -711,6 +719,8 @@ def verify_trust_log_chain(
             principal_public_keys=principal_public_keys,
             principal_key_status=principal_key_status,
             genesis_event_hash=genesis_hash,
+            current_custody=current_custody,
+            current_custody_digest=current_custody_digest,
         )
     return VerifiedChain(verified=tuple(verified_lifecycle), state=state)
 
@@ -1882,6 +1892,23 @@ def _resolve_authority(
             )
             apply_root_rotation(state.governance, rotated)
             return state.genesis_event_hash
+        if transition == TRUST_DOMAIN_CUSTODY_DECLARED:
+            # WI-314: admit the correction against the current replayed custody head
+            # BEFORE it is durably appended, mirroring the root-rotation write-time
+            # check above. This raises the same named error replay would raise for a
+            # seq gap or a wrong-predecessor supersession, so a malformed correction is
+            # refused fail-closed instead of wedging the log. Falls through to the
+            # shared root-threshold check below.
+            custody_head = (
+                (state.current_custody, state.current_custody_digest)
+                if state.current_custody is not None
+                and state.current_custody_digest is not None
+                else None
+            )
+            admit_custody_declaration(
+                custody_head,
+                parse_trust_domain_custody_declared(payload or {}),
+            )
         if parsed is not None:
             _check_authorized_by(
                 parsed,
