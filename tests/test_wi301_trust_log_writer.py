@@ -1383,3 +1383,153 @@ class TestReplayVerifies:
             assert exc_info.value.detail["reason"] == "root_threshold_not_met"
         finally:
             _close(handle, project)
+
+
+class TestEnrollmentBindsFreshKey:
+    """B1 (PR #58): enrolment binds a principal's key where there is none.
+
+    The writer must refuse a `principal_key_enrolled` that would displace a live key —
+    that is a §5.6 rotation, which carries the outgoing key's dual authorization. The
+    guard sits in the shared append path, so a direct `append_trust_log_event` (no CLI)
+    is bound by it too; the poison event never reaches the durable log. Rotation is
+    untouched.
+    """
+
+    def test_direct_append_enroll_over_active_key_is_refused(self, tmp_path):
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:seize-target"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            key_a = TrustLogKey.mint("pk_incumbent_a")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=key_a,
+            )
+
+            # A DIFFERENT key B for the SAME principal, appended directly (bypassing the
+            # CLI guard): the writer must refuse it at admission.
+            key_b = TrustLogKey.mint("pk_usurper_b")
+            payload_b, challenge_b = _enrollment_material(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=key_b,
+            )
+            _persist_challenge(handle, challenge_b, payload_b)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(
+                    handle, fixture, principal=principal, payload=payload_b
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "enrollment_key_already_present"
+
+            # The poison was never written: the log still replays and A is the sole
+            # active key.
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_key_status[(principal, key_a.key_id)] == "active"
+            assert (principal, key_b.key_id) not in state.principal_public_keys
+        finally:
+            _close(handle, project)
+
+    def test_reenroll_same_key_direct_append_is_admitted(self, tmp_path):
+        """The guard keys on the fingerprint: re-enrolling the SAME bytes is not a
+        change, so it is not refused (idempotent, mirrors the CLI no-op)."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:same-key"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            key_a = TrustLogKey.mint("pk_same_a")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=key_a,
+            )
+            # Same public bytes, fresh challenge — admitted (no different-fingerprint
+            # collision to guard against).
+            payload2, challenge2 = _enrollment_material(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=key_a,
+            )
+            _persist_challenge(handle, challenge2, payload2)
+            _append_enrollment(handle, fixture, principal=principal, payload=payload2)
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_key_status[(principal, key_a.key_id)] == "active"
+        finally:
+            _close(handle, project)
+
+    def test_rotation_still_supersedes_after_enroll_guard(self, tmp_path):
+        """A proper §5.6 dual rotation still supersedes A -> B — the enrol guard is
+        specific to the enrol transition and leaves rotation intact."""
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:rotates-cleanly"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            old = TrustLogKey.mint("pk_rotate_old")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=old,
+            )
+            new = TrustLogKey.mint("pk_rotate_new")
+            payload, challenge = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=new,
+                supersedes_key_id=old.key_id,
+                superseded_key=old,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge, payload)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            # The rotation was admitted and the new key is live; both keys remain in the
+            # replayed state (the projection applier is what marks A superseded). The
+            # point here is that the enrol guard did NOT block a legitimate rotation.
+            assert state.principal_key_status[(principal, new.key_id)] == "active"
+            assert state.principal_public_keys[(principal, new.key_id)] == new.public_key
+            assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
+        finally:
+            _close(handle, project)
