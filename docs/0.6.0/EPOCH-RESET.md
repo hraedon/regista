@@ -156,8 +156,14 @@ proves the second — a keyset cannot sign as a principal it is not bound to —
 gate asks a probe to observe. It does not prove the first in its strongest form, that private key
 material never leaves the actor: a process holding principal P's key can still sign as P. That is
 `client_signer` and the possession ceremony's territory, not a probe's. A green
-`regista.actor_boundary_signing` means "no arbitrary-principal signing", not "no service-held
-keys". What it proves is a library property, not a store property.
+`regista.actor_boundary_signing` means "no arbitrary-principal signing through the project-v6
+writers or ordinary trust-log append boundary", not "no service-held keys". What it proves is a
+library property, not a store property. Trust-domain Bootstrap A (`trust init-log` /
+`write_trust_genesis`) and the offline-root `trust delegate-registrar` wrapper are explicitly
+excluded and named in the report: those root-authority ceremonies map a root seed to an
+operator-asserted actor before constructing a temporary keyset. Their attribution gap remains
+WI-320; treating `initial_custody.declared_holder` as authenticated identity would contradict the
+frozen trust-domain contract.
 
 ## 6. Standing rules for the new epoch
 

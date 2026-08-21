@@ -344,6 +344,30 @@ def test_actor_boundary_check_passes_and_names_the_paths_it_proved() -> None:
     assert "append_v6_event" in detail
 
 
+def test_actor_boundary_report_names_the_trust_bootstrap_exclusion() -> None:
+    """A green R-10 check must not imply that WI-320 is resolved."""
+    report = invariant_probe_report("postgresql://example.invalid/db", [])
+    check = next(
+        item for item in report["checks"] if item["id"] == "regista.actor_boundary_signing"
+    )
+
+    assert check["claim"] == "r10.no_arbitrary_principal.project_v6"
+    assert check["paths_proven"] == [
+        "regista._genesis.append_v6_genesis",
+        "regista._v6_writer.append_v6_event",
+    ]
+    assert check["shared_boundary_consumers"] == [
+        "regista._trust_log_writer.append_trust_log_event"
+    ]
+    assert check["excluded_paths"] == [
+        "regista._cli.cmd_trust_init_log",
+        "regista._cli.cmd_trust_delegate_registrar",
+        "regista._cli._resolve_trust_root_actor",
+        "regista._trust_log_writer.write_trust_genesis",
+    ]
+    assert "WI-320" in check["exclusion_reason"]
+
+
 def test_actor_boundary_check_reds_when_the_ordinary_writer_boundary_is_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

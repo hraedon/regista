@@ -473,10 +473,23 @@ def _probe_first_write_admission() -> tuple[bool, str]:
 #   * ``_genesis.append_v6_genesis``  — opens the epoch
 #   * ``_v6_writer.append_v6_event``  — every ordinary event thereafter
 # Between them they cover the actor-boundary comparison in ``_genesis_key`` and
-# the one in ``_v6_writer._writer_key`` — and the latter is the *same function*
-# ``_trust_log_writer`` imports and calls for trust-log genesis and trust-log
-# appends (``_trust_log_writer.py`` line 69's import), so proving it here proves
-# it for that writer too. Not covered: the verification-side
+# the one in ``_v6_writer._writer_key``. The latter is the *same function*
+# ``_trust_log_writer`` imports for ordinary trust-log appends, so those appends
+# share the proven boundary too.
+#
+# Two root-authority wrappers are deliberately EXCLUDED: trust-domain Bootstrap
+# A (``trust init-log`` / ``write_trust_genesis``) and ``trust
+# delegate-registrar`` when it uses an offline root seed. Those operator commands
+# synthesize a temporary keyset labelled with the operator-asserted root actor.
+# The writer still enforces the keyset binding, but the raw-root-to-principal
+# mapping happened before that boundary, so this probe cannot authenticate it.
+# The residual is WI-320. It is not the
+# service-held-keyset posture R-10 targets, and changing it requires a new
+# trust-domain identity contract rather than pretending ``initial_custody``'s
+# signed-but-unverified ``declared_holder`` is identity evidence. The report
+# carries this exclusion as data so no consumer has to infer it from prose.
+#
+# Not covered either: the verification-side
 # ``_principal_keys.verify_principal_binding``, which is a read path and refuses
 # under the same code but is not a signing attempt.
 # Both are driven here over ``_in_memory_v6.InMemoryV6Connection``, the WI-287
@@ -1115,10 +1128,25 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
                 # probe may never do to a real store. The code exercised is the
                 # unmodified production signing path; see the WI-326 block above.
                 "basis": "behavioral_attempt_ephemeral_epoch",
+                "claim": "r10.no_arbitrary_principal.project_v6",
                 "paths_proven": [
                     "regista._genesis.append_v6_genesis",
                     "regista._v6_writer.append_v6_event",
                 ],
+                "shared_boundary_consumers": [
+                    "regista._trust_log_writer.append_trust_log_event",
+                ],
+                "excluded_paths": [
+                    "regista._cli.cmd_trust_init_log",
+                    "regista._cli.cmd_trust_delegate_registrar",
+                    "regista._cli._resolve_trust_root_actor",
+                    "regista._trust_log_writer.write_trust_genesis",
+                ],
+                "exclusion_reason": (
+                    "trust-domain root-authority wrappers map an offline root seed to "
+                    "an operator-asserted actor before constructing a temporary keyset; "
+                    "that attribution gap is WI-320 and is not service-held-keyset evidence"
+                ),
             },
         ],
     }

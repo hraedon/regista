@@ -19,10 +19,13 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   that never signs. The attempt runs against an ephemeral in-memory v6 epoch — a signing proof
   has to write, and the probe may not write to the store named by `REGISTA_DSN` — which the
   check declares in a new `basis` field rather than letting a reader assume the live store was
-  exercised. Scope limit, stated in the probe's source and in `EPOCH-RESET.md` §5.1: this proves
-  R-10's second sentence (a keyset cannot sign as a principal it is not bound to), not the first in
-  its strongest form (private key material never leaving the actor) — a process holding principal
-  P's key can still sign as P. No existing check, status or ID changed; `probe_version` stays `1`.
+  exercised. Scope limits are stated in the probe's source, its machine-readable report, and
+  `EPOCH-RESET.md` §5.1: this proves R-10's second sentence for project-v6 writers and the shared
+  ordinary trust-log boundary, not the first in its strongest form (private key material never
+  leaving the actor). Trust-domain Bootstrap A and the offline-root `trust delegate-registrar`
+  wrapper are explicitly excluded because their actor mapping happens before the temporary
+  keyset boundary; that attribution gap remains WI-320. No existing check, status or ID changed;
+  `probe_version` stays `1`.
 
 ## [0.6.0] — 2026-08-19
 

@@ -31,7 +31,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import uuid
@@ -77,14 +76,14 @@ def _run_probe(project: str) -> subprocess.CompletedProcess[str]:
     and key path must not leak into a measurement of a throwaway project, and a
     probe that quietly picked them up would be reporting on the wrong store.
     """
-    executable = shutil.which(PROBE_COMMAND[0])
-    if executable is None:
-        pytest.skip(f"{PROBE_COMMAND[0]!r} console script is not on PATH")
+    executable = Path(sys.executable).with_name(PROBE_COMMAND[0])
+    if not executable.is_file():
+        pytest.skip(f"{PROBE_COMMAND[0]!r} is not installed beside {sys.executable!r}")
     env = {k: v for k, v in os.environ.items() if not k.startswith("REGISTA_")}
     env["REGISTA_DSN"] = DSN
     env["REGISTA_PROJECT"] = project
     return subprocess.run(
-        (executable, *PROBE_COMMAND[1:]),
+        (str(executable), *PROBE_COMMAND[1:]),
         capture_output=True,
         text=True,
         timeout=120,
@@ -119,6 +118,17 @@ def test_probe_emits_a_passing_actor_boundary_check_over_the_cli(
         "regista._genesis.append_v6_genesis",
         "regista._v6_writer.append_v6_event",
     ]
+    assert check["claim"] == "r10.no_arbitrary_principal.project_v6"
+    assert check["shared_boundary_consumers"] == [
+        "regista._trust_log_writer.append_trust_log_event"
+    ]
+    assert check["excluded_paths"] == [
+        "regista._cli.cmd_trust_init_log",
+        "regista._cli.cmd_trust_delegate_registrar",
+        "regista._cli._resolve_trust_root_actor",
+        "regista._trust_log_writer.write_trust_genesis",
+    ]
+    assert "WI-320" in check["exclusion_reason"]
 
 
 def test_running_the_probe_writes_nothing_to_the_project_it_measured(
