@@ -3745,6 +3745,21 @@ def cmd_genesis_init(args: argparse.Namespace) -> None:
             "the two rather than have the tool choose which instruction to ignore.",
             {"reason": "checkpoint_seq_conflicts_with_published_checkpoint"},
         )
+    publication_args = (args.trust_publication_repo, args.trust_publication_commit)
+    if args.trust_checkpoint is not None and any(value is None for value in publication_args):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--trust-checkpoint requires both --trust-publication-repo and the "
+            "out-of-band --trust-publication-commit pin",
+            {"reason": "checkpoint_publication_pin_absent"},
+        )
+    if args.trust_checkpoint is None and any(value is not None for value in publication_args):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--trust-publication-repo/--trust-publication-commit require "
+            "--trust-checkpoint",
+            {"reason": "checkpoint_publication_without_checkpoint"},
+        )
 
     # (3) Producer identity. Load-bearing and process-level by design: unset is a
     # refusal naming the variables, never a default (V6-ENVELOPE.md §1.8).
@@ -3807,9 +3822,17 @@ def cmd_genesis_init(args: argparse.Namespace) -> None:
                 at=occurred_at,
                 checkpoint_seq=args.checkpoint_seq,
                 published_checkpoint_path=args.trust_checkpoint,
+                publication_repo=args.trust_publication_repo,
+                publication_commit=args.trust_publication_commit,
+                allow_derived_checkpoint=bool(args.dry_run),
             )
     finally:
         trust_mgr.close()
+    if reference.checkpoint.source == "derived" and refuse_reason is None:
+        # Dry-run is allowed to show the local observation, but it must report the
+        # refusal the identical real invocation would receive rather than claiming
+        # readiness that disappears when --dry-run is removed.
+        refuse_reason = "published_checkpoint_required"
 
     # (7) The local signing key must BE the enrolled key.
     _genesis_signing_key(key_path, reference.key)
@@ -3829,6 +3852,7 @@ def cmd_genesis_init(args: argparse.Namespace) -> None:
         reference=reference,
         producer=producer,
         previous_epoch=previous_epoch,
+        gate=gate,
         occurred_at=occurred_at,
         scope_entity_kinds=entity_kinds,
         may_sign_bundles=args.may_sign_bundles,
@@ -4264,40 +4288,78 @@ def cmd_keys_adopt_enrollment(args: argparse.Namespace) -> None:
     # the rewrite. A relabel that swapped a project's signing key would be the worst
     # possible outcome of a convenience command.
     try:
-        after_entry = KeySet(fs_path).get_key(enrolled.key_id)
+        try:
+            after_entry = KeySet(fs_path).get_key(enrolled.key_id)
+        except Exception as exc:
+            # A bare KEY_LOAD_ERROR would leave the operator holding an unloadable keyset
+            # with no indication that the original survives.
+            raise RegistaError(
+                ErrorCode.KEYSET_ADOPTION_REFUSED,
+                f"post-write self-check failed: the relabelled keyset no longer loads "
+                f"({exc}).",
+                {"reason": "post_write_keyset_unloadable", "backup": backup},
+            ) from exc
+        after_public = _ed25519_public_from_secret(after_entry.secret)
+        if after_public != before_public or after_public != enrolled.public_key:
+            raise RegistaError(
+                ErrorCode.KEYSET_ADOPTION_REFUSED,
+                f"post-write self-check failed: the private material behind "
+                f"{enrolled.key_id!r} no longer derives the enrolled public key, so the "
+                f"relabel changed which key this entry signs with rather than only its "
+                "label. (A per-key REGISTA_HMAC_KEY_<KEY_ID> override tied to the old "
+                "key_id is the usual cause.)",
+                {
+                    "reason": "post_write_secret_changed",
+                    "backup": backup,
+                    "key_id": enrolled.key_id,
+                    "previous_key_id": old_key_id,
+                },
+            )
+        if after_entry.public_key != enrolled.public_key:
+            raise RegistaError(
+                ErrorCode.KEYSET_ADOPTION_REFUSED,
+                "post-write self-check failed: the adopted entry's public_key field is "
+                "not the enrolled key.",
+                {"reason": "post_write_public_key_not_enrolled", "backup": backup},
+            )
     except RegistaError as exc:
-        # A bare KEY_LOAD_ERROR would leave the operator holding an unloadable keyset
-        # with no indication that the original survives.
+        # The command promises a relabel, not a possibly-mutated keyset plus recovery
+        # instructions. Restore through a same-directory temporary so the rollback is
+        # atomic too, while retaining the backup as durable audit/recovery evidence.
+        restore_tmp: str | None = None
+        try:
+            restore_fd, restore_tmp = tempfile.mkstemp(
+                prefix=".regista-keys-restore-", dir=directory
+            )
+            os.close(restore_fd)
+            shutil.copy2(backup, restore_tmp)
+            os.chmod(restore_tmp, mode)
+            os.replace(restore_tmp, fs_path)
+        except OSError as restore_exc:
+            if restore_tmp is not None:
+                try:
+                    os.unlink(restore_tmp)
+                except OSError:  # pragma: no cover - cleanup must not mask the refusal
+                    pass
+            raise RegistaError(
+                ErrorCode.KEYSET_ADOPTION_REFUSED,
+                "post-write verification failed and the automatic rollback also failed; "
+                f"the keyset may be partially relabelled. Restore {backup!r} before use.",
+                {
+                    "reason": "post_write_restore_failed",
+                    "original_reason": (exc.detail or {}).get("reason"),
+                    "backup": backup,
+                    "key_path": fs_path,
+                    "partial": True,
+                },
+            ) from restore_exc
+        detail = {**(exc.detail or {}), "restored": True, "partial": False}
         raise RegistaError(
-            ErrorCode.KEYSET_ADOPTION_REFUSED,
-            f"post-write self-check failed: the relabelled keyset no longer loads "
-            f"({exc}). The original is preserved at {backup!r} — restore it.",
-            {"reason": "post_write_keyset_unloadable", "backup": backup},
+            exc.code,
+            f"{exc.message} The original keyset was restored automatically; the "
+            f"backup remains at {backup!r}.",
+            detail,
         ) from exc
-    after_public = _ed25519_public_from_secret(after_entry.secret)
-    if after_public != before_public or after_public != enrolled.public_key:
-        raise RegistaError(
-            ErrorCode.KEYSET_ADOPTION_REFUSED,
-            f"post-write self-check failed: the private material behind "
-            f"{enrolled.key_id!r} no longer derives the enrolled public key, so the "
-            f"relabel changed which key this entry signs with rather than only its "
-            f"label. The original keyset is preserved at {backup!r} — restore it. "
-            "(A per-key REGISTA_HMAC_KEY_<KEY_ID> override tied to the old key_id is "
-            "the usual cause.)",
-            {
-                "reason": "post_write_secret_changed",
-                "backup": backup,
-                "key_id": enrolled.key_id,
-                "previous_key_id": old_key_id,
-            },
-        )
-    if after_entry.public_key != enrolled.public_key:
-        raise RegistaError(
-            ErrorCode.KEYSET_ADOPTION_REFUSED,
-            f"post-write self-check failed: the adopted entry's public_key field is not "
-            f"the enrolled key. The original keyset is preserved at {backup!r}.",
-            {"reason": "post_write_public_key_not_enrolled", "backup": backup},
-        )
 
     result = {
         **plan,
@@ -5296,6 +5358,14 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to a PUBLISHED regista.trust-checkpoint document to reference. When "
         "omitted, a local unsigned observation of the live trust log is derived instead "
         "and reported as source=derived",
+    )
+    genesis_init.add_argument(
+        "--trust-publication-repo",
+        help="Root of the clean §4.2 publication clone containing --trust-checkpoint",
+    )
+    genesis_init.add_argument(
+        "--trust-publication-commit",
+        help="Full git commit pinned out of band for the checkpoint publication channel",
     )
     genesis_init.add_argument(
         "--checkpoint-seq",

@@ -33,10 +33,15 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -96,6 +101,16 @@ def _write_json(path, obj) -> str:
     return str(path)
 
 
+def _git(repo, *args) -> str:
+    completed = subprocess.run(
+        ("git", "-C", str(repo), *args),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
@@ -143,6 +158,112 @@ def _gate_report(path, *, project: str, dsn: str = DSN, ok: bool = True,
         if store_fingerprint is not None
         else postgres_database_fingerprint(dsn)
     )
+    required_checks = {
+        "regista": [
+            {
+                "id": "regista.store_invariant_measurements",
+                "status": "measured",
+                "store_fingerprint": fingerprint,
+                "projects": [
+                    {
+                        "project": project,
+                        "event_count": 0,
+                        "declared_lineage_event_count": 0,
+                        "lineage_coverage": {"numerator": 0, "denominator": 0},
+                        "distinct_lineage_tokens": [],
+                        "unresolvable_lineage_tokens": [],
+                        "unresolvable_lineage_value_count": 0,
+                        "ambiguous_lineage_event_count": 0,
+                        "scheme_counts": {},
+                        "undeclared_agent_author_event_count": 0,
+                        "model_observation_status_counts": {},
+                        "snapshot_id": "pg:100:100:",
+                    }
+                ],
+                "errors": [],
+            },
+            {
+                "id": "regista.load_bearing_fields_refused",
+                "status": "pass",
+                "detail": "write attempt refused",
+            },
+            {
+                "id": "regista.closed_lineage_registry",
+                "status": "pass",
+                "detail": "closed registry enforced",
+            },
+            {
+                "id": "regista.first_write_admission",
+                "status": "pass",
+                "detail": "first-write matrix passed",
+            },
+            {
+                "id": "regista.actor_boundary_signing",
+                "status": "pass",
+                "detail": "unbound principal refused",
+                "claim": "r10.no_arbitrary_principal.project_v6",
+                "basis": "behavioral_attempt_ephemeral_epoch",
+                "paths_proven": [
+                    "regista._genesis.append_v6_genesis",
+                    "regista._v6_writer.append_v6_event",
+                ],
+                "shared_boundary_consumers": [
+                    "regista._trust_log_writer.append_trust_log_event"
+                ],
+                "excluded_paths": [
+                    "regista._cli.cmd_trust_init_log",
+                    "regista._cli.cmd_trust_delegate_registrar",
+                    "regista._cli._resolve_trust_root_actor",
+                    "regista._trust_log_writer.write_trust_genesis",
+                ],
+                "exclusion_reason": "WI-320 remains explicit",
+            },
+        ],
+        "cairn": [
+            {
+                "id": "cairn.runtime_model_observed",
+                "status": "pass",
+                "detail": "runtime model observed",
+            },
+            {
+                "id": "cairn.unavailable_model_named",
+                "status": "pass",
+                "detail": "unavailable model named",
+            },
+            {
+                "id": "cairn.observation_failure_nonblocking",
+                "status": "pass",
+                "detail": "capture remained nonblocking",
+            },
+        ],
+        "agent-notes": [
+            {
+                "id": "agent_notes.session_identity_resolvable",
+                "status": "pass",
+                "detail": "session identity resolved",
+            }
+        ],
+    }
+    required_findings = [
+        "regista.target_store_bound",
+        "regista.target_project_bound",
+        "regista.observation_snapshot_bound",
+        f"regista.store_empty:{project}",
+        f"regista.lineage_population_empty:{project}",
+        f"regista.lineage_tokens_resolvable:{project}",
+        f"regista.lineage_unambiguous:{project}",
+        f"regista.asymmetric_only:{project}",
+        f"regista.authors_declared:{project}",
+        f"regista.model_observation_population_empty:{project}",
+        "regista.load_bearing_fields_refused",
+        "regista.closed_lineage_registry",
+        "regista.first_write_admission",
+        "regista.actor_boundary_signing",
+        "cairn.runtime_model_observed",
+        "cairn.unavailable_model_named",
+        "cairn.observation_failure_nonblocking",
+        "agent_notes.session_identity_resolvable",
+    ]
     return _write_json(
         path,
         {
@@ -160,17 +281,24 @@ def _gate_report(path, *, project: str, dsn: str = DSN, ok: bool = True,
                 findings
                 if findings is not None
                 else [
-                    {"check_id": "regista.target_store_bound", "status": "pass",
-                     "detail": "bound"},
-                    {"check_id": f"regista.store_empty:{project}", "status": "pass",
-                     "detail": "0 events"},
+                    {"check_id": check_id, "status": "pass", "detail": "passed"}
+                    for check_id in required_findings
                 ]
             ),
             "probes": {
                 "report_version": 1,
                 "kind": "invariant_probes",
                 "ok": probes_ok,
-                "probes": [],
+                "probes": [
+                    {
+                        "component": component,
+                        "status": "pass",
+                        "ok": True,
+                        "detail": "probe passed",
+                        "checks": checks,
+                    }
+                    for component, checks in required_checks.items()
+                ],
             },
         },
     )
@@ -213,6 +341,8 @@ def _init_ns(**kwargs) -> argparse.Namespace:
         trust_event_hash=None,
         trust_domain_id=None,
         trust_checkpoint=None,
+        trust_publication_repo=None,
+        trust_publication_commit=None,
         checkpoint_seq=1,
         project_instance_id=None,
         scope_entity_kind=None,
@@ -372,6 +502,124 @@ def trust(tmp_path_factory):
         )
     )
 
+    # Publish a real root-signed §4.3 checkpoint in a two-commit append-only
+    # channel. WI-325 verifies the signature, exact canonical bytes, index prefix,
+    # path/sequence, git ancestry, and the out-of-band commit pin.
+    from regista._genesis_open import _checkpoint_signature_input
+    from regista._jcs import canonicalize
+    from regista._trust_domain import derive_governance_mode
+    from regista._trust_log_writer import verify_trust_log_chain
+
+    publication_repo = tmp_path / "publication"
+    publication_repo.mkdir()
+    _git(publication_repo, "init", "-b", "main")
+    published_at = _iso(datetime.now(UTC))
+    canonical_genesis = canonicalize(fx.document)
+    (publication_repo / "trust-domain.json").write_bytes(canonical_genesis)
+    index = {
+        "type": "regista.publication-index",
+        "version": 1,
+        "entries": [
+            {
+                "path": "trust-domain.json",
+                "sha256": "sha256:" + hashlib.sha256(canonical_genesis).hexdigest(),
+                "published_at": published_at,
+                "prev_commit": None,
+            }
+        ],
+    }
+    (publication_repo / "index.json").write_bytes(canonicalize(index))
+    _git(publication_repo, "add", "trust-domain.json", "index.json")
+    _git(
+        publication_repo,
+        "-c",
+        "user.name=Regista Test",
+        "-c",
+        "user.email=regista-test@example.invalid",
+        "commit",
+        "-m",
+        "regista: publish genesis test",
+    )
+    genesis_commit = _git(publication_repo, "rev-parse", "HEAD")
+
+    mgr = ConnectionManager(DSN, project)
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            chain = verify_trust_log_chain(conn, fx.document)
+    finally:
+        mgr.close()
+    checkpoint = {
+        "type": "regista.trust-checkpoint",
+        "version": 1,
+        "trust_domain_id": fx.document["trust_domain_id"],
+        "trust_domain_core_digest": fx.document["trust_domain_core_digest"],
+        "checkpoint_seq": 1,
+        "trust_log": {
+            "project_instance_id": fx.document["trust_log"]["project_instance_id"],
+            "event_count": chain.event_count,
+            "genesis_event_hash": chain.state.genesis_event_hash,
+            "head_event_hash": chain.head_event_hash,
+            "max_global_seq": chain.event_count,
+        },
+        "root_governance": {
+            "mode": derive_governance_mode(
+                chain.state.governance.threshold,
+                len(chain.state.governance.signer_fingerprints),
+            ),
+            "threshold": chain.state.governance.threshold,
+            "signer_count": len(chain.state.governance.signer_fingerprints),
+        },
+        "active_root_fingerprints": sorted(chain.state.governance.signer_fingerprints),
+        "prev_checkpoint_digest": None,
+        "prev_commit": genesis_commit,
+        "created_at": published_at,
+        "root_signatures": [],
+        "countersignatures": [],
+        "anchors": [],
+    }
+    signer_id = fx.signer_ids[0]
+    signature = nacl.signing.SigningKey(root_seed).sign(
+        _checkpoint_signature_input(checkpoint)
+    ).signature
+    checkpoint["root_signatures"] = [
+        {
+            "signer_id": signer_id,
+            "fingerprint": fx.fingerprints[signer_id],
+            "signature": base64.b64encode(signature).decode("ascii"),
+        }
+    ]
+    checkpoint_bytes = canonicalize(checkpoint)
+    checkpoint_rel = (
+        f"checkpoints/{fx.document['trust_domain_id']}/"
+        "00000001-20260821T000000.000000Z.json"
+    )
+    checkpoint_path = publication_repo / checkpoint_rel
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_bytes(checkpoint_bytes)
+    checkpoint_digest = "sha256:" + hashlib.sha256(checkpoint_bytes).hexdigest()
+    index["entries"].append(
+        {
+            "path": checkpoint_rel,
+            "sha256": checkpoint_digest,
+            "published_at": published_at,
+            "prev_commit": genesis_commit,
+        }
+    )
+    (publication_repo / "index.json").write_bytes(canonicalize(index))
+    _git(publication_repo, "add", checkpoint_rel, "index.json")
+    _git(
+        publication_repo,
+        "-c",
+        "user.name=Regista Test",
+        "-c",
+        "user.email=regista-test@example.invalid",
+        "commit",
+        "-m",
+        "regista: publish checkpoint test",
+    )
+    publication_commit = _git(publication_repo, "rev-parse", "HEAD")
+
     yield SimpleNamespace(
         project=project,
         genesis=genesis,
@@ -382,6 +630,10 @@ def trust(tmp_path_factory):
         host_fingerprint=_compute_fingerprint(host_public, "ed25519"),
         tmp_path=tmp_path,
         root_keyfile=root_keyfile,
+        root_seed=root_seed,
+        checkpoint=str(checkpoint_path),
+        publication_repo=str(publication_repo),
+        publication_commit=publication_commit,
     )
     drop_project_schema(DSN, project)
 
@@ -415,6 +667,9 @@ def _init(trust, target, **overrides) -> dict:
         "genesis": trust.genesis,
         "trust_project": trust.project,
         "gate_report": target.gate,
+        "trust_checkpoint": trust.checkpoint,
+        "trust_publication_repo": trust.publication_repo,
+        "trust_publication_commit": trust.publication_commit,
     }
     bound.update(overrides)
     return json.loads(_capture(cmd_genesis_init, _init_ns(**bound)))
@@ -464,7 +719,8 @@ def test_genesis_init_opens_the_epoch_end_to_end(trust, target):
     )
     assert result["trust_event_hash"] == enrolment.event_hash
     assert result["checkpoint"]["head_event_hash"] == chain.head_event_hash
-    assert result["checkpoint"]["source"] == "derived"
+    assert result["checkpoint"]["source"] == "published"
+    assert result["checkpoint"]["publication_commit"] == trust.publication_commit
 
 
 def test_read_genesis_reverifies_the_written_epoch(trust, target):
@@ -621,8 +877,7 @@ def test_self_contradictory_gate_report_is_refused(trust, target):
     with pytest.raises(RegistaError) as exc:
         _init(trust, target, gate_report=contradictory)
     assert exc.value.code is ErrorCode.GENESIS_GATE_EVIDENCE_INVALID
-    assert exc.value.detail["reason"] == "gate_report_self_contradictory"
-    assert "agent_notes.session_identity_resolvable" in exc.value.detail["failed_checks"]
+    assert exc.value.detail["reason"] == "gate_report_findings_invalid"
 
 
 def test_unsupported_gate_report_version_is_refused(trust, target):
@@ -648,7 +903,7 @@ def test_gate_report_with_unhealthy_probes_is_refused(trust, target):
                              project=target.project, probes_ok=False)
     with pytest.raises(RegistaError) as exc:
         _init(trust, target, gate_report=unhealthy)
-    assert exc.value.detail["reason"] == "gate_probe_health_not_ok"
+    assert exc.value.detail["reason"] == "gate_probe_report_invalid"
 
 
 def test_gate_report_with_no_findings_is_refused(trust, target):
@@ -657,6 +912,101 @@ def test_gate_report_with_no_findings_is_refused(trust, target):
     with pytest.raises(RegistaError) as exc:
         _init(trust, target, gate_report=empty)
     assert exc.value.detail["reason"] == "gate_report_findings_empty"
+
+
+def test_gate_report_refuses_a_non_object_finding(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    raw["findings"][0] = None
+    path = _write_json(target.tmp_path / "null-finding.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_report_findings_invalid"
+
+
+def test_gate_report_refuses_incomplete_nested_probe_coverage(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    raw["probes"]["probes"] = [
+        probe
+        for probe in raw["probes"]["probes"]
+        if probe["component"] != "agent-notes"
+    ]
+    path = _write_json(target.tmp_path / "missing-probe.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_probe_component_coverage_invalid"
+
+
+@pytest.mark.parametrize(
+    "snapshot", [None, "", "not-a-postgres-snapshot", "pg:not-a-snapshot"]
+)
+def test_gate_report_requires_a_named_postgres_snapshot(trust, target, snapshot):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    raw["binding"]["observation_snapshot"] = snapshot
+    path = _write_json(target.tmp_path / f"bad-snapshot-{snapshot!s}.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_report_snapshot_invalid"
+
+
+def test_gate_report_unknown_field_is_refused_not_ignored(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    raw["attacker_override"] = True
+    path = _write_json(target.tmp_path / "extra-field.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_report_shape_invalid"
+
+
+def test_gate_report_refuses_empty_behavioral_check_bodies(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    cairn = next(
+        probe for probe in raw["probes"]["probes"] if probe["component"] == "cairn"
+    )
+    cairn["checks"][0].pop("detail")
+    path = _write_json(target.tmp_path / "empty-check-body.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_probe_check_body_invalid"
+
+
+def test_gate_report_reconciles_the_full_empty_store_measurement(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    regista = next(
+        probe for probe in raw["probes"]["probes"] if probe["component"] == "regista"
+    )
+    measurement = next(
+        check
+        for check in regista["checks"]
+        if check["id"] == "regista.store_invariant_measurements"
+    )
+    measurement["projects"][0]["event_count"] = 1
+    path = _write_json(target.tmp_path / "false-empty-measurement.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_measurement_body_invalid"
+
+
+def test_gate_report_boolean_version_is_not_integer_one(trust, target):
+    raw = json.loads(open(target.gate, encoding="utf-8").read())
+    raw["report_version"] = True
+    path = _write_json(target.tmp_path / "boolean-version.json", raw)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, gate_report=path)
+
+    assert exc.value.detail["reason"] == "gate_report_version_absent"
 
 
 def test_unreadable_and_non_json_gate_reports_are_refused(tmp_path):
@@ -677,7 +1027,7 @@ def test_unenrolled_principal_is_refused(trust, target):
     with pytest.raises(RegistaError) as exc:
         _init(trust, target, principal="agent:never-enrolled")
     assert exc.value.code is ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
-    assert exc.value.detail["reason"] == "principal_not_enrolled"
+    assert exc.value.detail["reason"] == "principal_has_no_key_introduction"
     assert _count_events(target.project) == 0
 
 
@@ -685,8 +1035,8 @@ def test_wrong_key_id_is_refused(trust, target):
     with pytest.raises(RegistaError) as exc:
         _init(trust, target, key_id="pk_not_a_real_key")
     assert exc.value.code is ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
-    assert exc.value.detail["reason"] == "key_id_not_enrolled"
-    assert trust.host_key_id in exc.value.detail["enrolled_key_ids"]
+    assert exc.value.detail["reason"] == "key_id_not_introduced"
+    assert trust.host_key_id in exc.value.detail["introduced_key_ids"]
 
 
 def test_a_claimed_trust_event_hash_is_verified_not_trusted(trust, target):
@@ -892,6 +1242,21 @@ def _one_key(offset_seconds=0, not_after_offset=None, fingerprint=None, key_id="
     return record, public
 
 
+def _rotation_record(*, supersedes_key_id="pk_old", key_id="pk_new"):
+    record, public = _one_key(offset_seconds=-60, key_id=key_id)
+    record.transition = "principal_key_rotated"
+    record.event_hash = "sha256:" + "66" * 32
+    record.payload["type"] = "regista.key-rotation"
+    record.payload["supersedes_key_id"] = supersedes_key_id
+    record.payload["dual_authorization"] = {
+        "old_key_signature": base64.b64encode(b"\x00" * 64).decode("ascii"),
+        "mode": "dual",
+        "recovery_reason": None,
+    }
+    record.payload["root_signatures"] = []
+    return record, public
+
+
 def test_revoked_enrolled_key_is_refused():
     record, public = _one_key(offset_seconds=-60)
     chain = _synthetic_chain(
@@ -902,7 +1267,7 @@ def test_revoked_enrolled_key_is_refused():
     with pytest.raises(RegistaError) as exc:
         resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
     assert exc.value.code is ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
-    assert exc.value.detail["reason"] == "enrolled_key_not_active"
+    assert exc.value.detail["reason"] == "trust_key_not_active"
 
 
 def test_two_active_enrolled_keys_refuse_rather_than_choose():
@@ -915,7 +1280,7 @@ def test_two_active_enrolled_keys_refuse_rather_than_choose():
     )
     with pytest.raises(RegistaError) as exc:
         resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
-    assert exc.value.detail["reason"] == "enrolled_key_ambiguous"
+    assert exc.value.detail["reason"] == "trust_key_ambiguous"
     assert sorted(exc.value.detail["key_ids"]) == ["pk_a", "pk_b"]
 
 
@@ -927,7 +1292,7 @@ def test_not_yet_valid_enrolment_is_refused():
     )
     with pytest.raises(RegistaError) as exc:
         resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
-    assert exc.value.detail["reason"] == "enrollment_not_yet_valid"
+    assert exc.value.detail["reason"] == "trust_key_not_yet_valid"
 
 
 def test_expired_enrolment_is_refused():
@@ -938,7 +1303,7 @@ def test_expired_enrolment_is_refused():
     )
     with pytest.raises(RegistaError) as exc:
         resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
-    assert exc.value.detail["reason"] == "enrollment_expired"
+    assert exc.value.detail["reason"] == "trust_key_expired"
 
 
 def test_replayed_public_key_disagreeing_with_the_payload_is_refused():
@@ -953,20 +1318,27 @@ def test_replayed_public_key_disagreeing_with_the_payload_is_refused():
     assert exc.value.detail["reason"] == "replayed_public_key_mismatch"
 
 
-def test_a_rotation_sourced_key_is_refused_by_name():
-    """``trust_event_hash`` names an ENROLMENT; a rotation has no honest value for it."""
-    rotation = SimpleNamespace(
-        transition="principal_key_rotated",
-        event_hash="sha256:" + "66" * 32,
-        payload={"principal_id": HOST, "supersedes_key_id": "pk_gone"},
+def test_an_active_rotation_sourced_key_is_a_valid_trust_referent():
+    rotation, public = _rotation_record()
+    chain = _synthetic_chain(
+        [rotation],
+        statuses={(HOST, "pk_new"): "active"},
+        public_keys={(HOST, "pk_new"): public},
     )
-    chain = _synthetic_chain([rotation], statuses={}, public_keys={})
-    with pytest.raises(RegistaError) as exc:
-        resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
-    assert exc.value.detail["reason"] == "key_source_is_rotation_not_enrollment"
+
+    class _ProjectionAbsent:
+        def execute(self, *_a, **_k):
+            return SimpleNamespace(fetchone=lambda: {"present": False})
+
+    resolved = resolve_enrolled_key(
+        _ProjectionAbsent(), {}, principal_id=HOST, verified=chain
+    )
+    assert resolved.key_id == "pk_new"
+    assert resolved.trust_event_hash == rotation.event_hash
+    assert resolved.trust_event_transition == "principal_key_rotated"
 
 
-def test_a_key_rotated_away_is_refused_even_though_its_status_stays_active():
+def test_rotation_selects_new_key_even_though_old_status_stays_active():
     """The trap: a rotation does NOT mark the superseded key revoked.
 
     ``_trust_log_writer._classify_rotation`` records only the INCOMING key as active
@@ -977,52 +1349,45 @@ def test_a_key_rotated_away_is_refused_even_though_its_status_stays_active():
     rotation events themselves — this test fails if that reading is removed.
     """
     enrolment, public = _one_key(offset_seconds=-3600, key_id="pk_old")
-    rotation = SimpleNamespace(
-        transition="principal_key_rotated",
-        event_hash="sha256:" + "99" * 32,
-        payload={"principal_id": HOST, "supersedes_key_id": "pk_old"},
-    )
+    rotation, new_public = _rotation_record()
     chain = _synthetic_chain(
         [enrolment, rotation],
         # Exactly the state the real replay leaves behind: BOTH keys active.
         statuses={(HOST, "pk_old"): "active", (HOST, "pk_new"): "active"},
-        public_keys={(HOST, "pk_old"): public},
+        public_keys={(HOST, "pk_old"): public, (HOST, "pk_new"): new_public},
     )
-    with pytest.raises(RegistaError) as exc:
-        resolve_enrolled_key(_NoConn(), {}, principal_id=HOST, verified=chain)
-    assert exc.value.code is ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
-    assert exc.value.detail["reason"] == "key_source_is_rotation_not_enrollment"
-    assert exc.value.detail["superseded_key_ids"] == ["pk_old"]
+    class _ProjectionAbsent:
+        def execute(self, *_a, **_k):
+            return SimpleNamespace(fetchone=lambda: {"present": False})
+
+    resolved = resolve_enrolled_key(
+        _ProjectionAbsent(), {}, principal_id=HOST, verified=chain
+    )
+    assert resolved.key_id == "pk_new"
+    assert resolved.trust_event_transition == "principal_key_rotated"
 
 
 def test_an_explicit_key_id_naming_a_superseded_key_is_still_refused():
     """--key-id must not be a way past the supersession check."""
     enrolment, public = _one_key(offset_seconds=-3600, key_id="pk_old")
-    rotation = SimpleNamespace(
-        transition="principal_key_rotated",
-        event_hash="sha256:" + "aa" * 32,
-        payload={"principal_id": HOST, "supersedes_key_id": "pk_old"},
-    )
+    rotation, new_public = _rotation_record()
     chain = _synthetic_chain(
         [enrolment, rotation],
         statuses={(HOST, "pk_old"): "active"},
-        public_keys={(HOST, "pk_old"): public},
+        public_keys={(HOST, "pk_old"): public, (HOST, "pk_new"): new_public},
     )
     with pytest.raises(RegistaError) as exc:
         resolve_enrolled_key(
             _NoConn(), {}, principal_id=HOST, key_id="pk_old", verified=chain
         )
-    assert exc.value.detail["reason"] == "key_source_is_rotation_not_enrollment"
+    assert exc.value.detail["reason"] == "key_superseded"
 
 
 def test_a_rotation_of_another_principal_does_not_supersede_this_one(trust, target):
     """Supersession is per principal; a neighbour's rotation must not block genesis."""
     enrolment, public = _one_key(offset_seconds=-3600, key_id="pk_mine")
-    other_rotation = SimpleNamespace(
-        transition="principal_key_rotated",
-        event_hash="sha256:" + "bb" * 32,
-        payload={"principal_id": "agent:someone-else", "supersedes_key_id": "pk_mine"},
-    )
+    other_rotation, _other_public = _rotation_record(supersedes_key_id="pk_mine")
+    other_rotation.payload["principal_id"] = "agent:someone-else"
     chain = _synthetic_chain(
         [enrolment, other_rotation],
         statuses={(HOST, "pk_mine"): "active"},
@@ -1078,37 +1443,156 @@ def test_checkpoint_seq_below_one_is_refused(trust):
     assert exc.value.detail["reason"] == "checkpoint_seq_below_one"
 
 
-def test_a_published_checkpoint_is_verified_against_the_live_log(trust, target):
-    """A published checkpoint is stronger evidence only because it is CHECKED."""
-    from regista._trust_log_writer import verify_trust_log_chain
-
+def test_derived_checkpoint_cannot_claim_a_later_unlinked_sequence(trust):
     mgr = ConnectionManager(DSN, trust.project)
     try:
         mgr.open()
         with mgr.transaction() as conn:
-            chain = verify_trust_log_chain(conn, trust.fx.document)
+            with pytest.raises(RegistaError) as exc:
+                derive_trust_log_checkpoint(conn, trust.fx.document, checkpoint_seq=2)
     finally:
         mgr.close()
-    doc = trust.fx.document
-    published = {
-        "type": "regista.trust-checkpoint",
-        "version": 1,
-        "trust_domain_id": doc["trust_domain_id"],
-        "trust_domain_core_digest": doc["trust_domain_core_digest"],
-        "checkpoint_seq": 7,
-        "trust_log": {
-            "project_instance_id": doc["trust_log"]["project_instance_id"],
-            "event_count": chain.event_count,
-            "genesis_event_hash": chain.state.genesis_event_hash,
-            "head_event_hash": chain.head_event_hash,
-            "max_global_seq": chain.event_count,
-        },
-    }
-    good = _write_json(target.tmp_path / "checkpoint.json", published)
-    result = _init(trust, target, trust_checkpoint=good)
+    assert exc.value.detail["reason"] == "derived_checkpoint_sequence_unlinked"
+
+
+def test_a_published_checkpoint_is_verified_against_the_live_log(trust, target):
+    """A published checkpoint is stronger evidence because every layer is checked."""
+    result = _init(trust, target)
     assert result["checkpoint"]["source"] == "published"
-    assert result["checkpoint"]["checkpoint_seq"] == 7
-    assert result["checkpoint"]["head_event_hash"] == chain.head_event_hash
+    assert result["checkpoint"]["checkpoint_seq"] == 1
+    assert result["checkpoint"]["publication_commit"] == trust.publication_commit
+
+
+def test_unsigned_checkpoint_is_refused(trust, target):
+    from regista._jcs import canonicalize
+
+    raw = json.loads(open(trust.checkpoint, encoding="utf-8").read())
+    raw["root_signatures"] = []
+    path = target.tmp_path / "unsigned-checkpoint.json"
+    path.write_bytes(canonicalize(raw))
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, trust_checkpoint=str(path))
+
+    assert exc.value.detail["reason"] == "checkpoint_root_signatures_absent"
+
+
+def test_tampered_checkpoint_signature_is_refused(trust, target):
+    from regista._jcs import canonicalize
+
+    raw = json.loads(open(trust.checkpoint, encoding="utf-8").read())
+    raw["root_signatures"][0]["signature"] = base64.b64encode(b"x" * 64).decode(
+        "ascii"
+    )
+    path = target.tmp_path / "bad-signature-checkpoint.json"
+    path.write_bytes(canonicalize(raw))
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, trust_checkpoint=str(path))
+
+    assert exc.value.detail["reason"] == "checkpoint_root_signature_invalid"
+
+
+def test_checkpoint_boolean_version_is_not_integer_one(trust, target):
+    from regista._jcs import canonicalize
+
+    raw = json.loads(open(trust.checkpoint, encoding="utf-8").read())
+    raw["version"] = True
+    path = target.tmp_path / "boolean-checkpoint-version.json"
+    path.write_bytes(canonicalize(raw))
+
+    with pytest.raises(RegistaError) as exc:
+        _init(trust, target, trust_checkpoint=str(path))
+
+    assert exc.value.detail["reason"] == "checkpoint_type_or_version_invalid"
+
+
+def test_checkpoint_publication_index_must_bind_the_exact_digest(trust, target):
+    from regista._jcs import canonicalize
+
+    clone = target.tmp_path / "publication-clone"
+    shutil.copytree(trust.publication_repo, clone)
+    index_path = clone / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["entries"][-1]["sha256"] = "sha256:" + "00" * 32
+    index_path.write_bytes(canonicalize(index))
+    _git(clone, "add", "index.json")
+    _git(
+        clone,
+        "-c",
+        "user.name=Regista Test",
+        "-c",
+        "user.email=regista-test@example.invalid",
+        "commit",
+        "-m",
+        "tamper publication index",
+    )
+    commit = _git(clone, "rev-parse", "HEAD")
+    relative = os.path.relpath(trust.checkpoint, trust.publication_repo)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(
+            trust,
+            target,
+            trust_checkpoint=str(clone / relative),
+            trust_publication_repo=str(clone),
+            trust_publication_commit=commit,
+        )
+
+    assert exc.value.detail["reason"] == (
+        "checkpoint_publication_historical_digest_mismatch"
+    )
+
+
+def test_checkpoint_publication_assume_unchanged_cannot_hide_modified_bytes(
+    trust, target
+):
+    clone = target.tmp_path / "assume-unchanged-clone"
+    shutil.copytree(trust.publication_repo, clone)
+    _git(clone, "update-index", "--assume-unchanged", "index.json")
+    with open(clone / "index.json", "ab") as handle:
+        handle.write(b" ")
+    relative = os.path.relpath(trust.checkpoint, trust.publication_repo)
+
+    with pytest.raises(RegistaError) as exc:
+        _init(
+            trust,
+            target,
+            trust_checkpoint=str(clone / relative),
+            trust_publication_repo=str(clone),
+            trust_publication_commit=trust.publication_commit,
+        )
+
+    assert exc.value.detail["reason"] == "checkpoint_publication_worktree_mismatch"
+
+
+def test_real_genesis_requires_a_published_checkpoint(trust, target):
+    with pytest.raises(RegistaError) as exc:
+        _init(
+            trust,
+            target,
+            trust_checkpoint=None,
+            trust_publication_repo=None,
+            trust_publication_commit=None,
+        )
+
+    assert exc.value.detail["reason"] == "published_checkpoint_required"
+
+
+def test_dry_run_may_report_an_explicitly_derived_unbound_observation(trust, target):
+    result = _init(
+        trust,
+        target,
+        dry_run=True,
+        trust_checkpoint=None,
+        trust_publication_repo=None,
+        trust_publication_commit=None,
+    )
+
+    assert result["trust_reference"]["checkpoint"]["source"] == "derived"
+    assert result["would_write"] is False
+    assert result["would_refuse_reason"] == "published_checkpoint_required"
+    assert _count_events(target.project) == 0
 
 
 def test_checkpoint_seq_alongside_a_published_checkpoint_is_refused(trust, target):
@@ -1137,23 +1621,27 @@ def test_wrong_trust_project_is_refused_by_name(trust, target):
 
 
 def test_a_stale_published_checkpoint_is_refused(trust, target):
-    stale = dict(
-        type="regista.trust-checkpoint",
-        version=1,
-        trust_domain_id=trust.fx.document["trust_domain_id"],
-        trust_domain_core_digest=trust.fx.document["trust_domain_core_digest"],
-        checkpoint_seq=3,
-        trust_log={
-            "project_instance_id": trust.fx.document["trust_log"]["project_instance_id"],
-            "event_count": 1,
-            "genesis_event_hash": "sha256:" + "77" * 32,
-            "head_event_hash": "sha256:" + "88" * 32,
-            "max_global_seq": 1,
-        },
-    )
-    path = _write_json(target.tmp_path / "stale.json", stale)
+    from regista._genesis_open import _checkpoint_signature_input
+    from regista._jcs import canonicalize
+
+    stale = json.loads(open(trust.checkpoint, encoding="utf-8").read())
+    stale["trust_log"]["head_event_hash"] = "sha256:" + "88" * 32
+    stale["root_signatures"] = []
+    signer_id = trust.fx.signer_ids[0]
+    signature = nacl.signing.SigningKey(trust.root_seed).sign(
+        _checkpoint_signature_input(stale)
+    ).signature
+    stale["root_signatures"] = [
+        {
+            "signer_id": signer_id,
+            "fingerprint": trust.fx.fingerprints[signer_id],
+            "signature": base64.b64encode(signature).decode("ascii"),
+        }
+    ]
+    path_obj = target.tmp_path / "stale.json"
+    path_obj.write_bytes(canonicalize(stale))
     with pytest.raises(RegistaError) as exc:
-        _init(trust, target, trust_checkpoint=path)
+        _init(trust, target, trust_checkpoint=str(path_obj))
     assert exc.value.code is ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
     assert exc.value.detail["reason"] == "checkpoint_disagrees_with_live_log"
     assert _count_events(target.project) == 0
@@ -1399,6 +1887,156 @@ def test_adopt_enrollment_post_write_check_catches_a_changed_effective_secret(
     assert restored["key_id"] == "pk_stale"
     assert restored["principal_id"] == "old-label"
     assert restored["secret"] == base64.b64encode(trust.host_seed).decode("ascii")
+    assert open(correct, "rb").read() == open(backup, "rb").read()
+    assert exc.value.detail["restored"] is True
+    assert exc.value.detail["partial"] is False
+
+
+def test_adopt_enrollment_restores_when_relabelled_keyset_will_not_load(
+    trust, tmp_path, monkeypatch
+):
+    from regista._keys import KeySet
+
+    path = _keyfile(
+        tmp_path / "unloadable_after.json",
+        key_id="pk_stale",
+        principal_id="old-label",
+        seed=trust.host_seed,
+        public=trust.host_public,
+    )
+    original_get_key = KeySet.get_key
+    calls = 0
+
+    def fail_second_load(self, key_id):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RegistaError(ErrorCode.KEY_LOAD_ERROR, "synthetic post-write failure")
+        return original_get_key(self, key_id)
+
+    monkeypatch.setattr(KeySet, "get_key", fail_second_load)
+    with pytest.raises(RegistaError) as exc:
+        cmd_keys_adopt_enrollment(
+            _adopt_ns(
+                hmac_key_path=path,
+                genesis=trust.genesis,
+                trust_project=trust.project,
+            )
+        )
+
+    assert exc.value.detail["reason"] == "post_write_keyset_unloadable"
+    assert exc.value.detail["restored"] is True
+    assert open(path, "rb").read() == open(exc.value.detail["backup"], "rb").read()
+
+
+def test_adopt_enrollment_restores_on_post_write_public_key_mismatch(
+    trust, tmp_path, monkeypatch
+):
+    from regista._keys import KeySet
+
+    path = _keyfile(
+        tmp_path / "public_mismatch_after.json",
+        key_id="pk_stale",
+        principal_id="old-label",
+        seed=trust.host_seed,
+        public=trust.host_public,
+    )
+    original_get_key = KeySet.get_key
+    calls = 0
+
+    def change_second_public_key(self, key_id):
+        nonlocal calls
+        calls += 1
+        entry = original_get_key(self, key_id)
+        if calls == 2:
+            return replace(entry, public_key=b"x" * 32)
+        return entry
+
+    monkeypatch.setattr(KeySet, "get_key", change_second_public_key)
+    with pytest.raises(RegistaError) as exc:
+        cmd_keys_adopt_enrollment(
+            _adopt_ns(
+                hmac_key_path=path,
+                genesis=trust.genesis,
+                trust_project=trust.project,
+            )
+        )
+
+    assert exc.value.detail["reason"] == "post_write_public_key_not_enrolled"
+    assert exc.value.detail["restored"] is True
+    assert open(path, "rb").read() == open(exc.value.detail["backup"], "rb").read()
+
+
+def test_adopt_enrollment_names_partial_mutation_when_rollback_fails(
+    trust, tmp_path, monkeypatch
+):
+    path = _keyfile(
+        tmp_path / "rollback_failure.json",
+        key_id="pk_stale",
+        principal_id="old-label",
+        seed=trust.host_seed,
+        public=trust.host_public,
+    )
+    env_name = "REGISTA_HMAC_KEY_" + trust.host_key_id.upper().replace("-", "_")
+    monkeypatch.setenv(env_name, "A" * 32)
+    original_copy2 = shutil.copy2
+
+    def fail_restore(src, dst, *args, **kwargs):
+        if ".bak." in os.fspath(src):
+            raise OSError("synthetic rollback failure")
+        return original_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", fail_restore)
+    with pytest.raises(RegistaError) as exc:
+        cmd_keys_adopt_enrollment(
+            _adopt_ns(
+                hmac_key_path=path,
+                genesis=trust.genesis,
+                trust_project=trust.project,
+            )
+        )
+
+    assert exc.value.detail["reason"] == "post_write_restore_failed"
+    assert exc.value.detail["original_reason"] == "post_write_secret_changed"
+    assert exc.value.detail["partial"] is True
+    assert os.path.exists(exc.value.detail["backup"])
+    assert json.loads(open(path, encoding="utf-8").read())["keys"][0]["key_id"] == (
+        trust.host_key_id
+    )
+
+
+def test_adopt_enrollment_names_partial_mutation_when_restore_temp_allocation_fails(
+    trust, tmp_path, monkeypatch
+):
+    path = _keyfile(
+        tmp_path / "rollback_allocation_failure.json",
+        key_id="pk_stale",
+        principal_id="old-label",
+        seed=trust.host_seed,
+        public=trust.host_public,
+    )
+    env_name = "REGISTA_HMAC_KEY_" + trust.host_key_id.upper().replace("-", "_")
+    monkeypatch.setenv(env_name, "A" * 32)
+    original_mkstemp = tempfile.mkstemp
+
+    def fail_restore_temp(*args, **kwargs):
+        if str(kwargs.get("prefix", "")).startswith(".regista-keys-restore-"):
+            raise OSError("synthetic restore allocation failure")
+        return original_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", fail_restore_temp)
+    with pytest.raises(RegistaError) as exc:
+        cmd_keys_adopt_enrollment(
+            _adopt_ns(
+                hmac_key_path=path,
+                genesis=trust.genesis,
+                trust_project=trust.project,
+            )
+        )
+
+    assert exc.value.detail["reason"] == "post_write_restore_failed"
+    assert exc.value.detail["partial"] is True
+    assert os.path.exists(exc.value.detail["backup"])
 
 
 def test_adopt_enrollment_refuses_a_target_key_id_collision(trust, tmp_path):
@@ -1458,7 +2096,12 @@ def test_the_assembled_envelope_passes_the_writer_validator(trust, target):
         mgr.open()
         with mgr.transaction() as conn:
             reference = resolve_trust_reference(
-                conn, trust.fx.document, principal_id=HOST
+                conn,
+                trust.fx.document,
+                principal_id=HOST,
+                published_checkpoint_path=trust.checkpoint,
+                publication_repo=trust.publication_repo,
+                publication_commit=trust.publication_commit,
             )
     finally:
         mgr.close()
@@ -1479,6 +2122,7 @@ def test_the_assembled_envelope_passes_the_writer_validator(trust, target):
             "model": "test-fixture", "model_lineage": "fable",
         },
         previous_epoch=previous,
+        gate=load_gate_evidence(target.gate, dsn=DSN, project=target.project),
         occurred_at=datetime.now(UTC),
     )
     _validate_genesis_envelope(envelope)
@@ -1489,6 +2133,10 @@ def test_the_assembled_envelope_passes_the_writer_validator(trust, target):
     assert envelope["workflow"] is None
     assert envelope["signing"]["key_binding_event_hash"] is None
     assert envelope["actor"]["kind"] == "agent"
+    gate_metadata = envelope["actor"]["metadata"]["genesis_gate"]
+    loaded_gate = load_gate_evidence(target.gate, dsn=DSN, project=target.project)
+    assert gate_metadata["report_digest"] == loaded_gate.report_digest
+    assert gate_metadata["observation_snapshot"] == loaded_gate.observation_snapshot
     payload = envelope["payload"]
     assert set(payload) == {
         "bootstrap_key_acceptance", "genesis_document_digest", "previous_epoch",

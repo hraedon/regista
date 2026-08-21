@@ -46,12 +46,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
+import struct
+import subprocess
 import uuid as _uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from ._connection import DictConn
 from ._errors import ErrorCode, RegistaError
@@ -75,6 +78,63 @@ DEFAULT_SCOPE_ENTITY_KINDS: Final[tuple[str, ...]] = (
 #: ``epoch_may_open``'s meaning, and reading it as v1 would turn a BLOCKED gate into a
 #: PASS. Fail closed on the version, always.
 SUPPORTED_GATE_REPORT_VERSIONS: Final[frozenset[int]] = frozenset({1})
+_GATE_REQUIRED_PROBE_CHECKS: Final[Mapping[str, frozenset[str]]] = {
+    "regista": frozenset(
+        {
+            "regista.store_invariant_measurements",
+            "regista.load_bearing_fields_refused",
+            "regista.closed_lineage_registry",
+            "regista.first_write_admission",
+            "regista.actor_boundary_signing",
+        }
+    ),
+    "cairn": frozenset(
+        {
+            "cairn.runtime_model_observed",
+            "cairn.unavailable_model_named",
+            "cairn.observation_failure_nonblocking",
+        }
+    ),
+    "agent-notes": frozenset({"agent_notes.session_identity_resolvable"}),
+}
+_GATE_REQUIRED_BEHAVIORAL_FINDINGS: Final[frozenset[str]] = frozenset(
+    check_id
+    for component, check_ids in _GATE_REQUIRED_PROBE_CHECKS.items()
+    for check_id in check_ids
+    if check_id != "regista.store_invariant_measurements"
+)
+_GATE_REPORT_KEYS = frozenset(
+    {"report_version", "kind", "ok", "epoch_may_open", "binding", "findings", "probes"}
+)
+_GATE_BINDING_KEYS = frozenset(
+    {
+        "expected_store_fingerprint",
+        "reported_store_fingerprint",
+        "project",
+        "observation_snapshot",
+    }
+)
+_GATE_FINDING_KEYS = frozenset({"check_id", "status", "detail"})
+_PROBE_REPORT_KEYS = frozenset({"report_version", "kind", "ok", "probes"})
+_PROBE_RESULT_KEYS = frozenset({"component", "status", "ok", "detail", "checks"})
+_MEASUREMENT_KEYS = frozenset({"id", "status", "store_fingerprint", "projects", "errors"})
+_PROJECT_MEASUREMENT_KEYS = frozenset(
+    {
+        "project",
+        "event_count",
+        "declared_lineage_event_count",
+        "lineage_coverage",
+        "distinct_lineage_tokens",
+        "unresolvable_lineage_tokens",
+        "unresolvable_lineage_value_count",
+        "ambiguous_lineage_event_count",
+        "scheme_counts",
+        "undeclared_agent_author_event_count",
+        "model_observation_status_counts",
+        "snapshot_id",
+    }
+)
+_PG_SNAPSHOT_RE = re.compile(r"pg:[0-9]+:[0-9]+:(?:[0-9]+(?:,[0-9]+)*)?")
 
 #: The type tag on the locally derived, unsigned trust-log observation whose digest
 #: fills ``trust_log_checkpoint.document_digest`` when no PUBLISHED checkpoint document
@@ -84,19 +144,52 @@ SUPPORTED_GATE_REPORT_VERSIONS: Final[frozenset[int]] = frozenset({1})
 #: that reads as observed" EPOCH-RESET §6 rule 3 forbids. This document says only what
 #: it is: one process's verified observation of the trust log at one instant.
 TRUST_LOG_OBSERVATION_TYPE: Final[str] = "regista.trust-log-observation"
+TRUST_CHECKPOINT_TYPE: Final[str] = "regista.trust-checkpoint"
+TRUST_CHECKPOINT_SIGNATURE_DOMAIN: Final[bytes] = b"regista.trust-checkpoint.v1\x00"
+
+_CHECKPOINT_KEYS = frozenset(
+    {
+        "type",
+        "version",
+        "trust_domain_id",
+        "trust_domain_core_digest",
+        "checkpoint_seq",
+        "trust_log",
+        "root_governance",
+        "active_root_fingerprints",
+        "prev_checkpoint_digest",
+        "prev_commit",
+        "created_at",
+        "root_signatures",
+        "countersignatures",
+        "anchors",
+    }
+)
+_CHECKPOINT_LOG_KEYS = frozenset(
+    {
+        "project_instance_id",
+        "event_count",
+        "genesis_event_hash",
+        "head_event_hash",
+        "max_global_seq",
+    }
+)
+_CHECKPOINT_GOVERNANCE_KEYS = frozenset({"mode", "threshold", "signer_count"})
+_ROOT_SIGNATURE_KEYS = frozenset({"signer_id", "fingerprint", "signature"})
+_PUBLICATION_INDEX_KEYS = frozenset({"type", "version", "entries"})
+_PUBLICATION_ENTRY_KEYS = frozenset({"path", "sha256", "published_at", "prev_commit"})
+_GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 _ENROLLED = "principal_key_enrolled"
 _ROTATED = "principal_key_rotated"
 
 
-def _refuse(code: ErrorCode, message: str, reason: str, **detail: Any) -> Any:
+def _refuse(code: ErrorCode, message: str, reason: str, **detail: Any) -> NoReturn:
     raise RegistaError(code, message, {"reason": reason, **detail})
 
 
-def _unverified(message: str, reason: str, **detail: Any) -> Any:
-    return _refuse(
-        ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED, message, reason, **detail
-    )
+def _unverified(message: str, reason: str, **detail: Any) -> NoReturn:
+    _refuse(ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED, message, reason, **detail)
 
 
 def _fingerprint_of(public_key: bytes) -> str:
@@ -105,6 +198,300 @@ def _fingerprint_of(public_key: bytes) -> str:
 
 def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
+
+
+def _checkpoint_signature_input(document: Mapping[str, Any]) -> bytes:
+    from ._jcs import canonicalize
+
+    core = {
+        key: value
+        for key, value in document.items()
+        if key not in {"signature", "root_signatures", "countersignatures", "anchors"}
+    }
+    canonical = canonicalize(core)
+    return TRUST_CHECKPOINT_SIGNATURE_DOMAIN + struct.pack(">Q", len(canonical)) + canonical
+
+
+def _require_digest_text(value: Any, field: str, *, nullable: bool = False) -> None:
+    if nullable and value is None:
+        return
+    if (
+        not isinstance(value, str)
+        or len(value) != 71
+        or not value.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in value[7:])
+    ):
+        _unverified(
+            f"the checkpoint's {field} must be sha256:<64 lowercase hex>",
+            "checkpoint_field_invalid",
+            field=field,
+        )
+
+
+def _git(repo: Path, *args: str) -> str:
+    try:
+        completed = subprocess.run(
+            ("git", "-C", str(repo), *args),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _unverified(
+            "could not verify the checkpoint publication repository",
+            "checkpoint_publication_git_error",
+            error_type=type(exc).__name__,
+        )
+    if completed.returncode != 0:
+        _unverified(
+            "the checkpoint publication repository did not satisfy the requested git check",
+            "checkpoint_publication_git_check_failed",
+            operation=args[0] if args else "git",
+            exit_code=completed.returncode,
+        )
+    return completed.stdout.strip()
+
+
+def _index_entries(raw: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(raw, Mapping) or set(raw) != _PUBLICATION_INDEX_KEYS:
+        _unverified(
+            "publication index.json must be a closed regista.publication-index/v1 object",
+            "checkpoint_publication_index_malformed",
+        )
+    if (
+        raw.get("type") != "regista.publication-index"
+        or type(raw.get("version")) is not int
+        or raw.get("version") != 1
+    ):
+        _unverified(
+            "publication index.json has an unsupported type or version",
+            "checkpoint_publication_index_malformed",
+        )
+    entries = raw.get("entries")
+    if not isinstance(entries, list) or not all(isinstance(entry, Mapping) for entry in entries):
+        _unverified(
+            "publication index.json entries must be an array of objects",
+            "checkpoint_publication_index_malformed",
+        )
+    assert isinstance(entries, list)
+    return [entry for entry in entries if isinstance(entry, Mapping)]
+
+
+def _verify_checkpoint_publication(
+    path: Path,
+    document_digest: str,
+    trust_domain_id: str,
+    checkpoint_seq: int,
+    document_prev_commit: str | None,
+    *,
+    publication_repo: str | None,
+    publication_commit: str | None,
+) -> str:
+    if publication_repo is None or publication_commit is None:
+        _unverified(
+            "a published checkpoint requires --trust-publication-repo and an out-of-band "
+            "--trust-publication-commit pin",
+            "checkpoint_publication_pin_absent",
+        )
+    if _GIT_COMMIT_RE.fullmatch(publication_commit) is None:
+        _unverified(
+            "--trust-publication-commit must be a full lowercase 40-hex git commit",
+            "checkpoint_publication_commit_invalid",
+        )
+    repo = Path(publication_repo).resolve()
+    root = Path(_git(repo, "rev-parse", "--show-toplevel")).resolve()
+    if root != repo:
+        _unverified(
+            "--trust-publication-repo must name the repository root",
+            "checkpoint_publication_root_mismatch",
+            stated=str(repo),
+            actual=str(root),
+        )
+    try:
+        relative = path.resolve().relative_to(repo).as_posix()
+    except ValueError:
+        _unverified(
+            "the checkpoint file is outside --trust-publication-repo",
+            "checkpoint_outside_publication_repo",
+        )
+    expected_prefix = f"checkpoints/{trust_domain_id}/"
+    if not relative.startswith(expected_prefix):
+        _unverified(
+            "the checkpoint is not in the §4.2 checkpoints/<trust-domain-id>/ layout",
+            "checkpoint_publication_layout_invalid",
+            path=relative,
+        )
+    filename = Path(relative).name
+    if not filename.startswith(f"{checkpoint_seq:08d}-") or not filename.endswith(".json"):
+        _unverified(
+            "the checkpoint filename does not carry its zero-padded checkpoint_seq",
+            "checkpoint_publication_filename_invalid",
+            path=relative,
+        )
+
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "rev-parse", "--verify", f"{publication_commit}^{{commit}}")
+    _git(repo, "merge-base", "--is-ancestor", publication_commit, head)
+    for tracked in (relative, "index.json", "trust-domain.json"):
+        _git(repo, "ls-files", "--error-unmatch", "--", tracked)
+        _git(repo, "diff", "--quiet", "HEAD", "--", tracked)
+        _git(repo, "diff", "--cached", "--quiet", "HEAD", "--", tracked)
+        try:
+            worktree_bytes = (repo / tracked).read_bytes()
+            committed_bytes = _git(repo, "show", f"HEAD:{tracked}").encode("utf-8")
+        except OSError as exc:
+            _unverified(
+                "could not compare publication worktree bytes with the pinned commit",
+                "checkpoint_publication_bytes_unreadable",
+                path=tracked,
+                error_type=type(exc).__name__,
+            )
+        if worktree_bytes != committed_bytes:
+            _unverified(
+                "publication worktree bytes differ from HEAD (including an "
+                "assume-unchanged path)",
+                "checkpoint_publication_worktree_mismatch",
+                path=tracked,
+            )
+    _git(repo, "diff", "--quiet", publication_commit, "HEAD", "--", "trust-domain.json")
+
+    try:
+        current_index_raw = json.loads((repo / "index.json").read_text(encoding="utf-8"))
+        pinned_index_raw = json.loads(_git(repo, "show", f"{publication_commit}:index.json"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        _unverified(
+            "could not parse current and pinned publication indexes",
+            "checkpoint_publication_index_malformed",
+            error_type=type(exc).__name__,
+        )
+    current_entries = _index_entries(current_index_raw)
+    pinned_entries = _index_entries(pinned_index_raw)
+    if current_entries[: len(pinned_entries)] != pinned_entries:
+        _unverified(
+            "publication index.json is not an append-only extension of the pinned commit",
+            "checkpoint_publication_index_rewritten",
+        )
+
+    paths: list[str] = []
+    matched = 0
+    matching_entry: Mapping[str, Any] | None = None
+    trust_domain_entries = 0
+    previous_seq = 0
+    for ordinal, entry in enumerate(current_entries):
+        if set(entry) != _PUBLICATION_ENTRY_KEYS:
+            _unverified(
+                "publication index contains an entry with an unknown or missing field",
+                "checkpoint_publication_index_malformed",
+            )
+        entry_path = entry.get("path")
+        if not isinstance(entry_path, str) or not entry_path:
+            _unverified(
+                "publication index entry path is invalid",
+                "checkpoint_publication_index_malformed",
+            )
+        paths.append(entry_path)
+        pure_path = Path(entry_path)
+        if (
+            pure_path.is_absolute()
+            or ".." in pure_path.parts
+            or "\\" in entry_path
+            or entry_path == "index.json"
+        ):
+            _unverified(
+                "publication index entry path is unsafe or self-referential",
+                "checkpoint_publication_index_malformed",
+                path=entry_path,
+            )
+        published_at = entry.get("published_at")
+        try:
+            datetime.strptime(str(published_at), "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            _unverified(
+                "publication index entry published_at is not canonical UTC",
+                "checkpoint_publication_index_malformed",
+                path=entry_path,
+            )
+        prev_commit = entry.get("prev_commit")
+        if prev_commit is not None and (
+            not isinstance(prev_commit, str) or _GIT_COMMIT_RE.fullmatch(prev_commit) is None
+        ):
+            _unverified(
+                "publication index entry prev_commit is invalid",
+                "checkpoint_publication_index_malformed",
+                path=entry_path,
+            )
+        if ordinal == 0:
+            if prev_commit is not None:
+                _unverified(
+                    "the first publication index entry must have prev_commit=null",
+                    "checkpoint_publication_index_link_invalid",
+                )
+        else:
+            if not isinstance(prev_commit, str):
+                _unverified(
+                    "every later publication index entry must name its prior commit",
+                    "checkpoint_publication_index_link_invalid",
+                    path=entry_path,
+                )
+            try:
+                previous_raw = json.loads(_git(repo, "show", f"{prev_commit}:index.json"))
+            except (ValueError, UnicodeError) as exc:
+                _unverified(
+                    "publication index prev_commit does not expose a valid prior index",
+                    "checkpoint_publication_index_link_invalid",
+                    path=entry_path,
+                    error_type=type(exc).__name__,
+                )
+            if _index_entries(previous_raw) != current_entries[:ordinal]:
+                _unverified(
+                    "publication index prev_commit does not commit to the exact prior prefix",
+                    "checkpoint_publication_index_link_invalid",
+                    path=entry_path,
+                )
+            _git(repo, "merge-base", "--is-ancestor", prev_commit, head)
+        artifact = _git(repo, "show", f"HEAD:{entry_path}").encode("utf-8")
+        artifact_digest = "sha256:" + hashlib.sha256(artifact).hexdigest()
+        if entry.get("sha256") != artifact_digest:
+            _unverified(
+                "publication index digest does not match the committed artifact bytes",
+                "checkpoint_publication_historical_digest_mismatch",
+                path=entry_path,
+            )
+        if entry_path == "trust-domain.json":
+            trust_domain_entries += 1
+        if entry_path.startswith(expected_prefix) and entry_path.endswith(".json"):
+            try:
+                seq = int(Path(entry_path).name.split("-", 1)[0])
+            except ValueError:
+                _unverified(
+                    "publication index checkpoint path has no numeric sequence",
+                    "checkpoint_publication_index_malformed",
+                    path=entry_path,
+                )
+            if seq <= previous_seq:
+                _unverified(
+                    "publication index checkpoint sequences are not monotone",
+                    "checkpoint_publication_index_not_monotone",
+                )
+            previous_seq = seq
+        if entry_path == relative and entry.get("sha256") == document_digest:
+            matched += 1
+            matching_entry = entry
+    if len(paths) != len(set(paths)) or matched != 1 or trust_domain_entries != 1:
+        _unverified(
+            "publication index must name trust-domain.json and the checkpoint path/digest "
+            "exactly once",
+            "checkpoint_publication_entry_mismatch",
+            path=relative,
+        )
+    if matching_entry is None or matching_entry.get("prev_commit") != document_prev_commit:
+        _unverified(
+            "checkpoint prev_commit disagrees with its publication index entry",
+            "checkpoint_publication_prev_commit_mismatch",
+            path=relative,
+        )
+    return head
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +515,7 @@ class TrustLogCheckpoint:
     document_digest: str
     source: str
     document: Mapping[str, Any] = field(default_factory=dict)
+    publication_commit: str | None = None
 
     def as_payload_member(self) -> dict[str, Any]:
         """Exactly the three keys ``_genesis._validate_bootstrap_acceptance`` allows."""
@@ -138,7 +526,11 @@ class TrustLogCheckpoint:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self.as_payload_member(), "source": self.source}
+        return {
+            **self.as_payload_member(),
+            "source": self.source,
+            "publication_commit": self.publication_commit,
+        }
 
 
 def _max_global_seq(conn: DictConn) -> int | None:
@@ -187,6 +579,14 @@ def derive_trust_log_checkpoint(
             "checkpoint_seq_below_one",
             checkpoint_seq=checkpoint_seq,
         )
+    if checkpoint_seq != 1:
+        _refuse(
+            ErrorCode.INVALID_ARGUMENT,
+            "a derived observation has no prior published checkpoint to link, so its "
+            "checkpoint_seq must be exactly 1",
+            "derived_checkpoint_sequence_unlinked",
+            checkpoint_seq=checkpoint_seq,
+        )
 
     chain = verified if verified is not None else verify_trust_log_chain(conn, genesis_document)
     doc = parse_trust_genesis(genesis_document)
@@ -226,6 +626,8 @@ def load_published_checkpoint(
     genesis_document: Mapping[str, Any],
     *,
     verified: Any | None = None,
+    publication_repo: str | None = None,
+    publication_commit: str | None = None,
 ) -> TrustLogCheckpoint:
     """Read a published §4.3 checkpoint document and reconcile it with the live log.
 
@@ -236,8 +638,11 @@ def load_published_checkpoint(
     describes a different log, or a stale state of this one, is refused rather than
     signed into a project's first event.
     """
+    import nacl.exceptions
+    import nacl.signing
+
     from ._jcs import canonicalize
-    from ._trust_domain import parse_trust_genesis
+    from ._trust_domain import derive_governance_mode, parse_trust_genesis
     from ._trust_log_writer import verify_trust_log_chain
 
     try:
@@ -262,6 +667,31 @@ def load_published_checkpoint(
         )
     assert isinstance(raw, Mapping)
 
+    if set(raw) != _CHECKPOINT_KEYS:
+        _unverified(
+            "the checkpoint document has unknown or missing fields",
+            "checkpoint_document_shape_invalid",
+            unknown=sorted(set(raw) - _CHECKPOINT_KEYS),
+            missing=sorted(_CHECKPOINT_KEYS - set(raw)),
+        )
+    if (
+        raw.get("type") != TRUST_CHECKPOINT_TYPE
+        or type(raw.get("version")) is not int
+        or raw.get("version") != 1
+    ):
+        _unverified(
+            "the checkpoint must be regista.trust-checkpoint/v1",
+            "checkpoint_type_or_version_invalid",
+            type=raw.get("type"),
+            version=raw.get("version"),
+        )
+    canonical_document = canonicalize(raw)
+    if Path(path).read_bytes() != canonical_document:
+        _unverified(
+            "the published checkpoint file is not exact canonical JCS bytes",
+            "checkpoint_not_canonical_publication_bytes",
+        )
+
     seq = raw.get("checkpoint_seq")
     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
         _unverified(
@@ -278,9 +708,157 @@ def load_published_checkpoint(
             "checkpoint_trust_log_absent",
         )
     assert isinstance(log, Mapping)
+    if set(log) != _CHECKPOINT_LOG_KEYS:
+        _unverified(
+            "the checkpoint trust_log object has unknown or missing fields",
+            "checkpoint_document_shape_invalid",
+        )
+    event_count = log.get("event_count")
+    max_global_seq = log.get("max_global_seq")
+    if (
+        not isinstance(event_count, int)
+        or isinstance(event_count, bool)
+        or event_count < 1
+        or not isinstance(max_global_seq, int)
+        or isinstance(max_global_seq, bool)
+        or max_global_seq < 1
+    ):
+        _unverified(
+            "checkpoint trust_log counts must be positive integers",
+            "checkpoint_document_shape_invalid",
+        )
+    _require_digest_text(raw.get("trust_domain_core_digest"), "trust_domain_core_digest")
+    _require_digest_text(log.get("genesis_event_hash"), "trust_log.genesis_event_hash")
+    _require_digest_text(log.get("head_event_hash"), "trust_log.head_event_hash")
+    _require_digest_text(
+        raw.get("prev_checkpoint_digest"), "prev_checkpoint_digest", nullable=True
+    )
+    try:
+        datetime.strptime(str(raw.get("created_at")), "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        _unverified(
+            "checkpoint created_at must be canonical UTC with microseconds",
+            "checkpoint_created_at_invalid",
+        )
+    prev_commit = raw.get("prev_commit")
+    if prev_commit is not None and (
+        not isinstance(prev_commit, str) or _GIT_COMMIT_RE.fullmatch(prev_commit) is None
+    ):
+        _unverified(
+            "checkpoint prev_commit must be null or a full lowercase git commit",
+            "checkpoint_prev_commit_invalid",
+        )
 
     chain = verified if verified is not None else verify_trust_log_chain(conn, genesis_document)
     doc = parse_trust_genesis(genesis_document)
+
+    governance = raw.get("root_governance")
+    if not isinstance(governance, Mapping) or set(governance) != _CHECKPOINT_GOVERNANCE_KEYS:
+        _unverified(
+            "checkpoint root_governance has the wrong shape",
+            "checkpoint_governance_invalid",
+        )
+    if (
+        type(governance.get("threshold")) is not int
+        or type(governance.get("signer_count")) is not int
+    ):
+        _unverified(
+            "checkpoint governance counts must be strict integers",
+            "checkpoint_governance_invalid",
+        )
+    expected_governance = {
+        "mode": derive_governance_mode(
+            chain.state.governance.threshold,
+            len(chain.state.governance.signer_fingerprints),
+        ),
+        "threshold": chain.state.governance.threshold,
+        "signer_count": len(chain.state.governance.signer_fingerprints),
+    }
+    if dict(governance) != expected_governance:
+        _unverified(
+            "checkpoint root_governance disagrees with the verified live trust log",
+            "checkpoint_governance_mismatch",
+            stated=dict(governance),
+            actual=expected_governance,
+        )
+    active_roots = raw.get("active_root_fingerprints")
+    if (
+        not isinstance(active_roots, list)
+        or not all(isinstance(item, str) for item in active_roots)
+        or active_roots != sorted(chain.state.governance.signer_fingerprints)
+    ):
+        _unverified(
+            "checkpoint active_root_fingerprints disagree with the verified live trust log",
+            "checkpoint_active_roots_mismatch",
+        )
+    if raw.get("countersignatures") != [] or raw.get("anchors") != []:
+        _unverified(
+            "checkpoint countersignatures and anchors are not verified in 0.6.0 and must "
+            "be separate immutable attestation records",
+            "checkpoint_inline_attestations_unsupported",
+        )
+
+    root_signatures = raw.get("root_signatures")
+    if not isinstance(root_signatures, list) or not root_signatures:
+        _unverified(
+            "checkpoint requires direct root-threshold signatures; registrar checkpoint "
+            "authority remains deferred to P2.4",
+            "checkpoint_root_signatures_absent",
+        )
+    message = _checkpoint_signature_input(raw)
+    verified_fingerprints: set[str] = set()
+    for index, signature in enumerate(root_signatures):
+        if not isinstance(signature, Mapping) or set(signature) != _ROOT_SIGNATURE_KEYS:
+            _unverified(
+                "checkpoint root signature has the wrong shape",
+                "checkpoint_root_signature_invalid",
+                index=index,
+            )
+        fingerprint = signature.get("fingerprint")
+        signer_id = signature.get("signer_id")
+        encoded = signature.get("signature")
+        if (
+            not isinstance(fingerprint, str)
+            or not isinstance(signer_id, str)
+            or not signer_id
+            or not isinstance(encoded, str)
+            or fingerprint in verified_fingerprints
+        ):
+            _unverified(
+                "checkpoint root signatures must be distinct, named canonical entries",
+                "checkpoint_root_signature_invalid",
+                index=index,
+            )
+        public_key = chain.state.root_public_keys.get(fingerprint)
+        if (
+            public_key is None
+            or fingerprint not in chain.state.governance.signer_fingerprints
+        ):
+            _unverified(
+                "checkpoint was signed by a key outside the current root set",
+                "checkpoint_root_signer_not_current",
+                fingerprint=fingerprint,
+            )
+        try:
+            raw_signature = base64.b64decode(encoded, validate=True)
+            if len(raw_signature) != 64:
+                raise ValueError("signature length")
+            nacl.signing.VerifyKey(public_key).verify(message, raw_signature)
+        except (ValueError, TypeError, nacl.exceptions.BadSignatureError) as exc:
+            _unverified(
+                "checkpoint root signature did not verify",
+                "checkpoint_root_signature_invalid",
+                index=index,
+                error_type=type(exc).__name__,
+            )
+        verified_fingerprints.add(fingerprint)
+    if len(verified_fingerprints) < chain.state.governance.threshold:
+        _unverified(
+            "checkpoint root signatures do not meet the current governance threshold",
+            "checkpoint_root_threshold_not_met",
+            verified=len(verified_fingerprints),
+            required=chain.state.governance.threshold,
+        )
 
     for field_name, stated, actual in (
         ("trust_domain_id", raw.get("trust_domain_id"), str(doc.trust_domain_id)),
@@ -320,12 +898,23 @@ def load_published_checkpoint(
             stated=stated_count,
             actual=chain.event_count,
         )
+    document_digest = "sha256:" + hashlib.sha256(canonical_document).hexdigest()
+    published_commit = _verify_checkpoint_publication(
+        Path(path),
+        document_digest,
+        str(doc.trust_domain_id),
+        seq,
+        prev_commit,
+        publication_repo=publication_repo,
+        publication_commit=publication_commit,
+    )
     return TrustLogCheckpoint(
         checkpoint_seq=seq,
         head_event_hash=chain.head_event_hash,
-        document_digest="sha256:" + hashlib.sha256(canonicalize(raw)).hexdigest(),
+        document_digest=document_digest,
         source="published",
         document=dict(raw),
+        publication_commit=published_commit,
     )
 
 
@@ -336,16 +925,17 @@ def load_published_checkpoint(
 
 @dataclass(frozen=True)
 class EnrolledKey:
-    """One principal's live, ACTIVE, chain-verified enrolment."""
+    """One principal's live, ACTIVE, chain-verified enrolment or rotation."""
 
     principal_id: str
     principal_kind: str
     key_id: str
     public_key: bytes
     fingerprint: str
-    #: The ``principal_key_enrolled`` event's own hash — what
+    #: The key-introduction event's own hash — what
     #: ``bootstrap_key_acceptance.trust_event_hash`` must name.
     trust_event_hash: str
+    trust_event_transition: str
     not_before: datetime
     not_after: datetime | None
     #: ``"agree"`` when a ``principal_keys`` row was found and matched the chain,
@@ -365,6 +955,7 @@ class EnrolledKey:
             "fingerprint": self.fingerprint,
             "public_key": self.public_key_b64,
             "trust_event_hash": self.trust_event_hash,
+            "trust_event_transition": self.trust_event_transition,
             "not_before": _iso_micro_z(self.not_before),
             "not_after": None if self.not_after is None else _iso_micro_z(self.not_after),
             "projection": self.projection,
@@ -444,18 +1035,23 @@ def resolve_enrolled_key(
     revoked key, wait for a not-yet-valid window, re-enrol an expired one, or pass
     ``--key-id`` to disambiguate.
     """
-    from ._trust_log import parse_principal_key_enrolled
+    from ._trust_log import parse_principal_key_enrolled, parse_principal_key_rotated
     from ._trust_log_writer import verify_trust_log_chain
 
     moment = at or datetime.now(UTC)
     chain = verified if verified is not None else verify_trust_log_chain(conn, genesis_document)
 
-    # Every principal_key_enrolled the verified walk accepted, for this principal.
+    # Every key-introduction event the verified walk accepted for this principal.
+    # TRUST-DOMAIN §5.10 explicitly permits an enrolment OR rotation referent.
     candidates: list[tuple[Any, Any]] = []
     for record in chain.verified:
-        if record.transition != _ENROLLED:
+        parsed: Any
+        if record.transition == _ENROLLED:
+            parsed = parse_principal_key_enrolled(record.payload)
+        elif record.transition == _ROTATED:
+            parsed = parse_principal_key_rotated(record.payload)
+        else:
             continue
-        parsed = parse_principal_key_enrolled(record.payload)
         if parsed.principal_id != principal_id:
             continue
         candidates.append((record, parsed))
@@ -480,31 +1076,12 @@ def resolve_enrolled_key(
         if isinstance(r.payload.get("supersedes_key_id"), str)
     }
 
-    def _rotation_refusal() -> None:
-        # `bootstrap_key_acceptance.trust_event_hash` names an ENROLMENT event. A
-        # rotation-sourced key has no such event, and quietly pointing the field at a
-        # principal_key_rotated hash would make the acceptance say something untrue about
-        # which event introduced the key.
-        _unverified(
-            f"{principal_id!r} has trust-log key history, but its current key came from "
-            "principal_key_rotated, not principal_key_enrolled. "
-            "bootstrap_key_acceptance.trust_event_hash names an ENROLMENT event, so "
-            "there is nothing honest to put in it for a rotation-sourced key. Opening a "
-            "project genesis under a rotated key is not supported by this command.",
-            "key_source_is_rotation_not_enrollment",
-            principal_id=principal_id,
-            rotation_events=len(rotations),
-            superseded_key_ids=sorted(superseded_key_ids),
-        )
-
     if not candidates:
-        if rotations:
-            _rotation_refusal()
         _unverified(
-            f"{principal_id!r} has no principal_key_enrolled event in the verified "
-            "trust log; enrol the principal with `regista trust enroll` before opening "
-            "a project epoch as it",
-            "principal_not_enrolled",
+            f"{principal_id!r} has no principal_key_enrolled or "
+            "principal_key_rotated event in the verified trust log; enrol the principal "
+            "before opening a project epoch as it",
+            "principal_has_no_key_introduction",
             principal_id=principal_id,
         )
 
@@ -512,13 +1089,13 @@ def resolve_enrolled_key(
         narrowed = [(r, p) for r, p in candidates if p.key.key_id == key_id]
         if not narrowed:
             _unverified(
-                f"{principal_id!r} has no principal_key_enrolled event for key_id "
-                f"{key_id!r}; enrolled key ids are: "
+                f"{principal_id!r} has no enrolment or rotation event for key_id "
+                f"{key_id!r}; introduced key ids are: "
                 + ", ".join(sorted(p.key.key_id for _r, p in candidates)),
-                "key_id_not_enrolled",
+                "key_id_not_introduced",
                 principal_id=principal_id,
                 key_id=key_id,
-                enrolled_key_ids=sorted(p.key.key_id for _r, p in candidates),
+                introduced_key_ids=sorted(p.key.key_id for _r, p in candidates),
             )
         candidates = narrowed
 
@@ -527,7 +1104,14 @@ def resolve_enrolled_key(
     # be both vaguer and — given the status map above — wrong.
     unsuperseded = [(r, p) for r, p in candidates if p.key.key_id not in superseded_key_ids]
     if not unsuperseded:
-        _rotation_refusal()
+        _unverified(
+            f"every matching key for {principal_id!r} was superseded by a later "
+            "principal_key_rotated event",
+            "key_superseded",
+            principal_id=principal_id,
+            key_ids=sorted(p.key.key_id for _r, p in candidates),
+            superseded_key_ids=sorted(superseded_key_ids),
+        )
     candidates = unsuperseded
 
     status = chain.state.principal_key_status
@@ -536,9 +1120,9 @@ def resolve_enrolled_key(
     ]
     if not live:
         _unverified(
-            f"every enrolled key for {principal_id!r} is revoked in the verified trust "
+            f"every current key for {principal_id!r} is revoked in the verified trust "
             "log; a revoked key may not sign a project's genesis",
-            "enrolled_key_not_active",
+            "trust_key_not_active",
             principal_id=principal_id,
             key_ids=sorted(p.key.key_id for _r, p in candidates),
             statuses={
@@ -548,11 +1132,11 @@ def resolve_enrolled_key(
         )
     if len(live) > 1:
         _unverified(
-            f"{principal_id!r} has {len(live)} active enrolled keys "
+            f"{principal_id!r} has {len(live)} active trust-log keys "
             f"({', '.join(sorted(p.key.key_id for _r, p in live))}); pass --key-id to "
             "name the one that signs this genesis rather than letting the tool choose "
             "which key a project's whole history is bound to",
-            "enrolled_key_ambiguous",
+            "trust_key_ambiguous",
             principal_id=principal_id,
             key_ids=sorted(p.key.key_id for _r, p in live),
         )
@@ -560,15 +1144,15 @@ def resolve_enrolled_key(
     record, parsed = live[0]
     resolved_key_id = parsed.key.key_id
 
-    # The validity window is the enrolment's own claim about when the key is usable.
+    # The validity window is the introduction event's own claim about usability.
     # verify_trust_log_chain evaluates registrar liveness at each event's occurred_at;
     # nothing there checks the ENROLLED key against the instant it is about to sign.
     if moment < parsed.not_before:
         _unverified(
-            f"the enrolment of {principal_id}/{resolved_key_id} is not valid until "
+            f"the trust event for {principal_id}/{resolved_key_id} is not valid until "
             f"{_iso_micro_z(parsed.not_before)}, which is after the genesis instant "
             f"{_iso_micro_z(moment)}",
-            "enrollment_not_yet_valid",
+            "trust_key_not_yet_valid",
             principal_id=principal_id,
             key_id=resolved_key_id,
             not_before=_iso_micro_z(parsed.not_before),
@@ -576,23 +1160,23 @@ def resolve_enrolled_key(
         )
     if parsed.not_after is not None and moment >= parsed.not_after:
         _unverified(
-            f"the enrolment of {principal_id}/{resolved_key_id} expired at "
+            f"the trust event for {principal_id}/{resolved_key_id} expired at "
             f"{_iso_micro_z(parsed.not_after)}, before the genesis instant "
             f"{_iso_micro_z(moment)}",
-            "enrollment_expired",
+            "trust_key_expired",
             principal_id=principal_id,
             key_id=resolved_key_id,
             not_after=_iso_micro_z(parsed.not_after),
             at=_iso_micro_z(moment),
         )
 
-    # The replayed state's key bytes and the enrolment payload's must agree, and the
+    # The replayed state's key bytes and the introducing payload's must agree, and the
     # fingerprint must be recomputed from the bytes rather than trusted as stated.
     replayed = chain.state.principal_public_keys.get((principal_id, resolved_key_id))
     if replayed is None or replayed != parsed.key.public_key:
         _unverified(
             f"the replayed public key for {principal_id}/{resolved_key_id} does not "
-            "match the key material its enrolment event carries",
+            "match the key material its trust event carries",
             "replayed_public_key_mismatch",
             principal_id=principal_id,
             key_id=resolved_key_id,
@@ -600,18 +1184,18 @@ def resolve_enrolled_key(
     recomputed = _fingerprint_of(parsed.key.public_key)
     if parsed.key.fingerprint != recomputed:
         _unverified(
-            f"the enrolment of {principal_id}/{resolved_key_id} states fingerprint "
+            f"the trust event for {principal_id}/{resolved_key_id} states fingerprint "
             f"{parsed.key.fingerprint!r}, which is not the digest of the public key it "
             "carries",
-            "enrollment_fingerprint_mismatch",
+            "trust_key_fingerprint_mismatch",
             principal_id=principal_id,
             key_id=resolved_key_id,
         )
     if parsed.key.scheme_id != "ed25519":
         _unverified(
-            f"the enrolment of {principal_id}/{resolved_key_id} declares scheme "
+            f"the trust event for {principal_id}/{resolved_key_id} declares scheme "
             f"{parsed.key.scheme_id!r}; a v6 project genesis is Ed25519-only",
-            "enrollment_scheme_not_ed25519",
+            "trust_key_scheme_not_ed25519",
             principal_id=principal_id,
             key_id=resolved_key_id,
             scheme_id=parsed.key.scheme_id,
@@ -623,7 +1207,7 @@ def resolve_enrolled_key(
     if expected_trust_event_hash is not None and expected_trust_event_hash != record.event_hash:
         _unverified(
             f"--trust-event-hash {expected_trust_event_hash!r} is not the "
-            f"principal_key_enrolled event for {principal_id}/{resolved_key_id}; that "
+            f"key-introduction event for {principal_id}/{resolved_key_id}; that "
             f"event's hash is {record.event_hash!r}",
             "trust_event_hash_mismatch",
             principal_id=principal_id,
@@ -642,6 +1226,7 @@ def resolve_enrolled_key(
         public_key=parsed.key.public_key,
         fingerprint=recomputed,
         trust_event_hash=record.event_hash,
+        trust_event_transition=record.transition,
         not_before=parsed.not_before,
         not_after=parsed.not_after,
         projection=projection,
@@ -686,6 +1271,9 @@ def resolve_trust_reference(
     at: datetime | None = None,
     checkpoint_seq: int = 1,
     published_checkpoint_path: str | None = None,
+    publication_repo: str | None = None,
+    publication_commit: str | None = None,
+    allow_derived_checkpoint: bool = False,
 ) -> TrustReference:
     """One verified walk; every genesis input derived from it.
 
@@ -725,9 +1313,21 @@ def resolve_trust_reference(
     )
     if published_checkpoint_path is not None:
         checkpoint = load_published_checkpoint(
-            published_checkpoint_path, conn, genesis_document, verified=chain
+            published_checkpoint_path,
+            conn,
+            genesis_document,
+            verified=chain,
+            publication_repo=publication_repo,
+            publication_commit=publication_commit,
         )
     else:
+        if not allow_derived_checkpoint:
+            _unverified(
+                "an evidence-grade genesis requires a root-threshold-signed checkpoint "
+                "from the pinned publication channel; derived observations are available "
+                "only to --dry-run",
+                "published_checkpoint_required",
+            )
         checkpoint = derive_trust_log_checkpoint(
             conn,
             genesis_document,
@@ -750,6 +1350,48 @@ def resolve_trust_reference(
 # ---------------------------------------------------------------------------
 
 
+def _gate_measurement_valid(
+    check: Mapping[str, Any],
+    *,
+    project: str,
+    store_fingerprint: object,
+    snapshot: object,
+) -> bool:
+    if (
+        set(check) != _MEASUREMENT_KEYS
+        or check.get("id") != "regista.store_invariant_measurements"
+        or check.get("status") != "measured"
+        or check.get("store_fingerprint") != store_fingerprint
+        or check.get("errors") != []
+        or not isinstance(check.get("projects"), list)
+    ):
+        return False
+    projects = check["projects"]
+    if len(projects) != 1 or not isinstance(projects[0], Mapping):
+        return False
+    row = projects[0]
+    return (
+        set(row) == _PROJECT_MEASUREMENT_KEYS
+        and row.get("project") == project
+        and type(row.get("event_count")) is int
+        and row.get("event_count") == 0
+        and type(row.get("declared_lineage_event_count")) is int
+        and row.get("declared_lineage_event_count") == 0
+        and row.get("lineage_coverage") == {"numerator": 0, "denominator": 0}
+        and row.get("distinct_lineage_tokens") == []
+        and row.get("unresolvable_lineage_tokens") == []
+        and type(row.get("unresolvable_lineage_value_count")) is int
+        and row.get("unresolvable_lineage_value_count") == 0
+        and type(row.get("ambiguous_lineage_event_count")) is int
+        and row.get("ambiguous_lineage_event_count") == 0
+        and row.get("scheme_counts") == {}
+        and type(row.get("undeclared_agent_author_event_count")) is int
+        and row.get("undeclared_agent_author_event_count") == 0
+        and row.get("model_observation_status_counts") == {}
+        and row.get("snapshot_id") == snapshot
+    )
+
+
 @dataclass(frozen=True)
 class GateEvidence:
     """A validated ``agent-suite genesis-gate --json`` report for THIS target."""
@@ -760,6 +1402,7 @@ class GateEvidence:
     project: str
     observation_snapshot: str | None
     finding_count: int
+    report_digest: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -769,12 +1412,13 @@ class GateEvidence:
             "project": self.project,
             "observation_snapshot": self.observation_snapshot,
             "findings": self.finding_count,
+            "report_digest": self.report_digest,
             "epoch_may_open": True,
         }
 
 
-def _gate_refuse(message: str, reason: str, **detail: Any) -> Any:
-    return _refuse(ErrorCode.GENESIS_GATE_EVIDENCE_INVALID, message, reason, **detail)
+def _gate_refuse(message: str, reason: str, **detail: Any) -> NoReturn:
+    _refuse(ErrorCode.GENESIS_GATE_EVIDENCE_INVALID, message, reason, **detail)
 
 
 def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvidence:
@@ -826,6 +1470,14 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
         )
     assert isinstance(raw, Mapping)
 
+    if set(raw) != _GATE_REPORT_KEYS:
+        _gate_refuse(
+            "the gate report has unknown or missing top-level fields",
+            "gate_report_shape_invalid",
+            unknown=sorted(set(raw) - _GATE_REPORT_KEYS),
+            missing=sorted(_GATE_REPORT_KEYS - set(raw)),
+        )
+
     if raw.get("kind") != "genesis_gate":
         _gate_refuse(
             f"--gate-report {path!r} has kind {raw.get('kind')!r}; this must be the "
@@ -835,7 +1487,7 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
             kind=raw.get("kind"),
         )
     version = raw.get("report_version")
-    if not isinstance(version, int) or isinstance(version, bool):
+    if type(version) is not int:
         _gate_refuse(
             "the gate report has no integer report_version",
             "gate_report_version_absent",
@@ -863,6 +1515,30 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
             epoch_may_open=raw.get("epoch_may_open"),
         )
 
+    # Check the target project before deriving the dynamic v1 finding IDs. Otherwise
+    # an honestly formed report for the wrong project is diagnosed as generic finding
+    # incompleteness rather than the binding error the operator must fix.
+    early_binding = raw.get("binding")
+    if not isinstance(early_binding, Mapping) or set(early_binding) != _GATE_BINDING_KEYS:
+        _gate_refuse(
+            "the gate report has no complete binding object",
+            "gate_report_binding_invalid",
+        )
+    if early_binding.get("project") != project:
+        _gate_refuse(
+            f"the gate report is bound to project {early_binding.get('project')!r}, not "
+            f"the target project {project!r}",
+            "gate_report_project_mismatch",
+            report_project=early_binding.get("project"),
+            target_project=project,
+        )
+    early_snapshot = early_binding.get("observation_snapshot")
+    if not isinstance(early_snapshot, str) or _PG_SNAPSHOT_RE.fullmatch(early_snapshot) is None:
+        _gate_refuse(
+            "the gate report has no canonical PostgreSQL transaction snapshot label",
+            "gate_report_snapshot_invalid",
+        )
+
     findings = raw.get("findings")
     if not isinstance(findings, Sequence) or isinstance(findings, str | bytes):
         _gate_refuse(
@@ -879,24 +1555,176 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
     # `ok` is not taken on trust: a report whose top-level flag disagrees with its own
     # findings is self-contradictory, and the safe reading of a contradiction is the
     # pessimistic one.
-    failed = [
-        str(f.get("check_id"))
-        for f in findings
-        if isinstance(f, Mapping) and f.get("status") != "pass"
-    ]
-    if failed:
+    finding_ids: list[str] = []
+    malformed_finding = False
+    for finding in findings:
+        if (
+            not isinstance(finding, Mapping)
+            or set(finding) != _GATE_FINDING_KEYS
+            or not isinstance(finding.get("check_id"), str)
+            or not finding.get("check_id")
+            or finding.get("status") != "pass"
+            or not isinstance(finding.get("detail"), str)
+            or not finding.get("detail")
+        ):
+            malformed_finding = True
+            break
+        finding_ids.append(str(finding["check_id"]))
+    expected_findings = _GATE_REQUIRED_BEHAVIORAL_FINDINGS | frozenset(
+        {
+            "regista.target_store_bound",
+            "regista.target_project_bound",
+            "regista.observation_snapshot_bound",
+            f"regista.store_empty:{project}",
+            f"regista.lineage_population_empty:{project}",
+            f"regista.lineage_tokens_resolvable:{project}",
+            f"regista.lineage_unambiguous:{project}",
+            f"regista.asymmetric_only:{project}",
+            f"regista.authors_declared:{project}",
+            f"regista.model_observation_population_empty:{project}",
+        }
+    )
+    if (
+        malformed_finding
+        or len(finding_ids) != len(set(finding_ids))
+        or frozenset(finding_ids) != expected_findings
+    ):
         _gate_refuse(
-            f"the gate report says ok=true but {len(failed)} finding(s) do not pass: "
-            + ", ".join(sorted(failed)[:8]),
-            "gate_report_self_contradictory",
-            failed_checks=sorted(failed),
+            "the gate report's findings are malformed, duplicated, non-passing, or do "
+            "not exactly cover the v1 genesis contract",
+            "gate_report_findings_invalid",
+            reported_checks=sorted(finding_ids),
+            expected_checks=sorted(expected_findings),
         )
     probes = raw.get("probes")
-    if not isinstance(probes, Mapping) or probes.get("ok") is not True:
+    if (
+        not isinstance(probes, Mapping)
+        or set(probes) != _PROBE_REPORT_KEYS
+        or type(probes.get("report_version")) is not int
+        or probes.get("report_version") != 1
+        or probes.get("kind") != "invariant_probes"
+        or probes.get("ok") is not True
+        or not isinstance(probes.get("probes"), list)
+    ):
         _gate_refuse(
-            "the gate report's probe health is not ok; the required behavioral probes "
-            "did not all answer cleanly",
-            "gate_probe_health_not_ok",
+            "the gate report's nested invariant-probe report is malformed or unhealthy",
+            "gate_probe_report_invalid",
+        )
+    nested = probes["probes"]
+    assert isinstance(nested, list)
+    seen_components: set[str] = set()
+    for probe in nested:
+        if (
+            not isinstance(probe, Mapping)
+            or set(probe) != _PROBE_RESULT_KEYS
+            or not isinstance(probe.get("component"), str)
+            or probe.get("status") != "pass"
+            or probe.get("ok") is not True
+            or not isinstance(probe.get("detail"), str)
+            or not probe.get("detail")
+            or not isinstance(probe.get("checks"), list)
+        ):
+            _gate_refuse(
+                "the gate report contains a malformed or unhealthy component probe",
+                "gate_probe_result_invalid",
+            )
+        component = str(probe["component"])
+        if component in seen_components or component not in _GATE_REQUIRED_PROBE_CHECKS:
+            _gate_refuse(
+                "the gate report contains a duplicate or unexpected component probe",
+                "gate_probe_result_invalid",
+                component=component,
+            )
+        seen_components.add(component)
+        checks = probe["checks"]
+        assert isinstance(checks, list)
+        check_ids: list[str] = []
+        for check in checks:
+            if (
+                not isinstance(check, Mapping)
+                or not isinstance(check.get("id"), str)
+                or check.get("status")
+                != (
+                    "measured"
+                    if check.get("id") == "regista.store_invariant_measurements"
+                    else "pass"
+                )
+            ):
+                _gate_refuse(
+                    "the gate report contains a malformed or non-passing probe check",
+                    "gate_probe_check_invalid",
+                    component=component,
+                )
+            check_ids.append(str(check["id"]))
+            check_id = str(check["id"])
+            if check_id == "regista.store_invariant_measurements":
+                if not _gate_measurement_valid(
+                    check,
+                    project=project,
+                    store_fingerprint=early_binding.get("reported_store_fingerprint"),
+                    snapshot=early_snapshot,
+                ):
+                    _gate_refuse(
+                        "the regista measurement body does not prove an empty target at "
+                        "the report's named snapshot",
+                        "gate_measurement_body_invalid",
+                    )
+            elif not isinstance(check.get("detail"), str) or not check.get("detail"):
+                _gate_refuse(
+                    "a behavioral probe check has no non-empty evidence detail",
+                    "gate_probe_check_body_invalid",
+                    check_id=check_id,
+                )
+            if check_id == "regista.actor_boundary_signing" and (
+                check.get("claim") != "r10.no_arbitrary_principal.project_v6"
+                or check.get("basis") != "behavioral_attempt_ephemeral_epoch"
+                or not isinstance(check.get("paths_proven"), list)
+                or not all(isinstance(item, str) for item in check["paths_proven"])
+                or len(check["paths_proven"]) != 2
+                or set(check["paths_proven"])
+                != {
+                    "regista._genesis.append_v6_genesis",
+                    "regista._v6_writer.append_v6_event",
+                }
+                or not isinstance(check.get("shared_boundary_consumers"), list)
+                or not all(
+                    isinstance(item, str) for item in check["shared_boundary_consumers"]
+                )
+                or len(check["shared_boundary_consumers"]) != 1
+                or set(check["shared_boundary_consumers"])
+                != {"regista._trust_log_writer.append_trust_log_event"}
+                or not isinstance(check.get("excluded_paths"), list)
+                or not all(isinstance(item, str) for item in check["excluded_paths"])
+                or len(check["excluded_paths"]) != 4
+                or set(check["excluded_paths"])
+                != {
+                    "regista._cli.cmd_trust_init_log",
+                    "regista._cli.cmd_trust_delegate_registrar",
+                    "regista._cli._resolve_trust_root_actor",
+                    "regista._trust_log_writer.write_trust_genesis",
+                }
+                or not isinstance(check.get("exclusion_reason"), str)
+                or "WI-320" not in check["exclusion_reason"]
+            ):
+                _gate_refuse(
+                    "the actor-boundary check does not carry the exact scoped R-10 evidence",
+                    "gate_actor_boundary_scope_invalid",
+                )
+        if (
+            len(check_ids) != len(set(check_ids))
+            or frozenset(check_ids) != _GATE_REQUIRED_PROBE_CHECKS[component]
+        ):
+            _gate_refuse(
+                "the gate report's component check coverage is incomplete or duplicated",
+                "gate_probe_check_coverage_invalid",
+                component=component,
+            )
+    if seen_components != set(_GATE_REQUIRED_PROBE_CHECKS):
+        _gate_refuse(
+            "the gate report does not contain every required component probe",
+            "gate_probe_component_coverage_invalid",
+            reported=sorted(seen_components),
+            expected=sorted(_GATE_REQUIRED_PROBE_CHECKS),
         )
 
     binding = raw.get("binding")
@@ -907,6 +1735,11 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
             "gate_report_binding_absent",
         )
     assert isinstance(binding, Mapping)
+    if set(binding) != _GATE_BINDING_KEYS:
+        _gate_refuse(
+            "the gate report binding has unknown or missing fields",
+            "gate_report_binding_invalid",
+        )
     expected_fp = postgres_database_fingerprint(dsn)
     if expected_fp is None:
         _gate_refuse(
@@ -928,23 +1761,19 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
             expected_store_fingerprint=declared,
             target_store_fingerprint=expected_fp,
         )
-    if binding.get("project") != project:
-        _gate_refuse(
-            f"the gate report is bound to project {binding.get('project')!r}, not the "
-            f"target project {project!r}",
-            "gate_report_project_mismatch",
-            report_project=binding.get("project"),
-            target_project=project,
-        )
-
     snapshot = binding.get("observation_snapshot")
+    assert isinstance(snapshot, str)
+    from ._jcs import canonicalize
+
+    report_digest = "sha256:" + hashlib.sha256(canonicalize(raw)).hexdigest()
     return GateEvidence(
         path=path,
         report_version=version,
         store_fingerprint=expected_fp,
         project=project,
-        observation_snapshot=snapshot if isinstance(snapshot, str) else None,
+        observation_snapshot=snapshot,
         finding_count=len(findings),
+        report_digest=report_digest,
     )
 
 
@@ -1111,6 +1940,7 @@ def build_project_initialized_envelope(
     reference: TrustReference,
     producer: Mapping[str, Any],
     previous_epoch: PreviousEpoch,
+    gate: GateEvidence,
     occurred_at: datetime,
     event_id: str | None = None,
     scope_entity_kinds: Sequence[str] = DEFAULT_SCOPE_ENTITY_KINDS,
@@ -1160,7 +1990,19 @@ def build_project_initialized_envelope(
         "actor": {
             "principal_id": key.principal_id,
             "kind": _actor_kind_for(key.principal_id),
-            "metadata": {},
+            "metadata": {
+                # Signed attribution of the exact suite verdict the actor accepted.
+                # This authenticates the actor's assertion, not agent-suite as issuer;
+                # report v1 has no issuer signature. The writer's locked
+                # first_write_admission remains the current-store authority.
+                "genesis_gate": {
+                    "report_version": gate.report_version,
+                    "report_digest": gate.report_digest,
+                    "observation_snapshot": gate.observation_snapshot,
+                    "store_fingerprint": gate.store_fingerprint,
+                    "project": gate.project,
+                }
+            },
         },
         "signing": {
             "scheme_id": "ed25519",
@@ -1192,6 +2034,8 @@ def build_project_initialized_envelope(
 __all__ = [
     "DEFAULT_SCOPE_ENTITY_KINDS",
     "SUPPORTED_GATE_REPORT_VERSIONS",
+    "TRUST_CHECKPOINT_SIGNATURE_DOMAIN",
+    "TRUST_CHECKPOINT_TYPE",
     "TRUST_LOG_OBSERVATION_TYPE",
     "EnrolledKey",
     "GateEvidence",
