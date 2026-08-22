@@ -58,6 +58,7 @@ from ._ops import (
     WorkflowOps,
     WorkItemOps,
 )
+from ._principals import validate_principal_id as validate_principal_id
 from ._types import (
     ActorKind as ActorKind,
 )
@@ -111,6 +112,8 @@ from ._types import (
 from ._types import (
     WorkItem as WorkItem,
 )
+from ._v6_writer import Producer as Producer
+from ._v6_writer import resolve_producer as resolve_producer
 from ._version_info import VersionInfo as VersionInfo
 from ._version_info import versions as versions
 from ._workflow import canonical_workflow_yaml as canonical_workflow_yaml

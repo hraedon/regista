@@ -193,7 +193,7 @@ def in_memory_remove_link(
     )
     if not has_live:
         events = sorted(
-            store.events.get(from_work_item_id, []),
+            store.events_for("work_item", from_work_item_id),
             key=lambda e: e.event_seq,
             reverse=True,
         )

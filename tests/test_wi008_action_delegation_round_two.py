@@ -30,6 +30,7 @@ from tests._wi008_fixtures import (
     action_delegation_document,
     in_memory_action_project,
     review_to_in_review,
+    set_review_producer,
 )
 
 CHAIN_ROOT = "human:chain-root"
@@ -75,9 +76,9 @@ def _two_stage_credential(project: Any) -> dict[str, Any]:
 
 
 def _review_payload() -> dict[str, Any]:
+    set_review_producer()
     return {
         "review_note": "round-two adversarial review",
-        "reviewer_claims": {"model_lineage": "kimi"},
     }
 
 
@@ -1002,7 +1003,6 @@ def test_chain_rejects_invalid_parent_continuity(tmp_path, name, mutate) -> None
     ("axis", "value"),
     [
         ("project_instance_ids", [str(uuid.uuid4())]),
-        ("entity_kinds", ["principal"]),
         ("workflow_names", ["other-workflow"]),
         ("transitions", ["other-transition"]),
     ],

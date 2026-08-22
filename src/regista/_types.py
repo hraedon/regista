@@ -637,9 +637,10 @@ class ReplayReport:
     principal_binding_verified: bool = False
     #: Entity groups from the CLOSED v6 entity-kind registry other than
     #: ``work_item`` — ``project``, ``principal``, ``trust_domain``,
-    #: ``project_instance``, ``workflow`` (``V6-ENVELOPE.md`` §1.2). A v6 epoch's
-    #: chain necessarily carries these, so a healthy clean-epoch replay reports a
-    #: NON-ZERO value here and it is not a finding.
+    #: ``project_instance``, ``workflow``, ``spec``, ``note`` (``V6-ENVELOPE.md``
+    #: §1.2). A v6 epoch's chain necessarily carries several of these, so a
+    #: healthy clean-epoch replay reports a NON-ZERO value here and it is not a
+    #: finding.
     #:
     #: What "verified" claims, exactly: every event in these groups was carried
     #: into the global hash-chain verification (so any rewrite of their bytes is a
@@ -773,6 +774,7 @@ class ValidatorContext:
     actor_metadata: dict[str, Any] | None
     actor_kind: str
     prior_events: tuple[Event, ...]
+    producer: dict[str, Any] | None = None
     on_behalf_of: dict[str, Any] | None = None
     validator_params: dict[str, Any] | None = None
     authorization_evidence: AuthorizationEvidence = AuthorizationEvidence(
@@ -801,6 +803,8 @@ class ValidatorContext:
             "actor_kind": self.actor_kind,
             "prior_events": [e.to_dict() for e in self.prior_events],
         }
+        if self.producer is not None:
+            d["producer"] = self.producer
         if self.on_behalf_of is not None:
             d["on_behalf_of"] = self.on_behalf_of
         if self.validator_params is not None:
@@ -839,6 +843,7 @@ class ValidatorContext:
             prior_events=tuple(
                 Event.from_dict(e) for e in data.get("prior_events", [])
             ),
+            producer=data.get("producer"),
             on_behalf_of=data.get("on_behalf_of"),
             validator_params=data.get("validator_params"),
             authorization_evidence=AuthorizationEvidence(

@@ -169,7 +169,7 @@ PROJECTION_DRIVING_TRANSITIONS: Final[frozenset[str]] = frozenset(
 )
 
 #: §5.2 as AMENDED by Resolution 1: the entity-kind registry is shared and CLOSED
-#: at six values (``V6-ENVELOPE.md`` §1.2). ``project_system`` is prose, never a
+#: at eight values (``V6-ENVELOPE.md`` §1.2). ``project_system`` is prose, never a
 #: wire value. This module only maps the kinds its own transitions use.
 TRUST_LOG_ENTITY_KIND: Final[dict[str, str]] = {
     TRUST_DOMAIN_ESTABLISHED: "trust_domain",
@@ -2226,7 +2226,7 @@ def parse_trust_log_payload(transition: str, payload: Any) -> TrustLogPayload:
 def expected_entity_kind(transition: str) -> str:
     """The v6 envelope ``entity.kind`` for a trust-log transition (§5.2 AMENDED).
 
-    The registry is shared and closed at six values; ``project_system`` is prose and
+    The registry is shared and closed at eight values; ``project_system`` is prose and
     never a wire value.
     """
     kind = TRUST_LOG_ENTITY_KIND.get(transition)

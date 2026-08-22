@@ -28,6 +28,7 @@ from ._contract import (
 )
 from ._datetime_utils import v6_occurred_at
 from ._errors import ErrorCode, RegistaError
+from ._events import _v6_epoch_open
 from ._events import append_transition_event as _append_transition_event
 from ._keys import KeySet
 from ._observability import Metrics, OpTimer
@@ -130,6 +131,11 @@ def transition(
 
             new_state = transition_def["to_state"]
             resolved_occurred_at = datetime.now(UTC)
+            v6_producer = None
+            if _v6_epoch_open(conn):
+                from ._v6_writer import resolve_producer
+
+                v6_producer = resolve_producer()
             authorization_evidence = _verify_validator_authorization(
                 conn,
                 work_item_id=work_item_id,
@@ -176,6 +182,11 @@ def transition(
                         actor_metadata=actor_metadata,
                         actor_kind=actor_kind,
                         prior_events=prior_events,
+                        producer=(
+                            v6_producer.as_envelope_member()
+                            if v6_producer is not None
+                            else None
+                        ),
                         on_behalf_of=(
                             dict(on_behalf_of) if on_behalf_of is not None else None
                         ),
@@ -238,6 +249,7 @@ def transition(
                 _key_id=key_id,
                 action_delegation_credentials=action_delegation_credentials,
                 occurred_at=resolved_occurred_at,
+                producer=v6_producer,
             )
 
             hook_names = transition_def.get("hooks", [])

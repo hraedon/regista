@@ -32,14 +32,17 @@ from regista._review_validators import ReviewRejected, adversarial_review
 from regista._types import AuthorizationEvidence
 from tests._wi008_fixtures import (
     ACTION_AUTHOR,
+    ACTION_ISSUER,
     ACTION_REVIEW_ISSUER,
     ACTION_REVIEWER,
+    ACTION_SUBJECT,
     REVIEW_PRINCIPALS,
     REVIEW_WORKFLOW,
     action_delegation_document,
     copy_action_delegation_document,
     in_memory_action_project,
     review_to_in_review,
+    set_review_producer,
 )
 
 VECTORS = Path(__file__).parent / "vectors" / "v6"
@@ -147,7 +150,56 @@ def test_scope_axes_are_nonempty_exact_allowlists(axis: str) -> None:
     document = delegation_vector()["expected"]["signed_document"]
     document = copy.deepcopy(document)
     document["scope"][axis] = []
-    with pytest.raises(ActionDelegationError, match="non-empty array"):
+    expected = (
+        "workflow-bound work_item scopes"
+        if axis == "workflow_names"
+        else "non-empty array"
+    )
+    with pytest.raises(ActionDelegationError, match=expected):
+        parse_action_delegation(document)
+
+
+def test_note_scope_uses_an_empty_workflow_axis() -> None:
+    document = delegation_vector()["expected"]["signed_document"]
+    document = copy.deepcopy(document)
+    document["scope"]["entity_kinds"] = ["note"]
+    document["scope"]["workflow_names"] = []
+
+    credential = parse_action_delegation(document)
+
+    assert credential.scope.workflow_names == frozenset()
+    assert credential.scope.permits(
+        project_instance_id=next(iter(credential.scope.project_instance_ids)),
+        entity_kind="note",
+        workflow_name=None,
+        transition="note_added",
+    )
+    assert not credential.scope.permits(
+        project_instance_id=next(iter(credential.scope.project_instance_ids)),
+        entity_kind="note",
+        workflow_name="agent-notes",
+        transition="note_added",
+    )
+
+
+@pytest.mark.parametrize(
+    ("entity_kinds", "workflow_names", "message"),
+    [
+        (["work_item"], [], "workflow-bound work_item"),
+        (["note"], ["agent-notes"], "non-workflow note"),
+        (["work_item", "note"], [], "mixed work_item and note"),
+        (["principal"], ["agent-notes"], "authorizable v1 kinds"),
+    ],
+)
+def test_scope_rejects_ambiguous_workflow_axes(
+    entity_kinds: list[str], workflow_names: list[str], message: str
+) -> None:
+    document = delegation_vector()["expected"]["signed_document"]
+    document = copy.deepcopy(document)
+    document["scope"]["entity_kinds"] = entity_kinds
+    document["scope"]["workflow_names"] = workflow_names
+
+    with pytest.raises(ActionDelegationError, match=message):
         parse_action_delegation(document)
 
 
@@ -430,9 +482,9 @@ def in_memory_review_project(tmp_path: Path):
 
 
 def _review_payload() -> dict[str, Any]:
+    set_review_producer()
     return {
         "review_note": "delegated review checked the item",
-        "reviewer_claims": {"model_lineage": "kimi"},
     }
 
 
@@ -527,6 +579,182 @@ class TestInMemoryReviewActionDelegation:
                 "credential_hash": action_delegation_hash(document),
             }
         ]
+
+
+def _append_delegated_note(project: Any, document: dict[str, Any]) -> Any:
+    return project.instance.append_event(
+        uuid.uuid4(),
+        ACTION_SUBJECT,
+        entity_kind="note",
+        transition="note_added",
+        payload={"note": "delegated note"},
+        action_delegation_credentials=(document,),
+    )
+
+
+def test_in_memory_delegated_note_verifies_and_replays(tmp_path: Path) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project,
+            issuer=ACTION_ISSUER,
+            subject=ACTION_SUBJECT,
+            entity_kind="note",
+        )
+        event = _append_delegated_note(project, document)
+        envelope = json.loads(bytes(event.canonical_envelope))
+
+        assert event.entity_kind == "note"
+        assert envelope["workflow"] is None
+        assert envelope["authorization"]["mode"] == "delegated"
+        verification = project.instance.verify_event_result(event)
+        assert verification.delegation_verification.value == "verified"
+        report = project.instance.replay()
+        assert report.halted == 0
+        assert report.replayed_drift == 0
+        assert report.chain_breaks == 0
+    finally:
+        project.instance.close()
+
+
+def test_in_memory_note_namespace_does_not_mutate_work_item_stream(
+    tmp_path: Path,
+) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        work_item_id = project.work_item.work_item_id
+        before = project.instance.get_work_item(work_item_id)
+        assert before is not None
+        event_id = uuid.uuid4()
+        note_event = project.instance.append_event(
+            work_item_id,
+            ACTION_SUBJECT,
+            entity_kind="note",
+            transition="note_added",
+            payload={"note": "same UUID, separate entity stream"},
+            event_id=event_id,
+        )
+        after = project.instance.get_work_item(work_item_id)
+        assert after == before
+        assert project.instance._store.events_for("work_item", work_item_id)
+        assert project.instance._store.events_for("note", work_item_id) == [note_event]
+        assert any(
+            event.event_id == note_event.event_id
+            for event in project.instance.read_events(work_item_id=work_item_id)
+        )
+
+        with pytest.raises(RegistaError) as exc_info:
+            project.instance.append_event(
+                work_item_id,
+                ACTION_SUBJECT,
+                transition="note_added",
+                payload={"note": "event id belongs to note"},
+                event_id=event_id,
+            )
+        assert exc_info.value.code is ErrorCode.EVENT_ID_GLOBAL_COLLISION
+        report = project.instance.replay()
+        assert report.halted == 0
+    finally:
+        project.instance.close()
+
+
+def test_in_memory_delegated_note_respects_max_uses(tmp_path: Path) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project,
+            issuer=ACTION_ISSUER,
+            subject=ACTION_SUBJECT,
+            entity_kind="note",
+            max_uses=1,
+        )
+        _append_delegated_note(project, document)
+        with pytest.raises(RegistaError, match="max_uses"):
+            _append_delegated_note(project, document)
+    finally:
+        project.instance.close()
+
+
+def test_in_memory_delegated_note_revocation_is_enforced(tmp_path: Path) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project,
+            issuer=ACTION_ISSUER,
+            subject=ACTION_SUBJECT,
+            entity_kind="note",
+        )
+        _append_delegated_note(project, document)
+        project.instance.revoke_action_delegation(
+            uuid.UUID(document["credential_id"]),
+            action_delegation_hash(document),
+            ACTION_ISSUER,
+            reason="note authority withdrawn",
+        )
+        with pytest.raises(RegistaError, match="revoked"):
+            _append_delegated_note(project, document)
+    finally:
+        project.instance.close()
+
+
+def test_in_memory_replay_rejects_tampered_note_credential_evidence(
+    tmp_path: Path,
+) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project,
+            issuer=ACTION_ISSUER,
+            subject=ACTION_SUBJECT,
+            entity_kind="note",
+        )
+        _append_delegated_note(project, document)
+        stored = project.instance._store.v6_rows.action_delegation_credentials[
+            document["credential_id"]
+        ]
+        tampered = copy.deepcopy(stored["document"])
+        tampered["scope"]["transitions"] = ["other_transition"]
+        stored["document"] = tampered
+
+        report = project.instance.replay()
+        assert report.halted >= 1
+        assert report.unverifiable == 0
+    finally:
+        project.instance.close()
+
+
+@pytest.mark.parametrize(
+    ("credential_entity_kind", "event_entity_kind"),
+    [("note", "work_item"), ("work_item", "note")],
+)
+def test_in_memory_delegation_rejects_another_workflow_axis(
+    tmp_path: Path, credential_entity_kind: str, event_entity_kind: str
+) -> None:
+    project = in_memory_action_project(tmp_path)
+    try:
+        document = action_delegation_document(
+            project,
+            issuer=ACTION_ISSUER,
+            subject=ACTION_SUBJECT,
+            entity_kind=credential_entity_kind,
+        )
+        event_id = (
+            project.work_item.work_item_id
+            if event_entity_kind == "work_item"
+            else uuid.uuid4()
+        )
+        with pytest.raises(RegistaError) as exc_info:
+            project.instance.append_event(
+                event_id,
+                ACTION_SUBJECT,
+                entity_kind=event_entity_kind,
+                transition="note_added",
+                payload={"note": "axis mismatch"},
+                action_delegation_credentials=(document,),
+            )
+        assert exc_info.value.code is ErrorCode.ACTION_DELEGATION_INVALID
+    finally:
+        project.instance.close()
 
 
 def test_in_memory_writer_stores_evidence_and_signs_only_references(tmp_path: Path) -> None:

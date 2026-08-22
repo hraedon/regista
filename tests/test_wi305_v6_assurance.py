@@ -1,11 +1,4 @@
-"""WI-305 assurance counterparts over a real v6 epoch.
-
-The retired ``TestComputeAssuranceAPI`` cases used legacy actor metadata and an
-in-memory HMAC store.  These counterparts keep the API-level assertions while
-using the v6 vehicles: author lineage comes from the signed process-level
-``producer`` block and reviewer lineage comes from signed
-``payload.reviewer_claims``.
-"""
+"""Assurance over a real v6 epoch uses signed producer lineage only."""
 
 from __future__ import annotations
 
@@ -15,10 +8,19 @@ import pytest
 from _helpers import DSN
 
 from regista import Regista
-from regista._assurance import AssuranceLevel, gate_permits_done
+from regista._assurance import (
+    AssuranceLevel,
+    compute_assurance_level_from_dicts,
+    gate_permits_done,
+)
 from regista._errors import ErrorCode, RegistaError
 from regista.testing import drop_project_schema
-from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+from tests._v6_fixtures import (
+    Producer,
+    make_v6_keyset,
+    open_v6_epoch,
+    set_v6_producer_env,
+)
 
 AUTHOR = "agent:author"
 REVIEWER = "agent:reviewer"
@@ -28,6 +30,23 @@ AUTHOR_LINEAGE = "fable"
 DISTINCT_LINEAGE = "glm"
 
 ASSURANCE_PRINCIPALS = (AUTHOR, REVIEWER, AGENT_ACCEPTOR, HUMAN_ACCEPTOR)
+
+PRODUCER_MODELS = {
+    AUTHOR_LINEAGE: "claude-fable-5",
+    DISTINCT_LINEAGE: "glm-5.3",
+}
+
+
+def _set_producer(lineage: str | None, *, model: str | None = None) -> None:
+    set_v6_producer_env(
+        Producer(
+            harness="claude-code",
+            harness_version="test-harness/1",
+            model=(model if model is not None else PRODUCER_MODELS[lineage]),
+            model_lineage=lineage,
+        ),
+        overwrite=True,
+    )
 
 ASSURANCE_WORKFLOW = """\
 name: v6_assurance
@@ -103,6 +122,7 @@ def epoch(tmp_path_factory):
 
 
 def _setup_to_review(sub: Regista, *, workflow: str = "v6_assurance") -> uuid.UUID:
+    _set_producer(AUTHOR_LINEAGE)
     work_item, _ = sub.create_work_item(
         workflow_name=workflow,
         work_item_type="issue",
@@ -127,9 +147,9 @@ def _pass(
     lineage: str,
     acknowledged: bool = False,
 ) -> None:
+    _set_producer(lineage)
     payload: dict[str, object] = {
         "review_note": "v6 adversarial review: checked the diff",
-        "reviewer_claims": {"model_lineage": lineage},
     }
     if acknowledged:
         payload["same_lineage_acknowledged"] = True
@@ -180,6 +200,14 @@ class TestV6ComputeAssuranceAPI:
         work_item_id = _setup_to_review(epoch)
         _pass(epoch, work_item_id, lineage=DISTINCT_LINEAGE)
         assert epoch.compute_assurance(work_item_id) is AssuranceLevel.INDEPENDENTLY_REVIEWED
+
+    def test_dict_assurance_reads_the_signed_producer_envelope(self, epoch: Regista) -> None:
+        work_item_id = _setup_to_review(epoch)
+        _pass(epoch, work_item_id, lineage=DISTINCT_LINEAGE)
+        events = epoch.read_events(work_item_id=work_item_id, limit=1000)
+        assert compute_assurance_level_from_dicts(
+            [event.to_dict() for event in events]
+        ) is AssuranceLevel.INDEPENDENTLY_REVIEWED
 
     def test_assurance_after_same_lineage_pass(self, epoch: Regista) -> None:
         work_item_id = _setup_to_review(epoch)
@@ -282,17 +310,21 @@ class TestV6ComputeAssuranceAPI:
         assert epoch.compute_assurance(work_item_id) is AssuranceLevel.HUMAN_ACCEPTED
 
 
-class TestV6ReviewerClaimIngress:
-    def test_missing_reviewer_claim_is_rejected_instead_of_being_undeclared(
+class TestV6ReviewerProducerIngress:
+    def test_payload_reviewer_lineage_is_rejected_as_obsolete(
         self, epoch: Regista
     ) -> None:
         work_item_id = _setup_to_review(epoch, workflow="v6_assurance_strict")
+        _set_producer(DISTINCT_LINEAGE)
         with pytest.raises(RegistaError) as exc_info:
             epoch.transition(
                 work_item_id,
                 "adversarial_pass",
                 REVIEWER,
                 actor_kind="agent",
-                payload={"review_note": "missing signed reviewer claim", "reviewer_claims": {}},
+                payload={
+                    "review_note": "obsolete payload claim",
+                    "reviewer_claims": {"model_lineage": "kimi"},
+                },
             )
-        assert exc_info.value.code is ErrorCode.INVALID_MODEL_LINEAGE
+        assert exc_info.value.code is ErrorCode.INVALID_ARGUMENT

@@ -309,6 +309,30 @@ def test_workflow_null_lifecycle_and_transition_rules_are_not_the_obsolete_rule(
     _assert_unknown(registration)
 
 
+def test_note_is_a_null_workflow_entity_kind() -> None:
+    """``note`` is the eighth closed v6 entity kind and carries null workflow
+    the same way ``spec`` and the other non-work-item kinds do."""
+    from regista._verification import V6_ENTITY_KINDS
+
+    assert "note" in V6_ENTITY_KINDS
+    assert len(V6_ENTITY_KINDS) == 8
+
+    note_event = copy.deepcopy(BASE)
+    note_event["entity"]["kind"] = "note"
+    note_event["workflow"] = None
+    # A non-work-item kind with null workflow must classify and parse as a
+    # valid v6 envelope; a kind treated as "unknown" would refuse here.
+    assert classify_envelope_bytes(canonicalize_v6_envelope(note_event)) is EnvelopeVersion.V6
+    parse_v6_envelope_strict(canonicalize_v6_envelope(note_event))
+
+    # A non-work-item kind other than the closed set still refuses, even with
+    # null workflow — closure is not loosened by the addition of ``note``.
+    bogus = copy.deepcopy(BASE)
+    bogus["entity"]["kind"] = "not_a_registered_kind"
+    bogus["workflow"] = None
+    _assert_unknown(bogus)
+
+
 def test_bootstrap_null_key_binding_is_position_limited_without_external_state() -> None:
     for name in (
         "bootstrap-trust-genesis",

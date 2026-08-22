@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, TypeGuard
 
 from ._errors import ErrorCode, RegistaError
@@ -55,21 +56,17 @@ def declared_model_lineage(value: object) -> str | None:
     return value if is_model_lineage(value) else None
 
 
-#: The review-verdict payload member carrying the reviewer's role-specific model
-#: lineage (``REVIEW-VERDICTS.md`` §2.2, ``reviewer_claims.model_lineage``).
+#: The retired v4 review-verdict payload member. It remains readable only when
+#: replaying concrete legacy envelopes; v6 takes lineage from ``producer``.
 _REVIEWER_CLAIMS_KEY = "reviewer_claims"
 _REVIEWER_LINEAGE_KEY = "model_lineage"
 
 
 def verdict_reviewer_lineage(payload: Any) -> str | None:
-    """The reviewer's claimed lineage in a review-verdict ``payload``, or None.
+    """Read the legacy v4 reviewer's claimed lineage, or return ``None``.
 
-    Reads ``payload.reviewer_claims.model_lineage`` (``REVIEW-VERDICTS.md``
-    §2.2) and validates it against the closed lineage registry in the same
-    ``declared_model_lineage`` sense as ``actor_metadata``: an unvalidated or
-    absent value declares nothing and reads as absent yet again, never as an
-    invented distinct lineage. A payload that is not a review-verdict (no
-    ``reviewer_claims`` object) contributes nothing.
+    This reader exists only for concrete persisted v4 replay. A v6 event must
+    never use this vehicle: its signed envelope producer is authoritative.
     """
     if not isinstance(payload, dict):
         return None
@@ -79,17 +76,115 @@ def verdict_reviewer_lineage(payload: Any) -> str | None:
     return declared_model_lineage(claims.get(_REVIEWER_LINEAGE_KEY))
 
 
-def reviewer_model_lineage(event: Any) -> str | None:
-    """The reviewer's *effective* claimed lineage for ``event`` (WI-305 A).
+def reject_obsolete_reviewer_claims(payload: Any) -> None:
+    """Reject the retired reviewer-lineage payload vehicle in v6.
 
-    Prefers the signed review-verdict payload's ``reviewer_claims.model_lineage``
-    — the v6 vehicle, where the role-specific assertion lives and where
-    ``actor.metadata`` may not carry ``model_lineage`` at all — and falls back
-    to the legacy per-event lineage (``actor_metadata``/``producer``) for events
-    written before the verdict carried the claim. ``event`` is anything
-    event-shaped: a stored event or a validator ``ctx`` (both expose a
-    ``payload``).
+    The signed envelope already carries the reviewer's producer. Keeping a
+    second lineage field creates two competing authorities, so even an empty
+    ``reviewer_claims`` object has no supported v6 meaning.
     """
+    if not isinstance(payload, Mapping) or _REVIEWER_CLAIMS_KEY not in payload:
+        return
+    raise RegistaError(
+        ErrorCode.INVALID_ARGUMENT,
+        "reviewer_claims is obsolete in v6 review verdicts; reviewer lineage "
+        "must come from the signed producer block",
+        detail={
+            "reason": "obsolete_reviewer_claims",
+            "field": _REVIEWER_CLAIMS_KEY,
+        },
+    )
+
+
+def _producer_fields(producer: Any) -> tuple[object, object]:
+    if isinstance(producer, Mapping):
+        return producer.get("model"), producer.get("model_lineage")
+    return getattr(producer, "model", None), getattr(producer, "model_lineage", None)
+
+
+def _canonical_producer_lineage(producer: Any) -> str | None:
+    model, lineage = _producer_fields(producer)
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return declared_model_lineage(lineage)
+
+
+def event_has_v6_envelope(event: Any) -> bool:
+    """True if ``event`` carries a v6 canonical envelope (``version == 6``)."""
+    canonical_envelope = getattr(event, "canonical_envelope", None)
+    if canonical_envelope is None:
+        return False
+    try:
+        parsed = json.loads(canonical_envelope)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("version") == 6
+
+
+def _is_v6_event_or_context(event: Any) -> bool:
+    if event_has_v6_envelope(event) or getattr(event, "producer", None) is not None:
+        return True
+    return any(
+        event_has_v6_envelope(prior)
+        for prior in getattr(event, "prior_events", ())
+    )
+
+
+def _signed_or_candidate_producer(event: Any) -> Any | None:
+    candidate = getattr(event, "producer", None)
+    if candidate is not None:
+        return candidate
+    canonical_envelope = getattr(event, "canonical_envelope", None)
+    if canonical_envelope is None:
+        return None
+    try:
+        from ._verification import parse_v6_envelope_strict
+
+        parsed = parse_v6_envelope_strict(canonical_envelope)
+    except (TypeError, ValueError):
+        return None
+    producer = parsed.get("producer")
+    return producer if isinstance(producer, Mapping) else None
+
+
+def require_v6_reviewer_model_lineage(event: Any) -> str:
+    """Return the reviewer's canonical lineage from the v6 producer only.
+
+    Persisted events supply the signed envelope producer. A validator context
+    supplies the exact producer object that the v6 writer will sign after the
+    validator returns. Missing model material, a null model, and an unknown
+    lineage all fail closed before distinctness is evaluated.
+    """
+    producer = _signed_or_candidate_producer(event)
+    lineage = _canonical_producer_lineage(producer)
+    if lineage is None:
+        raise RegistaError(
+            ErrorCode.INVALID_MODEL_LINEAGE,
+            "a v6 review verdict requires a non-null producer.model and a "
+            "canonical producer.model_lineage",
+            detail={
+                "reason": "reviewer_producer_lineage_missing_or_noncanonical",
+                "field": "producer.model_lineage",
+                "model": _producer_fields(producer)[0] if producer is not None else None,
+                "model_lineage": (
+                    _producer_fields(producer)[1] if producer is not None else None
+                ),
+                "allowed": sorted(MODEL_LINEAGE_FAMILIES),
+            },
+        )
+    return lineage
+
+
+def reviewer_model_lineage(event: Any) -> str | None:
+    """The reviewer's effective lineage for ``event``.
+
+    v6 uses only the signed envelope producer (or the candidate producer in a
+    pre-append validator context). Legacy v4 replay retains the old payload
+    claim and actor-metadata fallback because those are the vehicles present in
+    persisted legacy envelopes.
+    """
+    if _is_v6_event_or_context(event):
+        return _canonical_producer_lineage(_signed_or_candidate_producer(event))
     claimed = verdict_reviewer_lineage(getattr(event, "payload", None))
     if claimed is not None:
         return claimed
@@ -97,14 +192,11 @@ def reviewer_model_lineage(event: Any) -> str | None:
 
 
 def require_canonical_reviewer_lineage(payload: Any) -> None:
-    """Reject at ingress a review-verdict whose reviewer lineage claim is not canonical.
+    """Validate the legacy v4 review-verdict lineage claim when it is present.
 
-    A review-verdict payload that declares a ``reviewer_claims`` object MUST carry
-    a canonical ``model_lineage`` (one of ``MODEL_LINEAGE_FAMILIES``). An absent,
-    malformed, or unknown value raises ``INVALID_MODEL_LINEAGE`` rather than being
-    silently read as undeclared: a signed verdict may not carry a lineage the
-    cross-lineage gate would fail closed on at read time. A payload with no
-    ``reviewer_claims`` block declares nothing and passes.
+    v6 rejects the entire vehicle through
+    :func:`reject_obsolete_reviewer_claims`; this helper is retained only for
+    compatibility with persisted v4 replay.
     """
     if not isinstance(payload, dict):
         return
@@ -122,54 +214,6 @@ def require_canonical_reviewer_lineage(payload: Any) -> None:
                 "allowed": sorted(MODEL_LINEAGE_FAMILIES),
             },
         )
-
-
-def require_present_canonical_reviewer_lineage(payload: Any) -> None:
-    """Post-epoch (WI-307): the ``reviewer_claims`` lineage vehicle is MANDATORY.
-
-    ``require_canonical_reviewer_lineage`` validates ``reviewer_claims`` only when
-    the block is present, so a review verdict could omit it entirely and let
-    ``reviewer_model_lineage`` fall back to the actor/producer lineage — a
-    cross-lineage claim the reviewer never signed in its role-specific payload.
-    That fallback weakens the WI-305 A contract that reviewer lineage rides the
-    signed ``reviewer_claims`` block (``REVIEW-VERDICTS.md`` §2.2). Inside the v6
-    epoch the block is required: an omitted, empty, null, or non-canonical
-    ``reviewer_claims.model_lineage`` fails closed with ``INVALID_MODEL_LINEAGE``
-    at ingress, before the verdict is accepted. Pre-epoch (persisted legacy)
-    verdicts keep the tolerant present-only semantics of
-    ``require_canonical_reviewer_lineage``.
-    """
-    claims = payload.get(_REVIEWER_CLAIMS_KEY) if isinstance(payload, dict) else None
-    value = claims.get(_REVIEWER_LINEAGE_KEY) if isinstance(claims, dict) else None
-    if not is_model_lineage(value):
-        raise RegistaError(
-            ErrorCode.INVALID_MODEL_LINEAGE,
-            "reviewer_claims.model_lineage is required for a review verdict "
-            "written in the v6 epoch and must be a canonical model lineage",
-            detail={
-                "field": "reviewer_claims.model_lineage",
-                "model_lineage": value,
-                "allowed": sorted(MODEL_LINEAGE_FAMILIES),
-            },
-        )
-
-
-def event_has_v6_envelope(event: Any) -> bool:
-    """True if ``event`` carries a v6 canonical envelope (``version == 6``).
-
-    The per-event v6 signal already used by ``raw_event_model_lineage`` to decide
-    whether the lineage lives in the envelope ``producer`` block. An event with no
-    ``canonical_envelope`` — a persisted legacy row, or a pre-signing validator
-    context — is not v6.
-    """
-    canonical_envelope = getattr(event, "canonical_envelope", None)
-    if canonical_envelope is None:
-        return False
-    try:
-        parsed = json.loads(canonical_envelope)
-    except (TypeError, ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(parsed, dict) and parsed.get("version") == 6
 
 
 def validate_model_lineage(value: object, *, field: str) -> str:

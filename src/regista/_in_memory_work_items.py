@@ -12,8 +12,13 @@ from ._contract import (
     validate_work_item_exists,
 )
 from ._errors import ErrorCode, RegistaError
-from ._event_store import InMemoryEventStore
-from ._event_store import append_event as _store_append
+from ._event_store import (
+    InMemoryEventStore,
+    _check_create_idempotency,
+)
+from ._event_store import (
+    append_event as _store_append,
+)
 from ._keys import KeySet
 from ._types import Event, QueryPage, WorkItem
 from ._workflow import validate_field_values
@@ -53,6 +58,7 @@ def in_memory_create_work_item(
     event_id: uuid.UUID | None = None,
     key_id: str | None = None,
     skip_event_id_version_check: bool = False,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -94,8 +100,35 @@ def in_memory_create_work_item(
 
     _validate_refs_in_memory(work_items, wf_data, work_item_type, validated_fields)
 
-    work_item_id = uuid.uuid4()
     initial_state = wf_def.initial_state
+
+    existing = store.find_by_event_id(event_id)
+    if existing is not None:
+        existing = _check_create_idempotency(
+            existing,
+            workflow_name=workflow_name,
+            workflow_version=version,
+            work_item_type=work_item_type,
+            initial_state=initial_state,
+            custom_fields=validated_fields,
+            not_before=not_before,
+            actor_id=actor_id,
+            actor_kind=actor_kind,
+            actor_metadata=actor_metadata,
+            key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
+            source=store,
+        )
+        assert existing is not None
+        wi_state = work_items.get(existing.work_item_id)
+        if wi_state is None:
+            raise RegistaError(
+                ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                "the idempotent created event has no work-item projection row",
+            )
+        return _wi_to_work_item(wi_state), existing
+
+    work_item_id = uuid.uuid4()
     now = datetime.now(UTC)
 
     wi_state = {
@@ -135,6 +168,7 @@ def in_memory_create_work_item(
             event_id=event_id,
             key_set=key_set,
             _key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
         )
     except RegistaError:
         del work_items[work_item_id]

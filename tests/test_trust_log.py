@@ -1351,8 +1351,10 @@ class TestDispatcherAndScopeBoundaries:
         parsed = parse_trust_log_payload(PRINCIPAL_KEY_ENROLLED, payload)
         assert parsed.principal_id == "agent:dispatch"
 
-    def test_entity_kinds_come_from_the_closed_six_value_registry(self):
+    def test_entity_kinds_come_from_the_closed_registry(self):
         """§5.2 AMENDED: ``project_system`` is prose, never a wire value."""
+        from regista._verification import V6_ENTITY_KINDS
+
         assert expected_entity_kind(TRUST_DOMAIN_ESTABLISHED) == "trust_domain"
         assert expected_entity_kind(TRUST_ROOT_ROTATED) == "trust_domain"
         assert expected_entity_kind(REGISTRAR_DELEGATED) == "trust_domain"
@@ -1367,10 +1369,7 @@ class TestDispatcherAndScopeBoundaries:
                 TRUST_DOMAIN_CUSTODY_DECLARED,
             )
         }:
-            assert kind in {
-                "work_item", "project", "principal",
-                "trust_domain", "project_instance", "workflow",
-            }
+            assert kind in V6_ENTITY_KINDS
 
     def test_unknown_payload_fields_are_rejected(self):
         key = TrustLogKey.mint("pk_extra")

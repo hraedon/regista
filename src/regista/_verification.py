@@ -390,7 +390,7 @@ V6_PRODUCER_KEYS = frozenset(
     {"harness", "harness_version", "model", "model_lineage"}
 )
 
-#: The CLOSED v6 entity-kind registry (``V6-ENVELOPE.md`` §1.2). Exactly seven
+#: The CLOSED v6 entity-kind registry (``V6-ENVELOPE.md`` §1.2). Exactly eight
 #: values, and "closed" is the load-bearing word: a kind outside this set is not
 #: an unrecognised extension to be tolerated, it is a refusal. This is the single
 #: definition — ``_genesis``, ``_v6_writer`` and ``_replay`` all import it rather
@@ -405,6 +405,7 @@ V6_ENTITY_KINDS: frozenset[str] = frozenset(
         "project_instance",
         "workflow",
         "spec",
+        "note",
     }
 )
 _V6_ENTITY_KINDS = V6_ENTITY_KINDS
@@ -768,6 +769,7 @@ def _validate_v6_object(
                     "project_instance",
                     "workflow",
                     "spec",
+                    "note",
                 },
                 "workflow null is not valid for this entity kind",
             )
@@ -806,6 +808,10 @@ def _validate_v6_object(
     )
     if envelope["payload"] is not None:
         _v6_canonical_json_size(envelope["payload"], "payload", _V6_MAX_CANONICAL_BYTES)
+        _v6_require(
+            "reviewer_claims" not in envelope["payload"],
+            "payload.reviewer_claims is obsolete; v6 review lineage lives in producer",
+        )
 
     chain = envelope["chain"]
     _v6_require_keys(chain, V6_CHAIN_KEYS, "chain")

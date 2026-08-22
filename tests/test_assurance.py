@@ -241,17 +241,16 @@ class TestUndeclaredAgentAuthorEscalation:
         with pytest.raises(ReviewRejected, match=HUMAN_GATE_REQUIRED):
             human_gate(ctx, require_human_on_same_lineage=True)
 
-    def test_strict_human_gate_reports_signed_reviewer_claim(self):
+    def test_strict_human_gate_reports_reviewer_lineage(self):
         prior = [
             *_author_events("glm"),
             _evt(
                 "adversarial_pass",
                 "r1",
-                actor_metadata={"model_lineage": "kimi"},
+                actor_metadata={"model_lineage": "glm"},
                 payload={
                     "review_note": "same lineage acknowledged",
                     "same_lineage_acknowledged": True,
-                    "reviewer_claims": {"model_lineage": "glm"},
                 },
             )
         ]

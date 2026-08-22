@@ -131,6 +131,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
         skip_event_id_version_check: bool = False,
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> tuple[WorkItem, Event]:
         from ._in_memory_work_items import in_memory_create_work_item
 
@@ -144,6 +145,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             event_id=event_id,
             key_id=key_id,
             skip_event_id_version_check=skip_event_id_version_check,
+            action_delegation_credentials=action_delegation_credentials,
         )
 
     def create_work_item(
@@ -158,6 +160,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> tuple[WorkItem, Event]:
         wi, evt = self._create_work_item(
             workflow_name,
@@ -169,6 +172,7 @@ class InMemWorkflowMixin(_InMemoryBase):
             not_before=not_before,
             event_id=event_id,
             key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
         )
         self._try_create_witness_receipts(evt)
         return wi, evt
@@ -397,7 +401,7 @@ class InMemWorkflowMixin(_InMemoryBase):
         work_item_id: uuid.UUID | None = None,
     ) -> ReplayReport:
         if work_item_id is not None and work_item_id not in self._work_items:
-            if work_item_id not in self._store.events:
+            if not self._store.has_events_for_id(work_item_id):
                 raise RegistaError(
                     ErrorCode.WORK_ITEM_NOT_FOUND,
                     f"Work item {work_item_id} not found for scoped replay",
