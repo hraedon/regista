@@ -79,6 +79,31 @@ class ErrorCode(StrEnum):
     GENESIS_SENTINEL_MISSING = "GENESIS_SENTINEL_MISSING"
     GENESIS_INVALID = "GENESIS_INVALID"
     GENESIS_RECOVERY_FAILED = "GENESIS_RECOVERY_FAILED"
+    # WI-325. The three refusals that stand between "an operator typed the command"
+    # and "an epoch opened". Each is distinct because the operator's next action is
+    # distinct, and each carries a machine-readable `reason` in detail.
+    #
+    # The trust-log reference the genesis envelope would carry does not hold up
+    # against the LIVE trust log: the domain differs from the pinned genesis, the
+    # principal's key is not enrolled or not active, the claimed trust_event_hash is
+    # not that principal's principal_key_enrolled event, the enrolment is outside its
+    # validity window, or the checkpoint does not name the real head. Deliberately
+    # NOT GENESIS_INVALID: the envelope may be perfectly well-formed and still be
+    # about facts the trust log does not attest (`_genesis.py`'s shape-only check is
+    # exactly the gap this closes).
+    GENESIS_TRUST_REFERENCE_UNVERIFIED = "GENESIS_TRUST_REFERENCE_UNVERIFIED"
+    # The §5 first-write verdict was not presented as valid evidence: no
+    # `agent-suite genesis-gate --json` report, a malformed or unsupported-version
+    # one, `epoch_may_open != true`, a failing finding, or a report bound to a
+    # different store fingerprint or project than the one about to be written.
+    # Distinct from GENESIS_GATE_NOT_PASSED, which is the writer-side refusal when
+    # `gate_passed` is not True — this one is "the evidence for that flag is absent
+    # or does not describe this target".
+    GENESIS_GATE_EVIDENCE_INVALID = "GENESIS_GATE_EVIDENCE_INVALID"
+    # `keys adopt-enrollment` refused to relabel a local keyset entry: no entry holds
+    # the enrolled public key, more than one does, the target key_id is already taken,
+    # or the matched entry is not a usable Ed25519 actor key. Never a partial rewrite.
+    KEYSET_ADOPTION_REFUSED = "KEYSET_ADOPTION_REFUSED"
     V6_EPOCH_OPEN = "V6_EPOCH_OPEN"
     # Trust-domain genesis (P2.1, TRUST-DOMAIN.md §3). Each error carries a
     # machine-readable `reason` in detail naming the exact rule violated.

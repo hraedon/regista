@@ -12,7 +12,6 @@ from ._errors import ErrorCode, RegistaError
 
 TRUST_GENESIS_PATH_ENV = "REGISTA_TRUST_GENESIS_PATH"
 
-
 def trust_genesis_path_from_env() -> str | None:
     """Resolve the canonical pinned-genesis environment variable."""
     return os.environ.get(TRUST_GENESIS_PATH_ENV)
