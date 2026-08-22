@@ -86,6 +86,27 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `GENESIS_TRUST_REFERENCE_UNVERIFIED`, `GENESIS_GATE_EVIDENCE_INVALID`,
   `KEYSET_ADOPTION_REFUSED`.
 
+- **`regista.actor_boundary_signing` — the genesis gate's fifth required check (WI-326).**
+  `regista invariants probe --json` now emits `regista.actor_boundary_signing`, the check
+  agent-suite's `genesis_gate` has required since WI-074 and whose absence kept the gate
+  `BLOCKED`. The operator contract demands a *behavioral* unbound-principal signing attempt
+  and rules out key-file or configuration inspection as evidence, so the check generates a
+  throwaway Ed25519 keyset holding one actor key bound to one `service:` principal and then
+  attempts real signing writes as a different principal through the unmodified
+  `_genesis.append_v6_genesis` and `_v6_writer.append_v6_event`. Both refuse with
+  `ACTOR_SIGNER_MISMATCH`, an auditor-role key refuses with `KEY_ROLE_NOT_PERMITTED`, and two
+  positive controls sign real events as the bound principal so the refusals cannot be a path
+  that never signs. The attempt runs against an ephemeral in-memory v6 epoch — a signing proof
+  has to write, and the probe may not write to the store named by `REGISTA_DSN` — which the
+  check declares in a new `basis` field rather than letting a reader assume the live store was
+  exercised. Scope limits are stated in the probe's source, its machine-readable report, and
+  `EPOCH-RESET.md` §5.1: this proves R-10's second sentence for project-v6 writers and the shared
+  ordinary trust-log boundary, not the first in its strongest form (private key material never
+  leaving the actor). Trust-domain Bootstrap A and the offline-root `trust delegate-registrar`
+  wrapper are explicitly excluded because their actor mapping happens before the temporary
+  keyset boundary; that attribution gap remains WI-320. No existing check, status or ID changed;
+  `probe_version` stays `1`.
+
 ## [0.7.1] — 2026-08-22
 
 ### Added
