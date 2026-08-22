@@ -1676,7 +1676,8 @@ def load_gate_evidence(path: str | None, *, dsn: str, project: str) -> GateEvide
                     check_id=check_id,
                 )
             if check_id == "regista.actor_boundary_signing" and (
-                check.get("claim") != "r10.no_arbitrary_principal.project_v6"
+                check.get("claim")
+                != "r10.project_v6.boundary_rejects_mismatched_binding"
                 or check.get("basis") != "behavioral_attempt_ephemeral_epoch"
                 or not isinstance(check.get("paths_proven"), list)
                 or not all(isinstance(item, str) for item in check["paths_proven"])

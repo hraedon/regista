@@ -201,7 +201,7 @@ def _gate_report(path, *, project: str, dsn: str = DSN, ok: bool = True,
                 "id": "regista.actor_boundary_signing",
                 "status": "pass",
                 "detail": "unbound principal refused",
-                "claim": "r10.no_arbitrary_principal.project_v6",
+                "claim": "r10.project_v6.boundary_rejects_mismatched_binding",
                 "basis": "behavioral_attempt_ephemeral_epoch",
                 "paths_proven": [
                     "regista._genesis.append_v6_genesis",

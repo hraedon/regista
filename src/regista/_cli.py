@@ -4800,7 +4800,7 @@ def main(argv: list[str] | None = None) -> None:
         "--principal",
         required=True,
         help="Canonical kind:subject principal id whose enrolment to adopt "
-        "(e.g. agent:mvmcc03)",
+        "(e.g. agent:example-host)",
     )
     keys_adopt.add_argument(
         "--key-id",
@@ -5312,7 +5312,7 @@ def main(argv: list[str] | None = None) -> None:
         required=True,
         help="Canonical kind:subject principal id that signs the genesis; must have a "
         "live, ACTIVE principal_key_enrolled in the trust log and its private key in "
-        "this host's keyset (e.g. agent:mvmcc03)",
+        "this host's keyset (e.g. agent:example-host)",
     )
     genesis_init.add_argument(
         "--gate-report",
