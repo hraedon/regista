@@ -143,6 +143,7 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   Mixed/ambiguous axes and non-authorizable entity kinds are rejected; no compatibility parsing is
   retained. Writer, verifier, replay, revocation, and max-use checks apply equally to delegated
   note events.
+
 ## [0.6.0] — 2026-08-19
 
 The 0.6.0 epoch-reset epoch: v6 signed envelopes, the Ed25519 trust domain,
