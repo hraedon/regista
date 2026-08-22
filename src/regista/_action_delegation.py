@@ -645,7 +645,6 @@ def action_delegation_revocation_authorized(
     if binding is None or getattr(binding, "transition", None) not in {
         "project_initialized",
         "project_cryptographic_epoch_started",
-        "principal_key_accepted",
     }:
         return False
     event_project = envelope.get("project_instance_id")
