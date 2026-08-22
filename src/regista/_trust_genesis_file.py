@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from ._errors import ErrorCode, RegistaError
+
+TRUST_GENESIS_PATH_ENV = "REGISTA_TRUST_GENESIS_PATH"
+
+
+def trust_genesis_path_from_env() -> str | None:
+    """Resolve the canonical pinned-genesis environment variable."""
+    return os.environ.get(TRUST_GENESIS_PATH_ENV)
 
 
 def load_trust_genesis_document(path: str | None) -> dict[str, Any] | None:
@@ -69,4 +77,8 @@ def _genesis_file_error(reason: str, message: str, path: str) -> RegistaError:
     )
 
 
-__all__ = ["load_trust_genesis_document"]
+__all__ = [
+    "TRUST_GENESIS_PATH_ENV",
+    "load_trust_genesis_document",
+    "trust_genesis_path_from_env",
+]

@@ -59,6 +59,8 @@ from ._ops import (
     WorkItemOps,
 )
 from ._principals import validate_principal_id as validate_principal_id
+from ._trust_genesis_file import load_trust_genesis_document as _load_trust_genesis_document
+from ._trust_genesis_file import trust_genesis_path_from_env as _trust_genesis_path_from_env
 from ._types import (
     ActorKind as ActorKind,
 )
@@ -129,6 +131,8 @@ from .principal_lifecycle import CustodyMode as CustodyMode
 from .principal_lifecycle import EffectiveReceipt as EffectiveReceipt
 from .principal_lifecycle import EffectiveReceiptStatus as EffectiveReceiptStatus
 from .principal_lifecycle import EnrollmentRequest as EnrollmentRequest
+from .principal_lifecycle import LifecycleAuthority as LifecycleAuthority
+from .principal_lifecycle import LifecycleAuthorityKind as LifecycleAuthorityKind
 from .principal_lifecycle import LifecycleContractError as LifecycleContractError
 from .principal_lifecycle import LifecycleDigest as LifecycleDigest
 from .principal_lifecycle import LifecycleErrorCode as LifecycleErrorCode
@@ -148,6 +152,17 @@ from .principal_lifecycle import RegistryReceiptStatus as RegistryReceiptStatus
 from .principal_lifecycle import RevocationRequest as RevocationRequest
 from .principal_lifecycle import RotationRequest as RotationRequest
 from .principal_lifecycle import canonical_lifecycle_digest as canonical_lifecycle_digest
+from .verification import NO_REFERENTS as NO_REFERENTS
+from .verification import Applicability as Applicability
+from .verification import BundleReferents as BundleReferents
+from .verification import EnvelopeVersion as EnvelopeVersion
+from .verification import TrustLogVerificationReport as TrustLogVerificationReport
+from .verification import VerificationPolicy as VerificationPolicy
+from .verification import VerificationResult as VerificationResult
+from .verification import bundle_referents as bundle_referents
+from .verification import chain_head_hash as chain_head_hash
+from .verification import make_verification_policy as make_verification_policy
+from .verification import verify_event_with_referents as verify_event_with_referents
 
 # Stream discipline (suite CLI contract v1 §1): unconfigured structlog prints
 # to *stdout*, so any CLI that embeds regista as a library gets its --json
@@ -195,6 +210,7 @@ class Regista(
         strict_roles: bool = False,
         strict_asymmetric: bool = False,
         approval_verifier: ApprovalVerifier | None = None,
+        trust_genesis_path: str | None = None,
         read_only: bool = False,
     ) -> None:
         """Connect to an existing project.
@@ -222,6 +238,10 @@ class Regista(
                 *unverified* and not sufficient for release qualification.
                 Release qualification requires a configured verifier so missing
                 or insufficient approval evidence fails closed.
+            trust_genesis_path: Operator-pinned trust-domain genesis document used
+                to resolve and append principal lifecycle authority. When omitted,
+                ``REGISTA_TRUST_GENESIS_PATH`` is consulted. Lifecycle commit
+                fails closed when no valid document is configured.
             read_only: Open a verify-path connection intended for use
                 against a read-only session (hot standby / restore). regista
                 will not issue DDL and replay runs in memory; the connect
@@ -249,6 +269,12 @@ class Regista(
             self._mgr.open()
             self._mgr.ensure_schema()
             self._keys = KeySet(hmac_key_path, strict_asymmetric=strict_asymmetric)
+            configured_genesis = (
+                trust_genesis_path
+                if trust_genesis_path is not None
+                else _trust_genesis_path_from_env()
+            )
+            self._trust_genesis_document = _load_trust_genesis_document(configured_genesis)
             self._metrics = Metrics(registry=prometheus_registry)
             self._project = project
             from ._review_validators import BUILTIN_REVIEW_VALIDATORS
@@ -297,6 +323,7 @@ class Regista(
         display_name: str | None = None,
         created_by: str | None = None,
         approval_verifier: ApprovalVerifier | None = None,
+        trust_genesis_path: str | None = None,
     ) -> Regista:
         """Create a new project: schema, migrations, and return a connected handle.
 
@@ -317,6 +344,8 @@ class Regista(
             created_by: Who created this project (for the catalog row).
             approval_verifier: Optional typed approval-evidence policy passed
                 through to the principal lifecycle facade (see ``__init__``).
+            trust_genesis_path: Operator-pinned trust-domain genesis document
+                passed through to the connected handle.
 
         Returns:
             A connected ``Regista`` instance.
@@ -361,6 +390,7 @@ class Regista(
             strict_roles=strict_roles,
             strict_asymmetric=strict_asymmetric,
             approval_verifier=approval_verifier,
+            trust_genesis_path=trust_genesis_path,
         )
 
     def _run_auto_partition(self) -> None:
@@ -384,6 +414,45 @@ class Regista(
             self._mgr.close()
             self._mgr = None  # type: ignore[assignment]
         log.info("regista.disconnected", project=self._project)
+
+    def verify_trust_log(self) -> TrustLogVerificationReport:
+        """Verify this project's pinned trust-genesis document and trust log.
+
+        The verification runs through regista's single authority-checked trust
+        log walk in a read-only transaction. A configured, valid pinned genesis
+        is mandatory; a missing pin raises instead of treating an empty or
+        unreachable log as verified. The returned report contains only typed
+        scalar evidence and never exposes the connection or an internal
+        manager.
+
+        Raises:
+            RegistaError: If the handle is closed, no pinned genesis is loaded,
+                or the genesis/trust-log chain fails verification.
+        """
+        self._require_open()
+        if self._trust_genesis_document is None:
+            raise RegistaError(
+                ErrorCode.TRUST_GENESIS_SCHEMA_INVALID,
+                "a pinned trust-genesis document is required to verify the trust log",
+                {"reason": "pinned_genesis_missing"},
+            )
+
+        from ._trust_log_writer import verify_trust_log_chain
+
+        assert self._mgr is not None
+        with self._mgr.transaction() as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            chain = verify_trust_log_chain(conn, self._trust_genesis_document)
+
+        return TrustLogVerificationReport(
+            verified=True,
+            # The chain walk counts every verified row, including genesis and
+            # root-authorised non-lifecycle transitions.  ``chain.verified``
+            # deliberately contains lifecycle transitions only.
+            event_count=chain.event_count,
+            trust_domain_id=chain.state.identity.trust_domain_id,
+            genesis_event_hash=chain.state.genesis_event_hash,
+        )
 
     def __enter__(self) -> Regista:
         return self
@@ -545,6 +614,7 @@ class Regista(
                 keys=self._keys,
                 metrics=self._metrics,
                 approval_verifier=self._approval_verifier,
+                trust_genesis_document=self._trust_genesis_document,
             )
         return self._principal_lifecycle_ops
 
