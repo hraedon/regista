@@ -161,6 +161,20 @@ class VerifiedLifecycle:
 class VerifiedChain:
     verified: tuple[VerifiedLifecycle, ...]
     state: TrustState
+    # Exact count of every row visited by the verified predecessor walk.  The
+    # ``verified`` tuple intentionally contains only lifecycle transitions, so
+    # it cannot be used as the stored trust-log event count (it omits genesis
+    # and root-authorised governance/delegation rows).
+    event_count: int
+
+
+@dataclass(frozen=True)
+class TrustLogAppend:
+    """The signed material a projection writer needs after an append."""
+
+    event_id: str
+    event_hash: str
+    occurred_at: datetime
 
 
 def _parse_envelope(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -729,7 +743,11 @@ def verify_trust_log_chain(
             current_custody=current_custody,
             current_custody_digest=current_custody_digest,
         )
-    return VerifiedChain(verified=tuple(verified_lifecycle), state=state)
+    return VerifiedChain(
+        verified=tuple(verified_lifecycle),
+        state=state,
+        event_count=len(order),
+    )
 
 
 def _revoke(entry: RegistrarState) -> RegistrarState:
@@ -1851,6 +1869,46 @@ def append_trust_log_event(
     key_id: str | None = None,
     occurred_at: datetime | None = None,
 ) -> str:
+    """Append one authority-checked trust-log event in its own transaction."""
+
+    with mgr.transaction() as conn:
+        appended = _append_trust_log_event_conn(
+            conn,
+            keys=keys,
+            genesis_document=genesis_document,
+            transition=transition,
+            payload=payload,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            principal_id=principal_id,
+            authority=authority,
+            key_id=key_id,
+            occurred_at=occurred_at,
+        )
+    return appended.event_id
+
+
+def _append_trust_log_event_conn(
+    conn: DictConn,
+    *,
+    keys: KeySet,
+    genesis_document: Mapping[str, Any],
+    transition: str,
+    payload: Mapping[str, Any] | None,
+    entity_kind: str,
+    entity_id: _uuid.UUID,
+    principal_id: str,
+    authority: str,
+    key_id: str | None = None,
+    occurred_at: datetime | None = None,
+) -> TrustLogAppend:
+    """Append a trust-log event inside a caller-owned transaction.
+
+    Principal lifecycle commit uses this seam so the signed authority event and
+    its rebuildable projection are atomic.  The public wrapper above retains the
+    historical ``event_id`` return shape for standalone callers.
+    """
+
     if transition not in TRUST_LOG_TRANSITIONS:
         raise RegistaError(
             ErrorCode.TRUST_LOG_PAYLOAD_INVALID,
@@ -1863,70 +1921,75 @@ def append_trust_log_event(
             "trust_domain_established is the genesis write; use write_trust_genesis",
             {"reason": "genesis_requires_dedicated_write"},
         )
-    with mgr.transaction() as conn:
-        head = _lock_global_chain_head(conn)
-        if head is None:
-            raise RegistaError(
-                ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED,
-                "the trust-log chain has no genesis; an ordinary append cannot precede it",
-                {"reason": "genesis_absent"},
-            )
-        key = _writer_key(keys, principal_id=principal_id, key_id=key_id)
-        state = replay_trust_state(conn, genesis_document)
-        admission_at = datetime.now(UTC)
-        if (
-            occurred_at is not None
-            and occurred_at.tzinfo is not None
-            and occurred_at.utcoffset() is not None
-        ):
-            admission_at = max(admission_at, occurred_at.astimezone(UTC))
-        _verify_possession_evidence(
-            conn,
-            payload,
-            transition,
-            mode="admission",
-            at_time=admission_at,
+    head = _lock_global_chain_head(conn)
+    if head is None:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED,
+            "the trust-log chain has no genesis; an ordinary append cannot precede it",
+            {"reason": "genesis_absent"},
         )
-        binding = _resolve_authority(
-            state, principal_id, authority, transition, payload, key
-        )
-        entity_seq = _max_entity_seq(conn, entity_kind, entity_id) + 1
-        previous_entity = _previous_entity_hash(conn, entity_kind, entity_id, entity_seq)
-        envelope = _build_envelope(
-            state.identity,
-            event_id=_uuid.uuid4(),
-            entity_kind=entity_kind,
-            entity_id=entity_id,
-            entity_seq=entity_seq,
-            actor_id=principal_id,
-            key_id=key.key_id,
-            key_binding_event_hash=binding,
-            transition=transition,
-            payload=payload,
-            producer=resolve_producer(),
-            occurred_at=occurred_at or datetime.now(UTC),
-            previous_entity_event_hash=previous_entity,
-            previous_project_event_hash="sha256:" + head.hex(),
-        )
-        try:
-            validate_v6_envelope(envelope)
-        except Exception as exc:
-            raise RegistaError(
-                ErrorCode.V6_ENVELOPE_INVALID,
-                f"the trust-log writer refused to sign an invalid envelope: {exc}",
-                {"reason": "envelope_invalid"},
-            ) from exc
-        signed = sign_v6_envelope(envelope, key.secret)
-        _self_verify(signed, state.identity, key.public_key)
-        return _write_row(
-            conn,
-            envelope=envelope,
-            signed=signed,
-            entity_kind=entity_kind,
-            entity_id=entity_id,
-            entity_seq=entity_seq,
-            previous_project_bytes=head,
-        )
+    key = _writer_key(keys, principal_id=principal_id, key_id=key_id)
+    state = replay_trust_state(conn, genesis_document)
+    admission_at = datetime.now(UTC)
+    if (
+        occurred_at is not None
+        and occurred_at.tzinfo is not None
+        and occurred_at.utcoffset() is not None
+    ):
+        admission_at = max(admission_at, occurred_at.astimezone(UTC))
+    _verify_possession_evidence(
+        conn,
+        payload,
+        transition,
+        mode="admission",
+        at_time=admission_at,
+    )
+    binding = _resolve_authority(
+        state, principal_id, authority, transition, payload, key
+    )
+    entity_seq = _max_entity_seq(conn, entity_kind, entity_id) + 1
+    previous_entity = _previous_entity_hash(conn, entity_kind, entity_id, entity_seq)
+    envelope = _build_envelope(
+        state.identity,
+        event_id=_uuid.uuid4(),
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        entity_seq=entity_seq,
+        actor_id=principal_id,
+        key_id=key.key_id,
+        key_binding_event_hash=binding,
+        transition=transition,
+        payload=payload,
+        producer=resolve_producer(),
+        occurred_at=occurred_at or datetime.now(UTC),
+        previous_entity_event_hash=previous_entity,
+        previous_project_event_hash="sha256:" + head.hex(),
+    )
+    try:
+        validate_v6_envelope(envelope)
+    except Exception as exc:
+        raise RegistaError(
+            ErrorCode.V6_ENVELOPE_INVALID,
+            f"the trust-log writer refused to sign an invalid envelope: {exc}",
+            {"reason": "envelope_invalid"},
+        ) from exc
+    signed = sign_v6_envelope(envelope, key.secret)
+    _self_verify(signed, state.identity, key.public_key)
+    event_id = _write_row(
+        conn,
+        envelope=envelope,
+        signed=signed,
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        entity_seq=entity_seq,
+        previous_project_bytes=head,
+    )
+    event_hash = "sha256:" + signed.event_hash.hex()
+    return TrustLogAppend(
+        event_id=event_id,
+        event_hash=event_hash,
+        occurred_at=_parse_ts(envelope["occurred_at"]),
+    )
 
 
 def _resolve_authority(

@@ -10,8 +10,9 @@ from ._integrity import REGISTA_VERSION
 # Schema version is the highest migration number. 045 drops the dead subsystem
 # tables (P1.4, on main); 046 adds the §5.9 projection columns to principal_keys and
 # 047 the v2 possession-challenge fields to lifecycle_challenges (both P2.2); 048 adds
-# the action-delegation credential store; 049 adds the v6 epoch-boundary guard trigger.
-SCHEMA_VERSION: int = 49
+# the action-delegation credential store; 049 adds the v6 epoch-boundary guard trigger;
+# 050 persists lifecycle authority bindings.
+SCHEMA_VERSION: int = 50
 # The envelope version this library WRITES (surfaced as "writable envelope" by
 # `regista version` / `regista doctor`). 0.6.0 removed the legacy write path:
 # post-genesis every ordinary event is stamped v6 by `_v6_writer.append_v6_event`

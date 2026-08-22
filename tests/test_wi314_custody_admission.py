@@ -49,13 +49,11 @@ pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
 
 
 @pytest.fixture(autouse=True)
-def _producer_env():
-    import os
-
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+def _producer_env(monkeypatch):
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "pytest")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
 
 # ---------------------------------------------------------------------------

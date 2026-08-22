@@ -625,11 +625,12 @@ def _check_principal_registration(
 
 
 def _operator_genesis_document() -> dict[str, Any] | None:
-    import os
+    from ._trust_genesis_file import (
+        load_trust_genesis_document,
+        trust_genesis_path_from_env,
+    )
 
-    from ._trust_genesis_file import load_trust_genesis_document
-
-    return load_trust_genesis_document(os.environ.get("REGISTRA_TRUST_GENESIS_PATH"))
+    return load_trust_genesis_document(trust_genesis_path_from_env())
 
 
 def _check_projection_consistent(
@@ -690,7 +691,7 @@ def _check_projection_consistent(
                 detail=(
                     f"trust log contains {event_count} stored event(s), but no "
                     "pinned genesis document is configured "
-                    "(REGISTRA_TRUST_GENESIS_PATH unset); the projection is "
+                    "(REGISTA_TRUST_GENESIS_PATH unset); the projection is "
                     "unverifiable"
                 ),
             )

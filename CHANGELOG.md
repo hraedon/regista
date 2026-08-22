@@ -4,6 +4,34 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-22
+
+### Added
+
+- **Signed principal-lifecycle authority binding.** Durable enrollment, routine
+  rotation, and revocation now resolve a live scoped registrar from the pinned
+  estate trust log; recovery rotation requires detached root-threshold signatures.
+  Trust-log append and the rebuildable principal-key projection share one
+  transaction, with durable idempotency and explicit dual-authorization seams.
+- **Canonical trust-genesis environment name.** `REGISTA_TRUST_GENESIS_PATH` is
+  the only supported environment variable for the operator-pinned trust-genesis
+  document.
+- **Public trust-log verification.** `Regista.verify_trust_log()` performs the
+  authority-checked trust-log walk in a read-only transaction and returns a
+  typed `TrustLogVerificationReport`; it fails closed when no pinned genesis is
+  configured.
+- **Public offline verification surface (`regista.verification`).** Embedding
+  consumers no longer need `regista._signing` / `regista._v6_referents` imports
+  to verify stored events correctly: `bundle_referents` presents a bundle's
+  manifest+events as v6 referent material (completeness derived from the
+  manifest, never asserted), `chain_head_hash` is the one version-aware
+  hash-chain link formula, and `verify_event_with_referents` returns the
+  structured verdict under caller-supplied key material with a required
+  `referents` keyword. Documented consumer contract: `INVALID` is a proven
+  defect, `UNVERIFIABLE` is an evidentiary gap (including the v6 genesis
+  bootstrap, whose authority is external to any bundle), and the two must not
+  be collapsed. See `docs/0.7.1/AMENDMENTS.md` §4.
+
 ## [0.7.0] — 2026-08-22
 
 ### Changed
