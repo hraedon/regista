@@ -24,6 +24,28 @@ MIGRATION_LOCK_ID: int = int.from_bytes(_RAW[:8], "big")
 if MIGRATION_LOCK_ID >= 2**63:
     MIGRATION_LOCK_ID -= 2**64
 
+# The 0.6.0 cutover amended migration 001 for fresh v6 schemas instead of
+# shipping equivalent forward DDL. Existing pre-v6 stores therefore retain the
+# original checksum. Accept only that exact published predecessor; migration 051
+# applies the missing DDL idempotently before the store can open a v6 epoch.
+_KNOWN_HISTORICAL_CHECKSUM_TRANSITIONS: dict[int, dict[bytes, bytes]] = {
+    1: {
+        bytes.fromhex(
+            "b8d3fbf2e07382d486b88c06cef493eb0dd474bd597f9ceb5d358f2acce9b49f"
+        ): bytes.fromhex(
+            "db8e3daeb85c962f4034af65b5bb7fae8929e9d8d6fb8015053b0703091cb373"
+        )
+    },
+    # 0.6.0 changed only migration 035's explanatory fail-closed comment.
+    35: {
+        bytes.fromhex(
+            "8dd73c22dd46efd797709b61daf811e4f939649e6def3f258bdd05801def2f31"
+        ): bytes.fromhex(
+            "6dd6ccc9ad9fb07a6196a94b8968588c5b7913f7fc28beb990aa69679a637a0f"
+        )
+    },
+}
+
 
 def _file_checksum(path: Path) -> bytes:
     """Return SHA-256 digest of a file's bytes."""
@@ -175,6 +197,22 @@ def _run_migrations_locked(mgr: ConnectionManager, lock_conn: Any) -> list[int]:
                 project=mgr.project,
                 version=version,
                 path=path.name,
+            )
+        elif current == _KNOWN_HISTORICAL_CHECKSUM_TRANSITIONS.get(version, {}).get(
+            stored
+        ):
+            with mgr.transaction() as conn:
+                conn.execute(
+                    "UPDATE _regista_migrations SET checksum = %s WHERE version = %s",
+                    [current, version],
+                )
+            log.warning(
+                "migrations.historical_checksum_advanced",
+                project=mgr.project,
+                version=version,
+                path=path.name,
+                stored_checksum=stored.hex(),
+                current_checksum=current.hex(),
             )
         elif stored != current:
             raise RegistaError(

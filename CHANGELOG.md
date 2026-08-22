@@ -4,6 +4,17 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-22
+
+### Fixed
+
+- **Existing pre-v6 schemas can advance without disabling migration integrity.**
+  The runner recognizes only the exact published predecessor checksums for the
+  two migration files changed during the 0.6.0 cutover, while unknown bytes
+  still fail with `MIGRATION_DRIFT`. Migration 051 applies the missing forward
+  DDL for nullable workflow identity and `project_identity`, including matching
+  archive-table nullability. Fresh v6 schemas remain idempotent.
+
 ## [0.7.1] — 2026-08-22
 
 ### Added

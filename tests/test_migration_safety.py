@@ -177,3 +177,144 @@ class TestChecksumDriftDetection:
             mig_mod._migrations_dir = original_migrations_dir
             mgr.close()
             _drop_schema(project)
+
+    def test_original_migration_one_checksum_advances_into_forward_ddl(self, tmp_path):
+        import regista._migrations as mig_mod
+
+        project = f"test_pre_v6_forward_{uuid.uuid4().hex[:8]}"
+        _create_schema(project)
+
+        real_migrations = Path(mig_mod._migrations_dir())
+        pre_051_migrations = tmp_path / "migrations"
+        shutil.copytree(real_migrations, pre_051_migrations)
+        (pre_051_migrations / "051_pre_v6_schema_forward_compat.sql").unlink()
+
+        original_migrations_dir = mig_mod._migrations_dir
+        mgr = _make_mgr(project)
+        try:
+            mig_mod._migrations_dir = lambda: pre_051_migrations
+            run_migrations(mgr)
+
+            with psycopg.connect(DSN, autocommit=True) as conn:
+                conn.execute(
+                    SQL("DROP TABLE {}.project_identity").format(Identifier(project))
+                )
+                conn.execute(
+                    SQL(
+                        "ALTER TABLE {}.events "
+                        "ALTER COLUMN workflow_name SET NOT NULL, "
+                        "ALTER COLUMN workflow_version SET NOT NULL"
+                    ).format(Identifier(project))
+                )
+                conn.execute(
+                    SQL(
+                        "ALTER TABLE {}.events_archive "
+                        "ALTER COLUMN workflow_name SET NOT NULL, "
+                        "ALTER COLUMN workflow_version SET NOT NULL"
+                    ).format(Identifier(project))
+                )
+                conn.execute(
+                    SQL(
+                        "UPDATE {}._regista_migrations SET checksum = %s "
+                        "WHERE version = 1"
+                    ).format(Identifier(project)),
+                    [
+                        bytes.fromhex(
+                            "b8d3fbf2e07382d486b88c06cef493eb0dd474bd597f9ceb5d358f2acce9b49f"
+                        )
+                    ],
+                )
+                conn.execute(
+                    SQL(
+                        "UPDATE {}._regista_migrations SET checksum = %s "
+                        "WHERE version = 35"
+                    ).format(Identifier(project)),
+                    [
+                        bytes.fromhex(
+                            "8dd73c22dd46efd797709b61daf811e4f939649e6def3f258bdd05801def2f31"
+                        )
+                    ],
+                )
+
+            mig_mod._migrations_dir = original_migrations_dir
+            assert run_migrations(mgr) == [51]
+
+            with psycopg.connect(DSN) as conn:
+                shape = conn.execute(
+                    "SELECT to_regclass(%s) IS NOT NULL AS has_identity, "
+                    "(SELECT is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = 'events' "
+                    "AND column_name = 'workflow_name') AS workflow_nullable, "
+                    "(SELECT is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = 'events_archive' "
+                    "AND column_name = 'workflow_name') AS archive_workflow_nullable",
+                    [f"{project}.project_identity", project, project],
+                ).fetchone()
+                assert shape is not None
+                assert shape[0] is True
+                assert shape[1] == "YES"
+                assert shape[2] == "YES"
+            assert run_migrations(mgr) == []
+        finally:
+            mig_mod._migrations_dir = original_migrations_dir
+            mgr.close()
+            _drop_schema(project)
+
+    def test_historical_checksum_does_not_accept_unknown_current_bytes(self, tmp_path):
+        import regista._migrations as mig_mod
+
+        project = f"test_pre_v6_tamper_{uuid.uuid4().hex[:8]}"
+        _create_schema(project)
+
+        real_migrations = Path(mig_mod._migrations_dir())
+        tampered_migrations = tmp_path / "migrations"
+        shutil.copytree(real_migrations, tampered_migrations)
+        target = tampered_migrations / "001_initial.sql"
+        target.write_bytes(target.read_bytes() + b"\n-- unexpected edit\n")
+
+        original_migrations_dir = mig_mod._migrations_dir
+        mgr = _make_mgr(project)
+        try:
+            mig_mod._migrations_dir = original_migrations_dir
+            run_migrations(mgr)
+            with psycopg.connect(DSN, autocommit=True) as conn:
+                conn.execute(
+                    SQL(
+                        "UPDATE {}._regista_migrations SET checksum = %s "
+                        "WHERE version = 1"
+                    ).format(Identifier(project)),
+                    [
+                        bytes.fromhex(
+                            "b8d3fbf2e07382d486b88c06cef493eb0dd474bd597f9ceb5d358f2acce9b49f"
+                        )
+                    ],
+                )
+
+            mig_mod._migrations_dir = lambda: tampered_migrations
+            with pytest.raises(RegistaError) as exc_info:
+                run_migrations(mgr)
+            assert exc_info.value.code == ErrorCode.MIGRATION_DRIFT
+        finally:
+            mig_mod._migrations_dir = original_migrations_dir
+            mgr.close()
+            _drop_schema(project)
+
+    def test_forward_migration_is_idempotent_on_fresh_schema(self):
+        project = f"test_v6_fresh_forward_{uuid.uuid4().hex[:8]}"
+        _create_schema(project)
+        mgr = _make_mgr(project)
+        try:
+            assert 51 in run_migrations(mgr)
+            assert run_migrations(mgr) == []
+            with psycopg.connect(DSN) as conn:
+                shape = conn.execute(
+                    "SELECT to_regclass(%s) IS NOT NULL, "
+                    "(SELECT is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = 'events_archive' "
+                    "AND column_name = 'workflow_name')",
+                    [f"{project}.project_identity", project],
+                ).fetchone()
+                assert shape == (True, "YES")
+        finally:
+            mgr.close()
+            _drop_schema(project)
