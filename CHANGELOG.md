@@ -4,6 +4,109 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **`regista genesis init` — the per-project v6 epoch opener (WI-325).** The per-project
+  analog of `trust init-log`, and the last step of the EPOCH-RESET ceremony that had no
+  CLI. `Regista.initialize_epoch()` was Python-API-only and consumed a finished,
+  ready-to-sign `project_initialized` envelope that nothing outside `tests/_v6_fixtures.py`
+  built. The new command assembles that envelope from **live trust-log facts** and
+  verifies every one of them before signing:
+
+  - the writing principal's active key and its key-introduction event hash come from
+    `verify_trust_log_chain`'s verified walk — not from a `principal_keys` row. Both
+    `principal_key_enrolled` and `principal_key_rotated` are valid referents, as
+    TRUST-DOMAIN §5.10 requires. The projection is consulted only as a cross-check: a row that
+    *contradicts* the chain is a refusal (`projection_disagrees_with_chain`), an absent
+    row is not (§5.9 rule 1 — the projection is never the authority).
+  - the enrolment's validity window must contain the genesis instant.
+  - a key **rotated away** is refused even though `principal_key_status` still reports it
+    `active`. `_trust_log_writer._classify_rotation` records only the incoming key as
+    active and never flips the outgoing one, so an is-it-active test alone would resolve
+    a superseded key and sign a project's genesis with it. Supersession is read off the
+    `principal_key_rotated` events, per principal, and `--key-id` is not a way past it.
+  - an evidence-grade write requires `--trust-checkpoint PATH`,
+    `--trust-publication-repo`, and an out-of-band `--trust-publication-commit` pin. The
+    §4.3 checkpoint must be exact canonical JCS, meet the current root threshold under
+    the checkpoint domain separator, reconcile its governance/domain/project/genesis/head/count
+    with the same verified walk, and appear exactly once in the clean, tracked, append-only
+    publication index. Registrar checkpoint authority remains refused until P2.4 implements
+    its distinct scope. A local **unsigned observation** remains available to `--dry-run`
+    only, is fixed at sequence 1, and is reported as `source: "derived"`, never as published.
+  - an operator-claimed `--trust-event-hash` / `--trust-domain-id` is **verified, never
+    taken**. This closes the hole at `_genesis.py:396-423`, where those fields were only
+    shape-checked, so a project could be opened with a self-consistent but fabricated
+    trust reference.
+  - `--gate-report PATH` is required: the EPOCH-RESET §5 first-write verdict, as the
+    `agent-suite genesis-gate --json` report. Regista validates the complete v1 report:
+    exact findings, components, owned checks, unique IDs, passing statuses, PostgreSQL
+    snapshot label, and target store/project binding. The report's JCS digest, snapshot,
+    store and project are embedded in signed `actor.metadata.genesis_gate`; replay or
+    alteration therefore changes the signed genesis bytes. Report v1 has no issuer
+    signature, so this authenticates the genesis actor's acceptance of the exact report,
+    not agent-suite as its cryptographic issuer. The writer still re-runs authoritative
+    first-write admission under the global-chain lock. There is no default-true and no
+    override.
+
+  Refusal semantics mirror `trust init-log`: verify-before-touch, a named
+  `GENESIS_ALREADY_WRITTEN` refusal for an already-opened epoch, a `--dry-run` that runs
+  every check (and reports the *same* would-refuse reason a real run would raise), and no
+  `--force`. A successful write is read back through `read_genesis()` and must re-verify.
+  Producer identity is a preflight refusal naming `REGISTA_PRODUCER_HARNESS` /
+  `_VERSION`, never a default.
+
+- **`regista keys adopt-enrollment` (WI-325).** `trust enroll` chooses the trust log's
+  `key_id` and nothing writes back to the local keyset, so a host can hold the enrolled
+  **private** key under a stale `key_id`/`principal_id` label and be unable to sign as
+  the identity the trust log knows. This finds the keyset entry whose **public-key bytes**
+  match the enrolment and rewrites exactly two label fields. It never generates, moves or
+  re-encodes private material; it refuses on ambiguity, on a `key_id` collision and on a
+  non-Ed25519 or non-active-actor entry; and it backs the file up, preserving mode,
+  before writing.
+
+  Both custody checks derive the public key from the entry's **effective secret** rather
+  than comparing `KeySet.describe_keys()` fingerprints. For an asymmetric entry
+  `KeyEntry.fingerprint()` digests the `public_key` *field* — a declaration, not a
+  derivation — so a fingerprint comparison cannot tell a correct entry from one that
+  declares the enrolled key while holding someone else's private half, and cannot notice
+  a secret changing at all. So: a **preflight** refuses before touching the file unless
+  the matched entry's secret derives the enrolled public key, and a **post-write**
+  self-check refuses if it no longer does and atomically restores the original from the
+  retained backup. A rollback failure is the distinct `partial: true`
+  `post_write_restore_failed` state, never an ordinary refusal. The check is not
+  hypothetical — `KeySet` resolves a per-key `REGISTA_HMAC_KEY_<KEY_ID>` override, so
+  renaming the key_id changes which variable supplies the secret.
+  `--dry-run` and idempotent re-runs write nothing.
+
+- `VerifiedChain` now reports `head_event_hash` and `event_count` from the same verified
+  walk that authenticated the chain, so a caller minting a checkpoint cannot read a head
+  the walk never authorised.
+
+- New error codes, each carrying a machine-readable `reason`:
+  `GENESIS_TRUST_REFERENCE_UNVERIFIED`, `GENESIS_GATE_EVIDENCE_INVALID`,
+  `KEYSET_ADOPTION_REFUSED`.
+
+- **`regista.actor_boundary_signing` — the genesis gate's fifth required check (WI-326).**
+  `regista invariants probe --json` now emits `regista.actor_boundary_signing`, the check
+  agent-suite's `genesis_gate` has required since WI-074 and whose absence kept the gate
+  `BLOCKED`. The operator contract demands a *behavioral* unbound-principal signing attempt
+  and rules out key-file or configuration inspection as evidence, so the check generates a
+  throwaway Ed25519 keyset holding one actor key bound to one `service:` principal and then
+  attempts real signing writes as a different principal through the unmodified
+  `_genesis.append_v6_genesis` and `_v6_writer.append_v6_event`. Both refuse with
+  `ACTOR_SIGNER_MISMATCH`, an auditor-role key refuses with `KEY_ROLE_NOT_PERMITTED`, and two
+  positive controls sign real events as the bound principal so the refusals cannot be a path
+  that never signs. The attempt runs against an ephemeral in-memory v6 epoch — a signing proof
+  has to write, and the probe may not write to the store named by `REGISTA_DSN` — which the
+  check declares in a new `basis` field rather than letting a reader assume the live store was
+  exercised. Scope limits are stated in the probe's source, its machine-readable report, and
+  `EPOCH-RESET.md` §5.1: this proves R-10's second sentence for project-v6 writers and the shared
+  ordinary trust-log boundary, not the first in its strongest form (private key material never
+  leaving the actor). Trust-domain Bootstrap A and the offline-root `trust delegate-registrar`
+  wrapper are explicitly excluded because their actor mapping happens before the temporary
+  keyset boundary; that attribution gap remains WI-320. No existing check, status or ID changed;
+  `probe_version` stays `1`.
+
 ## [0.7.1] — 2026-08-22
 
 ### Added
