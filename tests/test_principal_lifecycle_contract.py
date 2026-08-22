@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Any, cast
 
 import nacl.signing
 import pytest
@@ -54,7 +55,7 @@ def enrollment(keypair: tuple[nacl.signing.SigningKey, bytes]) -> EnrollmentRequ
         scheme="ed25519",
         custody_mode=CustodyMode.WINDOWS_LOCAL,
         reason="Initial project enrollment",
-        requested_authority="project-signer",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
         identity_binding_digest="sha256:identity-binding",
         protected_options=(("ticket", "KEY-42"), ("requires_step_up", "true")),
@@ -149,6 +150,34 @@ def test_prepare_rotation_binds_old_and_new_key(
     assert operation.public_key == enrollment.public_key
 
 
+@pytest.mark.parametrize("submit", ["rotation", "root"])
+def test_old_migration_row_without_new_key_id_is_typed_authority_mismatch(
+    enrollment: EnrollmentRequest,
+    submit: str,
+) -> None:
+    """Migration-050 legacy rows must not crash in detached authorization."""
+
+    source = PrincipalLifecycle("alpha", clock=MutableClock())
+    prepared = source.prepare_rotation(
+        RotationRequest(**enrollment.__dict__, old_key_id="pk_old"),
+        idempotency_key=f"idem-old-row-{submit}",
+    )
+    durable = PrincipalLifecycle("alpha", mgr=cast(Any, object()))
+    durable._operations[prepared.operation_id] = replace(
+        prepared,
+        state=LifecycleState.AWAITING_APPROVAL,
+        new_key_id=None,
+    )
+
+    with pytest.raises(LifecycleContractError) as exc_info:
+        if submit == "rotation":
+            durable.submit_rotation_authorization(prepared.operation_id, b"x" * 64)
+        else:
+            durable.submit_root_authorization(prepared.operation_id, [])
+
+    assert exc_info.value.code is LifecycleErrorCode.AUTHORITY_MISMATCH
+
+
 def test_prepare_revocation_requires_approval_but_not_possession() -> None:
     request = RevocationRequest(
         principal_id="service:deployer",
@@ -156,7 +185,7 @@ def test_prepare_revocation_requires_approval_but_not_possession() -> None:
         actor_id="entra:tenant:admin-456",
         key_id="pk_compromised",
         reason="Reported compromise",
-        requested_authority="security-admin",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
     )
     operation = PrincipalLifecycle("alpha", clock=MutableClock()).prepare_revocation(
@@ -408,4 +437,4 @@ def test_public_result_shapes_are_json_safe_and_versioned() -> None:
         reconciliation.to_dict(),
     ]
     encoded = json.dumps(payload)
-    assert encoded.count("regista.principal-lifecycle.v1-draft.1") == 4
+    assert encoded.count("regista.principal-lifecycle.v1-draft.2") == 4

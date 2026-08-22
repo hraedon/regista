@@ -732,14 +732,12 @@ class TestClaimLineagePropagationIntegration:
                 actor_kind="agent",
             )
             # Cross-lineage reviewer, no ack flag -> must pass.
+            monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "kimi-k2.5")
             monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "kimi")
             sub.transition(
                 wi.work_item_id, "adversarial_pass", "agent:kimi-agent",
                 actor_kind="agent",
-                payload={
-                    **REVIEW_NOTE,
-                    "reviewer_claims": {"model_lineage": "kimi"},
-                },
+                payload=REVIEW_NOTE,
             )
             assert sub.get_work_item(wi.work_item_id).current_state == "done"
         finally:

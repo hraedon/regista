@@ -134,6 +134,7 @@ def check_idempotency(
     transition: str | None = None,
     work_item_id: uuid.UUID | None = None,
     payload: dict[str, Any] | None = None,
+    entity_kind: str | None = None,
 ) -> Event | None:
     from ._contract import check_idempotency as _contract_check
 
@@ -145,6 +146,7 @@ def check_idempotency(
         return None
     return _contract_check(
         _row_to_event(row), actor_id, transition, work_item_id, payload=payload,
+        entity_kind=entity_kind,
     )
 
 
@@ -241,8 +243,8 @@ def _append_v6_through_writer(
     actor_id: str,
     actor_kind: str,
     actor_metadata: dict[str, Any] | None,
-    workflow_name: str,
-    workflow_version: int,
+    workflow_name: str | None,
+    workflow_version: int | None,
     transition: str | None,
     payload: dict[str, Any] | None,
     event_id: uuid.UUID,
@@ -250,6 +252,7 @@ def _append_v6_through_writer(
     key_id: str | None,
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     occurred_at: datetime | None = None,
+    producer: Any | None = None,
 ) -> Event:
     """Route one direct-SQL append through the real v6 writer.
 
@@ -288,7 +291,7 @@ def _append_v6_through_writer(
         transition=request.transition,
         actor_id=request.actor_id,
         actor_kind=request.actor_kind,
-        producer=resolve_producer(),
+        producer=producer if producer is not None else resolve_producer(),
         payload=request.payload,
         actor_metadata=request.actor_metadata,
         event_id=request.event_id,
@@ -354,6 +357,7 @@ def append_event(
             transition=transition,
             work_item_id=work_item_id,
             payload=_idem,
+            entity_kind=entity_kind,
         )
         if existing is not None:
             from ._event_store import _check_action_delegation_idempotency
@@ -420,6 +424,7 @@ def append_event(
         transition=transition,
         work_item_id=work_item_id,
         payload=_idem_payload,
+        entity_kind=entity_kind,
     )
     if existing is not None:
         from ._event_store import _check_action_delegation_idempotency
@@ -556,6 +561,7 @@ def append_event(
             transition=transition,
             work_item_id=work_item_id,
             payload=_idem_payload,
+            entity_kind=entity_kind,
         )
         if existing is not None:
             return existing
@@ -633,6 +639,7 @@ def _append_v6_transition(
     _key_id: str | None,
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...],
     occurred_at: datetime,
+    producer: Any | None,
 ) -> Event:
     """The v6 half of :func:`append_transition_event`.
 
@@ -661,6 +668,7 @@ def _append_v6_transition(
         transition=transition_name,
         work_item_id=work_item_id,
         payload=stored_payload if payload is not None else None,
+        entity_kind="work_item",
     )
     if existing is not None:
         from ._event_store import _check_action_delegation_idempotency
@@ -691,6 +699,7 @@ def _append_v6_transition(
         key_id=_key_id,
         action_delegation_credentials=action_delegation_credentials,
         occurred_at=occurred_at,
+        producer=producer,
     )
 
     merged_fields = wi_row["custom_fields"]
@@ -749,6 +758,7 @@ def append_transition_event(
     _key_id: str | None = None,
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     occurred_at: datetime | None = None,
+    producer: Any | None = None,
 ) -> Event:
     from ._genesis import admit_legacy_append, check_legacy_append
 
@@ -773,6 +783,7 @@ def append_transition_event(
             _key_id=_key_id,
             action_delegation_credentials=action_delegation_credentials,
             occurred_at=resolved_occurred_at,
+            producer=producer,
         )
 
     check_legacy_append(conn, writer="events.append_transition_event")
@@ -801,6 +812,7 @@ def append_transition_event(
         transition=transition_name,
         work_item_id=work_item_id,
         payload=stored_payload if payload is not None else None,
+        entity_kind="work_item",
     )
     if existing is not None:
         return existing
@@ -913,6 +925,7 @@ def append_transition_event(
             transition=transition_name,
             work_item_id=work_item_id,
             payload=stored_payload if payload is not None else None,
+            entity_kind="work_item",
         )
         if existing is not None:
             return existing

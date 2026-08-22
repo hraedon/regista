@@ -33,6 +33,29 @@ from ._verification import (
 
 log = structlog.get_logger()
 
+_EXPECTED_UNPINNED_BOOTSTRAP_TARGETS = {
+    "trust_domain_established": "trust_domain",
+    "project_cryptographic_epoch_started": "project",
+    "project_initialized": "project",
+}
+
+
+def _is_expected_unpinned_bootstrap(
+    *,
+    entity_kind: str | None,
+    transition: str | None,
+    applicability: Applicability,
+    reasons: tuple[FailureReason, ...],
+) -> bool:
+    """Recognize only the three legal externally anchored bootstrap events."""
+
+    return (
+        transition is not None
+        and _EXPECTED_UNPINNED_BOOTSTRAP_TARGETS.get(transition) == entity_kind
+        and applicability is Applicability.UNVERIFIABLE
+        and reasons == (FailureReason.KEY_BINDING_UNRESOLVED,)
+    )
+
 
 def drop_old_replay_tables(conn: DictConn, schema: str) -> None:
     """Drop stale replay tables from previous runs."""
@@ -395,6 +418,118 @@ class _ReplayHaltError(RegistaError):
         self.unverifiable = unverifiable
 
 
+def _verify_non_work_item_group(
+    events: list[dict[str, Any]],
+    *,
+    key_set: KeySet,
+    referents: ReferentResolver,
+    continue_on_revoked: bool,
+) -> tuple[int, int, int, bool]:
+    """Verify every event in a legal non-work-item entity group.
+
+    Non-work-item groups do not rebuild ``work_items_current``, but they are still
+    signed v6 entities and may carry the complete action-delegation contract. A
+    group is counted when every event survives strict row/envelope validation and
+    every delegated authorization is verified against the complete store material.
+    The expected unpinned bootstrap authority is the one deliberate exception:
+    its bytes are checked, but the external trust root is outside a default replay.
+    """
+
+    warnings = 0
+    chain_breaks = 0
+    unverifiable = 0
+    verified = True
+    previous: dict[str, Any] | None = None
+    for event in sorted(events, key=lambda item: item["event_seq"]):
+        chain_ok, chain_error = _verify_hash_chain(event, previous)
+        if not chain_ok:
+            chain_breaks += 1
+            verified = False
+            log.warning(
+                "replay.hash_chain_broken",
+                entity_kind=event.get("entity_kind"),
+                entity_id=str(event.get("entity_id")),
+                event_id=str(event["event_id"]),
+                event_seq=event["event_seq"],
+                detail=chain_error,
+            )
+
+        key_entry = None
+        unknown_key_skipped = False
+        try:
+            key_entry = key_set.verify_key_status(
+                event["key_id"],
+                event_timestamp=(
+                    event["timestamp"].isoformat() if event.get("timestamp") else None
+                ),
+            )
+        except RegistaError as exc:
+            if exc.code == ErrorCode.REVOKED_KEY_ID and continue_on_revoked:
+                key_entry = key_set.get_key(event["key_id"])
+                warnings += 1
+            elif exc.code == ErrorCode.UNKNOWN_KEY_ID and continue_on_revoked:
+                unknown_key_skipped = True
+                warnings += 1
+            else:
+                raise
+
+        if key_entry is None:
+            verified = False
+            unverifiable += 1
+        else:
+            verification = verify_event_strict(
+                EventRow.from_mapping(event),
+                keys=KeySetResolver(key_set),
+                referents=referents,
+                policy=DEFAULT_POLICY,
+            )
+            if verification.applicability is Applicability.INVALID:
+                raise _ReplayHaltError(
+                    f"Signature verification failed for event {event['event_id']} "
+                    f"at seq {event['event_seq']}: {verification.summary()}",
+                    warnings=warnings,
+                    chain_breaks=chain_breaks,
+                    unverifiable=unverifiable,
+                )
+            if not verification.accepted:
+                # A clean epoch's bootstrap event is intentionally not fully
+                # authenticated until the caller supplies the external trust
+                # and checkpoint pins.  That expected bootstrap gap is not an
+                # evidentiary gap in the replay report: this counter describes
+                # events that could not be checked at all, while the envelope,
+                # row and chain checks above have all run here.  Any other
+                # non-accepted result remains an unverified group finding.
+                expected_unpinned_bootstrap = _is_expected_unpinned_bootstrap(
+                    entity_kind=event.get("entity_kind"),
+                    transition=event.get("transition"),
+                    applicability=verification.applicability,
+                    reasons=verification.reasons,
+                )
+                if not expected_unpinned_bootstrap:
+                    verified = False
+                if FailureReason.ENVELOPE_ABSENT in verification.reasons:
+                    probe = probe_absent_envelope(
+                        EventRow.from_mapping(event), keys=KeySetResolver(key_set)
+                    )
+                    if probe is AbsentEnvelopeProbe.INCONSISTENT:
+                        raise _ReplayHaltError(
+                            f"Event {event['event_id']} at seq {event['event_seq']} "
+                            "has no canonical_envelope, and no envelope this row "
+                            "could have carried reproduces its retained signature: "
+                            "the row contradicts its own cryptographic material",
+                            warnings=warnings,
+                            chain_breaks=chain_breaks,
+                            unverifiable=unverifiable,
+                        )
+                if not expected_unpinned_bootstrap:
+                    unverifiable += 1
+        if unknown_key_skipped:
+            verified = False
+        previous = event
+
+    return warnings, chain_breaks, unverifiable, verified
+
+
 _EVENT_FIELDS = (
     "event_id, work_item_id, entity_kind, entity_id, hash_alg, "
     "event_seq, global_seq, actor_id, actor_kind, "
@@ -550,13 +685,14 @@ def _replay_inner(
     processed_wi_ids: set[Any] = set()
 
     def _handle_orphan_group(orphan_id: Any, orphan_evts: list[dict[str, Any]]) -> None:
-        nonlocal halted_count, total_warnings, non_work_item_groups
+        nonlocal halted_count, total_warnings, total_chain_breaks
+        nonlocal total_unverifiable, non_work_item_groups
 
         kinds = {e.get("entity_kind", "work_item") for e in orphan_evts}
-        # An entity kind outside the CLOSED six-value registry (V6-ENVELOPE.md
+        # An entity kind outside the CLOSED eight-value registry (V6-ENVELOPE.md
         # §1.2) is a refusal, not an extension point. It halts, and it halts
         # BEFORE the spec-legal branch below so that a fabricated kind cannot
-        # ride out on the tolerance that branch grants the five legal ones.
+        # ride out on the tolerance that branch grants to legal non-work-item kinds.
         unknown = sorted(kinds - V6_ENTITY_KINDS)
         if unknown:
             halted_count += 1
@@ -596,20 +732,44 @@ def _replay_inner(
                 )
                 return
             # A spec-legal non-work-item entity group: `project`, `principal`,
-            # `trust_domain`, `project_instance` or `workflow`. A v6 epoch's chain
-            # necessarily carries these, so this is the ORDINARY case and must be
-            # neither a halt nor a warning — it is counted, by name, in
-            # `ReplayReport.non_work_item_groups_verified`. Their chain links are
-            # already in the global hash-chain verification (every streamed event
-            # is, before it is grouped); what they have no part in is the
-            # work-item projection rebuild, because they have no
-            # `work_items_current` row.
-            non_work_item_groups += 1
+            # `trust_domain`, `project_instance`, `workflow`, `spec` or `note`.
+            # These events have no projection row, but they still pass the same
+            # strict row/envelope/referent verifier as work-item events.
+            try:
+                group_warnings, group_breaks, group_unverifiable, verified = (
+                    _verify_non_work_item_group(
+                        orphan_evts,
+                        key_set=key_set,
+                        referents=referents,
+                        continue_on_revoked=continue_on_revoked,
+                    )
+                )
+            except _ReplayHaltError as exc:
+                halted_count += 1
+                total_warnings += exc.warnings
+                total_chain_breaks += exc.chain_breaks
+                total_unverifiable += exc.unverifiable
+                log.error(
+                    "replay.non_work_item_verification_failed",
+                    entity_id=str(orphan_id),
+                    entity_kinds=sorted(kinds),
+                    error=str(exc),
+                )
+                store.add_report_entry(
+                    orphan_id, "halted", str(exc), exc.warnings, exc.chain_breaks
+                )
+                return
+            total_warnings += group_warnings
+            total_chain_breaks += group_breaks
+            total_unverifiable += group_unverifiable
+            if verified:
+                non_work_item_groups += 1
             log.info(
                 "replay.non_work_item_entity",
                 entity_id=str(orphan_id),
                 entity_kinds=sorted(kinds),
                 event_count=len(orphan_evts),
+                verified=verified,
             )
             return
         # WI-266: a created work item whose projection row is gone is the same

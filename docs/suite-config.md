@@ -11,6 +11,7 @@
 | `REGISTA_KEY_PATH` | Path to signing key-set JSON (or secret-backend ref) | Yes |
 | `REGISTA_REQUIRE_SSL` | Reject connections without SSL (`true`/`false`) | No (default `false`) |
 | `REGISTA_PROJECT` | Project (schema) slug — shared default; each tool may set its own `<TOOL>_PROJECT` | Yes |
+| `REGISTA_TRUST_GENESIS_PATH` | Operator-pinned signed trust-genesis document for lifecycle authority | No (lifecycle disabled when unset) |
 
 ### Deprecated Aliases (one-release)
 
@@ -18,8 +19,8 @@
 |----------|---------------|
 | `REGISTA_HMAC_KEY_PATH` | `REGISTA_KEY_PATH` |
 
-Aliases work in all resolution layers (env vars, suite.env files). They will
-be removed in the release after this one ships.
+The remaining alias works in all resolution layers (env vars, suite.env files).
+It will be removed in the release after this one ships.
 
 ## 2. Layered Resolution
 
@@ -321,14 +322,14 @@ CLI). `private_key_dir` is meaningful only for the `file` backend.
 ```json
 {
   "component": "regista",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "reachable": true,
-  "schema_version": 49,
+  "schema_version": 50,
   "projects": [{"name": "my_project"}],
   "checks": [
     {"name": "db:reachable", "status": "ok", "detail": "connected"},
-    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 49"},
-    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 49, envelope 6"},
+    {"name": "schema:my_project", "status": "ok", "detail": "Schema version 50"},
+    {"name": "version:schema", "status": "ok", "detail": "Library declares schema 50, envelope 6"},
     {"name": "version:signing_schemes", "status": "ok", "detail": "Available: ed25519, hmac-sha256"}
   ]
 }
@@ -371,8 +372,8 @@ pin against:
 ```json
 {
   "component": "regista",
-  "library_version": "0.6.0",
-  "schema_version": 49,
+  "library_version": "0.7.1",
+  "schema_version": 50,
   "canonical_workflow_version": "3",
   "envelope_version": 6,
   "canonical_workflow_hash": "sha256hex...",

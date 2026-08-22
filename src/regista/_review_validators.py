@@ -7,8 +7,9 @@ from ._lineage import (
     declared_model_lineage,
     event_has_v6_envelope,
     event_model_lineage,
+    reject_obsolete_reviewer_claims,
     require_canonical_reviewer_lineage,
-    require_present_canonical_reviewer_lineage,
+    require_v6_reviewer_model_lineage,
     reviewer_model_lineage,
 )
 
@@ -129,6 +130,10 @@ def _is_post_epoch(ctx: Any) -> bool:
     tolerant present-only reviewer-lineage check.
     """
     return any(event_has_v6_envelope(e) for e in getattr(ctx, "prior_events", ()))
+
+
+def _is_v6_review_context(ctx: Any) -> bool:
+    return _is_post_epoch(ctx) or getattr(ctx, "producer", None) is not None
 
 
 def _add_delegated_principal(
@@ -312,7 +317,10 @@ def _adversarial_pass_identities(prior_events: Iterable[Any]) -> set[str]:
 def adversarial_review(ctx: Any) -> None:
     from ._assurance import LineageRelation, review_lineage_relation
 
-    require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
+    if _is_v6_review_context(ctx):
+        reject_obsolete_reviewer_claims(getattr(ctx, "payload", None))
+    else:
+        require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
 
     params = getattr(ctx, "validator_params", None) or {}
     finding_only = params.get("finding_only", False)
@@ -347,18 +355,6 @@ def adversarial_review(ctx: Any) -> None:
         _require_review_note(ctx, "adversarial_review")
         return
 
-    # WI-307: this is the positive-verdict path, where reviewer lineage is
-    # consumed below for the cross-lineage distinctness decision. Inside the v6
-    # epoch the reviewer's lineage is carried ONLY in the signed role-specific
-    # payload (``reviewer_claims.model_lineage``, ``REVIEW-VERDICTS.md`` §2.2), so
-    # a verdict that omits it must fail closed here rather than let
-    # ``reviewer_model_lineage`` fall back to the producer/actor lineage and
-    # manufacture a cross-lineage claim the reviewer never signed. Pre-epoch
-    # (persisted legacy) verdicts keep the tolerant present-only check applied at
-    # the top of this validator.
-    if _is_post_epoch(ctx):
-        require_present_canonical_reviewer_lineage(getattr(ctx, "payload", None))
-
     author_ids, author_kinds, author_lineages, agent_author_undeclared = derive_authors(
         ctx.prior_events
     )
@@ -366,7 +362,11 @@ def adversarial_review(ctx: Any) -> None:
     _check_separation_of_duties(ctx, author_ids, "adversarial_review")
     _require_review_note(ctx, "adversarial_review")
 
-    reviewer_lineage = reviewer_model_lineage(ctx)
+    reviewer_lineage = (
+        require_v6_reviewer_model_lineage(ctx)
+        if _is_v6_review_context(ctx)
+        else reviewer_model_lineage(ctx)
+    )
     # WI-262: "is there an agent mind behind this review?" is not answered by
     # the proxy's actor_kind alone. A HUMAN proxy recording a pass on behalf of
     # an agent principal is an agent review with a human typing it, and the
@@ -429,7 +429,10 @@ def human_gate(
     require_human: bool = False,
     require_human_on_same_lineage: bool = False,
 ) -> None:
-    require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
+    if _is_v6_review_context(ctx):
+        reject_obsolete_reviewer_claims(getattr(ctx, "payload", None))
+    else:
+        require_canonical_reviewer_lineage(getattr(ctx, "payload", None))
 
     if require_human:
         if ctx.actor_kind != "human":

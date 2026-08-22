@@ -467,7 +467,7 @@ class TestEndToEndWithLifecycle:
             scheme="ed25519",
             custody_mode=CustodyMode.FILE,
             reason="initial enrollment",
-            requested_authority="admin",
+            requested_authority="registrar",
             policy_version="v1",
         )
         operation = lifecycle.prepare_enrollment(request, idempotency_key="enroll-alice-1")
@@ -516,7 +516,7 @@ class TestEndToEndWithLifecycle:
             scheme="ed25519",
             custody_mode=CustodyMode.FILE,
             reason="initial enrollment",
-            requested_authority="admin",
+            requested_authority="registrar",
             policy_version="v1",
         )
         operation = lifecycle.prepare_enrollment(request, idempotency_key="enroll-alice-wrongkey")

@@ -44,13 +44,11 @@ REGISTRAR = "service:registrar-1"
 
 
 @pytest.fixture(autouse=True)
-def _producer_env():
-    import os
-
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+def _producer_env(monkeypatch):
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "pytest")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
 
 def _fingerprint(pk: bytes) -> str:
@@ -138,7 +136,6 @@ def test_genesis_file_loaders_return_none_only_when_path_is_absent(tmp_path, mon
     from regista._doctor import _operator_genesis_document
 
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    monkeypatch.delenv("REGISTRA_TRUST_GENESIS_PATH", raising=False)
     assert _operator_genesis_document() is None
     assert _load_genesis_document(None) is None
 
@@ -171,10 +168,7 @@ def test_doctor_reports_configured_bad_genesis_before_empty_log_check(tmp_path, 
     from regista._doctor import _check_projection_consistent
 
     configured = tmp_path / "missing.json"
-    # WI-324: deliberately exercises the DEPRECATED spelling so the fallback stays
-    # covered; the canonical name is cleared so it cannot shadow it.
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    monkeypatch.setenv("REGISTRA_TRUST_GENESIS_PATH", str(configured))
+    monkeypatch.setenv("REGISTA_TRUST_GENESIS_PATH", str(configured))
     check = _check_projection_consistent(
         "postgresql://unused", "doctor_genesis_invalid", require_ssl=False
     )
@@ -189,10 +183,7 @@ def test_doctor_skips_empty_trust_log_with_valid_configured_genesis(tmp_path, mo
     fixture, handle, _key_file, project, _registrar = _env(tmp_path)
     configured = tmp_path / "trust-genesis.json"
     configured.write_text(json.dumps(fixture.document), encoding="utf-8")
-    # WI-324: deliberately exercises the DEPRECATED spelling so the fallback stays
-    # covered; the canonical name is cleared so it cannot shadow it.
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    monkeypatch.setenv("REGISTRA_TRUST_GENESIS_PATH", str(configured))
+    monkeypatch.setenv("REGISTA_TRUST_GENESIS_PATH", str(configured))
     try:
         check = _check_projection_consistent(DSN, project, require_ssl=False)
         assert check.status == "skip"
@@ -489,7 +480,6 @@ class TestVerifiedRebuild:
                 root_principal_id=ROOT,
             )
             monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-            monkeypatch.delenv("REGISTRA_TRUST_GENESIS_PATH", raising=False)
             check = _check_projection_consistent(DSN, project, require_ssl=False)
             assert check.status == "fail"
             assert "unverifiable" in check.detail

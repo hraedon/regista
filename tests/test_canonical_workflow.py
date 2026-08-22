@@ -177,11 +177,12 @@ def test_canonical_supports_mixed_agent_human_chain_to_done(
     sub.transition(aid, "submit_for_review", "agent:glm-agent", **glm)
 
     # A cross-lineage agent reviewer (kimi) passes the adversarial gate.
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "kimi-k2.5")
     monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "kimi")
     sub.transition(
         aid, "adversarial_pass", "agent:kimi-agent",
         actor_kind="agent", actor_metadata={"role": "agent"},
-        payload={**REVIEW_NOTE, "reviewer_claims": {"model_lineage": "kimi"}},
+        payload=REVIEW_NOTE,
     )
 
     # A human accepts (relaxed gate; the accepter is distinct from every author).

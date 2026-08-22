@@ -11,6 +11,7 @@ from psycopg.sql import SQL
 from ._connection import DictConn
 from ._contract import Jsonb
 from ._errors import ErrorCode, RegistaError
+from ._event_store import _check_create_idempotency
 from ._events import append_event, check_idempotency
 from ._keys import KeySet
 from ._types import Event, QueryPage, WorkflowDefinition, WorkItem
@@ -85,6 +86,7 @@ def create_work_item(
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
     key_id: str | None = None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -105,9 +107,50 @@ def create_work_item(
 
     validated_fields = validate_field_values(wf, work_item_type, custom_fields or {})
     validate_work_item_refs(conn, def_data, work_item_type, validated_fields)
+    initial_state = wf.initial_state
+
+    # Serialize retries that use the same caller-supplied event id. Without this
+    # lock two concurrent creates can both insert a projection row before the
+    # unique event-id constraint tells the second append that it was a retry.
+    lock_key = int.from_bytes(event_id.bytes[:8], "big", signed=False)
+    if lock_key >= 2**63:
+        lock_key -= 2**64
+    # PostgreSQL exposes the one-argument BIGINT form; using the first half of
+    # the UUID is sufficient for serialization (a collision only adds waiting).
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", [lock_key])
+
+    existing = check_idempotency(
+        conn, event_id, entity_kind="work_item"
+    )
+    if existing is not None:
+        existing = _check_create_idempotency(
+            existing,
+            workflow_name=workflow_name,
+            workflow_version=version,
+            work_item_type=work_item_type,
+            initial_state=initial_state,
+            custom_fields=validated_fields,
+            not_before=not_before,
+            actor_id=actor_id,
+            actor_kind=actor_kind,
+            actor_metadata=actor_metadata.value if actor_metadata is not None else None,
+            key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
+            source=conn,
+        )
+        assert existing is not None
+        wi_row = conn.execute(
+            SQL(f"SELECT {_WORK_ITEM_FIELDS} FROM work_items_current WHERE work_item_id = %s"),
+            [existing.work_item_id],
+        ).fetchone()
+        if wi_row is None:
+            raise RegistaError(
+                ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+                "the idempotent created event has no work-item projection row",
+            )
+        return _row_to_work_item(wi_row), existing
 
     work_item_id = uuid.uuid4()
-    initial_state = wf.initial_state
 
     try:
         conn.execute(
@@ -130,8 +173,24 @@ def create_work_item(
             ],
         )
     except psycopg.errors.UniqueViolation:
-        existing = check_idempotency(conn, event_id, transition="created")
+        existing = check_idempotency(conn, event_id, entity_kind="work_item")
         if existing is not None:
+            existing = _check_create_idempotency(
+                existing,
+                workflow_name=workflow_name,
+                workflow_version=version,
+                work_item_type=work_item_type,
+                initial_state=initial_state,
+                custom_fields=validated_fields,
+                not_before=not_before,
+                actor_id=actor_id,
+                actor_kind=actor_kind,
+                actor_metadata=actor_metadata.value if actor_metadata is not None else None,
+                key_id=key_id,
+                action_delegation_credentials=action_delegation_credentials,
+                source=conn,
+            )
+            assert existing is not None
             wi_row = conn.execute(
                 SQL(f"SELECT {_WORK_ITEM_FIELDS} FROM work_items_current WHERE work_item_id = %s"),
                 [existing.work_item_id],
@@ -158,6 +217,7 @@ def create_work_item(
         }),
         event_id=event_id,
         _key_id=key_id,
+        action_delegation_credentials=action_delegation_credentials,
     )
 
     wi_row = conn.execute(

@@ -6,8 +6,8 @@ not appear in actor.metadata, ``V6-ENVELOPE.md`` §1.8). The surviving invariant
 — an agent's claim counts it as an author for separation of duties, and a
 claimed, worked item's cross-lineage review passes only when the reviewer is
 genuinely distinct — carry forward over the v6 vehicles in
-``tests/test_wi305_v6_review_gate.py`` (author lineage via the process-level
-``producer`` block; reviewer lineage via the signed verdict payload's
-``reviewer_claims.model_lineage``) and ``tests/test_wi305_reviewer_lineage_payload.py``.
+``tests/test_wi305_v6_review_gate.py`` (author and reviewer lineage via the
+signed process-level ``producer`` block) and
+``tests/test_wi305_reviewer_lineage_payload.py``.
 Each retired node is recorded in ``tests/retired_tests_ledger.json``.
 """

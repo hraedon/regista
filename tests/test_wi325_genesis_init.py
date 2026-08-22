@@ -385,9 +385,8 @@ def _producer_env(monkeypatch):
     monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
     monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
     # The command resolves the pinned genesis from --genesis in these tests; an
-    # ambient pin (either spelling) must not shadow that.
+    # ambient pin must not shadow that.
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    monkeypatch.delenv("REGISTRA_TRUST_GENESIS_PATH", raising=False)
 
 
 @pytest.fixture(scope="module")

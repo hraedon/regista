@@ -279,6 +279,12 @@ def compute_assurance_level_from_dicts(
 ) -> AssuranceLevel:
     converted: list[SimpleNamespace] = []
     for e in events:
+        canonical_envelope = e.get("canonical_envelope")
+        if isinstance(canonical_envelope, str):
+            try:
+                canonical_envelope = bytes.fromhex(canonical_envelope)
+            except ValueError:
+                pass
         converted.append(
             SimpleNamespace(
                 transition=e.get("transition"),
@@ -287,6 +293,7 @@ def compute_assurance_level_from_dicts(
                 actor_metadata=e.get("actor_metadata"),
                 on_behalf_of=e.get("on_behalf_of"),
                 payload=e.get("payload"),
+                canonical_envelope=canonical_envelope,
                 scheme_id=e.get("scheme_id"),
             )
         )

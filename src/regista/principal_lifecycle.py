@@ -14,7 +14,7 @@ import hmac
 import secrets
 import struct
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -23,20 +23,7 @@ from typing import Any, ClassVar, Final, Protocol, assert_never
 import psycopg
 
 from ._connection import ConnectionManager, DictConn
-from ._contract import (
-    Jsonb as _Jsonb,
-)
-from ._contract import (
-    check_reserved_transition as _check_reserved_transition,
-)
-from ._contract import (
-    validate_entity_kind as _validate_entity_kind,
-)
-from ._contract import (
-    validate_mutation_params as _validate_mutation_params,
-)
-from ._event_store import PostgresEventStore as _PostgresEventStore
-from ._event_store import append_event as _store_append_event
+from ._errors import RegistaError
 from ._jcs import canonicalize
 from ._keys import KeySet
 from ._observability import Metrics
@@ -45,7 +32,6 @@ from ._principal_keys import (
     _apply_enrollment_projection,
     _apply_revocation_projection,
     _apply_rotation_projection,
-    _generate_key_id,
 )
 from ._principal_keys import (
     list_principal_keys_for_conn as _list_principal_keys_for_conn,
@@ -63,8 +49,12 @@ from ._trust_log import (
 from ._trust_log import (
     PRINCIPAL_KEY_ROTATED as _TRUST_LOG_PRINCIPAL_KEY_ROTATED,
 )
+from ._trust_log_writer import (
+    _append_trust_log_event_conn,
+    replay_trust_state,
+)
 
-CONTRACT_VERSION: Final[str] = "regista.principal-lifecycle.v1-draft.1"
+CONTRACT_VERSION: Final[str] = "regista.principal-lifecycle.v1-draft.2"
 # §5.5: enrolment through the 0.6.0 contract requires the v2 possession domain.
 POSSESSION_DOMAIN: Final[str] = "regista.principal-possession.v2"
 EFFECTIVE_DOMAIN: Final[str] = "regista.principal-effective.v1"
@@ -155,6 +145,8 @@ class LifecycleErrorCode(StrEnum):
     APPROVAL_EVIDENCE_REQUIRED = "approval_evidence_required"
     RECEIPT_OBSERVED_AT_INVALID = "receipt_observed_at_invalid"
     OPERATION_ALREADY_COMMITTED = "operation_already_committed"
+    AUTHORITY_REQUIRED = "authority_required"
+    AUTHORITY_MISMATCH = "authority_mismatch"
 
 
 class LifecycleContractError(Exception):
@@ -164,6 +156,39 @@ class LifecycleContractError(Exception):
         self.code = code
         self.message = message
         super().__init__(f"[{code}] {message}")
+
+
+class LifecycleAuthorityKind(StrEnum):
+    """The two authority roots permitted for principal lifecycle events."""
+
+    ROOT = "root"
+    REGISTRAR = "registrar"
+
+
+@dataclass(frozen=True)
+class LifecycleAuthority:
+    """The signed authority binding captured by a prepared operation.
+
+    ``key_binding_event_hash`` is the v6 envelope binding: the trust genesis
+    hash for root authority, or the exact ``registrar_delegated`` event hash
+    for registrar authority.  ``delegation_event_hash`` is the payload's
+    ``authorized_by`` field and is intentionally ``None`` for root authority.
+    """
+
+    authority: LifecycleAuthorityKind
+    principal_id: str
+    key_id: str
+    key_binding_event_hash: str
+    delegation_event_hash: str | None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "authority": self.authority.value,
+            "principal_id": self.principal_id,
+            "key_id": self.key_id,
+            "key_binding_event_hash": self.key_binding_event_hash,
+            "delegation_event_hash": self.delegation_event_hash,
+        }
 
 
 @dataclass(frozen=True)
@@ -189,11 +214,13 @@ class EnrollmentRequest:
     policy_version: str
     identity_binding_digest: str | None = None
     protected_options: tuple[tuple[str, str], ...] = ()
+    root_signatures: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
 class RotationRequest(EnrollmentRequest):
     old_key_id: str = ""
+    old_key_signature: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +234,7 @@ class RevocationRequest:
     policy_version: str
     identity_binding_digest: str | None = None
     protected_options: tuple[tuple[str, str], ...] = ()
+    root_signatures: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,8 +290,12 @@ class LifecycleOperation:
     scheme: str | None = None
     custody_mode: CustodyMode | None = None
     old_key_id: str | None = None
+    new_key_id: str | None = None
     identity_binding_digest: str | None = None
     protected_options: tuple[tuple[str, str], ...] = ()
+    authority: LifecycleAuthority | None = None
+    root_signatures: tuple[Mapping[str, Any], ...] = ()
+    old_key_signature: bytes | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -287,8 +319,14 @@ class LifecycleOperation:
             "scheme": self.scheme,
             "custody_mode": self.custody_mode.value if self.custody_mode else None,
             "old_key_id": self.old_key_id,
+            "new_key_id": self.new_key_id,
             "identity_binding_digest": self.identity_binding_digest,
             "protected_options": dict(self.protected_options),
+            "authority": self.authority.to_dict() if self.authority is not None else None,
+            "root_signatures": [dict(item) for item in self.root_signatures],
+            "old_key_signature": _encode(self.old_key_signature)
+            if self.old_key_signature is not None
+            else None,
         }
 
 
@@ -544,16 +582,12 @@ class PrincipalLifecycle:
     commit registry changes.  Without one it operates as a process-local
     contract foundation: prepare and verify work, but commit is unavailable.
 
-    .. caution::
-
-       **A rotation committed here is parse-valid but NOT authorised.** Its event
-       satisfies ``TRUST-DOMAIN.md`` §5.6's payload contract and replays correctly
-       through §5.9's projection rebuild, but it carries ``mode: "recovery"`` with
-       empty ``root_signatures`` — so a verifier reports ``root_threshold_not_met``
-       (Resolution 5 / D-8: recovery requires the current root threshold, and this
-       online ceremony cannot supply it). Collecting root signatures is Gate-2
-       wiring; until then treat a ceremony rotation as unauthorised for
-       verification purposes. Enrolments and revocations are unaffected.
+    Durable commits are fail-closed against the pinned trust-domain document. Routine
+    enrollment, rotation, and revocation resolve a live registrar delegation; recovery
+    rotation additionally requires detached signatures meeting the current root
+    threshold. The trust-log writer re-resolves that authority inside the commit
+    transaction, so revocation, expiry, scope changes, and key drift between prepare and
+    commit cannot be bypassed.
     """
 
     def __init__(
@@ -567,6 +601,7 @@ class PrincipalLifecycle:
         nonce_factory: Callable[[], str] | None = None,
         approval_verifier: ApprovalVerifier | None = None,
         effective_receipt_clock_skew: timedelta | None = None,
+        trust_genesis_document: Mapping[str, Any] | None = None,
     ) -> None:
         _require_text("project", project)
         self._project = project
@@ -574,6 +609,9 @@ class PrincipalLifecycle:
         self._keys = keys
         self._metrics = metrics
         self._approval_verifier = approval_verifier
+        self._trust_genesis_document = (
+            dict(trust_genesis_document) if trust_genesis_document is not None else None
+        )
         self._effective_receipt_clock_skew = (
             EFFECTIVE_RECEIPT_CLOCK_SKEW
             if effective_receipt_clock_skew is None
@@ -656,17 +694,32 @@ class PrincipalLifecycle:
         _require_text("key_id", request.key_id)
         _require_text("idempotency_key", idempotency_key)
         protected = _protected_options(request.protected_options)
+        existing = self._existing_durable_for_request(
+            LifecycleOperationType.REVOCATION,
+            request,
+            idempotency_key=idempotency_key,
+            old_key_id=request.key_id,
+            protected_options=protected,
+        )
+        if existing is not None:
+            return existing
+        created_at, expires_at = self._time_window(ttl)
+        authority = self._resolve_authority_binding(
+            LifecycleOperationType.REVOCATION,
+            request,
+            at=created_at,
+        )
         intent = _intent_digest(
             LifecycleOperationType.REVOCATION,
             self._project,
             request,
             old_key_id=request.key_id,
             protected_options=protected,
+            authority=authority,
         )
         existing = self._existing_idempotent(idempotency_key, intent)
         if existing is not None:
             return existing
-        created_at, expires_at = self._time_window(ttl)
         op_id = operation_id or str(uuid.uuid4())
         fields = _digest_fields(
             operation_id=op_id,
@@ -681,6 +734,7 @@ class PrincipalLifecycle:
             scheme=None,
             custody_mode=None,
             protected_options=protected,
+            authority=authority,
         )
         operation = LifecycleOperation(
             operation_id=op_id,
@@ -700,6 +754,8 @@ class PrincipalLifecycle:
             old_key_id=request.key_id,
             identity_binding_digest=request.identity_binding_digest,
             protected_options=protected,
+            authority=authority,
+            root_signatures=_normalize_root_signatures(request.root_signatures),
         )
         return self._remember(operation, intent)
 
@@ -806,6 +862,271 @@ class PrincipalLifecycle:
         self._operations[operation_id] = verified
         return verified
 
+    def rotation_authorization_bytes(self, operation_id: str) -> bytes:
+        """Return the exact bytes the superseded key must sign for a dual rotation."""
+
+        self._require_durable("rotation_authorization_bytes")
+        operation = self._operation(operation_id)
+        if operation.operation_type is not LifecycleOperationType.ROTATION:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "only rotation operations have old-key authorization bytes",
+            )
+        if operation.state not in {
+            LifecycleState.AWAITING_PROOF,
+            LifecycleState.AWAITING_APPROVAL,
+        }:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_OPERATION_STATE,
+                f"Operation {operation_id!r} is not awaiting possession or approval",
+            )
+        if (
+            operation.authority is None
+            or operation.authority.authority is not LifecycleAuthorityKind.REGISTRAR
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "dual old-key authorization requires registrar authority",
+            )
+        if operation.new_key_id is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "rotation has no prepared new key id",
+            )
+        from ._trust_log import old_key_signature_input
+
+        unsigned = replace(operation, old_key_signature=None)
+        return old_key_signature_input(
+            self._trust_log_payload(
+                unsigned,
+                key_id=operation.new_key_id,
+                allow_unsigned_rotation=True,
+            )
+        )
+
+    def submit_rotation_authorization(
+        self,
+        operation_id: str,
+        old_key_signature: bytes,
+    ) -> LifecycleOperation:
+        """Persist and verify the outgoing-key half of a dual rotation."""
+
+        self._require_durable("submit_rotation_authorization")
+        operation = self._operation(operation_id)
+        if operation.operation_type is not LifecycleOperationType.ROTATION:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "old-key authorization is valid only for rotation operations",
+            )
+        if operation.state is not LifecycleState.AWAITING_APPROVAL:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_OPERATION_STATE,
+                f"Operation {operation_id!r} is not awaiting approval",
+            )
+        if operation.new_key_id is None:
+            # Migration-050 rows created before deterministic replacement-key
+            # identity was added are still readable.  They must fail as a
+            # contract mismatch, not reach _trust_log_payload's internal
+            # assertion and crash the caller.
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "rotation has no prepared new key id",
+            )
+        if len(old_key_signature) != 64:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "old-key authorization must be a 64-byte Ed25519 signature",
+            )
+        if operation.old_key_signature is not None:
+            if hmac.compare_digest(operation.old_key_signature, old_key_signature):
+                return operation
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "the rotation already carries a different old-key authorization",
+            )
+        assert self._mgr is not None
+        assert self._trust_genesis_document is not None
+        assert operation.old_key_id is not None
+        try:
+            from ._trust_log import classify_rotation_authority, parse_principal_key_rotated
+
+            candidate = replace(operation, old_key_signature=old_key_signature)
+            payload = self._trust_log_payload(
+                candidate,
+                key_id=operation.new_key_id,
+            )
+            with self._mgr.transaction() as conn:
+                state = replay_trust_state(conn, self._trust_genesis_document)
+            old_public_key = state.principal_public_keys.get(
+                (operation.principal_id, operation.old_key_id)
+            )
+            parsed = parse_principal_key_rotated(payload)
+            classify_rotation_authority(
+                parsed,
+                governance=state.governance,
+                root_public_keys=state.root_public_keys,
+                payload=payload,
+                superseded_public_key=old_public_key,
+            )
+        except (RegistaError, psycopg.Error) as exc:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "the old-key rotation authorization was refused: "
+                f"{type(exc).__name__}",
+            ) from exc
+        with self._mgr.transaction() as conn:
+            updated_row = conn.execute(
+                "UPDATE lifecycle_operations SET old_key_signature = %s "
+                "WHERE operation_id = %s AND state = 'awaiting_approval' "
+                "AND old_key_signature IS NULL",
+                [old_key_signature, operation_id],
+            )
+            if updated_row.rowcount != 1:
+                row = conn.execute(
+                    "SELECT state, old_key_signature FROM lifecycle_operations "
+                    "WHERE operation_id = %s FOR UPDATE",
+                    [operation_id],
+                ).fetchone()
+                if row is None or row["state"] != "awaiting_approval":
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.INVALID_OPERATION_STATE,
+                        f"Operation {operation_id!r} is no longer awaiting approval",
+                    )
+                stored = row["old_key_signature"]
+                if stored is None or not hmac.compare_digest(bytes(stored), old_key_signature):
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_MISMATCH,
+                        "the rotation already carries a different old-key authorization",
+                    )
+        updated = replace(operation, old_key_signature=old_key_signature)
+        self._operations[operation_id] = updated
+        return updated
+
+    def root_authorization_bytes(self, operation_id: str) -> bytes:
+        """Return the bytes detached root signers must sign for recovery."""
+
+        self._require_durable("root_authorization_bytes")
+        operation = self._operation(operation_id)
+        if operation.operation_type is not LifecycleOperationType.ROTATION:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "only recovery rotation operations have root authorization bytes",
+            )
+        if (
+            operation.authority is None
+            or operation.authority.authority is not LifecycleAuthorityKind.ROOT
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "root authorization bytes require root authority",
+            )
+        if operation.new_key_id is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "rotation has no prepared new key id",
+            )
+        from ._trust_log import root_signature_input
+
+        unsigned = replace(operation, root_signatures=())
+        return root_signature_input(
+            self._trust_log_payload(
+                unsigned,
+                key_id=operation.new_key_id,
+                allow_unsigned_rotation=True,
+            )
+        )
+
+    def submit_root_authorization(
+        self,
+        operation_id: str,
+        root_signatures: Sequence[Mapping[str, Any]],
+    ) -> LifecycleOperation:
+        """Persist detached root signatures for a recovery rotation."""
+
+        self._require_durable("submit_root_authorization")
+        operation = self._operation(operation_id)
+        if operation.operation_type is not LifecycleOperationType.ROTATION:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "root authorization is valid only for rotation operations",
+            )
+        if operation.state is not LifecycleState.AWAITING_APPROVAL:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_OPERATION_STATE,
+                f"Operation {operation_id!r} is not awaiting approval",
+            )
+        if operation.new_key_id is None:
+            # See submit_rotation_authorization: old durable rows are a typed
+            # authority mismatch, never an assertion failure in payload build.
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "rotation has no prepared new key id",
+            )
+        candidate_signatures = _normalize_root_signatures(root_signatures)
+        if operation.root_signatures:
+            if _normalize_root_signatures(operation.root_signatures) == candidate_signatures:
+                return operation
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "the rotation already carries different root authorization",
+            )
+        if (
+            operation.authority is None
+            or operation.authority.authority is not LifecycleAuthorityKind.ROOT
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "root authorization requires root authority",
+            )
+        assert self._mgr is not None
+        assert self._trust_genesis_document is not None
+        try:
+            from ._trust_log import verify_root_threshold
+
+            candidate = replace(operation, root_signatures=candidate_signatures)
+            payload = self._trust_log_payload(candidate, key_id=operation.new_key_id)
+            with self._mgr.transaction() as conn:
+                state = replay_trust_state(conn, self._trust_genesis_document)
+            verify_root_threshold(payload, state.governance, state.root_public_keys)
+        except (RegistaError, psycopg.Error) as exc:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "the detached root authorization was refused: " f"{type(exc).__name__}",
+            ) from exc
+        with self._mgr.transaction() as conn:
+            updated_row = conn.execute(
+                "UPDATE lifecycle_operations SET root_signatures = %s "
+                "WHERE operation_id = %s AND state = 'awaiting_approval' "
+                "AND root_signatures = '[]'::jsonb",
+                [psycopg.types.json.Jsonb(list(candidate_signatures)), operation_id],
+            )
+            if updated_row.rowcount != 1:
+                row = conn.execute(
+                    "SELECT state, root_signatures FROM lifecycle_operations "
+                    "WHERE operation_id = %s FOR UPDATE",
+                    [operation_id],
+                ).fetchone()
+                if row is None or row["state"] != "awaiting_approval":
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.INVALID_OPERATION_STATE,
+                        f"Operation {operation_id!r} is no longer awaiting approval",
+                    )
+                stored_raw = row["root_signatures"]
+                stored = (
+                    _normalize_root_signatures(stored_raw)
+                    if isinstance(stored_raw, list)
+                    and all(isinstance(item, dict) for item in stored_raw)
+                    else ()
+                )
+                if stored != candidate_signatures:
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_MISMATCH,
+                        "the rotation already carries different root authorization",
+                    )
+        updated = replace(operation, root_signatures=candidate_signatures)
+        self._operations[operation_id] = updated
+        return updated
+
     def get_operation(self, operation_id: str) -> LifecycleOperation:
         return self._operation(operation_id)
 
@@ -822,6 +1143,31 @@ class PrincipalLifecycle:
                 LifecycleErrorCode.INVALID_OPERATION_STATE,
                 f"Operation {operation_id!r} is not awaiting approval",
             )
+        if operation.operation_type is LifecycleOperationType.ROTATION:
+            authority = operation.authority
+            if authority is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_REQUIRED,
+                    "rotation approval requires a signed authority binding",
+                )
+            if (
+                authority.authority is LifecycleAuthorityKind.REGISTRAR
+                and operation.old_key_signature is None
+            ):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "submit the superseded key's authorization before approving a "
+                    "registrar rotation",
+                )
+            if (
+                authority.authority is LifecycleAuthorityKind.ROOT
+                and not operation.root_signatures
+            ):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "submit detached root authorization before approving a recovery "
+                    "rotation",
+                )
         if not hmac.compare_digest(approval.approval_digest, operation.digest.value):
             raise LifecycleContractError(
                 LifecycleErrorCode.APPROVAL_DIGEST_MISMATCH,
@@ -890,18 +1236,6 @@ class PrincipalLifecycle:
         assert self._keys is not None
         transition = self._transition_for(operation.operation_type)
         entity_id = _principal_entity_id(operation.principal_id)
-        event_id = uuid.uuid4()
-        # §5.5/§5.6/§5.7-shaped payload. The Plan-026 shape this replaces carried
-        # neither the public key bytes (Defect A) nor a §5.3 transition, so the
-        # events were unusable by §5.9's rebuild. The key_id is minted HERE and
-        # handed to the applier, so the event names the key it created rather than
-        # the applier inventing one the event does not mention.
-        new_key_id = (
-            None
-            if operation.operation_type is LifecycleOperationType.REVOCATION
-            else _generate_key_id()
-        )
-        payload = self._trust_log_payload(operation, key_id=new_key_id)
         with self._mgr.transaction() as conn:
             existing_row = conn.execute(
                     "SELECT state, receipt_key_id, committed_at FROM lifecycle_operations "
@@ -928,37 +1262,55 @@ class PrincipalLifecycle:
                     LifecycleErrorCode.INVALID_OPERATION_STATE,
                     f"Operation {operation_id!r} is not approved",
                 )
-            _validate_entity_kind("principal")
-            _validate_mutation_params(
-                actor_id=operation.actor_id,
-                actor_kind="system",
-                event_id=event_id,
-            )
-            _check_reserved_transition(transition)
-            store = _PostgresEventStore(conn, self._keys)
-            # The event is appended FIRST: its hash is what the projection applier
-            # requires (§5.9 rule 2), so the registry row cannot exist without the
-            # signed event it projects. Before P2.2 the row was written first and the
-            # event second, which is why three callers could skip the event entirely.
-            appended = _store_append_event(
-                store,
-                work_item_id=entity_id,
-                actor_id=operation.actor_id,
-                actor_kind="system",
-                actor_metadata=None,
-                workflow_name="",
-                workflow_version=0,
-                transition=transition,
-                payload=_Jsonb(payload),
-                event_id=event_id,
-                key_set=self._keys,
-                entity_kind="principal",
-            )
+            if self._trust_genesis_document is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_REQUIRED,
+                    "a pinned trust-genesis document is required before a principal "
+                    "lifecycle operation can commit",
+                )
+            authority = operation.authority
+            if authority is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_REQUIRED,
+                    "the prepared lifecycle operation has no signed authority binding",
+                )
+            new_key_id = operation.new_key_id
+            if operation.operation_type is not LifecycleOperationType.REVOCATION:
+                if new_key_id is None:
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_MISMATCH,
+                        "the prepared lifecycle operation has no deterministic new key id",
+                    )
+            payload = self._trust_log_payload(operation, key_id=new_key_id)
+            # The trust-log event is appended FIRST: its hash is the source
+            # evidence the projection applier requires (§5.9 rule 2).  This
+            # low-level seam deliberately shares this transaction, so a signed
+            # authority event and its projection cannot diverge.
+            try:
+                appended = _append_trust_log_event_conn(
+                    conn,
+                    keys=self._keys,
+                    genesis_document=self._trust_genesis_document,
+                    transition=transition,
+                    payload=payload,
+                    entity_kind="principal",
+                    entity_id=entity_id,
+                    principal_id=operation.actor_id,
+                    authority=authority.authority.value,
+                    key_id=authority.key_id,
+                    occurred_at=self._now(),
+                )
+            except RegistaError as exc:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "the signed lifecycle authority was refused by the trust log: "
+                    f"{exc}",
+                ) from exc
             entry = self._commit_key(
                 conn,
                 operation,
-                source_event_hash=_lifecycle_event_hash(appended),
-                occurred_at=appended.timestamp,
+                source_event_hash=appended.event_hash,
+                occurred_at=appended.occurred_at,
                 payload=payload,
                 key_id=new_key_id,
             )
@@ -1332,6 +1684,117 @@ class PrincipalLifecycle:
                 f"{method_name} requires a durable backend (ConnectionManager)",
             )
 
+    def _resolve_authority_binding(
+        self,
+        operation_type: LifecycleOperationType,
+        request: EnrollmentRequest | RevocationRequest,
+        *,
+        at: datetime,
+    ) -> LifecycleAuthority | None:
+        """Resolve and pin the signed authority for a durable operation.
+
+        The operation actor is also the signer of the trust-log event.  A
+        registrar binding therefore has to resolve twice: first here, so the
+        prepared digest names the exact credential, and again in the append
+        transaction, so revocation/expiry/redelegation between prepare and
+        commit fails closed.
+        """
+
+        if not self._durable:
+            return None
+        if self._trust_genesis_document is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                "a pinned trust-genesis document is required to prepare a durable "
+                "principal lifecycle operation",
+            )
+        assert self._mgr is not None
+        assert self._keys is not None
+        try:
+            authority_kind = LifecycleAuthorityKind(request.requested_authority)
+        except ValueError as exc:
+            raise LifecycleContractError(
+                LifecycleErrorCode.INVALID_REQUEST,
+                "requested_authority must be 'root' or 'registrar'",
+            ) from exc
+        if (
+            authority_kind is LifecycleAuthorityKind.ROOT
+            and operation_type is not LifecycleOperationType.ROTATION
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "root authority is reserved for recovery rotation; enrollment and "
+                "revocation require a scoped registrar",
+            )
+        try:
+            key_entry = self._keys.resolve_signing_key(request.actor_id)
+            with self._mgr.transaction() as conn:
+                state = replay_trust_state(conn, self._trust_genesis_document)
+        except (RegistaError, psycopg.Error) as exc:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                "the live signed trust authority could not be resolved: "
+                f"{type(exc).__name__}",
+            ) from exc
+
+        if key_entry.public_key is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                f"authority key {key_entry.key_id!r} has no public key",
+            )
+        key_fingerprint = key_entry.fingerprint()
+        if authority_kind is LifecycleAuthorityKind.ROOT:
+            if key_fingerprint not in state.governance.signer_fingerprints:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    f"actor {request.actor_id!r} is not signed by a current root key",
+                )
+            return LifecycleAuthority(
+                authority=authority_kind,
+                principal_id=request.actor_id,
+                key_id=key_entry.key_id,
+                key_binding_event_hash=state.genesis_event_hash,
+                delegation_event_hash=None,
+            )
+
+        registrar = state.registrars.get(request.actor_id)
+        if registrar is None or registrar.revoked:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                f"actor {request.actor_id!r} has no live signed registrar delegation",
+            )
+        if registrar.key_id != key_entry.key_id or registrar.public_key != key_entry.public_key:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                f"actor {request.actor_id!r} is not using the delegated registrar key",
+            )
+        transition = self._transition_for(operation_type)
+        if transition not in registrar.scopes:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                f"registrar delegation does not cover {transition!r}",
+            )
+        if not registrar.not_before <= at < registrar.not_after:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                "the registrar delegation is outside its validity window",
+            )
+        if (
+            registrar.max_operations is not None
+            and registrar.operations_used >= registrar.max_operations
+        ):
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                "the registrar delegation has exhausted max_operations",
+            )
+        return LifecycleAuthority(
+            authority=authority_kind,
+            principal_id=request.actor_id,
+            key_id=key_entry.key_id,
+            key_binding_event_hash=registrar.delegated_event_hash,
+            delegation_event_hash=registrar.delegated_event_hash,
+        )
+
     #: §5.5 custody.declared_backend for each lifecycle custody mode. An unmapped
     #: mode declares "operator" — an unverified claim either way (§11 obligation 2).
     _CUSTODY_BACKEND_BY_MODE: ClassVar[dict[CustodyMode, str]] = {
@@ -1341,7 +1804,11 @@ class PrincipalLifecycle:
     }
 
     def _trust_log_payload(
-        self, operation: LifecycleOperation, *, key_id: str | None
+        self,
+        operation: LifecycleOperation,
+        *,
+        key_id: str | None,
+        allow_unsigned_rotation: bool = False,
     ) -> dict[str, Any]:
         """Build the §5.5 / §5.6 / §5.7 payload for a committed operation.
 
@@ -1350,11 +1817,10 @@ class PrincipalLifecycle:
         validly the commit fails here rather than writing an event that would later
         read as divergence.
 
-        The one deliberate softness: a pre-genesis project has no trust domain, so
-        the payload cannot be §5.5-valid. Rather than raise a new error and change
-        the recorded failure form of the epoch-blocked commit tests, the unvalidated
-        payload is returned and the append refuses immediately afterwards with
-        GENESIS_REQUIRED — which is the honest reason and the one already recorded.
+        Durable callers have already supplied and validated the pinned trust-genesis
+        document during preparation. A non-durable caller has no commit path, so this
+        helper remains useful only for the contract foundation and does not weaken
+        durable authority admission.
         """
         from ._trust_log import (
             POSSESSION_DOMAIN_V2,
@@ -1364,7 +1830,11 @@ class PrincipalLifecycle:
         )
 
         trust_domain_id = self._trust_domain_id()
-        now = _format_time(self._now())
+        # The prepared operation's creation time is part of its immutable digest.
+        # Authorization bytes must remain stable between preparation and commit;
+        # using a fresh clock value here would make an old-key/root signature
+        # collected before commit unverifiable at commit time.
+        now = _format_time(operation.created_at)
 
         if operation.operation_type is LifecycleOperationType.REVOCATION:
             assert operation.old_key_id is not None
@@ -1392,8 +1862,7 @@ class PrincipalLifecycle:
                 },
                 "authorized_by": self._authorized_by(operation),
             }
-            if trust_domain_id is not None:
-                parse_principal_key_revoked(payload)
+            parse_principal_key_revoked(payload)
             return payload
 
         assert operation.public_key is not None
@@ -1437,44 +1906,77 @@ class PrincipalLifecycle:
             "supersedes_key_id": operation.old_key_id,
         }
         if operation.operation_type is LifecycleOperationType.ROTATION:
-            # §5.6 dual authorization. This ceremony proves possession of the NEW
-            # key, not the outgoing one, so it cannot assert mode "dual"; it records
-            # the authority it actually had. Recovery requires the current root
-            # threshold (Resolution 5 / D-8), which the online ceremony cannot
-            # supply — so root_signatures is empty and a verifier will refuse it
-            # until the ceremony collects them. Left visible rather than faked.
-            #
-            # NB4 (P2.2 review) — KNOWN WORKING STATE, recorded not hidden: a
-            # rotation emitted here is parse-valid but NOT verifiable. It will
-            # satisfy parse_principal_key_rotated and the §5.9 rebuild, and it will
-            # fail classify_rotation_authority (root_threshold_not_met) because no
-            # root signature is present. Collecting root signatures for a rotation
-            # is P1.7/Gate-2 wiring; until then a ceremony rotation must be treated
-            # as unauthorised for verification purposes.
-            payload["dual_authorization"] = {
-                "old_key_signature": None,
-                "mode": "recovery",
-                "recovery_reason": "custody-migration",
-            }
-            payload["root_signatures"] = []
-            if trust_domain_id is not None:
-                parse_principal_key_rotated(payload)
-        elif trust_domain_id is not None:
+            authority = operation.authority
+            if authority is None:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_REQUIRED,
+                    "rotation has no signed authority binding",
+                )
+            if authority.authority is LifecycleAuthorityKind.REGISTRAR:
+                if operation.old_key_signature is None and not allow_unsigned_rotation:
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_REQUIRED,
+                        "registrar rotation requires a signature from the superseded key",
+                    )
+                payload["dual_authorization"] = {
+                    "old_key_signature": (
+                        _encode(operation.old_key_signature)
+                        if operation.old_key_signature is not None
+                        else None
+                    ),
+                    "mode": "dual",
+                    "recovery_reason": None,
+                }
+                payload["root_signatures"] = []
+            else:
+                if not operation.root_signatures and not allow_unsigned_rotation:
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_REQUIRED,
+                        "root recovery rotation requires detached root signatures",
+                    )
+                payload["dual_authorization"] = {
+                    "old_key_signature": None,
+                    "mode": "recovery",
+                    "recovery_reason": "custody-migration",
+                }
+                payload["root_signatures"] = [
+                    dict(item)
+                    for item in _normalize_root_signatures(operation.root_signatures)
+                ]
+            validation_payload = payload
+            if (
+                allow_unsigned_rotation
+                and authority.authority is LifecycleAuthorityKind.REGISTRAR
+                and operation.old_key_signature is None
+            ):
+                # The frozen parser correctly requires a non-null signature in a
+                # committed ``mode: dual`` payload.  Authorization bytes are
+                # collected before that signature exists, however.  Validate the
+                # same shape with a throwaway 64-byte value; the signing-input
+                # helper canonicalizes this field back to null, so the placeholder
+                # can never escape into a signed or persisted payload.
+                validation_payload = dict(payload)
+                dual = dict(validation_payload["dual_authorization"])
+                dual["old_key_signature"] = _encode(b"\x00" * 64)
+                validation_payload["dual_authorization"] = dual
+            parse_principal_key_rotated(validation_payload)
+        else:
             parse_principal_key_enrolled(payload)
         return payload
 
     def _authorized_by(self, operation: LifecycleOperation) -> dict[str, Any]:
-        """§5.5 ``authorized_by``, from the authority the operation requested."""
-        authority = "root" if operation.requested_authority == "root" else "registrar"
+        """Build ``authorized_by`` from the verified prepared binding."""
+        binding = operation.authority
+        if binding is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                "the lifecycle operation has no signed authority binding",
+            )
         return {
-            "authority": authority,
-            "principal_id": operation.actor_id,
-            "key_id": operation.old_key_id or "pk_lifecycle",
-            # A registrar authorisation must name its delegation event (§5.4). This
-            # ceremony has no registrar delegation to name, so a non-root operation
-            # is reported with a null hash and the §5.5 parser refuses it — the
-            # honest outcome until registrar delegation is wired (P1.7/Gate 2).
-            "delegation_event_hash": None,
+            "authority": binding.authority.value,
+            "principal_id": binding.principal_id,
+            "key_id": binding.key_id,
+            "delegation_event_hash": binding.delegation_event_hash,
         }
 
     def _committed_possession(
@@ -1519,37 +2021,18 @@ class PrincipalLifecycle:
         )
 
     def _trust_domain_id(self) -> str | None:
-        """The project's trust domain, from ``project_identity`` (written by genesis).
-
-        ``None`` before genesis. That is not an error here: ``commit()`` cannot
-        append an ordinary event in a pre-genesis project anyway (GENESIS_REQUIRED),
-        so the append refuses first and reports the real reason.
-        """
-        if not self._durable or self._mgr is None:
+        """Return the operator-pinned trust-domain identity for lifecycle writes."""
+        if self._trust_genesis_document is None:
             return None
         try:
-            with self._mgr.transaction() as conn:
-                row = conn.execute(
-                    "SELECT trust_domain_id FROM project_identity WHERE id IS TRUE"
-                ).fetchone()
-        except psycopg.errors.UndefinedTable:
-            # No project_identity relation at all: a pre-genesis schema. "Absent"
-            # is a real answer, and the append refuses right afterwards anyway.
-            return None
-        except psycopg.Error as exc:
-            # NB1 (P2.2 review): a transient read FAILURE must not be swallowed into
-            # "no trust domain", because that silently skips §5.5 payload validation
-            # and would let an unvalidated event through once P1.7 permits the
-            # append. Absence and failure are different facts.
+            from ._trust_domain import parse_trust_genesis
+
+            return parse_trust_genesis(self._trust_genesis_document).trust_domain_id
+        except RegistaError as exc:
             raise LifecycleContractError(
-                LifecycleErrorCode.INVALID_OPERATION_STATE,
-                "could not read project_identity to resolve the trust domain; "
-                "refusing rather than proceeding with an unvalidated payload "
-                f"({type(exc).__name__})",
+                LifecycleErrorCode.AUTHORITY_REQUIRED,
+                f"the pinned trust-genesis document is invalid: {exc}",
             ) from exc
-        if row is None or row["trust_domain_id"] is None:
-            return None
-        return str(row["trust_domain_id"])
 
     def _transition_for(self, op_type: LifecycleOperationType) -> str:
         """The §5.3 catalogue transition names.
@@ -1678,12 +2161,14 @@ class PrincipalLifecycle:
                     (operation_id, idempotency_key, operation_type, state,
                      project, principal_id, principal_kind, actor_id,
                      reason, requested_authority, policy_version,
-                     digest_value, digest_algorithm, digest_version,
-                     public_key, fingerprint, scheme, custody_mode, old_key_id,
-                     identity_binding_digest, protected_options,
-                     created_at, expires_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                      digest_value, digest_algorithm, digest_version,
+                      public_key, fingerprint, scheme, custody_mode, old_key_id,
+                      new_key_id, identity_binding_digest, protected_options,
+                      authority_binding, root_signatures, old_key_signature,
+                      created_at, expires_at)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                         %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
                 RETURNING operation_id
                 """,
@@ -1707,8 +2192,19 @@ class PrincipalLifecycle:
                     operation.scheme,
                     operation.custody_mode.value if operation.custody_mode else None,
                     operation.old_key_id,
+                    operation.new_key_id,
                     operation.identity_binding_digest,
                     psycopg.types.json.Jsonb(dict(operation.protected_options)),
+                    psycopg.types.json.Jsonb(
+                        operation.authority.to_dict() if operation.authority is not None else None
+                    ),
+                    psycopg.types.json.Jsonb(
+                        [
+                            dict(item)
+                            for item in _normalize_root_signatures(operation.root_signatures)
+                        ]
+                    ),
+                    operation.old_key_signature,
                     operation.created_at,
                     operation.expires_at,
                 ],
@@ -1736,6 +2232,54 @@ class PrincipalLifecycle:
             protected_options = ()
         custody_mode = row["custody_mode"]
         public_key = row["public_key"]
+        raw_authority = row.get("authority_binding")
+        authority: LifecycleAuthority | None = None
+        if isinstance(raw_authority, dict):
+            try:
+                authority = LifecycleAuthority(
+                    authority=LifecycleAuthorityKind(raw_authority["authority"]),
+                    principal_id=str(raw_authority["principal_id"]),
+                    key_id=str(raw_authority["key_id"]),
+                    key_binding_event_hash=str(raw_authority["key_binding_event_hash"]),
+                    delegation_event_hash=(
+                        str(raw_authority["delegation_event_hash"])
+                        if raw_authority.get("delegation_event_hash") is not None
+                        else None
+                    ),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "durable lifecycle operation contains an invalid authority binding",
+                ) from exc
+            if authority.principal_id != str(row["actor_id"]):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "durable lifecycle authority is bound to a different actor",
+                )
+            if authority.authority.value != str(row["requested_authority"]):
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "durable lifecycle authority does not match requested authority",
+                )
+            if authority.authority is LifecycleAuthorityKind.ROOT:
+                if authority.delegation_event_hash is not None:
+                    raise LifecycleContractError(
+                        LifecycleErrorCode.AUTHORITY_MISMATCH,
+                        "root lifecycle authority cannot carry a delegation event",
+                    )
+            elif authority.delegation_event_hash != authority.key_binding_event_hash:
+                raise LifecycleContractError(
+                    LifecycleErrorCode.AUTHORITY_MISMATCH,
+                    "registrar lifecycle authority must bind to its delegation event",
+                )
+        raw_root_signatures = row.get("root_signatures")
+        root_signatures = (
+            _normalize_root_signatures(raw_root_signatures)
+            if isinstance(raw_root_signatures, list)
+            and all(isinstance(item, dict) for item in raw_root_signatures)
+            else ()
+        )
         return LifecycleOperation(
             operation_id=str(row["operation_id"]),
             idempotency_key=row["idempotency_key"],
@@ -1760,8 +2304,16 @@ class PrincipalLifecycle:
             scheme=row["scheme"],
             custody_mode=CustodyMode(custody_mode) if custody_mode is not None else None,
             old_key_id=row["old_key_id"],
+            new_key_id=row.get("new_key_id"),
             identity_binding_digest=row["identity_binding_digest"],
             protected_options=protected_options,
+            authority=authority,
+            root_signatures=root_signatures,
+            old_key_signature=(
+                bytes(row["old_key_signature"])
+                if row.get("old_key_signature") is not None
+                else None
+            ),
         )
 
     def _load_operation_from_db(self, operation_id: str) -> LifecycleOperation:
@@ -2135,17 +2687,33 @@ class PrincipalLifecycle:
             )
         protected = _protected_options(request.protected_options)
         old_key_id = request.old_key_id if isinstance(request, RotationRequest) else None
+        existing = self._existing_durable_for_request(
+            operation_type,
+            request,
+            idempotency_key=idempotency_key,
+            old_key_id=old_key_id,
+            protected_options=protected,
+        )
+        if existing is not None:
+            return existing
+        created_at, expires_at = self._time_window(ttl)
+        authority = self._resolve_authority_binding(operation_type, request, at=created_at)
+        new_key_id = (
+            None
+            if operation_type is LifecycleOperationType.REVOCATION
+            else _lifecycle_key_id(idempotency_key)
+        )
         intent = _intent_digest(
             operation_type,
             self._project,
             request,
             old_key_id=old_key_id,
             protected_options=protected,
+            authority=authority,
         )
         existing = self._existing_idempotent(idempotency_key, intent)
         if existing is not None:
             return existing
-        created_at, expires_at = self._time_window(ttl)
         op_id = operation_id or str(uuid.uuid4())
         fingerprint = _fingerprint(request.public_key, request.scheme)
         fields = _digest_fields(
@@ -2161,6 +2729,8 @@ class PrincipalLifecycle:
             scheme=request.scheme,
             custody_mode=request.custody_mode,
             protected_options=protected,
+            authority=authority,
+            new_key_id=new_key_id,
         )
         operation = LifecycleOperation(
             operation_id=op_id,
@@ -2182,8 +2752,14 @@ class PrincipalLifecycle:
             scheme=request.scheme,
             custody_mode=request.custody_mode,
             old_key_id=old_key_id,
+            new_key_id=new_key_id,
             identity_binding_digest=request.identity_binding_digest,
             protected_options=protected,
+            authority=authority,
+            root_signatures=_normalize_root_signatures(request.root_signatures),
+            old_key_signature=(
+                request.old_key_signature if isinstance(request, RotationRequest) else None
+            ),
         )
         return self._remember(operation, intent)
 
@@ -2216,6 +2792,60 @@ class PrincipalLifecycle:
                 f"Idempotency key {idempotency_key!r} is bound to another request",
             )
         return self._operations[operation_id]
+
+    def _existing_durable_for_request(
+        self,
+        operation_type: LifecycleOperationType,
+        request: EnrollmentRequest | RevocationRequest,
+        *,
+        idempotency_key: str,
+        old_key_id: str | None,
+        protected_options: tuple[tuple[str, str], ...],
+    ) -> LifecycleOperation | None:
+        """Load an idempotent operation before resolving live authority.
+
+        A retry is a read of the original prepared intent. Re-resolving a
+        registrar before checking the durable idempotency row would make an
+        otherwise safe retry fail merely because that delegation expired or was
+        revoked after the first request.
+        """
+
+        if not self._durable:
+            return None
+        assert self._mgr is not None
+        with self._mgr.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM lifecycle_operations "
+                "WHERE idempotency_key = %s AND project = %s",
+                [idempotency_key, self._project],
+            ).fetchone()
+        if row is None:
+            return None
+        existing = self._operation_from_row(row)
+        existing_intent = _intent_digest(
+            existing.operation_type,
+            self._project,
+            _request_from_operation(existing),
+            old_key_id=existing.old_key_id,
+            protected_options=existing.protected_options,
+            authority=existing.authority,
+        )
+        candidate_intent = _intent_digest(
+            operation_type,
+            self._project,
+            request,
+            old_key_id=old_key_id,
+            protected_options=protected_options,
+            authority=existing.authority,
+        )
+        if not hmac.compare_digest(existing_intent, candidate_intent):
+            raise LifecycleContractError(
+                LifecycleErrorCode.OPERATION_DIGEST_MISMATCH,
+                f"Idempotency key {idempotency_key!r} is bound to another request",
+            )
+        self._operations[existing.operation_id] = existing
+        self._idempotency[idempotency_key] = (existing_intent, existing.operation_id)
+        return existing
 
     def _operation(self, operation_id: str) -> LifecycleOperation:
         """Return a prepared operation, rehydrating from the DB when durable.
@@ -2317,6 +2947,8 @@ def _digest_fields(
     scheme: str | None,
     custody_mode: CustodyMode | None,
     protected_options: tuple[tuple[str, str], ...],
+    authority: LifecycleAuthority | None,
+    new_key_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "contract_version": CONTRACT_VERSION,
@@ -2337,8 +2969,10 @@ def _digest_fields(
         "scheme": scheme,
         "custody_mode": custody_mode.value if custody_mode else None,
         "old_key_id": old_key_id,
+        "new_key_id": new_key_id,
         "identity_binding_digest": request.identity_binding_digest,
         "protected_options": dict(protected_options),
+        "authority": authority.to_dict() if authority is not None else None,
     }
 
 
@@ -2349,6 +2983,7 @@ def _intent_digest(
     *,
     old_key_id: str | None,
     protected_options: tuple[tuple[str, str], ...],
+    authority: LifecycleAuthority | None,
 ) -> str:
     public_key = request.public_key if isinstance(request, EnrollmentRequest) else None
     scheme = request.scheme if isinstance(request, EnrollmentRequest) else None
@@ -2369,6 +3004,7 @@ def _intent_digest(
         "old_key_id": old_key_id,
         "identity_binding_digest": request.identity_binding_digest,
         "protected_options": dict(protected_options),
+        "authority": authority.to_dict() if authority is not None else None,
     }
     return hashlib.sha256(canonicalize(fields)).hexdigest()
 
@@ -2382,6 +3018,88 @@ def _validate_common(request: EnrollmentRequest | RevocationRequest) -> None:
         "policy_version",
     ):
         _require_text(name, getattr(request, name))
+    try:
+        LifecycleAuthorityKind(request.requested_authority)
+    except ValueError as exc:
+        raise LifecycleContractError(
+            LifecycleErrorCode.INVALID_REQUEST,
+            "requested_authority must be 'root' or 'registrar'",
+        ) from exc
+
+
+def _lifecycle_key_id(idempotency_key: str) -> str:
+    """Derive a stable new-key id without inventing a commit-time value."""
+
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
+    return f"pk_lifecycle_{digest}"
+
+
+def _request_from_operation(
+    operation: LifecycleOperation,
+) -> EnrollmentRequest | RevocationRequest:
+    """Reconstruct the intent-bearing request fields from a durable operation."""
+
+    if operation.operation_type is LifecycleOperationType.REVOCATION:
+        if operation.old_key_id is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "durable revocation operation has no key id",
+            )
+        return RevocationRequest(
+            principal_id=operation.principal_id,
+            principal_kind=operation.principal_kind,
+            actor_id=operation.actor_id,
+            key_id=operation.old_key_id,
+            reason=operation.reason,
+            requested_authority=operation.requested_authority,
+            policy_version=operation.policy_version,
+            identity_binding_digest=operation.identity_binding_digest,
+            protected_options=operation.protected_options,
+        )
+    if (
+        operation.public_key is None
+        or operation.scheme is None
+        or operation.custody_mode is None
+    ):
+        raise LifecycleContractError(
+            LifecycleErrorCode.AUTHORITY_MISMATCH,
+            "durable key operation is missing public key material",
+        )
+    if operation.operation_type is LifecycleOperationType.ROTATION:
+        if operation.old_key_id is None:
+            raise LifecycleContractError(
+                LifecycleErrorCode.AUTHORITY_MISMATCH,
+                "durable rotation operation has no superseded key id",
+            )
+        return RotationRequest(
+            principal_id=operation.principal_id,
+            principal_kind=operation.principal_kind,
+            actor_id=operation.actor_id,
+            public_key=operation.public_key,
+            scheme=operation.scheme,
+            custody_mode=operation.custody_mode,
+            reason=operation.reason,
+            requested_authority=operation.requested_authority,
+            policy_version=operation.policy_version,
+            old_key_id=operation.old_key_id,
+            identity_binding_digest=operation.identity_binding_digest,
+            protected_options=operation.protected_options,
+        )
+    if operation.operation_type is LifecycleOperationType.ENROLLMENT:
+        return EnrollmentRequest(
+            principal_id=operation.principal_id,
+            principal_kind=operation.principal_kind,
+            actor_id=operation.actor_id,
+            public_key=operation.public_key,
+            scheme=operation.scheme,
+            custody_mode=operation.custody_mode,
+            reason=operation.reason,
+            requested_authority=operation.requested_authority,
+            policy_version=operation.policy_version,
+            identity_binding_digest=operation.identity_binding_digest,
+            protected_options=operation.protected_options,
+        )
+    assert_never(operation.operation_type)
 
 
 def _protected_options(options: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
@@ -2392,6 +3110,29 @@ def _protected_options(options: tuple[tuple[str, str], ...]) -> tuple[tuple[str,
             "protected_options names must be non-empty and unique",
         )
     return tuple(sorted(options))
+
+
+def _normalize_root_signatures(
+    signatures: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Return detached root signatures in one deterministic order.
+
+    The root-signature array is detached from the signed rotation core, so its
+    authoring order carries no meaning. Sorting by the complete identifying
+    fields makes retries with the same signature set idempotent even when
+    signers respond in a different order. The parser remains responsible for
+    rejecting malformed or duplicate records.
+    """
+
+    normalized = [dict(signature) for signature in signatures]
+    normalized.sort(
+        key=lambda signature: (
+            str(signature.get("fingerprint", "")),
+            str(signature.get("signer_id", "")),
+            str(signature.get("signature", "")),
+        )
+    )
+    return tuple(normalized)
 
 
 def _require_text(name: str, value: str) -> None:
@@ -2431,6 +3172,8 @@ __all__ = [
     "EffectiveReceipt",
     "EffectiveReceiptStatus",
     "EnrollmentRequest",
+    "LifecycleAuthority",
+    "LifecycleAuthorityKind",
     "LifecycleContractError",
     "LifecycleDigest",
     "LifecycleErrorCode",

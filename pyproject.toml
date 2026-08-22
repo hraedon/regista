@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "regista-hraedon"
-version = "0.6.0"
+version = "0.7.1"
 description = "Coordination + state plane for agent pipelines over Postgres"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.2,<4",

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _serialize(obj: Any) -> Any:
@@ -39,6 +39,7 @@ class CreateWorkItemRequest(BaseModel):
     custom_fields: dict[str, Any] | None = None
     not_before: str | None = None
     event_id: str | None = None
+    action_delegation_credentials: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AppendEventRequest(BaseModel):
@@ -51,8 +52,21 @@ class AppendEventRequest(BaseModel):
     event_id: str | None = None
     expected_event_seq: int | None = None
     on_behalf_of: dict[str, Any] | None = None
-    entity_kind: Literal["work_item"] = "work_item"
+    entity_kind: str = "work_item"
     action_delegation_credentials: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("entity_kind")
+    @classmethod
+    def _validate_entity_kind(cls, value: str) -> str:
+        # Keep the HTTP grammar tied to the single v6 registry rather than
+        # maintaining a second literal list that will omit a future closed kind.
+        from .._verification import V6_ENTITY_KINDS
+
+        if value not in V6_ENTITY_KINDS:
+            raise ValueError(
+                f"entity_kind must be one of {sorted(V6_ENTITY_KINDS)}"
+            )
+        return value
 
 
 class TransitionRequest(BaseModel):

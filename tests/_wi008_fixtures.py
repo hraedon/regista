@@ -15,6 +15,7 @@ from typing import Any
 from regista._datetime_utils import v6_occurred_at
 from regista._jcs import canonicalize
 from tests._v6_fixtures import (
+    Producer,
     accept_key,
     make_v6_keyset,
     set_v6_producer_env,
@@ -181,7 +182,15 @@ def _prepare_action_project(
     workflow_name: str,
     creator: str,
 ) -> ActionProject:
-    set_v6_producer_env()
+    set_v6_producer_env(
+        Producer(
+            harness="claude-code",
+            harness_version="test-harness/1",
+            model="claude-fable-5",
+            model_lineage="fable",
+        ),
+        overwrite=True,
+    )
     genesis = write_test_genesis(instance, keyset)
     acceptances = {
         principal: accept_key(instance, keyset, genesis, principal)
@@ -272,6 +281,7 @@ def action_delegation_document(
     max_uses: int | None = None,
     scope: dict[str, list[str]] | None = None,
     credential_id: str | None = None,
+    entity_kind: str = "work_item",
 ) -> dict[str, Any]:
     """Sign a credential against an actual issuer acceptance in ``project``."""
 
@@ -293,8 +303,10 @@ def action_delegation_document(
         "scope": scope
         or {
             "project_instance_ids": [str(project.genesis.project_instance_id)],
-            "entity_kinds": ["work_item"],
-            "workflow_names": [workflow_name or project.workflow_name],
+            "entity_kinds": [entity_kind],
+            "workflow_names": (
+                [] if entity_kind == "note" else [workflow_name or project.workflow_name]
+            ),
             "transitions": [transition],
         },
         "not_before": v6_occurred_at(current - timedelta(hours=1)),
@@ -322,6 +334,18 @@ def copy_action_delegation_document(document: dict[str, Any]) -> dict[str, Any]:
     """Return a mutation-safe copy for validator/reference assertions."""
 
     return copy.deepcopy(document)
+
+
+def set_review_producer() -> None:
+    set_v6_producer_env(
+        Producer(
+            harness="claude-code",
+            harness_version="test-harness/1",
+            model="kimi-k2.5",
+            model_lineage="kimi",
+        ),
+        overwrite=True,
+    )
 
 
 def review_to_in_review(project: ActionProject) -> None:

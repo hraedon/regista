@@ -54,6 +54,7 @@ _DOCUMENT_KEYS: Final = frozenset(
 _SCOPE_KEYS: Final = frozenset(
     {"project_instance_ids", "entity_kinds", "workflow_names", "transitions"}
 )
+_ACTION_DELEGATION_ENTITY_KINDS: Final = frozenset({"work_item", "note"})
 _SIGNATURE_KEYS: Final = frozenset({"scheme_id", "value"})
 _REFERENCE_KEYS: Final = frozenset({"credential_id", "credential_hash"})
 _REVOCATION_KEYS: Final = frozenset(
@@ -128,13 +129,17 @@ class ActionDelegationScope:
         *,
         project_instance_id: str,
         entity_kind: str,
-        workflow_name: str,
+        workflow_name: str | None,
         transition: str,
     ) -> bool:
         return (
             project_instance_id in self.project_instance_ids
             and entity_kind in self.entity_kinds
-            and workflow_name in self.workflow_names
+            and (
+                workflow_name in self.workflow_names
+                if workflow_name is not None
+                else not self.workflow_names
+            )
             and transition in self.transitions
         )
 
@@ -204,8 +209,17 @@ def _nonempty_string(value: Any, path: str) -> str:
     return str(value)
 
 
-def _scope_axis(value: Any, path: str, *, uuids: bool = False) -> frozenset[str]:
-    _require(isinstance(value, list) and bool(value), f"{path} must be a non-empty array")
+def _scope_axis(
+    value: Any,
+    path: str,
+    *,
+    uuids: bool = False,
+    allow_empty: bool = False,
+) -> frozenset[str]:
+    _require(
+        isinstance(value, list) and (bool(value) or allow_empty),
+        f"{path} must be {'a non-empty array' if not allow_empty else 'an array'}",
+    )
     result: list[str] = []
     for index, item in enumerate(value):
         item_path = f"{path}[{index}]"
@@ -221,13 +235,44 @@ def _scope_axis(value: Any, path: str, *, uuids: bool = False) -> frozenset[str]
 def _parse_scope(value: Any) -> ActionDelegationScope:
     _require(isinstance(value, dict), "scope must be an object")
     _require(frozenset(value) == _SCOPE_KEYS, "scope has unknown or missing members")
+    entity_kinds = _scope_axis(value["entity_kinds"], "scope.entity_kinds")
+    _require(
+        entity_kinds <= _ACTION_DELEGATION_ENTITY_KINDS,
+        "scope.entity_kinds may contain only authorizable v1 kinds: work_item or note",
+    )
+    _require(
+        entity_kinds in (frozenset({"work_item"}), frozenset({"note"})),
+        "scope.entity_kinds must name exactly one v1 action-delegation kind; "
+        "mixed work_item and note scopes are not representable",
+    )
+    workflow_names = _scope_axis(
+        value["workflow_names"], "scope.workflow_names", allow_empty=True
+    )
+    if entity_kinds == frozenset({"work_item"}):
+        _require(
+            bool(workflow_names),
+            "workflow-bound work_item scopes require a non-empty workflow_names array",
+        )
+    else:
+        _require(
+            not workflow_names,
+            "non-workflow note scopes require an empty workflow_names array",
+        )
     return ActionDelegationScope(
         project_instance_ids=_scope_axis(
             value["project_instance_ids"], "scope.project_instance_ids", uuids=True
         ),
-        entity_kinds=_scope_axis(value["entity_kinds"], "scope.entity_kinds"),
-        workflow_names=_scope_axis(value["workflow_names"], "scope.workflow_names"),
+        entity_kinds=entity_kinds,
+        workflow_names=workflow_names,
         transitions=_scope_axis(value["transitions"], "scope.transitions"),
+    )
+
+
+def is_action_delegation_target(entity_kind: str, workflow_name: str | None) -> bool:
+    """Return whether a v1 credential may authorize the event target."""
+
+    return (entity_kind == "work_item" and workflow_name is not None) or (
+        entity_kind == "note" and workflow_name is None
     )
 
 
@@ -636,11 +681,16 @@ def verify_action_delegation_chain(
         _require(len(references) == len(credentials), "credential reference count differs")
         transition = str(envelope["transition"])
         workflow = envelope["workflow"]
+        workflow_name: str | None = None
+        if workflow is not None:
+            _require(isinstance(workflow, Mapping), "workflow binding is invalid")
+            workflow_name = workflow.get("name")
+            _require(isinstance(workflow_name, str), "workflow name is invalid")
         _require(
             transition not in _ADMINISTRATIVE_TRANSITIONS
-            and isinstance(workflow, Mapping)
-            and envelope["entity"]["kind"] == "work_item",
-            "action delegation cannot authorize lifecycle administration",
+            and is_action_delegation_target(str(envelope["entity"]["kind"]), workflow_name),
+            "action delegation can authorize only workflow-bound work_item or "
+            "non-workflow note actions; lifecycle and other entity events are forbidden",
         )
         occurred_at = parse_v6_occurred_at(str(envelope["occurred_at"]))
         ancestor_hashes = {
@@ -776,7 +826,7 @@ def verify_action_delegation_chain(
             terminal.scope.permits(
                 project_instance_id=str(envelope["project_instance_id"]),
                 entity_kind=str(envelope["entity"]["kind"]),
-                workflow_name=str(workflow["name"]),
+                workflow_name=workflow_name,
                 transition=transition,
             ),
             "delegation scope does not authorize candidate action",
@@ -842,6 +892,7 @@ __all__ = [
     "action_delegation_revocation_authorized",
     "action_delegation_signature_input",
     "action_delegation_unsigned_bytes",
+    "is_action_delegation_target",
     "parse_action_delegation",
     "parse_action_delegation_revocation",
     "verify_action_delegation_chain",

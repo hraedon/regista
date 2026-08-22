@@ -22,7 +22,6 @@ from __future__ import annotations
 import base64
 import importlib
 import json
-import os
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -30,7 +29,7 @@ from types import SimpleNamespace
 
 import psycopg
 import pytest
-from _helpers import DSN, KEY_PATH
+from _helpers import DSN
 from _trust_fixtures import mint_solo
 from _trust_log_fixtures import (
     TrustLogKey,
@@ -101,19 +100,18 @@ _COLUMNS = (
 
 
 @pytest.fixture
-def trust_store(tmp_path):
+def trust_store(tmp_path, monkeypatch):
     """A production-writer trust log with pinned genesis and durable evidence."""
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "pytest")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
     project = f"p22_tl_{uuid.uuid4().hex[:8]}"
     genesis = mint_solo()
     genesis_path = tmp_path / "trust-genesis.json"
     genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")
-    os.environ["REGISTA_TRUST_GENESIS_PATH"] = str(genesis_path)
-    os.environ.pop("REGISTRA_TRUST_GENESIS_PATH", None)
+    monkeypatch.setenv("REGISTA_TRUST_GENESIS_PATH", str(genesis_path))
     root_signer = genesis.signer_ids[0]
     root_key = TrustLogKey(
         key_id="pk_root_a",
@@ -811,10 +809,15 @@ class TestCriterion17BypassNamesAreGone:
             assert param.kind is inspect.Parameter.KEYWORD_ONLY
             assert param.default is inspect.Parameter.empty
 
-    def test_the_ops_facade_refuses_instead_of_writing(self, trust_store):
+    def test_the_ops_facade_refuses_instead_of_writing(self, trust_store, tmp_path):
         from regista import Regista
 
-        sub = Regista(DSN, trust_store.project, KEY_PATH)
+        sub = Regista(
+            DSN,
+            trust_store.project,
+            trust_store.handle._hmac_key_path,
+            trust_genesis_path=str(tmp_path / "trust-genesis.json"),
+        )
         try:
             for call in (
                 lambda: sub.principals.register("agent:x", b"\x01" * 32),
@@ -904,16 +907,21 @@ class TestRebuildAndTheSanctionedWriterIntersect:
 
         private_key = nacl.signing.SigningKey.generate()
         public_key = bytes(private_key.verify_key)
-        lifecycle = PrincipalLifecycle(sub.project, mgr=sub._mgr, keys=sub._keys)
+        lifecycle = PrincipalLifecycle(
+            sub.project,
+            mgr=sub._mgr,
+            keys=sub._keys,
+            trust_genesis_document=sub._trust_genesis_document,
+        )
         request = EnrollmentRequest(
             principal_id="agent:ceremony",
             principal_kind=PrincipalKind.AGENT,
-            actor_id="human:requester",
+            actor_id=REGISTRAR_PRINCIPAL,
             public_key=public_key,
             scheme="ed25519",
             custody_mode=CustodyMode.FILE,
             reason="intersection regression",
-            requested_authority="root",
+            requested_authority="registrar",
             policy_version="v1",
         )
         operation = lifecycle.prepare_enrollment(request, idempotency_key="idem-x")
@@ -959,7 +967,12 @@ class TestRebuildAndTheSanctionedWriterIntersect:
         from regista import Regista
         from regista._trust_log import parse_principal_key_enrolled
 
-        sub = Regista(DSN, trust_store.project, KEY_PATH)
+        sub = Regista(
+            DSN,
+            trust_store.project,
+            trust_store.handle._hmac_key_path,
+            trust_genesis_path=str(tmp_path / "trust-genesis.json"),
+        )
         try:
             with sub._mgr.transaction() as conn:
                 conn.execute(

@@ -80,6 +80,7 @@ class WorkflowApiMixin(_RegistaBase):
         not_before: datetime | None = None,
         event_id: uuid.UUID | None = None,
         key_id: str | None = None,
+        action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     ) -> tuple[WorkItem, Event]:
         """Create a new work item in the given workflow.
 
@@ -94,13 +95,19 @@ class WorkflowApiMixin(_RegistaBase):
             event_id: Optional UUIDv4 for idempotency.
             key_id: Pin the signing key for the ``created`` event that opens the
                 chain; defaults to the key set's resolution for ``actor_id``.
+            action_delegation_credentials: Ordered action-delegation credential
+                documents authorizing this create. Their hashes enter the signed
+                ``created`` event as a delegated authorization; documents are
+                verified and stored transactionally as immutable evidence. When
+                empty, the event is authorized directly (the legacy behaviour).
 
         Returns:
             Tuple of ``(WorkItem, Event)``.
 
         Raises:
             RegistaError: ``WORKFLOW_NOT_REGISTERED``,
-                ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``.
+                ``WORK_ITEM_TYPE_NOT_DECLARED``, ``CUSTOM_FIELD_VIOLATION``,
+                ``ACTION_DELEGATION_INVALID``.
         """
         wi, evt = self.work_items.create(
             workflow_name, work_item_type, actor_id, actor_kind,
@@ -109,6 +116,7 @@ class WorkflowApiMixin(_RegistaBase):
             not_before=not_before,
             event_id=event_id,
             key_id=key_id,
+            action_delegation_credentials=action_delegation_credentials,
         )
         self._try_create_witness_receipts(evt)
         return wi, evt

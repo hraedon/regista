@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import base64
+import json
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import nacl.signing
 import pytest
+from _trust_fixtures import mint_genesis
+from _trust_log_fixtures import TrustLogKey, _ts, make_registrar_delegation_payload
 
 import regista
 from regista import (
@@ -29,6 +34,7 @@ from regista import (
     RevocationRequest,
     RotationRequest,
 )
+from regista._trust_log_writer import append_trust_log_event, write_trust_genesis
 from regista.principal_lifecycle import EffectiveChallenge
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
@@ -51,23 +57,18 @@ def keypair() -> tuple[nacl.signing.SigningKey, bytes]:
 @pytest.fixture
 def enrollment(keypair: tuple[nacl.signing.SigningKey, bytes]) -> EnrollmentRequest:
     _private_key, public_key = keypair
-    # Canonical ids per `TRUST-DOMAIN.md` §2.1 — the v6 grammar refuses a bare
-    # legacy name at ingress (`PRINCIPAL_ID_UNGRAMMATICAL`), and the actor must be a
-    # principal the project's epoch has accepted so the ceremony's append can be
-    # signed. `requested_authority="root"` because `_authorized_by` maps anything
-    # else onto §5.4 registrar authority, which requires a `delegation_event_hash`
-    # this ceremony has no way to name (registrar delegation is not wired) — §5.5
-    # then refuses the payload. `tests/test_trust_projection.py`'s already-passing
-    # ceremony fixtures use the same root shape.
+    # Canonical ids per `TRUST-DOMAIN.md` §2.1. The durable fixture provisions a
+    # live registrar delegation below; lifecycle authority is never an arbitrary
+    # caller-supplied label.
     return EnrollmentRequest(
         principal_id="human:enrollee",
         principal_kind=PrincipalKind.HUMAN,
-        actor_id="human:operator",
+        actor_id="service:registrar",
         public_key=public_key,
         scheme="ed25519",
         custody_mode=CustodyMode.WINDOWS_LOCAL,
         reason="Initial project enrollment",
-        requested_authority="root",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
         identity_binding_digest="sha256:identity-binding",
         protected_options=(("ticket", "KEY-42"),),
@@ -240,11 +241,77 @@ def regista_instance(v6_keyset):
 
     from regista import Regista
     from regista.testing import drop_project_schema
-    from tests._v6_fixtures import open_v6_epoch
+    from tests._v6_fixtures import ACTOR_PRINCIPALS, make_v6_keyset, set_v6_producer_env
 
     project = f"test_{uuid.uuid4().hex[:8]}"
-    sub = Regista.create_project(DSN, project, v6_keyset.path)
-    open_v6_epoch(sub, v6_keyset)
+    # The lifecycle event store is a trust-log project for this focused durable
+    # fixture.  Its first event must be trust_domain_established; a regular v6
+    # project epoch cannot be mistaken for the authority chain.
+    root_principal = "service:root"
+    registrar_principal = "service:registrar"
+    principals = (*ACTOR_PRINCIPALS, root_principal, registrar_principal)
+    if not all(principal in v6_keyset.keys for principal in principals):
+        v6_keyset = make_v6_keyset(
+            Path(v6_keyset.path).parent,
+            principals=principals,
+            filename=Path(v6_keyset.path).name,
+        )
+    root = v6_keyset.key_for(root_principal)
+    registrar = v6_keyset.key_for(registrar_principal)
+    genesis = mint_genesis(
+        threshold=1,
+        signer_count=1,
+        seeds=[root.seed],
+        project_instance_id=str(uuid.uuid4()),
+        project_name_hint="test-trust-log",
+    )
+    genesis_path = Path(v6_keyset.path).parent / "trust-genesis.json"
+    genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")
+    sub = Regista.create_project(
+        DSN,
+        project,
+        v6_keyset.path,
+        trust_genesis_path=str(genesis_path),
+    )
+    set_v6_producer_env()
+    root_log_key = TrustLogKey(
+        key_id=root.key_id,
+        seed=root.seed,
+        public_key=root.public_key,
+        fingerprint=root.fingerprint,
+    )
+    registrar_log_key = TrustLogKey(
+        key_id=registrar.key_id,
+        seed=registrar.seed,
+        public_key=registrar.public_key,
+        fingerprint=registrar.fingerprint,
+    )
+    write_trust_genesis(
+        sub._mgr,
+        keys=sub._keys,
+        genesis_document=genesis.document,
+        root_principal_id=root_principal,
+    )
+    delegation = make_registrar_delegation_payload(
+        trust_domain_id=genesis.trust_domain_id,
+        registrar_principal_id=registrar_principal,
+        key=registrar_log_key,
+        root_keys=[root_log_key],
+        max_operations=None,
+        not_before=_ts(-24 * 60 * 60),
+        not_after=_ts(365 * 24 * 60 * 60),
+    )
+    append_trust_log_event(
+        sub._mgr,
+        keys=sub._keys,
+        genesis_document=genesis.document,
+        transition="registrar_delegated",
+        payload=delegation,
+        entity_kind="trust_domain",
+        entity_id=uuid.UUID(genesis.trust_domain_id),
+        principal_id=root_principal,
+        authority="root",
+    )
     yield sub
     sub.close()
     drop_project_schema(DSN, project)
@@ -319,7 +386,12 @@ def _open_fresh_instance(reg: regista.Regista, keyset: Any) -> regista.Regista:
     # The v6 keyset, not `KEY_PATH`: a second handle on the same project has to
     # sign with keys the project's epoch has accepted, and the committed
     # `tests/test_keys.json` holds one HMAC key with no `principal_id`.
-    return regista.Regista(DSN, reg.project, keyset.path)
+    return regista.Regista(
+        DSN,
+        reg.project,
+        keyset.path,
+        trust_genesis_path=str(Path(keyset.path).parent / "trust-genesis.json"),
+    )
 
 
 def test_durable_prepare_persists(
@@ -445,7 +517,7 @@ def test_durable_commit_rotation(
         scheme="ed25519",
         custody_mode=CustodyMode.WINDOWS_LOCAL,
         reason="Key rotation",
-        requested_authority="root",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
         old_key_id=old_key_id,
     )
@@ -453,6 +525,10 @@ def test_durable_commit_rotation(
     challenge = lifecycle.issue_possession_challenge(rot_op.operation_id)
     proof = _proof(new_private_key, rot_op.digest.value, challenge)
     lifecycle.submit_possession(rot_op.operation_id, proof)
+    old_key_signature = private_key.sign(
+        lifecycle.rotation_authorization_bytes(rot_op.operation_id)
+    ).signature
+    lifecycle.submit_rotation_authorization(rot_op.operation_id, old_key_signature)
     approval = Approval(
         approver_id="entra:tenant:approver-789",
         approver_kind="human",
@@ -470,9 +546,122 @@ def test_durable_commit_rotation(
             "principal_keys",
             "principal_id = %s AND status = 'active'",
             [enrollment.principal_id],
-        )
-        == 1
     )
+    == 1
+    )
+
+
+def test_rotation_approval_requires_outgoing_or_root_authorization(
+    regista_instance: Any,
+    keypair: tuple[nacl.signing.SigningKey, bytes],
+    enrollment: EnrollmentRequest,
+) -> None:
+    private_key, _ = keypair
+    enrollment_operation = _enroll_and_approve(
+        regista_instance,
+        private_key,
+        enrollment,
+        idempotency_key="idem-rotation-approval-enroll",
+    )
+    lifecycle = regista_instance.principal_lifecycle
+    enrollment_receipt = lifecycle.commit(
+        enrollment_operation.operation_id,
+        expected_digest=enrollment_operation.digest.value,
+    )
+    new_private_key = nacl.signing.SigningKey.generate()
+    rotation = RotationRequest(
+        principal_id=enrollment.principal_id,
+        principal_kind=enrollment.principal_kind,
+        actor_id=enrollment.actor_id,
+        public_key=bytes(new_private_key.verify_key),
+        scheme="ed25519",
+        custody_mode=CustodyMode.FILE,
+        reason="rotation authorization ordering",
+        requested_authority="registrar",
+        policy_version="policy-2026-07",
+        old_key_id=enrollment_receipt.key_id,
+    )
+    operation = lifecycle.prepare_rotation(rotation, idempotency_key="idem-rotation-approval")
+    challenge = lifecycle.issue_possession_challenge(operation.operation_id)
+    lifecycle.submit_possession(
+        operation.operation_id,
+        _proof(new_private_key, operation.digest.value, challenge),
+    )
+
+    with pytest.raises(LifecycleContractError) as exc_info:
+        lifecycle.record_approval(
+            operation.operation_id,
+            Approval(
+                approver_id="entra:tenant:approver-789",
+                approver_kind="human",
+                approval_digest=operation.digest.value,
+            ),
+        )
+    assert exc_info.value.code is LifecycleErrorCode.AUTHORITY_MISMATCH
+    assert _db_operation_state(regista_instance, operation.operation_id) == "awaiting_approval"
+
+
+def test_durable_recovery_rotation_uses_root_threshold(
+    regista_instance: Any,
+    keypair: tuple[nacl.signing.SigningKey, bytes],
+    enrollment: EnrollmentRequest,
+) -> None:
+    private_key, _ = keypair
+    lifecycle = regista_instance.principal_lifecycle
+    operation = _enroll_and_approve(
+        regista_instance, private_key, enrollment, idempotency_key="idem-recovery-enroll"
+    )
+    receipt = lifecycle.commit(operation.operation_id, expected_digest=operation.digest.value)
+
+    new_private_key = nacl.signing.SigningKey.generate()
+    rotation = RotationRequest(
+        principal_id=enrollment.principal_id,
+        principal_kind=enrollment.principal_kind,
+        actor_id="service:root",
+        public_key=bytes(new_private_key.verify_key),
+        scheme="ed25519",
+        custody_mode=CustodyMode.WINDOWS_LOCAL,
+        reason="Recovery after outgoing-key loss",
+        requested_authority="root",
+        policy_version="policy-2026-07",
+        old_key_id=receipt.key_id,
+    )
+    rot_op = lifecycle.prepare_rotation(rotation, idempotency_key="idem-recovery-rotate")
+    challenge = lifecycle.issue_possession_challenge(rot_op.operation_id)
+    lifecycle.submit_possession(
+        rot_op.operation_id,
+        _proof(new_private_key, rot_op.digest.value, challenge),
+    )
+
+    root = regista_instance._keys.resolve_signing_key("service:root")
+    root_signature = nacl.signing.SigningKey(root.secret).sign(
+        lifecycle.root_authorization_bytes(rot_op.operation_id)
+    ).signature
+    lifecycle.submit_root_authorization(
+        rot_op.operation_id,
+        [
+            {
+                "signer_id": "service:root",
+                "fingerprint": root.fingerprint(),
+                "signature": base64.b64encode(root_signature).decode("ascii"),
+            }
+        ],
+    )
+    approved = lifecycle.record_approval(
+        rot_op.operation_id,
+        Approval(
+            approver_id="entra:tenant:approver-789",
+            approver_kind="human",
+            approval_digest=rot_op.digest.value,
+        ),
+    )
+    recovery_receipt = lifecycle.commit(
+        approved.operation_id,
+        expected_digest=approved.digest.value,
+    )
+    assert recovery_receipt.status is RegistryReceiptStatus.COMMITTED
+    assert recovery_receipt.key_id != receipt.key_id
+    assert _db_key_status(regista_instance, receipt.key_id) != "active"
 
 
 def test_durable_commit_revocation(
@@ -492,7 +681,7 @@ def test_durable_commit_revocation(
         actor_id=enrollment.actor_id,
         key_id=receipt.key_id,
         reason="Reported compromise",
-        requested_authority="root",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
     )
     rev_op = lifecycle.prepare_revocation(revocation, idempotency_key="idem-revoke-2")
@@ -814,13 +1003,14 @@ def test_durable_commit_rejects_expired(
     keypair: tuple[nacl.signing.SigningKey, bytes],
     enrollment: EnrollmentRequest,
 ) -> None:
-    clock = MutableClock()
+    clock = MutableClock(datetime.now(UTC))
     lifecycle = PrincipalLifecycle(
         regista_instance._project,
         mgr=regista_instance._mgr,
         keys=regista_instance._keys,
         metrics=regista_instance._metrics,
         clock=clock,
+        trust_genesis_document=regista_instance._trust_genesis_document,
     )
     operation = lifecycle.prepare_enrollment(
         enrollment, idempotency_key="idem-expired", ttl=timedelta(seconds=1)
@@ -890,7 +1080,7 @@ def test_durable_commit_revocation_rejects_unapproved(
         actor_id=enrollment.actor_id,
         key_id=receipt.key_id,
         reason="Reported compromise",
-        requested_authority="root",
+        requested_authority="registrar",
         policy_version="policy-2026-07",
     )
     rev_op = lifecycle.prepare_revocation(revocation, idempotency_key="idem-revoke-unapproved")
@@ -989,6 +1179,7 @@ def _fresh_lifecycle(reg: regista.Regista) -> PrincipalLifecycle:
         mgr=reg._mgr,
         keys=reg._keys,
         metrics=reg._metrics,
+        trust_genesis_document=reg._trust_genesis_document,
     )
 
 
@@ -1001,7 +1192,7 @@ class TestDurablePrepareIdempotencyRace:
         # A shared clock and explicit operation_id make both workers compute an
         # identical digest, so this is a genuine idempotency collision (same
         # idempotency key + same digest), not two distinct requests.
-        clock = MutableClock()
+        clock = MutableClock(datetime.now(UTC))
         shared_op_id = "11111111-1111-4111-8111-111111111111"
         barrier = threading.Barrier(2, timeout=10)
         results: list[Any] = [None, None]
@@ -1014,6 +1205,7 @@ class TestDurablePrepareIdempotencyRace:
                 keys=regista_instance._keys,
                 metrics=regista_instance._metrics,
                 clock=clock,
+                trust_genesis_document=regista_instance._trust_genesis_document,
             )
             try:
                 barrier.wait()
@@ -1388,6 +1580,7 @@ class TestApprovalSeparationOfDuties:
             keys=regista_instance._keys,
             metrics=regista_instance._metrics,
             approval_verifier=RequireStepUp(),
+            trust_genesis_document=regista_instance._trust_genesis_document,
         )
         operation = _full_enrollment_flow(
             lifecycle, private_key, enrollment, idempotency_key="idem-verifier-reject"
@@ -1419,6 +1612,7 @@ class TestApprovalSeparationOfDuties:
             keys=regista_instance._keys,
             metrics=regista_instance._metrics,
             approval_verifier=RequireStepUp(),
+            trust_genesis_document=regista_instance._trust_genesis_document,
         )
         operation = _full_enrollment_flow(
             lifecycle, private_key, enrollment, idempotency_key="idem-verifier-accept"
@@ -1583,6 +1777,7 @@ class TestDurableConsumeTransitionAtomicity:
             mgr=faulty,
             keys=regista_instance._keys,
             metrics=regista_instance._metrics,
+            trust_genesis_document=regista_instance._trust_genesis_document,
         )
         # Prime the cache so the fault lands on the consume+transition
         # transaction (the fetch read is the skipped transaction), not on the
@@ -1658,6 +1853,7 @@ class TestDurableConsumeTransitionAtomicity:
             mgr=faulty,
             keys=regista_instance._keys,
             metrics=regista_instance._metrics,
+            trust_genesis_document=regista_instance._trust_genesis_document,
         )
         # Prime the cache with the committed operation so the fault lands on the
         # consume+receipt+transition transaction, not the rehydration/fetch.
@@ -1718,16 +1914,18 @@ class TestApprovalVerifierPublicApi:
     def test_constructor_passes_verifier_to_facade(
         self,
         regista_instance: Any,
+        v6_keyset: Any,
         keypair: tuple[nacl.signing.SigningKey, bytes],
         enrollment: EnrollmentRequest,
     ) -> None:
-        from _helpers import DSN, KEY_PATH
+        from _helpers import DSN
 
         sub = regista.Regista(
             DSN,
             regista_instance.project,
-            KEY_PATH,
+            v6_keyset.path,
             approval_verifier=self._AcceptAll(),
+            trust_genesis_path=str(Path(v6_keyset.path).parent / "trust-genesis.json"),
         )
         try:
             assert sub.principal_lifecycle._approval_verifier is not None

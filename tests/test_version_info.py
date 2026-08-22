@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import json
 
 from regista._version_info import (
@@ -11,6 +12,10 @@ from regista._version_info import (
 
 
 class TestVersions:
+    def test_package_declares_pep_561_typing(self) -> None:
+        marker = importlib.resources.files("regista").joinpath("py.typed")
+        assert marker.is_file()
+
     def test_returns_version_info(self):
         info = versions()
         assert isinstance(info, VersionInfo)
