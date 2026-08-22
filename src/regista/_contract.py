@@ -233,9 +233,16 @@ def check_idempotency(
     transition: str | None,
     work_item_id: uuid.UUID | None = None,
     payload: dict[str, Any] | None = None,
+    entity_kind: str | None = None,
 ) -> Event | None:
     if existing_event is None:
         return None
+    if entity_kind is not None and existing_event.entity_kind != entity_kind:
+        raise RegistaError(
+            ErrorCode.EVENT_ID_GLOBAL_COLLISION,
+            f"event_id {existing_event.event_id} already used for entity_kind "
+            f"{existing_event.entity_kind!r}, not {entity_kind!r}",
+        )
     if work_item_id is not None and existing_event.work_item_id != work_item_id:
         raise RegistaError(
             ErrorCode.EVENT_ID_GLOBAL_COLLISION,

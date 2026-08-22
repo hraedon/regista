@@ -1,23 +1,8 @@
-"""WI-305 A v6 counterparts: the cross-lineage review gate over a genuine v6 epoch.
-
-The retired pre-epoch review nodes recorded author and reviewer lineage in
-``actor_metadata.model_lineage``, which the v6 envelope refuses at ingress
-(producer fields must not appear in actor.metadata, ``V6-ENVELOPE.md`` §1.8).
-This file pins the same surviving invariants over the v6 vehicles:
-
-* author lineage rides the process-level ``producer`` block (one value per
-  process, resolved from the environment);
-* reviewer lineage is a canonical assertion in the signed verdict payload's
-  ``reviewer_claims.model_lineage`` (``REVIEW-VERDICTS.md`` §2.2).
-
-The gate therefore decides cross-lineage distinctness by comparing the author
-producer lineages against the reviewer's payload claim. A claimed, worked item
-whose reviewer declares a distinct lineage passes; a same-lineage reviewer is
-blocked until acknowledged; assurance over the chain reflects the verdict.
-"""
+"""The v6 review gate uses the signed producer as the only lineage authority."""
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -25,7 +10,12 @@ from _helpers import DSN
 
 from regista._errors import ErrorCode, RegistaError
 from regista.testing import drop_project_schema
-from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+from tests._v6_fixtures import (
+    Producer,
+    make_v6_keyset,
+    open_v6_epoch,
+    set_v6_producer_env,
+)
 
 pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
 
@@ -87,7 +77,27 @@ def epoch(tmp_path_factory):
         drop_project_schema(DSN, project)
 
 
-def _work_to_review(sub) -> uuid.UUID:
+_PRODUCER_MODELS = {
+    "fable": "claude-fable-5",
+    "glm": "glm-5.3",
+    "kimi": "kimi-k2.5",
+}
+
+
+def _set_producer(lineage: str | None, *, model: str | None = None) -> None:
+    set_v6_producer_env(
+        Producer(
+            harness="claude-code",
+            harness_version="test-harness/1",
+            model=model if model is not None else _PRODUCER_MODELS.get(lineage),
+            model_lineage=lineage,
+        ),
+        overwrite=True,
+    )
+
+
+def _work_to_review(sub, *, author_lineage: str = "fable") -> uuid.UUID:
+    _set_producer(author_lineage)
     wi, _ = sub.create_work_item(
         workflow_name="canonical_v6",
         work_item_type="issue",
@@ -102,13 +112,20 @@ def _work_to_review(sub) -> uuid.UUID:
     return wi.work_item_id
 
 
-def _pass(sub, wi_id, *, lineage=None, ack=False, include_claims=True) -> None:
+def _pass(
+    sub,
+    wi_id,
+    *,
+    lineage: str,
+    ack: bool = False,
+    payload_claim: str | None = None,
+) -> None:
+    _set_producer(lineage)
     payload = {"review_note": "adversarial review: checked the diff"}
     if ack:
         payload["same_lineage_acknowledged"] = True
-    if include_claims:
-        claims = {} if lineage is None else {"model_lineage": lineage}
-        payload["reviewer_claims"] = claims
+    if payload_claim is not None:
+        payload["reviewer_claims"] = {"model_lineage": payload_claim}
     sub.transition(
         wi_id,
         "adversarial_pass",
@@ -145,46 +162,36 @@ class TestCrossLineageGateOverV6:
         assert level is AssuranceLevel.INDEPENDENTLY_REVIEWED
 
 
-class TestPostEpochReviewerClaimsAreMandatory:
-    """WI-307: a v6 adversarial pass MUST carry a canonical reviewer_claims block.
-
-    The prior events (create/start/submit) written inside the epoch carry v6
-    envelopes, so the gate reads the verdict as post-epoch and refuses to let the
-    reviewer lineage fall back to the producer block — the omission fails closed
-    at ingress with INVALID_MODEL_LINEAGE, before the verdict is accepted.
-    """
-
-    def test_post_epoch_pass_omitting_reviewer_claims_fails_closed(self, epoch) -> None:
-        wi_id = _work_to_review(epoch)
-        with pytest.raises(RegistaError) as exc_info:
-            _pass(epoch, wi_id, include_claims=False)
-        assert exc_info.value.code == ErrorCode.INVALID_MODEL_LINEAGE
-        # The verdict was refused: the item never left in_review.
-        refreshed = epoch.get_work_item(wi_id)
-        assert refreshed is not None
-        assert refreshed.current_state == "in_review"
-
-    def test_post_epoch_pass_with_empty_reviewer_claims_fails_closed(self, epoch) -> None:
-        wi_id = _work_to_review(epoch)
-        with pytest.raises(RegistaError) as exc_info:
-            _pass(epoch, wi_id, lineage=None, include_claims=True)
-        assert exc_info.value.code == ErrorCode.INVALID_MODEL_LINEAGE
-
-    def test_post_epoch_pass_with_canonical_reviewer_claims_passes(self, epoch) -> None:
-        wi_id = _work_to_review(epoch)
+class TestV6ProducerOnlyReviewerLineage:
+    def test_positive_review_uses_signed_producer_only(self, epoch) -> None:
+        wi_id = _work_to_review(epoch, author_lineage="fable")
         _pass(epoch, wi_id, lineage="glm")
         refreshed = epoch.get_work_item(wi_id)
         assert refreshed is not None
         assert refreshed.current_state == "done"
+        event = epoch.read_events(work_item_id=wi_id, transition="adversarial_pass")[0]
+        assert event.payload == {"review_note": "adversarial review: checked the diff"}
+        assert json.loads(event.canonical_envelope)["producer"]["model_lineage"] == "glm"
 
-
-class TestIngressRejectsNoncanonicalReviewerLineage:
-    def test_unknown_lineage_in_verdict_payload_is_rejected(self, epoch) -> None:
-        from regista._lineage import require_canonical_reviewer_lineage
-
+    def test_payload_lineage_cannot_override_same_signed_producer(self, epoch) -> None:
+        wi_id = _work_to_review(epoch, author_lineage="glm")
         with pytest.raises(RegistaError) as exc_info:
-            require_canonical_reviewer_lineage(
-                {"reviewer_claims": {"model_lineage": "not-a-family"}}
+            _pass(epoch, wi_id, lineage="glm", payload_claim="kimi")
+        assert exc_info.value.code == ErrorCode.INVALID_ARGUMENT
+        refreshed = epoch.get_work_item(wi_id)
+        assert refreshed is not None
+        assert refreshed.current_state == "in_review"
+
+    def test_v6_review_without_model_producer_fails_closed(self, epoch) -> None:
+        wi_id = _work_to_review(epoch, author_lineage="fable")
+        _set_producer(None, model=None)
+        with pytest.raises(RegistaError) as exc_info:
+            epoch.transition(
+                wi_id,
+                "adversarial_pass",
+                "agent:reviewer",
+                actor_kind="agent",
+                payload={"review_note": "no model producer"},
             )
         assert exc_info.value.code == ErrorCode.INVALID_MODEL_LINEAGE
 

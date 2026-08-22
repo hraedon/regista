@@ -107,7 +107,7 @@ def _revocation(payload: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 class TestAcceptancePayload:
     def test_the_fixture_payload_is_valid_and_yields_its_scopes(self, payload):
         scopes = validate_key_acceptance_payload(payload)
-        assert scopes.entity_kinds == frozenset({"work_item", "principal", "workflow"})
+        assert scopes.entity_kinds == frozenset({"work_item", "principal", "workflow", "note"})
         assert scopes.transitions is None
         assert scopes.may_sign_checkpoints is False
         assert scopes.may_sign_bundles is False
@@ -921,9 +921,8 @@ def _minimal_envelope() -> dict[str, Any]:
 
     import json
 
-    from _v6_fixtures import VECTOR_PATH
-
-    case = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
+    vector_path = Path(__file__).parent / "vectors" / "v6" / "bootstrap-project-initialized.json"
+    case = json.loads(vector_path.read_text(encoding="utf-8"))
     envelope: dict[str, Any] = copy.deepcopy(case["input"]["envelope_declaration_order"])
     project = str(uuid.uuid4())
     envelope["project_instance_id"] = project

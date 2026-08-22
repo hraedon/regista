@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
+from collections.abc import Iterator, MutableMapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, runtime_checkable
 
@@ -29,6 +30,44 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _DUMMY_KEY_ID = "in-memory"
 _DUMMY_SIG = b"\x00" * 32
 _DUMMY_HASH = b"\x00" * 32
+
+_EntityEventKey = tuple[str, uuid.UUID]
+
+
+class _NamespacedEventBuckets(MutableMapping[_EntityEventKey, list[Event]]):
+    """Event buckets keyed by the signed entity identity.
+
+    The UUID-only access form is retained as a compatibility shim for older test
+    helpers that inspected ``InMemoryEventStore.events`` directly.  It always means
+    the ``work_item`` namespace; iteration and all stored keys remain fully
+    namespaced, so a note can never share a bucket with a work item.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[_EntityEventKey, list[Event]] = {}
+
+    @staticmethod
+    def _key(key: _EntityEventKey | uuid.UUID) -> _EntityEventKey:
+        if isinstance(key, uuid.UUID):
+            return ("work_item", key)
+        return key
+
+    def __getitem__(self, key: _EntityEventKey | uuid.UUID) -> list[Event]:
+        return self._data[self._key(key)]
+
+    def __setitem__(
+        self, key: _EntityEventKey | uuid.UUID, value: list[Event]
+    ) -> None:
+        self._data[self._key(key)] = value
+
+    def __delitem__(self, key: _EntityEventKey | uuid.UUID) -> None:
+        del self._data[self._key(key)]
+
+    def __iter__(self) -> Iterator[_EntityEventKey]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
 
 
 @runtime_checkable
@@ -85,6 +124,7 @@ class V6AppendRequest:
     key_id: str | None
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = ()
     occurred_at: datetime | None = None
+    producer: Any | None = None
 
 
 def _v6_request(
@@ -94,8 +134,8 @@ def _v6_request(
     actor_id: str,
     actor_kind: str,
     actor_metadata: dict[str, Any] | None,
-    workflow_name: str,
-    workflow_version: int,
+    workflow_name: str | None,
+    workflow_version: int | None,
     transition: str | None,
     payload: dict[str, Any] | None,
     event_id: uuid.UUID,
@@ -104,6 +144,7 @@ def _v6_request(
     key_id: str | None,
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     occurred_at: datetime | None = None,
+    producer: Any | None = None,
 ) -> V6AppendRequest:
     """Translate the legacy append signature into the v6 one, or refuse.
 
@@ -156,6 +197,7 @@ def _v6_request(
         key_id=key_id,
         action_delegation_credentials=action_delegation_credentials,
         occurred_at=occurred_at,
+        producer=producer,
     )
 
 
@@ -224,6 +266,91 @@ def _check_action_delegation_idempotency(
         )
 
 
+def _check_create_idempotency(
+    existing_event: Event | None,
+    *,
+    workflow_name: str,
+    workflow_version: int,
+    work_item_type: str,
+    initial_state: str,
+    custom_fields: dict[str, Any],
+    not_before: datetime | None,
+    actor_id: str,
+    actor_kind: str,
+    actor_metadata: dict[str, Any] | None,
+    key_id: str | None,
+    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...],
+    source: Any,
+) -> Event | None:
+    """Validate and return an existing ``created`` event for an idempotent retry.
+
+    Creation has no caller-supplied entity id, so the ordinary event append
+    idempotency check cannot establish whether a duplicate ``event_id`` belongs to
+    the same request. Compare the complete immutable creation request before either
+    backend allocates a projection row.
+    """
+
+    if existing_event is None:
+        return None
+    if existing_event.entity_kind != "work_item":
+        raise RegistaError(
+            ErrorCode.EVENT_ID_GLOBAL_COLLISION,
+            f"event_id {existing_event.event_id} already used for entity_kind "
+            f"{existing_event.entity_kind!r}, not 'work_item'",
+        )
+    if existing_event.transition != "created":
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used with transition "
+            f"{existing_event.transition!r}, not 'created'",
+        )
+    if existing_event.actor_id != actor_id or existing_event.actor_kind != actor_kind:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used by a different actor",
+        )
+    if existing_event.actor_metadata != actor_metadata:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used with different actor metadata",
+        )
+    if (
+        existing_event.workflow_name != workflow_name
+        or existing_event.workflow_version != workflow_version
+    ):
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used for a different workflow",
+        )
+    if key_id is not None and existing_event.key_id != key_id:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used with a different key_id",
+        )
+    expected_payload = {
+        "work_item_type": work_item_type,
+        "initial_state": initial_state,
+        "custom_fields": custom_fields,
+        "not_before": not_before.isoformat() if not_before else None,
+    }
+    if existing_event.payload != expected_payload:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} already used with different creation facts",
+        )
+    if existing_event.on_behalf_of is not None:
+        raise RegistaError(
+            ErrorCode.IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD,
+            f"event_id {existing_event.event_id} has unexpected delegation metadata",
+        )
+    _check_action_delegation_idempotency(
+        existing_event,
+        action_delegation_credentials,
+        source=source,
+    )
+    return existing_event
+
+
 def _stored_action_delegation_documents(
     source: Any,
     references: tuple[tuple[str, str], ...],
@@ -283,6 +410,7 @@ def append_event(
     hash_alg: str = "sha-256",
     action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
     occurred_at: datetime | None = None,
+    producer: Any | None = None,
 ) -> Event:
     # The epoch fork. Before genesis this raises GENESIS_REQUIRED exactly as it did
     # on main — which is what keeps every epoch_blocked manifest entry's recorded
@@ -307,6 +435,7 @@ def append_event(
                 key_id=_key_id,
                 action_delegation_credentials=action_delegation_credentials,
                 occurred_at=occurred_at,
+                producer=producer,
             )
         )
     store.check_legacy_append()
@@ -322,7 +451,7 @@ def append_event(
     )
     existing = check_idempotency(
         existing_evt, actor_id, transition, work_item_id,
-        payload=_idem_payload,
+        payload=_idem_payload, entity_kind=entity_kind,
     )
     if existing is not None:
         return existing
@@ -437,7 +566,7 @@ class InMemoryEventStore:
     """
 
     def __init__(self) -> None:
-        self.events: dict[uuid.UUID, list[Event]] = {}
+        self.events: MutableMapping[_EntityEventKey, list[Event]] = _NamespacedEventBuckets()
         self.event_id_index: dict[uuid.UUID, Event] = {}
         self._work_items: dict[uuid.UUID, dict[str, Any]] = {}
         self._entity_seqs: dict[tuple[str, uuid.UUID], dict[str, Any]] = {}
@@ -497,6 +626,20 @@ class InMemoryEventStore:
         """Every stored event, for the v6 row projection."""
         return [event for bucket in self.events.values() for event in bucket]
 
+    def events_for(self, entity_kind: str, entity_id: uuid.UUID) -> list[Event]:
+        """Return one namespaced entity stream without UUID collision."""
+
+        return self.events.get((entity_kind, entity_id), [])
+
+    def has_events_for_id(self, entity_id: uuid.UUID) -> bool:
+        """Whether any entity namespace uses *entity_id*.
+
+        This preserves the historical ``read_events(work_item_id=...)`` lookup
+        semantics while keeping internal stream operations kind-specific.
+        """
+
+        return any(key[1] == entity_id for key in self.events)
+
     def append_v6_row(self, event: Event) -> int:
         """Store one v6 event and return its assigned ``global_seq``.
 
@@ -510,17 +653,18 @@ class InMemoryEventStore:
         seq = self._next_global_seq
         self._next_global_seq += 1
         event = dataclasses.replace(event, global_seq=seq)
-        self.events.setdefault(event.work_item_id, []).append(event)
+        entity_id = event.effective_entity_id
+        self.events.setdefault((event.entity_kind, entity_id), []).append(event)
         self.event_id_index[event.event_id] = event
         self._global_seq_by_event_id[event.event_id] = seq
-        wi = self._work_items.get(event.work_item_id)
+        wi = self._work_items.get(entity_id) if event.entity_kind == "work_item" else None
         if wi is not None:
             wi["last_event_seq"] = event.event_seq
             wi["last_event_at"] = event.timestamp
             wi["next_event_seq"] = event.event_seq + 1
         else:
             ent = self._entity_seqs.setdefault(
-                (event.entity_kind, event.work_item_id),
+                (event.entity_kind, entity_id),
                 {"next_event_seq": 1, "last_event_seq": 0},
             )
             ent["last_event_seq"] = event.event_seq
@@ -601,6 +745,7 @@ class InMemoryEventStore:
             request.transition,
             request.work_item_id,
             payload=_idem_payload,
+            entity_kind=request.entity_kind,
         )
         if existing is not None:
             _check_action_delegation_idempotency(
@@ -626,7 +771,11 @@ class InMemoryEventStore:
                 transition=request.transition,
                 actor_id=request.actor_id,
                 actor_kind=request.actor_kind,
-                producer=resolve_producer(),
+                producer=(
+                    request.producer
+                    if request.producer is not None
+                    else resolve_producer()
+                ),
                 payload=request.payload,
                 actor_metadata=request.actor_metadata,
                 event_id=request.event_id,
@@ -663,13 +812,13 @@ class InMemoryEventStore:
         return self.event_id_index.get(event_id)
 
     def append(self, event: Event) -> Event:
-        wid = event.work_item_id
+        entity_id = event.effective_entity_id
         seq = self._next_global_seq
         self._next_global_seq += 1
         event = dataclasses.replace(event, global_seq=seq)
-        wi = self._work_items.get(wid)
+        wi = self._work_items.get(entity_id) if event.entity_kind == "work_item" else None
         if wi is not None:
-            self.events.setdefault(wid, []).append(event)
+            self.events.setdefault((event.entity_kind, entity_id), []).append(event)
             self.event_id_index[event.event_id] = event
             self._global_seq_by_event_id[event.event_id] = seq
             wi["last_event_seq"] = event.event_seq
@@ -680,7 +829,7 @@ class InMemoryEventStore:
                     bytes(event.canonical_envelope), bytes(event.signature)
                 )
             return event
-        ent_key = (getattr(event, "entity_kind", "work_item"), wid)
+        ent_key = (getattr(event, "entity_kind", "work_item"), entity_id)
         ent = self._entity_seqs.setdefault(
             ent_key,
             {
@@ -688,7 +837,7 @@ class InMemoryEventStore:
                 "last_event_seq": 0,
             },
         )
-        self.events.setdefault(wid, []).append(event)
+        self.events.setdefault(ent_key, []).append(event)
         self.event_id_index[event.event_id] = event
         self._global_seq_by_event_id[event.event_id] = seq
         ent["last_event_seq"] = event.event_seq
@@ -711,7 +860,16 @@ class InMemoryEventStore:
         before_seq: int | None = None,
     ) -> list[Event]:
         if work_item_id is not None:
-            evts = list(self.events.get(work_item_id, []))
+            # Preserve the public historical lookup by UUID: Postgres filters
+            # its compatibility ``work_item_id`` column and therefore returns
+            # all namespaces carrying that UUID. Internal stream consumers use
+            # ``events_for`` and remain isolated by kind.
+            evts = [
+                event
+                for key, bucket in self.events.items()
+                if key[1] == work_item_id
+                for event in bucket
+            ]
             if transition is not None:
                 evts = [e for e in evts if e.transition == transition]
             if actor_id is not None:
@@ -807,6 +965,7 @@ class PostgresEventStore:
             request.transition,
             request.work_item_id,
             payload=_idem_payload,
+            entity_kind=request.entity_kind,
         )
         if existing is not None:
             _check_action_delegation_idempotency(
@@ -831,7 +990,11 @@ class PostgresEventStore:
             transition=request.transition,
             actor_id=request.actor_id,
             actor_kind=request.actor_kind,
-            producer=resolve_producer(),
+            producer=(
+                request.producer
+                if request.producer is not None
+                else resolve_producer()
+            ),
             payload=request.payload,
             actor_metadata=request.actor_metadata,
             event_id=request.event_id,
@@ -986,6 +1149,7 @@ class PostgresEventStore:
                     transition=event.transition,
                     work_item_id=event.work_item_id,
                     payload=_idem_pl,
+                    entity_kind=event.entity_kind,
                 )
                 if match is not None:
                     return match

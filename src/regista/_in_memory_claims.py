@@ -302,7 +302,7 @@ def _in_memory_check_escalation(
     threshold = wf_data.get("attempt_threshold")
     has_escalated = any(
         e.transition == "escalated"
-        for e in store.events.get(wi["work_item_id"], [])
+        for e in store.events_for("work_item", wi["work_item_id"])
     )
     if not should_escalate(threshold, has_escalated, attempt_number):
         return False
