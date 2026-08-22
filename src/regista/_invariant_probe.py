@@ -1128,7 +1128,7 @@ def invariant_probe_report(dsn: str, projects: Iterable[str]) -> dict[str, Any]:
                 # probe may never do to a real store. The code exercised is the
                 # unmodified production signing path; see the WI-326 block above.
                 "basis": "behavioral_attempt_ephemeral_epoch",
-                "claim": "r10.no_arbitrary_principal.project_v6",
+                "claim": "r10.project_v6.boundary_rejects_mismatched_binding",
                 "paths_proven": [
                     "regista._genesis.append_v6_genesis",
                     "regista._v6_writer.append_v6_event",

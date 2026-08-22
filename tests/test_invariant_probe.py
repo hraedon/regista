@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -351,7 +352,7 @@ def test_actor_boundary_report_names_the_trust_bootstrap_exclusion() -> None:
         item for item in report["checks"] if item["id"] == "regista.actor_boundary_signing"
     )
 
-    assert check["claim"] == "r10.no_arbitrary_principal.project_v6"
+    assert check["claim"] == "r10.project_v6.boundary_rejects_mismatched_binding"
     assert check["paths_proven"] == [
         "regista._genesis.append_v6_genesis",
         "regista._v6_writer.append_v6_event",
@@ -479,7 +480,7 @@ def test_actor_boundary_probe_leaves_no_seed_variable_in_the_environment() -> No
 
 
 def test_actor_boundary_check_passes_with_no_ambient_regista_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """No ambient key path, key material, store or home directory is consulted.
 

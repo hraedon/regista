@@ -39,6 +39,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from _helpers import DSN, KEY_PATH
+from psycopg.sql import SQL, Identifier
 
 #: The sibling checkout holding the gate validator this probe feeds.
 AGENT_SUITE_SRC = Path("/projects/agent-suite/src")
@@ -64,7 +65,9 @@ def probe_project():
 
 def _event_count(project: str) -> int:
     with psycopg.connect(DSN, connect_timeout=5) as conn:
-        row = conn.execute(f'SELECT COUNT(*) FROM "{project}".events').fetchone()
+        row = conn.execute(
+            SQL("SELECT COUNT(*) FROM {}.events").format(Identifier(project))
+        ).fetchone()
     assert row is not None
     return int(row[0])
 
@@ -118,7 +121,7 @@ def test_probe_emits_a_passing_actor_boundary_check_over_the_cli(
         "regista._genesis.append_v6_genesis",
         "regista._v6_writer.append_v6_event",
     ]
-    assert check["claim"] == "r10.no_arbitrary_principal.project_v6"
+    assert check["claim"] == "r10.project_v6.boundary_rejects_mismatched_binding"
     assert check["shared_boundary_consumers"] == [
         "regista._trust_log_writer.append_trust_log_event"
     ]
