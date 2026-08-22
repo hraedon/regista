@@ -1,6 +1,6 @@
 # Epoch reset — the evidentiary record starts at genesis, not at first run
 
-**Status: owner decision, 2026-08-10.** This document has precedence over
+**Status: owner decision, 2026-08-10; cutover disposition amended 2026-08-22.** This document has precedence over
 `ARCHITECTURE-FINAL.md` and `RECONCILIATION.md` for the questions it decides, and it decides
 only two: what happens to the existing event population, and what must be true before the
 new one is opened. Everything else in the frozen set stands.
@@ -9,13 +9,23 @@ new one is opened. Everything else in the frozen set stands.
 
 ## 1. The decision
 
-The legacy event population is **discarded, not migrated**. The 0.6.0 evidentiary record
-begins at a deliberate genesis in an empty store. There is no cut-over from the existing
-data, no mixed-epoch region, and no legacy prefix to anchor.
+The legacy event population is **excluded from the v6 evidentiary record, not migrated or
+deleted**. The 0.6.0 evidentiary record begins at a deliberate genesis in an empty store.
+There is no chain cut-over from the existing data, no mixed-epoch region, and no legacy
+prefix in the v6 chain.
+
+At cutover, the legacy schema is made read-only and retained with a restore-proven final
+backup. The signed estate cutover catalog records its final head hash and event count beside
+the new epoch head. This makes the frozen population independently checkable without
+promoting it into the v6 record or implying v6 assurance over it.
 
 Deliberative content — work items, breadcrumbs, memories, decisions — is **operational
 memory, not evidence**, and is migrated as ordinary rows. Its value never depended on the
-signature chain and does not depend on it now.
+signature chain and does not depend on it now. An operational row that refers to a legacy
+event keeps an explicit legacy-qualified reference that resolves against the frozen store.
+The migration must never silently rewrite such a reference to a v6 event id or hash. If a
+component cannot preserve that distinction, its operational-row migration is blocked until
+the component exposes a conforming import path.
 
 ## 2. Why, measured
 
@@ -177,12 +187,18 @@ frozen trust-domain contract.
 5. Keep the invariants executable and run them on a schedule.
 6. Prefer mistakes that are fixable at read time. Where a value may need correcting later,
    keep it in a projection or mapping rather than baking it into signed bytes.
+7. Published migration files are immutable. Once a release contains a migration path, later
+   releases never change that file's bytes; schema changes ship as appended migration DDL.
+   A fresh-store baseline may be consolidated only as a separately versioned baseline, never
+   by rewriting the migration history an existing store has checksummed. The mutation of
+   published `migrations/001_initial.sql` that surfaced during PR #62 is the defect this rule
+   prevents (tracking issue #65, pending conversion to a native work item after repoint).
 
 ## 7. Open
 
-- **Disposition of the discarded data.** Archived read-only for a period, or dropped. It has
-  no evidentiary value either way; this is a storage and sentiment question, not a
-  correctness one.
+- **Legacy retention is resolved:** keep the schema read-only, retain the final restore-proven
+  dump, and bind its head hash and event count into the estate cutover catalog. Retention does
+  not make the legacy population part of the v6 evidentiary record.
 - **Canonical family ownership is resolved:** regista owns the release-controlled comparison
   registry; cairn owns harness-specific observed-model-to-family mapping (WI-285/WI-045).
 - **Whether `agent_provenance` telemetry restarts empty or is retained as an operational
