@@ -114,7 +114,9 @@ conformance check gates the epoch; if it does not pass, the epoch does not open.
    a hundred events rather than three hundred and seventy-one thousand.
 
 The executable surfaces are split deliberately. `regista invariants probe` owns read-only store
-measurements; `cairn invariants probe` owns the observed-model behavioral checks; agent-suite
+measurements plus the library-property behavioral refusals it can prove without writing to a real
+store (`regista.actor_boundary_signing` is one — see §5.1); `cairn invariants probe` owns the
+observed-model behavioral checks; agent-suite
 orchestrates them with `agent-suite invariant-probes` and applies the separate first-write verdict
 with `agent-suite genesis-gate`. The measurement command is scheduled even while the genesis verdict
 is blocked. Every required behavioral check and every store predicate has both a passing throwaway
@@ -132,6 +134,36 @@ segment writers are refused before genesis and after the v6 epoch opens, with na
 `Regista.read_genesis()` re-derives and verifies the signed record without writing. The invariant
 probe exposes the load-bearing-field refusal, first-write admission, credential-free store
 fingerprint, and transaction snapshot required by the suite gate.
+
+`regista.actor_boundary_signing` (WI-326) is the gate's fifth required check and the one that is
+not a store measurement. The gate asks for proof that signing happens at the actor boundary and
+that no service-held keyset can sign as arbitrary principals, and it rules out key-file or
+configuration inspection as evidence. So the probe generates a throwaway Ed25519 keyset holding
+exactly one usable actor key, bound to one `service:` principal, and then attempts real signing
+writes as a *different* principal through the unmodified `_genesis.append_v6_genesis` and
+`_v6_writer.append_v6_event`. Both refuse with `ACTOR_SIGNER_MISMATCH`; a bound-but-auditor-role
+key refuses with `KEY_ROLE_NOT_PERMITTED`; and the same keyset signs genesis and an ordinary event
+for the principal it *is* bound to, so the refusals cannot be a path that simply cannot sign. The
+check first asserts that `KeySet.resolve_signing_key` **does** offer the service's own key to the
+unbound principal — the keyset is willing, and the actor-boundary comparison is the only thing
+refusing. Because a signing proof necessarily writes, the attempt runs against an ephemeral
+in-memory v6 epoch (the WI-287 D2 parity backend, over which those two writers run unmodified) and
+never against the store named by `REGISTA_DSN`. The check says so in its own `basis` field rather
+than leaving a reader to assume the live store was exercised.
+
+The scope limit matters and is stated in the probe's own source. R-10 has two sentences; this check
+proves the second — a keyset cannot sign as a principal it is not bound to — which is the one the
+gate asks a probe to observe. It does not prove the first in its strongest form, that private key
+material never leaves the actor: a process holding principal P's key can still sign as P. That is
+`client_signer` and the possession ceremony's territory, not a probe's. A green
+`regista.actor_boundary_signing` means "no arbitrary-principal signing through the project-v6
+writers or ordinary trust-log append boundary", not "no service-held keys". What it proves is a
+library property, not a store property. Trust-domain Bootstrap A (`trust init-log` /
+`write_trust_genesis`) and the offline-root `trust delegate-registrar` wrapper are explicitly
+excluded and named in the report: those root-authority ceremonies map a root seed to an
+operator-asserted actor before constructing a temporary keyset. Their attribution gap remains
+WI-320; treating `initial_custody.declared_holder` as authenticated identity would contradict the
+frozen trust-domain contract.
 
 ## 6. Standing rules for the new epoch
 
