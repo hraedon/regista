@@ -35,7 +35,7 @@ GENESIS_ENTITY_KIND = "project"
 # Compatibility spelling used by early v6 conformance fixtures.
 _GENESIS_TRANSITION = GENESIS_TRANSITION
 _MISSING = object()
-#: The closed six-value registry, imported rather than restated — see
+#: The closed eight-value registry, imported rather than restated — see
 #: ``_verification.V6_ENTITY_KINDS``.
 _V6_ENTITY_KINDS = V6_ENTITY_KINDS
 

@@ -133,7 +133,7 @@ class InMemClaimMixin(_InMemoryBase):
     ) -> list[Link]:
         """Return all live (non-removed) links from *work_item_id*."""
         events = sorted(
-            self._store.events.get(work_item_id, []),
+            self._store.events_for("work_item", work_item_id),
             key=lambda e: e.event_seq,
         )
         created: dict[tuple[Any, ...], dict[str, Any]] = {}

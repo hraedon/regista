@@ -12,6 +12,7 @@ from ._datetime_utils import ts_equal_within as _ts_equal_within
 from ._errors import ErrorCode, RegistaError
 from ._event_store import InMemoryEventStore
 from ._keys import KeySet
+from ._replay import _is_expected_unpinned_bootstrap
 from ._types import Event, ReplayReport
 from ._v6_referents import MappingReferents, MaterialCompleteness
 from ._verification import (
@@ -61,6 +62,115 @@ class _NoKeyResolver:
 
 
 _NO_KEY_RESOLVER = _NoKeyResolver()
+
+
+def _verify_non_work_item_group(
+    events: list[Event],
+    *,
+    key_set: KeySet | None,
+    referents: MappingReferents,
+    continue_on_revoked: bool,
+) -> tuple[int, int, int, bool]:
+    """Verify every event in a legal non-work-item entity group.
+
+    Non-work-item groups do not rebuild ``work_items_current``, but they are still
+    signed v6 entities and may carry the complete action-delegation contract.  A
+    group is counted when every event survives strict row/envelope validation and
+    every delegated authorization is verified against the complete store material.
+    The expected unpinned bootstrap authority is the one deliberate exception:
+    its bytes are checked, but the external trust root is outside a default replay.
+    """
+
+    warnings = 0
+    chain_breaks = 0
+    unverifiable = 0
+    verified = True
+    previous: Event | None = None
+    for event in sorted(events, key=lambda item: item.event_seq):
+        chain_ok, chain_error = _verify_hash_chain_in_memory(event, previous)
+        if not chain_ok:
+            chain_breaks += 1
+            verified = False
+            log.warning(
+                "replay.hash_chain_broken",
+                entity_kind=event.entity_kind,
+                entity_id=str(event.effective_entity_id),
+                event_id=str(event.event_id),
+                event_seq=event.event_seq,
+                detail=chain_error,
+            )
+
+        key_entry = None
+        unknown_key_skipped = False
+        if key_set is not None:
+            try:
+                key_entry = key_set.verify_key_status(
+                    event.key_id,
+                    event_timestamp=event.timestamp.isoformat() if event.timestamp else None,
+                )
+            except RegistaError as exc:
+                if exc.code == ErrorCode.REVOKED_KEY_ID and continue_on_revoked:
+                    key_entry = key_set.get_key(event.key_id)
+                    warnings += 1
+                elif exc.code == ErrorCode.UNKNOWN_KEY_ID and continue_on_revoked:
+                    unknown_key_skipped = True
+                    warnings += 1
+                else:
+                    raise
+
+        if key_set is None:
+            verification = verify_event_strict(
+                EventRow.from_event(event, backend=Backend.IN_MEMORY),
+                keys=_NO_KEY_RESOLVER,
+                referents=referents,
+                policy=_KEYLESS_POLICY,
+            )
+        elif key_entry is None:
+            verification = None
+        else:
+            verification = verify_event_strict(
+                EventRow.from_event(event, backend=Backend.IN_MEMORY),
+                keys=KeySetResolver(key_set),
+                referents=referents,
+                policy=_IN_MEMORY_POLICY,
+            )
+
+        if verification is not None:
+            if verification.applicability is Applicability.INVALID:
+                raise RegistaError(
+                    ErrorCode.REPLAY_HALTED,
+                    f"Signature verification failed for event {event.event_id} "
+                    f"at seq {event.event_seq}: {verification.summary()}",
+                )
+            if not verification.accepted:
+                # See the Postgres replay path: a bootstrap event without an
+                # external trust/checkpoint pin is an expected policy gap, not
+                # an event that replay failed to inspect.  Keep the clean epoch
+                # group count and report counters aligned across backends.
+                expected_unpinned_bootstrap = _is_expected_unpinned_bootstrap(
+                    entity_kind=event.entity_kind,
+                    transition=event.transition,
+                    applicability=verification.applicability,
+                    reasons=verification.reasons,
+                )
+                if not expected_unpinned_bootstrap:
+                    verified = False
+                    unverifiable += 1
+            if verification.delegated_authorization and (
+                verification.delegation_verification.value != "verified"
+            ):
+                verified = False
+                if verification.delegation_verification.value == "unverifiable":
+                    unverifiable += 1
+        else:
+            verified = False
+            unverifiable += 1
+        if unknown_key_skipped:
+            verified = False
+            unverifiable += 1
+        previous = event
+
+    return warnings, chain_breaks, unverifiable, verified
 
 
 
@@ -251,44 +361,58 @@ def in_memory_replay(
                    "verify_principal_binding is a no-op",
         )
 
+    all_entity_groups: dict[tuple[str, uuid.UUID], list[Event]] = {}
+    for event in store.all_events():
+        all_entity_groups.setdefault(
+            (event.entity_kind, event.effective_entity_id), []
+        ).append(event)
+
     if not scoped:
-        all_event_wi_ids = set(store.events.keys())
         wi_ids = set(work_items.keys())
-        orphan_ids = all_event_wi_ids - wi_ids
-        for orphan_id in orphan_ids:
-            orphan_evts = sorted(store.events.get(orphan_id, []), key=lambda e: e.event_seq)
-            # Identical decision procedure to `_replay._handle_orphan_group` —
-            # unknown kind halts, a mixed group halts, a spec-legal non-work-item
-            # group is counted by name. Parity is the point: the two backends may
-            # not disagree about whether a healthy v6 chain has findings.
-            kinds = {e.entity_kind for e in orphan_evts}
-            unknown = sorted(kinds - V6_ENTITY_KINDS)
-            if unknown:
+        for (entity_kind, entity_id), group_events in all_entity_groups.items():
+            orphan_evts = sorted(group_events, key=lambda e: e.event_seq)
+            if entity_kind not in V6_ENTITY_KINDS:
                 halted += 1
                 log.error(
                     "replay.unknown_entity_kind",
-                    entity_id=str(orphan_id),
-                    entity_kinds=unknown,
+                    entity_id=str(entity_id),
+                    entity_kinds=[entity_kind],
                     event_count=len(orphan_evts),
                 )
                 continue
-            if kinds != {"work_item"}:
-                if "work_item" in kinds:
+            if entity_kind != "work_item":
+                try:
+                    group_warnings, group_breaks, group_unverifiable, verified = (
+                        _verify_non_work_item_group(
+                            orphan_evts,
+                            key_set=key_set,
+                            referents=referents,
+                            continue_on_revoked=continue_on_revoked,
+                        )
+                    )
+                except RegistaError as exc:
                     halted += 1
                     log.error(
-                        "replay.mixed_entity_kind_group",
-                        entity_id=str(orphan_id),
-                        entity_kinds=sorted(kinds),
-                        event_count=len(orphan_evts),
+                        "replay.non_work_item_verification_failed",
+                        entity_kind=entity_kind,
+                        entity_id=str(entity_id),
+                        error=str(exc),
                     )
                     continue
-                non_work_item_groups += 1
+                warnings += group_warnings
+                chain_breaks += group_breaks
+                unverifiable += group_unverifiable
+                if verified:
+                    non_work_item_groups += 1
                 log.info(
                     "replay.non_work_item_entity",
-                    entity_id=str(orphan_id),
-                    entity_kinds=sorted(kinds),
+                    entity_kind=entity_kind,
+                    entity_id=str(entity_id),
                     event_count=len(orphan_evts),
+                    verified=verified,
                 )
+                continue
+            if entity_id in wi_ids:
                 continue
             # WI-266: a created work item whose projection row is gone is the
             # same structural finding scoped replay halts on. Both the created
@@ -298,29 +422,34 @@ def in_memory_replay(
             if is_created:
                 log.error(
                     "replay.orphan_work_item_missing_projection",
-                    work_item_id=str(orphan_id),
+                    work_item_id=str(entity_id),
                     event_count=len(orphan_evts),
                 )
             else:
                 log.error(
                     "replay.orphan_events",
-                    work_item_id=str(orphan_id),
+                    work_item_id=str(entity_id),
                     event_count=len(orphan_evts),
                 )
 
     if scoped:
+        assert work_item_id is not None
         wi_ids = {work_item_id} if work_item_id in work_items else set()
         items = (
             [(work_item_id, work_items[work_item_id])]
             if work_item_id in work_items
             else []
         )
-        if work_item_id not in work_items and work_item_id in store.events:
+        if work_item_id not in work_items and store.has_events_for_id(work_item_id):
             halted += 1
             log.error(
                 "replay.projection_row_missing",
                 work_item_id=str(work_item_id),
-                event_count=len(store.events.get(work_item_id, [])),
+                event_count=sum(
+                    len(events)
+                    for key, events in store.events.items()
+                    if key[1] == work_item_id
+                ),
             )
     else:
         items = list(work_items.items())
@@ -329,7 +458,7 @@ def in_memory_replay(
     keyless_unsigned = 0
 
     for wi_id, wi in items:
-        evts = store.events.get(wi_id, [])
+        evts = store.events_for("work_item", wi_id)
         if not evts:
             continue
         processed_wi_ids.add(wi_id)
@@ -597,9 +726,7 @@ def in_memory_replay(
         )
 
     if not scoped:
-        all_global_events = []
-        for wid in store.events:
-            all_global_events.extend(store.events[wid])
+        all_global_events = store.all_events()
         stored_head = getattr(store, "_global_chain_head", None)
 
         if not all_global_events:

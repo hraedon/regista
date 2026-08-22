@@ -106,6 +106,11 @@ def in_memory_transition(
 
     new_state = transition_def["to_state"]
     resolved_occurred_at = datetime.now(UTC)
+    v6_producer = None
+    if store.v6_epoch_open():
+        from ._v6_writer import resolve_producer
+
+        v6_producer = resolve_producer()
     authorization_evidence = AuthorizationEvidence(
         mode="direct", status="not_applicable"
     )
@@ -141,7 +146,7 @@ def in_memory_transition(
             )
         prior_events = tuple(
             sorted(
-                store.events.get(work_item_id, []),
+                store.events_for("work_item", work_item_id),
                 key=lambda e: e.event_seq,
             )[-VALIDATOR_HISTORY_LIMIT:]
         )
@@ -179,6 +184,9 @@ def in_memory_transition(
             actor_metadata=actor_metadata,
             actor_kind=actor_kind,
             prior_events=prior_events,
+            producer=(
+                v6_producer.as_envelope_member() if v6_producer is not None else None
+            ),
             on_behalf_of=(
                 dict(on_behalf_of) if on_behalf_of is not None else None
             ),
@@ -214,6 +222,7 @@ def in_memory_transition(
         _key_id=key_id,
         action_delegation_credentials=action_delegation_credentials,
         occurred_at=resolved_occurred_at,
+        producer=v6_producer,
     )
 
     wi["current_state"] = new_state

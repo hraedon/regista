@@ -130,6 +130,7 @@ def register_routes(
             custom_fields=body.custom_fields,
             not_before=_parse_datetime(body.not_before),
             event_id=_parse_uuid(body.event_id) if body.event_id else None,
+            action_delegation_credentials=tuple(body.action_delegation_credentials),
         )
         return {"work_item": _serialize(wi), "event": _serialize(evt)}
 

@@ -121,7 +121,7 @@ def in_memory_read_events_since(
     *,
     limit: int = 100,
 ) -> list[Event]:
-    evts = store.events.get(work_item_id, [])
+    evts = store.events_for("work_item", work_item_id)
     result = [e for e in evts if e.event_seq > after_seq]
     result.sort(key=lambda e: e.event_seq)
     return result[:limit]

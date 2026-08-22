@@ -26,7 +26,63 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   wrapper are explicitly excluded because their actor mapping happens before the temporary
   keyset boundary; that attribution gap remains WI-320. No existing check, status or ID changed;
   `probe_version` stays `1`.
+## [0.7.1] — 2026-08-22
 
+### Added
+
+- **Signed principal-lifecycle authority binding.** Durable enrollment, routine
+  rotation, and revocation now resolve a live scoped registrar from the pinned
+  estate trust log; recovery rotation requires detached root-threshold signatures.
+  Trust-log append and the rebuildable principal-key projection share one
+  transaction, with durable idempotency and explicit dual-authorization seams.
+- **Canonical trust-genesis environment name.** `REGISTA_TRUST_GENESIS_PATH` is
+  the only supported environment variable for the operator-pinned trust-genesis
+  document.
+- **Public trust-log verification.** `Regista.verify_trust_log()` performs the
+  authority-checked trust-log walk in a read-only transaction and returns a
+  typed `TrustLogVerificationReport`; it fails closed when no pinned genesis is
+  configured.
+- **Public offline verification surface (`regista.verification`).** Embedding
+  consumers no longer need `regista._signing` / `regista._v6_referents` imports
+  to verify stored events correctly: `bundle_referents` presents a bundle's
+  manifest+events as v6 referent material (completeness derived from the
+  manifest, never asserted), `chain_head_hash` is the one version-aware
+  hash-chain link formula, and `verify_event_with_referents` returns the
+  structured verdict under caller-supplied key material with a required
+  `referents` keyword. Documented consumer contract: `INVALID` is a proven
+  defect, `UNVERIFIABLE` is an evidentiary gap (including the v6 genesis
+  bootstrap, whose authority is external to any bundle), and the two must not
+  be collapsed. See `docs/0.7.1/AMENDMENTS.md` §4.
+
+## [0.7.0] — 2026-08-22
+
+### Changed
+
+- **Clean next-minor v6 review lineage:** the signed envelope's producer is the
+  sole reviewer model/model-lineage authority. `reviewer_claims` is obsolete in
+  v6 and is rejected as a duplicate at ingress; missing or non-canonical
+  producer model lineage fails the review gate closed. Legacy v4 replay keeps
+  its persisted payload fallback only where that historical envelope requires
+  it.
+
+### Added
+
+- **Public v6 test helpers.** `regista.testing.make_v6_keyset` creates caller-owned
+  throwaway per-principal Ed25519 actor keys, and `open_v6_epoch` opens the real v6
+  genesis path while accepting only the requested principals and scopes. The helpers
+  are test-only and never open an epoch during production handle construction.
+
+- **`note` becomes the eighth v6 entity kind.** `V6_ENTITY_KINDS` in `regista._verification` amends the closed §1.2 registry from seven values to eight by adding `note`, a non-work-item kind that carries null `workflow` (admitted by the verifier's null-`workflow` rule in `_verification._validate_v6_object`). `_genesis`, `_v6_writer`, `_replay` and the docs (`V6-ENVELOPE.md`, `TRUST-DOMAIN.md`, `RECONCILIATION.md`) all follow from the single registry definition. Closure still rejects unknown kinds; it does not preserve the numeral seven.
+
+- **Action-delegation credentials threaded through `create_work_item`.** `action_delegation_credentials` now flows from the public `Regista.create_work_item` / `InMemoryRegista.create_work_item` API and the sidecar `/v1/create_work_item` route through the full Postgres and in-memory create call chains into the initial `created` event's v6 append. An empty tuple preserves the legacy `direct` authorization; invalid credentials fail with `ACTION_DELEGATION_INVALID` before the work item is created. Idempotency binding behaviour is unchanged — the existing event-store `_check_action_delegation_idempotency` still governs duplicate `event_id` resolution.
+
+### Changed — BREAKING
+
+- **Action-delegation v1 scopes now authorize notes.** A scope is exactly a workflow-bound
+  `work_item` with non-empty `workflow_names`, or a non-workflow `note` with `workflow_names: []`.
+  Mixed/ambiguous axes and non-authorizable entity kinds are rejected; no compatibility parsing is
+  retained. Writer, verifier, replay, revocation, and max-use checks apply equally to delegated
+  note events.
 ## [0.6.0] — 2026-08-19
 
 The 0.6.0 epoch-reset epoch: v6 signed envelopes, the Ed25519 trust domain,
@@ -56,23 +112,10 @@ explicit residual-threat disclosure (**Security**, WI-007).
   frozen contracts amend consistently: `V6-ENVELOPE.md` §1.2 / DD-7 and
   `TRUST-DOMAIN.md` §5.2.
 
-- **The reviewer's model lineage is a canonical assertion in the signed review-verdict
-  payload (WI-305 A).** A reviewer's role-specific `model_lineage` now lives in
-  `payload.reviewer_claims.model_lineage` (``REVIEW-VERDICTS.md`` §2.2) — the v6
-  vehicle, since `actor.metadata` may not carry `model_lineage` and the process-level
-  `producer` block (§1.8) is one value per process. At **ingress** — in
-  `adversarial_review` and `human_gate` — a review-verdict that declares a
-  `reviewer_claims` object must carry a canonical `model_lineage`; an absent,
-  malformed, or unknown value raises `INVALID_MODEL_LINEAGE`
-  (`regista._lineage.require_canonical_reviewer_lineage`) instead of being silently
-  read as undeclared. At **read time** the gate consumes the payload claim
-  (`verdict_reviewer_lineage` / `reviewer_model_lineage`), with a narrow legacy
-  fallback to the per-event lineage only for persisted pre-verdict events. New helpers
-  in `regista._lineage`; `tests/test_wi305_reviewer_lineage_payload.py` pins the
-  vehicle (closed-registry ingress rejection, precedence, gate classification from the
-  payload alone) and `tests/test_wi305_v6_review_gate.py` pins it over a genuine v6
-  epoch (author lineage via the `producer` block, reviewer lineage via the signed
-  verdict).
+- **Historical 0.6.0 reviewer-lineage payload vehicle (WI-305 A).** The released
+  0.6.0 implementation recorded a reviewer claim in `reviewer_claims`; the
+  clean next-minor contract above supersedes that v6 vehicle. Only concrete
+  persisted v4 replay retains the legacy payload reader.
 
 - **WI-305 C: `principal_binding_verified` reports the acceptance-chain binding on a
   v6 epoch.** `ReplayReport.principal_binding_verified` is now True on a clean v6 epoch

@@ -55,6 +55,7 @@ from ._action_delegation import (
     ACTION_DELEGATION_REVOKED,
     ActionDelegationCredential,
     ActionDelegationError,
+    is_action_delegation_target,
     parse_action_delegation,
     parse_action_delegation_revocation,
     verify_action_delegation_chain,
@@ -64,7 +65,7 @@ from ._datetime_utils import parse_v6_occurred_at, v6_occurred_at
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
 from ._keys import KeyEntry, KeySet
-from ._lineage import MODEL_LINEAGE_FAMILIES
+from ._lineage import MODEL_LINEAGE_FAMILIES, reject_obsolete_reviewer_claims
 from ._signing import sign_v6_envelope
 from ._verification import (
     V6_ENTITY_KINDS,
@@ -92,7 +93,7 @@ _ANCHOR_TRANSITIONS: Final[frozenset[str]] = frozenset(
     {"project_initialized", "project_cryptographic_epoch_started", PRINCIPAL_KEY_ACCEPTED}
 )
 
-#: The closed six-value registry, imported rather than restated — see
+#: The closed eight-value registry, imported rather than restated — see
 #: ``_verification.V6_ENTITY_KINDS``.
 _V6_ENTITY_KINDS: Final[frozenset[str]] = V6_ENTITY_KINDS
 
@@ -1672,6 +1673,7 @@ def append_v6_event(
             f"entity_kind {entity_kind!r} is not in the closed v6 registry",
             detail={"allowed": sorted(_V6_ENTITY_KINDS)},
         )
+    reject_obsolete_reviewer_claims(payload)
     if (workflow_name is None) != (workflow_version is None):
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -1705,11 +1707,12 @@ def append_v6_event(
             ErrorCode.ACTION_DELEGATION_INVALID,
             f"the action-delegation credential document is invalid: {exc}",
         ) from exc
-    if parsed_credentials and (entity_kind != "work_item" or workflow_name is None):
+    if parsed_credentials and not is_action_delegation_target(entity_kind, workflow_name):
         raise RegistaError(
             ErrorCode.ACTION_DELEGATION_INVALID,
-            "action-delegation credentials may authorize only workflow-bound work-item "
-            "actions; lifecycle and project events require their own signed authority",
+            "action-delegation credentials may authorize only workflow-bound work_item "
+            "or non-workflow note actions; lifecycle and other entity events require "
+            "their own signed authority",
             detail={
                 "entity_kind": entity_kind,
                 "workflow_name": workflow_name,

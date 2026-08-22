@@ -40,6 +40,30 @@ from regista._principals import (
     validate_principal_id,
 )
 
+
+def test_validate_principal_id_is_exported_from_public_package() -> None:
+    from regista import validate_principal_id as public_validate_principal_id
+
+    assert public_validate_principal_id("agent:public-api") == "agent:public-api"
+    with pytest.raises(RegistaError):
+        public_validate_principal_id("not-a-principal")
+
+
+def test_resolve_producer_is_exported_from_public_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    import regista
+
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "public-api-test")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "1")
+    monkeypatch.delenv("REGISTA_PRODUCER_MODEL", raising=False)
+    monkeypatch.delenv("REGISTA_PRODUCER_MODEL_LINEAGE", raising=False)
+
+    producer = regista.resolve_producer()
+
+    assert producer.harness == "public-api-test"
+    assert producer.harness_version == "1"
+    assert producer.model is None
+    assert producer.model_lineage is None
+
 # ---------------------------------------------------------------------------
 # §2.1 — the closed sets, asserted exactly
 # ---------------------------------------------------------------------------

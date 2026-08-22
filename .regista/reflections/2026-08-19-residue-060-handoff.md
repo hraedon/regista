@@ -79,7 +79,7 @@ now put governance and custody outside `binding_core` (sorted top-level
   projection unchanged. A missing genesis is accepted only when the stored trust log is empty;
   an event-present log fails closed with `genesis_document_required`. `check_projection_consistent`
   calls the same dry-run. Doctor `trust:projection_consistent` reads the pinned genesis from
-  `REGISTRA_TRUST_GENESIS_PATH`; without one it skips an empty log and fails an
+  `REGISTA_TRUST_GENESIS_PATH`; without one it skips an empty log and fails an
   event-present log (never a clean pass on unverifiable material).
 - `source_event_hash` = the verified trust-log event hash; `acceptance_event_hash` stays the
   project-chain acceptance (two-chain split).

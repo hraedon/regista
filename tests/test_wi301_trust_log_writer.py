@@ -49,13 +49,11 @@ REGISTRAR = "service:registrar-1"
 
 
 @pytest.fixture(autouse=True)
-def _producer_env():
-    import os
-
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+def _producer_env(monkeypatch):
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "pytest")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
 
 def _tlogkey(key_id: str, seed: bytes) -> TrustLogKey:

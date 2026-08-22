@@ -3,16 +3,17 @@
 A v6 epoch's chain necessarily carries ``project``, ``principal`` and ``workflow``
 entity events beside its work items. Before this file, ``replay()`` folded every
 such group into the generic ``warnings`` counter — so a *healthy* clean-epoch
-replay reported seven warnings, and every migrated fixture asserting a clean
-report would have had to either fail or weaken its assertion.
+replay reported a warning for each non-work-item group, and every migrated fixture
+asserting a clean report would have had to either fail or weaken its assertion.
 
 The corrected contract, and what each assertion here falsifies:
 
-* an entity kind in the **CLOSED** seven-value registry (``V6-ENVELOPE.md`` §1.2)
+* an entity kind in the **CLOSED** eight-value registry (``V6-ENVELOPE.md`` §1.2)
   other than ``work_item`` is a spec-legal chain member: no halt, no warning,
   counted by name in ``ReplayReport.non_work_item_groups_verified``;
 * an entity kind **outside** that registry halts, fail-closed, exactly as an
-  orphaned work item does — the tolerance above is granted to five named values,
+  orphaned work item does — the tolerance above is granted to the named
+  non-work-item values,
   not to "anything that is not a work item";
 * their bytes stay inside the global hash-chain verification, which is the
   substance behind the word "verified" in the field's name.
@@ -51,7 +52,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
 
 
 def test_the_closed_registry_is_one_registry() -> None:
-    """Three modules used to hand-copy the seven values. A replay that halts on
+    """Three modules used to hand-copy the eight values. A replay that halts on
     "not in the registry" is only as trustworthy as the registry being singular —
     two registries that drift make the halt a coin toss."""
 
@@ -65,6 +66,7 @@ def test_the_closed_registry_is_one_registry() -> None:
         "project_instance",
         "workflow",
         "spec",
+        "note",
     }
 
 

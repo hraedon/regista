@@ -38,15 +38,13 @@ ROOT_PRINCIPAL = "service:root-a"
 
 
 @pytest.fixture(autouse=True)
-def _producer_env():
+def _producer_env(monkeypatch):
     """The v6 writer refuses to sign without a real process-level producer identity
     (V6-ENVELOPE.md §1.8 — no invented default). Set it as the other writer suites do."""
-    import os
-
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS", "pytest")
-    os.environ.setdefault("REGISTA_PRODUCER_HARNESS_VERSION", "0")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL", "test-fixture")
-    os.environ.setdefault("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS", "pytest")
+    monkeypatch.setenv("REGISTA_PRODUCER_HARNESS_VERSION", "0")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL", "test-fixture")
+    monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
 
 def _write(path, obj) -> str:

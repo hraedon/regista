@@ -188,6 +188,18 @@ class ClientSigner:
             signature=signature,
         )
 
+    def sign_rotation_authorization(self, authorization_bytes: bytes) -> bytes:
+        """Sign the server-provided dual-rotation authorization bytes.
+
+        The server constructs and returns the exact domain-separated bytes from
+        the prepared operation.  The outgoing key's custody helper signs those
+        bytes without exposing its private material; the resulting detached
+        signature is submitted to the server before commit.
+        """
+        if not authorization_bytes:
+            raise ValueError("rotation authorization bytes must not be empty")
+        return _sign_ed25519(self._private_key, authorization_bytes)
+
     def sign_effective(
         self,
         challenge: EffectiveChallenge,
