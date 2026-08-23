@@ -98,66 +98,103 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
-- **`regista trust catalog` / `regista trust verify-catalog` — the signed estate cutover
-  catalog (WI-330, `TRUST-DOMAIN.md` §4.3).** agent-suite's cutover runbook §5.4 step 4
-  instructs the operator to "produce and publish the signed estate cutover catalog
-  through regista's documented catalog command … do not hand-author catalog JSON", and
-  no such command existed: the `trust` subparser offered only
+- **`regista trust catalog` / `trust sign-catalog` / `trust verify-catalog` — the signed
+  estate cutover catalog (WI-330, `TRUST-DOMAIN.md` §4.3).** agent-suite's cutover
+  runbook §5.4 step 4 instructs the operator to "produce and publish the signed estate
+  cutover catalog through regista's documented catalog command … do not hand-author
+  catalog JSON", and no such command existed: the `trust` subparser offered only
   sign/verify/rebuild/init/enroll/delegate-registrar. The artifact itself was fully
   specified (§4.3) and byte-frozen (`tests/vectors/v6/estate-catalog.json`) with nothing
   able to emit it — a cutover blocker.
 
   **Naming.** `catalog` matches the runbook's own wording and §4.4's `trust publish
-  --kind catalog`; `verify-catalog` mirrors the existing `verify-genesis` verb and is
-  what runbook §5.4 step 5 ("re-fetch the publication through an independent checkout
-  and verify its signatures, catalog fields, and referenced heads") runs.
-  `ARCHITECTURE-0.6.0.md`:942-943 makes "produce and sign" ONE step and "publish" the
-  next one, which is why signing is folded into `catalog` and neither command touches
-  git or a network.
+  --kind catalog`; `sign-catalog` and `verify-catalog` mirror the existing
+  `sign-genesis` / `verify-genesis` verbs. `ARCHITECTURE-0.6.0.md`:942-943 makes
+  "produce and sign" ONE step and "publish" the next one, which is why signing is
+  folded into `catalog` and none of the three touches git or a network.
 
-  `trust catalog` builds the document from **measured** store state — each project's
-  `project_instance_id`, its epoch-opening event and its current chain head, plus a
-  PUBLISHED §4.3 trust-log checkpoint reconciled against the live trust log through the
-  same `load_published_checkpoint` path `genesis init` uses — canonicalises it (JCS),
-  derives the digest under `b"regista.estate-catalog.v1\x00"` with §5.3 length framing,
-  root-signs it, self-verifies the bytes it is about to write, writes them, re-reads
-  them and verifies again. `--dry-run` reports the digest the real run would produce
-  (signatures are outside the signed core, so it is the same value, not an
-  approximation), and a pinned `--created-at` makes the whole artifact byte-reproducible.
+  **Authority comes from the published trust-log checkpoint, not from the genesis
+  document.** `verify-catalog` REQUIRES the `regista.trust-checkpoint` the catalog
+  binds: it parses it, enforces its canonical publication bytes, verifies its root
+  signatures, reconciles its `signer_count` against the fingerprints it actually lists,
+  and then takes the authorised signer set from `active_root_fingerprints` and the
+  threshold from its `root_governance` — which the catalog must restate exactly.
+  Genesis alone is wrong in both directions (a root removed by a §5.4 rotation would
+  keep signing; a rotated-in root would be refused), so a rotated-in root's public key
+  is supplied out of band with `--root-public-key` and is used only if `sha256(key)` is
+  in the signed checkpoint's active set — bytes from the operator, authority from the
+  checkpoint. k-of-n catalogs verify against that set and threshold; `--key` is
+  repeatable, and `trust sign-catalog` appends a signature to an existing document
+  (never rebuilding its signed core) so an airgapped ceremony works by courier.
 
-  The frozen legacy head hash, event count and scheme counts come from an operator
+  **Every per-project fact is recomputed from signed event bytes.** The head and the
+  epoch-opening hash come from `_signing.compute_chain_head_hash` over the max- and
+  min-`global_seq` events; the project's identity comes from inside its signed genesis
+  envelope; `event_chain_head` and `project_identity` are then checked *as claims* and a
+  disagreement is a distinct named refusal. This is `ARCHITECTURE-0.6.0.md`:802-810's
+  rule — "the signed event, not the mutable posture row, tells future verifiers where
+  strict v6 rules begin". The operator's approved preflight head and count are a
+  MANDATORY second witness in the inputs file, so the command is never the only witness
+  to a number it signs.
+
+  **Completeness is visible.** Per `RECONCILIATION.md`:682-684 the published catalog is
+  the COMPLETE one and "a partial catalog says `catalog_status: partial` and is ceremony
+  failure, not success". Both commands take a `regista.estate-manifest/v1` document
+  naming the expected `project_instance_id`s (§4.3's "all 26" is this estate's current
+  count, not a contract — nothing is hardcoded). Because the frozen vector has no
+  `catalog_status` key, **absence is the complete claim and presence is the partial
+  one**: the field appears only on partial catalogs, keeping byte conformance intact,
+  and it lives inside the signed core so it cannot be stripped afterwards. Building a
+  partial catalog requires `--allow-partial` and prints a ceremony-failure banner;
+  verifying one returns verdict `PARTIAL` and exits 3.
+
+  The frozen legacy head hash, event count and scheme counts come from the operator's
   measurements file (`--inputs`, a closed-key-set `regista.estate-catalog-inputs/v1`
   document — **not** the catalog): the legacy schema is read-only by the time this runs
   and those numbers were recorded by runbook §2.4 before the freeze. Supplying
-  `legacy_project` re-measures the frozen store instead, and supplying both cross-checks
-  them and refuses a disagreement.
+  `legacy_project` re-measures the frozen store instead — also by recomputing its head
+  from event bytes — and supplying both cross-checks them and refuses a disagreement.
+  Note that the provenance labels (`operator_recorded` / `measured` /
+  `operator_recorded_and_measured`) appear only in the command's **report**: putting them
+  in the document would change its canonical bytes and break the frozen vector, so a
+  reader of a published catalog cannot tell the two apart from the artifact alone.
 
   Fail-closed throughout, every refusal named: unknown or missing top-level keys, a
   publication file that is not exact canonical JCS, `scheme_counts` that do not sum to
   `legacy_event_count`, a restated governance mode that is not the derived one, a
   threshold below the pinned genesis's (WI-280 monotonicity), a signature by a key the
-  pinned genesis never committed to (refused, never dropped — dropping turns k-of-n into
-  1-of-n), inline countersignatures/anchors (§4.3 rule 3 makes those separate immutable
-  records), a project with no opened epoch, an out-of-band `--expect-digest` mismatch.
-  Two new error codes carry them: `ESTATE_CATALOG_SCHEMA_INVALID` (malformed — rebuild
-  it) and `ESTATE_CATALOG_UNVERIFIED` (well-formed, claims did not hold up).
+  verified checkpoint does not list active (refused, never dropped — dropping turns
+  k-of-n into 1-of-n), inline countersignatures/anchors (§4.3 rule 3 makes those
+  separate immutable records), a project with no opened epoch, an out-of-band
+  `--expect-digest` mismatch, a `created_at` without exactly six fractional digits, an
+  unusable `--out`. Two new error codes carry them: `ESTATE_CATALOG_SCHEMA_INVALID`
+  (malformed — rebuild it) and `ESTATE_CATALOG_UNVERIFIED` (well-formed, claims did not
+  hold up). The artifact is written atomically (sibling temp file, fsync, read-back,
+  `os.replace`, directory fsync), so a failure — including under `--force` — leaves any
+  previous catalog intact.
 
   Under-specified points, resolved and recorded in `_estate_catalog.py`'s module
-  docstring rather than chosen silently: signing is **direct root threshold**
-  (`root_signatures[]`, `signer` absent — §4.3's AMENDED rule 1, superseding the JSON
-  skeleton's `"signer": {}`; a scoped-authority catalog is refused, not accepted);
-  `trust_log_checkpoint_digest` is a plain SHA-256 over the published checkpoint's exact
-  canonical bytes, the same value every project's `bootstrap_key_acceptance` already
-  binds; `cutover_event_hash` is the event that opened the project's new epoch, since
-  under `EPOCH-RESET.md` §5 the fresh schema's `project_initialized` *is* its cutover
-  event; and `catalog_kind: project_heads` (§4.3 rule 4, optional and explicitly not a
-  release gate) is a named refusal rather than a guessed entry shape.
+  docstring rather than chosen silently: `trust_log_checkpoint_digest` is a plain
+  SHA-256 over the published checkpoint's exact canonical bytes, the same value every
+  project's `bootstrap_key_acceptance` already binds; `cutover_event_hash` is the event
+  that opened the project's new epoch, since under `EPOCH-RESET.md` §5 the fresh
+  schema's `project_initialized` *is* its cutover event; and `catalog_kind:
+  project_heads` (§4.3 rule 4, optional and explicitly not a release gate) is a named
+  refusal rather than a guessed entry shape.
 
   **Publishing is still an operator step.** §4.4's keyless `regista trust publish --kind
   catalog --input <signed.json> --repo <clone>` does not exist yet; `trust catalog`
   writes the exact canonical publication bytes and prints the §4.2 path they belong at.
-  A k-of-n root domain is refused by name (`threshold_exceeds_single_key`), the same way
-  `trust init-log` and `trust delegate-registrar` refuse it.
+
+  **Known limits, stated rather than implied.** (i) A rotated-in root's public key must
+  be supplied out of band; regista cannot discover it offline, and the ceremony host's
+  live trust log is not consulted by `verify-catalog` by design. (ii) `verify-catalog`
+  authenticates the checkpoint but cannot confirm it *describes the real trust log* —
+  that needs the log, and it is `genesis init` / `trust catalog` that check it against a
+  live walk. (iii) The provenance of the frozen-legacy numbers is absent from the signed
+  artifact (see above). (iv) `--allow-partial` exists so a partial ceremony can be
+  recorded honestly, not so one can be shipped; both the builder and the verifier treat
+  it as failure.
 
 - **`regista genesis init` — the per-project v6 epoch opener (WI-325).** The per-project
   analog of `trust init-log`, and the last step of the EPOCH-RESET ceremony that had no

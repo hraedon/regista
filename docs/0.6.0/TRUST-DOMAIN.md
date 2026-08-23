@@ -834,21 +834,71 @@ is explicitly `policy_not_supplied` and never a silent skip.
 Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 
 > **IMPLEMENTED BY — WI-330.** `regista trust catalog` produces and root-signs this
-> document; `regista trust verify-catalog` verifies a published one, fail-closed and
-> offline. The signed core is the document minus `{root_signatures, countersignatures,
-> anchors}`, canonicalised with JCS and framed as above; the frozen bytes are
-> `tests/vectors/v6/estate-catalog.json`. Signing is **direct root threshold** per rule 1
-> of the amendment below — `root_signatures[]`, `signer` absent — and a scoped-authority
-> catalog is refused rather than accepted, because no ratified document names such an
-> authority for the artifact that says the ceremony finished. Three points this section
-> leaves open are resolved in `src/regista/_estate_catalog.py`'s module docstring and
-> recorded there, not here: `trust_log_checkpoint_digest` is a plain SHA-256 over the
-> published checkpoint's exact canonical bytes (the same value
+> document; `regista trust sign-catalog` appends a further root signature offline (the
+> airgapped k-of-n leg); `regista trust verify-catalog` verifies a published one,
+> fail-closed and offline. The signed core is the document minus `{root_signatures,
+> countersignatures, anchors}`, canonicalised with JCS and framed as above; the frozen
+> bytes are `tests/vectors/v6/estate-catalog.json`.
+>
+> **Authority is the published checkpoint, not this document's own `root_governance`
+> and not the genesis signer list.** `verify-catalog` REQUIRES the published
+> `regista.trust-checkpoint` the catalog binds, parses it, checks its canonical form,
+> verifies its root signatures, and takes the authorised signer set from its
+> `active_root_fingerprints` and the threshold from its `root_governance` — which the
+> catalog must then restate exactly. Verifying against genesis alone is wrong in both
+> directions: a root **removed** by a §5.4 rotation would keep signing valid catalogs,
+> and a root **rotated in** would be refused. A rotated-in root's public key is not in
+> any document an offline auditor holds, so `--root-public-key` supplies the bytes while
+> the signed checkpoint supplies the authority (the key is used only if `sha256(key)` is
+> in `active_root_fingerprints`) — the same direct exchange §4.5 step 1 already requires
+> for the root fingerprints. There is no verification mode in which the checkpoint is
+> skipped and the verdict still reads VALID.
+>
+> Signing is **direct root threshold** per rule 1 of the amendment below —
+> `root_signatures[]`, `signer` absent — and a scoped-authority catalog is refused
+> rather than accepted, because no ratified document names such an authority for the
+> artifact that says the ceremony finished.
+>
+> **Completeness is checked against an operator-supplied manifest.**
+> `RECONCILIATION.md`:682-684 requires the published catalog to be the COMPLETE one and
+> a partial catalog to say `catalog_status: partial` ("ceremony failure, not success").
+> Because the frozen vector carries no `catalog_status` key, **absence is the complete
+> claim and presence is the partial one** — the field appears only on partial catalogs,
+> which keeps byte conformance intact, and it sits inside the signed core so it cannot
+> be stripped after signing. §4.3's "all 26" is this estate's current count, not a
+> contract, so both commands take a `regista.estate-manifest/v1` document naming the
+> expected `project_instance_id`s; nothing hardcodes 26. A catalog that omits
+> `catalog_status` while missing an expected project is a refusal (a false claim inside
+> signed bytes), and a catalog that declares itself partial verifies cryptographically
+> and still returns a non-success verdict (`verify-catalog` exits 3).
+>
+> **Every per-project fact is recomputed from signed event bytes**, never read from a
+> mutable posture row: the head and the epoch-opening hash come from
+> `_signing.compute_chain_head_hash` over the max- and min-`global_seq` events, the
+> project's identity comes from inside its signed genesis envelope, and
+> `event_chain_head` / `project_identity` are then treated as claims to be checked.
+> That is `ARCHITECTURE-0.6.0.md`:802-810's rule — "the signed event, not the mutable
+> posture row, tells future verifiers where strict v6 rules begin" — and the operator's
+> approved preflight head and count are a mandatory second witness that must agree.
+>
+> Three points this section leaves open are resolved in
+> `src/regista/_estate_catalog.py`'s module docstring and recorded there, not here:
+> `trust_log_checkpoint_digest` is a plain SHA-256 over the published checkpoint's exact
+> canonical bytes (the same value
 > `bootstrap_key_acceptance.trust_log_checkpoint.document_digest` binds);
 > `cutover_event_hash` is the event that opened the project's new epoch, which under
 > `EPOCH-RESET.md` §5 is its `project_initialized`; and `scheme_counts` must sum to
 > `legacy_event_count`, which the frozen vector satisfies. `catalog_kind:
 > project_heads` (rule 4) is **not** implemented and is a named refusal.
+>
+> **What the artifact does not carry.** The provenance of the frozen-legacy numbers —
+> whether `legacy_head_event_hash` / `legacy_event_count` / `scheme_counts` were
+> re-measured from the still-reachable frozen schema or transcribed from the §2.4
+> record — appears only in the **command's report**, never in the document. Adding a
+> field would change the canonical bytes and break the frozen vector, so it was
+> deliberately not added. A reader of a published catalog therefore cannot distinguish
+> the two; what stands behind those numbers is the build-time cross-check, which refuses
+> when a recorded value disagrees with a live measurement.
 
 > **AMENDED — `RECONCILIATION.md` collisions 19, 21, 22.** Four rules govern every document in
 > §4.3, including the two above:

@@ -52,6 +52,7 @@ from regista._estate_catalog import (
     CATALOG_KEYS,
     CORE_KEYS,
     ESTATE_CATALOG_DOMAIN,
+    OPTIONAL_CORE_KEYS,
     SIGNATURE_SECTIONS,
     CatalogProject,
     build_estate_catalog,
@@ -61,6 +62,7 @@ from regista._estate_catalog import (
     estate_catalog_signature_input,
     parse_catalog_inputs,
     parse_estate_catalog,
+    parse_estate_manifest,
     sign_estate_catalog,
     verify_estate_catalog,
 )
@@ -258,10 +260,6 @@ def test_every_core_field_is_covered_by_the_digest(field: str) -> None:
 # ===========================================================================
 
 
-def _published(document: dict[str, Any]) -> dict[str, Any]:
-    return {**document, "root_signatures": [], "countersignatures": [], "anchors": []}
-
-
 def test_unknown_top_level_key_is_rejected() -> None:
     document = _published(_vector_document())
     document["published_by"] = "operator"
@@ -437,13 +435,108 @@ def test_short_signature_is_refused() -> None:
 
 
 # ===========================================================================
-# Verification against a pinned genesis
+# Fixture builders: a genesis, an AUTHENTICATED checkpoint, and a signed catalog
 # ===========================================================================
+#
+# The checkpoint is now load-bearing (review F2/F3): it is what authorises the signing
+# keys and fixes the threshold, so every verification test needs a real, signed,
+# canonical one. `_checkpoint` mints it with the SAME signature input the production
+# checkpoint verifier uses (`_genesis_open._checkpoint_signature_input`), and its
+# knobs — `actives`, `governance`, `sign_with`, `extra_signers` — exist so a test can
+# express a post-rotation root set that genesis alone cannot.
 
 
-def _sign_catalog(fixture, *, signer_index: int = 0, **overrides: Any) -> dict[str, Any]:
-    """Build and root-sign a catalog bound to ``fixture``'s trust domain."""
+def _published(document: dict[str, Any]) -> dict[str, Any]:
+    return {**document, "root_signatures": [], "countersignatures": [], "anchors": []}
+
+
+def _fingerprint_of(public_key: bytes) -> str:
+    return "ed25519:sha256:" + hashlib.sha256(public_key).hexdigest()
+
+
+def _checkpoint(
+    fixture,
+    *,
+    seq: int = 1,
+    actives: tuple[str, ...] | None = None,
+    governance: dict[str, Any] | None = None,
+    sign_with: tuple[str, ...] | None = None,
+    extra_signers: tuple[tuple[bytes, str, str], ...] = (),
+    created_at: str = "2026-08-20T11:00:00.000000Z",
+) -> bytes:
+    """Mint a canonical, root-signed ``regista.trust-checkpoint`` document.
+
+    Defaults describe the un-rotated estate: every genesis signer is active, governance
+    is the genesis governance, and every signer signs.
+    """
+    from regista._genesis_open import _checkpoint_signature_input
+
+    if actives is None:
+        actives = tuple(sorted(fixture.fingerprints[s] for s in fixture.signer_ids))
+    if governance is None:
+        governance = {
+            "mode": fixture.mode,
+            "threshold": fixture.threshold,
+            "signer_count": len(actives),
+        }
+    if sign_with is None:
+        sign_with = tuple(fixture.signer_ids)
+    document: dict[str, Any] = {
+        "type": "regista.trust-checkpoint",
+        "version": 1,
+        "trust_domain_id": fixture.trust_domain_id,
+        "trust_domain_core_digest": fixture.trust_domain_core_digest,
+        "checkpoint_seq": seq,
+        "trust_log": {
+            "project_instance_id": "11111111-2222-3333-4444-555555555555",
+            "event_count": 3,
+            "genesis_event_hash": "sha256:" + "1a" * 32,
+            "head_event_hash": "sha256:" + "2b" * 32,
+            "max_global_seq": 3,
+        },
+        "root_governance": dict(governance),
+        "active_root_fingerprints": list(actives),
+        "prev_checkpoint_digest": None,
+        "prev_commit": None,
+        "created_at": created_at,
+        "root_signatures": [],
+        "countersignatures": [],
+        "anchors": [],
+    }
+    message = _checkpoint_signature_input(document)
+    entries = []
+    for signer_id in sign_with:
+        entries.append(
+            {
+                "signer_id": signer_id,
+                "fingerprint": fixture.fingerprints[signer_id],
+                "signature": base64.b64encode(
+                    nacl.signing.SigningKey(fixture.seeds[signer_id]).sign(message).signature
+                ).decode("ascii"),
+            }
+        )
+    for seed, signer_id, fingerprint in extra_signers:
+        entries.append(
+            {
+                "signer_id": signer_id,
+                "fingerprint": fingerprint,
+                "signature": base64.b64encode(
+                    nacl.signing.SigningKey(seed).sign(message).signature
+                ).decode("ascii"),
+            }
+        )
+    document["root_signatures"] = entries
+    return canonicalize(document)
+
+
+def _build_for(fixture, *, checkpoint: bytes | None = None, **overrides: Any) -> dict[str, Any]:
+    """The unsigned catalog core for ``fixture``, from the frozen vector's project entry."""
     entry = _vector_document()["projects"][0]
+    digest = (
+        "sha256:" + hashlib.sha256(checkpoint).hexdigest()
+        if checkpoint is not None
+        else "sha256:" + "ff" * 32
+    )
     fields: dict[str, Any] = {
         "trust_domain_id": fixture.trust_domain_id,
         "trust_domain_core_digest": fixture.trust_domain_core_digest,
@@ -463,220 +556,520 @@ def _sign_catalog(fixture, *, signer_index: int = 0, **overrides: Any) -> dict[s
                 new_epoch_head_event_hash=entry["new_epoch_head_event_hash"],
             )
         ],
-        "trust_log_checkpoint_digest": "sha256:" + "ff" * 32,
+        "trust_log_checkpoint_digest": digest,
         "created_at": "2026-08-20T12:00:00.000000Z",
         "prev_commit": None,
     }
     fields.update(overrides)
-    document = build_estate_catalog(**fields)
-    signer_id = fixture.signer_ids[signer_index]
-    return sign_estate_catalog(
-        document,
-        seed=fixture.seeds[signer_id],
-        signer_id=signer_id,
-        fingerprint=fixture.fingerprints[signer_id],
+    return build_estate_catalog(**fields)
+
+
+def _sign_catalog(
+    fixture,
+    *,
+    checkpoint: bytes | None = None,
+    sign_with: tuple[str, ...] | None = None,
+    extra_signers: tuple[tuple[bytes, str, str], ...] = (),
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Build and root-sign a catalog bound to ``fixture``'s trust domain."""
+    document = _build_for(fixture, checkpoint=checkpoint, **overrides)
+    if sign_with is None:
+        sign_with = (fixture.signer_ids[0],)
+    signed = dict(document)
+    for signer_id in sign_with:
+        signed = sign_estate_catalog(
+            signed,
+            seed=fixture.seeds[signer_id],
+            signer_id=signer_id,
+            fingerprint=fixture.fingerprints[signer_id],
+        )
+    for seed, signer_id, fingerprint in extra_signers:
+        signed = sign_estate_catalog(
+            signed, seed=seed, signer_id=signer_id, fingerprint=fingerprint
+        )
+    return signed
+
+
+def _manifest(trust_domain_id: str, ids: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "type": "regista.estate-manifest",
+        "version": 1,
+        "trust_domain_id": trust_domain_id,
+        "project_instance_ids": list(ids),
+    }
+
+
+def _manifest_for(catalog: dict[str, Any]) -> dict[str, Any]:
+    """The manifest that makes ``catalog`` exactly complete."""
+    return _manifest(
+        catalog["trust_domain_id"],
+        tuple(entry["project_instance_id"] for entry in catalog["projects"]),
     )
+
+
+# ===========================================================================
+# Completeness (review F4): catalog_status and the expected-estate manifest
+# ===========================================================================
+
+
+def test_frozen_vector_carries_no_catalog_status_key() -> None:
+    """The conformance constraint that decides how partiality is expressed.
+
+    ``RECONCILIATION.md``:682-684 requires a partial catalog to say
+    ``catalog_status: partial``. The frozen vector has no such key, so the field cannot
+    be mandatory without changing the canonical bytes of every catalog. Absence is
+    therefore the COMPLETE claim. This test exists so a future change that makes the
+    field mandatory fails here, loudly, instead of silently breaking every published
+    digest.
+    """
+    document = _vector_document()
+    assert "catalog_status" not in document
+    assert "catalog_status" not in CORE_KEYS
+    assert OPTIONAL_CORE_KEYS == {"catalog_status"}
+    # Still inside the signed core when present: it is not a signature section.
+    assert "catalog_status" not in SIGNATURE_SECTIONS
+
+
+def test_catalog_status_is_covered_by_the_signature() -> None:
+    """A partial stamp cannot be stripped after signing.
+
+    If ``catalog_status`` were outside the hashed bytes, an operator could sign a
+    partial catalog and publish it as complete by deleting one key.
+    """
+    document = _vector_document()
+    stamped = {**document, "catalog_status": "partial"}
+    assert estate_catalog_digest(stamped) != estate_catalog_digest(document)
+    assert b"catalog_status" in estate_catalog_canonical_core(stamped)
+
+
+def test_catalog_status_may_only_say_partial() -> None:
+    document = _published(_vector_document())
+    for value in ("complete", "COMPLETE", "ok", ""):
+        candidate = {**document, "catalog_status": value}
+        assert _reason(_refusal(parse_estate_catalog, candidate, for_signing=True)) in {
+            "catalog_status_invalid",
+            "not_a_string",
+        }
+
+
+def test_builder_omits_catalog_status_for_a_complete_catalog() -> None:
+    built = _build_for(mint_solo())
+    assert "catalog_status" not in built
+    built_partial = _build_for(mint_solo(), catalog_status="partial")
+    assert built_partial["catalog_status"] == "partial"
+
+
+def test_manifest_parsing_is_closed_and_bound_to_a_domain() -> None:
+    domain = str(uuid.uuid4())
+    ids = (str(uuid.uuid4()),)
+    parsed_domain, parsed_ids = parse_estate_manifest(_manifest(domain, ids))
+    assert parsed_domain == domain
+    assert parsed_ids == ids
+
+    assert _reason(
+        _refusal(parse_estate_manifest, {**_manifest(domain, ids), "extra": 1})
+    ) == "closed_key_set_violated"
+    assert _reason(
+        _refusal(parse_estate_manifest, {**_manifest(domain, ids), "type": "x"})
+    ) == "wrong_manifest_type"
+    assert _reason(
+        _refusal(parse_estate_manifest, _manifest(domain, ()))
+    ) == "manifest_projects_empty"
+    assert _reason(
+        _refusal(parse_estate_manifest, _manifest(domain, (ids[0], ids[0])))
+    ) == "duplicate_manifest_project_instance_id"
+
+
+# ===========================================================================
+# Verification: the checkpoint is authenticated, not merely hashed (review F2)
+# ===========================================================================
 
 
 def test_verify_happy_path() -> None:
-    """Every piece of evidence presented at once: file bytes, digest pin, checkpoint."""
+    """Every piece of evidence presented at once, and all of it checked."""
     fixture = mint_solo()
-    checkpoint_bytes = b"published-checkpoint-bytes"
-    signed = _sign_catalog(
-        fixture,
-        trust_log_checkpoint_digest="sha256:" + hashlib.sha256(checkpoint_bytes).hexdigest(),
-    )
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
     report = verify_estate_catalog(
         signed,
         genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
         file_bytes=canonicalize(signed),
         expect_digest=estate_catalog_digest(signed),
-        trust_log_checkpoint_bytes=checkpoint_bytes,
     )
     assert report.verdict == "VALID"
+    assert report.complete is True
     assert report.signatures_verified == 1
-    assert report.extra_signatures == 0
     assert report.digest_pin_status == "matched"
-    assert report.trust_log_checkpoint_status == "matched"
-    assert report.project_count == 1
-    assert report.project_name_hints == ("agent_notes",)
+    assert report.completeness == "complete"
+    assert report.catalog_status == "complete"
+    assert report.checkpoint.signatures_verified == 1
+    assert report.checkpoint.active_root_fingerprints == (
+        fixture.fingerprints[fixture.signer_ids[0]],
+    )
 
 
-def test_verify_reports_unpresented_evidence_rather_than_skipping_it() -> None:
-    """Absent evidence is REPORTED, never silently passed over."""
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    report = verify_estate_catalog(signed, genesis_document=fixture.document)
-    assert report.verdict == "VALID"
-    assert report.digest_pin_status == "not_pinned"
-    assert report.trust_log_checkpoint_status == "not_presented"
+def test_verify_refuses_arbitrary_bytes_presented_as_a_checkpoint() -> None:
+    """Reviewer probe (F2): arbitrary bytes used to report ``matched``.
 
-
-def test_verify_refuses_a_tampered_signature() -> None:
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    signed["created_at"] = "2026-08-20T12:00:01.000000Z"
-    error = _refusal(verify_estate_catalog, signed, genesis_document=fixture.document)
-    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
-    assert _reason(error) == "root_signature_invalid"
-
-
-def test_verify_refuses_a_signer_the_genesis_never_committed_to() -> None:
-    """An unknown key is a REFUSAL, not a dropped signature.
-
-    Dropping it would turn a k-of-n check into a (k-1)-of-n one for anyone who can add
-    a bogus entry, which is the exact hole ``verify_root_threshold`` documents.
+    The old implementation compared only ``sha256(checkpoint_bytes)`` against the
+    catalog's ``trust_log_checkpoint_digest``. Any blob whose digest the catalog happened
+    to bind — and the catalog is written by the same operator — passed as a verified
+    checkpoint. Now the bytes must BE a checkpoint.
     """
     fixture = mint_solo()
-    stranger = nacl.signing.SigningKey.generate()
-    document = build_estate_catalog(
-        trust_domain_id=fixture.trust_domain_id,
-        trust_domain_core_digest=fixture.trust_domain_core_digest,
-        root_governance={
-            "mode": fixture.mode,
-            "threshold": fixture.threshold,
-            "signer_count": fixture.signer_count,
-        },
-        projects=[
-            CatalogProject(**{
-                key: _vector_document()["projects"][0][key]
-                for key in (
-                    "project_instance_id", "project_name_hint", "cutover_event_hash",
-                    "legacy_head_event_hash", "legacy_event_count", "scheme_counts",
-                    "new_epoch_head_event_hash",
-                )
-            })
-        ],
-        trust_log_checkpoint_digest="sha256:" + "ff" * 32,
-        created_at="2026-08-20T12:00:00.000000Z",
+    blob = b"not a checkpoint at all"
+    signed = _sign_catalog(
+        fixture,
+        trust_log_checkpoint_digest="sha256:" + hashlib.sha256(blob).hexdigest(),
     )
-    signed = sign_estate_catalog(
-        document,
-        seed=bytes(stranger),
-        signer_id="root-a",
-        fingerprint="ed25519:sha256:"
-        + hashlib.sha256(bytes(stranger.verify_key)).hexdigest(),
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=blob,
+        expected_estate=_manifest_for(signed),
     )
-    error = _refusal(verify_estate_catalog, signed, genesis_document=fixture.document)
-    assert _reason(error) == "root_signer_not_presented"
+    assert error.code == ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID
+    assert _reason(error) == "checkpoint_file_invalid_json"
 
 
-def test_verify_refuses_a_signer_id_that_contradicts_the_genesis() -> None:
+def test_verify_refuses_a_checkpoint_with_invented_governance() -> None:
+    """Reviewer probe (F2): ``signer_count: 99`` beside one fingerprint passed VALID.
+
+    Nothing compared the checkpoint's stated ``signer_count`` with the number of
+    fingerprints it actually listed, so a catalog could restate an invented governance
+    block and satisfy its own threshold.
+    """
     fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    signed["root_signatures"][0]["signer_id"] = "root-impostor"
-    error = _refusal(verify_estate_catalog, signed, genesis_document=fixture.document)
-    assert _reason(error) == "root_signer_id_mismatch"
+    # `mode` is kept CONSISTENT with (threshold 1, signer_count 99) so the §3.4 derived
+    # mode check cannot mask the finding: what is under test is that signer_count is
+    # compared with the number of fingerprints actually listed.
+    checkpoint = _checkpoint(
+        fixture,
+        governance={"mode": "solo_effective", "threshold": 1, "signer_count": 99},
+    )
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_signer_count_contradicts_active_roots"
+    assert error.detail["signer_count"] == 99
+    assert error.detail["active_roots"] == 1
 
 
-def test_verify_refuses_a_catalog_below_the_threshold() -> None:
-    """A 2-of-2 domain: one valid signature is not enough, and is not rounded up."""
+def test_verify_refuses_a_checkpoint_with_no_signatures() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture, sign_with=())
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_root_signatures_absent"
+
+
+def test_verify_refuses_a_checkpoint_whose_signature_does_not_verify() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    tampered = json.loads(checkpoint.decode())
+    tampered["checkpoint_seq"] = 2
+    tampered_bytes = canonicalize(tampered)
+    signed = _sign_catalog(
+        fixture,
+        trust_log_checkpoint_digest="sha256:" + hashlib.sha256(tampered_bytes).hexdigest(),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=tampered_bytes,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_root_signature_invalid"
+
+
+def test_verify_refuses_a_non_canonical_checkpoint_file() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    pretty = json.dumps(json.loads(checkpoint.decode()), indent=2, sort_keys=True).encode()
+    signed = _sign_catalog(
+        fixture,
+        trust_log_checkpoint_digest="sha256:" + hashlib.sha256(pretty).hexdigest(),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=pretty,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_not_canonical_publication_bytes"
+
+
+def test_verify_refuses_a_checkpoint_the_catalog_does_not_bind() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    other = _checkpoint(fixture, seq=7)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=other,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "trust_log_checkpoint_digest_mismatch"
+
+
+def test_verify_refuses_a_catalog_whose_governance_contradicts_the_checkpoint() -> None:
+    """The catalog RESTATES the checkpoint's governance; a disagreement is invalid."""
+    fixture = mint_solo_effective(signer_count=3)
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(
+        fixture,
+        checkpoint=checkpoint,
+        root_governance={"mode": "solo", "threshold": 1, "signer_count": 1},
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "root_governance_contradicts_checkpoint"
+
+
+def test_verify_refuses_a_checkpoint_for_another_trust_domain() -> None:
+    fixture = mint_solo()
+    other = mint_solo()
+    checkpoint = _checkpoint(other)
+    signed = _sign_catalog(
+        fixture,
+        trust_log_checkpoint_digest="sha256:" + hashlib.sha256(checkpoint).hexdigest(),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_trust_domain_mismatch"
+
+
+def test_verify_refuses_an_unsorted_active_root_list() -> None:
     fixture = mint_co_signed(threshold=2, signer_count=2)
-    signed = _sign_catalog(fixture)
-    error = _refusal(verify_estate_catalog, signed, genesis_document=fixture.document)
+    actives = tuple(fixture.fingerprints[s] for s in fixture.signer_ids)
+    checkpoint = _checkpoint(fixture, actives=tuple(reversed(sorted(actives))))
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, sign_with=fixture.signer_ids)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_active_roots_unsorted"
+
+
+# ===========================================================================
+# Root rotation (review F3): authority is the ACTIVE set, not genesis
+# ===========================================================================
+
+
+def test_verify_refuses_a_signature_by_a_root_the_rotation_removed() -> None:
+    """Reviewer probe (F3): a REMOVED root's catalog still verified.
+
+    Keys were resolved from the genesis document, which names the *initial* roots. A
+    root removed by a §5.4 rotation is still in genesis forever, so its signature kept
+    verifying — the exact opposite of what a rotation is for.
+    """
+    fixture = mint_solo_effective(signer_count=3)
+    kept = fixture.signer_ids[0]
+    removed = fixture.signer_ids[1]
+    # The checkpoint declares only `kept` active: `removed` was rotated out.
+    checkpoint = _checkpoint(
+        fixture,
+        actives=(fixture.fingerprints[kept],),
+        governance={"mode": "solo", "threshold": 1, "signer_count": 1},
+        sign_with=(kept,),
+    )
+    signed = _sign_catalog(
+        fixture,
+        checkpoint=checkpoint,
+        root_governance={"mode": "solo", "threshold": 1, "signer_count": 1},
+        sign_with=(removed,),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "root_signer_not_active"
+    assert error.detail["fingerprint"] == fixture.fingerprints[removed]
+
+
+def test_verify_accepts_a_root_rotated_in_after_genesis() -> None:
+    """Reviewer probe (F3), other direction: a NEWLY ACTIVE root was rejected.
+
+    A root added by a rotation appears in no document an offline auditor holds, so its
+    public key must be supplied out of band. Authority still comes from the signed
+    checkpoint: the key is used only because ``sha256(key)`` is in
+    ``active_root_fingerprints``.
+    """
+    fixture = mint_solo()
+    newcomer = nacl.signing.SigningKey.generate()
+    newcomer_public = bytes(newcomer.verify_key)
+    newcomer_fp = "ed25519:sha256:" + hashlib.sha256(newcomer_public).hexdigest()
+    checkpoint = _checkpoint(
+        fixture,
+        actives=(newcomer_fp,),
+        governance={"mode": "solo", "threshold": 1, "signer_count": 1},
+        sign_with=(),
+        extra_signers=((bytes(newcomer), "root-new", newcomer_fp),),
+    )
+    signed = _sign_catalog(
+        fixture,
+        checkpoint=checkpoint,
+        root_governance={"mode": "solo", "threshold": 1, "signer_count": 1},
+        sign_with=(),
+        extra_signers=((bytes(newcomer), "root-new", newcomer_fp),),
+    )
+    # Without the public key the signature CANNOT be checked, and that is a refusal.
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "checkpoint_root_public_key_unavailable"
+
+    # Supplied out of band, the rotated-in root verifies.
+    report = verify_estate_catalog(
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+        additional_root_public_keys=[newcomer_public],
+    )
+    assert report.verdict == "VALID"
+    assert report.verified_fingerprints == (newcomer_fp,)
+
+
+def test_supplied_public_keys_cannot_manufacture_authority() -> None:
+    """A supplied key is only ever consulted through its checkpoint-listed fingerprint."""
+    fixture = mint_solo()
+    stranger = nacl.signing.SigningKey.generate()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(
+        fixture,
+        checkpoint=checkpoint,
+        sign_with=(),
+        extra_signers=(
+            (
+                bytes(stranger),
+                "root-a",
+                "ed25519:sha256:"
+                + hashlib.sha256(bytes(stranger.verify_key)).hexdigest(),
+            ),
+        ),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+        additional_root_public_keys=[bytes(stranger.verify_key)],
+    )
+    assert _reason(error) == "root_signer_not_active"
+
+
+# ===========================================================================
+# Threshold (review F5): k-of-n verification against the checkpoint
+# ===========================================================================
+
+
+def test_verify_refuses_a_catalog_below_the_checkpoint_threshold() -> None:
+    fixture = mint_co_signed(threshold=2, signer_count=2)
+    checkpoint = _checkpoint(fixture, sign_with=fixture.signer_ids)
+    signed = _sign_catalog(
+        fixture, checkpoint=checkpoint, sign_with=(fixture.signer_ids[0],)
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
     assert _reason(error) == "root_threshold_not_met"
     assert error.detail["verified"] == 1
     assert error.detail["threshold"] == 2
 
 
-def test_verify_accepts_a_co_signed_catalog_at_threshold() -> None:
+def test_verify_accepts_a_k_of_n_catalog_at_threshold() -> None:
+    """F5's verification half: a 2-of-2 catalog verifies against the active set."""
     fixture = mint_co_signed(threshold=2, signer_count=2)
-    signed = _sign_catalog(fixture)
-    second = fixture.signer_ids[1]
-    signed = sign_estate_catalog(
+    checkpoint = _checkpoint(fixture, sign_with=fixture.signer_ids)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, sign_with=fixture.signer_ids)
+    report = verify_estate_catalog(
         signed,
-        seed=fixture.seeds[second],
-        signer_id=second,
-        fingerprint=fixture.fingerprints[second],
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
     )
-    report = verify_estate_catalog(signed, genesis_document=fixture.document)
     assert report.verdict == "VALID"
     assert report.signatures_verified == 2
+    assert report.extra_signatures == 0
     assert report.root_governance.mode == "co_signed"
 
 
-def test_verify_refuses_a_catalog_for_another_trust_domain() -> None:
-    fixture = mint_solo()
-    other = mint_solo()
-    signed = _sign_catalog(fixture)
-    error = _refusal(verify_estate_catalog, signed, genesis_document=other.document)
-    assert _reason(error) == "trust_domain_mismatch"
-
-
-def test_verify_refuses_a_catalog_that_lowers_the_root_threshold() -> None:
-    """WI-280: the threshold is monotone non-decreasing; a document may not lower it."""
+def test_signatures_can_be_appended_one_root_at_a_time() -> None:
+    """The airgapped k-of-n flow: sign, courier, sign again, then verify."""
     fixture = mint_co_signed(threshold=2, signer_count=2)
-    # A catalog claiming 1-of-2 in a 2-of-2 domain would meet its own stated bar with
-    # a single signature. Refused on the stated threshold, before any signature check.
-    signed = _sign_catalog(
-        fixture,
-        root_governance={"mode": "solo_effective", "threshold": 1, "signer_count": 2},
+    checkpoint = _checkpoint(fixture, sign_with=fixture.signer_ids)
+    first = _sign_catalog(fixture, checkpoint=checkpoint, sign_with=(fixture.signer_ids[0],))
+    second_id = fixture.signer_ids[1]
+    complete = sign_estate_catalog(
+        first,
+        seed=fixture.seeds[second_id],
+        signer_id=second_id,
+        fingerprint=fixture.fingerprints[second_id],
     )
-    error = _refusal(verify_estate_catalog, signed, genesis_document=fixture.document)
-    assert _reason(error) == "root_threshold_lowered"
-
-
-def test_verify_refuses_a_non_canonical_publication_file() -> None:
-    """§4.4: publications are canonical JCS bytes. Whitespace is not cosmetic here.
-
-    Two files that parse to the same document but differ in bytes have different
-    sha256s, and ``index.json`` plus every out-of-band pin compares sha256s.
-    """
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    pretty = json.dumps(signed, indent=2, sort_keys=True).encode("utf-8")
-    error = _refusal(
-        verify_estate_catalog, signed, genesis_document=fixture.document, file_bytes=pretty
-    )
-    assert error.code == ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID
-    assert _reason(error) == "not_canonical_publication_bytes"
-
-
-def test_verify_refuses_a_digest_that_disagrees_with_the_out_of_band_pin() -> None:
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    error = _refusal(
-        verify_estate_catalog,
-        signed,
+    # The claim did not move; only the signature array grew.
+    assert estate_catalog_core(complete) == estate_catalog_core(first)
+    assert estate_catalog_digest(complete) == estate_catalog_digest(first)
+    report = verify_estate_catalog(
+        complete,
         genesis_document=fixture.document,
-        expect_digest="sha256:" + "00" * 32,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(complete),
     )
-    assert _reason(error) == "estate_catalog_digest_mismatch"
-
-
-def test_verify_refuses_a_checkpoint_that_is_not_the_bound_one() -> None:
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    error = _refusal(
-        verify_estate_catalog,
-        signed,
-        genesis_document=fixture.document,
-        trust_log_checkpoint_bytes=b"a different checkpoint entirely",
-    )
-    assert _reason(error) == "trust_log_checkpoint_digest_mismatch"
-
-
-def test_verify_refuses_an_under_signed_genesis_document() -> None:
-    """An unverified genesis is not a source of root public keys.
-
-    The refusal is the genesis verifier's own (``threshold_not_met`` /
-    ``TRUST_GENESIS_SIGNATURE_INVALID``), delegated rather than re-implemented so the
-    two cannot drift apart. What this pins is that ``verify_estate_catalog`` runs it
-    *before* treating the document's signers as authority — a catalog signed by a key
-    listed in an unverifiable genesis must not come back VALID.
-    """
-    fixture = mint_co_signed(threshold=2, signer_count=2)
-    genesis = {**fixture.document, "signatures": fixture.document["signatures"][:1]}
-    signed = _sign_catalog(fixture)
-    error = _refusal(verify_estate_catalog, signed, genesis_document=genesis)
-    assert error.code == ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID
-    assert _reason(error) == "threshold_not_met"
+    assert report.verdict == "VALID"
+    assert report.signatures_verified == 2
 
 
 def test_signing_twice_with_the_same_key_is_refused() -> None:
     """Two entries by one signer cannot raise the distinct-signer count."""
     fixture = mint_solo_effective(signer_count=3)
-    signed = _sign_catalog(fixture)
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
     signer_id = fixture.signer_ids[0]
     error = _refusal(
         sign_estate_catalog,
@@ -686,6 +1079,210 @@ def test_signing_twice_with_the_same_key_is_refused() -> None:
         fingerprint=fixture.fingerprints[signer_id],
     )
     assert _reason(error) == "duplicate_root_signature"
+
+
+# ===========================================================================
+# Verification: the rest
+# ===========================================================================
+
+
+def test_verify_refuses_a_tampered_catalog() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    signed["created_at"] = "2026-08-20T12:00:01.000000Z"
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "root_signature_invalid"
+
+
+def test_verify_refuses_a_signer_id_that_contradicts_the_genesis() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    signed["root_signatures"][0]["signer_id"] = "root-impostor"
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "root_signer_id_mismatch"
+
+
+def test_verify_refuses_a_catalog_for_another_trust_domain() -> None:
+    fixture = mint_solo()
+    other = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=other.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "trust_domain_mismatch"
+
+
+def test_verify_refuses_a_non_canonical_publication_file() -> None:
+    """§4.4: publications are canonical JCS bytes. Whitespace is not cosmetic here."""
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    pretty = json.dumps(signed, indent=2, sort_keys=True).encode("utf-8")
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+        file_bytes=pretty,
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID
+    assert _reason(error) == "not_canonical_publication_bytes"
+
+
+def test_verify_refuses_a_digest_that_disagrees_with_the_out_of_band_pin() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+        expect_digest="sha256:" + "00" * 32,
+    )
+    assert _reason(error) == "estate_catalog_digest_mismatch"
+
+
+def test_verify_refuses_an_under_signed_genesis_document() -> None:
+    """An unverified genesis is not a source of root public keys.
+
+    The refusal is the genesis verifier's own (``threshold_not_met`` /
+    ``TRUST_GENESIS_SIGNATURE_INVALID``), delegated rather than re-implemented so the
+    two cannot drift apart. What this pins is that ``verify_estate_catalog`` runs it
+    *before* treating anything derived from that document as authority.
+    """
+    fixture = mint_co_signed(threshold=2, signer_count=2)
+    checkpoint = _checkpoint(fixture, sign_with=fixture.signer_ids)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, sign_with=fixture.signer_ids)
+    genesis = {**fixture.document, "signatures": fixture.document["signatures"][:1]}
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=genesis,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert error.code == ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID
+    assert _reason(error) == "threshold_not_met"
+
+
+# ===========================================================================
+# Completeness verdicts (review F4)
+# ===========================================================================
+
+
+def test_verify_refuses_a_catalog_that_claims_complete_but_is_not() -> None:
+    """Reviewer probe (F4): a one-project catalog for a two-project estate said VALID."""
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    absent = str(uuid.uuid4())
+    manifest = _manifest(
+        fixture.trust_domain_id,
+        (signed["projects"][0]["project_instance_id"], absent),
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=manifest,
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "catalog_completeness_contradicted"
+    assert error.detail["missing_project_instance_ids"] == [absent]
+
+
+def test_verify_reports_partial_as_non_success() -> None:
+    """A partial catalog authenticates and is STILL not a success."""
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, catalog_status="partial")
+    absent = str(uuid.uuid4())
+    manifest = _manifest(
+        fixture.trust_domain_id,
+        (signed["projects"][0]["project_instance_id"], absent),
+    )
+    report = verify_estate_catalog(
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=manifest,
+    )
+    assert report.verdict == "PARTIAL"
+    assert report.complete is False
+    assert report.completeness == "partial"
+    assert report.catalog_status == "partial"
+    assert report.missing_project_instance_ids == (absent,)
+    # The signatures were fine — that is exactly why the verdict has to carry it.
+    assert report.signatures_verified == 1
+
+
+def test_verify_refuses_a_false_partial_claim() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, catalog_status="partial")
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=_manifest_for(signed),
+    )
+    assert _reason(error) == "catalog_partial_claim_contradicted"
+
+
+def test_verify_refuses_a_catalog_covering_an_unexpected_project() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    manifest = _manifest(fixture.trust_domain_id, (str(uuid.uuid4()),))
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=manifest,
+    )
+    assert _reason(error) == "catalog_project_not_in_expected_estate"
+
+
+def test_verify_refuses_a_manifest_for_another_trust_domain() -> None:
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    manifest = _manifest(
+        str(uuid.uuid4()), (signed["projects"][0]["project_instance_id"],)
+    )
+    error = _refusal(
+        verify_estate_catalog,
+        signed,
+        genesis_document=fixture.document,
+        trust_log_checkpoint_bytes=checkpoint,
+        expected_estate=manifest,
+    )
+    assert _reason(error) == "expected_estate_trust_domain_mismatch"
 
 
 # ===========================================================================
@@ -706,28 +1303,59 @@ _RECORDED = {
     "legacy_event_count": 1000,
     "scheme_counts": {"hmac-sha256": 800, "ed25519": 200},
 }
+_PREFLIGHT = {
+    "expected_new_epoch_head_event_hash": "sha256:" + "ee" * 32,
+    "expected_new_epoch_event_count": 1,
+}
 
 
 def test_inputs_accepts_recorded_legacy_measurements() -> None:
-    parsed = parse_catalog_inputs(_inputs({"project": "agent_notes", **_RECORDED}))
+    parsed = parse_catalog_inputs(
+        _inputs({"project": "agent_notes", **_RECORDED, **_PREFLIGHT})
+    )
     assert len(parsed) == 1
     assert parsed[0].project == "agent_notes"
     assert parsed[0].project_name_hint == "agent_notes"
     assert parsed[0].legacy_project is None
     assert parsed[0].has_recorded_legacy_facts is True
+    assert parsed[0].expected_new_epoch_event_count == 1
 
 
 def test_inputs_accepts_a_measurable_legacy_project() -> None:
     parsed = parse_catalog_inputs(
-        _inputs({"project": "agent_notes", "legacy_project": "agent_notes_legacy"})
+        _inputs(
+            {
+                "project": "agent_notes",
+                "legacy_project": "agent_notes_legacy",
+                **_PREFLIGHT,
+            }
+        )
     )
     assert parsed[0].legacy_project == "agent_notes_legacy"
     assert parsed[0].has_recorded_legacy_facts is False
 
 
+def test_inputs_require_the_approved_preflight_numbers() -> None:
+    """Review F1: the command must not be the only witness to what it signs.
+
+    ``ARCHITECTURE-0.6.0.md``:802-810 gates the ceremony on "Confirm the head/count
+    equal the approved preflight result", so the operator has to state them.
+    """
+    error = _refusal(
+        parse_catalog_inputs, _inputs({"project": "agent_notes", **_RECORDED})
+    )
+    assert _reason(error) == "inputs_preflight_absent"
+    assert error.detail["missing"] == [
+        "expected_new_epoch_head_event_hash",
+        "expected_new_epoch_event_count",
+    ]
+
+
 def test_inputs_refuse_an_entry_with_no_legacy_binding() -> None:
     """The legacy binding is the whole point of a cutover catalog: never defaulted."""
-    error = _refusal(parse_catalog_inputs, _inputs({"project": "agent_notes"}))
+    error = _refusal(
+        parse_catalog_inputs, _inputs({"project": "agent_notes", **_PREFLIGHT})
+    )
     assert _reason(error) == "inputs_legacy_facts_incomplete"
 
 
@@ -739,6 +1367,7 @@ def test_inputs_refuse_a_partial_legacy_record() -> None:
                 "project": "agent_notes",
                 "legacy_project": "agent_notes_legacy",
                 "legacy_event_count": 1000,
+                **_PREFLIGHT,
             }
         ),
     )
@@ -748,14 +1377,17 @@ def test_inputs_refuse_a_partial_legacy_record() -> None:
 def test_inputs_refuse_unknown_fields_and_duplicates() -> None:
     error = _refusal(
         parse_catalog_inputs,
-        _inputs({"project": "agent_notes", "dsn": "postgres://x", **_RECORDED}),
+        _inputs({"project": "agent_notes", "dsn": "postgres://x", **_RECORDED, **_PREFLIGHT}),
     )
     assert _reason(error) == "closed_key_set_violated"
     assert error.detail["unknown"] == ["dsn"]
 
     error = _refusal(
         parse_catalog_inputs,
-        _inputs({"project": "agent_notes", **_RECORDED}, {"project": "agent_notes", **_RECORDED}),
+        _inputs(
+            {"project": "agent_notes", **_RECORDED, **_PREFLIGHT},
+            {"project": "agent_notes", **_RECORDED, **_PREFLIGHT},
+        ),
     )
     assert _reason(error) == "duplicate_input_project"
 
@@ -763,7 +1395,14 @@ def test_inputs_refuse_unknown_fields_and_duplicates() -> None:
 def test_inputs_refuse_the_legacy_schema_being_the_target_schema() -> None:
     error = _refusal(
         parse_catalog_inputs,
-        _inputs({"project": "agent_notes", "legacy_project": "agent_notes", **_RECORDED}),
+        _inputs(
+            {
+                "project": "agent_notes",
+                "legacy_project": "agent_notes",
+                **_RECORDED,
+                **_PREFLIGHT,
+            }
+        ),
     )
     assert _reason(error) == "inputs_legacy_project_is_target"
 
@@ -797,29 +1436,51 @@ def _verify_ns(**kwargs) -> argparse.Namespace:
         "hmac_key_path": None,
         "file": None,
         "genesis": None,
-        "expect_digest": None,
         "trust_checkpoint": None,
+        "expected_estate": None,
+        "root_public_key": None,
+        "expect_digest": None,
         "json": True,
     }
     base.update(kwargs)
     return argparse.Namespace(**base)
 
 
-def test_cli_verify_catalog_round_trip(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    fixture = mint_solo()
-    signed = _sign_catalog(fixture)
+def _cli_files(tmp_path, fixture, signed, checkpoint, manifest=None):
     catalog_path = tmp_path / "catalog.json"
     catalog_path.write_bytes(canonicalize(signed))
     genesis_path = tmp_path / "genesis.json"
     genesis_path.write_text(json.dumps(fixture.document), encoding="utf-8")
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_bytes(checkpoint)
+    manifest_path = tmp_path / "estate.json"
+    manifest_path.write_text(
+        json.dumps(manifest if manifest is not None else _manifest_for(signed)),
+        encoding="utf-8",
+    )
+    return (
+        str(catalog_path),
+        str(genesis_path),
+        str(checkpoint_path),
+        str(manifest_path),
+    )
+
+
+def test_cli_verify_catalog_round_trip(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    catalog, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
 
     report = json.loads(
         _capture(
             cmd_trust_verify_catalog,
             _verify_ns(
-                file=str(catalog_path),
-                genesis=str(genesis_path),
+                file=catalog,
+                genesis=genesis,
+                trust_checkpoint=cp,
+                expected_estate=manifest,
                 expect_digest=estate_catalog_digest(signed),
             ),
         )
@@ -827,56 +1488,98 @@ def test_cli_verify_catalog_round_trip(tmp_path, monkeypatch) -> None:
     assert report["verdict"] == "VALID"
     assert report["digest_pin_status"] == "matched"
     assert report["signatures_verified"] == 1
+    assert report["completeness"] == "complete"
+    assert report["checkpoint"]["signatures_verified"] == 1
+
+
+def test_cli_verify_catalog_exits_3_on_a_partial_catalog(tmp_path, monkeypatch) -> None:
+    """A ceremony failure must not look like success to a pipeline.
+
+    ``RECONCILIATION.md``:682-684 — a partial catalog "is ceremony failure, not
+    success". The report still prints (it authenticated), and the process exits 3.
+    """
+    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
+    fixture = mint_solo()
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, catalog_status="partial")
+    absent = str(uuid.uuid4())
+    manifest = _manifest(
+        fixture.trust_domain_id,
+        (signed["projects"][0]["project_instance_id"], absent),
+    )
+    catalog, genesis, cp, manifest_path = _cli_files(
+        tmp_path, fixture, signed, checkpoint, manifest
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(
+                file=catalog,
+                genesis=genesis,
+                trust_checkpoint=cp,
+                expected_estate=manifest_path,
+            ),
+        )
+    assert excinfo.value.code == 3
 
 
 def test_cli_verify_catalog_human_output_names_what_it_did_not_prove(
     tmp_path, monkeypatch
 ) -> None:
-    """The default (non-``--json``) report is what an operator actually reads.
-
-    Two things it must say out loud: the verdict, and the limits of the verdict.
-    Without an out-of-band ``--expect-digest`` the check proves internal coherence
-    only — §4.1 / OPERATOR-FORGERY R3 — and an unsupplied checkpoint is reported
-    ``not_presented`` rather than silently skipped.
-    """
+    """The default (non-``--json``) report is what an operator actually reads."""
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
     fixture = mint_solo()
-    signed = _sign_catalog(fixture)
-    catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_bytes(canonicalize(signed))
-    genesis_path = tmp_path / "genesis.json"
-    genesis_path.write_text(json.dumps(fixture.document), encoding="utf-8")
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    catalog, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
 
     output = _capture(
         cmd_trust_verify_catalog,
-        _verify_ns(file=str(catalog_path), genesis=str(genesis_path), json=False),
+        _verify_ns(
+            file=catalog,
+            genesis=genesis,
+            trust_checkpoint=cp,
+            expected_estate=manifest,
+            json=False,
+        ),
     )
     assert "verdict: VALID" in output
     assert f"estate_catalog_digest: {estate_catalog_digest(signed)}" in output
     assert "digest_pin: not_pinned" in output
-    assert "trust_log_checkpoint: not_presented" in output
+    assert "trust_log_checkpoint: VERIFIED" in output
+    assert "completeness: complete" in output
+    assert "active_root_fingerprints:" in output
     assert "OPERATOR-FORGERY R3" in output
-    assert "no --trust-checkpoint was supplied" in output
 
 
 def test_cli_verify_catalog_refuses_without_a_genesis(tmp_path, monkeypatch) -> None:
     """Without the pinned genesis there are no root keys, so a verdict would be vacuous."""
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
     fixture = mint_solo()
-    catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_bytes(canonicalize(_sign_catalog(fixture)))
-    error = _refusal(cmd_trust_verify_catalog, _verify_ns(file=str(catalog_path)))
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    catalog, _, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
+    error = _refusal(
+        cmd_trust_verify_catalog,
+        _verify_ns(file=catalog, trust_checkpoint=cp, expected_estate=manifest),
+    )
     assert _reason(error) == "genesis_document_absent"
 
 
 def test_cli_verify_catalog_refuses_an_unreadable_file(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
     fixture = mint_solo()
-    genesis_path = tmp_path / "genesis.json"
-    genesis_path.write_text(json.dumps(fixture.document), encoding="utf-8")
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    _, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
     error = _refusal(
         cmd_trust_verify_catalog,
-        _verify_ns(file=str(tmp_path / "absent.json"), genesis=str(genesis_path)),
+        _verify_ns(
+            file=str(tmp_path / "absent.json"),
+            genesis=genesis,
+            trust_checkpoint=cp,
+            expected_estate=manifest,
+        ),
     )
     assert _reason(error) == "catalog_file_unreadable"
 
@@ -884,23 +1587,22 @@ def test_cli_verify_catalog_refuses_an_unreadable_file(tmp_path, monkeypatch) ->
 def test_cli_verify_catalog_refuses_non_json(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
     fixture = mint_solo()
-    genesis_path = tmp_path / "genesis.json"
-    genesis_path.write_text(json.dumps(fixture.document), encoding="utf-8")
-    bad = tmp_path / "catalog.json"
+    checkpoint = _checkpoint(fixture)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint)
+    _, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
+    bad = tmp_path / "bad.json"
     bad.write_text("not json at all", encoding="utf-8")
     error = _refusal(
-        cmd_trust_verify_catalog, _verify_ns(file=str(bad), genesis=str(genesis_path))
+        cmd_trust_verify_catalog,
+        _verify_ns(
+            file=str(bad), genesis=genesis, trust_checkpoint=cp, expected_estate=manifest
+        ),
     )
     assert _reason(error) == "catalog_file_invalid_json"
 
 
 def test_catalog_verbs_are_wired_into_the_trust_subparser() -> None:
-    """The defect WI-330 reports is that no catalog verb exists. Pin that it does.
-
-    ``regista trust --help`` is the surface the runbook's "documented catalog command"
-    sentence points an operator at, so the help text — not just the callable — is what
-    has to carry the verbs.
-    """
+    """The defect WI-330 reports is that no catalog verb exists. Pin that it does."""
     from regista._cli import main
 
     buf = io.StringIO()
@@ -909,6 +1611,50 @@ def test_catalog_verbs_are_wired_into_the_trust_subparser() -> None:
     assert excinfo.value.code == 0
     help_text = buf.getvalue()
     assert "catalog" in help_text
+    assert "sign-catalog" in help_text
     assert "verify-catalog" in help_text
 
 
+def test_trust_catalog_rejects_project_and_projects_flags() -> None:
+    """Review N-d: argparse abbreviation must not bind ``--project`` to an option.
+
+    ``--project`` is a GLOBAL option that has to precede the subcommand. With
+    ``allow_abbrev`` left on and an option named ``--projects``, argparse silently
+    accepted ``trust catalog --project x`` as the inputs path. Both spellings are now
+    unrecognised arguments.
+    """
+    from regista._cli import main
+
+    for flag in ("--project", "--projects"):
+        err = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, contextlib.redirect_stderr(err):
+            main(["trust", "catalog", flag, "x"])
+        assert excinfo.value.code == 2
+        assert "unrecognized arguments" in err.getvalue() or "required" in err.getvalue()
+        assert "--inputs" in err.getvalue()
+
+
+def test_verify_catalog_requires_checkpoint_and_manifest_at_the_cli() -> None:
+    """There is no invocation that skips the checkpoint and still reports a verdict."""
+    from regista._cli import main
+
+    err = io.StringIO()
+    with pytest.raises(SystemExit) as excinfo, contextlib.redirect_stderr(err):
+        main(["trust", "verify-catalog", "catalog.json"])
+    assert excinfo.value.code == 2
+    message = err.getvalue()
+    assert "--trust-checkpoint" in message
+    assert "--expected-estate" in message
+
+
+def test_created_at_requires_exactly_six_fractional_digits() -> None:
+    """Review N-b: ``strptime('%f')`` accepted one to six digits."""
+    document = _published(_vector_document())
+    for value in ("2026-08-20T12:00:00.1Z", "2026-08-20T12:00:00.12345Z",
+                  "2026-08-20T12:00:00Z", "2026-08-20T12:00:00.1234567Z"):
+        candidate = {**document, "created_at": value}
+        assert _reason(
+            _refusal(parse_estate_catalog, candidate, for_signing=True)
+        ) == "malformed_timestamp", value
+    # The frozen vector's own form still passes, so conformance is unaffected.
+    parse_estate_catalog(document, for_signing=True)

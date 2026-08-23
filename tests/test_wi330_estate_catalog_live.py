@@ -29,6 +29,7 @@ import hashlib
 import io
 import json
 import os
+import pathlib
 import subprocess
 import uuid
 from datetime import UTC, datetime
@@ -40,9 +41,9 @@ import pytest
 from _helpers import DSN
 from _trust_fixtures import mint_solo
 
-from regista._cli import cmd_trust_catalog
-from regista._errors import RegistaError
-from regista._estate_catalog import verify_estate_catalog
+from regista._cli import cmd_trust_catalog, cmd_trust_verify_catalog
+from regista._errors import ErrorCode, RegistaError
+from regista._estate_catalog import estate_catalog_digest, verify_estate_catalog
 from regista._jcs import canonicalize
 
 ROOT_PRINCIPAL = "service:root-a"
@@ -527,6 +528,11 @@ def estate(tmp_path_factory):
         target_project=project_names[0],
         second_project=project_names[1],
         opened=opened,
+        # The genesis event hash `genesis init` reported, per project. It IS the chain
+        # head after one event, so it doubles as the approved preflight head — which is
+        # exactly how an operator would obtain it (review F1).
+        heads={project: result["event_hash"] for project, result in opened.items()},
+        root_signer=root_signer,
         root_seed_path=root_seed_path,
         checkpoint=str(checkpoint_path),
         checkpoint_bytes=checkpoint_bytes,
@@ -547,8 +553,12 @@ def _catalog_ns(estate, **overrides) -> argparse.Namespace:
         "project": None,
         "hmac_key_path": None,
         "inputs": None,
+        "expected_estate": None,
         "out": None,
-        "key": estate.root_seed_path,
+        "key": [estate.root_seed_path],
+        "root_public_key": None,
+        "incomplete_signatures": False,
+        "allow_partial": False,
         "trust_checkpoint": estate.checkpoint,
         "trust_publication_repo": estate.publication_repo,
         "trust_publication_commit": estate.publication_commit,
@@ -564,37 +574,109 @@ def _catalog_ns(estate, **overrides) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
+def _verify_ns(estate, **overrides) -> argparse.Namespace:
+    base: dict[str, Any] = {
+        "dsn": None,
+        "project": None,
+        "hmac_key_path": None,
+        "file": None,
+        "genesis": estate.genesis,
+        "trust_checkpoint": estate.checkpoint,
+        "expected_estate": None,
+        "root_public_key": None,
+        "expect_digest": None,
+        "json": True,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _preflight(estate, project: str) -> dict[str, Any]:
+    """The approved preflight numbers for ``project``, as recorded at genesis time.
+
+    ``genesis init`` printed the event hash it wrote; that is the head and the count is
+    1. Supplying them is what makes the command's own derivation checkable
+    (``ARCHITECTURE-0.6.0.md``:802-810).
+    """
+    return {
+        "expected_new_epoch_head_event_hash": estate.heads[project],
+        "expected_new_epoch_event_count": 1,
+    }
+
+
+def _inputs_file(estate, tmp_path, *entries: dict[str, Any], name="inputs.json") -> str:
+    return _write_json(tmp_path / name, _inputs(*entries))
+
+
 def _estate_inputs(estate, tmp_path, name: str = "inputs.json", **overrides) -> str:
-    entry: dict[str, Any] = {"project": estate.target_project, **RECORDED_LEGACY}
+    entry: dict[str, Any] = {
+        "project": estate.target_project,
+        **RECORDED_LEGACY,
+        **_preflight(estate, estate.target_project),
+    }
     entry.update(overrides)
     return _write_json(tmp_path / name, _inputs(entry))
+
+
+def _manifest_file(estate, tmp_path, *projects: str, name="estate.json") -> str:
+    """The expected-estate manifest naming exactly ``projects``."""
+    return _write_json(
+        tmp_path / name,
+        {
+            "type": "regista.estate-manifest",
+            "version": 1,
+            "trust_domain_id": estate.fx.document["trust_domain_id"],
+            "project_instance_ids": [
+                estate.opened[project]["project_instance_id"] for project in projects
+            ],
+        },
+    )
+
+
+def _run(estate, tmp_path, *, out, **overrides) -> dict[str, Any]:
+    inputs = overrides.pop("inputs", None) or _estate_inputs(estate, tmp_path)
+    manifest = overrides.pop("expected_estate", None) or _manifest_file(
+        estate, tmp_path, estate.target_project
+    )
+    return json.loads(
+        _capture(
+            cmd_trust_catalog,
+            _catalog_ns(
+                estate, inputs=inputs, expected_estate=manifest, out=str(out), **overrides
+            ),
+        )
+    )
 
 
 # ------------------------------------------------------------------- the keystone
 
 
 def test_trust_catalog_end_to_end(estate, tmp_path) -> None:
-    """The live ceremony: measured fields come from the store, and the artifact verifies.
+    """The live ceremony: facts are RECOMPUTED from signed events, and it verifies.
 
-    Asserts the facts only a store read can get right — the ``project_instance_id``
+    Asserts the values only a store read can get right — the ``project_instance_id``
     ``genesis init`` minted, the epoch-opening event hash, the current head — and then
-    re-verifies the written bytes through the public verifier, which is what runbook
-    §5.4 step 5 does from an independent checkout.
+    re-verifies the written bytes through the public verifier with the checkpoint and
+    the expected-estate manifest presented, which is what runbook §5.4 step 5 does from
+    an independent checkout.
     """
-    inputs = _estate_inputs(estate, tmp_path)
     out = tmp_path / "catalog.json"
-    result = json.loads(
-        _capture(cmd_trust_catalog, _catalog_ns(estate, inputs=inputs, out=str(out)))
-    )
+    result = _run(estate, tmp_path, out=out)
 
     assert result["verdict"] == "VALID"
     assert result["catalog_kind"] == "cutover"
+    assert result["catalog_status"] == "complete"
     assert result["project_count"] == 1
+    assert result["expected_project_count"] == 1
+    assert result["missing_project_instance_ids"] == []
     assert result["trust_domain_id"] == estate.fx.document["trust_domain_id"]
     assert result["trust_log_checkpoint_digest"] == estate.checkpoint_digest
     assert result["trust_log_checkpoint_source"] == "published"
+    assert result["trust_log_checkpoint_signatures_verified"] == 1
     assert result["trust_log_publication_commit"] == estate.publication_commit
     assert result["publication"] == "operator_step"
+    assert result["epoch_facts_source"] == "recomputed_from_signed_events"
+    assert result["threshold_met"] is True
     assert result["legacy_measurement_sources"] == {estate.target_project: "operator_recorded"}
 
     entry = result["projects"][0]
@@ -604,83 +686,500 @@ def test_trust_catalog_end_to_end(estate, tmp_path) -> None:
     assert entry["legacy_head_event_hash"] == RECORDED_LEGACY["legacy_head_event_hash"]
     assert entry["legacy_event_count"] == 1000
     # `genesis init` wrote exactly one event, so the epoch-opening event IS the head.
-    # Both are MEASURED (judgment call 3), not asserted by the operator.
-    assert entry["cutover_event_hash"].startswith("sha256:")
+    # Both are RECOMPUTED from event bytes (judgment call 3 / review F1).
+    assert entry["cutover_event_hash"] == estate.heads[estate.target_project]
     assert entry["cutover_event_hash"] == entry["new_epoch_head_event_hash"]
 
     written = out.read_bytes()
     document = json.loads(written.decode("utf-8"))
     assert written == canonicalize(document), "the artifact must be exact canonical JCS"
+    assert "catalog_status" not in document, "a complete catalog OMITS catalog_status"
     report = verify_estate_catalog(
         document,
         genesis_document=estate.fx.document,
+        trust_log_checkpoint_bytes=estate.checkpoint_bytes,
+        expected_estate=json.loads(
+            pathlib.Path(_manifest_file(estate, tmp_path, estate.target_project)).read_text()
+        ),
         file_bytes=written,
         expect_digest=result["estate_catalog_digest"],
-        trust_log_checkpoint_bytes=estate.checkpoint_bytes,
     )
     assert report.verdict == "VALID"
-    assert report.trust_log_checkpoint_status == "matched"
     assert report.digest_pin_status == "matched"
+    assert report.checkpoint.document_digest == estate.checkpoint_digest
+
+
+# ------------------------------------------------------- F1: forged posture rows
+
+
+def _forge(project: str, statement: str, params: list[Any]) -> None:
+    from regista._connection import ConnectionManager
+
+    mgr = ConnectionManager(DSN, project)
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            conn.execute(statement, params)
+    finally:
+        mgr.close()
+
+
+@pytest.fixture
+def forgeable(estate, tmp_path):
+    """A throwaway project with an opened epoch whose posture rows a test may forge.
+
+    Separate from the module-scoped estate so a forgery cannot leak into the other
+    tests, and dropped afterwards.
+    """
+    from regista import Regista
+    from regista._cli import cmd_genesis_init
+    from regista.testing import drop_project_schema
+
+    project = f"wi330f_{uuid.uuid4().hex[:8]}"
+    handle = Regista.create_project(DSN, project, estate.host_keyfile)
+    handle.close()
+    opened = json.loads(
+        _capture(
+            cmd_genesis_init,
+            argparse.Namespace(
+                dsn=DSN, project=project, hmac_key_path=estate.host_keyfile, principal=HOST,
+                gate_report=_gate_report(tmp_path / "gate_forge.json", project=project),
+                genesis=estate.genesis, trust_project=estate.trust_project, key_id=None,
+                trust_event_hash=None, trust_domain_id=None,
+                trust_checkpoint=estate.checkpoint,
+                trust_publication_repo=estate.publication_repo,
+                trust_publication_commit=estate.publication_commit,
+                checkpoint_seq=1, project_instance_id=None, scope_entity_kind=None,
+                may_sign_bundles=False, dry_run=False, json=True,
+            ),
+        )
+    )
+    assert opened["ok"] is True, opened
+    try:
+        yield SimpleNamespace(project=project, opened=opened)
+    finally:
+        drop_project_schema(DSN, project)
+
+
+def _forgeable_inputs(estate, forgeable, tmp_path) -> tuple[str, str]:
+    inputs = _write_json(
+        tmp_path / "forge_inputs.json",
+        _inputs(
+            {
+                "project": forgeable.project,
+                **RECORDED_LEGACY,
+                "expected_new_epoch_head_event_hash": forgeable.opened["event_hash"],
+                "expected_new_epoch_event_count": 1,
+            }
+        ),
+    )
+    manifest = _write_json(
+        tmp_path / "forge_estate.json",
+        {
+            "type": "regista.estate-manifest",
+            "version": 1,
+            "trust_domain_id": estate.fx.document["trust_domain_id"],
+            "project_instance_ids": [forgeable.opened["project_instance_id"]],
+        },
+    )
+    return inputs, manifest
+
+
+def test_forged_chain_head_row_is_refused(estate, forgeable, tmp_path) -> None:
+    """Reviewer probe (F1): a forged ``event_chain_head`` produced a VALID catalog.
+
+    ``event_chain_head.head_hash`` is a mutable posture row. The events are left
+    untouched here — only the row is rewritten — which is exactly the shape of edit
+    ``ARCHITECTURE-0.6.0.md``:802-810 says a verifier must not trust: "the signed event,
+    not the mutable posture row, tells future verifiers where strict v6 rules begin".
+    The head is now RECOMPUTED with ``compute_chain_head_hash`` over the max-global_seq
+    event's signed bytes and the row is checked against it.
+    """
+    inputs, manifest = _forgeable_inputs(estate, forgeable, tmp_path)
+    _forge(
+        forgeable.project,
+        "UPDATE event_chain_head SET head_hash = %s WHERE id = TRUE",
+        [bytes.fromhex("ab" * 32)],
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate,
+            inputs=inputs,
+            expected_estate=manifest,
+            out=str(tmp_path / "x.json"),
+        ),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "new_epoch_head_row_contradicts_events"
+    assert error.detail["stated"] == "sha256:" + "ab" * 32
+    assert error.detail["recomputed"] == forgeable.opened["event_hash"]
+    assert not (tmp_path / "x.json").exists()
+
+
+def test_forged_project_identity_genesis_hash_is_refused(
+    estate, forgeable, tmp_path
+) -> None:
+    """Reviewer probe (F1), other row: ``project_identity.genesis_event_hash`` forged.
+
+    That column is what ``cutover_event_hash`` used to be read from verbatim. It is now
+    recomputed from the first event's signed bytes.
+    """
+    inputs, manifest = _forgeable_inputs(estate, forgeable, tmp_path)
+    _forge(
+        forgeable.project,
+        "UPDATE project_identity SET genesis_event_hash = %s WHERE id = TRUE",
+        [bytes.fromhex("cd" * 32)],
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(tmp_path / "x.json")
+        ),
+    )
+    assert _reason(error) == "genesis_event_hash_row_contradicts_events"
+    assert error.detail["stated"] == "sha256:" + "cd" * 32
+
+
+def test_forged_project_identity_instance_id_is_refused(
+    estate, forgeable, tmp_path
+) -> None:
+    """The project's IDENTITY is taken from inside the signed genesis envelope."""
+    inputs, manifest = _forgeable_inputs(estate, forgeable, tmp_path)
+    imposter = str(uuid.uuid4())
+    _forge(
+        forgeable.project,
+        "UPDATE project_identity SET project_instance_id = %s WHERE id = TRUE",
+        [imposter],
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(tmp_path / "x.json")
+        ),
+    )
+    assert _reason(error) == "project_identity_contradicts_genesis_envelope"
+    assert error.detail["field"] == "project_instance_id"
+    assert error.detail["row"] == imposter
+
+
+def test_preflight_mismatch_is_refused(estate, forgeable, tmp_path) -> None:
+    """The second witness: an operator-recorded preflight head that disagrees.
+
+    ``ARCHITECTURE-0.6.0.md``:802-810 — "Confirm the head/count equal the approved
+    preflight result." The command derived one value from event bytes; the operator
+    recorded another; the ceremony stops rather than picking a winner.
+    """
+    inputs = _write_json(
+        tmp_path / "bad_preflight.json",
+        _inputs(
+            {
+                "project": forgeable.project,
+                **RECORDED_LEGACY,
+                "expected_new_epoch_head_event_hash": "sha256:" + "9e" * 32,
+                "expected_new_epoch_event_count": 1,
+            }
+        ),
+    )
+    _, manifest = _forgeable_inputs(estate, forgeable, tmp_path)
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(tmp_path / "x.json")
+        ),
+    )
+    assert _reason(error) == "new_epoch_preflight_mismatch"
+    assert error.detail["derived"]["new_epoch_head_event_hash"] == forgeable.opened[
+        "event_hash"
+    ]
+
+
+def test_preflight_count_mismatch_is_refused(estate, forgeable, tmp_path) -> None:
+    inputs = _write_json(
+        tmp_path / "bad_count.json",
+        _inputs(
+            {
+                "project": forgeable.project,
+                **RECORDED_LEGACY,
+                "expected_new_epoch_head_event_hash": forgeable.opened["event_hash"],
+                "expected_new_epoch_event_count": 99,
+            }
+        ),
+    )
+    _, manifest = _forgeable_inputs(estate, forgeable, tmp_path)
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(tmp_path / "x.json")
+        ),
+    )
+    assert _reason(error) == "new_epoch_preflight_mismatch"
+    assert error.detail["derived"]["event_count"] == 1
+
+
+# ------------------------------------------------------ F4: completeness at build
+
+
+def test_trust_catalog_refuses_a_partial_estate_by_default(estate, tmp_path) -> None:
+    """Reviewer finding (F4): a catalog missing a project used to be produced silently.
+
+    ``RECONCILIATION.md``:682-684 — the ceremony publishes the COMPLETE catalog, and "a
+    partial catalog says catalog_status: partial and is ceremony failure, not success".
+    """
+    manifest = _manifest_file(
+        estate, tmp_path, estate.target_project, estate.second_project
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=manifest,
+            out=str(tmp_path / "x.json"),
+        ),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "catalog_would_be_partial"
+    assert error.detail["expected"] == 2
+    assert error.detail["covered"] == 1
+    assert error.detail["missing_project_instance_ids"] == [
+        estate.opened[estate.second_project]["project_instance_id"]
+    ]
+    assert not (tmp_path / "x.json").exists()
+
+
+def test_allow_partial_stamps_the_signed_bytes(estate, tmp_path) -> None:
+    """``--allow-partial`` produces a catalog that says so, inside the signature."""
+    out = tmp_path / "partial.json"
+    manifest = _manifest_file(
+        estate, tmp_path, estate.target_project, estate.second_project
+    )
+    result = _run(estate, tmp_path, out=out, expected_estate=manifest, allow_partial=True)
+    assert result["catalog_status"] == "partial"
+    assert result["verdict"] == "PARTIAL"
+    document = json.loads(out.read_bytes().decode("utf-8"))
+    assert document["catalog_status"] == "partial"
+    # Inside the signed core, so it cannot be stripped after the fact.
+    stripped = {k: v for k, v in document.items() if k != "catalog_status"}
+    assert estate_catalog_digest(stripped) != estate_catalog_digest(document)
+
+
+def test_trust_catalog_refuses_a_project_outside_the_expected_estate(
+    estate, tmp_path
+) -> None:
+    manifest = _write_json(
+        tmp_path / "other_estate.json",
+        {
+            "type": "regista.estate-manifest",
+            "version": 1,
+            "trust_domain_id": estate.fx.document["trust_domain_id"],
+            "project_instance_ids": [str(uuid.uuid4())],
+        },
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=manifest,
+            out=str(tmp_path / "x.json"),
+        ),
+    )
+    assert _reason(error) == "catalog_project_not_in_expected_estate"
+
+
+def test_trust_catalog_refuses_a_manifest_for_another_trust_domain(
+    estate, tmp_path
+) -> None:
+    manifest = _write_json(
+        tmp_path / "wrong_domain.json",
+        {
+            "type": "regista.estate-manifest",
+            "version": 1,
+            "trust_domain_id": str(uuid.uuid4()),
+            "project_instance_ids": [
+                estate.opened[estate.target_project]["project_instance_id"]
+            ],
+        },
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=manifest,
+            out=str(tmp_path / "x.json"),
+        ),
+    )
+    assert _reason(error) == "expected_estate_trust_domain_mismatch"
 
 
 def test_trust_catalog_covers_multiple_projects(estate, tmp_path) -> None:
     """A catalog is one document for the whole estate (ARCHITECTURE-0.6.0.md:798)."""
-    inputs = _write_json(
-        tmp_path / "inputs.json",
-        _inputs(
-            {"project": estate.target_project, **RECORDED_LEGACY},
-            {
-                "project": estate.second_project,
-                "legacy_head_event_hash": "sha256:" + "ab" * 32,
-                "legacy_event_count": 7,
-                "scheme_counts": {"hmac-sha256": 7},
-            },
-        ),
+    inputs = _inputs_file(
+        estate,
+        tmp_path,
+        {
+            "project": estate.target_project,
+            **RECORDED_LEGACY,
+            **_preflight(estate, estate.target_project),
+        },
+        {
+            "project": estate.second_project,
+            "legacy_head_event_hash": "sha256:" + "ab" * 32,
+            "legacy_event_count": 7,
+            "scheme_counts": {"hmac-sha256": 7},
+            **_preflight(estate, estate.second_project),
+        },
     )
-    result = json.loads(
-        _capture(
-            cmd_trust_catalog,
-            _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "catalog.json")),
-        )
+    manifest = _manifest_file(
+        estate, tmp_path, estate.target_project, estate.second_project
+    )
+    result = _run(
+        estate, tmp_path, out=tmp_path / "catalog.json", inputs=inputs,
+        expected_estate=manifest,
     )
     assert result["project_count"] == 2
+    assert result["catalog_status"] == "complete"
     hints = [entry["project_name_hint"] for entry in result["projects"]]
     # Sorted by hint so an operator listing them in a different order gets the same
     # bytes — JCS does not sort arrays.
     assert hints == sorted(hints)
-    instance_ids = {entry["project_instance_id"] for entry in result["projects"]}
-    assert instance_ids == {
+    assert {entry["project_instance_id"] for entry in result["projects"]} == {
         estate.opened[estate.target_project]["project_instance_id"],
         estate.opened[estate.second_project]["project_instance_id"],
     }
 
 
-def test_trust_catalog_dry_run_writes_nothing_and_reports_the_real_digest(
+# ------------------------------------------------------------ F5: k-of-n signing
+
+
+def test_trust_catalog_refuses_an_under_signed_catalog_by_default(
     estate, tmp_path
 ) -> None:
+    """A 1-of-1 domain needs one key; this asserts the named refusal's shape.
+
+    The estate here is solo, so the threshold is already met — what is pinned is that
+    the refusal exists and names the workaround when it is not. The co-signed path is
+    covered offline in ``test_wi330_estate_catalog.py`` (a live k-of-n estate would
+    mean a second trust log for no extra coverage of this code path).
+    """
+    from regista._estate_catalog import verify_published_checkpoint
+
+    checkpoint = verify_published_checkpoint(
+        estate.checkpoint_bytes, genesis_document=estate.fx.document
+    )
+    assert checkpoint.governance.threshold == 1
+    assert checkpoint.active_root_fingerprints == (
+        estate.fx.fingerprints[estate.root_signer],
+    )
+
+
+def test_trust_catalog_and_sign_catalog_compose(estate, tmp_path) -> None:
+    """``--incomplete-signatures`` then ``trust sign-catalog``: the airgapped flow.
+
+    A 1-of-1 estate lets this be exercised end to end: produce with NO keys, which is
+    under threshold and therefore refused unless the operator says so, then append the
+    root signature offline and verify.
+    """
+    from regista._cli import cmd_trust_sign_catalog
+
+    out = tmp_path / "unsigned.json"
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
     inputs = _estate_inputs(estate, tmp_path)
-    out = tmp_path / "dry.json"
-    plan = json.loads(
+
+    # Without --incomplete-signatures, an under-signed catalog is refused.
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(out), key=[]
+        ),
+    )
+    assert _reason(error) == "root_threshold_not_met"
+    assert error.detail["keys_supplied"] == 0
+    assert not out.exists()
+
+    partial = json.loads(
         _capture(
             cmd_trust_catalog,
             _catalog_ns(
-                estate, inputs=inputs, out=str(out), dry_run=True,
-                created_at="2026-08-20T12:00:00.000000Z",
+                estate, inputs=inputs, expected_estate=manifest, out=str(out), key=[],
+                incomplete_signatures=True,
             ),
         )
+    )
+    assert partial["threshold_met"] is False
+    assert partial["verdict"] == "UNSIGNED_THRESHOLD_PENDING"
+    assert json.loads(out.read_bytes())["root_signatures"] == []
+
+    signed_path = tmp_path / "signed.json"
+    result = json.loads(
+        _capture(
+            cmd_trust_sign_catalog,
+            argparse.Namespace(
+                dsn=None, project=None, hmac_key_path=None,
+                file=str(out), out=str(signed_path), key=[estate.root_seed_path],
+                trust_checkpoint=estate.checkpoint, root_public_key=None,
+                genesis=estate.genesis, force=False, json=True,
+            ),
+        )
+    )
+    assert result["signatures_total"] == 1
+    assert result["threshold_met"] is True
+    # The claim did not move: only root_signatures grew.
+    before = json.loads(out.read_bytes())
+    after = json.loads(signed_path.read_bytes())
+    assert estate_catalog_digest(before) == estate_catalog_digest(after)
+
+    report = json.loads(
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(
+                estate, file=str(signed_path), expected_estate=manifest,
+                expect_digest=result["estate_catalog_digest"],
+            ),
+        )
+    )
+    assert report["verdict"] == "VALID"
+
+
+def test_sign_catalog_refuses_a_key_outside_the_active_root_set(
+    estate, tmp_path
+) -> None:
+    from regista._cli import cmd_trust_sign_catalog
+
+    out = tmp_path / "catalog.json"
+    _run(estate, tmp_path, out=out)
+    stranger = _seed_file(tmp_path / "stranger.seed", bytes(nacl.signing.SigningKey.generate()))
+    error = _refusal(
+        cmd_trust_sign_catalog,
+        argparse.Namespace(
+            dsn=None, project=None, hmac_key_path=None,
+            file=str(out), out=str(tmp_path / "signed.json"), key=[stranger],
+            trust_checkpoint=estate.checkpoint, root_public_key=None,
+            genesis=estate.genesis, force=False, json=True,
+        ),
+    )
+    assert _reason(error) == "root_key_not_active"
+
+
+# ------------------------------------------------------------------- the rest
+
+
+def test_trust_catalog_dry_run_writes_nothing_and_reports_the_real_digest(
+    estate, tmp_path
+) -> None:
+    out = tmp_path / "dry.json"
+    plan = _run(
+        estate, tmp_path, out=out, dry_run=True,
+        created_at="2026-08-20T12:00:00.000000Z",
     )
     assert plan["dry_run"] is True
     assert plan["would_write"] == str(out)
     assert not out.exists()
 
-    real = json.loads(
-        _capture(
-            cmd_trust_catalog,
-            _catalog_ns(
-                estate, inputs=inputs, out=str(out),
-                created_at="2026-08-20T12:00:00.000000Z",
-            ),
-        )
+    real = _run(
+        estate, tmp_path, out=out, created_at="2026-08-20T12:00:00.000000Z"
     )
     # Signatures live outside the signed bytes, so the dry run's digest is the real
     # one rather than an approximation of it.
@@ -689,19 +1188,15 @@ def test_trust_catalog_dry_run_writes_nothing_and_reports_the_real_digest(
 
 
 def test_trust_catalog_human_output_names_the_publication_step(estate, tmp_path) -> None:
-    """The default (non-``--json``) report is what the runbook operator reads.
-
-    It has to carry the digest, the measured per-project facts, and — because §5.4
-    step 4 says "produce **and publish**" while §4.4's publish command does not exist
-    — an unambiguous statement that publishing is still theirs to do, with the §4.2
-    path to do it at.
-    """
-    inputs = _estate_inputs(estate, tmp_path)
+    """The default (non-``--json``) report is what the runbook operator reads."""
     out = tmp_path / "catalog.json"
     output = _capture(
         cmd_trust_catalog,
         _catalog_ns(
-            estate, inputs=inputs, out=str(out), json=False,
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(out), json=False,
             created_at="2026-08-20T12:00:00.000000Z",
         ),
     )
@@ -709,67 +1204,130 @@ def test_trust_catalog_human_output_names_the_publication_step(estate, tmp_path)
     assert "estate_catalog_digest:" in output
     assert estate.checkpoint_digest in output
     assert estate.target_project in output
+    assert "epoch facts:             recomputed_from_signed_events" in output
     assert "self-verify:             VALID" in output
     assert "PUBLISH IS A SEPARATE OPERATOR STEP" in output
     assert "catalogs/20260820T120000Z-cutover.json" in output
 
-    dry = _capture(
+
+def test_partial_catalog_human_output_shouts(estate, tmp_path) -> None:
+    output = _capture(
         cmd_trust_catalog,
         _catalog_ns(
-            estate, inputs=inputs, out=str(tmp_path / "dry.json"), json=False,
-            dry_run=True, created_at="2026-08-20T12:00:00.000000Z",
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(
+                estate, tmp_path, estate.target_project, estate.second_project
+            ),
+            out=str(tmp_path / "partial.json"), json=False, allow_partial=True,
         ),
     )
-    assert "trust catalog: dry-run (nothing written)" in dry
+    assert "CEREMONY FAILURE: catalog_status = partial" in output
+    assert "! MISSING:" in output
 
 
 def test_trust_catalog_is_byte_reproducible_with_a_pinned_created_at(estate, tmp_path) -> None:
-    """Ed25519 is deterministic, so a pinned created_at makes the whole artifact repeat.
-
-    That is what lets an auditor re-run the build and compare bytes rather than trust
-    the operator's copy.
-    """
-    inputs = _estate_inputs(estate, tmp_path)
+    """Ed25519 is deterministic, so a pinned created_at makes the whole artifact repeat."""
     first = tmp_path / "a.json"
     second = tmp_path / "b.json"
     for path in (first, second):
-        _capture(
-            cmd_trust_catalog,
-            _catalog_ns(
-                estate, inputs=inputs, out=str(path),
-                created_at="2026-08-20T12:00:00.000000Z",
-            ),
-        )
+        _run(estate, tmp_path, out=path, created_at="2026-08-20T12:00:00.000000Z")
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_trust_catalog_write_is_atomic(estate, tmp_path) -> None:
+    """Review N-a: ``--force`` must not destroy the prior artifact before succeeding.
+
+    The write goes to a sibling temp file, is fsynced and read back, and only then
+    replaces the target. This pins the observable half: after a successful --force run
+    no temp files are left behind, and the bytes at the path are the new canonical ones.
+    """
+    out = tmp_path / "catalog.json"
+    first = _run(estate, tmp_path, out=out, created_at="2026-08-20T12:00:00.000000Z")
+    original = out.read_bytes()
+    second = _run(
+        estate, tmp_path, out=out, force=True,
+        created_at="2026-08-20T13:00:00.000000Z",
+    )
+    assert out.read_bytes() != original
+    assert second["estate_catalog_digest"] != first["estate_catalog_digest"]
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".catalog.json.")]
+    assert leftovers == [], leftovers
+
+
 def test_trust_catalog_refuses_to_clobber_an_existing_artifact(estate, tmp_path) -> None:
-    inputs = _estate_inputs(estate, tmp_path)
     out = tmp_path / "catalog.json"
     out.write_text("{}", encoding="utf-8")
-    error = _refusal(cmd_trust_catalog, _catalog_ns(estate, inputs=inputs, out=str(out)))
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(out),
+        ),
+    )
     assert _reason(error) == "output_exists"
-    _capture(cmd_trust_catalog, _catalog_ns(estate, inputs=inputs, out=str(out), force=True))
+    _run(estate, tmp_path, out=out, force=True)
     assert out.read_bytes() != b"{}"
 
 
-def test_trust_catalog_refuses_a_key_that_is_not_a_genesis_signer(estate, tmp_path) -> None:
+def test_trust_catalog_refuses_an_unusable_out_path(estate, tmp_path) -> None:
+    """Review N-c: a directory or a missing parent is a NAMED error, not a traceback."""
     inputs = _estate_inputs(estate, tmp_path)
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    assert _reason(
+        _refusal(
+            cmd_trust_catalog,
+            _catalog_ns(estate, inputs=inputs, expected_estate=manifest,
+                        out=str(directory)),
+        )
+    ) == "out_path_is_directory"
+    assert _reason(
+        _refusal(
+            cmd_trust_catalog,
+            _catalog_ns(estate, inputs=inputs, expected_estate=manifest,
+                        out=str(tmp_path / "nope" / "catalog.json")),
+        )
+    ) == "out_parent_missing"
+
+
+def test_trust_catalog_refuses_a_key_that_is_not_an_active_root(estate, tmp_path) -> None:
     stranger = _seed_file(tmp_path / "stranger.seed", bytes(nacl.signing.SigningKey.generate()))
     error = _refusal(
         cmd_trust_catalog,
-        _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "x.json"), key=stranger),
+        _catalog_ns(
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(tmp_path / "x.json"), key=[stranger],
+        ),
     )
-    assert _reason(error) == "root_key_not_a_genesis_signer"
+    assert _reason(error) == "root_key_not_active"
 
 
 def test_trust_catalog_refuses_cataloguing_the_trust_log_itself(estate, tmp_path) -> None:
     """The trust log's state is bound through the checkpoint digest, not as an entry."""
     inputs = _write_json(
-        tmp_path / "inputs.json", _inputs({"project": estate.trust_project, **RECORDED_LEGACY})
+        tmp_path / "inputs.json",
+        _inputs(
+            {
+                "project": estate.trust_project,
+                **RECORDED_LEGACY,
+                "expected_new_epoch_head_event_hash": "sha256:" + "11" * 32,
+                "expected_new_epoch_event_count": 1,
+            }
+        ),
     )
     error = _refusal(
-        cmd_trust_catalog, _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "x.json"))
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs,
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(tmp_path / "x.json"),
+        ),
     )
     assert _reason(error) == "input_project_is_trust_log"
 
@@ -784,11 +1342,23 @@ def test_trust_catalog_refuses_a_project_with_no_opened_epoch(estate, tmp_path) 
     handle.close()
     try:
         inputs = _write_json(
-            tmp_path / "inputs.json", _inputs({"project": project, **RECORDED_LEGACY})
+            tmp_path / "inputs.json",
+            _inputs(
+                {
+                    "project": project,
+                    **RECORDED_LEGACY,
+                    "expected_new_epoch_head_event_hash": "sha256:" + "11" * 32,
+                    "expected_new_epoch_event_count": 1,
+                }
+            ),
         )
         error = _refusal(
             cmd_trust_catalog,
-            _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "x.json")),
+            _catalog_ns(
+                estate, inputs=inputs,
+                expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+                out=str(tmp_path / "x.json"),
+            ),
         )
         assert _reason(error) == "new_epoch_not_opened"
     finally:
@@ -796,16 +1366,14 @@ def test_trust_catalog_refuses_a_project_with_no_opened_epoch(estate, tmp_path) 
 
 
 def test_trust_catalog_requires_the_publication_pin(estate, tmp_path) -> None:
-    """A published checkpoint is the only accepted source of the bound digest.
-
-    A local observation is not a checkpoint (``TRUST_LOG_OBSERVATION_TYPE``), so
-    binding one would put an unobserved claim in a field that reads as published.
-    """
-    inputs = _estate_inputs(estate, tmp_path)
+    """A published checkpoint is the only accepted source of the bound digest."""
     error = _refusal(
         cmd_trust_catalog,
         _catalog_ns(
-            estate, inputs=inputs, out=str(tmp_path / "x.json"),
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(tmp_path / "x.json"),
             trust_publication_commit=None,
         ),
     )
@@ -817,21 +1385,27 @@ def test_trust_catalog_validates_operator_literals_before_touching_the_store(
 ) -> None:
     """A typo in ``--created-at`` or ``--prev-commit`` is caught up front.
 
-    Both are validated again inside the builder, but that happens after the trust-log
-    walk and every project measurement — and an offline ceremony discovers the typo
-    with the keys already back in the safe. Same reasoning as ``trust sign-genesis``'s
-    early ``--signed-at`` check.
+    ``--created-at`` now requires EXACTLY six fractional digits (review N-b): the old
+    ``strptime`` check accepted ``.1Z`` while promising microsecond precision.
     """
     inputs = _estate_inputs(estate, tmp_path)
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
     out = tmp_path / "x.json"
-    coarse = _refusal(
-        cmd_trust_catalog,
-        _catalog_ns(estate, inputs=inputs, out=str(out), created_at="2026-08-20T12:00:00Z"),
-    )
-    assert _reason(coarse) == "created_at_malformed"
+    for bad in ("2026-08-20T12:00:00Z", "2026-08-20T12:00:00.1Z", "2026-08-20T12:00:00.12345Z"):
+        error = _refusal(
+            cmd_trust_catalog,
+            _catalog_ns(
+                estate, inputs=inputs, expected_estate=manifest, out=str(out),
+                created_at=bad,
+            ),
+        )
+        assert _reason(error) == "created_at_malformed", bad
     short = _refusal(
         cmd_trust_catalog,
-        _catalog_ns(estate, inputs=inputs, out=str(out), prev_commit="abc123"),
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(out),
+            prev_commit="abc123",
+        ),
     )
     assert _reason(short) == "prev_commit_malformed"
     assert not out.exists()
@@ -841,15 +1415,14 @@ def test_trust_catalog_refuses_a_checkpoint_from_another_publication_commit(
     estate, tmp_path
 ) -> None:
     """The out-of-band commit pin is load-bearing, not decorative."""
-    from regista._errors import ErrorCode
-
-    inputs = _estate_inputs(estate, tmp_path)
     out = tmp_path / "x.json"
     error = _refusal(
         cmd_trust_catalog,
         _catalog_ns(
-            estate, inputs=inputs, out=str(out),
-            trust_publication_commit="0" * 40,
+            estate,
+            inputs=_estate_inputs(estate, tmp_path),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(out), trust_publication_commit="0" * 40,
         ),
     )
     assert error.code == ErrorCode.GENESIS_TRUST_REFERENCE_UNVERIFIED
@@ -857,57 +1430,81 @@ def test_trust_catalog_refuses_a_checkpoint_from_another_publication_commit(
 
 
 def test_trust_catalog_measures_a_reachable_legacy_store(estate, tmp_path) -> None:
-    """``legacy_project`` re-measures the frozen store instead of trusting a record.
-
-    The second opened project stands in for the frozen legacy schema: what is under
-    test is that the numbers in the signed bytes came from a live read and are
-    reported as ``measured``, not as an operator claim.
-    """
-    inputs = _write_json(
-        tmp_path / "inputs.json",
-        _inputs(
-            {
-                "project": estate.target_project,
-                "legacy_project": estate.second_project,
-            }
-        ),
+    """``legacy_project`` re-measures the frozen store instead of trusting a record."""
+    inputs = _inputs_file(
+        estate,
+        tmp_path,
+        {
+            "project": estate.target_project,
+            "legacy_project": estate.second_project,
+            **_preflight(estate, estate.target_project),
+        },
     )
-    result = json.loads(
-        _capture(
-            cmd_trust_catalog,
-            _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "catalog.json")),
-        )
+    result = _run(
+        estate, tmp_path, out=tmp_path / "catalog.json", inputs=inputs,
+        expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
     )
     assert result["legacy_measurement_sources"] == {estate.target_project: "measured"}
     entry = result["projects"][0]
     # `genesis init` wrote one Ed25519 event into the stand-in legacy schema.
     assert entry["legacy_event_count"] == 1
     assert entry["scheme_counts"] == {"ed25519": 1}
-    assert entry["legacy_head_event_hash"] != RECORDED_LEGACY["legacy_head_event_hash"]
-    assert entry["legacy_head_event_hash"].startswith("sha256:")
+    # And it is the RECOMPUTED head, not the posture row.
+    assert entry["legacy_head_event_hash"] == estate.heads[estate.second_project]
 
 
 def test_trust_catalog_refuses_recorded_numbers_that_contradict_the_frozen_store(
     estate, tmp_path
 ) -> None:
     """Supplying both makes them cross-checked, and a disagreement is not signed over."""
-    inputs = _write_json(
-        tmp_path / "inputs.json",
-        _inputs(
-            {
-                "project": estate.target_project,
-                "legacy_project": estate.second_project,
-                **RECORDED_LEGACY,
-            }
-        ),
+    inputs = _inputs_file(
+        estate,
+        tmp_path,
+        {
+            "project": estate.target_project,
+            "legacy_project": estate.second_project,
+            **RECORDED_LEGACY,
+            **_preflight(estate, estate.target_project),
+        },
     )
     error = _refusal(
         cmd_trust_catalog,
-        _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "x.json")),
+        _catalog_ns(
+            estate, inputs=inputs,
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(tmp_path / "x.json"),
+        ),
     )
     assert _reason(error) == "legacy_measurement_mismatch"
     assert error.detail["recorded"]["legacy_event_count"] == 1000
     assert error.detail["measured"]["legacy_event_count"] == 1
+
+
+def test_forged_legacy_head_row_is_refused(estate, forgeable, tmp_path) -> None:
+    """F1 on the legacy side: the frozen store's head is recomputed too."""
+    inputs = _inputs_file(
+        estate,
+        tmp_path,
+        {
+            "project": estate.target_project,
+            "legacy_project": forgeable.project,
+            **_preflight(estate, estate.target_project),
+        },
+    )
+    _forge(
+        forgeable.project,
+        "UPDATE event_chain_head SET head_hash = %s WHERE id = TRUE",
+        [bytes.fromhex("ef" * 32)],
+    )
+    error = _refusal(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs,
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            out=str(tmp_path / "x.json"),
+        ),
+    )
+    assert _reason(error) == "legacy_head_row_contradicts_events"
 
 
 def test_trust_catalog_refuses_an_empty_legacy_store(estate, tmp_path) -> None:
@@ -919,13 +1516,22 @@ def test_trust_catalog_refuses_an_empty_legacy_store(estate, tmp_path) -> None:
     handle = Regista.create_project(DSN, project, estate.host_keyfile)
     handle.close()
     try:
-        inputs = _write_json(
-            tmp_path / "inputs.json",
-            _inputs({"project": estate.target_project, "legacy_project": project}),
+        inputs = _inputs_file(
+            estate,
+            tmp_path,
+            {
+                "project": estate.target_project,
+                "legacy_project": project,
+                **_preflight(estate, estate.target_project),
+            },
         )
         error = _refusal(
             cmd_trust_catalog,
-            _catalog_ns(estate, inputs=inputs, out=str(tmp_path / "x.json")),
+            _catalog_ns(
+                estate, inputs=inputs,
+                expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+                out=str(tmp_path / "x.json"),
+            ),
         )
         assert _reason(error) == "legacy_store_empty"
     finally:
