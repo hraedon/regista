@@ -3823,15 +3823,30 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
     )
     with open(args.out, "wb") as handle:
         handle.write(canonical)
-    # Re-read the bytes that actually landed and verify those, not the in-memory copy.
-    with open(args.out, "rb") as handle:
-        written = handle.read()
-    report = verify_estate_catalog(
-        json.loads(written.decode("utf-8")),
-        genesis_document=genesis_document,
-        file_bytes=written,
-        expect_digest=digest,
-    )
+    # Re-read the bytes that actually LANDED and verify those, not the in-memory copy.
+    # If they do not verify, delete them: bytes that failed verification must not be
+    # left sitting at the path the operator is about to commit to the channel. The
+    # pre-write check above makes this unreachable short of I/O corruption, which is
+    # exactly the case where a half-written artifact on disk is most dangerous.
+    try:
+        with open(args.out, "rb") as handle:
+            written = handle.read()
+        report = verify_estate_catalog(
+            json.loads(written.decode("utf-8")),
+            genesis_document=genesis_document,
+            file_bytes=written,
+            expect_digest=digest,
+        )
+    except BaseException:
+        try:
+            os.unlink(args.out)
+        except OSError as unlink_err:
+            print(
+                f"WARNING: could not remove the unverifiable catalog at {args.out} "
+                f"({unlink_err}); do NOT publish it",
+                file=sys.stderr,
+            )
+        raise
 
     plan["dry_run"] = False
     plan["written"] = args.out

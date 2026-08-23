@@ -829,6 +829,36 @@ def test_cli_verify_catalog_round_trip(tmp_path, monkeypatch) -> None:
     assert report["signatures_verified"] == 1
 
 
+def test_cli_verify_catalog_human_output_names_what_it_did_not_prove(
+    tmp_path, monkeypatch
+) -> None:
+    """The default (non-``--json``) report is what an operator actually reads.
+
+    Two things it must say out loud: the verdict, and the limits of the verdict.
+    Without an out-of-band ``--expect-digest`` the check proves internal coherence
+    only — §4.1 / OPERATOR-FORGERY R3 — and an unsupplied checkpoint is reported
+    ``not_presented`` rather than silently skipped.
+    """
+    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
+    fixture = mint_solo()
+    signed = _sign_catalog(fixture)
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_bytes(canonicalize(signed))
+    genesis_path = tmp_path / "genesis.json"
+    genesis_path.write_text(json.dumps(fixture.document), encoding="utf-8")
+
+    output = _capture(
+        cmd_trust_verify_catalog,
+        _verify_ns(file=str(catalog_path), genesis=str(genesis_path), json=False),
+    )
+    assert "verdict: VALID" in output
+    assert f"estate_catalog_digest: {estate_catalog_digest(signed)}" in output
+    assert "digest_pin: not_pinned" in output
+    assert "trust_log_checkpoint: not_presented" in output
+    assert "OPERATOR-FORGERY R3" in output
+    assert "no --trust-checkpoint was supplied" in output
+
+
 def test_cli_verify_catalog_refuses_without_a_genesis(tmp_path, monkeypatch) -> None:
     """Without the pinned genesis there are no root keys, so a verdict would be vacuous."""
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)

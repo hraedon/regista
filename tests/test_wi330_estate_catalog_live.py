@@ -688,6 +688,41 @@ def test_trust_catalog_dry_run_writes_nothing_and_reports_the_real_digest(
     assert real["written"] == str(out)
 
 
+def test_trust_catalog_human_output_names_the_publication_step(estate, tmp_path) -> None:
+    """The default (non-``--json``) report is what the runbook operator reads.
+
+    It has to carry the digest, the measured per-project facts, and — because §5.4
+    step 4 says "produce **and publish**" while §4.4's publish command does not exist
+    — an unambiguous statement that publishing is still theirs to do, with the §4.2
+    path to do it at.
+    """
+    inputs = _estate_inputs(estate, tmp_path)
+    out = tmp_path / "catalog.json"
+    output = _capture(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, out=str(out), json=False,
+            created_at="2026-08-20T12:00:00.000000Z",
+        ),
+    )
+    assert "trust catalog: signed estate cutover catalog written" in output
+    assert "estate_catalog_digest:" in output
+    assert estate.checkpoint_digest in output
+    assert estate.target_project in output
+    assert "self-verify:             VALID" in output
+    assert "PUBLISH IS A SEPARATE OPERATOR STEP" in output
+    assert "catalogs/20260820T120000Z-cutover.json" in output
+
+    dry = _capture(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, out=str(tmp_path / "dry.json"), json=False,
+            dry_run=True, created_at="2026-08-20T12:00:00.000000Z",
+        ),
+    )
+    assert "trust catalog: dry-run (nothing written)" in dry
+
+
 def test_trust_catalog_is_byte_reproducible_with_a_pinned_created_at(estate, tmp_path) -> None:
     """Ed25519 is deterministic, so a pinned created_at makes the whole artifact repeat.
 
