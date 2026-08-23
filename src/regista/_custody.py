@@ -55,17 +55,29 @@ def resolve_backend(explicit: str | None) -> str:
     return cfg.secret_backend or _DEFAULT_BACKEND
 
 
-#: A project name that may be used *verbatim* as a backend name segment: Azure Key Vault's
-#: secret-name class (``[A-Za-z0-9-]``) and short enough that the whole azure name cannot
-#: exceed Key Vault's 127-character limit — ``len("regista-") + 63 + len("-") + 35 == 107``.
-#: 63 is not arbitrary: it is the upstream project cap (``_connection._SCHEMA_RE``, a
-#: Postgres schema name). Note that the upstream grammar also permits ``_``, which Key Vault
-#: forbids, so ordinary project names like ``my_proj`` land on the derived branch below.
-_VERBATIM_PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}")
+#: A project name that may be used *verbatim* as a backend name segment. This is
+#: deliberately **stricter than** Azure Key Vault's own secret-name class
+#: (``[A-Za-z0-9-]``, 1-127): it is lowercase-only, and capped at 63 rather than 127.
+#:
+#: *Lowercase-only* because Key Vault secret names are **case-insensitive**, so
+#: ``[A-Za-z0-9-]`` is not an injective alphabet for them — ``MyProj`` and ``myproj`` are one
+#: name at the service. Anything carrying an uppercase character therefore takes the derived
+#: branch rather than being folded into a neighbour's secret.
+#:
+#: *63* because it makes the whole name fit by construction —
+#: ``len("regista-") + 63 + len("-") + 35 == 107`` against Key Vault's 127 — which is what
+#: removes the truncation branch entirely. It is also the upstream project cap
+#: (``_connection._SCHEMA_RE``, a Postgres schema name). Note that the upstream grammar
+#: permits ``_`` and Key Vault does not, so ordinary project names like ``my_proj`` land on
+#: the derived branch below.
+_VERBATIM_PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 #: The shape :func:`_project_segment` derives. The verbatim branch refuses this shape so the
 #: two branches have **disjoint ranges**: a project literally named ``px-<32 hex>`` can never
-#: alias the derived segment of some other project.
-_DERIVED_PROJECT_RE = re.compile(r"px-[0-9a-f]{32}")
+#: alias the derived segment of some other project. Matched case-insensitively because Key
+#: Vault folds case: without ``IGNORECASE`` a project named ``px-<UPPERCASE 32 hex>`` would
+#: be refused by the lowercase-only class above but, were that class ever widened, could
+#: case-fold onto a real derived segment. Belt and braces on the boundary that matters.
+_DERIVED_PROJECT_RE = re.compile(r"px-[0-9a-f]{32}", re.IGNORECASE)
 #: Domain separation, as for ``_principals.BACKEND_NAME_DOMAIN``. A project segment and a
 #: principal segment must never be derivable from each other.
 _PROJECT_NAME_DOMAIN = b"regista.custody.project-name.v1\x00"
@@ -79,8 +91,25 @@ def _project_segment(project: str) -> str:
     secret. Verbatim when it is already safe — §2.2 keeps derived names auditable by hand,
     and an opaque project segment has no lookup verb to recover it — otherwise a
     domain-separated digest, which is the only representation for a project name Key Vault
-    cannot spell. Both branches are injective and their ranges are disjoint, so distinct
-    projects never share a segment.
+    cannot spell.
+
+    **Injective under case folding**, which is the equivalence that matters because Key
+    Vault secret names are case-insensitive; plain injectivity would not be enough. Taking
+    the branches in turn:
+
+    * *within verbatim* — the map is the identity on strings that are already lowercase, so
+      two distinct verbatim inputs are two distinct lowercase strings, and casefolding fixes
+      each of them. Distinct inputs, case-fold-distinct outputs.
+    * *within derived* — outputs are ``px-`` plus lowercase hex, already case-folded, so
+      case-fold-collision reduces to a SHA-256 collision on a domain-separated input.
+    * *across the branches* — every derived output case-folds to ``px-<32 lowercase hex>``,
+      and the verbatim branch refuses exactly that shape (case-insensitively). Disjoint
+      ranges, so no verbatim project can land on any project's derived segment.
+
+    The lowercase-only class is what makes the first bullet true, and it is why an uppercase
+    project takes the derived branch: ``MyProj`` derives, ``myproj`` stays verbatim, and the
+    two cannot fold together. A project spelled ``px-<UPPERCASE 32 hex>`` is caught twice —
+    by the lowercase class and by the case-insensitive shape refusal — and derives.
     """
     if _VERBATIM_PROJECT_RE.fullmatch(project) and not _DERIVED_PROJECT_RE.fullmatch(
         project
@@ -99,6 +128,12 @@ def _derived_custody_name(project: str, principal_id: str) -> str:
     principal segment and everything between ``regista-`` and it is always the project
     segment. Two distinct canonical principal ids therefore never map to one name — the
     trailing token differs and no project segment, of any length, can absorb the difference.
+
+    That survives case folding, which Key Vault applies to secret names. Every character
+    this function emits outside the project segment is already lowercase, so if two names
+    case-fold together their trailing 35 characters are equal outright and the principals
+    are the same; the remaining middles must then case-fold together, which
+    :func:`_project_segment` rules out for distinct projects.
     """
     from ._principals import backend_name
 

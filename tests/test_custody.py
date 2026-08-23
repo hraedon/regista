@@ -41,6 +41,12 @@ AZURE_SECRET_NAME_RE = re.compile(r"[0-9a-zA-Z-]{1,127}")
 WRITABLE_NAME_DERIVING_BACKENDS = ("azure", "windows", "vault")
 
 
+def _bn(principal_id: str) -> str:
+    from regista._principals import backend_name
+
+    return backend_name(principal_id)
+
+
 def _drop(project: str) -> None:
     drop_project_schema(DSN, project)
 
@@ -514,6 +520,53 @@ class TestWI297BackendSafeNaming:
         assert squatter.startswith("px-")
         assert _project_segment(squatter) != squatter
 
+    def test_case_differing_projects_do_not_fold_together_on_azure(self):
+        """Key Vault secret names are **case-insensitive**, so plain inequality is not the
+        test — the names must differ *after case folding*. ``MyProj`` therefore takes the
+        derived branch instead of being spelled verbatim next to ``myproj``."""
+        upper = build_ref("azure", "agent:a", project="MyProj").removeprefix("azure:")
+        lower = build_ref("azure", "agent:a", project="myproj").removeprefix("azure:")
+        assert upper != lower
+        assert upper.casefold() != lower.casefold()
+        assert lower == f"regista-myproj-{_bn('agent:a')}"
+        assert "px-" in upper  # MyProj derived rather than kept verbatim
+
+    def test_no_two_projects_fold_together_on_azure(self):
+        """The case-folded generalisation of the disjointness pin, over the spellings that
+        probe the branch boundary."""
+        projects = [
+            "myproj", "MyProj", "MYPROJ", "my_proj", "my-proj",
+            "px-" + "a" * 32, "PX-" + "A" * 32, "p" * 63, "p" * 64,
+        ]
+        folded = {
+            build_ref("azure", "agent:a", project=p).removeprefix("azure:").casefold()
+            for p in projects
+        }
+        assert len(folded) == len(projects)
+
+    def test_an_uppercase_derived_shape_project_cannot_case_fold_squat(self):
+        """The specific escape the lowercase-only class closes: ``px-<UPPERCASE 32 hex>``
+        passed the old ``[A-Za-z0-9-]`` class and the lowercase-only shape refusal, so it
+        was emitted verbatim and case-folded straight onto a real derived segment."""
+        from regista._custody import _project_segment
+
+        victim = _project_segment("prod/eu")
+        assert victim == victim.casefold()
+        squatter = "px-" + victim.removeprefix("px-").upper()
+        assert squatter.casefold() == victim  # it *would* fold, if emitted verbatim
+        assert _project_segment(squatter).casefold() != victim
+
+    def test_the_verbatim_class_is_stricter_than_key_vaults_own(self):
+        """Not a redundant restatement of the service grammar: uppercase and 64-plus are
+        legal at Key Vault and refused here, and that gap is the whole safety argument."""
+        from regista._custody import _VERBATIM_PROJECT_RE
+
+        assert _VERBATIM_PROJECT_RE.fullmatch("myproj")
+        assert not _VERBATIM_PROJECT_RE.fullmatch("MyProj")
+        assert not _VERBATIM_PROJECT_RE.fullmatch("p" * 64)
+        assert AZURE_SECRET_NAME_RE.fullmatch("MyProj")
+        assert AZURE_SECRET_NAME_RE.fullmatch("p" * 64)
+
     @pytest.mark.parametrize("backend", WRITABLE_NAME_DERIVING_BACKENDS)
     def test_the_principal_segment_is_colon_free(self, backend):
         """§2.2's premise: Azure Key Vault and the Windows credential store forbid ``:``."""
@@ -591,6 +644,33 @@ class TestWI297OperatorPrefixIsRefused:
         assert out != ref.encode("utf-8")
         raise AssertionError(f"operator: ref resolved to {out!r} instead of raising")
 
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "operator:some/path",
+            "OPERATOR:some/path",
+            "Operator:some/path",
+            " operator:some/path",
+            "operator :some/path",
+            "\toperator:some/path",
+        ],
+    )
+    def test_the_refusal_is_not_defeated_by_case_or_whitespace(self, ref):
+        """The fail-open this closes is not case-sensitive: every one of these took the
+        same fall-through to the literal provider, so every one has to be refused."""
+        with pytest.raises(RegistaError) as exc:
+            resolve_secret(ref)
+        assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+        assert exc.value.detail["reason"] == "reserved_custody_prefix"
+
+    def test_normalising_the_prefix_does_not_widen_anything_else(self):
+        """The normalisation applies to the reserved-name test only. A prefix that is not
+        reserved under any spelling must resolve exactly as it did before — otherwise this
+        would quietly become a case-insensitive provider lookup."""
+        assert resolve_secret("NOSUCHBACKEND:whatever") == b"NOSUCHBACKEND:whatever"
+        assert resolve_secret("FILE:whatever") == b"FILE:whatever"
+        assert resolve_secret(" literal:x") == b" literal:x"
+
     def test_store_refuses_an_operator_ref(self):
         with pytest.raises(RegistaError) as exc:
             store_secret("operator:some/path", b"secret-bytes")
@@ -625,6 +705,20 @@ class TestWI297OperatorPrefixIsRefused:
         consistency = [c for c in report.checks if c.name == "custody:consistency"]
         assert consistency and consistency[0].status == "skip"
         assert "operator:secret/x/private_key" in consistency[0].detail
+
+    def test_doctor_only_swallows_this_refusal_not_every_future_one(self, monkeypatch):
+        """A bare ``except RegistaError`` there would silently downgrade the *next*
+        fail-closed check added to ``_detect_prefix`` into a skipped health row."""
+        import regista._secrets as secrets_mod
+        from regista._doctor import _resolve_key_file_path
+
+        def _boom(ref):
+            raise RegistaError(ErrorCode.SECRET_RESOLVE_FAILED, "some future gate")
+
+        monkeypatch.setattr(secrets_mod, "_detect_prefix", _boom)
+        with pytest.raises(RegistaError) as exc:
+            _resolve_key_file_path("file:/tmp/keys.json")
+        assert exc.value.code is ErrorCode.SECRET_RESOLVE_FAILED
 
 
 def _assert_keypair_verifies(private_key: bytes, public_key: bytes) -> None:

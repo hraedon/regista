@@ -271,9 +271,22 @@ _KNOWN_PROVIDER_NAMES = frozenset(
 _RESERVED_NON_PROVIDER_PREFIXES = frozenset({"operator"})
 
 
+#: Marks the refusal below in ``RegistaError.detail`` so a caller can catch *this* failure
+#: specifically rather than every ``RegistaError`` a prefix check might ever raise.
+RESERVED_PREFIX_REASON = "reserved_custody_prefix"
+
+
 def _refuse_reserved_prefix(prefix: str, ref: str) -> None:
-    """Fail closed on a custody-mode prefix. No-op for anything else."""
-    if prefix not in _RESERVED_NON_PROVIDER_PREFIXES:
+    """Fail closed on a custody-mode prefix. No-op for anything else.
+
+    ``prefix`` is normalised (case-folded, surrounding whitespace stripped) before the
+    membership test, because the fail-open this closes is not case-sensitive: ``OPERATOR:``
+    and `` operator:`` are the same operator mistake and, left alone, take the same
+    fall-through to the ``literal`` provider. Normalising *here* rather than in the callers
+    keeps the widening contained — a prefix that is not reserved under any spelling still
+    reaches provider lookup exactly as it did before, with its original casing.
+    """
+    if prefix.strip().lower() not in _RESERVED_NON_PROVIDER_PREFIXES:
         return
     raise RegistaError(
         ErrorCode.INVALID_ARGUMENT,
@@ -281,7 +294,7 @@ def _refuse_reserved_prefix(prefix: str, ref: str) -> None:
         f"resolved or written. An 'operator:' value marks a key regista never holds: "
         f"populate the secret out-of-band, then record the real reference "
         f"(vault:/azure:/windows:/file:) instead.",
-        {"reason": "reserved_custody_prefix", "prefix": prefix},
+        {"reason": RESERVED_PREFIX_REASON, "prefix": prefix},
     )
 
 
