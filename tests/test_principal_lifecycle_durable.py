@@ -264,6 +264,8 @@ def regista_instance(v6_keyset):
         seeds=[root.seed],
         project_instance_id=str(uuid.uuid4()),
         project_name_hint="test-trust-log",
+        # WI-320 (a-prime): the genesis writer custody-binds root_principal_id.
+        declared_holder=root_principal,
     )
     genesis_path = Path(v6_keyset.path).parent / "trust-genesis.json"
     genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")

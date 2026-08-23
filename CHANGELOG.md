@@ -6,23 +6,39 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed
 
-- **`--root-principal-id` is now VERIFY-ONLY on `trust init-log` and
-  `trust delegate-registrar` (WI-320, option a-prime).** An explicit value used to be
-  written into the event's `actor_id` verbatim, so a genuine root seed could attribute
-  the estate genesis (or a registrar delegation) to an arbitrary principal the genesis
-  never declared. It must now EQUAL the `initial_custody` `declared_holder` of the entry
-  belonging to the supplied `--key`'s fingerprint — the entry that root is entitled to
-  claim (WI-292 keys custody by signer fingerprint, 1:1 with the signers, enforced at
-  parse time), so in a multi-signer domain one root cannot assert a co-signer's declared
-  holder. A disagreeing value is refused with `ACTOR_SIGNER_MISMATCH` /
-  `root_principal_id_contradicts_declared_holder` and nothing is written; a matching one
-  proceeds and reports `root_principal_source: "explicit_verified"` (replacing
-  `"operator_override"`). Omitting the flag is unchanged: it still defaults from the
-  signed declaration and reports `"declared_holder"`. Signed formats, payload templates,
-  `validate_key_binding_bootstrap`, and the gate contract are untouched — this is a CLI
-  acceptance-semantics change only. Still open in WI-320: `declared_holder` is signed but
-  operator-declared rather than key-attested, and the resulting `actor_id` is still not
-  cryptographically bound inside the signed event bytes.
+- **The trust-genesis actor is now VERIFY-ONLY, at the CLI and at the writer (WI-320,
+  option a-prime).** `trust init-log`'s and `trust delegate-registrar`'s
+  `--root-principal-id`, and `write_trust_genesis`'s `root_principal_id` argument, were
+  all written into the event's `actor_id` verbatim, so a genuine root seed could
+  attribute the estate genesis (or a registrar delegation) to an arbitrary principal the
+  genesis never declared. The value must now EQUAL the `initial_custody`
+  `declared_holder` of the entry belonging to the fingerprint of the key that actually
+  signs — the one entry that root is entitled to claim (WI-292 keys custody by signer
+  fingerprint, 1:1 with the signers, enforced at parse time), so in a multi-signer domain
+  one root cannot assert a co-signer's declared holder. The shared check is
+  `_trust_domain.verify_root_principal_binding`; a disagreeing value raises
+  `ACTOR_SIGNER_MISMATCH` / `root_principal_id_contradicts_declared_holder`.
+
+  Per-path effect: at the CLI the refusal happens before the store is touched at all
+  (no schema is created and no event is written); inside `write_trust_genesis` it happens
+  before any write in the genesis transaction (only `SELECT`s and the head lock precede
+  it), so the store is left unchanged. A matching value proceeds, and the CLI reports
+  `root_principal_source: "explicit_verified"` (replacing `"operator_override"`).
+  Omitting the flag is unchanged: it still defaults from the signed declaration and
+  reports `"declared_holder"`, now looked up by the signing root's fingerprint rather
+  than positionally.
+
+  **Breaking for library callers**: `write_trust_genesis(..., root_principal_id=X)` now
+  refuses unless X is the signing key's declared holder. Signed formats, payload
+  templates, `validate_key_binding_bootstrap`, and the gate contract are untouched.
+
+  Still open, and deliberately out of scope here: (i) `declared_holder` is signed but
+  operator-DECLARED, not key-attested, and the resulting `actor_id` is still not
+  cryptographically bound inside the signed event bytes; (ii) `append_trust_log_event`'s
+  root-authority path binds the actor's fingerprint to the genesis signer set only and is
+  NOT custody-bound — a root rotated in after genesis legitimately has no
+  `initial_custody` entry, so binding it to one would refuse a legitimate write. Both are
+  option (b)/(d) territory, tracked by WI-331.
 
 ## [0.7.2] — 2026-08-23
 

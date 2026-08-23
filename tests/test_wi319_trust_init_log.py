@@ -397,6 +397,42 @@ def test_explicit_root_principal_is_bound_to_the_selected_root_fingerprint(
     assert _genesis_actor(project_name) == "service:root-a"
 
 
+def test_fingerprint_binding_holds_in_the_reverse_direction(tmp_path, project_name):
+    """The same document from root-b's side, so the check cannot be passing by accident.
+
+    A guard that always compared against ``initial_custody[0]`` would accept root-b
+    claiming root-a's holder and reject root-b claiming its own — the exact inverse of
+    what happens here.
+    """
+    fx = mint_solo_effective(
+        signer_count=2,
+        project_name_hint=project_name,
+        declared_holders=["service:root-a", "service:root-b"],
+    )
+    gpath = _write(tmp_path / "genesis.json", fx.document)
+    # root-b's seed this time: the SECOND custody entry is the one it may claim.
+    kpath = _seed_file(tmp_path / "root-b.seed", fx.seeds[fx.signer_ids[1]])
+
+    with pytest.raises(RegistaError) as exc:
+        cmd_trust_init_log(
+            _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+                root_principal_id="service:root-a")
+        )
+    assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+    detail = exc.value.detail
+    assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+    assert detail["root_principal_id"] == "service:root-a"
+    assert detail["declared_holder"] == "service:root-b"
+    assert detail["fingerprint"] == fx.fingerprints[fx.signer_ids[1]]
+    assert not _schema_exists(project_name)
+
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id="service:root-b")
+    )
+    assert _genesis_actor(project_name) == "service:root-b"
+
+
 def test_overridden_non_canonical_root_principal_refused(tmp_path, project_name):
     """An explicit --root-principal-id is still validated: a non-canonical override is
     refused before any write (the actor is recorded permanently)."""

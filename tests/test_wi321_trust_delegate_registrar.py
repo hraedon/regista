@@ -546,3 +546,50 @@ def test_explicit_root_principal_is_bound_to_the_selected_root_fingerprint(tmp_p
         assert _count_events(project, "registrar_delegated") == 1
     finally:
         drop_project_schema(DSN, project)
+
+
+def test_fingerprint_binding_holds_in_the_reverse_direction(tmp_path):
+    """The same document from root-b's side, so the check cannot be passing by accident.
+
+    A guard comparing against ``initial_custody[0]`` would accept root-b claiming
+    root-a's holder and reject root-b claiming its own — the exact inverse of this.
+    """
+    project = f"wi321rev_{uuid.uuid4().hex[:8]}"
+    fx = mint_solo_effective(
+        signer_count=2,
+        project_name_hint=project,
+        declared_holders=["service:root-a", "service:root-b"],
+    )
+    genesis = _write_json(tmp_path / "genesis.json", fx.document)
+    reg_sk = nacl.signing.SigningKey.generate()
+    reg_public_b64 = base64.b64encode(bytes(reg_sk.verify_key)).decode("ascii")
+    # root-b authorises the delegation; the SECOND custody entry is the one it may claim.
+    root_b_seed = _seed_file(tmp_path / "root-b.seed", fx.seeds[fx.signer_ids[1]])
+    try:
+        _init_log(fx, genesis, tmp_path, project,
+                  root_principal_id="service:root-a")
+        base = dict(project=project, genesis=genesis,
+                    registrar_public_key=reg_public_b64, key=root_b_seed)
+
+        with pytest.raises(RegistaError) as exc:
+            cmd_trust_delegate_registrar(
+                _deleg_ns(**base, root_principal_id="service:root-a")
+            )
+        assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+        detail = exc.value.detail
+        assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+        assert detail["root_principal_id"] == "service:root-a"
+        assert detail["declared_holder"] == "service:root-b"
+        assert detail["fingerprint"] == fx.fingerprints[fx.signer_ids[1]]
+        assert _count_events(project, "registrar_delegated") == 0
+
+        out = json.loads(
+            _capture(
+                cmd_trust_delegate_registrar,
+                _deleg_ns(**base, root_principal_id="service:root-b"),
+            )
+        )
+        assert out["root_principal_id"] == "service:root-b"
+        assert _count_events(project, "registrar_delegated") == 1
+    finally:
+        drop_project_schema(DSN, project)

@@ -9,13 +9,16 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import structlog
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
 from regista._workflow import validate_yaml as _validate_yaml
+
+if TYPE_CHECKING:  # import-time cost stays out of the CLI's startup path
+    from regista._trust_domain import TrustGenesisDocument
 
 
 class _StderrLoggerFactory:
@@ -2053,7 +2056,12 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
 
     from regista._principal_keys import _compute_fingerprint
     from regista._principals import classify_principal_id
-    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+    from regista._trust_domain import (
+        custody_for_root_fingerprint,
+        parse_trust_genesis,
+        verify_root_principal_binding,
+        verify_trust_genesis,
+    )
     from regista._trust_log_writer import write_trust_genesis
 
     json_mode = getattr(args, "json", False)
@@ -2104,7 +2112,9 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
     # WI-320 (a-prime): an EXPLICIT --root-principal-id is VERIFY-ONLY. It used to be
     # written into actor_id verbatim, so a genuine root seed could attribute the estate
     # genesis to any principal at all; it must now equal the declared_holder of the
-    # custody entry for THIS root's fingerprint (_verify_root_principal_override).
+    # custody entry for THIS root's fingerprint. The check itself lives in
+    # _trust_domain.verify_root_principal_binding because write_trust_genesis enforces the
+    # same binding at the durable boundary — this call is the early, actionable refusal.
     override = args.root_principal_id
     root_principal_id = override
     actor_source = "explicit_verified" if override is not None else "declared_holder"
@@ -2121,7 +2131,12 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
                     "custody_count": len(doc.initial_custody),
                 },
             )
-        holder = doc.initial_custody[0].declared_holder
+        # Keyed by THIS root's fingerprint rather than initial_custody[0]: provably the
+        # same entry today (the guard above bounds the block to one entry and the
+        # fingerprint is already proven to be a signer, so WI-292's 1:1 rule makes them
+        # identical), but uniform with the verify-only path and correct if the
+        # single-entry guard is ever relaxed.
+        holder = custody_for_root_fingerprint(doc, fingerprint).declared_holder
         if not classify_principal_id(holder).canonical:
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -2141,7 +2156,7 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             {"reason": "root_principal_id_not_canonical"},
         )
     if override is not None:
-        _verify_root_principal_override(doc, root_principal_id, fingerprint)
+        verify_root_principal_binding(doc, root_principal_id, fingerprint)
 
     # The trust log is one estate-wide project whose first event is
     # trust_domain_established (§5.2). Its schema name is the document's SIGNED
@@ -3042,63 +3057,8 @@ def _parse_scope_args(raw_scopes: list[str] | None) -> list[str]:
     return out
 
 
-def _verify_root_principal_override(
-    doc: Any, override: str, root_fingerprint: str
-) -> None:
-    """WI-320 (a-prime): an explicit ``--root-principal-id`` is VERIFY-ONLY, never an
-    override.
-
-    It used to be written into the event's ``actor_id`` verbatim, so a genuine root seed
-    could attribute a root-authorised trust-log write to an arbitrary principal the
-    domain never declared. An explicit value must now AGREE with the signed declaration,
-    and the comparison is bound to the SELECTED ROOT rather than being a blind global
-    scan: WI-292 keys ``initial_custody`` by signer fingerprint, exactly one entry per
-    signer, and ``parse_trust_genesis`` enforces that 1:1 correspondence — so the entry
-    for the fingerprint of the seed actually producing the signature is exactly the
-    declaration that root is entitled to claim. In a multi-signer domain root-b therefore
-    cannot assert root-a's declared holder.
-
-    Residual gap (still WI-320, options (b)/(d)): ``declared_holder`` is signed but
-    operator-declared rather than key-attested, and the resulting ``actor_id`` is still
-    not cryptographically bound inside the signed event bytes. This closes the free-form
-    override only.
-    """
-    custody = doc.custody_by_fingerprint(root_fingerprint)
-    if custody is None:
-        # Unreachable for a parsed document whose signer we already matched (the 1:1
-        # rule is a parse-time invariant). Fail closed rather than trust the override.
-        raise RegistaError(
-            ErrorCode.ACTOR_SIGNER_MISMATCH,
-            f"the genesis declares no initial_custody entry for the root signer "
-            f"(fingerprint {root_fingerprint}), so an explicit --root-principal-id "
-            "cannot be checked against the signed declaration",
-            {
-                "reason": "custody_absent_for_root_signer",
-                "fingerprint": root_fingerprint,
-            },
-        )
-    if override != custody.declared_holder:
-        raise RegistaError(
-            ErrorCode.ACTOR_SIGNER_MISMATCH,
-            f"--root-principal-id {override!r} contradicts the genesis's SIGNED "
-            f"initial_custody declared_holder {custody.declared_holder!r} for the root "
-            f"signer whose seed was supplied (fingerprint {root_fingerprint}). An "
-            "explicit --root-principal-id is VERIFY-ONLY (WI-320): it may confirm the "
-            "signed declaration, never replace it. Pass --root-principal-id "
-            f"{custody.declared_holder} (or omit the flag to take the declaration); if "
-            "the declaration itself is wrong, correct it with a threshold-authorized "
-            "trust-log event, not at the CLI.",
-            {
-                "reason": "root_principal_id_contradicts_declared_holder",
-                "root_principal_id": override,
-                "declared_holder": custody.declared_holder,
-                "fingerprint": root_fingerprint,
-            },
-        )
-
-
 def _resolve_trust_root_actor(
-    doc: Any, override: str | None, root_fingerprint: str
+    doc: TrustGenesisDocument, override: str | None, root_fingerprint: str
 ) -> tuple[str, str]:
     """Resolve the root actor principal id for a root-authorised trust-log write.
 
@@ -3113,6 +3073,10 @@ def _resolve_trust_root_actor(
     it is recorded permanently.
     """
     from regista._principals import classify_principal_id
+    from regista._trust_domain import (
+        custody_for_root_fingerprint,
+        verify_root_principal_binding,
+    )
 
     root_principal_id = override
     source = "explicit_verified" if override is not None else "declared_holder"
@@ -3129,7 +3093,8 @@ def _resolve_trust_root_actor(
                     "custody_count": len(doc.initial_custody),
                 },
             )
-        holder = doc.initial_custody[0].declared_holder
+        # Fingerprint-keyed for the same reason as `init-log`'s defaulting path.
+        holder = custody_for_root_fingerprint(doc, root_fingerprint).declared_holder
         if not classify_principal_id(holder).canonical:
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -3149,7 +3114,7 @@ def _resolve_trust_root_actor(
             {"reason": "root_principal_id_not_canonical"},
         )
     if override is not None:
-        _verify_root_principal_override(doc, root_principal_id, root_fingerprint)
+        verify_root_principal_binding(doc, root_principal_id, root_fingerprint)
     return root_principal_id, source
 
 
