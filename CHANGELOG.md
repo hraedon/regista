@@ -35,26 +35,37 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   or a projection — a project store holds no governance state at all, so export refuses
   rather than attesting a governance claim it invented. The statement signer must bear
   `may_sign_bundles` in its signed project-local acceptance (owner ruling O3): holding the
-  writer key is not an implication of the authority, and the verifier re-derives the scope
-  from the acceptance event rather than believing the statement. A chain that cannot be
-  totally ordered means no bundle at all (owner ruling O4) — one named refusal, no
-  diagnostic flag, no partial artifact.
+  writer key is not an implication of the authority, and the verifier re-derives the
+  authority *structure* from the events rather than believing the statement. A chain that
+  cannot be totally ordered means no bundle at all (owner ruling O4) — one named refusal,
+  no diagnostic flag, no partial artifact.
 
-  **O3 is re-derived offline with the store's own rules, not inferred from payload shape.**
-  A first cut of the verify-side gate accepted any acceptance-*shaped* payload from any
-  event, which let four documents the writer refuses to create verify clean: a grant
-  embedded in a self-authored ordinary event, a `regista.key-acceptance` payload on an
-  ordinary transition, a grant whose revocation is *inside the same bundle*, and a
-  superseded grant named while the current one denies the scope. The verifier now mirrors
-  `_v6_writer.resolve_key_binding_anchor` — anchor transitions only, newest live anchor
-  wins, any revocation for the key refuses the whole resolution, and a standalone
-  acceptance must be signed by the principal its own `accepted_by` block names and be
-  anchored on a key holding `may_accept_keys`. The verifying key is also bound to the signed
-  signer block (`fingerprint(key) == signer.fingerprint`, `statement_signature.key_id ==
-  signer.key_id`), which is the stated purpose of `signer.fingerprint`'s redundancy. And a
-  `complete-store` scope must be headed by an actual `project_initialized` genesis rather
-  than merely by an event with a null project link — a `trust_domain_established` event
-  legitimately carries one, and it heads the trust-log chain, not a project's.
+  **O3 is re-derived offline by reusing the writer's own validator, not a paraphrase of
+  it.** The verify-side authority resolver mirrors `_v6_writer.resolve_key_binding_anchor`
+  and, for standalone acceptances, calls `_v6_writer.validate_key_acceptance_payload`
+  directly — so it cannot drift from the store. That reuse is what makes the rule airtight:
+  a standalone acceptance's `scopes` object has a closed key set that does not contain
+  `may_accept_keys`, and the writer returns it hardcoded `False`, so the *only* thing that
+  can grant key-acceptance authority is the project genesis. Anchor transitions only;
+  newest live anchor wins **and fails closed on a malformed competitor** (a newer
+  competing acceptance that does not validate refuses the resolution rather than falling
+  back to stale authority); any revocation for the key refuses the whole resolution; a
+  standalone must be signed by the principal its own `accepted_by` names; and its grantor
+  is itself validated — a valid, preceding, un-revoked project-genesis bootstrap that
+  accepted that signer. The verifying key is bound to the signed signer block
+  (`fingerprint(key) == signer.fingerprint`, `statement_signature.key_id ==
+  signer.key_id`). A `complete-store` scope must be headed by an actual `project_initialized`
+  genesis, not merely an event with a null project link (a `trust_domain_established` event
+  carries one too, and heads the trust-log chain, not a project's).
+
+  **What "re-derives authority" means, precisely, so it is not read as more than it is:**
+  Phase B re-derives the authority *structure* the store would have required at write time —
+  the anchor graph, its scopes, its revocations. It does **not** verify any event's own
+  Ed25519 signature, so `actor.principal_id` / `signing.key_id` are read as signed *fields*,
+  not authenticated identity. Event authentication — the trust that a named key is the key
+  that signed — is Phase C's axis (`BUNDLE-V3.md` §12 A4/A5), gated on the auditor's pinned
+  root. So a green O3 here means "the artifact's own records grant this key the scope", not
+  "a key the auditor trusts holds it"; the two compose, and the second is §4's.
 
   Hostile input is refused by name rather than by traceback: non-finite and out-of-range
   JSON numbers, unpaired surrogates and duplicate object keys are all rejected, and the
