@@ -13,7 +13,11 @@ What is here (WI-289 Phase B, "verification-complete bundle v3 core"):
   ``signer`` shape, a closed section set, ``complete-store``/``contiguous-range`` only, and
   **no** ``epoch`` block (decision E2, forbidden rather than merely unemitted).
 * §3.3 — the RFC 6962 membership tree over chain-derived ordinals.
-* §3.4 — the ed25519 statement signature over ``b"regista.audit-bundle.v3\\x00" || JCS(statement)``.
+* §3.4 — the ed25519 statement signature over ``b"regista.audit-bundle.v3\\x00" || JCS(statement)``,
+  checked against a key that must BE the key ``statement.signer`` names. That binding is the
+  stated purpose of ``signer.fingerprint``'s redundancy with ``key_id``, and without it a
+  signature valid under *some* key reads as a signature by the named signer — a valid
+  signature by the wrong principal, which is a stronger lie than an invalid one.
 * §3.6/§3.7 — base64 event records and the domain-separated section digests.
 
 **What is NOT here, and where it goes.** This module resolves no trust and reaches no
@@ -35,9 +39,16 @@ verdict. Those are the two seams it exists to present:
 ``Phase D (§9 export contract discipline)``
     consumes :func:`build_bundle_v3_document`. D owns the ceremony around it — ``.partial``
     write then self-verify then ``os.replace``, preflight comparison, the dependency-closure
-    walk, exit codes and the CLI flags. This module owns only the document: given ordered
-    event bytes, a trust root, a signer and its private key, it produces the exact bytes
-    §3 specifies, or it refuses.
+    walk, exit codes and the CLI flags. This module owns only the document: given event
+    bytes, a trust root, a signer and its private key, it produces the exact bytes §3
+    specifies, or it refuses.
+
+    Two arguments D must know about. :class:`BundleV3Signer` carries **no** authority flag
+    and no authority event hash: both are derived from the events being signed over, because
+    a caller-asserted authority is not evidence. And ``authority_records`` exists to be a
+    *superset* of ``event_records`` — a windowed chunk legitimately excludes the signer's own
+    acceptance, so an exporter resolves authority over the whole chain it observes and emits
+    over the window.
 
 ``Phase E (§9 rule 6 credential transport)``
     is deferred post-cutover by owner ruling O1. There is no
@@ -48,10 +59,18 @@ Two owner rulings from the 2026-08-23 amendment are enforced here rather than do
 
 O3
     The statement signer MAY be the project writer key **provided that key bears
-    ``may_sign_bundles``**. :func:`build_bundle_v3_document` takes the resolved scope as a
-    required flag on :class:`BundleV3Signer` and refuses to sign without it, and
-    :func:`verify_bundle_v3_core` re-derives it from the signer's own authority event when
-    that event is inside the bundle (which a ``complete-store`` bundle guarantees).
+    ``may_sign_bundles``**, and both the builder and the verifier *derive* that from the
+    signed events with :func:`resolve_bundle_signing_authority` rather than being told it.
+
+    The derivation is the offline mirror of ``_v6_writer.resolve_key_binding_anchor`` and it
+    has to be, because "is there a payload here shaped like an acceptance?" is a much weaker
+    question than "does this key currently hold this scope?". Four documents separate the
+    two, and the store refuses all four while a shape check accepts all four: a grant
+    embedded in a self-authored ordinary event, an acceptance-typed payload on an ordinary
+    transition, a grant whose revocation is inside the same bundle, and a superseded grant
+    named while the current one denies the scope. The rules mirrored are the anchor-transition
+    restriction, newest-live selection, revocation-refuses-everything, and the
+    ``accepted_by``-must-be-the-signer binding.
 
 O4
     A broken chain means no bundle. :func:`derive_chain_order` refuses — one named error,
@@ -201,6 +220,46 @@ SECTION_TRANSITIONS: Final[Mapping[str, frozenset[str]]] = {
 SECTION_PAYLOAD_TYPES: Final[Mapping[str, frozenset[str]]] = {
     "review_verdicts": frozenset({"regista.review-verdict"}),
 }
+
+# ---------------------------------------------------------------------------
+# Key-binding anchors — the offline mirror of ``_v6_writer``'s resolver
+# ---------------------------------------------------------------------------
+#
+# These four names and the rules built on them are not a second policy; they are the
+# same policy read from a bundle instead of from a store. The asymmetry that made them
+# necessary is worth stating plainly: the writer refuses to CREATE evidence under an
+# authority it cannot resolve, and an offline verifier must refuse to BELIEVE evidence
+# whose authority it cannot resolve. A verifier that asked only "is there a payload here
+# shaped like an acceptance?" accepts four documents the writer exists to prevent —
+# self-authored grants, grants on ordinary transitions, revoked grants, and superseded
+# grants — and it accepts them while the store that produced neither would refuse.
+
+#: ``V6-ENVELOPE.md`` §1.4(b) / ``_v6_writer._ANCHOR_TRANSITIONS``. A key-binding anchor is
+#: an event with one of these transitions and nothing else. The transition is a SIGNED
+#: field; a payload type is not a substitute for it.
+BOOTSTRAP_ANCHOR_TRANSITIONS: Final[frozenset[str]] = frozenset(
+    {"project_initialized", "project_cryptographic_epoch_started"}
+)
+ACCEPTANCE_TRANSITION: Final[str] = "principal_key_accepted"
+ACCEPTANCE_REVOCATION_TRANSITION: Final[str] = "principal_key_acceptance_revoked"
+ANCHOR_TRANSITIONS: Final[frozenset[str]] = BOOTSTRAP_ANCHOR_TRANSITIONS | {
+    ACCEPTANCE_TRANSITION
+}
+
+#: The ONE transition that may head a project chain, and the reason the head check is a
+#: single value rather than the anchor set. ``_verification._validate_v6_object`` limits a
+#: null ``chain.previous_project_event_hash`` to ``{trust_domain_established,
+#: project_initialized}`` — so ``project_cryptographic_epoch_started`` can never head a
+#: chain (its predecessor is the legacy head, which is the whole point of the seam
+#: spelling), and ``trust_domain_established`` heads the TRUST-LOG chain, not a project's.
+#:
+#: That second one is the live attack surface F3 closes: a signed ``trust_domain_established``
+#: event legitimately carries a null project link, so "the head has a null predecessor" was
+#: satisfied by an event that is not a project genesis at all.
+PROJECT_GENESIS_TRANSITION: Final[str] = "project_initialized"
+
+KEY_ACCEPTANCE_PAYLOAD_TYPE: Final[str] = "regista.key-acceptance"
+KEY_ACCEPTANCE_REVOCATION_PAYLOAD_TYPE: Final[str] = "regista.key-acceptance-revocation"
 
 # ---------------------------------------------------------------------------
 # §3.2 — statement schema, as amended
@@ -353,6 +412,117 @@ def _require_statement(condition: bool, message: str, **detail: Any) -> None:
 # Small typed readers. Every one of these fails closed: there is no
 # "read it as a string if it happens to be one" path.
 # ---------------------------------------------------------------------------
+
+
+def canonical_bytes(obj: Any, *, path: str) -> bytes:
+    """RFC 8785 over *obj*, with every canonicalizer refusal renamed.
+
+    ``_vendor.rfc8785`` raises ``FloatDomainError`` on a non-finite float,
+    ``IntegerDomainError`` outside the IEEE-754 safe-integer range, and
+    ``CanonicalizationError`` on an unpaired surrogate. All three are ``ValueError``
+    subclasses and none of them is a ``RegistaError``, so before this wrapper a hostile
+    ``sections.external_evidence[].content`` produced a traceback at the CLI and a 500 at
+    the sidecar — and a 500 reads as "the verifier broke", which is the wrong conclusion
+    for an auditor to draw about a hostile artifact.
+
+    JSON's number grammar genuinely admits values RFC 8785 cannot represent (``1e400``
+    parses to ``inf``; ``10**400`` is an exact integer outside the safe range), so this is
+    not a defensive check against something impossible — it is the named refusal for a
+    reachable input class.
+    """
+
+    from ._vendor.rfc8785 import CanonicalizationError
+
+    try:
+        return canonicalize(obj)
+    except CanonicalizationError as exc:
+        raise _statement_refusal(
+            f"{path} cannot be canonicalized under RFC 8785: {exc}. A bundle is canonical "
+            "JSON (BUNDLE-V3.md §3.1 rule 4), so a value the canonicalizer cannot "
+            "represent — a non-finite number, an integer outside the IEEE-754 safe range, "
+            "an unpaired surrogate — is not carryable in one",
+            path=path,
+            canonicalizer_error=type(exc).__name__,
+        ) from exc
+
+
+def ed25519_fingerprint(public_key: bytes) -> str:
+    """``TRUST-DOMAIN.md`` §3.5's one fingerprint function: ``ed25519:sha256:<hex>``.
+
+    Sibling B's requirement B2 is "a fingerprint function over a public key, identical to
+    the one the genesis document and the enrollment events use, so a pinned fingerprint and
+    a bundled key are comparable without me re-deriving it". This is that function, spelled
+    the same way ``_keys.KeyEntry.fingerprint`` spells it.
+    """
+
+    if len(public_key) != 32:
+        raise _signer_refusal(
+            f"an ed25519 public key is 32 bytes, got {len(public_key)}",
+            length=len(public_key),
+        )
+    return "ed25519:sha256:" + hashlib.sha256(public_key).hexdigest()
+
+
+def ed25519_public_key_from_seed(seed: bytes) -> bytes:
+    """The public key an ed25519 private seed produces.
+
+    Needed so the builder can refuse a signer whose declared fingerprint its own private
+    key cannot produce — a caller error that must not become a signed artifact, because the
+    resulting document names one principal and is signed by another.
+    """
+
+    try:
+        import nacl.signing
+    except ImportError as exc:  # pragma: no cover - PyNaCl is a hard dependency
+        raise RegistaError(
+            ErrorCode.KEY_LOAD_ERROR,
+            "Scheme 'ed25519' requires PyNaCl: pip install regista[ed25519]",
+        ) from exc
+    try:
+        return bytes(nacl.signing.SigningKey(seed).verify_key)
+    except (ValueError, TypeError) as exc:
+        raise _signer_refusal(
+            f"the supplied signer private key is not a valid ed25519 seed: {exc}"
+        ) from exc
+
+
+def _object_from_pairs(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    """``json.loads(object_pairs_hook=...)`` — refuse duplicate object keys.
+
+    Python's decoder keeps the LAST of two identical keys, so a decoy placed before the real
+    one is invisible to the parser and plainly visible to a human reading the file — or the
+    reverse, depending on which tool reads it. Canonical JSON has no duplicate keys, and an
+    artifact whose meaning depends on which parser you use is not evidence.
+    """
+
+    seen: set[str] = set()
+    for key, _value in pairs:
+        if key in seen:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"Bundle is not valid JSON: duplicate object key {key!r}. A canonical-JSON "
+                "document has no duplicate keys, and a document whose meaning depends on "
+                "which parser reads it is not evidence (BUNDLE-V3.md §3.1 rule 4)",
+            )
+        seen.add(key)
+    return dict(pairs)
+
+
+def _reject_non_finite(literal: str) -> Any:
+    """``json.loads(parse_constant=...)`` — refuse the three non-JSON number literals.
+
+    ``NaN``, ``Infinity`` and ``-Infinity`` are not in RFC 8259's grammar at all; Python's
+    decoder accepts them as an extension. Leaving the extension on means an artifact can
+    carry a value no conforming JSON parser in another language would even read, which is
+    the opposite of what a cross-implementation audit format needs.
+    """
+
+    raise RegistaError(
+        ErrorCode.INVALID_ARGUMENT,
+        f"Bundle is not valid JSON: {literal!r} is not a JSON number. RFC 8259 has no "
+        "NaN or Infinity literal; a bundle carrying one is not readable by a conforming "
+        "parser in any other language, which is the whole point of a canonical format",
+    )
 
 
 def is_digest_text(value: object) -> bool:
@@ -547,7 +717,10 @@ def section_digest(name: str, section: Sequence[Any]) -> bytes:
         # function is public and the failure would be silent.
         raise _statement_refusal(f"section name may not contain NUL: {name!r}", section=name)
     return hashlib.sha256(
-        SECTION_DIGEST_DOMAIN + name.encode("utf-8") + b"\x00" + canonicalize(list(section))
+        SECTION_DIGEST_DOMAIN
+        + name.encode("utf-8")
+        + b"\x00"
+        + canonical_bytes(list(section), path=f"sections.{name}")
     ).digest()
 
 
@@ -568,7 +741,7 @@ def statement_signing_input(statement: Mapping[str, Any]) -> bytes:
     JCS-signed regista object under the same key.
     """
 
-    return STATEMENT_SIGNING_DOMAIN + canonicalize(dict(statement))
+    return STATEMENT_SIGNING_DOMAIN + canonical_bytes(dict(statement), path="statement")
 
 
 def sign_statement(
@@ -670,6 +843,29 @@ class OrderedMember:
         value = payload.get("type")
         return value if isinstance(value, str) else None
 
+    @property
+    def payload(self) -> Mapping[str, Any] | None:
+        payload = self.envelope.get("payload")
+        return payload if isinstance(payload, Mapping) else None
+
+    @property
+    def actor_principal_id(self) -> str | None:
+        """Who signed this event, from the signed ``actor`` block."""
+
+        actor = self.envelope.get("actor")
+        if not isinstance(actor, Mapping):
+            return None
+        value = actor.get("principal_id")
+        return value if isinstance(value, str) else None
+
+    @property
+    def signing_key_id(self) -> str | None:
+        signing = self.envelope.get("signing")
+        if not isinstance(signing, Mapping):
+            return None
+        value = signing.get("key_id")
+        return value if isinstance(value, str) else None
+
     def as_event_record(self) -> dict[str, str]:
         """The §3.6 record: envelope and signature, base64, nothing else."""
 
@@ -767,8 +963,23 @@ def derive_chain_order(
         )
 
     ordered: list[OrderedMember] = []
+    # A cycle is unreachable in honestly signed material — an event's hash covers its own
+    # `previous_project_event_hash`, so no signer can close a loop — but a hand-edited
+    # artifact can present one, and O4 demands a refusal rather than a hang. A verifier that
+    # never returns is a denial of service on the tool the auditor is holding, and it is
+    # indistinguishable from a very large bundle.
+    visited: set[str] = set()
     current: OrderedMember | None = entries[0]
     while current is not None:
+        text = current.event_hash_text
+        if text in visited:
+            raise _chain_refusal(
+                f"the chain revisits {text} after {len(ordered)} step(s), so it contains a "
+                "cycle and has no total order. Owner ruling O4: refused, not degraded",
+                at=text,
+                steps=len(ordered),
+            )
+        visited.add(text)
         ordered.append(
             OrderedMember(
                 scope_ordinal=len(ordered),
@@ -778,12 +989,12 @@ def derive_chain_order(
                 envelope=current.envelope,
             )
         )
-        nexts = successors.get(current.event_hash_text, [])
+        nexts = successors.get(text, [])
         if len(nexts) > 1:
             raise _chain_refusal(
-                f"the chain forks after {current.event_hash_text}: "
+                f"the chain forks after {text}: "
                 f"{len(nexts)} events declare it as their predecessor",
-                at=current.event_hash_text,
+                at=text,
                 forked=sorted(m.event_hash_text for m in nexts),
             )
         current = nexts[0] if nexts else None
@@ -1229,7 +1440,9 @@ def parse_bundle_v3_document(raw: bytes | str) -> BundleV3Document:
     """
 
     try:
-        loaded = json.loads(raw)
+        loaded = json.loads(
+            raw, object_pairs_hook=_object_from_pairs, parse_constant=_reject_non_finite
+        )
     except json.JSONDecodeError as exc:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT, f"Bundle is not valid JSON: {exc}"
@@ -1238,6 +1451,26 @@ def parse_bundle_v3_document(raw: bytes | str) -> BundleV3Document:
         raise _format_refusal("a bundle document must be a JSON object")
 
     require_supported_format_version(loaded)
+
+    # §3.1 rule 4: "The bundle is canonical JSON." Enforced rather than asserted, and it
+    # is the same discipline `parse_v6_envelope_strict` applies to an envelope — stored
+    # bytes must BE their RFC 8785 fixed point. One comparison subsumes a whole family of
+    # presentation tricks: reordered keys, inserted whitespace, a number spelled two ways,
+    # and any duplicate key that somehow survived the pair hook. It runs AFTER the format
+    # decision so a v1/v2 artifact still gets its named format refusal rather than a
+    # confusing complaint about canonicality.
+    recanonicalized = canonical_bytes(loaded, path="bundle")
+    presented_bytes = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+    if not hmac.compare_digest(presented_bytes, recanonicalized):
+        raise _statement_refusal(
+            "the artifact's bytes are not their RFC 8785 canonical form, so it is not a "
+            "canonical-JSON bundle (BUNDLE-V3.md §3.1 rule 4). Two byte strings that parse "
+            "to the same object are two different artifacts as far as a signature is "
+            "concerned, and an auditor reading the file must be reading what the verifier "
+            "read. Re-export rather than reformat",
+            presented_bytes=len(presented_bytes),
+            canonical_bytes=len(recanonicalized),
+        )
 
     unknown = sorted(set(loaded) - TOP_LEVEL_KEYS)
     if unknown:
@@ -1257,6 +1490,23 @@ def parse_bundle_v3_document(raw: bytes | str) -> BundleV3Document:
     signature_block = _require_closed_mapping(
         loaded["statement_signature"], STATEMENT_SIGNATURE_KEYS, "statement_signature"
     )
+    # A pure internal contradiction, so it is a parse-time refusal rather than a finding:
+    # no supplied key is needed to see that the block that carries the signature and the
+    # block that describes the signer name two different keys.
+    declared_signer = statement.get("signer")
+    if isinstance(declared_signer, Mapping):
+        if signature_block["key_id"] != declared_signer["key_id"]:
+            raise _statement_refusal(
+                "statement_signature.key_id is "
+                f"{signature_block['key_id']!r} but statement.signer.key_id is "
+                f"{declared_signer['key_id']!r}. One artifact cannot name two signing keys: "
+                "the signature block says which key signed and the signer block says which "
+                "key was authorised, and a verifier checking one while an auditor reads the "
+                "other is the gap §3.2's redundancy exists to close",
+                signature_key_id=signature_block["key_id"],
+                signer_key_id=declared_signer["key_id"],
+            )
+
     index = loaded.get("index")
     if index is not None and not isinstance(index, Mapping):
         raise _statement_refusal("index, when present, must be an object")
@@ -1320,10 +1570,15 @@ class BundleV3CoreReport:
     #: resolve a key from the artifact, because that is §5.2 rule C's clamp and a core that
     #: quietly harvested the key would make the clamp unreachable.
     statement_signature_checked: bool
-    membership_root_ok: bool
+    #: ``None`` means the check DID NOT RUN — the chain could not be ordered, so there was
+    #: no tree to root, no scope to compare against and no events to classify. A default of
+    #: ``True`` there was the defect: it reported the frozen empty-tree root as though it
+    #: had been computed over the presented events. ``structural_checks_ok`` treats ``None``
+    #: as not-ok, so an unrun check never reads as a pass.
+    membership_root_ok: bool | None
     section_digests_ok: bool
-    reference_sections_ok: bool
-    scope_consistent: bool
+    reference_sections_ok: bool | None
+    scope_consistent: bool | None
     chain_ordered: bool
     #: O3: True when the signer's authority event was found inside the bundle and its
     #: acceptance object grants ``may_sign_bundles``.
@@ -1331,7 +1586,8 @@ class BundleV3CoreReport:
     #: False when the authority event is outside the presented scope — a fact for §5's
     #: ``not_checkable``, not a pass.
     signer_authority_checked: bool
-    recomputed_membership_root: str
+    #: ``None`` when the chain could not be ordered. See ``membership_root_ok``.
+    recomputed_membership_root: str | None
     section_digest_mismatches: tuple[str, ...] = ()
     ordered_event_hashes: tuple[str, ...] = ()
     findings: tuple[str, ...] = ()
@@ -1356,22 +1612,37 @@ class BundleV3CoreReport:
         """
 
         return (
-            self.membership_root_ok
-            and self.section_digests_ok
-            and self.reference_sections_ok
-            and self.scope_consistent
-            and self.chain_ordered
+            self.membership_root_ok is True
+            and self.section_digests_ok is True
+            and self.reference_sections_ok is True
+            and self.scope_consistent is True
+            and self.chain_ordered is True
             and not self.findings
         )
 
     @property
     def core_ok(self) -> bool:
-        """Structural checks passed AND the statement signature was checked and valid."""
+        """Everything Phase B can establish about this artifact, established.
+
+        Structural checks, the statement signature checked and valid **against the key the
+        statement names**, and the signer's ``may_sign_bundles`` re-derived from the anchor
+        in force. The authority clause is here rather than left to the caller because this
+        is the summary a consumer reaches for first, and the module docstring points Phase C
+        at exactly this function — a ``core_ok`` that could be True while O3 was never
+        established would invite the misreading the axis model exists to prevent.
+
+        For a ``contiguous-range`` bundle whose authority event lies outside the window this
+        is therefore ``False`` with a ``note``, not ``True``. That is Resolution 4's "never
+        silently valid": the artifact may be perfectly well-formed and still not have
+        established that its signer was permitted to sign it.
+        """
 
         return (
             self.structural_checks_ok
             and self.statement_signature_checked
             and self.statement_signature_valid
+            and self.signer_authority_checked
+            and self.signer_may_sign_bundles
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1405,29 +1676,305 @@ class _CoreAccumulator:
         return condition
 
 
-def _acceptance_scopes_for(member: OrderedMember, *, key_id: str) -> Mapping[str, Any] | None:
-    """The signed acceptance ``scopes`` block *member* grants to *key_id*, if any.
+@dataclass(frozen=True)
+class SigningAuthority:
+    """A resolved key-binding anchor: the event that grants a key its project scopes."""
 
-    Reads the parsed **envelope**, never a row column: the envelope bytes are the
-    artifact, and an authority read out of a rewritable projection is the S6 defect.
+    event_hash: str
+    #: ``bootstrap`` for the acceptance embedded in a genesis/epoch event, ``acceptance``
+    #: for a standalone ``principal_key_accepted``. Mirrors ``KeyBindingAnchor.kind``.
+    kind: str
+    scope_ordinal: int
+    may_sign_bundles: bool
+
+
+def _acceptance_object(member: OrderedMember, *, principal_id: str, key_id: str) -> tuple[
+    Mapping[str, Any] | None, str, str | None
+]:
+    """The acceptance object *member* grants to ``(principal_id, key_id)``, if it is one.
+
+    Returns ``(acceptance, kind, refusal)``. A non-``None`` refusal is a NAMED reason this
+    event is not an anchor for that key; it is returned rather than raised because a
+    bundle legitimately contains many events that are not anchors, and only a candidate
+    that *claims* to be one is worth reporting on.
+
+    The rule that does the most work is the first: an anchor is decided by the event's
+    **transition**, never by its payload type. ``_v6_writer._ANCHOR_TRANSITIONS`` is a
+    closed set of three, and reading the payload type instead is what let a
+    ``regista.key-acceptance`` object on transition ``updated`` grant bundle-signing
+    authority to the key that signed it.
     """
 
-    payload = member.envelope.get("payload")
-    if not isinstance(payload, Mapping):
-        return None
-    candidates: list[Mapping[str, Any]] = []
-    if payload.get("type") == "regista.key-acceptance":
-        candidates.append(payload)
-    embedded = payload.get("bootstrap_key_acceptance")
-    if isinstance(embedded, Mapping):
-        candidates.append(embedded)
-    for acceptance in candidates:
-        if acceptance.get("key_id") != key_id:
+    transition = member.transition
+    payload = member.payload
+    if transition not in ANCHOR_TRANSITIONS or payload is None:
+        return None, "", None
+
+    if transition == ACCEPTANCE_TRANSITION:
+        acceptance: Mapping[str, Any] | None = payload
+        kind = "acceptance"
+        if payload.get("type") != KEY_ACCEPTANCE_PAYLOAD_TYPE:
+            acceptance = None
+    else:
+        embedded = payload.get("bootstrap_key_acceptance")
+        acceptance = embedded if isinstance(embedded, Mapping) else None
+        kind = "bootstrap"
+    if acceptance is None:
+        return None, kind, None
+    if acceptance.get("principal_id") != principal_id or acceptance.get("key_id") != key_id:
+        return None, kind, None
+    if not isinstance(acceptance.get("scopes"), Mapping):
+        return None, kind, (
+            f"anchor_scopes_missing: the acceptance at {member.event_hash_text} names "
+            f"key {key_id!r} but carries no scopes object, so it grants nothing"
+        )
+
+    if kind == "bootstrap":
+        # A bootstrap acceptance's authority is EXTERNAL by construction — the trust log —
+        # so there is no in-project authority to check. RECONCILIATION.md Resolution 1 is
+        # explicit that this is not a bootstrap unless something outside the artifact pins
+        # it, and that pin is the auditor's (§4, Phase C). What is checkable here is that
+        # the acceptance is for the key that signed the genesis event, which is what makes
+        # it a *self-*bootstrap rather than an arbitrary grant riding along in the payload.
+        if (
+            member.actor_principal_id != principal_id
+            or member.signing_key_id != key_id
+        ):
+            return None, kind, (
+                f"bootstrap_anchor_is_not_the_genesis_signer: the acceptance embedded at "
+                f"{member.event_hash_text} grants {principal_id!r}/{key_id!r}, but that "
+                f"event is signed by {member.actor_principal_id!r}/"
+                f"{member.signing_key_id!r}. A genesis event bootstraps its OWN signing "
+                "key; a grant to some other key riding in its payload has no authority "
+                "behind it"
+            )
+        return acceptance, kind, None
+
+    # A standalone acceptance's authority IS in the project, so all of it is checkable.
+    accepted_by = acceptance.get("accepted_by")
+    if not isinstance(accepted_by, Mapping):
+        return None, kind, (
+            f"anchor_accepted_by_missing: the acceptance at {member.event_hash_text} names "
+            "no accepted_by block, so nothing records who exercised the authority"
+        )
+    by_principal = accepted_by.get("principal_id")
+    by_key = accepted_by.get("key_id")
+    if by_principal == principal_id and by_key == key_id:
+        return None, kind, (
+            f"anchor_self_authorised: the acceptance at {member.event_hash_text} is "
+            f"accepted_by the very key it accepts. RECONCILIATION.md Resolution 1: "
+            "\"a key may not accept itself: ordinary acceptance runs with no exceptions "
+            'and no self-authorisation anywhere"'
+        )
+    if by_principal != member.actor_principal_id or by_key != member.signing_key_id:
+        return None, kind, (
+            f"anchor_accepted_by_is_not_the_signer: the acceptance at "
+            f"{member.event_hash_text} says {by_principal!r}/{by_key!r} exercised the "
+            f"authority, but the event is signed by {member.actor_principal_id!r}/"
+            f"{member.signing_key_id!r}. The block records who exercised the authority and "
+            "must BE the signer, or it asserts an authority that never touched the event"
+        )
+    return acceptance, kind, None
+
+
+def resolve_bundle_signing_authority(
+    ordered: Sequence[OrderedMember],
+    *,
+    principal_id: str,
+    key_id: str,
+) -> tuple[SigningAuthority | None, tuple[str, ...]]:
+    """Resolve the anchor that currently grants ``(principal_id, key_id)`` its scopes.
+
+    The offline counterpart of ``_v6_writer.resolve_key_binding_anchor``, with the same
+    three rules and for the same reasons:
+
+    1. **Anchor transitions only.** An acceptance-shaped payload on an ordinary transition
+       is not an acceptance.
+    2. **Newest live wins**, and newest means furthest along the *chain*, which is what
+       ``ordered`` already is. "The later acceptance is the one carrying current scopes";
+       honouring an older grant reads the operator's superseded word as current.
+    3. **Any revocation for this principal/key refuses the whole resolution** — not just
+       the revoked anchor. The store's comment says why: "Falling back turns a revocation
+       into a *privilege escalation*: the operator's most recent word about this key was
+       'no longer usable', and what remains is either an older acceptance (whose scopes the
+       newer one superseded) or the bootstrap anchor (typically the BROADER scope)."
+
+    Returns ``(authority, refusals)``. ``authority`` is ``None`` whenever the material
+    cannot establish one, and the refusals name why. There is no
+    acceptance-shaped-implies-authorised default: absence of an anchor is absence of
+    authority, and for a bounded scope the caller reports it as outside scope rather than
+    as satisfaction.
+
+    **What this deliberately does not do**: it does not walk the acceptance chain of
+    authority back to the root. A standalone acceptance must be signed by the principal its
+    own ``accepted_by`` block names, and that block's ``key_binding_event_hash`` must resolve
+    to an anchor in the material granting ``may_accept_keys`` — one level, checked below.
+    Beyond that, whether the *granting* key was itself legitimately enrolled is a trust-log
+    question (``TRUST-DOMAIN.md`` §5.8) and therefore §4's, not this function's.
+    """
+
+    refusals: list[str] = []
+
+    # Rule 3 first: a revocation anywhere in the material kills the resolution, so there is
+    # no point selecting an anchor to then discard.
+    for member in ordered:
+        if member.transition != ACCEPTANCE_REVOCATION_TRANSITION:
             continue
-        scopes = acceptance.get("scopes")
-        if isinstance(scopes, Mapping):
-            return scopes
-    return None
+        payload = member.payload
+        if payload is None:
+            # A revocation whose payload cannot be read must not be skipped: skipping it
+            # would silently re-admit the acceptance it revoked (the store raises here for
+            # the same reason).
+            refusals.append(
+                f"revocation_unreadable: the event at {member.event_hash_text} is a "
+                "principal_key_acceptance_revoked with no readable payload, and a "
+                "revocation that cannot be evaluated cannot be ignored"
+            )
+            return None, tuple(refusals)
+        # A revocation-transition event whose payload cannot be read AS a revocation must
+        # not be skipped, and this is the subtle half of the rule: skipping it would let an
+        # attacker neutralise a revocation by editing its payload type or dropping the
+        # principal it names. The store raises for the same reason — "a revocation that
+        # cannot be parsed cannot be skipped, because skipping it would silently re-admit
+        # the acceptance it revoked". So anything unreadable here refuses the resolution
+        # rather than falling through to the grant.
+        target_principal = payload.get("principal_id")
+        target_key = payload.get("key_id")
+        if (
+            payload.get("type") != KEY_ACCEPTANCE_REVOCATION_PAYLOAD_TYPE
+            or not isinstance(target_principal, str)
+            or not isinstance(target_key, str)
+        ):
+            refusals.append(
+                f"revocation_unreadable: the event at {member.event_hash_text} has "
+                f"transition {ACCEPTANCE_REVOCATION_TRANSITION!r} but its payload does not "
+                "name a revoked principal and key, so it cannot be determined whether it "
+                "revokes this signer's authority. A revocation that cannot be evaluated is "
+                "not a revocation of nothing"
+            )
+            return None, tuple(refusals)
+        if target_principal != principal_id or target_key != key_id:
+            continue
+        target = payload.get("acceptance_event_hash")
+        refusals.append(
+            f"signer_authority_revoked: the acceptance {target!r} for {principal_id!r}/"
+            f"{key_id!r} is revoked at {member.event_hash_text}, which is inside this "
+            "bundle. A revocation is not superseded by an older acceptance "
+            "(TRUST-DOMAIN.md §5.8/§5.10 step 4), so no anchor for this key may be used"
+        )
+        return None, tuple(refusals)
+
+    # Index every anchor in the material, so `accepted_by.key_binding_event_hash` can be
+    # resolved without a second pass per candidate.
+    anchors_by_hash: dict[str, tuple[OrderedMember, Mapping[str, Any], str]] = {}
+    for member in ordered:
+        if member.transition not in ANCHOR_TRANSITIONS:
+            continue
+        payload = member.payload
+        if payload is None:
+            continue
+        if member.transition == ACCEPTANCE_TRANSITION:
+            obj = payload if payload.get("type") == KEY_ACCEPTANCE_PAYLOAD_TYPE else None
+            kind = "acceptance"
+        else:
+            embedded = payload.get("bootstrap_key_acceptance")
+            obj = embedded if isinstance(embedded, Mapping) else None
+            kind = "bootstrap"
+        if obj is not None:
+            anchors_by_hash[member.event_hash_text] = (member, obj, kind)
+
+    bootstrap: SigningAuthority | None = None
+    acceptance: SigningAuthority | None = None
+    for member in ordered:
+        obj, kind, refusal = _acceptance_object(
+            member, principal_id=principal_id, key_id=key_id
+        )
+        if refusal is not None:
+            refusals.append(refusal)
+            continue
+        if obj is None:
+            continue
+        scopes = obj["scopes"]
+        assert isinstance(scopes, Mapping)
+
+        if kind == "acceptance":
+            accepted_by = obj["accepted_by"]
+            assert isinstance(accepted_by, Mapping)
+            granting_hash = accepted_by.get("key_binding_event_hash")
+            granting = (
+                anchors_by_hash.get(granting_hash)
+                if isinstance(granting_hash, str)
+                else None
+            )
+            if granting is None:
+                refusals.append(
+                    f"anchor_granting_authority_outside_scope: the acceptance at "
+                    f"{member.event_hash_text} anchors on {granting_hash!r}, which is not "
+                    "an anchor in the presented material — so whether the accepting key "
+                    "held may_accept_keys cannot be established here"
+                )
+                continue
+            granting_member, granting_obj, _granting_kind = granting
+            granting_scopes = granting_obj.get("scopes")
+            # The granting anchor must grant to the key that SIGNED this acceptance, not
+            # merely be an anchor that happens to hold may_accept_keys. Without this,
+            # any principal could anchor its own acceptance on someone else's
+            # may_accept_keys grant and inherit an authority it was never given — the same
+            # class of forgery as `accepted_by` naming a principal that did not sign, one
+            # indirection further out.
+            if (
+                granting_obj.get("principal_id") != accepted_by.get("principal_id")
+                or granting_obj.get("key_id") != accepted_by.get("key_id")
+            ):
+                refusals.append(
+                    f"anchor_granting_authority_is_for_another_key: the acceptance at "
+                    f"{member.event_hash_text} anchors on "
+                    f"{granting_member.event_hash_text}, which grants scopes to "
+                    f"{granting_obj.get('principal_id')!r}/{granting_obj.get('key_id')!r} "
+                    f"— not to {accepted_by.get('principal_id')!r}/"
+                    f"{accepted_by.get('key_id')!r}, the pair that signed the acceptance. "
+                    "An anchor authorises the key it names and no other"
+                )
+                continue
+            # And it must PRECEDE it. `_v6_writer` gets this for free by walking backward
+            # from the chain head; here the ordinals are the chain order, so it is a
+            # comparison. An anchor authorised by a later event is a loop in the authority
+            # graph, not a chain of authority.
+            if granting_member.scope_ordinal >= member.scope_ordinal:
+                refusals.append(
+                    f"anchor_granting_authority_not_preceding: the acceptance at "
+                    f"{member.event_hash_text} (scope_ordinal {member.scope_ordinal}) "
+                    f"anchors on {granting_member.event_hash_text} (scope_ordinal "
+                    f"{granting_member.scope_ordinal}), which does not precede it. "
+                    "Authority flows forward along the chain"
+                )
+                continue
+            if not (
+                isinstance(granting_scopes, Mapping)
+                and granting_scopes.get("may_accept_keys") is True
+            ):
+                refusals.append(
+                    f"anchor_granting_authority_may_not_accept: the acceptance at "
+                    f"{member.event_hash_text} anchors on "
+                    f"{granting_member.event_hash_text}, whose acceptance does not grant "
+                    "may_accept_keys, so that key may not accept another "
+                    "(TRUST-DOMAIN.md §5.8)"
+                )
+                continue
+
+        resolved = SigningAuthority(
+            event_hash=member.event_hash_text,
+            kind=kind,
+            scope_ordinal=member.scope_ordinal,
+            may_sign_bundles=scopes.get("may_sign_bundles") is True,
+        )
+        # Chain order, so a later candidate is strictly newer. Rule 2.
+        if kind == "acceptance":
+            acceptance = resolved
+        else:
+            bootstrap = resolved
+
+    return (acceptance or bootstrap), tuple(refusals)
 
 
 def verify_bundle_v3_core(
@@ -1477,13 +2024,16 @@ def verify_bundle_v3_core(
         chain_ordered = False
         acc.findings.append(f"{exc.code.value}: {exc.message}")
 
-    recomputed_root = digest_text(membership_root([m.event_hash for m in ordered]))
-    membership_root_ok = chain_ordered and acc.check(
-        hmac.compare_digest(recomputed_root, str(statement["event_membership_root"])),
-        "membership_root_mismatch: the recomputed RFC 6962 root over the presented events "
-        f"is {recomputed_root}, but the signed statement commits to "
-        f"{statement['event_membership_root']}",
-    )
+    recomputed_root: str | None = None
+    membership_root_ok: bool | None = None
+    if chain_ordered:
+        recomputed_root = digest_text(membership_root([m.event_hash for m in ordered]))
+        membership_root_ok = acc.check(
+            hmac.compare_digest(recomputed_root, str(statement["event_membership_root"])),
+            "membership_root_mismatch: the recomputed RFC 6962 root over the presented "
+            f"events is {recomputed_root}, but the signed statement commits to "
+            f"{statement['event_membership_root']}",
+        )
 
     declared_digests = statement["section_digests"]
     assert isinstance(declared_digests, Mapping)
@@ -1497,8 +2047,9 @@ def verify_bundle_v3_core(
         f"section_digest_mismatch: {sorted(mismatches)} do not match the signed digests",
     )
 
-    reference_sections_ok = True
+    reference_sections_ok: bool | None = None
     if chain_ordered:
+        reference_sections_ok = True
         derived = recompute_reference_sections(ordered)
         for name in REFERENCE_SECTIONS:
             presented = list(document.sections[name])
@@ -1511,8 +2062,9 @@ def verify_bundle_v3_core(
                     "(BUNDLE-V3.md §3.2 as amended)"
                 )
 
-    scope_consistent = True
+    scope_consistent: bool | None = None
     if chain_ordered:
+        scope_consistent = True
         scope_consistent &= acc.check(
             len(ordered) == scope["event_count"],
             f"scope_event_count_mismatch: the signed scope claims "
@@ -1565,68 +2117,137 @@ def verify_bundle_v3_core(
                 "chain, so its first event must be the chain genesis "
                 "(previous_project_event_hash null)",
             )
+            # A null project link is necessary and nowhere near sufficient. §3.5 requires
+            # `first_event_hash` to be the PROJECT GENESIS, and an ordinary signed event can
+            # carry a null link — nothing in the envelope schema forbids it. The difference
+            # is load-bearing because `complete-store` is the scope that licenses "an absent
+            # referent contradicts the claim" (`MaterialCompleteness.COMPLETE_STORE`): a
+            # false one turns every absence into a lie in the safe-looking direction.
+            head = ordered[0]
+            head_entity = head.envelope.get("entity")
+            scope_consistent &= acc.check(
+                head.transition == PROJECT_GENESIS_TRANSITION
+                and isinstance(head_entity, Mapping)
+                and head_entity.get("kind") == "project"
+                and head.payload is not None
+                and isinstance(head.payload.get("bootstrap_key_acceptance"), Mapping),
+                "complete_store_head_is_not_project_genesis: the first event is "
+                f"{head.event_hash_text}, transition {head.transition!r}, entity kind "
+                f"{(head_entity or {}).get('kind')!r}. §3.5 requires "
+                "scope.first_event_hash to BE the project genesis: transition "
+                f"{PROJECT_GENESIS_TRANSITION!r} on a `project` entity carrying a "
+                "bootstrap_key_acceptance. A null previous_project_event_hash does not "
+                "establish it — a trust_domain_established event carries one too, and it "
+                "heads the trust-log chain, not this project's",
+            )
 
-    # O3 — the signer's authority, checked from the signed acceptance rather than assumed.
+    # O3 — the signer's authority, RE-DERIVED with the store's own rules.
+    #
+    # Two independent things are checked and they are easy to conflate: that the statement
+    # names the anchor that actually grants the scope (`authority_event_hash`), and that the
+    # anchor grants it (`may_sign_bundles`). A statement naming a superseded or revoked
+    # anchor fails the first even when some anchor in the bundle would have passed the
+    # second — which is the whole of scenarios S2 and S3.
     signer = statement["signer"]
     assert isinstance(signer, Mapping)
     authority_hash = str(signer["authority_event_hash"])
     signer_key_id = str(signer["key_id"])
-    authority_member = next(
-        (m for m in ordered if m.event_hash_text == authority_hash), None
-    )
-    signer_authority_checked = authority_member is not None
+    signer_principal_id = str(signer["principal_id"])
+    signer_authority_checked = False
     signer_may_sign_bundles = False
-    if authority_member is not None:
-        scopes = _acceptance_scopes_for(authority_member, key_id=signer_key_id)
-        if scopes is None:
-            acc.findings.append(
-                "signer_authority_not_an_acceptance: "
-                f"statement.signer.authority_event_hash names {authority_hash}, which is "
-                f"in the bundle but grants no acceptance to key {signer_key_id!r}"
-            )
-        else:
-            signer_may_sign_bundles = scopes.get("may_sign_bundles") is True
-            if not signer_may_sign_bundles:
+    if chain_ordered:
+        authority, authority_refusals = resolve_bundle_signing_authority(
+            ordered, principal_id=signer_principal_id, key_id=signer_key_id
+        )
+        if authority is None:
+            if authority_refusals:
+                # Named reasons the material refuses — a revocation, a self-authorised
+                # grant, an accepted_by that is not the signer. These are defects of the
+                # artifact whatever its scope kind, so they are findings in both cases.
+                acc.findings.extend(authority_refusals)
+            elif scope["kind"] == "complete-store":
+                # RECONCILIATION.md Resolution 4: "Missing closure in `complete-store` is
+                # invalid." The signing-authority closure is the one dependency Phase B
+                # enforces; the rest of the closure walk is Phase D's.
                 acc.findings.append(
-                    "signer_may_not_sign_bundles: the signed acceptance at "
-                    f"{authority_hash} does not grant may_sign_bundles to key "
-                    f"{signer_key_id!r}. Owner ruling O3: the bundle signer MAY be the "
-                    "project writer key, but only if that key explicitly bears the scope "
-                    "— holding the writer key is not an implication of the authority"
+                    "signer_authority_absent_from_complete_store: no key-binding anchor in "
+                    f"this bundle grants {signer_principal_id!r}/{signer_key_id!r} any "
+                    "scopes, and the bundle claims to be the whole chain. A complete-store "
+                    "scope missing a dependency it must contain is invalid, not "
+                    "unverifiable"
                 )
-    elif scope["kind"] == "complete-store":
-        # RECONCILIATION.md Resolution 4: "Missing closure in `complete-store` is invalid."
-        # The signing-authority closure is the one dependency Phase B needs to enforce O3
-        # at verify; the rest of the closure walk is Phase D's.
-        acc.findings.append(
-            "signer_authority_outside_complete_store: "
-            f"statement.signer.authority_event_hash names {authority_hash}, which is not "
-            "in a bundle claiming the whole chain. A complete-store scope missing a "
-            "dependency it must contain is invalid, not unverifiable"
-        )
-    else:
-        # A bounded range legitimately may not contain it — and Resolution 4 requires that
-        # be *named* rather than treated as satisfaction. This is not a finding: the
-        # artifact is not defective. It is the third state, and a caller that reports
-        # `core_ok` without it is claiming O3 was checked when it was not.
-        acc.notes.append(
-            "signer_authority_outside_scope: "
-            f"statement.signer.authority_event_hash names {authority_hash}, which lies "
-            f"outside this {scope['kind']} scope, so may_sign_bundles could not be "
-            "re-derived from the signed acceptance (owner ruling O3). Not checkable here — "
-            "not satisfied"
-        )
+            else:
+                # A bounded range legitimately may not contain it, and Resolution 4 requires
+                # that be *named* rather than treated as satisfaction. Not a finding: the
+                # artifact is not defective. It is the third state.
+                acc.notes.append(
+                    "signer_authority_outside_scope: no key-binding anchor for "
+                    f"{signer_principal_id!r}/{signer_key_id!r} lies inside this "
+                    f"{scope['kind']} scope, so may_sign_bundles could not be re-derived "
+                    "from a signed acceptance (owner ruling O3). Not checkable here — not "
+                    "satisfied"
+                )
+        else:
+            # Refusals alongside a successful resolution still matter: they name candidate
+            # anchors the material rejected, which is how an auditor sees that a forged
+            # grant was present and discarded rather than absent.
+            acc.notes.extend(authority_refusals)
+            signer_authority_checked = True
+            if authority.event_hash != authority_hash:
+                signer_authority_checked = False
+                acc.findings.append(
+                    "signer_authority_is_not_the_current_anchor: the statement names "
+                    f"{authority_hash} as the authority for {signer_principal_id!r}/"
+                    f"{signer_key_id!r}, but the anchor currently in force in this bundle "
+                    f"is {authority.event_hash} (kind {authority.kind}, scope_ordinal "
+                    f"{authority.scope_ordinal}). The newest live acceptance carries the "
+                    "current scopes; honouring an older one reads the operator's "
+                    "superseded word as current"
+                )
+            elif not authority.may_sign_bundles:
+                signer_may_sign_bundles = False
+                acc.findings.append(
+                    "signer_may_not_sign_bundles: the anchor in force at "
+                    f"{authority.event_hash} does not grant may_sign_bundles to "
+                    f"{signer_key_id!r}. Owner ruling O3: the bundle signer MAY be the "
+                    "project writer key, but only if that key explicitly bears the scope — "
+                    "holding the writer key is not an implication of the authority"
+                )
+            else:
+                signer_may_sign_bundles = True
 
     statement_signature_checked = statement_public_key is not None
     statement_signature_valid = False
     if statement_public_key is not None:
-        try:
-            verify_statement_signature(
-                statement, document.statement_signature, public_key=statement_public_key
+        # The key must BE the key the statement names, and this comparison is the entire
+        # stated purpose of `signer.fingerprint`: §3.2 says it "is redundant with `key_id`
+        # **on purpose**: the auditor pins fingerprints, not key ids, and a signed
+        # self-statement of the fingerprint means the pin comparison never has to route
+        # through the bundled registry." Without the comparison the field is decoration,
+        # and a signature that verifies under SOME key reads as a signature by the named
+        # signer. Note the direction that makes this load-bearing: the signature below may
+        # be perfectly valid under `statement_public_key`, and it is still refused, because
+        # a valid signature by the wrong principal is a stronger lie than an invalid one.
+        supplied_fingerprint = ed25519_fingerprint(statement_public_key)
+        declared = str(signer["fingerprint"])
+        if not hmac.compare_digest(supplied_fingerprint, declared):
+            acc.findings.append(
+                "statement_key_is_not_the_declared_signer: the supplied verification key "
+                f"has fingerprint {supplied_fingerprint}, but "
+                f"statement.signer.fingerprint declares {declared}. "
+                "§4.4 criterion 4: a key whose fingerprint contradicts the "
+                "pin for the same key id is invalid, not merely reported"
             )
-            statement_signature_valid = True
-        except RegistaError as exc:
-            acc.findings.append(f"{exc.code.value}: {exc.message}")
+        else:
+            try:
+                verify_statement_signature(
+                    statement,
+                    document.statement_signature,
+                    public_key=statement_public_key,
+                )
+                statement_signature_valid = True
+            except RegistaError as exc:
+                acc.findings.append(f"{exc.code.value}: {exc.message}")
 
     return BundleV3CoreReport(
         format_version=document.format_version,
@@ -1688,30 +2309,42 @@ class BundleV3TrustRoot:
 
 @dataclass(frozen=True)
 class BundleV3Signer:
-    """The bundle-signing authority, with the O3 scope as a required input.
+    """The identity offered to sign a bundle statement, and the private key to sign with.
 
-    ``may_sign_bundles`` is a constructor argument rather than something this module reads,
-    for the same reason ``trust_root`` is: resolving it means walking the project's
-    acceptance anchors, which is the caller's transaction. What this module guarantees is
-    that a ``False`` never signs — see :func:`build_bundle_v3_document`.
+    **Four fields, and deliberately not six.** An earlier shape carried
+    ``may_sign_bundles`` and ``authority_event_hash`` as constructor arguments, on the
+    reasoning that resolving them meant walking the project's acceptance anchors and that
+    was the caller's transaction. That was wrong in the way this document exists to remove:
+    a caller-asserted authority flag is not evidence, it is the same "free-text claim
+    wearing a structured field's clothes" that ``_v6_writer`` refuses in ``accepted_by``.
+    The builder now derives both from the event set it is about to sign over
+    (:func:`resolve_bundle_signing_authority`), so the only way to obtain a signed
+    statement is for the events themselves to support it.
+
+    ``fingerprint`` stays declared rather than derived on purpose: keeping it declared means
+    a caller that pairs one principal's identity with another's private key is CAUGHT, where
+    deriving it would silently paper the mistake over and emit a document naming one signer
+    and signed by another.
     """
 
     principal_id: str
     key_id: str
     fingerprint: str
-    authority_kind: str
-    authority_event_hash: str
-    may_sign_bundles: bool
     private_key: bytes
 
-    def as_statement_member(self) -> dict[str, Any]:
+    def as_statement_member(self, *, authority_event_hash: str) -> dict[str, Any]:
         return {
             "principal_id": self.principal_id,
             "key_id": self.key_id,
             "scheme_id": STATEMENT_SIGNATURE_SCHEME,
             "fingerprint": self.fingerprint,
-            "authority_kind": self.authority_kind,
-            "authority_event_hash": self.authority_event_hash,
+            # `scoped` is the honest value for a project-local acceptance, and it is the
+            # only one Phase B can produce: the authority came from an acceptance event
+            # inside this project, not from the trust root or a registrar delegation. A
+            # `root`/`registrar` statement is a direct root-threshold signature, which uses
+            # `root_signatures[]` and is refused here until §4 lands.
+            "authority_kind": "scoped",
+            "authority_event_hash": authority_event_hash,
         }
 
 
@@ -1723,6 +2356,7 @@ def build_bundle_v3_document(
     signer: BundleV3Signer,
     scope_kind: str,
     preceding_event_hash: str | None = None,
+    authority_records: Sequence[tuple[bytes, bytes]] | None = None,
     bundled_key_evidence: Sequence[Mapping[str, Any]] = (),
     external_evidence: Sequence[Mapping[str, Any]] = (),
     regista_version: str,
@@ -1743,16 +2377,21 @@ def build_bundle_v3_document(
     document its verifier refuses).
     """
 
-    if not signer.may_sign_bundles:
+    # The declared identity must be the private key's identity. Without this a
+    # `BundleV3Signer` carrying B's identity and A's key produces a document that verifies
+    # under A's public key while naming B as its signer — a valid signature by the wrong
+    # principal, which is a stronger lie than an invalid one.
+    derived_fingerprint = ed25519_fingerprint(
+        ed25519_public_key_from_seed(signer.private_key)
+    )
+    if not hmac.compare_digest(derived_fingerprint, signer.fingerprint):
         raise _signer_refusal(
-            f"key {signer.key_id!r} for principal {signer.principal_id!r} does not bear "
-            "may_sign_bundles, so it may not sign a bundle statement. Owner ruling O3 "
-            "(2026-08-23): the statement signer MAY be the project writer key, but the "
-            "authority is an explicit, signed property of the key "
-            "(TRUST-DOMAIN.md §5.8 scopes) and never an implication of holding it. Grant "
-            "the scope in a key-acceptance event, or sign with a key that has it",
+            f"the signer declares fingerprint {signer.fingerprint} but its private key "
+            f"produces {derived_fingerprint}. Refusing to sign a statement that names one "
+            "key and is signed by another",
+            declared=signer.fingerprint,
+            derived=derived_fingerprint,
             key_id=signer.key_id,
-            principal_id=signer.principal_id,
         )
     if scope_kind not in SCOPE_KINDS:
         raise _statement_refusal(
@@ -1768,6 +2407,53 @@ def build_bundle_v3_document(
 
     members = [parse_event_member(env, sig) for env, sig in event_records]
     ordered = derive_chain_order(members, preceding_event_hash=preceding_event_hash)
+
+    # Owner ruling O3, derived rather than asserted: the builder resolves the authority with
+    # the same rules the verifier will, so a caller cannot obtain a signature by claiming a
+    # scope the material does not grant.
+    #
+    # `authority_records` defaults to the exported set but exists to be a SUPERSET of it,
+    # and the distinction is what keeps chunked export working. A windowed chunk (§3.5
+    # `contiguous-range`, §9's chunking workflow) legitimately excludes the signer's own
+    # acceptance event; resolving authority over the window alone would make every such
+    # chunk unexportable. The exporter observes the whole store — the same reasoning that
+    # lets it restate the trust root from a genesis event outside the window — so it resolves
+    # over the whole chain and the statement names the anchor it found. A verifier holding
+    # only the chunk then reports `signer_authority_outside_scope` as a note, which is the
+    # honest "not checkable here" rather than either a pass or a defect.
+    authority_material = (
+        ordered
+        if authority_records is None
+        else derive_chain_order(
+            [parse_event_member(env, sig) for env, sig in authority_records],
+            preceding_event_hash=None,
+        )
+    )
+    authority, authority_refusals = resolve_bundle_signing_authority(
+        authority_material, principal_id=signer.principal_id, key_id=signer.key_id
+    )
+    if authority is None or not authority.may_sign_bundles:
+        detail = (
+            "; ".join(authority_refusals)
+            if authority_refusals
+            else (
+                f"the anchor in force is {authority.event_hash} and it does not grant the "
+                "scope"
+                if authority is not None
+                else "no key-binding anchor for it appears in the events being exported"
+            )
+        )
+        raise _signer_refusal(
+            f"key {signer.key_id!r} for principal {signer.principal_id!r} does not bear "
+            f"may_sign_bundles in the material being signed over: {detail}. Owner ruling "
+            "O3 (2026-08-23): the statement signer MAY be the project writer key, but the "
+            "authority is an explicit, signed property of the key "
+            "(TRUST-DOMAIN.md §5.8 scopes) and never an implication of holding it. Grant "
+            "the scope in a key-acceptance event, or sign with a key that has it",
+            key_id=signer.key_id,
+            principal_id=signer.principal_id,
+            refusals=list(authority_refusals),
+        )
 
     sections: dict[str, list[Any]] = {name: [] for name in SECTION_NAMES}
     sections["events"] = [m.as_event_record() for m in ordered]
@@ -1798,7 +2484,9 @@ def build_bundle_v3_document(
             name: section_digest_text(name, sections[name]) for name in SECTION_NAMES
         },
         "trust_root": trust_root.as_statement_member(),
-        "signer": signer.as_statement_member(),
+        "signer": signer.as_statement_member(
+            authority_event_hash=authority.event_hash
+        ),
         "exporter": {
             "regista_version": regista_version,
             "statement_schema": BUNDLE_V3_STATEMENT_SCHEMA,
@@ -1834,11 +2522,15 @@ def canonical_bundle_bytes(document: Mapping[str, Any]) -> bytes:
     unkeyed digest alongside it would be a field an operator could mistake for evidence.
     """
 
-    return canonicalize(dict(document))
+    return canonical_bytes(dict(document), path="bundle")
 
 
 __all__ = [
+    "ACCEPTANCE_REVOCATION_TRANSITION",
+    "ACCEPTANCE_TRANSITION",
+    "ANCHOR_TRANSITIONS",
     "AUTHORITY_KINDS",
+    "BOOTSTRAP_ANCHOR_TRANSITIONS",
     "BUNDLED_KEY_EVIDENCE_KEYS",
     "BUNDLE_V3_FORMAT_VERSION",
     "BUNDLE_V3_STATEMENT_SCHEMA",
@@ -1868,11 +2560,15 @@ __all__ = [
     "BundleV3Signer",
     "BundleV3TrustRoot",
     "OrderedMember",
+    "SigningAuthority",
     "build_bundle_v3_document",
     "canonical_bundle_bytes",
+    "canonical_bytes",
     "derive_chain_order",
     "digest_bytes",
     "digest_text",
+    "ed25519_fingerprint",
+    "ed25519_public_key_from_seed",
     "is_digest_text",
     "membership_root",
     "membership_root_text",
@@ -1883,6 +2579,7 @@ __all__ = [
     "parse_event_member",
     "recompute_reference_sections",
     "require_supported_format_version",
+    "resolve_bundle_signing_authority",
     "section_digest",
     "section_digest_text",
     "sign_statement",

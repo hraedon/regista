@@ -943,7 +943,7 @@ class ArchiveOps:
         The store's own :class:`~regista._keys.KeySet` is passed through as the signing
         material: a v3 bundle *is* a signed statement, so there is nothing to export
         without it. ``root_governance`` has no default for the reason
-        ``_bundle._trust_root_from_genesis`` documents — the replayed governance state
+        ``_bundle._trust_root_from_store`` documents — the replayed governance state
         cannot be derived from a project store, and inventing it would falsify the one
         field WI-272 requires to be true in every artifact.
         """

@@ -741,9 +741,12 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                     )
                 elif not result.get("statement_signature_valid", True):
                     print("  statement_signature: INVALID")
-                if not result.get("membership_root_ok", True):
+                # `is False`, not falsy: these fields are None when the check did not run
+                # (the chain could not be ordered), and "did not run" must not print as
+                # "does not match".
+                if result.get("membership_root_ok") is False:
                     print("  event_membership_root: recomputed root does not match")
-                if not result.get("section_digests_ok", True):
+                if result.get("section_digests_ok") is False:
                     print("  section_digests: a section does not match its signed digest")
                 if not result["global_chain_ok"]:
                     print(f"  global_chain: {result['global_chain_error']}")

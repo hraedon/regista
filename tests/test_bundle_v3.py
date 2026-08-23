@@ -25,6 +25,7 @@ import copy
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,10 @@ from regista._bundle_v3 import (
     merkle_root,
     parse_bundle_v3_document,
     parse_event_member,
+    recompute_reference_sections,
     section_digest,
+    section_digest_text,
+    sign_statement,
     statement_signing_input,
     verify_bundle_v3_core,
 )
@@ -81,37 +85,66 @@ def _load_vector(name: str) -> dict[str, Any]:
 class _Chain:
     """A signed v6 chain built in memory, plus everything a statement needs."""
 
-    def __init__(self, keyset: Any, *, may_sign_bundles: bool = True) -> None:
+    def __init__(
+        self,
+        keyset: Any,
+        *,
+        may_sign_bundles: bool = True,
+        with_genesis: bool = True,
+        head_transition: str | None = None,
+        with_acceptance: bool = True,
+        ordinary_events: int = 2,
+    ) -> None:
         self.keyset = keyset
         self.records: list[tuple[bytes, bytes]] = []
         self.hashes: list[str] = []
+        self._entity_seq: dict[str, int] = {}
+        self._entity_head: dict[str, str | None] = {}
+        self.work_item_id = str(uuid.uuid4())
 
+        # The genesis envelope is built either way, because it is where the project and
+        # trust-domain identifiers and the two trust-root digests come from. `with_genesis`
+        # only decides whether it is APPENDED — a chain headed by a non-genesis event is
+        # exactly what F3 (complete-store head identity) has to be tested against.
         genesis = genesis_envelope(keyset, principal_id=BOOTSTRAP)
         self.project_instance_id = str(genesis["project_instance_id"])
         self.trust_domain_id = str(genesis["trust_domain_id"])
         self.core_digest = str(genesis["payload"]["trust_domain_core_digest"])
         self.document_digest = str(genesis["payload"]["genesis_document_digest"])
-        self._append(genesis, BOOTSTRAP)
-        self.genesis_hash = self.hashes[0]
+        self.genesis_hash: str | None = None
+        if with_genesis:
+            self._append(genesis, BOOTSTRAP)
+            self.genesis_hash = self.hashes[0]
+        elif head_transition is not None:
+            # A chain headed by something other than a project genesis. Only
+            # `trust_domain_established` and `project_initialized` may carry a null
+            # `chain.previous_project_event_hash` at all (the v6 envelope validator enforces
+            # that), so this is the ONE non-genesis head a real signer can produce — which
+            # is exactly why F3's check has to name the transition rather than the link.
+            head = self._base(BOOTSTRAP)
+            self._entity(head, "trust_domain", self.trust_domain_id)
+            head["transition"] = head_transition
+            head["payload"] = {"note": "trust-log genesis, not this project's"}
+            head["signing"]["key_binding_event_hash"] = None
+            self._append(head, BOOTSTRAP)
 
-        worker = keyset.key_for(WORKER)
-        acceptance = self._acceptance_envelope(worker, may_sign_bundles=may_sign_bundles)
-        self._append(acceptance, BOOTSTRAP)
-        self.acceptance_hash = self.hashes[-1]
-
-        entity_id = str(uuid.uuid4())
-        previous_entity: str | None = None
-        for seq, transition in enumerate(("created", "updated"), start=1):
-            envelope = self._work_item_envelope(
-                entity_id=entity_id,
-                entity_seq=seq,
-                transition=transition,
-                previous_entity_event_hash=previous_entity,
+        self.acceptance_hash: str | None = None
+        if with_acceptance:
+            self.acceptance_hash = self.append(
+                self.acceptance_envelope(WORKER, may_sign_bundles=may_sign_bundles),
+                BOOTSTRAP,
             )
-            self._append(envelope, WORKER)
-            previous_entity = self.hashes[-1]
+
+        for transition in ("created", "updated")[:ordinary_events]:
+            self.append(self.work_item_envelope(transition=transition), WORKER)
 
     # -- construction -----------------------------------------------------
+
+    def append(self, envelope: dict[str, Any], principal_id: str) -> str:
+        """Sign and append *envelope*, linking it to the current head. Returns its hash."""
+
+        self._append(envelope, principal_id)
+        return self.hashes[-1]
 
     def _append(self, envelope: dict[str, Any], principal_id: str) -> None:
         envelope = copy.deepcopy(envelope)
@@ -121,6 +154,8 @@ class _Chain:
         signed = sign_v6_envelope(envelope, self.keyset.key_for(principal_id).seed)
         self.records.append((signed.canonical_envelope, signed.signature))
         self.hashes.append("sha256:" + signed.event_hash.hex())
+        entity_id = str(envelope["entity"]["id"])
+        self._entity_head[entity_id] = self.hashes[-1]
 
     def _base(self, principal_id: str) -> dict[str, Any]:
         key = self.keyset.key_for(principal_id)
@@ -147,58 +182,131 @@ class _Chain:
             },
         }
 
-    def _acceptance_envelope(self, worker: Any, *, may_sign_bundles: bool) -> dict[str, Any]:
-        envelope = self._base(BOOTSTRAP)
-        envelope["entity"] = {
-            "kind": "principal",
-            "id": str(uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + WORKER)),
+    def _entity(self, envelope: dict[str, Any], kind: str, entity_id: str) -> None:
+        """Fill entity, entity_seq and the per-entity chain link for *entity_id*."""
+
+        seq = self._entity_seq.get(entity_id, 0) + 1
+        self._entity_seq[entity_id] = seq
+        envelope["entity"] = {"kind": kind, "id": entity_id}
+        envelope["entity_seq"] = seq
+        envelope["chain"]["previous_entity_event_hash"] = self._entity_head.get(entity_id)
+
+    def acceptance_payload(
+        self,
+        principal_id: str,
+        *,
+        may_sign_bundles: bool,
+        accepted_by: str = BOOTSTRAP,
+        accepted_by_anchor: str | None = None,
+        may_accept_keys: bool | None = None,
+    ) -> dict[str, Any]:
+        """A ``regista.key-acceptance/v1`` payload for *principal_id*'s key."""
+
+        key = self.keyset.key_for(principal_id)
+        scopes: dict[str, Any] = {
+            "entity_kinds": ["work_item", "principal", "workflow", "project"],
+            "transitions": None,
+            "may_sign_checkpoints": False,
+            "may_sign_bundles": may_sign_bundles,
         }
-        envelope["entity_seq"] = 1
-        envelope["transition"] = "principal_key_accepted"
-        envelope["payload"] = {
+        if may_accept_keys is not None:
+            scopes["may_accept_keys"] = may_accept_keys
+        return {
             "type": "regista.key-acceptance",
             "version": 1,
             "trust_domain_id": self.trust_domain_id,
             "project_instance_id": self.project_instance_id,
-            "principal_id": WORKER,
-            "key_id": worker.key_id,
-            "fingerprint": worker.fingerprint,
-            "public_key": worker.public_key_b64,
+            "principal_id": principal_id,
+            "key_id": key.key_id,
+            "fingerprint": key.fingerprint,
+            "public_key": key.public_key_b64,
             "trust_event_hash": digest_text(hashlib.sha256(b"enrolment").digest()),
             "trust_log_checkpoint": {
                 "checkpoint_seq": 1,
                 "head_event_hash": digest_text(hashlib.sha256(b"head").digest()),
                 "document_digest": digest_text(hashlib.sha256(b"doc").digest()),
             },
-            "scopes": {
-                "entity_kinds": ["work_item", "principal", "workflow", "project"],
-                "transitions": None,
-                "may_sign_checkpoints": False,
-                "may_sign_bundles": may_sign_bundles,
-            },
+            "scopes": scopes,
             "accepted_by": {
-                "principal_id": BOOTSTRAP,
-                "key_id": self.keyset.key_for(BOOTSTRAP).key_id,
-                "key_binding_event_hash": self.hashes[0],
+                "principal_id": accepted_by,
+                "key_id": self.keyset.key_for(accepted_by).key_id,
+                "key_binding_event_hash": (
+                    accepted_by_anchor
+                    if accepted_by_anchor is not None
+                    else (self.genesis_hash or digest_text(b"\x00" * 32))
+                ),
+            },
+        }
+
+    def acceptance_envelope(
+        self,
+        principal_id: str,
+        *,
+        may_sign_bundles: bool,
+        signed_by: str = BOOTSTRAP,
+        transition: str = "principal_key_accepted",
+        entity_label: str = "",
+        **payload_kwargs: Any,
+    ) -> dict[str, Any]:
+        envelope = self._base(signed_by)
+        self._entity(
+            envelope,
+            "principal",
+            str(uuid.uuid5(uuid.NAMESPACE_OID, f"regista.principal:{principal_id}{entity_label}")),
+        )
+        envelope["transition"] = transition
+        envelope["payload"] = self.acceptance_payload(
+            principal_id, may_sign_bundles=may_sign_bundles, **payload_kwargs
+        )
+        return envelope
+
+    def revocation_envelope(
+        self,
+        *,
+        principal_id: str,
+        acceptance_event_hash: str,
+        revoked_by: str = BOOTSTRAP,
+    ) -> dict[str, Any]:
+        envelope = self._base(revoked_by)
+        self._entity(
+            envelope,
+            "principal",
+            str(uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal_id)),
+        )
+        envelope["transition"] = "principal_key_acceptance_revoked"
+        envelope["payload"] = {
+            "type": "regista.key-acceptance-revocation",
+            "version": 1,
+            "trust_domain_id": self.trust_domain_id,
+            "project_instance_id": self.project_instance_id,
+            "principal_id": principal_id,
+            "key_id": self.keyset.key_for(principal_id).key_id,
+            "acceptance_event_hash": acceptance_event_hash,
+            "reason": "superseded",
+            "revoked_by": {
+                "principal_id": revoked_by,
+                "key_id": self.keyset.key_for(revoked_by).key_id,
+                "key_binding_event_hash": self.genesis_hash or digest_text(b"\x00" * 32),
             },
         }
         return envelope
 
-    def _work_item_envelope(
+    def work_item_envelope(
         self,
         *,
-        entity_id: str,
-        entity_seq: int,
-        transition: str,
-        previous_entity_event_hash: str | None,
+        transition: str = "created",
+        signed_by: str = WORKER,
+        payload: dict[str, Any] | None = None,
+        entity_id: str | None = None,
     ) -> dict[str, Any]:
-        envelope = self._base(WORKER)
-        envelope["entity"] = {"kind": "work_item", "id": entity_id}
-        envelope["entity_seq"] = entity_seq
+        envelope = self._base(signed_by)
+        self._entity(envelope, "work_item", entity_id or self.work_item_id)
         envelope["transition"] = transition
-        envelope["payload"] = {"note": f"event {entity_seq}"}
-        envelope["signing"]["key_binding_event_hash"] = self.acceptance_hash
-        envelope["chain"]["previous_entity_event_hash"] = previous_entity_event_hash
+        envelope["payload"] = (
+            payload if payload is not None else {"note": f"event {transition}"}
+        )
+        if self.acceptance_hash is not None:
+            envelope["signing"]["key_binding_event_hash"] = self.acceptance_hash
         return envelope
 
     # -- statement inputs -------------------------------------------------
@@ -221,9 +329,6 @@ class _Chain:
             "principal_id": WORKER,
             "key_id": worker.key_id,
             "fingerprint": worker.fingerprint,
-            "authority_kind": "scoped",
-            "authority_event_hash": self.acceptance_hash,
-            "may_sign_bundles": True,
             "private_key": worker.seed,
         }
         fields.update(overrides)
@@ -280,6 +385,96 @@ def document(chain: _Chain) -> dict[str, Any]:
 
 def _reparse(document: dict[str, Any]) -> Any:
     return parse_bundle_v3_document(canonical_bundle_bytes(document))
+
+
+def _forge_document(
+    chain: _Chain,
+    *,
+    records: Sequence[tuple[bytes, bytes]] | None = None,
+    scope_kind: str = "complete-store",
+    preceding_event_hash: str | None = None,
+    signer_principal: str = WORKER,
+    signer_key_principal: str | None = None,
+    signing_seed_principal: str | None = None,
+    authority_event_hash: str | None = None,
+    statement_overrides: Mapping[str, Any] | None = None,
+    signature_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble a v3 document DIRECTLY, bypassing ``build_bundle_v3_document``.
+
+    A conforming builder refuses to emit most of what these tests need — that is the
+    point of the builder — but a verifier is judged on artifacts no conforming builder
+    would produce. So the statement is assembled here from the same public primitives
+    (:func:`membership_root`, :func:`section_digest_text`,
+    :func:`recompute_reference_sections`, :func:`sign_statement`), which means this helper
+    cannot drift from the format even though it can lie about anything in it.
+
+    ``signer_key_principal`` sets the ``signer.key_id``/``signer.fingerprint`` identity;
+    ``signing_seed_principal`` sets whose private key actually signs. Making those two
+    independently settable is exactly what F2 needs.
+    """
+
+    from regista._bundle_v3 import derive_chain_order, parse_event_member
+
+    event_records = list(records if records is not None else chain.records)
+    ordered = derive_chain_order(
+        [parse_event_member(env, sig) for env, sig in event_records],
+        preceding_event_hash=preceding_event_hash,
+    )
+
+    sections: dict[str, list[Any]] = {name: [] for name in SECTION_NAMES}
+    sections["events"] = [m.as_event_record() for m in ordered]
+    sections.update(recompute_reference_sections(ordered))
+    sections["bundled_key_evidence"] = chain.key_evidence()
+
+    identity = chain.keyset.key_for(signer_key_principal or signer_principal)
+    seed = chain.keyset.key_for(signing_seed_principal or signer_principal).seed
+
+    statement: dict[str, Any] = {
+        "type": "regista.audit-bundle",
+        "version": 3,
+        "bundle_id": str(uuid.uuid4()),
+        "project_instance_id": chain.project_instance_id,
+        "trust_domain_id": chain.trust_domain_id,
+        "created_at": "2026-08-23T12:00:00+00:00",
+        "scope": {
+            "kind": scope_kind,
+            "event_count": len(ordered),
+            "first_event_hash": ordered[0].event_hash_text,
+            "last_event_hash": ordered[-1].event_hash_text,
+            "preceding_event_hash": preceding_event_hash,
+        },
+        "event_membership_root": digest_text(
+            membership_root([m.event_hash for m in ordered])
+        ),
+        "section_digests": {
+            name: section_digest_text(name, sections[name]) for name in SECTION_NAMES
+        },
+        "trust_root": chain.trust_root().as_statement_member(),
+        "signer": {
+            "principal_id": signer_principal,
+            "key_id": identity.key_id,
+            "scheme_id": "ed25519",
+            "fingerprint": identity.fingerprint,
+            "authority_kind": "scoped",
+            "authority_event_hash": (
+                authority_event_hash
+                if authority_event_hash is not None
+                else (chain.acceptance_hash or digest_text(b"\x11" * 32))
+            ),
+        },
+        "exporter": {
+            "regista_version": "0.7.2",
+            "statement_schema": "regista.audit-bundle/3",
+        },
+    }
+    if statement_overrides:
+        statement.update(copy.deepcopy(dict(statement_overrides)))
+
+    signature = sign_statement(statement, private_key=seed, key_id=identity.key_id)
+    if signature_overrides:
+        signature.update(dict(signature_overrides))
+    return {"statement": statement, "statement_signature": signature, "sections": sections}
 
 
 def _mutated(document: dict[str, Any]) -> dict[str, Any]:
@@ -1071,11 +1266,17 @@ class TestRecomputation:
 
 
 class TestSignerAuthority:
-    def test_a_key_without_the_scope_cannot_sign(self, chain: _Chain) -> None:
+    def test_a_key_without_the_scope_cannot_sign(self, keyset: Any) -> None:
         """Owner ruling O3: "A writer key without the scope cannot sign a bundle
-        statement." The refusal is at build time and by name."""
+        statement." The refusal is at build time and by name.
+
+        Note what the builder is handed: a chain whose acceptance for this key sets
+        ``may_sign_bundles: false``, and a signer that says nothing about the scope at all.
+        There is no flag to lie with any more — the events decide.
+        """
+        denied = _Chain(keyset, may_sign_bundles=False)
         with pytest.raises(RegistaError) as exc:
-            chain.build(signer=chain.signer(may_sign_bundles=False))
+            denied.build()
         assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
         assert "may_sign_bundles" in str(exc.value)
 
@@ -1084,9 +1285,14 @@ class TestSignerAuthority:
     ) -> None:
         """The other half of O3, and the half that matters to an auditor: the scope is
         re-derived from the acceptance event inside the bundle, not taken from the
-        statement's word. A builder that lied about ``may_sign_bundles`` is caught."""
+        statement's word.
+
+        The document is forged rather than built, because a conforming builder now refuses
+        to produce it — and an artifact no conforming builder emits is precisely what a
+        verifier must be judged on.
+        """
         unscoped = _Chain(keyset, may_sign_bundles=False)
-        document = unscoped.build()  # the builder's flag says True; the chain says False
+        document = _forge_document(unscoped)
         report = verify_bundle_v3_core(
             _reparse(document), statement_public_key=unscoped.signer_public_key
         )
@@ -1095,12 +1301,29 @@ class TestSignerAuthority:
         assert report.core_ok is False
         assert any("signer_may_not_sign_bundles" in f for f in report.findings)
 
-    def test_an_authority_event_outside_a_complete_store_bundle_is_invalid(
-        self, chain: _Chain, document: dict[str, Any]
+    def test_an_authority_event_absent_from_a_complete_store_bundle_is_invalid(
+        self, keyset: Any
     ) -> None:
         """``RECONCILIATION.md`` Resolution 4: "Missing closure in ``complete-store`` is
         invalid." The signing authority is the one dependency Phase B closes; the rest of
         the closure walk is Phase D's."""
+        no_anchor = _Chain(keyset, with_acceptance=False)
+        document = _forge_document(no_anchor)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=no_anchor.signer_public_key
+        )
+        assert report.signer_authority_checked is False
+        assert report.core_ok is False
+        assert any(
+            "signer_authority_absent_from_complete_store" in f for f in report.findings
+        ), report.findings
+
+    def test_naming_an_anchor_that_is_not_the_one_in_force_is_invalid(
+        self, chain: _Chain, document: dict[str, Any]
+    ) -> None:
+        """Naming a hash that is not the current anchor is its own finding, distinct from
+        naming nothing: the bundle DOES carry an anchor, and the statement points elsewhere.
+        Keeping the two apart is what makes the superseded-acceptance case (S3) legible."""
         doctored = _mutated(document)
         doctored["statement"]["signer"]["authority_event_hash"] = digest_text(
             b"\x5c" * 32
@@ -1111,8 +1334,8 @@ class TestSignerAuthority:
         )
         assert report.signer_authority_checked is False
         assert any(
-            "signer_authority_outside_complete_store" in f for f in report.findings
-        )
+            "signer_authority_is_not_the_current_anchor" in f for f in report.findings
+        ), report.findings
 
 
 # ---------------------------------------------------------------------------
@@ -1140,8 +1363,17 @@ class TestBuilder:
         assert exc.value.code is ErrorCode.BUNDLE_STATEMENT_INVALID
 
     def test_a_contiguous_range_bundle_verifies(self, chain: _Chain) -> None:
+        """A windowed chunk that excludes the signer's own acceptance still builds, because
+        the builder resolves authority over ``authority_records`` — the whole chain the
+        exporter observes — and not over the window it is emitting.
+
+        Resolving over the window alone would make every chunk that does not happen to
+        contain the acceptance unexportable, which would break §9's chunking workflow
+        outright.
+        """
         document = chain.build(
             event_records=chain.records[2:],
+            authority_records=chain.records,
             scope_kind="contiguous-range",
             preceding_event_hash=chain.hashes[1],
         )
@@ -1218,3 +1450,722 @@ class TestBuilder:
             parsed, statement_public_key=chain.signer_public_key
         )
         assert report.core_ok, report.findings
+
+
+# ---------------------------------------------------------------------------
+# F1 — owner ruling O3 cannot be satisfied by an acceptance-SHAPED payload
+# ---------------------------------------------------------------------------
+
+
+class TestSignerAuthorityLaundering:
+    """The four laundering routes a probe-executing reviewer demonstrated end to end.
+
+    The original Phase B gate asked one question — "is there a payload here that looks
+    like an acceptance and names this key?" — and every scenario below answers yes while
+    the store's own resolver answers no. That asymmetry is the defect: the store refused to
+    export these bundles, and the offline verifier accepted them, so the artifact was
+    stronger than the verdict on it.
+
+    The fix mirrors ``_v6_writer``'s three rules, and each test names the one it depends
+    on: the anchor-transition restriction (``_ANCHOR_TRANSITIONS``), newest-live selection,
+    and revocation-kills-the-whole-resolution.
+    """
+
+    def test_a_grant_embedded_in_an_ordinary_event_is_not_an_anchor(
+        self, keyset: Any
+    ) -> None:
+        """S1a. An ordinary work-item event, signed by the worker itself, whose payload
+        carries a ``bootstrap_key_acceptance`` granting the worker ``may_sign_bundles``.
+
+        Nothing about that payload is authority: the event's transition is not one the
+        project's key-binding machinery reads anchors from, and the "grant" is
+        self-authored. ``_v6_writer._ANCHOR_TRANSITIONS`` is a closed set of three for
+        exactly this reason.
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        forged = chain.append(
+            chain.work_item_envelope(
+                transition="updated",
+                signed_by=WORKER,
+                payload={
+                    "note": "nothing to see here",
+                    "bootstrap_key_acceptance": chain.acceptance_payload(
+                        WORKER, may_sign_bundles=True
+                    ),
+                },
+            ),
+            WORKER,
+        )
+        document = _forge_document(chain, authority_event_hash=forged)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("signer_authority" in f for f in report.findings), report.findings
+
+    def test_an_acceptance_typed_payload_on_an_ordinary_transition_is_not_an_anchor(
+        self, keyset: Any
+    ) -> None:
+        """S1b. The same forgery one level more brazen: a full
+        ``regista.key-acceptance/v1`` payload on transition ``updated``.
+
+        The payload validates against §5.8's schema. It is still not an anchor, because a
+        transition is a signed field and ``principal_key_accepted`` is what the project
+        chain uses to mean "a key was accepted". Reading the payload type instead of the
+        transition is what let this through.
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        forged = chain.append(
+            chain.work_item_envelope(
+                transition="updated",
+                signed_by=WORKER,
+                payload=chain.acceptance_payload(WORKER, may_sign_bundles=True),
+            ),
+            WORKER,
+        )
+        document = _forge_document(chain, authority_event_hash=forged)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+
+    def test_a_self_authored_acceptance_is_not_an_anchor(self, keyset: Any) -> None:
+        """The worker accepts its own key, on the right transition, with a valid-looking
+        payload.
+
+        ``RECONCILIATION.md`` Resolution 1: "a key may not accept itself: ordinary
+        acceptance runs with no exceptions and no self-authorisation anywhere". The store
+        refuses this at write time (``self_authorisation``); an offline verifier that did
+        not re-check it would accept the one document the writer exists to prevent.
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        forged = chain.append(
+            chain.acceptance_envelope(
+                WORKER,
+                may_sign_bundles=True,
+                signed_by=WORKER,
+                accepted_by=WORKER,
+                entity_label="-self",
+            ),
+            WORKER,
+        )
+        document = _forge_document(chain, authority_event_hash=forged)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+
+    def test_an_acceptance_whose_accepted_by_is_not_the_signer_is_not_an_anchor(
+        self, keyset: Any
+    ) -> None:
+        """``_v6_writer._require_authority_matches_signer``, offline.
+
+        The payload claims the bootstrap principal exercised the authority; the envelope is
+        signed by the worker. "If those may differ, the payload asserts an authority that
+        never touched the event — a free-text claim wearing a structured field's clothes."
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        forged = chain.append(
+            chain.acceptance_envelope(
+                WORKER,
+                may_sign_bundles=True,
+                signed_by=WORKER,          # the worker signs...
+                accepted_by=BOOTSTRAP,     # ...but claims bootstrap authorised it
+                entity_label="-mismatch",
+            ),
+            WORKER,
+        )
+        document = _forge_document(chain, authority_event_hash=forged)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+
+    def test_an_acceptance_anchored_on_another_keys_grant_is_not_an_anchor(
+        self, keyset: Any
+    ) -> None:
+        """A hole found while reviewing the fix for this finding, one indirection further
+        out than the ``accepted_by`` binding.
+
+        ``human:operator`` signs an acceptance for the worker and anchors it on the genesis
+        bootstrap acceptance — which does hold ``may_accept_keys``, but grants it to the
+        BOOTSTRAP principal, not to the operator. Checking only "does the granting anchor
+        hold may_accept_keys?" lets any principal inherit an authority it was never given by
+        pointing at someone else's grant. An anchor authorises the key it names and no other.
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        forged = chain.append(
+            chain.acceptance_envelope(
+                WORKER,
+                may_sign_bundles=True,
+                signed_by="human:operator",
+                accepted_by="human:operator",
+                accepted_by_anchor=chain.genesis_hash,
+                entity_label="-borrowed",
+            ),
+            "human:operator",
+        )
+        document = _forge_document(chain, authority_event_hash=forged)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+
+    def test_a_revocation_whose_payload_cannot_be_read_refuses_rather_than_skipping(
+        self, keyset: Any
+    ) -> None:
+        """The other hole found while reviewing the fix, and the more dangerous one.
+
+        Gating the revocation check on ``payload.type`` meant an attacker could neutralise a
+        revocation by editing that one field: the event still carries transition
+        ``principal_key_acceptance_revoked``, the check skipped it, and the revoked grant
+        survived. The store raises in the same situation — "a revocation that cannot be
+        parsed cannot be skipped, because skipping it would silently re-admit the acceptance
+        it revoked" — so an unreadable revocation refuses the whole resolution.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True)
+        assert chain.acceptance_hash is not None
+        envelope = chain.revocation_envelope(
+            principal_id=WORKER, acceptance_event_hash=chain.acceptance_hash
+        )
+        envelope["payload"]["type"] = "regista.something-else"
+        chain.append(envelope, BOOTSTRAP)
+        document = _forge_document(chain, authority_event_hash=chain.acceptance_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("revocation_unreadable" in f for f in report.findings), report.findings
+
+    def test_a_revocation_for_a_different_key_does_not_refuse(self, keyset: Any) -> None:
+        """The necessary counterweight to the two rules above: a revocation naming ANOTHER
+        principal's key must not disturb this signer's authority. A fix that refused on any
+        revocation anywhere would make a store unable to export after any key rotation."""
+        chain = _Chain(keyset, may_sign_bundles=True)
+        chain.append(
+            chain.revocation_envelope(
+                principal_id="human:operator",
+                acceptance_event_hash=digest_text(b"\x7e" * 32),
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=chain.acceptance_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is True
+        assert report.core_ok is True, report.findings
+
+    def test_a_revocation_inside_the_same_bundle_kills_the_authority(
+        self, keyset: Any
+    ) -> None:
+        """S2, and the sharpest of the four: the revocation is IN the artifact.
+
+        ``resolve_key_binding_anchor`` refuses on any revocation for the principal/key,
+        and says why: "Falling back turns a revocation into a *privilege escalation*: the
+        operator's most recent word about this key was 'no longer usable'." A bundle that
+        carries both the grant and its revocation and reports the grant is reporting the
+        operator's superseded word as current.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True)
+        assert chain.acceptance_hash is not None
+        chain.append(
+            chain.revocation_envelope(
+                principal_id=WORKER, acceptance_event_hash=chain.acceptance_hash
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=chain.acceptance_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("revoked" in f for f in report.findings), report.findings
+
+    def test_a_superseded_acceptance_does_not_beat_the_current_one(
+        self, keyset: Any
+    ) -> None:
+        """S3. Acceptance A grants ``may_sign_bundles``; a later acceptance B for the same
+        key denies it; the statement names A.
+
+        ``resolve_key_binding_anchor``'s rule is "the most recent live acceptance — the one
+        carrying current scopes", and currentness is predecessor-link traversal. Honouring
+        the older grant reads the operator's superseded word as current, which is the same
+        defect as the revocation case in a quieter form.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True)
+        superseded = chain.acceptance_hash
+        assert superseded is not None
+        chain.append(
+            chain.acceptance_envelope(
+                WORKER, may_sign_bundles=False, entity_label="-current"
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=superseded)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+
+    def test_the_current_acceptance_is_the_one_that_decides(self, keyset: Any) -> None:
+        """The positive direction, so the fix is not merely "refuse everything".
+
+        Acceptance A denies the scope, a later acceptance B grants it, and the statement
+        names B. Newest-live selection means this verifies — and a fix that broke it would
+        have made the O3 gate unusable rather than sound.
+        """
+        chain = _Chain(keyset, may_sign_bundles=False)
+        current = chain.append(
+            chain.acceptance_envelope(
+                WORKER, may_sign_bundles=True, entity_label="-current"
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=current)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_authority_checked is True
+        assert report.signer_may_sign_bundles is True
+        assert report.core_ok is True, report.findings
+
+    def test_the_builder_derives_authority_instead_of_trusting_its_caller(
+        self, keyset: Any
+    ) -> None:
+        """The build side of F1: ``BundleV3Signer`` no longer carries a
+        ``may_sign_bundles`` flag for the builder to believe.
+
+        A caller-asserted boolean is not evidence — it is the same "free-text claim wearing
+        a structured field's clothes" the writer refuses in ``accepted_by``. The builder now
+        derives the scope from the event set it is about to sign over, so the only way to
+        get a signed statement is for the events to support it.
+        """
+        import dataclasses
+
+        assert "may_sign_bundles" not in {
+            f.name for f in dataclasses.fields(BundleV3Signer)
+        }, "a caller-asserted authority flag is exactly what F1 removed"
+        assert "authority_event_hash" not in {
+            f.name for f in dataclasses.fields(BundleV3Signer)
+        }, "the authority event is derived from the chain, not named by the caller"
+
+        denied = _Chain(keyset, may_sign_bundles=False)
+        with pytest.raises(RegistaError) as exc:
+            denied.build()
+        assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
+        assert "may_sign_bundles" in str(exc.value)
+
+    def test_the_builder_refuses_when_the_authority_is_revoked_in_scope(
+        self, keyset: Any
+    ) -> None:
+        chain = _Chain(keyset, may_sign_bundles=True)
+        assert chain.acceptance_hash is not None
+        chain.append(
+            chain.revocation_envelope(
+                principal_id=WORKER, acceptance_event_hash=chain.acceptance_hash
+            ),
+            BOOTSTRAP,
+        )
+        with pytest.raises(RegistaError) as exc:
+            chain.build()
+        assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
+
+
+# ---------------------------------------------------------------------------
+# F2 — the verifying key must be the key the statement names
+# ---------------------------------------------------------------------------
+
+
+class TestSignerKeyBinding:
+    """§3.2 says ``signer.fingerprint`` is redundant with ``key_id`` **on purpose**: "the
+    auditor pins fingerprints, not key ids, and a signed self-statement of the fingerprint
+    means the pin comparison never has to route through the bundled registry."
+
+    Both reviewers found independently that Phase B never made that comparison, in either
+    direction — so the statement's whole account of who signed it was decoration. Three
+    comparisons close it, and each has a test below.
+    """
+
+    def test_a_signature_from_a_key_the_statement_does_not_name_is_refused(
+        self, keyset: Any
+    ) -> None:
+        """Reviewer A's probe. The bootstrap key signs the statement; the signer block names
+        the worker; the verifier is handed the bootstrap public key.
+
+        Before the fix the signature verified and the report said so, while the artifact's
+        own account of its signer was a different principal entirely. An auditor comparing
+        their pinned fingerprint against ``signer.fingerprint`` would have been comparing
+        against a field nothing checked.
+        """
+        chain = _Chain(keyset)
+        document = _forge_document(
+            chain,
+            signer_principal=WORKER,          # the statement names the worker...
+            signing_seed_principal=BOOTSTRAP,  # ...but bootstrap's key signed it
+        )
+        report = verify_bundle_v3_core(
+            _reparse(document),
+            statement_public_key=keyset.key_for(BOOTSTRAP).public_key,
+        )
+        assert report.statement_signature_checked is True
+        assert report.statement_signature_valid is False, (
+            "the signature is cryptographically valid under the key supplied, and that is "
+            "precisely why it must be refused: the key is not the one the statement names"
+        )
+        assert report.core_ok is False
+        assert any(
+            "statement_key_is_not_the_declared_signer" in f for f in report.findings
+        ), report.findings
+
+    def test_a_signature_block_naming_another_key_id_is_refused(
+        self, keyset: Any
+    ) -> None:
+        """The cheaper half, and a pure internal contradiction: ``statement_signature.key_id``
+        disagrees with ``statement.signer.key_id``. No supplied key is needed to see it, so
+        it is a parse-time refusal rather than a finding."""
+        chain = _Chain(keyset)
+        document = _forge_document(
+            chain, signature_overrides={"key_id": "pk_something_else"}
+        )
+        with pytest.raises(RegistaError) as exc:
+            parse_bundle_v3_document(canonical_bundle_bytes(document))
+        assert exc.value.code is ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "statement_signature.key_id" in str(exc.value)
+
+    def test_a_signer_block_whose_fingerprint_contradicts_its_key_id_is_refused(
+        self, keyset: Any
+    ) -> None:
+        """The signer block names the worker's ``key_id`` and the bootstrap key's
+        fingerprint. §4.4 criterion 4: "a bundled key whose fingerprint contradicts a pinned
+        fingerprint for the same key id is ``invalid``, not merely reported"."""
+        chain = _Chain(keyset)
+        document = _forge_document(chain)
+        document["statement"]["signer"]["fingerprint"] = keyset.key_for(
+            BOOTSTRAP
+        ).fingerprint
+        # Re-sign so the finding cannot be the signature's.
+        document["statement_signature"] = sign_statement(
+            document["statement"],
+            private_key=keyset.key_for(WORKER).seed,
+            key_id=keyset.key_for(WORKER).key_id,
+        )
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.statement_signature_valid is False
+        assert report.core_ok is False
+
+    def test_the_builder_refuses_a_signer_whose_private_key_is_not_its_identity(
+        self, keyset: Any
+    ) -> None:
+        """Reviewer B's probe, on the build side: a ``BundleV3Signer`` carrying the worker's
+        declared identity and the bootstrap principal's private key produced a document that
+        verified under the bootstrap public key with ``signer_may_sign_bundles=True``.
+
+        The builder now refuses: a declared fingerprint the supplied private key cannot
+        produce is a caller error that must not become a signed artifact.
+        """
+        chain = _Chain(keyset)
+        with pytest.raises(RegistaError) as exc:
+            chain.build(
+                signer=chain.signer(private_key=keyset.key_for(BOOTSTRAP).seed)
+            )
+        assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
+        assert "fingerprint" in str(exc.value)
+
+    def test_a_matching_key_still_verifies(self, keyset: Any) -> None:
+        """The positive control for all three comparisons."""
+        chain = _Chain(keyset)
+        report = verify_bundle_v3_core(
+            _reparse(chain.build()), statement_public_key=chain.signer_public_key
+        )
+        assert report.core_ok is True, report.findings
+
+
+# ---------------------------------------------------------------------------
+# F3 — complete-store must be headed by the project genesis
+# ---------------------------------------------------------------------------
+
+
+class TestCompleteStoreHeadIsGenesis:
+    def test_a_null_predecessor_non_genesis_head_cannot_claim_complete_store(
+        self, keyset: Any
+    ) -> None:
+        """§3.5: ``complete-store`` requires ``first_event_hash`` = **project genesis**.
+
+        Phase B checked only that the head had a null ``previous_project_event_hash``, which
+        is a necessary and nowhere near sufficient condition: an ordinary signed event can
+        carry a null project link and head a bundle claiming to be the whole chain. The
+        difference matters because ``complete-store`` is the scope that licenses "an absent
+        referent contradicts the claim" — a false one turns every absence into a lie in the
+        safe-looking direction.
+        """
+        chain = _Chain(
+            keyset,
+            with_genesis=False,
+            head_transition="trust_domain_established",
+            with_acceptance=False,
+        )
+        document = _forge_document(chain, scope_kind="complete-store")
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.scope_consistent is False
+        assert report.core_ok is False
+        assert any(
+            "complete_store_head_is_not_project_genesis" in f for f in report.findings
+        ), report.findings
+
+    def test_a_genuine_genesis_head_is_accepted(self, keyset: Any) -> None:
+        chain = _Chain(keyset)
+        report = verify_bundle_v3_core(
+            _reparse(chain.build()), statement_public_key=chain.signer_public_key
+        )
+        assert report.scope_consistent is True
+        assert report.core_ok is True, report.findings
+
+
+# ---------------------------------------------------------------------------
+# N1 / N2 — hostile JSON must produce a NAMED refusal, not a traceback
+# ---------------------------------------------------------------------------
+
+
+class TestHostileJson:
+    """A verifier is an attacker-facing parser, so every rejection must be a named
+    ``RegistaError``.
+
+    An uncaught ``FloatDomainError`` or ``CanonicalizationError`` is a traceback at the CLI
+    and a 500 at the sidecar — and a 500 is indistinguishable from "the verifier broke",
+    which is the wrong thing for an auditor to conclude about a hostile artifact. Each case
+    below reached the caller as a non-``RegistaError`` exception before the fix.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "raw_content"),
+        [
+            ("infinity", "Infinity"),
+            ("negative-infinity", "-Infinity"),
+            ("nan", "NaN"),
+            ("float-overflow", "1e400"),
+            ("integer-overflow", "1" + "0" * 400),
+        ],
+        ids=lambda v: str(v)[:24],
+    )
+    def test_non_finite_and_out_of_range_numbers_are_named_refusals(
+        self, chain: _Chain, document: dict[str, Any], label: str, raw_content: str
+    ) -> None:
+        """JSON's number grammar admits values RFC 8785 cannot canonicalize, and
+        ``json.loads`` accepts three literals the grammar does not even contain
+        (``NaN``/``Infinity``/``-Infinity``). Both routes must be refused by name."""
+        # The hostile value goes inside an OTHERWISE VALID document, and that placement is
+        # the whole point: a malformed skeleton is refused by the structural checks long
+        # before anything canonicalizes, so a probe built that way proves nothing. Here every
+        # structural check passes and the canonicalizer is genuinely reached.
+        carrier = chain.build(
+            external_evidence=[
+                {
+                    "class": "operator_asserted",
+                    "source": "hostile",
+                    "obtained_at": "2026-08-23T00:00:00+00:00",
+                    "content": {"n": 0},
+                }
+            ]
+        )
+        raw = canonical_bundle_bytes(carrier).decode()
+        hostile = raw.replace('"n":0', f'"n":{raw_content}')
+        assert hostile != raw, "the substitution must actually land"
+        with pytest.raises(RegistaError) as exc:
+            parse_bundle_v3_document(hostile)
+        assert exc.value.code in {
+            ErrorCode.INVALID_ARGUMENT,
+            ErrorCode.BUNDLE_STATEMENT_INVALID,
+        }
+
+    def test_a_lone_surrogate_is_a_named_refusal(self, chain: _Chain) -> None:
+        """RFC 8785 cannot serialise an unpaired surrogate, and the canonicalizer says so by
+        raising. Reaching the caller as a canonicalizer error rather than a bundle error
+        makes a hostile string look like an internal fault."""
+        carrier = chain.build(
+            external_evidence=[
+                {
+                    "class": "operator_asserted",
+                    "source": "surrogate-carrier",
+                    "obtained_at": "2026-08-23T00:00:00+00:00",
+                    "content": {},
+                }
+            ]
+        )
+        raw = canonical_bundle_bytes(carrier).decode()
+        hostile = raw.replace('"surrogate-carrier"', '"\\ud800"')
+        assert hostile != raw
+        with pytest.raises(RegistaError) as exc:
+            parse_bundle_v3_document(hostile)
+        assert exc.value.code in {
+            ErrorCode.INVALID_ARGUMENT,
+            ErrorCode.BUNDLE_STATEMENT_INVALID,
+            ErrorCode.BUNDLE_FORMAT_UNSUPPORTED,
+        }
+
+    def test_a_duplicate_json_key_is_refused(self, document: dict[str, Any]) -> None:
+        """N2. ``json.loads`` keeps the LAST of two identical keys, so a decoy ``scope``
+        placed before the real one is invisible to the parser and visible to a human reading
+        the file — or the reverse, depending on which tool reads it. §3.1 rule 4 says the
+        bundle is canonical JSON; canonical JSON has no duplicate keys."""
+        raw = canonical_bundle_bytes(document).decode()
+        decoy = '{"kind":"complete-store","event_count":1}'
+        hostile = raw.replace('"scope":', f'"scope":{decoy},"scope":', 1)
+        assert hostile != raw
+        with pytest.raises(RegistaError) as exc:
+            parse_bundle_v3_document(hostile)
+        assert exc.value.code in {
+            ErrorCode.INVALID_ARGUMENT,
+            ErrorCode.BUNDLE_STATEMENT_INVALID,
+        }
+        assert "duplicate" in str(exc.value).lower()
+
+    def test_non_canonical_bytes_are_refused(self, document: dict[str, Any]) -> None:
+        """§3.1 rule 4, enforced rather than asserted: the artifact's bytes must BE their
+        RFC 8785 fixed point.
+
+        This is the same discipline ``parse_v6_envelope_strict`` applies to an envelope, and
+        it subsumes a whole family of presentation tricks — reordered keys, inserted
+        whitespace, a duplicate key that survived the pair hook — into one comparison.
+        """
+        pretty = json.dumps(json.loads(canonical_bundle_bytes(document)), indent=2)
+        with pytest.raises(RegistaError) as exc:
+            parse_bundle_v3_document(pretty)
+        assert exc.value.code is ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "canonical" in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# N3 — a cycle must refuse, not hang
+# ---------------------------------------------------------------------------
+
+
+class TestChainOrderTerminates:
+    """O4 demands a refusal on a chain that cannot be totally ordered. A hang is not a
+    refusal: an export or verify that never returns is a denial-of-service on the tool an
+    auditor is holding, and it is indistinguishable from a very large bundle.
+    """
+
+    def test_a_two_event_cycle_refuses_rather_than_hanging(self, keyset: Any) -> None:
+        """Two events each declaring the other as predecessor, entered from outside.
+
+        Constructed by hand because no chain builder can produce it: event A's hash depends
+        on B's and vice versa. So instead both events declare the SAME external predecessor
+        and one of them also appears as its own successor — the shape a relocated or
+        replayed chunk produces.
+        """
+        chain = _Chain(keyset)
+        members = [parse_event_member(env, sig) for env, sig in chain.records]
+        # Re-enter at an event already in the walk: member[2]'s predecessor is member[1],
+        # and we ask the walk to start at member[1]'s predecessor, which is member[0] —
+        # then splice member[0] back in as a successor of the tail.
+        entry = members[0].previous_project_event_hash
+        looped = [*members, members[0]]
+        with pytest.raises(RegistaError) as exc:
+            derive_chain_order(looped, preceding_event_hash=entry)
+        assert exc.value.code is ErrorCode.BUNDLE_CHAIN_UNORDERABLE
+
+    def test_a_self_referencing_event_refuses(self, keyset: Any) -> None:
+        """An event naming its own hash as its predecessor cannot exist honestly (the hash
+        covers the field), but a hand-edited artifact can present one, and the walk must
+        terminate on it."""
+        from regista._bundle_v3 import OrderedMember
+
+        chain = _Chain(keyset)
+        member = parse_event_member(*chain.records[0])
+        # A member whose declared predecessor IS its own hash. Built by substituting the
+        # parsed envelope rather than by re-signing, because a real signer cannot produce
+        # this and the verifier must still terminate.
+        envelope = dict(member.envelope)
+        envelope["chain"] = {
+            **dict(member.envelope["chain"]),
+            "previous_project_event_hash": member.event_hash_text,
+        }
+        looping = OrderedMember(
+            scope_ordinal=-1,
+            canonical_envelope=member.canonical_envelope,
+            signature=member.signature,
+            event_hash=member.event_hash,
+            envelope=envelope,
+        )
+        with pytest.raises(RegistaError) as exc:
+            derive_chain_order([looping], preceding_event_hash=member.event_hash_text)
+        assert exc.value.code is ErrorCode.BUNDLE_CHAIN_UNORDERABLE
+
+
+# ---------------------------------------------------------------------------
+# N4 / N5 — the report must not claim checks it did not run
+# ---------------------------------------------------------------------------
+
+
+class TestReportHonesty:
+    def test_core_ok_requires_the_signer_authority(self, keyset: Any) -> None:
+        """N4. The module docstring points Phase C at ``verify_bundle_v3_core``, and
+        ``core_ok`` is the summary a consumer reaches for first. If it can be True while
+        O3 was never established, the seam invites exactly the misreading the axis model
+        exists to prevent."""
+        chain = _Chain(keyset)
+        document = _forge_document(
+            chain,
+            records=chain.records[2:],
+            scope_kind="contiguous-range",
+            preceding_event_hash=chain.acceptance_hash,
+        )
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.structural_checks_ok is True
+        assert report.statement_signature_valid is True
+        assert report.signer_authority_checked is False
+        assert report.core_ok is False, (
+            "core_ok must not read as an acceptance when the signer's authority was never "
+            "established"
+        )
+        assert any("signer_authority_outside_scope" in n for n in report.notes)
+
+    def test_unrun_checks_are_reported_as_unrun_not_as_passes(self, keyset: Any) -> None:
+        """N5. With the chain unorderable there is nothing to compare a scope against and no
+        tree to root, so the fields that describe those checks must say "not run" rather
+        than carry a default that reads as a pass.
+
+        ``recomputed_membership_root`` was the worst of them: it reported
+        ``sha256(<empty>)`` — the frozen empty-tree root — as though it had been computed
+        over the presented events.
+        """
+        chain = _Chain(keyset)
+        document = _forge_document(chain)
+        # Drop a middle event so the walk cannot reach the tail.
+        del document["sections"]["events"][1]
+        document["statement"]["section_digests"]["events"] = section_digest_text(
+            "events", document["sections"]["events"]
+        )
+        parsed = _reparse(document)
+        report = verify_bundle_v3_core(
+            parsed, statement_public_key=chain.signer_public_key
+        )
+        assert report.chain_ordered is False
+        assert report.membership_root_ok is None
+        assert report.scope_consistent is None
+        assert report.reference_sections_ok is None
+        assert report.recomputed_membership_root is None
+        assert report.core_ok is False
+        emitted = report.to_dict()
+        for key in (
+            "membership_root_ok",
+            "scope_consistent",
+            "reference_sections_ok",
+            "recomputed_membership_root",
+        ):
+            assert emitted[key] is None, key

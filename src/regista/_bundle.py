@@ -19,10 +19,11 @@ here, and why each deletion is safe:
     signature is a field an operator could mistake for evidence.
 
 ``signature_check`` and its three magic strings
-    ``"enforced"`` / ``"skipped_v1_bundle"`` / ``"enforced_none_verified"`` (§6). The first
-    is unconditional now, the second described a format that no longer exists, and the
-    third is exactly A4 ``none_verifiable`` in the §5.1 axis model — a correct signal
-    invented under duress because the boolean could not carry it.
+    The three values §6 names are gone with the field. One was unconditional, one described
+    a format that no longer exists, and the third was exactly A4 ``none_verifiable`` in the
+    §5.1 axis model — a correct signal invented under duress because the boolean could not
+    carry it. The strings are not repeated here: a deleted magic string that survives in a
+    docstring is the next reader's grep hit.
 
 ``_row_to_event_dict``
     §3.6: a v3 event record is ``{canonical_envelope, signature}`` and **nothing else**.
@@ -94,6 +95,7 @@ from ._bundle_v3 import (
     OrderedMember,
     build_bundle_v3_document,
     canonical_bundle_bytes,
+    ed25519_fingerprint,
     parse_bundle_v3_document,
     parse_event_member,
     verify_bundle_v3_core,
@@ -193,10 +195,14 @@ class BundleVerificationReport:
     work_item_chain_error: str | None = None
     statement_signature_checked: bool = False
     statement_signature_valid: bool = False
-    membership_root_ok: bool = True
+    #: ``None`` means the check did not run, because the chain could not be ordered and
+    #: there was nothing to root, compare or classify. Mirrors
+    #: :class:`~regista._bundle_v3.BundleV3CoreReport`'s contract: an unrun check must never
+    #: be emitted as a passing fact.
+    membership_root_ok: bool | None = True
     section_digests_ok: bool = True
-    reference_sections_ok: bool = True
-    scope_consistent: bool = True
+    reference_sections_ok: bool | None = True
+    scope_consistent: bool | None = True
     signer_authority_checked: bool = False
     signer_may_sign_bundles: bool = False
     signatures_verified: int = 0
@@ -425,14 +431,19 @@ def _resolve_bundle_signer(
     principal_id: str,
     key_id: str | None,
 ) -> BundleV3Signer:
-    """Resolve the statement signer and its ``may_sign_bundles`` scope (owner ruling O3).
+    """Resolve the statement signer's identity, and refuse early if the store denies it.
 
-    The scope comes from ``resolve_key_binding_anchor`` — the *signed* project-local
-    acceptance — and never from the key file, a ``principal_keys`` row or a configuration
-    flag. That is the whole content of O3: "the authority to sign bundles is an explicit,
-    signed property of a key — not an implication of holding the writer key". The anchor's
-    own event hash becomes ``statement.signer.authority_event_hash``, so a verifier holding
-    the bundle can re-derive the same grant from the same signed event.
+    Two independent gates guard owner ruling O3, and both run. This one asks the STORE:
+    ``resolve_key_binding_anchor`` sees the whole chain including ``events_archive`` and
+    every revocation, and it refuses with the store's own named errors
+    (``KEY_ACCEPTANCE_REVOKED``, ``KEY_BINDING_UNRESOLVED``). The second is
+    ``build_bundle_v3_document``'s offline derivation over the event bytes it is about to
+    sign — the same rules read from the artifact rather than from the store.
+
+    Keeping both is deliberate rather than redundant. They can only disagree if the offline
+    material misrepresents the store, which is the exact condition the artifact exists to
+    make detectable; and the store-side check gives a fast, precise refusal before any
+    signing work happens. The offline one is what an auditor can reproduce.
     """
 
     from ._v6_writer import resolve_key_binding_anchor
@@ -445,16 +456,26 @@ def _resolve_bundle_signer(
             "bundle statement signer (BUNDLE-V3.md §3.2 requires signer.fingerprint).",
         )
     anchor = resolve_key_binding_anchor(conn, principal_id=principal_id, key_id=entry.key_id)
+    if not anchor.scopes.may_sign_bundles:
+        raise RegistaError(
+            ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED,
+            f"key {entry.key_id!r} for principal {principal_id!r} does not bear "
+            "may_sign_bundles in the anchor currently in force for it "
+            f"({anchor.event_hash}, kind {anchor.kind}). Owner ruling O3: the statement "
+            "signer MAY be the project writer key, but the authority is an explicit, "
+            "signed property of the key (TRUST-DOMAIN.md §5.8 scopes) and never an "
+            "implication of holding it. Grant the scope in a key-acceptance event, or "
+            "sign with a key that has it. Nothing was written.",
+            detail={
+                "principal_id": principal_id,
+                "key_id": entry.key_id,
+                "anchor_event_hash": anchor.event_hash,
+            },
+        )
     return BundleV3Signer(
         principal_id=principal_id,
         key_id=entry.key_id,
-        fingerprint="ed25519:sha256:" + hashlib.sha256(entry.public_key).hexdigest(),
-        # `scoped` is the honest value for a project-local acceptance: the authority came
-        # from an acceptance event inside this project, not from the trust root or a
-        # registrar delegation.
-        authority_kind="scoped",
-        authority_event_hash=anchor.event_hash,
-        may_sign_bundles=anchor.scopes.may_sign_bundles,
+        fingerprint=ed25519_fingerprint(entry.public_key),
         private_key=entry.secret,
     )
 
@@ -558,7 +579,7 @@ def export_audit_bundle(
 
     ``root_governance``
         The replayed current governance state (§3.2). See
-        :func:`_trust_root_from_genesis` for why it cannot be derived from a project
+        :func:`_trust_root_from_store` for why it cannot be derived from a project
         store. Resolving it is trust-root resolution — ``BUNDLE-V3.md`` §4, WI-289 Phase C
         — so until that lands a caller must pass the state it replayed, and the CLI cannot
         yet do so. That is a scheduling consequence of the ratified phasing and it fails
@@ -674,8 +695,19 @@ def export_audit_bundle(
 
     from ._integrity import REGISTA_VERSION
 
+    # A windowed export legitimately excludes the signer's own acceptance event, so the
+    # builder resolves O3 over the WHOLE chain (what the exporter observes) and emits over
+    # the window. Reading the full chain a second time is the honest cost of that: the
+    # alternative is resolving authority from the window and refusing every chunk that
+    # happens not to contain the acceptance, which would break §9's chunking workflow.
+    authority_records = records
+    if since_seq is not None or until_seq is not None:
+        with mgr.transaction() as conn:
+            authority_records = _read_export_rows(conn, since_seq=None, until_seq=None)
+
     document = build_bundle_v3_document(
         event_records=records,
+        authority_records=authority_records,
         project_instance_id=str(identity.project_instance_id),
         trust_root=trust_root,
         signer=signer,

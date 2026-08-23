@@ -189,6 +189,33 @@ def sub(project: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _project_identity(store: Any) -> Any:
+    from regista._v6_writer import read_project_identity
+
+    with store._mgr.transaction() as conn:
+        identity = read_project_identity(conn)
+    assert identity is not None
+    return identity
+
+
+def _acceptance_hash_for(rows: Any, principal_id: str, keyset: V6TestKeyset) -> str:
+    """The event hash of the standalone acceptance granting *principal_id*'s key."""
+
+    from regista._bundle_v3 import parse_event_member
+
+    key_id = keyset.key_for(principal_id).key_id
+    for row in rows:
+        if row["transition"] != "principal_key_accepted":
+            continue
+        member = parse_event_member(
+            bytes(row["canonical_envelope"]), bytes(row["signature"])
+        )
+        payload = member.payload or {}
+        if payload.get("principal_id") == principal_id and payload.get("key_id") == key_id:
+            return member.event_hash_text
+    raise AssertionError(f"no acceptance for {principal_id} in the presented rows")
+
+
 def _read(output: Path) -> dict[str, Any]:
     return json.loads(output.read_text())
 
@@ -728,6 +755,123 @@ class TestOfflineSignatureVerification:
 
 class TestExportBounds:
     """WI-240: bounded, capped, self-verifying export."""
+
+    def test_a_revoked_signing_authority_refuses_at_both_gates(
+        self, tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+    ) -> None:
+        """Owner ruling O3 against a real store, and the scenario a probe-executing reviewer
+        used to show the two gates had drifted apart.
+
+        The store admits a ``principal_key_acceptance_revoked`` event through the ordinary
+        writer — that is what revocation IS — and from that moment
+        ``resolve_key_binding_anchor`` refuses every anchor for the key, because "a
+        revocation is not superseded by an older acceptance".
+
+        Both gates are asserted, and only one of them was ever sound. The store-side
+        pre-flight already refused before this fix, which is exactly what made the defect
+        hard to see: export said no, so the *export* path looked correct, while an offline
+        verifier handed the resulting events said yes. So this test also runs the offline
+        resolver over the REAL store's events — not a hand-built chain — because that is the
+        gate that was missing, and agreement between the two is the property worth pinning.
+        """
+        from regista._v6_writer import append_v6_event
+
+        keyset = make_v6_keyset(tmp_path_factory.mktemp("bundle_v3_revoked_keys"))
+        name = f"bundle_v3_rev_{uuid.uuid4().hex[:8]}"
+        store, genesis_hash, _entity = _open_store(name, keyset)
+        try:
+            with store._mgr.transaction() as conn:
+                rows = conn.execute(
+                    "SELECT canonical_envelope, signature, transition FROM events "
+                    "ORDER BY global_seq"
+                ).fetchall()
+            acceptance_hash = _acceptance_hash_for(rows, BUNDLE_SIGNER, keyset)
+
+            with store._mgr.transaction() as conn:
+                append_v6_event(
+                    conn,
+                    store._keys,
+                    entity_kind="principal",
+                    entity_id=uuid.uuid5(
+                        uuid.NAMESPACE_OID, "regista.principal:" + BUNDLE_SIGNER
+                    ),
+                    transition="principal_key_acceptance_revoked",
+                    actor_id=BOOTSTRAP_PRINCIPAL,
+                    actor_kind="system",
+                    producer=v6_producer(),
+                    payload={
+                        "type": "regista.key-acceptance-revocation",
+                        "version": 1,
+                        "trust_domain_id": str(
+                            _project_identity(store).trust_domain_id
+                        ),
+                        "project_instance_id": str(
+                            _project_identity(store).project_instance_id
+                        ),
+                        "principal_id": BUNDLE_SIGNER,
+                        "key_id": keyset.key_for(BUNDLE_SIGNER).key_id,
+                        "acceptance_event_hash": acceptance_hash,
+                        "reason": "superseded",
+                        "revoked_by": {
+                            "principal_id": BOOTSTRAP_PRINCIPAL,
+                            "key_id": keyset.key_for(BOOTSTRAP_PRINCIPAL).key_id,
+                            "key_binding_event_hash": genesis_hash,
+                        },
+                    },
+                )
+
+            # Gate 1 — the store-side pre-flight. Sound before this fix, and asserted so a
+            # later refactor cannot quietly drop it.
+            output = tmp_path / "revoked.json"
+            with pytest.raises(RegistaError) as exc_info:
+                store.export_audit_bundle(
+                    str(output),
+                    root_governance=ROOT_GOVERNANCE,
+                    signing_principal_id=BUNDLE_SIGNER,
+                )
+            assert exc_info.value.code in {
+                ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED,
+                ErrorCode.KEY_ACCEPTANCE_REVOKED,
+            }
+            assert not output.exists()
+
+            # Gate 2 — the offline derivation, over the same real events. This is the one
+            # that was missing: the material carries the grant AND its revocation, and the
+            # answer must be "no anchor", by name.
+            from regista._bundle_v3 import (
+                derive_chain_order,
+                parse_event_member,
+                resolve_bundle_signing_authority,
+            )
+
+            with store._mgr.transaction() as conn:
+                all_rows = conn.execute(
+                    "SELECT canonical_envelope, signature FROM events ORDER BY global_seq"
+                ).fetchall()
+            ordered = derive_chain_order(
+                [
+                    parse_event_member(
+                        bytes(r["canonical_envelope"]), bytes(r["signature"])
+                    )
+                    for r in all_rows
+                ],
+                preceding_event_hash=None,
+            )
+            authority, refusals = resolve_bundle_signing_authority(
+                ordered,
+                principal_id=BUNDLE_SIGNER,
+                key_id=keyset.key_for(BUNDLE_SIGNER).key_id,
+            )
+            assert authority is None, (
+                "the revocation is in the material; no anchor for this key may be used"
+            )
+            assert any("signer_authority_revoked" in r for r in refusals), refusals
+            assert acceptance_hash in " ".join(refusals), (
+                "the refusal must name the acceptance that was revoked"
+            )
+        finally:
+            store.close()
+            drop_project_schema(DSN, name)
 
     def test_empty_range_is_rejected(self, sub: Any, tmp_path: Path) -> None:
         with pytest.raises(RegistaError, match="Empty export range"):
