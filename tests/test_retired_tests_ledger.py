@@ -15,6 +15,16 @@ Round-4 hardening:
   inside the reconciliation, not outside it.
 - Ledger entries must be unique, refer to real (inventory) nodes, be absent
   from current collection, and use the exact documented dispositions.
+
+WI-289 Phase A hardening — the coverage pointer is strict by default:
+- A ``coverage_owed`` entry with no ``covered_by`` FAILS unless it carries an
+  explicit ``deferred_to`` marker naming the work item (optionally
+  ``/<phase>``) that owes the coverage. The previous rule silently accepted
+  *every* null pointer except WI-008's, so a new tranche could be retired with
+  no replacement and no deferral and nothing would go red.
+- The set of deferrals is pinned by exact count in
+  ``DEFERRED_COVERAGE_ALLOWLIST``, so growing the allowlist is a visible diff
+  in two places: the ledger entry and the pin.
 """
 
 from __future__ import annotations
@@ -40,9 +50,32 @@ RATIFIED_INVENTORY_SHA256 = "8696641ae892240f8c6f42d5dc432c12a3345b95b9cd8d3f352
 
 # Exact documented dispositions (SUITE-RECONCILIATION.md §2.2).
 _DISPOSITION_RE = re.compile(r"^(dies_with_v5|deleted_by: P1\.4|coverage_owed)$")
-_WORK_ITEM_RE = re.compile(
-    r"^(WI-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+_WORK_ITEM_PAT = (
+    r"(?:WI-\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 )
+_WORK_ITEM_RE = re.compile(rf"^{_WORK_ITEM_PAT}$")
+
+# A deferral marker: the work item that owes the coverage, optionally narrowed
+# to the phase inside it ("WI-289/P3.3"). String sanity only — nothing here
+# reaches the tracker, so this proves the marker is a work-item reference, not
+# that the work item is open. That is deliberate: an offline gate that lies
+# about liveness would be worse than one that admits its scope.
+_DEFERRED_TO_RE = re.compile(rf"^({_WORK_ITEM_PAT})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+
+#: Every ``coverage_owed`` deferral currently on the books, with its EXACT entry
+#: count. This is the pin that stops the allowlist growing quietly: a new
+#: deferral has to be written twice — once on the ledger entry, once here — and
+#: the second edit is the one a reviewer notices.
+#:
+#: - ``WI-289/P3.3`` — cluster 4, bundle v3 (all 11 in ``tests/test_bundle.py``),
+#:   owed to P3.3 and deliberately not implemented at Phase A.
+#: - ``WI-293`` — the P2.2 trust-log / key-lifecycle tranche.
+#: - ``WI-305`` — the plan-023 review-validator and claim-lineage tranche.
+DEFERRED_COVERAGE_ALLOWLIST = {
+    "WI-289/P3.3": 11,
+    "WI-293": 33,
+    "WI-305": 21,
+}
 
 
 @pytest.fixture(scope="module")
@@ -103,19 +136,49 @@ def test_ledger_entries_are_well_formed(inventory: set[str], full_collection: se
 def test_coverage_owed_entries_point_to_collected_coverage(
     full_collection: set[str],
 ) -> None:
-    """Every promised replacement must be a real, collected test node."""
+    """Every promised replacement must be a real, collected test node.
+
+    Or, failing that, an explicit deferral. There is no third option: the
+    pointer is mandatory unless the entry says out loud where the coverage went
+    and who owes it.
+    """
     ledger = json.loads(LEDGER_PATH.read_text())
     for entry in ledger["entries"]:
         if entry.get("disposition") != "coverage_owed":
             continue
         node_id = entry["node_id"]
         covered_by = entry.get("covered_by")
-        if not covered_by and entry.get("work_item") != "WI-008":
-            # Older ledger tranches predate the optional replacement pointer.
-            # WI-008 is the first tranche whose coverage contract requires one.
+        deferred_to = entry.get("deferred_to")
+        if not covered_by:
+            assert deferred_to, (
+                f"{node_id}: coverage_owed with no covered_by pointer and no "
+                "deferred_to marker. Either name the test node that discharges "
+                "the invariant, or add \"deferred_to\": \"WI-<n>[/<phase>]\" "
+                "naming the work item that owes it (and add it to "
+                "DEFERRED_COVERAGE_ALLOWLIST in the same diff). Retiring a "
+                "test with neither is silent coverage debt."
+            )
+            marker = (
+                _DEFERRED_TO_RE.match(deferred_to) if isinstance(deferred_to, str) else None
+            )
+            assert marker, (
+                f"{node_id}: deferred_to {deferred_to!r} is not a work-item "
+                "reference — expected 'WI-<n>' or a regista work-item UUID, "
+                "optionally narrowed to a phase as 'WI-289/P3.3'"
+            )
+            owing = marker.group(1)
+            assert owing == entry.get("work_item"), (
+                f"{node_id}: deferred_to names {owing} but the entry's "
+                f"work_item is {entry.get('work_item')!r}. The deferral and the "
+                "attribution must agree; if the debt genuinely moved, move both."
+            )
             continue
         assert isinstance(covered_by, str) and covered_by, (
             f"{node_id}: coverage_owed requires a covered_by test node"
+        )
+        assert not deferred_to, (
+            f"{node_id}: has both covered_by and deferred_to — an entry is "
+            "either discharged or deferred, not both"
         )
         collected = covered_by in full_collection or any(
             node.startswith(covered_by + "[") for node in full_collection
@@ -123,6 +186,35 @@ def test_coverage_owed_entries_point_to_collected_coverage(
         assert collected, (
             f"{node_id}: covered_by node is not collected: {covered_by}"
         )
+
+
+def test_deferred_coverage_allowlist_cannot_grow_silently() -> None:
+    """The deferral allowlist is pinned by exact count, per target.
+
+    The gate above lets a null ``covered_by`` through on the strength of a
+    ``deferred_to`` marker. Without this pin, that would be a hole one JSON key
+    wide: any new tranche could be retired with a marker and nothing would go
+    red. Pinning the exact counts means adding a deferral costs a second,
+    deliberate edit in a file a reviewer is already reading.
+    """
+    ledger = json.loads(LEDGER_PATH.read_text())
+    observed: dict[str, int] = {}
+    for entry in ledger["entries"]:
+        marker = entry.get("deferred_to")
+        if not marker:
+            continue
+        assert entry.get("disposition") == "coverage_owed", (
+            f"{entry['node_id']}: deferred_to is only meaningful for "
+            "coverage_owed; a dies_with_v5 / deleted_by entry owes nothing"
+        )
+        observed[marker] = observed.get(marker, 0) + 1
+    assert observed == DEFERRED_COVERAGE_ALLOWLIST, (
+        "the set of deferred coverage debts changed. Observed "
+        f"{dict(sorted(observed.items()))}, pinned "
+        f"{dict(sorted(DEFERRED_COVERAGE_ALLOWLIST.items()))}. If a deferral "
+        "was discharged, drop it from both; if one was added, add it to both — "
+        "and say which in the commit message."
+    )
 
 
 def test_no_test_vanishes_without_a_disposition(
