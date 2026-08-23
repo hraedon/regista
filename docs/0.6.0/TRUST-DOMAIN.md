@@ -840,18 +840,29 @@ Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 > countersignatures, anchors}`, canonicalised with JCS and framed as above; the frozen
 > bytes are `tests/vectors/v6/estate-catalog.json`.
 >
-> **Authority is the published checkpoint, not this document's own `root_governance`
-> and not the genesis signer list.** `verify-catalog` REQUIRES the published
-> `regista.trust-checkpoint` the catalog binds, parses it, checks its canonical form,
-> verifies its root signatures, and takes the authorised signer set from its
-> `active_root_fingerprints` and the threshold from its `root_governance` — which the
-> catalog must then restate exactly. Verifying against genesis alone is wrong in both
-> directions: a root **removed** by a §5.4 rotation would keep signing valid catalogs,
-> and a root **rotated in** would be refused. A rotated-in root's public key is not in
-> any document an offline auditor holds, so `--root-public-key` supplies the bytes while
-> the signed checkpoint supplies the authority (the key is used only if `sha256(key)` is
-> in `active_root_fingerprints`) — the same direct exchange §4.5 step 1 already requires
-> for the root fingerprints. There is no verification mode in which the checkpoint is
+> **Authority chains from genesis, and no document authorises itself.** The signer set,
+> threshold and public keys are derived from the pinned genesis and advanced *only* by
+> the verified trust log — the model `_genesis_open.load_published_checkpoint` already
+> uses (`verify_trust_log_chain` → `chain.state`). `verify-catalog` REQUIRES the
+> published `regista.trust-checkpoint` the catalog binds, parses it, checks its
+> canonical form and verifies its root signatures **against that derived state**; its
+> declared `active_root_fingerprints` and threshold must then EQUAL the derived set, and
+> the catalog must restate the same governance. Verifying a checkpoint against its own
+> `active_root_fingerprints` is circular and was exploitable: an attacker knowing the
+> estate's public `trust_domain_id` and `trust_domain_core_digest` could mint a
+> checkpoint naming their own fresh key as the sole active root, sign it with that key,
+> and be believed.
+>
+> Presenting the trust log (`--trust-log-project`, plus `--trust-log-dsn`) is what proves
+> a §5.4 rotation: the log's `trust_root_rotated` event carries the added root's public
+> key, which is how the replayed state learns material genesis never had. Omitting it
+> leaves the authority at genesis — the zero-rotation state, correct for a domain that
+> has never rotated — and any checkpoint claiming a different signer set is refused by
+> name with instructions to present the log. So a rotated-in root is honoured only when
+> the log proves the rotation, and a root **removed** by a rotation is refused even
+> while the checkpoint still lists it. There is deliberately **no operator channel for
+> root public keys**: supplying bytes for a fingerprint the checkpoint merely *claimed*
+> active was the hole. And there is no verification mode in which the checkpoint is
 > skipped and the verdict still reads VALID.
 >
 > Signing is **direct root threshold** per rule 1 of the amendment below —
@@ -872,7 +883,7 @@ Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 > signed bytes), and a catalog that declares itself partial verifies cryptographically
 > and still returns a non-success verdict (`verify-catalog` exits 3).
 >
-> **Every per-project fact is recomputed from signed event bytes**, never read from a
+> **Every per-project HASH is recomputed from signed event bytes**, never read from a
 > mutable posture row: the head and the epoch-opening hash come from
 > `_signing.compute_chain_head_hash` over the max- and min-`global_seq` events, the
 > project's identity comes from inside its signed genesis envelope, and
@@ -880,6 +891,16 @@ Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 > That is `ARCHITECTURE-0.6.0.md`:802-810's rule — "the signed event, not the mutable
 > posture row, tells future verifiers where strict v6 rules begin" — and the operator's
 > approved preflight head and count are a mandatory second witness that must agree.
+>
+> **`legacy_event_count` and `scheme_counts` are the exception, and are aggregates.**
+> They are `COUNT(*)` and `GROUP BY scheme_id` over `events`; there is no signed
+> counterpart to recompute them against, because no event attests the size of the set it
+> belongs to. Consequently a row *inserted mid-chain* inflates both while the head hash
+> stays valid — detectable only by the `sum(scheme_counts) == legacy_event_count` rule
+> (which such an insertion satisfies) or by the operator's §2.4 record, which is why the
+> recorded-and-measured cross-check exists and why the measured-only mode is the weaker
+> one. Counting a population is not the same kind of claim as naming its head, and this
+> section does not pretend otherwise.
 >
 > Three points this section leaves open are resolved in
 > `src/regista/_estate_catalog.py`'s module docstring and recorded there, not here:

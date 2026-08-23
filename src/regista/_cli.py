@@ -20,7 +20,7 @@ from regista._errors import ErrorCode, RegistaError
 from regista._workflow import validate_yaml as _validate_yaml
 
 if TYPE_CHECKING:  # import-time cost stays out of the CLI's startup path
-    from regista._estate_catalog import VerifiedCheckpoint
+    from regista._estate_catalog import RootAuthorityState
     from regista._trust_domain import TrustGenesisDocument
 
 #: EXACTLY six fractional digits. ``strptime("%f")`` accepts one to six, so a CLI check
@@ -3590,64 +3590,66 @@ def _load_json_document(path: str, what: str, reason_prefix: str) -> Any:
         ) from exc
 
 
-def _load_root_public_keys(paths: list[str] | None) -> list[bytes]:
-    """Read 0..n raw Ed25519 public keys supplied out of band.
+def _resolve_root_authority(
+    args: argparse.Namespace, genesis_document: Mapping[str, Any]
+) -> RootAuthorityState:
+    """Derive the root authority: genesis, advanced by the verified trust log if given.
 
-    These exist so a root ROTATED IN after genesis can be verified offline: the
-    checkpoint authorises its fingerprint but no document an offline auditor holds
-    carries its bytes. Authority still comes from the signed checkpoint — a supplied key
-    is consulted only through ``sha256(public_key)`` — so this widens what CAN be
-    checked without widening who is trusted.
+    THE trust-log input design (WI-330 review FR2-1). regista's trust log is a
+    PostgreSQL project and §4.2 publishes no trust-log export, so "present the log"
+    means naming the schema that holds it: ``--trust-log-dsn`` (defaulting to the
+    global ``--dsn``/``REGISTA_DSN``) plus ``--trust-log-project``. When it is
+    presented, ``verify_trust_log_chain`` replays it from the pinned genesis under full
+    verification and the authority is the replayed state — the same walk the in-store
+    verifier uses.
+
+    When it is NOT presented — the offline auditor's case, with only the §4.2
+    publication in hand — the authority is genesis. That is not a weaker check: genesis
+    is the chain's root, so it is the state of a domain with zero rotation events, and a
+    checkpoint claiming any other signer set is REFUSED by name with instructions to
+    present the log. An unproven rotation is never believed, and there is deliberately
+    no operator channel for root public keys.
     """
-    out: list[bytes] = []
-    for path in paths or []:
-        try:
-            text = open(path, encoding="utf-8").read().strip()
-        except OSError as exc:
-            raise RegistaError(
-                ErrorCode.KEY_LOAD_ERROR,
-                f"cannot read --root-public-key {path!r}: {exc}",
-                {"reason": "root_public_key_unreadable", "path": path},
-            ) from exc
-        raw: bytes | None = None
-        if len(text) == 64:
-            try:
-                raw = bytes.fromhex(text)
-            except ValueError:
-                raw = None
-        if raw is None:
-            try:
-                raw = base64.b64decode(text, validate=True)
-            except Exception as exc:
-                raise RegistaError(
-                    ErrorCode.KEY_LOAD_ERROR,
-                    f"--root-public-key {path!r} must hold a 32-byte Ed25519 public key "
-                    "as 64 hex chars or base64",
-                    {"reason": "root_public_key_malformed", "path": path},
-                ) from exc
-        if len(raw) != 32:
-            raise RegistaError(
-                ErrorCode.KEY_LOAD_ERROR,
-                f"--root-public-key {path!r} must decode to 32 bytes, got {len(raw)}",
-                {"reason": "root_public_key_malformed", "path": path},
-            )
-        out.append(raw)
-    return out
+    from regista._connection import ConnectionManager
+    from regista._estate_catalog import genesis_root_authority, trust_log_root_authority
+
+    project = getattr(args, "trust_log_project", None)
+    if project is None:
+        return genesis_root_authority(genesis_document)
+    dsn = getattr(args, "trust_log_dsn", None) or (args.dsn or os.environ.get("REGISTA_DSN"))
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--trust-log-project needs a DSN: pass --trust-log-dsn, or --dsn/REGISTA_DSN",
+            {"reason": "trust_log_dsn_absent", "trust_log_project": project},
+        )
+    _genesis_require_trust_log(dsn, project)
+    mgr = ConnectionManager(dsn, project)
+    try:
+        mgr.open()
+        # NOT `SET TRANSACTION READ ONLY`: the verified walk takes `SELECT ... FOR
+        # SHARE` row locks, which PostgreSQL forbids in a read-only transaction. Every
+        # statement on this path is a SELECT.
+        with mgr.transaction() as conn:
+            return trust_log_root_authority(conn, genesis_document)
+    finally:
+        mgr.close()
 
 
 def _catalog_signers(
-    key_paths: list[str],
-    *,
-    checkpoint: VerifiedCheckpoint,
-    genesis_doc: TrustGenesisDocument,
+    key_paths: list[str], *, authority: RootAuthorityState
 ) -> list[tuple[bytes, str, str]]:
     """Resolve ``--key`` seeds to (seed, signer_id, fingerprint), authorised.
 
-    Each key must be in the VERIFIED checkpoint's ``active_root_fingerprints``, not
-    merely in the genesis signer list: after a rotation a removed root must not be able
-    to sign a catalog, and a rotated-in root must be able to (WI-330 review F3).
-    ``signer_id`` comes from genesis when the fingerprint is an original root; a
-    rotated-in root has no genesis entry, so its own ``--root-signer-id`` names it.
+    Each key must be in the root set DERIVED from genesis and the verified trust log —
+    never in a set the checkpoint declares about itself (WI-330 review FR2-1). After a
+    rotation a removed root cannot sign and a rotated-in root can, and both facts come
+    from the log rather than from the document being signed.
+
+    ``signer_id`` is the genesis name for an original root; a root rotated in later has
+    no genesis entry, so its fingerprint is used as its own label. Verification applies
+    the same rule (``authority.signer_ids.get`` returns ``None`` and the signer_id check
+    is skipped), so the two sides agree by construction.
     """
     import nacl.signing
 
@@ -3659,16 +3661,17 @@ def _catalog_signers(
         seed = _read_ed25519_seed(path)
         public = bytes(nacl.signing.SigningKey(seed).verify_key)
         fingerprint = _compute_fingerprint(public, "ed25519")
-        if fingerprint not in checkpoint.active_root_fingerprints:
+        if fingerprint not in authority.signer_fingerprints:
             raise RegistaError(
                 ErrorCode.ACTOR_SIGNER_MISMATCH,
-                f"the key at {path} (fingerprint {fingerprint}) is not in the verified "
-                "checkpoint's active_root_fingerprints; a root the current trust state "
-                "does not list active may not sign a cutover catalog",
+                f"the key at {path} (fingerprint {fingerprint}) is not in the root set "
+                f"derived from {authority.source}; a root the verified trust chain does "
+                "not make current may not sign a cutover catalog",
                 {
                     "reason": "root_key_not_active",
                     "fingerprint": fingerprint,
-                    "active_root_fingerprints": list(checkpoint.active_root_fingerprints),
+                    "authority_source": authority.source,
+                    "derived_actives": list(authority.signer_fingerprints),
                 },
             )
         if fingerprint in seen:
@@ -3679,8 +3682,9 @@ def _catalog_signers(
                 {"reason": "duplicate_signing_key", "fingerprint": fingerprint},
             )
         seen.add(fingerprint)
-        signer = genesis_doc.signer_by_fingerprint(fingerprint)
-        resolved.append((seed, signer.signer_id if signer else fingerprint, fingerprint))
+        resolved.append(
+            (seed, authority.signer_ids.get(fingerprint, fingerprint), fingerprint)
+        )
     return resolved
 
 
@@ -3692,9 +3696,10 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
       1. resolve config; refuse without a DSN; refuse an unusable ``--out``
       2. load and fully verify the pinned trust-genesis document
       3. parse the operator's measurements file and expected-estate manifest
-      4. walk the LIVE trust log and reconcile the PUBLISHED checkpoint against it
-      5. authenticate that checkpoint offline too, for its active root set + threshold
-      6. resolve every ``--key`` against that active set
+      4. walk the LIVE trust log: reconcile the PUBLISHED checkpoint against it AND
+         derive the root authority (signer set, threshold, public keys) from it
+      5. authenticate that checkpoint against the DERIVED authority, never its own claims
+      6. resolve every ``--key`` against that derived root set
       7. DERIVE each project's facts from its signed events and cross-check them
          against the posture rows AND the approved preflight numbers
       8. cross-check any re-measurable legacy store against the recorded numbers
@@ -3717,6 +3722,7 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
         parse_catalog_inputs,
         parse_estate_manifest,
         sign_estate_catalog,
+        trust_log_root_authority,
         verify_estate_catalog,
         verify_published_checkpoint,
     )
@@ -3834,25 +3840,26 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
                 publication_repo=args.trust_publication_repo,
                 publication_commit=args.trust_publication_commit,
             )
+            # The root authority, from the SAME verified walk. This is the only source
+            # of "who may sign" (WI-330 review FR2-1): the checkpoint's own
+            # active_root_fingerprints are a claim to be reconciled, never the answer.
+            authority = trust_log_root_authority(conn, genesis_document)
     finally:
         trust_mgr.close()
 
-    # (5) Authenticate the same checkpoint the way an OFFLINE auditor will, so the
-    # active root set and threshold the build signs under are the ones
-    # `verify-catalog` will resolve from the published bytes.
-    additional_keys = _load_root_public_keys(getattr(args, "root_public_key", None))
+    # (5) Authenticate the same checkpoint the way an OFFLINE auditor will, against the
+    # authority derived above, so the set and threshold the build signs under are the
+    # ones `verify-catalog` will independently derive.
     checkpoint_bytes = _read_catalog_bytes(args.trust_checkpoint, "trust-checkpoint")
     checkpoint = verify_published_checkpoint(
         checkpoint_bytes,
         genesis_document=genesis_document,
-        additional_root_public_keys=additional_keys,
+        authority=authority,
     )
-    threshold = checkpoint.governance.threshold
+    threshold = authority.threshold
 
-    # (6) Every --key must be a CURRENTLY ACTIVE root.
-    signers = _catalog_signers(
-        list(args.key), checkpoint=checkpoint, genesis_doc=doc
-    )
+    # (6) Every --key must be a CURRENTLY ACTIVE root, per the derived authority.
+    signers = _catalog_signers(list(args.key), authority=authority)
     if len(signers) < threshold and not args.incomplete_signatures:
         raise RegistaError(
             ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
@@ -4057,7 +4064,8 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
             "threshold": checkpoint.governance.threshold,
             "signer_count": checkpoint.governance.signer_count,
         },
-        "active_root_fingerprints": list(checkpoint.active_root_fingerprints),
+        "root_authority": authority.to_dict(),
+        "active_root_fingerprints": list(authority.signer_fingerprints),
         "trust_log_checkpoint_digest": checkpoint.document_digest,
         "trust_log_checkpoint_seq": checkpoint.checkpoint_seq,
         "trust_log_checkpoint_source": published.source,
@@ -4111,9 +4119,9 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
             expected_estate=_load_json_document(
                 args.expected_estate, "--expected-estate", "expected_estate_file"
             ),
+            authority=authority,
             file_bytes=canonical,
             expect_digest=digest,
-            additional_root_public_keys=additional_keys,
         )
     _write_canonical_atomic(args.out, canonical)
     written = canonical
@@ -4131,9 +4139,9 @@ def cmd_trust_catalog(args: argparse.Namespace) -> None:
             expected_estate=_load_json_document(
                 args.expected_estate, "--expected-estate", "expected_estate_file"
             ),
+            authority=authority,
             file_bytes=written,
             expect_digest=digest,
-            additional_root_public_keys=additional_keys,
         )
         verdict = report.verdict
         signatures_verified = report.signatures_verified
@@ -4204,14 +4212,21 @@ def cmd_trust_sign_catalog(args: argparse.Namespace) -> None:
     compared, and only the ``root_signatures`` array grows. Nothing here can change what
     the catalog claims.
 
-    Like ``trust sign-genesis``, it never contacts a database and never writes to the
-    publication repo.
+    Every signature already on the document is verified against the resolved root
+    authority BEFORE anything is appended, and the whole array is verified again
+    afterwards — so ``threshold_met`` counts verified signatures, not array entries
+    (WI-330 review FR2-2).
+
+    Like ``trust sign-genesis`` it never writes to the publication repo. It contacts a
+    database only if ``--trust-log-project`` is given, which is how a rotated root set
+    is proven rather than asserted.
     """
     from regista._estate_catalog import (
         estate_catalog_canonical_core,
         estate_catalog_digest,
         parse_estate_catalog,
         sign_estate_catalog,
+        verify_catalog_root_signatures,
         verify_published_checkpoint,
     )
     from regista._jcs import canonicalize
@@ -4231,12 +4246,12 @@ def cmd_trust_sign_catalog(args: argparse.Namespace) -> None:
     verify_trust_genesis(genesis_document)
     doc = parse_trust_genesis(genesis_document)
 
-    additional_keys = _load_root_public_keys(getattr(args, "root_public_key", None))
+    authority = _resolve_root_authority(args, genesis_document)
     checkpoint_bytes = _read_catalog_bytes(args.trust_checkpoint, "trust-checkpoint")
     checkpoint = verify_published_checkpoint(
         checkpoint_bytes,
         genesis_document=genesis_document,
-        additional_root_public_keys=additional_keys,
+        authority=authority,
     )
 
     incoming_bytes = _read_catalog_bytes(args.file, "catalog")
@@ -4278,8 +4293,16 @@ def cmd_trust_sign_catalog(args: argparse.Namespace) -> None:
             {"reason": "trust_log_checkpoint_digest_mismatch"},
         )
 
+    # FR2-2: every EXISTING signature must verify before this command touches the
+    # document. A structurally-valid-but-cryptographically-invalid entry used to sit
+    # there while a freshly appended good one pushed the count to threshold and the
+    # command reported `threshold_met: true` — a claim an independent `verify-catalog`
+    # then refused with `root_signature_invalid`. A count of unverified entries is not
+    # a count of signatures.
+    verify_catalog_root_signatures(incoming, parsed, authority)
+
     core_before = estate_catalog_canonical_core(incoming)
-    signers = _catalog_signers(list(args.key), checkpoint=checkpoint, genesis_doc=doc)
+    signers = _catalog_signers(list(args.key), authority=authority)
     signed: dict[str, Any] = dict(incoming)
     for seed, signer_id, fingerprint in signers:
         signed = sign_estate_catalog(
@@ -4292,22 +4315,29 @@ def cmd_trust_sign_catalog(args: argparse.Namespace) -> None:
             "signing changed the catalog's signed core; refusing to write",
             {"reason": "signed_core_mutated"},
         )
+    # And re-verify the WHOLE array afterwards, so `signatures_verified` below counts
+    # only entries this command actually checked — never `len(root_signatures)`.
+    verified = verify_catalog_root_signatures(
+        signed, parse_estate_catalog(signed, for_signing=True), authority
+    )
     canonical = canonicalize(signed)
     _write_canonical_atomic(args.out, canonical)
 
-    total = len(signed["root_signatures"])
-    threshold = checkpoint.governance.threshold
+    threshold = authority.threshold
     result = {
         "ok": True,
         "action": "trust-sign-catalog",
         "written": args.out,
         "estate_catalog_digest": estate_catalog_digest(signed),
         "signatures_added": len(signers),
-        "signatures_total": total,
+        "signatures_verified": len(verified),
+        "signatures_total": len(signed["root_signatures"]),
         "threshold": threshold,
-        "threshold_met": total >= threshold,
+        "threshold_met": len(verified) >= threshold,
+        "root_authority": authority.to_dict(),
         "root_fingerprints_added": [fingerprint for _, _, fingerprint in signers],
     }
+    total = len(verified)
     if json_mode:
         _dump_json(result)
         return
@@ -4315,7 +4345,8 @@ def cmd_trust_sign_catalog(args: argparse.Namespace) -> None:
     print(f"  in:                      {args.file}")
     print(f"  out:                     {args.out}")
     print(f"  estate_catalog_digest:   {result['estate_catalog_digest']}")
-    print(f"  signatures:              {total} of {threshold} required")
+    print(f"  root authority:          {authority.source}")
+    print(f"  signatures VERIFIED:     {total} of {threshold} required")
     if total >= threshold:
         print("  threshold MET: run `regista trust verify-catalog` before publishing.")
     else:
@@ -4377,11 +4408,9 @@ def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
         genesis_document=genesis_document,
         trust_log_checkpoint_bytes=checkpoint_bytes,
         expected_estate=expected_estate,
+        authority=_resolve_root_authority(args, genesis_document),
         file_bytes=file_bytes,
         expect_digest=args.expect_digest,
-        additional_root_public_keys=_load_root_public_keys(
-            getattr(args, "root_public_key", None)
-        ),
     )
     if json_mode:
         _dump_json(report.to_dict())
@@ -4406,9 +4435,10 @@ def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
             f"(seq {report.checkpoint.checkpoint_seq}, "
             f"{report.checkpoint.signatures_verified} root signature(s))"
         )
+        print(f"root_authority: {report.root_authority.source}")
         print(
             "active_root_fingerprints: "
-            + ", ".join(report.checkpoint.active_root_fingerprints)
+            + ", ".join(report.root_authority.signer_fingerprints)
         )
         print(f"completeness: {report.completeness}")
         print(f"projects: {report.project_count}")
@@ -6412,9 +6442,10 @@ def main(argv: list[str] | None = None) -> None:
         required=True,
         help="Path to the PUBLISHED regista.trust-checkpoint document whose digest the "
         "catalog binds. It is reconciled against the live trust log AND authenticated "
-        "offline (parsed, canonical-form-checked, signature-verified); its "
-        "active_root_fingerprints and threshold are what authorise the signing keys. A "
-        "local observation is not a checkpoint and is not accepted.",
+        "(parsed, canonical-form-checked, signature-verified) against the root "
+        "authority DERIVED from that same verified walk; its own "
+        "active_root_fingerprints are a claim reconciled against that set, never the "
+        "source of it. A local observation is not a checkpoint and is not accepted.",
     )
     trust_catalog.add_argument(
         "--trust-publication-repo",
@@ -6425,15 +6456,6 @@ def main(argv: list[str] | None = None) -> None:
         "--trust-publication-commit",
         default=None,
         help="Full 40-hex git commit pinned out of band for the publication channel",
-    )
-    trust_catalog.add_argument(
-        "--root-public-key",
-        action="append",
-        default=None,
-        help="Path to a raw Ed25519 root public key (64 hex chars or base64), for a "
-        "root ROTATED IN after genesis whose bytes appear in no document held offline. "
-        "Repeatable. Authority still comes from the signed checkpoint: a supplied key "
-        "is used only if sha256(key) is in its active_root_fingerprints.",
     )
     trust_catalog.add_argument(
         "--genesis",
@@ -6504,10 +6526,19 @@ def main(argv: list[str] | None = None) -> None:
         "offline and used for the active root set and threshold",
     )
     trust_sign_catalog.add_argument(
-        "--root-public-key",
-        action="append",
+        "--trust-log-project",
         default=None,
-        help="Path to a raw Ed25519 root public key for a rotated-in root; repeatable",
+        help="Schema holding the estate trust log. Present it to prove a ROOT ROTATION: "
+        "the log is replayed from the pinned genesis under full verification and the "
+        "resulting signer set/threshold become the authority. Omit it and the authority "
+        "is genesis itself (the zero-rotation state) — correct for a domain that has "
+        "never rotated, and any checkpoint claiming a different root set is refused by "
+        "name. There is no operator channel for root public keys by design.",
+    )
+    trust_sign_catalog.add_argument(
+        "--trust-log-dsn",
+        default=None,
+        help="DSN for --trust-log-project; defaults to --dsn/REGISTA_DSN",
     )
     trust_sign_catalog.add_argument(
         "--genesis",
@@ -6537,15 +6568,17 @@ def main(argv: list[str] | None = None) -> None:
         "--genesis",
         default=None,
         help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH). "
-        "REQUIRED: it supplies the initial roots' public keys.",
+        "REQUIRED: it is the ROOT of the authority chain — the initial signer set, "
+        "threshold and public keys everything else is derived from.",
     )
     trust_verify_catalog.add_argument(
         "--trust-checkpoint",
         required=True,
         help="Path to the published trust-checkpoint document. REQUIRED: it is parsed, "
-        "canonical-form-checked and signature-verified, and its active_root_fingerprints "
-        "and threshold are what authorise the catalog's signatures. There is no mode in "
-        "which this is skipped and the verdict still reads VALID.",
+        "canonical-form-checked and signature-verified against the genesis-rooted "
+        "authority, and its declared active_root_fingerprints must EQUAL that derived "
+        "set. There is no mode in which this is skipped and the verdict still reads "
+        "VALID.",
     )
     trust_verify_catalog.add_argument(
         "--expected-estate",
@@ -6555,12 +6588,19 @@ def main(argv: list[str] | None = None) -> None:
         "claim about a set the catalog cannot describe on its own.",
     )
     trust_verify_catalog.add_argument(
-        "--root-public-key",
-        action="append",
+        "--trust-log-project",
         default=None,
-        help="Path to a raw Ed25519 root public key for a root rotated in after "
-        "genesis; repeatable. Only usable if the signed checkpoint lists its "
-        "fingerprint as active.",
+        help="Schema holding the estate trust log. Present it to prove a ROOT ROTATION: "
+        "the log is replayed from the pinned genesis under full verification and the "
+        "resulting signer set/threshold become the authority. Omit it and the authority "
+        "is genesis itself (the zero-rotation state) — correct for a domain that has "
+        "never rotated, and any checkpoint claiming a different root set is refused by "
+        "name. There is no operator channel for root public keys by design.",
+    )
+    trust_verify_catalog.add_argument(
+        "--trust-log-dsn",
+        default=None,
+        help="DSN for --trust-log-project; defaults to --dsn/REGISTA_DSN",
     )
     trust_verify_catalog.add_argument(
         "--expect-digest",

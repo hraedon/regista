@@ -113,25 +113,40 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   "produce and sign" ONE step and "publish" the next one, which is why signing is
   folded into `catalog` and none of the three touches git or a network.
 
-  **Authority comes from the published trust-log checkpoint, not from the genesis
-  document.** `verify-catalog` REQUIRES the `regista.trust-checkpoint` the catalog
-  binds: it parses it, enforces its canonical publication bytes, verifies its root
-  signatures, reconciles its `signer_count` against the fingerprints it actually lists,
-  and then takes the authorised signer set from `active_root_fingerprints` and the
-  threshold from its `root_governance` — which the catalog must restate exactly.
-  Genesis alone is wrong in both directions (a root removed by a §5.4 rotation would
-  keep signing; a rotated-in root would be refused), so a rotated-in root's public key
-  is supplied out of band with `--root-public-key` and is used only if `sha256(key)` is
-  in the signed checkpoint's active set — bytes from the operator, authority from the
-  checkpoint. k-of-n catalogs verify against that set and threshold; `--key` is
-  repeatable, and `trust sign-catalog` appends a signature to an existing document
-  (never rebuilding its signed core) so an airgapped ceremony works by courier.
+  **Authority chains from genesis; no document authorises itself.** The signer set,
+  threshold and public keys are derived from the pinned genesis and advanced *only* by
+  the verified trust log — the model `_genesis_open.load_published_checkpoint` already
+  uses (`verify_trust_log_chain` → `chain.state`). `verify-catalog` REQUIRES the
+  `regista.trust-checkpoint` the catalog binds: it parses it, enforces its canonical
+  publication bytes, reconciles its `signer_count` against the fingerprints it actually
+  lists, and verifies its root signatures **against that derived state**; its declared
+  `active_root_fingerprints` and threshold must then EQUAL the derived set, and the
+  catalog must restate the same governance. Verifying a checkpoint against its own
+  declared actives is circular: an attacker knowing the estate's public
+  `trust_domain_id` and `trust_domain_core_digest` could mint a checkpoint naming their
+  own fresh key as the sole active root, sign it with that key, and be believed.
 
-  **Every per-project fact is recomputed from signed event bytes.** The head and the
+  `--trust-log-project` (with `--trust-log-dsn`, defaulting to `--dsn`/`REGISTA_DSN`) is
+  how a §5.4 rotation is PROVEN: the log's `trust_root_rotated` event carries the added
+  root's public key, so the replayed state holds material genesis never had. Omitted,
+  the authority is genesis — the zero-rotation state — and any checkpoint claiming a
+  different signer set is refused by name. A rotated-in root is honoured only when the
+  log proves the rotation; a removed root is refused even while the checkpoint still
+  lists it. There is deliberately **no operator channel for root public keys**.
+  `trust catalog` always derives its authority from the live walk it already performs.
+  k-of-n catalogs verify against the derived set and threshold; `--key` is repeatable,
+  and `trust sign-catalog` appends a signature to an existing document (never rebuilding
+  its signed core, and verifying every signature already present before counting any) so
+  an airgapped ceremony works by courier.
+
+  **Every per-project HASH is recomputed from signed event bytes.** The head and the
   epoch-opening hash come from `_signing.compute_chain_head_hash` over the max- and
   min-`global_seq` events; the project's identity comes from inside its signed genesis
   envelope; `event_chain_head` and `project_identity` are then checked *as claims* and a
-  disagreement is a distinct named refusal. This is `ARCHITECTURE-0.6.0.md`:802-810's
+  disagreement is a distinct named refusal. `legacy_event_count` and `scheme_counts` are
+  the stated exception — they are `COUNT(*)`/`GROUP BY` aggregates with no signed
+  counterpart, so a row inserted mid-chain inflates them while the head stays valid, and
+  the operator's §2.4 record is what stands behind them. This is `ARCHITECTURE-0.6.0.md`:802-810's
   rule — "the signed event, not the mutable posture row, tells future verifiers where
   strict v6 rules begin". The operator's approved preflight head and count are a
   MANDATORY second witness in the inputs file, so the command is never the only witness
@@ -186,9 +201,10 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   catalog --input <signed.json> --repo <clone>` does not exist yet; `trust catalog`
   writes the exact canonical publication bytes and prints the §4.2 path they belong at.
 
-  **Known limits, stated rather than implied.** (i) A rotated-in root's public key must
-  be supplied out of band; regista cannot discover it offline, and the ceremony host's
-  live trust log is not consulted by `verify-catalog` by design. (ii) `verify-catalog`
+  **Known limits, stated rather than implied.** (i) Honouring a root rotation requires
+  the trust log, which is a PostgreSQL project — §4.2 publishes no trust-log export, so
+  an auditor with only the publication can verify a non-rotated domain and must be given
+  log access for a rotated one. (ii) `verify-catalog`
   authenticates the checkpoint but cannot confirm it *describes the real trust log* —
   that needs the log, and it is `genesis init` / `trust catalog` that check it against a
   live walk. (iii) The provenance of the frozen-legacy numbers is absent from the signed

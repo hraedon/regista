@@ -71,23 +71,41 @@ Judgment calls this module makes, because §4.3 under-specifies them
    expected estate is **operator-supplied** (a ``regista.estate-manifest/v1`` document);
    nothing here hardcodes 26 projects.
 
-Where authority comes from, and why it is not the genesis document alone
------------------------------------------------------------------------
+Where authority comes from: a chain rooted at genesis
+-----------------------------------------------------
 
-The set of keys that may sign a catalog is the **verified published trust-log
-checkpoint's** ``active_root_fingerprints``, not the genesis document's signer list.
-Genesis names the *initial* roots; §5.4/WI-280 let a rotation replace signers and raise
-the threshold without moving ``trust_domain_id``. Verifying against genesis alone gets
-both directions wrong: a **removed** root's signature still verifies, and a
-**rotated-in** root is refused. So verification requires the checkpoint, reconciles the
-catalog's restated ``root_governance`` against it, and takes the threshold from it.
+**A checkpoint never authorises itself.** An earlier version of this module verified a
+checkpoint's signatures against the checkpoint's own ``active_root_fingerprints``, which
+is circular: an attacker who knows the estate's ``trust_domain_id`` and
+``trust_domain_core_digest`` — both public — could mint a checkpoint listing their own
+fresh key as the only active root, sign it with that key, and have it accepted. Sol's
+round-2 probe did exactly that end to end (WI-330 review FR2-1).
 
-Public keys are still needed to check a signature, and a checkpoint carries only
-fingerprints. They come from the genesis document plus operator-supplied
-``--root-public-key`` files; each supplied key is accepted only if
-``sha256(public_key)`` matches a fingerprint the **signed** checkpoint authorises, so
-the operator supplies bytes, never authority. That is the same out-of-band exchange
-§4.5 step 1 already requires of the root fingerprints themselves.
+Authority is therefore a :class:`RootAuthorityState` **derived from the pinned genesis
+document and advanced only by the verified trust log**, which is the model the in-store
+verifier already uses (``_genesis_open.load_published_checkpoint`` →
+``verify_trust_log_chain`` → ``chain.state``):
+
+* :func:`genesis_root_authority` — genesis's signer set, threshold and public keys. This
+  is the state of a domain with **no rotation events**, and it is what an offline
+  auditor holding only the §4.2 publication can establish.
+* :func:`trust_log_root_authority` — the same thing after replaying the trust log from
+  that genesis under full verification. Rotations move the signer set and may raise the
+  threshold (§5.4, WI-280), and a ``trust_root_rotated`` event **carries the added
+  root's public key**, which is how ``chain.state.root_public_keys`` learns material
+  genesis never had.
+
+A checkpoint's declared ``active_root_fingerprints`` and ``threshold`` must then EQUAL
+the derived state; a disagreement is a named refusal. So a rotated-in root is honoured
+only when the log proves the rotation, a removed root is refused even while the
+checkpoint still lists it, and Sol's self-authorising checkpoint is refused because its
+actives are not genesis's and no log says otherwise.
+
+There is deliberately **no operator channel for root public keys**. An earlier
+``--root-public-key`` flag existed so an offline verifier could check a rotated-in
+root, and it was precisely the hole: supplying bytes for a fingerprint the *checkpoint*
+claimed active was enough to manufacture authority. Key material now comes only from
+genesis or from the verified log's own events.
 
 Everything fails closed. Unknown top-level keys are a rejection; a file whose bytes are
 not exact canonical JCS is a rejection; a signature by a fingerprint the verified
@@ -531,6 +549,9 @@ class EstateCatalogVerification:
     completeness: str
     missing_project_instance_ids: tuple[str, ...]
     checkpoint: VerifiedCheckpoint
+    #: Where "who may sign" came from. Reported so a reader can tell a genesis-derived
+    #: verdict (no rotation provable offline) from a log-derived one.
+    root_authority: RootAuthorityState
 
     @property
     def complete(self) -> bool:
@@ -559,6 +580,7 @@ class EstateCatalogVerification:
             "completeness": self.completeness,
             "missing_project_instance_ids": list(self.missing_project_instance_ids),
             "checkpoint": self.checkpoint.to_dict(),
+            "root_authority": self.root_authority.to_dict(),
         }
 
 
@@ -1004,71 +1026,113 @@ def _verify_ed25519(public_key: bytes, message: bytes, signature: bytes) -> bool
     return True
 
 
-def resolve_root_public_keys(
-    genesis_document: Mapping[str, Any],
-    additional_public_keys: Sequence[bytes] = (),
-) -> dict[str, bytes]:
-    """Fingerprint -> raw Ed25519 public key, from genesis plus operator-supplied keys.
+@dataclass(frozen=True)
+class RootAuthorityState:
+    """Who may sign, derived from genesis and optionally advanced by the verified log.
 
-    A checkpoint authorises *fingerprints*; checking a signature needs *bytes*. Genesis
-    carries the initial roots' bytes, but a root rotated in after genesis appears in no
-    document an offline verifier holds — so its public key has to be supplied. That is
-    safe because a supplied key is only ever consulted through its fingerprint, and the
-    fingerprint must appear in the SIGNED checkpoint's ``active_root_fingerprints``:
-    the operator supplies bytes, never authority. §4.5 step 1 already requires the root
-    fingerprints to be obtained by direct exchange; this is the same exchange.
+    ``source`` is reported, always, because the two states answer different questions.
+    ``"genesis"`` is what an offline auditor with only the §4.2 publication can
+    establish — correct for a domain that has never rotated, and unable to honour a
+    rotation. ``"verified_trust_log"`` is the replayed state, and is the only thing that
+    can admit a rotated-in root or a raised threshold.
     """
-    from ._principal_keys import _compute_fingerprint
+
+    signer_fingerprints: tuple[str, ...]
+    threshold: int
+    public_keys: Mapping[str, bytes]
+    signer_ids: Mapping[str, str]
+    source: str
+    trust_log_event_count: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "signer_fingerprints": list(self.signer_fingerprints),
+            "threshold": self.threshold,
+            "trust_log_event_count": self.trust_log_event_count,
+        }
+
+
+def genesis_root_authority(genesis_document: Mapping[str, Any]) -> RootAuthorityState:
+    """The root authority of a domain with NO rotation events, from genesis alone.
+
+    Genesis is the root of the authority chain, so this is the zero-rotation case of
+    :func:`trust_log_root_authority` rather than a weaker alternative to it. What it
+    cannot do is honour a rotation: a checkpoint claiming a signer set genesis does not
+    name is refused, and the operator must present the log that proves the rotation.
+    """
+    from ._trust_domain import parse_trust_genesis, verify_trust_genesis
+
+    verify_trust_genesis(genesis_document)
+    genesis = parse_trust_genesis(genesis_document)
+    return RootAuthorityState(
+        signer_fingerprints=tuple(sorted(s.fingerprint for s in genesis.signers)),
+        threshold=genesis.initial_governance.threshold,
+        public_keys={s.fingerprint: s.public_key for s in genesis.signers},
+        signer_ids={s.fingerprint: s.signer_id for s in genesis.signers},
+        source="genesis",
+    )
+
+
+def trust_log_root_authority(
+    conn: Any, genesis_document: Mapping[str, Any]
+) -> RootAuthorityState:
+    """The root authority after replaying the trust log from genesis, under verification.
+
+    Delegates the walk to :func:`~regista._trust_log_writer.verify_trust_log_chain` —
+    the same single verified walk ``_genesis_open`` and the in-store verifier use — and
+    reads the signer set, threshold and public keys out of its resulting
+    ``chain.state``. Nothing here re-implements rotation semantics; a rotation's own
+    ``added[].public_key`` is what puts a new root's bytes into that state.
+    """
+    from ._trust_log_writer import verify_trust_log_chain
+
+    chain = verify_trust_log_chain(conn, genesis_document)
+    governance = chain.state.governance
+    genesis_ids = _genesis_signer_ids(genesis_document)
+    return RootAuthorityState(
+        signer_fingerprints=tuple(sorted(governance.signer_fingerprints)),
+        threshold=governance.threshold,
+        public_keys=dict(chain.state.root_public_keys),
+        signer_ids=genesis_ids,
+        source="verified_trust_log",
+        trust_log_event_count=chain.event_count,
+    )
+
+
+def _genesis_signer_ids(genesis_document: Mapping[str, Any]) -> dict[str, str]:
     from ._trust_domain import parse_trust_genesis
 
-    genesis = parse_trust_genesis(genesis_document)
-    keys: dict[str, bytes] = {
-        signer.fingerprint: signer.public_key for signer in genesis.signers
-    }
-    for index, raw in enumerate(additional_public_keys):
-        _require(
-            isinstance(raw, bytes) and len(raw) == 32,
-            f"additional root public key {index} must be 32 raw Ed25519 bytes",
-            "root_public_key_malformed",
-            index=index,
-        )
-        fingerprint = _compute_fingerprint(raw, "ed25519")
-        existing = keys.get(fingerprint)
-        if existing is not None and existing != raw:
-            # Cannot happen for Ed25519 (the fingerprint IS sha256 of these bytes), but
-            # asserting it means a future scheme change cannot silently replace a
-            # genesis key with operator-supplied bytes under the same label.
-            _unverified(
-                f"additional root public key {index} collides with a different key "
-                f"already known for fingerprint {fingerprint}",
-                "root_public_key_collision",
-                fingerprint=fingerprint,
-            )
-        keys[fingerprint] = raw
-    return keys
+    return {s.fingerprint: s.signer_id for s in parse_trust_genesis(genesis_document).signers}
 
 
 def verify_published_checkpoint(
     checkpoint_bytes: bytes,
     *,
     genesis_document: Mapping[str, Any],
-    additional_root_public_keys: Sequence[bytes] = (),
+    authority: RootAuthorityState,
 ) -> VerifiedCheckpoint:
     """Authenticate a published §4.3 trust-log checkpoint OFFLINE, fail-closed.
 
     This is ``_genesis_open.load_published_checkpoint``'s model with the live trust log
     removed: same closed key set, same canonical-bytes rule, same signature input, same
     "signer must be in the current root set" and "threshold must be met" refusals — but
-    the key material comes from :func:`resolve_root_public_keys` instead of a chain
-    walk, because runbook §5.4 step 5 runs from an independent checkout with no
-    database. The shape constants and the framing are IMPORTED from ``_genesis_open``
-    rather than re-declared: a second copy of a signed document's key set is a second
-    copy that can drift.
+the key material and the signer set come from ``authority`` — a state derived from
+    genesis and advanced only by the verified trust log. The shape constants and the
+    framing are IMPORTED from ``_genesis_open`` rather than re-declared: a second copy
+    of a signed document's key set is a second copy that can drift.
 
-    What is deliberately NOT claimed: this proves the checkpoint is internally coherent
-    and threshold-signed by keys its own ``active_root_fingerprints`` authorise. It does
-    not prove the checkpoint describes the real trust log — that needs the log, and it
-    is what ``genesis init`` does at ceremony time.
+    **The checkpoint's own ``active_root_fingerprints`` are never the authority.** They
+    are checked FOR EQUALITY against ``authority.signer_fingerprints``, and its stated
+    threshold against ``authority.threshold``; the signatures are then verified against
+    ``authority``. Verifying against the document's own claims is circular and was
+    exploitable (WI-330 review FR2-1).
+
+    What is deliberately NOT claimed: this proves the checkpoint is internally coherent,
+    consistent with the derived root authority, and threshold-signed by keys that
+    authority holds. It does not prove the checkpoint's ``trust_log`` block describes the
+    real log's head — that needs the log, and it is what ``genesis init`` and
+    ``trust catalog`` check against a live walk at ceremony time.
     """
     import base64
     import binascii
@@ -1081,6 +1145,12 @@ def verify_published_checkpoint(
         TRUST_CHECKPOINT_TYPE,
         _checkpoint_signature_input,
     )
+    from ._trust_domain import verify_trust_genesis
+
+    # This function is public and exported, so it cannot rely on its callers having
+    # verified the genesis first (WI-330 review NEW-2). An unverified genesis is not a
+    # source of anything, including the identity this checkpoint is matched against.
+    verify_trust_genesis(genesis_document)
 
     try:
         raw = _json.loads(checkpoint_bytes.decode("utf-8"))
@@ -1237,7 +1307,32 @@ def verify_published_checkpoint(
         genesis_threshold=genesis.initial_governance.threshold,
     )
 
-    public_keys = resolve_root_public_keys(genesis_document, additional_root_public_keys)
+    # THE circularity fix (WI-330 review FR2-1). The checkpoint's declared root set is
+    # a CLAIM, reconciled against the state derived from genesis and the verified log.
+    # An attacker who mints a checkpoint naming their own key active gets refused here,
+    # before any signature of theirs is ever consulted.
+    if actives != authority.signer_fingerprints:
+        _unverified(
+            "the checkpoint's active_root_fingerprints are not the root set derived "
+            f"from {authority.source}; a checkpoint cannot declare its own signing "
+            "authority. If the domain rotated its roots, present the trust log that "
+            "carries the rotation so the new set can be derived rather than asserted.",
+            "checkpoint_actives_contradict_authority",
+            authority_source=authority.source,
+            checkpoint_actives=list(actives),
+            derived_actives=list(authority.signer_fingerprints),
+        )
+    if governance.threshold != authority.threshold:
+        _unverified(
+            f"the checkpoint states threshold {governance.threshold} but the root "
+            f"authority derived from {authority.source} is {authority.threshold}",
+            "checkpoint_threshold_contradicts_authority",
+            authority_source=authority.source,
+            stated=governance.threshold,
+            derived=authority.threshold,
+        )
+
+    public_keys = authority.public_keys
     message = _checkpoint_signature_input(raw)
     signatures = raw["root_signatures"]
     _require(
@@ -1281,24 +1376,27 @@ def verify_published_checkpoint(
             "checkpoint_signature_malformed",
             path=path,
         )
-        if fingerprint not in actives:
+        if fingerprint not in authority.signer_fingerprints:
             _unverified(
-                f"{path}.fingerprint is not in the checkpoint's own "
-                "active_root_fingerprints; a checkpoint signed by a key it does not "
-                "itself declare active is not evidence about the root set",
+                f"{path}.fingerprint is not in the root set derived from "
+                f"{authority.source}; a checkpoint signed by a key the trust chain does "
+                "not make a current root is not evidence about anything",
                 "checkpoint_root_signer_not_active",
                 path=path,
                 fingerprint=fingerprint,
+                authority_source=authority.source,
             )
         key = public_keys.get(fingerprint)
         if key is None:
             _unverified(
-                f"{path}.fingerprint has no public key in the presented material; "
-                "supply it out of band (--root-public-key) rather than skipping the "
-                "signature",
+                f"{path}.fingerprint is a current root but the derived authority holds "
+                "no public key for it, so the signature cannot be checked. This is a "
+                "gap in the trust log's key material, not something an operator may "
+                "supply — there is no out-of-band key channel by design.",
                 "checkpoint_root_public_key_unavailable",
                 path=path,
                 fingerprint=fingerprint,
+                authority_source=authority.source,
             )
         if not _verify_ed25519(key, message, signature):
             _unverified(
@@ -1308,13 +1406,14 @@ def verify_published_checkpoint(
                 fingerprint=fingerprint,
             )
         verified.append(fingerprint)
-    if len(verified) < governance.threshold:
+    if len(verified) < authority.threshold:
         _unverified(
-            f"{len(verified)} verified checkpoint root signature(s); the checkpoint's "
-            f"threshold is {governance.threshold}",
+            f"{len(verified)} verified checkpoint root signature(s); the threshold "
+            f"derived from {authority.source} is {authority.threshold}",
             "checkpoint_root_threshold_not_met",
             verified=len(verified),
-            threshold=governance.threshold,
+            threshold=authority.threshold,
+            authority_source=authority.source,
         )
 
     return VerifiedCheckpoint(
@@ -1331,15 +1430,76 @@ def verify_published_checkpoint(
     )
 
 
+def verify_catalog_root_signatures(
+    document: Mapping[str, Any],
+    parsed: EstateCatalog,
+    authority: RootAuthorityState,
+) -> tuple[str, ...]:
+    """Verify EVERY ``root_signatures`` entry against ``authority``. Returns fingerprints.
+
+    Extracted so the verifier and ``trust sign-catalog`` cannot disagree about what
+    "this catalog's signatures are good" means. ``sign-catalog`` used to append a valid
+    signature beside a structurally-well-formed but cryptographically INVALID one and
+    report ``threshold_met: true``, which an independent ``verify-catalog`` then refused
+    (WI-330 review FR2-2). A signature count is only meaningful if every counted entry
+    verified.
+    """
+    message = estate_catalog_signature_input(document)
+    verified: list[str] = []
+    for index, entry in enumerate(parsed.root_signatures):
+        path = f"root_signatures[{index}]"
+        if entry.fingerprint not in authority.signer_fingerprints:
+            _unverified(
+                f"{path}.fingerprint is not in the root set derived from "
+                f"{authority.source}; a root the trust chain does not make current "
+                "cannot sign a catalog, and its signature is refused rather than "
+                "dropped",
+                "root_signer_not_active",
+                path=path,
+                fingerprint=entry.fingerprint,
+                authority_source=authority.source,
+                derived_actives=list(authority.signer_fingerprints),
+            )
+        key = authority.public_keys.get(entry.fingerprint)
+        if key is None:
+            _unverified(
+                f"{path}.fingerprint is a current root but the derived authority holds "
+                "no public key for it, so the signature cannot be checked",
+                "root_public_key_unavailable",
+                path=path,
+                fingerprint=entry.fingerprint,
+                authority_source=authority.source,
+            )
+        expected_signer_id = authority.signer_ids.get(entry.fingerprint)
+        if expected_signer_id is not None and expected_signer_id != entry.signer_id:
+            _unverified(
+                f"{path}.signer_id is {entry.signer_id!r} but the genesis names "
+                f"{expected_signer_id!r} for that fingerprint",
+                "root_signer_id_mismatch",
+                path=path,
+                stated=entry.signer_id,
+                actual=expected_signer_id,
+            )
+        if not _verify_ed25519(key, message, entry.signature):
+            _unverified(
+                f"{path} does not verify over the estate-catalog signature input",
+                "root_signature_invalid",
+                path=path,
+                fingerprint=entry.fingerprint,
+            )
+        verified.append(entry.fingerprint)
+    return tuple(verified)
+
+
 def verify_estate_catalog(
     document: Mapping[str, Any],
     *,
     genesis_document: Mapping[str, Any],
     trust_log_checkpoint_bytes: bytes,
     expected_estate: Any,
+    authority: RootAuthorityState,
     file_bytes: bytes | None = None,
     expect_digest: str | None = None,
-    additional_root_public_keys: Sequence[bytes] = (),
 ) -> EstateCatalogVerification:
     """Verify a published estate catalog. Fail-closed: every refusal is named.
 
@@ -1359,8 +1519,13 @@ def verify_estate_catalog(
     * ``expected_estate`` — the ``regista.estate-manifest/v1`` document naming which
       projects a complete catalog must cover. Without it "complete" is unfalsifiable,
       and a dropped project is exactly the attack the catalog exists to expose.
+    * ``authority`` — the root set, threshold and public keys derived from genesis and
+      advanced only by the verified trust log (:func:`genesis_root_authority` /
+      :func:`trust_log_root_authority`). The checkpoint is reconciled against it and
+      the catalog's signatures are verified under it; neither document supplies its own
+      authority.
 
-    There is no degraded mode. A caller that cannot present all three gets a named
+    There is no degraded mode. A caller that cannot present all of these gets a named
     refusal, not a qualified VALID.
 
     The returned verdict is ``"VALID"`` only for an authenticated AND complete catalog;
@@ -1414,7 +1579,7 @@ def verify_estate_catalog(
     checkpoint = verify_published_checkpoint(
         trust_log_checkpoint_bytes,
         genesis_document=genesis_document,
-        additional_root_public_keys=additional_root_public_keys,
+        authority=authority,
     )
     if checkpoint.document_digest != parsed.trust_log_checkpoint_digest:
         _unverified(
@@ -1443,58 +1608,16 @@ def verify_estate_catalog(
             },
         )
 
-    public_keys = resolve_root_public_keys(genesis_document, additional_root_public_keys)
-    message = estate_catalog_signature_input(document)
-    verified: list[str] = []
-    for index, entry in enumerate(parsed.root_signatures):
-        path = f"root_signatures[{index}]"
-        if entry.fingerprint not in checkpoint.active_root_fingerprints:
-            _unverified(
-                f"{path}.fingerprint is not in the verified checkpoint's "
-                "active_root_fingerprints; a root removed by a rotation cannot sign a "
-                "catalog, and its signature is refused rather than dropped",
-                "root_signer_not_active",
-                path=path,
-                fingerprint=entry.fingerprint,
-                active_root_fingerprints=list(checkpoint.active_root_fingerprints),
-            )
-        key = public_keys.get(entry.fingerprint)
-        if key is None:
-            _unverified(
-                f"{path}.fingerprint is authorised by the checkpoint but no public key "
-                "for it was presented, so the signature cannot be checked; supply it "
-                "out of band (--root-public-key) rather than skipping the signature",
-                "root_public_key_unavailable",
-                path=path,
-                fingerprint=entry.fingerprint,
-            )
-        signer = genesis.signer_by_fingerprint(entry.fingerprint)
-        if signer is not None and signer.signer_id != entry.signer_id:
-            _unverified(
-                f"{path}.signer_id is {entry.signer_id!r} but the genesis names "
-                f"{signer.signer_id!r} for that fingerprint",
-                "root_signer_id_mismatch",
-                path=path,
-                stated=entry.signer_id,
-                actual=signer.signer_id,
-            )
-        if not _verify_ed25519(key, message, entry.signature):
-            _unverified(
-                f"{path} does not verify over the estate-catalog signature input",
-                "root_signature_invalid",
-                path=path,
-                fingerprint=entry.fingerprint,
-            )
-        verified.append(entry.fingerprint)
-
-    threshold = checkpoint.governance.threshold
+    verified = verify_catalog_root_signatures(document, parsed, authority)
+    threshold = authority.threshold
     if len(verified) < threshold:
         _unverified(
-            f"{len(verified)} verified root signature(s); the verified checkpoint's "
-            f"threshold is {threshold}",
+            f"{len(verified)} verified root signature(s); the threshold derived from "
+            f"{authority.source} is {threshold}",
             "root_threshold_not_met",
             verified=len(verified),
             threshold=threshold,
+            authority_source=authority.source,
         )
 
     digest = estate_catalog_digest(document)
@@ -1563,7 +1686,7 @@ def verify_estate_catalog(
         project_count=len(parsed.projects),
         root_governance=parsed.root_governance,
         signatures_verified=len(verified),
-        verified_fingerprints=tuple(verified),
+        verified_fingerprints=verified,
         extra_signatures=max(0, len(verified) - threshold),
         trust_log_checkpoint_digest=parsed.trust_log_checkpoint_digest,
         digest_pin_status=digest_pin_status,
@@ -1572,6 +1695,7 @@ def verify_estate_catalog(
         completeness="complete" if not missing else "partial",
         missing_project_instance_ids=missing,
         checkpoint=checkpoint,
+        root_authority=authority,
     )
 
 
@@ -2123,19 +2247,22 @@ __all__ = [
     "EstateCatalogVerification",
     "LegacyMeasurement",
     "NewEpochMeasurement",
+    "RootAuthorityState",
     "VerifiedCheckpoint",
     "build_estate_catalog",
     "estate_catalog_canonical_core",
     "estate_catalog_core",
     "estate_catalog_digest",
     "estate_catalog_signature_input",
+    "genesis_root_authority",
     "measure_frozen_legacy",
     "measure_new_epoch",
     "parse_catalog_inputs",
     "parse_estate_catalog",
     "parse_estate_manifest",
-    "resolve_root_public_keys",
     "sign_estate_catalog",
+    "trust_log_root_authority",
+    "verify_catalog_root_signatures",
     "verify_estate_catalog",
     "verify_published_checkpoint",
 ]

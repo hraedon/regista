@@ -43,7 +43,12 @@ from _trust_fixtures import mint_solo
 
 from regista._cli import cmd_trust_catalog, cmd_trust_verify_catalog
 from regista._errors import ErrorCode, RegistaError
-from regista._estate_catalog import estate_catalog_digest, verify_estate_catalog
+from regista._estate_catalog import (
+    estate_catalog_digest,
+    genesis_root_authority,
+    trust_log_root_authority,
+    verify_estate_catalog,
+)
 from regista._jcs import canonicalize
 
 ROOT_PRINCIPAL = "service:root-a"
@@ -556,7 +561,6 @@ def _catalog_ns(estate, **overrides) -> argparse.Namespace:
         "expected_estate": None,
         "out": None,
         "key": [estate.root_seed_path],
-        "root_public_key": None,
         "incomplete_signatures": False,
         "allow_partial": False,
         "trust_checkpoint": estate.checkpoint,
@@ -583,7 +587,8 @@ def _verify_ns(estate, **overrides) -> argparse.Namespace:
         "genesis": estate.genesis,
         "trust_checkpoint": estate.checkpoint,
         "expected_estate": None,
-        "root_public_key": None,
+        "trust_log_project": None,
+        "trust_log_dsn": None,
         "expect_digest": None,
         "json": True,
     }
@@ -697,6 +702,7 @@ def test_trust_catalog_end_to_end(estate, tmp_path) -> None:
     report = verify_estate_catalog(
         document,
         genesis_document=estate.fx.document,
+        authority=genesis_root_authority(estate.fx.document),
         trust_log_checkpoint_bytes=estate.checkpoint_bytes,
         expected_estate=json.loads(
             pathlib.Path(_manifest_file(estate, tmp_path, estate.target_project)).read_text()
@@ -1067,7 +1073,9 @@ def test_trust_catalog_refuses_an_under_signed_catalog_by_default(
     from regista._estate_catalog import verify_published_checkpoint
 
     checkpoint = verify_published_checkpoint(
-        estate.checkpoint_bytes, genesis_document=estate.fx.document
+        estate.checkpoint_bytes,
+        genesis_document=estate.fx.document,
+        authority=genesis_root_authority(estate.fx.document),
     )
     assert checkpoint.governance.threshold == 1
     assert checkpoint.active_root_fingerprints == (
@@ -1119,8 +1127,8 @@ def test_trust_catalog_and_sign_catalog_compose(estate, tmp_path) -> None:
             argparse.Namespace(
                 dsn=None, project=None, hmac_key_path=None,
                 file=str(out), out=str(signed_path), key=[estate.root_seed_path],
-                trust_checkpoint=estate.checkpoint, root_public_key=None,
-                genesis=estate.genesis, force=False, json=True,
+                trust_checkpoint=estate.checkpoint, trust_log_project=None,
+                trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
             ),
         )
     )
@@ -1156,8 +1164,8 @@ def test_sign_catalog_refuses_a_key_outside_the_active_root_set(
         argparse.Namespace(
             dsn=None, project=None, hmac_key_path=None,
             file=str(out), out=str(tmp_path / "signed.json"), key=[stranger],
-            trust_checkpoint=estate.checkpoint, root_public_key=None,
-            genesis=estate.genesis, force=False, json=True,
+            trust_checkpoint=estate.checkpoint, trust_log_project=None,
+            trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
         ),
     )
     assert _reason(error) == "root_key_not_active"
@@ -1235,24 +1243,54 @@ def test_trust_catalog_is_byte_reproducible_with_a_pinned_created_at(estate, tmp
     assert first.read_bytes() == second.read_bytes()
 
 
-def test_trust_catalog_write_is_atomic(estate, tmp_path) -> None:
-    """Review N-a: ``--force`` must not destroy the prior artifact before succeeding.
+def test_trust_catalog_write_is_atomic(estate, tmp_path, monkeypatch) -> None:
+    """Review N-a, and NEW-3: assert properties a plain truncating write does NOT have.
 
-    The write goes to a sibling temp file, is fsynced and read back, and only then
-    replaces the target. This pins the observable half: after a successful --force run
-    no temp files are left behind, and the bytes at the path are the new canonical ones.
+    The first version of this test only checked that the bytes changed and no temp file
+    was left — both true of ``open(path, "wb")``, so it proved nothing. Two
+    discriminating properties are asserted instead:
+
+    1. **The inode changes across ``--force``.** ``os.replace`` swaps a new file into
+       place; a truncating write keeps the same inode. This is what makes a concurrent
+       reader see either the old artifact or the new one, never a half-written one.
+    2. **A failure leaves the previous artifact byte-intact.** With ``os.replace`` made
+       to fail, the target still holds the ORIGINAL catalog — whereas a truncating write
+       would already have destroyed it before failing.
     """
     out = tmp_path / "catalog.json"
     first = _run(estate, tmp_path, out=out, created_at="2026-08-20T12:00:00.000000Z")
     original = out.read_bytes()
+    original_inode = out.stat().st_ino
+
     second = _run(
         estate, tmp_path, out=out, force=True,
         created_at="2026-08-20T13:00:00.000000Z",
     )
     assert out.read_bytes() != original
     assert second["estate_catalog_digest"] != first["estate_catalog_digest"]
-    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".catalog.json.")]
-    assert leftovers == [], leftovers
+    assert out.stat().st_ino != original_inode, (
+        "the artifact was written in place; a truncating write has no atomicity"
+    )
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".catalog.json.")] == []
+
+    # (2) The prior artifact survives a failed publish.
+    surviving = out.read_bytes()
+    real_replace = os.replace
+
+    def exploding_replace(src, dst, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", exploding_replace)
+    with pytest.raises(OSError):
+        _run(
+            estate, tmp_path, out=out, force=True,
+            created_at="2026-08-20T14:00:00.000000Z",
+        )
+    monkeypatch.setattr(os, "replace", real_replace)
+    assert out.read_bytes() == surviving, "a failed write destroyed the previous catalog"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".catalog.json.")] == [], (
+        "the temp file was left behind after a failed replace"
+    )
 
 
 def test_trust_catalog_refuses_to_clobber_an_existing_artifact(estate, tmp_path) -> None:
@@ -1536,3 +1574,175 @@ def test_trust_catalog_refuses_an_empty_legacy_store(estate, tmp_path) -> None:
         assert _reason(error) == "legacy_store_empty"
     finally:
         drop_project_schema(DSN, project)
+
+
+# ------------------- FR2-1: the log-derived authority adapter, live -------------
+
+
+def test_trust_log_root_authority_matches_genesis_on_an_unrotated_log(estate) -> None:
+    """The adapter that turns a real chain walk into a ``RootAuthorityState``.
+
+    The DB-free module expresses post-rotation states by constructing that object
+    directly; this pins the one thing only a live log can prove — that
+    ``trust_log_root_authority`` derives the SAME state from a real
+    ``verify_trust_log_chain`` walk that ``genesis_root_authority`` derives from the
+    document, on a log with no rotation events. If the two ever disagreed, every offline
+    verdict would differ from the ceremony host's, and FR2-1's fix would be nominal.
+    """
+    from regista._connection import ConnectionManager
+
+    expected = genesis_root_authority(estate.fx.document)
+    mgr = ConnectionManager(DSN, estate.trust_project)
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            derived = trust_log_root_authority(conn, estate.fx.document)
+    finally:
+        mgr.close()
+
+    assert derived.signer_fingerprints == expected.signer_fingerprints
+    assert derived.threshold == expected.threshold
+    assert dict(derived.public_keys) == dict(expected.public_keys)
+    assert derived.source == "verified_trust_log"
+    assert derived.trust_log_event_count is not None and derived.trust_log_event_count >= 2
+
+
+def test_trust_catalog_reports_a_log_derived_authority(estate, tmp_path) -> None:
+    """`trust catalog` must never fall back to genesis: it HAS the log, so it walks it."""
+    result = _run(estate, tmp_path, out=tmp_path / "catalog.json")
+    assert result["root_authority"]["source"] == "verified_trust_log"
+    assert result["root_authority"]["signer_fingerprints"] == [
+        estate.fx.fingerprints[estate.root_signer]
+    ]
+    assert result["active_root_fingerprints"] == result["root_authority"][
+        "signer_fingerprints"
+    ]
+
+
+def test_verify_catalog_can_use_the_live_trust_log_as_authority(estate, tmp_path) -> None:
+    """`--trust-log-project` is the CLI surface for "present the log"."""
+    out = tmp_path / "catalog.json"
+    built = _run(estate, tmp_path, out=out)
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    report = json.loads(
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(
+                estate, file=str(out), expected_estate=manifest,
+                trust_log_project=estate.trust_project, trust_log_dsn=DSN,
+                expect_digest=built["estate_catalog_digest"],
+            ),
+        )
+    )
+    assert report["verdict"] == "VALID"
+    assert report["root_authority"]["source"] == "verified_trust_log"
+
+
+def test_verify_catalog_refuses_a_trust_log_project_without_a_dsn(estate, tmp_path) -> None:
+    out = tmp_path / "catalog.json"
+    _run(estate, tmp_path, out=out)
+    error = _refusal(
+        cmd_trust_verify_catalog,
+        _verify_ns(
+            estate, file=str(out),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            trust_log_project=estate.trust_project, trust_log_dsn=None, dsn=None,
+        ),
+    )
+    assert _reason(error) == "trust_log_dsn_absent"
+
+
+# ---------------- FR2-2: sign-catalog must not count unverified entries ----------
+
+
+def test_sign_catalog_refuses_a_catalog_carrying_an_invalid_signature(
+    estate, tmp_path
+) -> None:
+    """Sol's round-2 probe (FR2-2): ``threshold_met: true`` beside a bad signature.
+
+    ``sign-catalog`` appended a valid signature next to a structurally well-formed but
+    cryptographically INVALID one and reported ``ok: true, threshold_met: true`` — a
+    claim an independent ``verify-catalog`` then refused with ``root_signature_invalid``.
+    A count of array entries is not a count of signatures, so every existing entry is
+    now verified BEFORE anything is appended.
+    """
+    from regista._cli import cmd_trust_sign_catalog
+
+    out = tmp_path / "unsigned.json"
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    inputs = _estate_inputs(estate, tmp_path)
+    _capture(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=inputs, expected_estate=manifest, out=str(out), key=[],
+            incomplete_signatures=True,
+        ),
+    )
+
+    # Splice in a well-formed entry naming the genuine root but with garbage bytes.
+    document = json.loads(out.read_bytes())
+    document["root_signatures"] = [
+        {
+            "signer_id": estate.root_signer,
+            "fingerprint": estate.fx.fingerprints[estate.root_signer],
+            "signature": base64.b64encode(b"\x00" * 64).decode("ascii"),
+        }
+    ]
+    tampered = tmp_path / "tampered.json"
+    tampered.write_bytes(canonicalize(document))
+
+    # A second, genuine root key would push the ARRAY to 2 entries. It must not push the
+    # verified count anywhere, because entry 0 does not verify.
+    signed_out = tmp_path / "signed.json"
+    error = _refusal(
+        cmd_trust_sign_catalog,
+        argparse.Namespace(
+            dsn=None, project=None, hmac_key_path=None,
+            file=str(tampered), out=str(signed_out), key=[estate.root_seed_path],
+            trust_checkpoint=estate.checkpoint, trust_log_project=None,
+            trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+        ),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "root_signature_invalid"
+    assert not signed_out.exists(), "a refused sign must leave no artifact behind"
+
+
+def test_sign_catalog_counts_only_verified_signatures(estate, tmp_path) -> None:
+    """The reported number is ``signatures_verified``, not ``len(root_signatures)``."""
+    from regista._cli import cmd_trust_sign_catalog
+
+    out = tmp_path / "unsigned.json"
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    _capture(
+        cmd_trust_catalog,
+        _catalog_ns(
+            estate, inputs=_estate_inputs(estate, tmp_path), expected_estate=manifest,
+            out=str(out), key=[], incomplete_signatures=True,
+        ),
+    )
+    signed_out = tmp_path / "signed.json"
+    result = json.loads(
+        _capture(
+            cmd_trust_sign_catalog,
+            argparse.Namespace(
+                dsn=None, project=None, hmac_key_path=None,
+                file=str(out), out=str(signed_out), key=[estate.root_seed_path],
+                trust_checkpoint=estate.checkpoint, trust_log_project=None,
+                trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+            ),
+        )
+    )
+    assert result["signatures_verified"] == 1
+    assert result["signatures_total"] == 1
+    assert result["threshold_met"] is True
+    assert result["root_authority"]["source"] == "genesis"
+    # And the artifact an independent verifier sees agrees.
+    report = json.loads(
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(estate, file=str(signed_out), expected_estate=manifest),
+        )
+    )
+    assert report["verdict"] == "VALID"
+    assert report["signatures_verified"] == 1
