@@ -71,6 +71,7 @@ VECTORS = Path(__file__).parent / "vectors" / "v6"
 
 BOOTSTRAP = BOOTSTRAP_PRINCIPAL
 WORKER = "agent:worker"
+OPERATOR = "human:operator"
 
 
 def _load_vector(name: str) -> dict[str, Any]:
@@ -1783,6 +1784,262 @@ class TestSignerAuthorityLaundering:
 # ---------------------------------------------------------------------------
 # F2 — the verifying key must be the key the statement names
 # ---------------------------------------------------------------------------
+
+
+class TestSignerAuthorityGrantorLaundering:
+    """Round-2 blocker FR2-1 Face A: the GRANTOR of a standalone acceptance is validated.
+
+    Round 1 validated the candidate acceptance but read the grantor's ``may_accept_keys``
+    straight off its payload, so a forged grantor laundered authority one indirection out.
+    The writer is the oracle that makes this decisive: ``_v6_writer._ACCEPTANCE_SCOPE_KEYS``
+    does not contain ``may_accept_keys``, and ``validate_key_acceptance_payload`` returns it
+    hardcoded ``False`` — so a standalone acceptance carrying the field is a *refusal*, and
+    the only thing that can legitimately grant it is the project genesis. These tests build a
+    two-hop authority chain (worker accepted by operator, operator's grant forged) and assert
+    the forgery is caught.
+    """
+
+    def _operator_grants_worker(
+        self,
+        keyset: Any,
+        *,
+        grantor_envelope_factory: Any,
+    ) -> tuple[_Chain, str]:
+        """genesis → [grantor for operator] → worker-acceptance(accepted_by operator).
+
+        ``grantor_envelope_factory(chain)`` returns the (envelope, signer_principal) for the
+        event the worker's acceptance will anchor on. Returns the chain and the forged
+        authority hash (the worker acceptance)."""
+        chain = _Chain(keyset, with_acceptance=False, ordinary_events=0)
+        grantor_env, grantor_signer = grantor_envelope_factory(chain)
+        grantor_hash = chain.append(grantor_env, grantor_signer)
+        worker_hash = chain.append(
+            chain.acceptance_envelope(
+                WORKER,
+                may_sign_bundles=True,
+                signed_by=OPERATOR,
+                accepted_by=OPERATOR,
+                accepted_by_anchor=grantor_hash,
+                entity_label="-by-operator",
+            ),
+            OPERATOR,
+        )
+        return chain, worker_hash
+
+    def test_a_standalone_grantor_carrying_may_accept_keys_is_refused(
+        self, keyset: Any
+    ) -> None:
+        """Face A, decisive form. The grantor is a standalone ``principal_key_accepted`` for
+        the operator with ``may_accept_keys: true`` forged into its scopes.
+
+        Pre-fix the resolver read that ``True`` and let the worker's acceptance resolve. The
+        writer's validator refuses the payload outright (``scopes_key_set``): the member is
+        not part of a standalone acceptance's closed scope set at all.
+        """
+        chain, worker_hash = self._operator_grants_worker(
+            keyset,
+            grantor_envelope_factory=lambda c: (
+                c.acceptance_envelope(
+                    OPERATOR,
+                    may_sign_bundles=False,
+                    signed_by=BOOTSTRAP,
+                    accepted_by=BOOTSTRAP,
+                    accepted_by_anchor=c.genesis_hash,
+                    may_accept_keys=True,  # the forgery: standalone scopes cannot carry this
+                    entity_label="-grantor",
+                ),
+                BOOTSTRAP,
+            ),
+        )
+        document = _forge_document(chain, authority_event_hash=worker_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("anchor_grantor" in f for f in report.findings), report.findings
+
+    def test_a_self_minted_epoch_started_grantor_is_refused(self, keyset: Any) -> None:
+        """Face A: the grantor is a self-minted ``project_cryptographic_epoch_started``.
+
+        Pre-fix a bootstrap-transition event was treated as an unconditional external
+        bootstrap at any ordinal/signer. EPOCH-RESET deletes the legacy seam, so the only
+        bootstrap anchor a clean-epoch bundle recognises is the project genesis; an
+        epoch-started grantor is refused (``grantor_not_project_genesis``).
+        """
+
+        def _epoch_started(c: _Chain) -> tuple[dict[str, Any], str]:
+            # A v6 project_cryptographic_epoch_started has fixed shape: entity kind
+            # "project", entity id == project_instance_id, entity_seq 1 (null prev entity),
+            # non-null project predecessor. Built to pass the envelope validator precisely so
+            # the REFUSAL under test comes from the resolver — grantor_not_project_genesis —
+            # and not from an ill-formed envelope that would never reach it.
+            env = c._base(OPERATOR)
+            env["entity"] = {"kind": "project", "id": c.project_instance_id}
+            env["entity_seq"] = 1
+            env["transition"] = "project_cryptographic_epoch_started"
+            env["chain"]["previous_entity_event_hash"] = None
+            env["payload"] = {
+                "bootstrap_key_acceptance": c.acceptance_payload(
+                    OPERATOR,
+                    may_sign_bundles=False,
+                    accepted_by=OPERATOR,
+                    may_accept_keys=True,
+                )
+            }
+            env["signing"]["key_binding_event_hash"] = None
+            return env, OPERATOR
+
+        chain, worker_hash = self._operator_grants_worker(
+            keyset, grantor_envelope_factory=_epoch_started
+        )
+        document = _forge_document(chain, authority_event_hash=worker_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("anchor_grantor" in f for f in report.findings), report.findings
+
+    def test_a_revoked_grantor_is_refused(self, keyset: Any) -> None:
+        """Face A: the grantor's own key is revoked. The standard chain (worker accepted by
+        BOOTSTRAP, anchored on genesis) plus a revocation of the BOOTSTRAP key.
+
+        The top-level revocation gate only refuses when the SIGNER's key is revoked; the
+        grantor-revocation check is separate, and pre-fix it did not exist, so a worker whose
+        grantor was revoked still resolved.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True, ordinary_events=0)
+        assert chain.acceptance_hash is not None
+        chain.append(
+            chain.revocation_envelope(
+                principal_id=BOOTSTRAP,
+                acceptance_event_hash=chain.genesis_hash or "",
+                revoked_by=BOOTSTRAP,
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=chain.acceptance_hash)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("anchor_grantor_revoked" in f for f in report.findings), report.findings
+
+
+class TestSignerAuthorityNewestLiveFailsClosed:
+    """Round-2 blocker FR2-1 Face B: a malformed NEWER competing anchor fails closed."""
+
+    def test_a_malformed_newer_anchor_does_not_fall_back_to_stale_authority(
+        self, keyset: Any
+    ) -> None:
+        """Acceptance A grants ``may_sign_bundles``; a newer ``principal_key_accepted`` for
+        the same key has its payload type set wrong; the statement names A.
+
+        Pre-fix the malformed newer anchor was silently skipped and the resolver fell back to
+        A, preserving stale authority. The store fails parsing rather than selecting stale
+        authority, and so must this: a competing anchor that does not validate refuses the
+        whole resolution.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True, ordinary_events=0)
+        stale = chain.acceptance_hash
+        assert stale is not None
+        malformed = chain.acceptance_envelope(
+            WORKER, may_sign_bundles=False, entity_label="-newer"
+        )
+        malformed["payload"]["type"] = "regista.not-an-acceptance"
+        chain.append(malformed, BOOTSTRAP)
+        document = _forge_document(chain, authority_event_hash=stale)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is False
+        assert report.core_ok is False
+        assert any("competing_anchor_invalid" in f for f in report.findings), report.findings
+
+    def test_a_newer_anchor_with_scopes_removed_fails_closed(self, keyset: Any) -> None:
+        """The other repro shape: scopes stripped from the newer competing anchor."""
+        chain = _Chain(keyset, may_sign_bundles=True, ordinary_events=0)
+        stale = chain.acceptance_hash
+        assert stale is not None
+        malformed = chain.acceptance_envelope(
+            WORKER, may_sign_bundles=False, entity_label="-newer2"
+        )
+        del malformed["payload"]["scopes"]
+        chain.append(malformed, BOOTSTRAP)
+        document = _forge_document(chain, authority_event_hash=stale)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.core_ok is False
+        assert any("competing_anchor_invalid" in f for f in report.findings), report.findings
+
+    def test_a_valid_newer_anchor_supersedes_and_verifies(self, keyset: Any) -> None:
+        """The counterweight: a WELL-FORMED newer anchor is honoured (newest-live), so the
+        fail-closed rule does not break legitimate re-acceptance."""
+        chain = _Chain(keyset, may_sign_bundles=False, ordinary_events=0)
+        newer = chain.append(
+            chain.acceptance_envelope(
+                WORKER, may_sign_bundles=True, entity_label="-current"
+            ),
+            BOOTSTRAP,
+        )
+        document = _forge_document(chain, authority_event_hash=newer)
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.signer_may_sign_bundles is True
+        assert report.core_ok is True, report.findings
+
+    def test_the_writer_validator_is_the_one_actually_used(self) -> None:
+        """The reuse, asserted structurally so a later refactor cannot quietly fork it. The
+        module must call ``_v6_writer.validate_key_acceptance_payload``, not a paraphrase."""
+        import inspect
+
+        from regista import _bundle_v3
+
+        src = inspect.getsource(_bundle_v3._validate_standalone_anchor)
+        assert "validate_key_acceptance_payload" in src
+        assert "from ._v6_writer import validate_key_acceptance_payload" in src
+
+
+class TestBuilderAuthorityRecordsIntegrity:
+    """Round-2 NB-b: build enforces authority_records ⊇ event_records and one project."""
+
+    def test_authority_records_must_contain_every_exported_event(
+        self, keyset: Any
+    ) -> None:
+        chain = _Chain(keyset, may_sign_bundles=True)
+        with pytest.raises(RegistaError) as exc:
+            chain.build(
+                event_records=chain.records,
+                authority_records=chain.records[:1],  # missing the rest
+            )
+        assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
+        assert "every exported event" in str(exc.value)
+
+    def test_authority_records_from_another_project_are_refused(
+        self, keyset: Any
+    ) -> None:
+        chain = _Chain(keyset, may_sign_bundles=True)
+        other = _Chain(keyset, may_sign_bundles=True)
+        with pytest.raises(RegistaError) as exc:
+            chain.build(
+                event_records=chain.records,
+                # a superset by count, but a different project's chain
+                authority_records=chain.records + other.records,
+            )
+        # Two independent project chains cannot form one ordered authority chain — each has
+        # its own null-predecessor genesis — so this is refused, and the *earliest* gate to
+        # catch it wins: derive_chain_order sees two heads (BUNDLE_CHAIN_UNORDERABLE) before
+        # the explicit same-project check (BUNDLE_SIGNER_NOT_PERMITTED) is reached. Either is
+        # a correct fail-closed; the point is that a cross-project authority_records never
+        # yields a signed statement.
+        assert exc.value.code in {
+            ErrorCode.BUNDLE_CHAIN_UNORDERABLE,
+            ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED,
+        }
 
 
 class TestSignerKeyBinding:

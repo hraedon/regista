@@ -70,7 +70,19 @@ O3
     transition, a grant whose revocation is inside the same bundle, and a superseded grant
     named while the current one denies the scope. The rules mirrored are the anchor-transition
     restriction, newest-live selection, revocation-refuses-everything, and the
-    ``accepted_by``-must-be-the-signer binding.
+    ``accepted_by``-must-be-the-signer binding — and, from round 2, the grantor of a
+    standalone acceptance is itself run through the same validator, so a forged
+    ``may_accept_keys`` cannot ride in on it. The reuse is literal: standalone anchors go
+    through the writer's ``validate_key_acceptance_payload``, not a paraphrase of it.
+
+    **What "derive" does and does not mean here (NB-a).** Phase B re-derives the authority
+    *structure* the store would have required at write time — the anchor graph, its scopes,
+    its revocations. It does **not** verify any event's own Ed25519 signature, so the
+    ``actor.principal_id`` / ``signing.key_id`` this reasoning reads are signed *fields*, not
+    authenticated identity. Event authentication — the trust that the named key is the key
+    that signed — is Phase C's axis (``BUNDLE-V3.md`` §12 A4/A5), gated on the auditor's
+    pinned root. So this establishes "the artifact's own records grant this key the scope",
+    not "a key the auditor trusts holds it"; the second is §4's, and the two compose.
 
 O4
     A broken chain means no bundle. :func:`derive_chain_order` refuses — one named error,
@@ -260,6 +272,15 @@ PROJECT_GENESIS_TRANSITION: Final[str] = "project_initialized"
 
 KEY_ACCEPTANCE_PAYLOAD_TYPE: Final[str] = "regista.key-acceptance"
 KEY_ACCEPTANCE_REVOCATION_PAYLOAD_TYPE: Final[str] = "regista.key-acceptance-revocation"
+
+#: The bootstrap acceptance carries FIVE scope members — the four a standalone acceptance
+#: carries plus ``may_accept_keys`` (``RECONCILIATION.md`` Resolution 1). This is the one
+#: place ``may_accept_keys`` legitimately appears, which is why a standalone that carries it
+#: is a forgery the writer's closed ``_ACCEPTANCE_SCOPE_KEYS`` set refuses.
+_BOOTSTRAP_SCOPE_KEYS: Final[frozenset[str]] = frozenset(
+    {"entity_kinds", "transitions", "may_accept_keys", "may_sign_checkpoints", "may_sign_bundles"}
+)
+
 
 # ---------------------------------------------------------------------------
 # §3.2 — statement schema, as amended
@@ -1678,103 +1699,232 @@ class _CoreAccumulator:
 
 @dataclass(frozen=True)
 class SigningAuthority:
-    """A resolved key-binding anchor: the event that grants a key its project scopes."""
+    """A resolved, VALIDATED key-binding anchor: the event that grants a key its scopes.
+
+    "Validated" is the whole of what round 2 changed. An earlier cut returned an anchor as
+    soon as a payload *shaped* like an acceptance named the key, and validated the grantor of
+    a standalone acceptance only for ``may_accept_keys`` — reading it straight off the
+    payload. Both reviewers found the same hole with the writer as an oracle: a standalone
+    acceptance's ``scopes`` object has a CLOSED key set (``_v6_writer._ACCEPTANCE_SCOPE_KEYS``)
+    that does not contain ``may_accept_keys`` at all, and the writer hardcodes it ``False``
+    for every standalone anchor. So in honest material the grantor rule was decoration, and
+    in hostile material a forged ``may_accept_keys: true`` on a standalone acceptance was the
+    laundering vector. This module now runs every anchor — candidate AND grantor — through
+    the writer's own ``validate_key_acceptance_payload``, which is where that closed set
+    lives, so an anchor that reaches this dataclass has passed the same gate the store
+    applies at write time.
+    """
 
     event_hash: str
-    #: ``bootstrap`` for the acceptance embedded in a genesis/epoch event, ``acceptance``
-    #: for a standalone ``principal_key_accepted``. Mirrors ``KeyBindingAnchor.kind``.
+    #: ``bootstrap`` for the acceptance embedded in the project genesis, ``acceptance`` for a
+    #: standalone ``principal_key_accepted``. Mirrors ``KeyBindingAnchor.kind``.
     kind: str
     scope_ordinal: int
+    principal_id: str
+    key_id: str
+    may_accept_keys: bool
     may_sign_bundles: bool
 
 
-def _acceptance_object(member: OrderedMember, *, principal_id: str, key_id: str) -> tuple[
-    Mapping[str, Any] | None, str, str | None
-]:
-    """The acceptance object *member* grants to ``(principal_id, key_id)``, if it is one.
+class _AnchorRefusedError(Exception):
+    """A candidate or grantor anchor failed validation. Carries the named reason.
 
-    Returns ``(acceptance, kind, refusal)``. A non-``None`` refusal is a NAMED reason this
-    event is not an anchor for that key; it is returned rather than raised because a
-    bundle legitimately contains many events that are not anchors, and only a candidate
-    that *claims* to be one is worth reporting on.
-
-    The rule that does the most work is the first: an anchor is decided by the event's
-    **transition**, never by its payload type. ``_v6_writer._ANCHOR_TRANSITIONS`` is a
-    closed set of three, and reading the payload type instead is what let a
-    ``regista.key-acceptance`` object on transition ``updated`` grant bundle-signing
-    authority to the key that signed it.
+    Raised rather than returned so the two validators compose without every caller threading
+    an ``Optional`` refusal — the resolver catches it at exactly the two places a refusal
+    changes the verdict (a competing candidate: fail closed; a grantor: reject that
+    candidate).
     """
 
-    transition = member.transition
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _anchor_subject(member: OrderedMember) -> tuple[str | None, str | None]:
+    """Best-effort ``(principal_id, key_id)`` an anchor-transition event claims to bind.
+
+    Used only to decide whether an event is a *competing* anchor for the key under
+    resolution — cheaply, before full validation. ``(None, None)`` means the subject cannot
+    be read, which for a ``principal_key_accepted`` event is itself disqualifying (a real
+    store never wrote one), so the caller treats an unreadable subject as competing and lets
+    full validation fail it closed.
+    """
+
     payload = member.payload
-    if transition not in ANCHOR_TRANSITIONS or payload is None:
-        return None, "", None
-
-    if transition == ACCEPTANCE_TRANSITION:
-        acceptance: Mapping[str, Any] | None = payload
-        kind = "acceptance"
-        if payload.get("type") != KEY_ACCEPTANCE_PAYLOAD_TYPE:
-            acceptance = None
+    if payload is None:
+        return None, None
+    if member.transition == ACCEPTANCE_TRANSITION:
+        obj: Any = payload
     else:
-        embedded = payload.get("bootstrap_key_acceptance")
-        acceptance = embedded if isinstance(embedded, Mapping) else None
-        kind = "bootstrap"
-    if acceptance is None:
-        return None, kind, None
-    if acceptance.get("principal_id") != principal_id or acceptance.get("key_id") != key_id:
-        return None, kind, None
-    if not isinstance(acceptance.get("scopes"), Mapping):
-        return None, kind, (
-            f"anchor_scopes_missing: the acceptance at {member.event_hash_text} names "
-            f"key {key_id!r} but carries no scopes object, so it grants nothing"
-        )
+        obj = payload.get("bootstrap_key_acceptance")
+    if not isinstance(obj, Mapping):
+        return None, None
+    principal = obj.get("principal_id")
+    key = obj.get("key_id")
+    return (
+        principal if isinstance(principal, str) else None,
+        key if isinstance(key, str) else None,
+    )
 
-    if kind == "bootstrap":
-        # A bootstrap acceptance's authority is EXTERNAL by construction — the trust log —
-        # so there is no in-project authority to check. RECONCILIATION.md Resolution 1 is
-        # explicit that this is not a bootstrap unless something outside the artifact pins
-        # it, and that pin is the auditor's (§4, Phase C). What is checkable here is that
-        # the acceptance is for the key that signed the genesis event, which is what makes
-        # it a *self-*bootstrap rather than an arbitrary grant riding along in the payload.
-        if (
-            member.actor_principal_id != principal_id
-            or member.signing_key_id != key_id
-        ):
-            return None, kind, (
-                f"bootstrap_anchor_is_not_the_genesis_signer: the acceptance embedded at "
-                f"{member.event_hash_text} grants {principal_id!r}/{key_id!r}, but that "
-                f"event is signed by {member.actor_principal_id!r}/"
-                f"{member.signing_key_id!r}. A genesis event bootstraps its OWN signing "
-                "key; a grant to some other key riding in its payload has no authority "
-                "behind it"
-            )
-        return acceptance, kind, None
 
-    # A standalone acceptance's authority IS in the project, so all of it is checkable.
-    accepted_by = acceptance.get("accepted_by")
-    if not isinstance(accepted_by, Mapping):
-        return None, kind, (
-            f"anchor_accepted_by_missing: the acceptance at {member.event_hash_text} names "
-            "no accepted_by block, so nothing records who exercised the authority"
+def _validate_bootstrap_anchor(member: OrderedMember) -> SigningAuthority:
+    """Validate the bootstrap acceptance embedded in a project genesis. Raise on any defect.
+
+    A clean-epoch bundle has exactly ONE bootstrap anchor — the project genesis
+    (``project_initialized``) — and F3 already requires the ``complete-store`` head to be it.
+    ``project_cryptographic_epoch_started`` is the legacy-cutover spelling, and
+    ``EPOCH-RESET.md`` deletes the legacy seam ("one epoch, because there is one
+    construction"): it cannot legitimately appear, and the v6 envelope validator already
+    forbids it from heading a chain. So this refuses it outright rather than importing the
+    ordinal/count/signer constraints the seam needed — stricter, and correct for the one
+    epoch that exists.
+
+    The structural checks mirror ``_genesis._validate_bootstrap_acceptance`` (the keyless
+    subset — the key-material comparison there authenticates the signer, which is Phase C's
+    event-signature axis, not this function's): the closed five-member ``scopes`` set,
+    ``may_accept_keys``/``may_sign_checkpoints`` both true, the fingerprint matching the
+    public-key bytes, and the acceptance naming the event's own signer. The last is what
+    makes it a *self*-bootstrap — the project's connection to the trust log — rather than an
+    arbitrary grant riding in the payload.
+    """
+
+    if member.transition != PROJECT_GENESIS_TRANSITION:
+        raise _AnchorRefusedError(
+            f"grantor_not_project_genesis: {member.event_hash_text} has transition "
+            f"{member.transition!r}, not {PROJECT_GENESIS_TRANSITION!r}. In the one epoch "
+            "the estate has (EPOCH-RESET.md), the only bootstrap anchor is the project "
+            "genesis; project_cryptographic_epoch_started is a legacy-seam event that "
+            "cannot legitimately appear"
         )
-    by_principal = accepted_by.get("principal_id")
-    by_key = accepted_by.get("key_id")
-    if by_principal == principal_id and by_key == key_id:
-        return None, kind, (
-            f"anchor_self_authorised: the acceptance at {member.event_hash_text} is "
-            f"accepted_by the very key it accepts. RECONCILIATION.md Resolution 1: "
-            "\"a key may not accept itself: ordinary acceptance runs with no exceptions "
-            'and no self-authorisation anywhere"'
+    payload = member.payload
+    acceptance = payload.get("bootstrap_key_acceptance") if payload is not None else None
+    if not isinstance(acceptance, Mapping):
+        raise _AnchorRefusedError(
+            f"bootstrap_acceptance_missing: {member.event_hash_text} is a project genesis "
+            "with no bootstrap_key_acceptance object to anchor on"
         )
-    if by_principal != member.actor_principal_id or by_key != member.signing_key_id:
-        return None, kind, (
+    principal = acceptance.get("principal_id")
+    key = acceptance.get("key_id")
+    if not isinstance(principal, str) or not isinstance(key, str):
+        raise _AnchorRefusedError(
+            f"bootstrap_acceptance_names_no_key: {member.event_hash_text} carries a "
+            "bootstrap_key_acceptance with no principal_id/key_id"
+        )
+    # Self-bootstrap: the genesis bootstraps the key that signed it.
+    if member.actor_principal_id != principal or member.signing_key_id != key:
+        raise _AnchorRefusedError(
+            f"bootstrap_anchor_is_not_the_genesis_signer: the acceptance embedded at "
+            f"{member.event_hash_text} grants {principal!r}/{key!r}, but the event is "
+            f"signed by {member.actor_principal_id!r}/{member.signing_key_id!r}. A genesis "
+            "bootstraps its OWN key; a grant to another key riding in its payload has no "
+            "authority behind it"
+        )
+    scopes = acceptance.get("scopes")
+    # The bootstrap scopes object has FIVE members — the four a standalone acceptance carries
+    # plus may_accept_keys (RECONCILIATION.md Resolution 1). This is the one place
+    # may_accept_keys legitimately lives.
+    if not isinstance(scopes, Mapping) or set(scopes) != _BOOTSTRAP_SCOPE_KEYS:
+        raise _AnchorRefusedError(
+            f"bootstrap_scopes_shape: the bootstrap acceptance at {member.event_hash_text} "
+            f"must carry exactly {sorted(_BOOTSTRAP_SCOPE_KEYS)} in scopes"
+        )
+    if scopes.get("may_accept_keys") is not True or scopes.get("may_sign_checkpoints") is not True:
+        raise _AnchorRefusedError(
+            f"bootstrap_scopes_incomplete: the bootstrap acceptance at "
+            f"{member.event_hash_text} must permit may_accept_keys and may_sign_checkpoints "
+            "(a genesis that cannot accept keys can bootstrap nothing)"
+        )
+    if not isinstance(scopes.get("may_sign_bundles"), bool):
+        raise _AnchorRefusedError(
+            f"bootstrap_may_sign_bundles_not_bool: {member.event_hash_text}"
+        )
+    fingerprint = acceptance.get("fingerprint")
+    public_key = acceptance.get("public_key")
+    if not (isinstance(fingerprint, str) and isinstance(public_key, str)):
+        raise _AnchorRefusedError(
+            f"bootstrap_key_material_missing: {member.event_hash_text}"
+        )
+    try:
+        raw = base64.b64decode(public_key, validate=True)
+    except (ValueError, binascii.Error):
+        raw = b""
+    if len(raw) != 32 or fingerprint != ed25519_fingerprint(raw):
+        raise _AnchorRefusedError(
+            f"bootstrap_fingerprint_mismatch: the bootstrap acceptance at "
+            f"{member.event_hash_text} carries a fingerprint that is not the SHA-256 of the "
+            "public_key bytes beside it (§5.8 makes that disagreement invalid)"
+        )
+    return SigningAuthority(
+        event_hash=member.event_hash_text,
+        kind="bootstrap",
+        scope_ordinal=member.scope_ordinal,
+        principal_id=principal,
+        key_id=key,
+        may_accept_keys=True,
+        may_sign_bundles=bool(scopes["may_sign_bundles"]),
+    )
+
+
+def _validate_standalone_anchor(member: OrderedMember) -> SigningAuthority:
+    """Validate a standalone ``principal_key_accepted`` through the WRITER'S validator.
+
+    ``validate_key_acceptance_payload`` is imported from ``_v6_writer`` rather than
+    re-implemented, which is the whole point of round 2: it enforces the closed
+    ``_ACCEPTANCE_SCOPE_KEYS`` set (so a forged ``may_accept_keys`` member is a named
+    refusal, not a grant), the ``fingerprint``==SHA-256(``public_key``) rule, the
+    self-authorisation ban, and the full §5.8 shape — and it RETURNS scopes with
+    ``may_accept_keys`` hardcoded ``False``. So a standalone anchor can never, by
+    construction, be a valid grantor, which is exactly the store's model.
+
+    Added on top of the payload validator, because they are properties of the *event* rather
+    than the payload: ``accepted_by`` must name the event's own signer (the writer's
+    ``_require_authority_matches_signer``).
+    """
+
+    from ._v6_writer import validate_key_acceptance_payload
+
+    payload = member.payload
+    try:
+        scopes = validate_key_acceptance_payload(payload)
+    except RegistaError as exc:
+        reason = (exc.detail or {}).get("reason", "invalid") if exc.detail else "invalid"
+        raise _AnchorRefusedError(
+            f"acceptance_payload_invalid[{reason}]: the standalone acceptance at "
+            f"{member.event_hash_text} does not pass the writer's own "
+            f"validate_key_acceptance_payload: {exc.message}"
+        ) from exc
+    assert isinstance(payload, Mapping)
+    accepted_by = payload["accepted_by"]
+    assert isinstance(accepted_by, Mapping)
+    if (
+        accepted_by.get("principal_id") != member.actor_principal_id
+        or accepted_by.get("key_id") != member.signing_key_id
+    ):
+        raise _AnchorRefusedError(
             f"anchor_accepted_by_is_not_the_signer: the acceptance at "
-            f"{member.event_hash_text} says {by_principal!r}/{by_key!r} exercised the "
-            f"authority, but the event is signed by {member.actor_principal_id!r}/"
+            f"{member.event_hash_text} says "
+            f"{accepted_by.get('principal_id')!r}/{accepted_by.get('key_id')!r} exercised "
+            f"the authority, but the event is signed by {member.actor_principal_id!r}/"
             f"{member.signing_key_id!r}. The block records who exercised the authority and "
-            "must BE the signer, or it asserts an authority that never touched the event"
+            "must BE the signer (_v6_writer._require_authority_matches_signer)"
         )
-    return acceptance, kind, None
+    return SigningAuthority(
+        event_hash=member.event_hash_text,
+        kind="acceptance",
+        scope_ordinal=member.scope_ordinal,
+        principal_id=str(payload["principal_id"]),
+        key_id=str(payload["key_id"]),
+        may_accept_keys=scopes.may_accept_keys,  # always False — the writer guarantees it
+        may_sign_bundles=scopes.may_sign_bundles,
+    )
+
+
+def _validate_anchor(member: OrderedMember) -> SigningAuthority:
+    """Validate any anchor-transition event to a :class:`SigningAuthority`, or raise."""
+
+    if member.transition == ACCEPTANCE_TRANSITION:
+        return _validate_standalone_anchor(member)
+    return _validate_bootstrap_anchor(member)
 
 
 def resolve_bundle_signing_authority(
@@ -1785,63 +1935,51 @@ def resolve_bundle_signing_authority(
 ) -> tuple[SigningAuthority | None, tuple[str, ...]]:
     """Resolve the anchor that currently grants ``(principal_id, key_id)`` its scopes.
 
-    The offline counterpart of ``_v6_writer.resolve_key_binding_anchor``, with the same
-    three rules and for the same reasons:
+    The offline counterpart of ``_v6_writer.resolve_key_binding_anchor``, faithful to it
+    because it reuses the writer's own validators rather than paraphrasing them. Four rules:
 
-    1. **Anchor transitions only.** An acceptance-shaped payload on an ordinary transition
-       is not an acceptance.
-    2. **Newest live wins**, and newest means furthest along the *chain*, which is what
-       ``ordered`` already is. "The later acceptance is the one carrying current scopes";
-       honouring an older grant reads the operator's superseded word as current.
-    3. **Any revocation for this principal/key refuses the whole resolution** — not just
-       the revoked anchor. The store's comment says why: "Falling back turns a revocation
-       into a *privilege escalation*: the operator's most recent word about this key was
-       'no longer usable', and what remains is either an older acceptance (whose scopes the
-       newer one superseded) or the bootstrap anchor (typically the BROADER scope)."
+    1. **Any revocation for this principal/key refuses the whole resolution** — not just the
+       revoked anchor. "Falling back turns a revocation into a *privilege escalation*." A
+       revocation-transition event whose payload cannot be read AS a revocation fails closed
+       too: skipping it "would silently re-admit the acceptance it revoked".
+    2. **Every anchor is validated** (candidate and grantor) through
+       :func:`_validate_anchor`, i.e. through the writer's ``validate_key_acceptance_payload``
+       for standalones. A standalone therefore has ``may_accept_keys == False`` always, which
+       is what forces a grantor to be the project genesis.
+    3. **Newest live wins, and fails closed on a malformed competitor.** A
+       ``principal_key_accepted`` event that competes for this key (same subject, or a subject
+       too malformed to read) but does not validate refuses the whole resolution — it does not
+       fall back to an older valid anchor, because that would preserve authority the operator's
+       newer word contradicts.
+    4. **A standalone's grantor must be a valid, preceding, un-revoked bootstrap anchor that
+       accepted the standalone's signer.** Because a standalone can never carry
+       ``may_accept_keys``, the "grantor grants may_accept_keys" check is what pins the grantor
+       to the genesis.
 
-    Returns ``(authority, refusals)``. ``authority`` is ``None`` whenever the material
-    cannot establish one, and the refusals name why. There is no
-    acceptance-shaped-implies-authorised default: absence of an anchor is absence of
-    authority, and for a bounded scope the caller reports it as outside scope rather than
-    as satisfaction.
+    Returns ``(authority, refusals)``; ``authority`` is ``None`` whenever the material cannot
+    establish one. There is no acceptance-shaped-implies-authorised default.
 
-    **What this deliberately does not do**: it does not walk the acceptance chain of
-    authority back to the root. A standalone acceptance must be signed by the principal its
-    own ``accepted_by`` block names, and that block's ``key_binding_event_hash`` must resolve
-    to an anchor in the material granting ``may_accept_keys`` — one level, checked below.
-    Beyond that, whether the *granting* key was itself legitimately enrolled is a trust-log
-    question (``TRUST-DOMAIN.md`` §5.8) and therefore §4's, not this function's.
+    **What this deliberately does not do** (NB-a, and stated so the CHANGELOG and docstrings
+    do not overclaim): it does not verify any event's OWN signature. ``actor.principal_id`` and
+    ``signing.key_id`` are read as signed *structure*, not authenticated identity — event
+    authentication is Phase C's axis (``BUNDLE-V3.md`` §12 A4/A5). So this re-derives the
+    authority STRUCTURE the store would have required at write time; the trust that the named
+    keys are the keys that signed is the auditor's pinned root, resolved in §4.
     """
 
     refusals: list[str] = []
 
-    # Rule 3 first: a revocation anywhere in the material kills the resolution, so there is
-    # no point selecting an anchor to then discard.
+    # Rule 1 — revocations first.
+    revoked_pairs: set[tuple[str, str]] = set()
     for member in ordered:
         if member.transition != ACCEPTANCE_REVOCATION_TRANSITION:
             continue
         payload = member.payload
-        if payload is None:
-            # A revocation whose payload cannot be read must not be skipped: skipping it
-            # would silently re-admit the acceptance it revoked (the store raises here for
-            # the same reason).
-            refusals.append(
-                f"revocation_unreadable: the event at {member.event_hash_text} is a "
-                "principal_key_acceptance_revoked with no readable payload, and a "
-                "revocation that cannot be evaluated cannot be ignored"
-            )
-            return None, tuple(refusals)
-        # A revocation-transition event whose payload cannot be read AS a revocation must
-        # not be skipped, and this is the subtle half of the rule: skipping it would let an
-        # attacker neutralise a revocation by editing its payload type or dropping the
-        # principal it names. The store raises for the same reason — "a revocation that
-        # cannot be parsed cannot be skipped, because skipping it would silently re-admit
-        # the acceptance it revoked". So anything unreadable here refuses the resolution
-        # rather than falling through to the grant.
-        target_principal = payload.get("principal_id")
-        target_key = payload.get("key_id")
+        target_principal = payload.get("principal_id") if payload is not None else None
+        target_key = payload.get("key_id") if payload is not None else None
         if (
-            payload.get("type") != KEY_ACCEPTANCE_REVOCATION_PAYLOAD_TYPE
+            payload is None
+            or payload.get("type") != KEY_ACCEPTANCE_REVOCATION_PAYLOAD_TYPE
             or not isinstance(target_principal, str)
             or not isinstance(target_key, str)
         ):
@@ -1850,131 +1988,133 @@ def resolve_bundle_signing_authority(
                 f"transition {ACCEPTANCE_REVOCATION_TRANSITION!r} but its payload does not "
                 "name a revoked principal and key, so it cannot be determined whether it "
                 "revokes this signer's authority. A revocation that cannot be evaluated is "
-                "not a revocation of nothing"
+                "not a revocation of nothing (the store raises here for the same reason)"
             )
             return None, tuple(refusals)
-        if target_principal != principal_id or target_key != key_id:
-            continue
-        target = payload.get("acceptance_event_hash")
+        revoked_pairs.add((target_principal, target_key))
+
+    if (principal_id, key_id) in revoked_pairs:
         refusals.append(
-            f"signer_authority_revoked: the acceptance {target!r} for {principal_id!r}/"
-            f"{key_id!r} is revoked at {member.event_hash_text}, which is inside this "
-            "bundle. A revocation is not superseded by an older acceptance "
-            "(TRUST-DOMAIN.md §5.8/§5.10 step 4), so no anchor for this key may be used"
+            f"signer_authority_revoked: an acceptance for {principal_id!r}/{key_id!r} is "
+            f"revoked inside this bundle. A revocation is not superseded by an older "
+            "acceptance (TRUST-DOMAIN.md §5.8/§5.10 step 4), so no anchor for this key may "
+            "be used"
         )
         return None, tuple(refusals)
 
-    # Index every anchor in the material, so `accepted_by.key_binding_event_hash` can be
-    # resolved without a second pass per candidate.
-    anchors_by_hash: dict[str, tuple[OrderedMember, Mapping[str, Any], str]] = {}
+    # Grantor lookup needs every anchor addressable by hash, validated on demand and cached.
+    by_hash: dict[str, OrderedMember] = {m.event_hash_text: m for m in ordered}
+    validated_cache: dict[str, SigningAuthority | _AnchorRefusedError] = {}
+
+    def validated(hash_text: str) -> SigningAuthority | _AnchorRefusedError:
+        if hash_text not in validated_cache:
+            member = by_hash[hash_text]
+            try:
+                validated_cache[hash_text] = _validate_anchor(member)
+            except _AnchorRefusedError as exc:
+                validated_cache[hash_text] = exc
+        return validated_cache[hash_text]
+
+    # Rule 3 — collect the live candidates for (principal, key), failing closed on a
+    # malformed competitor.
+    candidates: list[SigningAuthority] = []
     for member in ordered:
         if member.transition not in ANCHOR_TRANSITIONS:
             continue
-        payload = member.payload
-        if payload is None:
+        subject = _anchor_subject(member)
+        competing = subject == (principal_id, key_id) or subject == (None, None)
+        if not competing:
             continue
-        if member.transition == ACCEPTANCE_TRANSITION:
-            obj = payload if payload.get("type") == KEY_ACCEPTANCE_PAYLOAD_TYPE else None
-            kind = "acceptance"
-        else:
-            embedded = payload.get("bootstrap_key_acceptance")
-            obj = embedded if isinstance(embedded, Mapping) else None
-            kind = "bootstrap"
-        if obj is not None:
-            anchors_by_hash[member.event_hash_text] = (member, obj, kind)
-
-    bootstrap: SigningAuthority | None = None
-    acceptance: SigningAuthority | None = None
-    for member in ordered:
-        obj, kind, refusal = _acceptance_object(
-            member, principal_id=principal_id, key_id=key_id
-        )
-        if refusal is not None:
-            refusals.append(refusal)
-            continue
-        if obj is None:
-            continue
-        scopes = obj["scopes"]
-        assert isinstance(scopes, Mapping)
-
-        if kind == "acceptance":
-            accepted_by = obj["accepted_by"]
-            assert isinstance(accepted_by, Mapping)
-            granting_hash = accepted_by.get("key_binding_event_hash")
-            granting = (
-                anchors_by_hash.get(granting_hash)
-                if isinstance(granting_hash, str)
-                else None
+        result = validated(member.event_hash_text)
+        if isinstance(result, _AnchorRefusedError):
+            # A newer (or any) competing anchor that does not validate fails the whole
+            # resolution — never a fall-back to older authority.
+            refusals.append(
+                f"competing_anchor_invalid: {member.event_hash_text} is an anchor "
+                f"transition competing for {principal_id!r}/{key_id!r} but does not "
+                f"validate ({result.reason}); newest-live fails closed rather than falling "
+                "back to an older anchor"
             )
-            if granting is None:
+            return None, tuple(refusals)
+        if result.principal_id != principal_id or result.key_id != key_id:
+            # Subject was unreadable pre-validation but resolved to another key; not a
+            # competitor after all.
+            continue
+
+        # Rule 4 — a standalone's grantor must be a valid, preceding, un-revoked bootstrap
+        # anchor that accepted this standalone's signer.
+        if result.kind == "acceptance":
+            member_payload = member.payload
+            assert isinstance(member_payload, Mapping)
+            accepted_by = member_payload["accepted_by"]
+            assert isinstance(accepted_by, Mapping)
+            grantor_hash = accepted_by.get("key_binding_event_hash")
+            if not isinstance(grantor_hash, str) or grantor_hash not in by_hash:
                 refusals.append(
-                    f"anchor_granting_authority_outside_scope: the acceptance at "
-                    f"{member.event_hash_text} anchors on {granting_hash!r}, which is not "
-                    "an anchor in the presented material — so whether the accepting key "
-                    "held may_accept_keys cannot be established here"
+                    f"anchor_grantor_outside_scope: the acceptance at "
+                    f"{member.event_hash_text} anchors on {grantor_hash!r}, which is not an "
+                    "event in the presented material, so whether the accepting key held "
+                    "may_accept_keys cannot be established here"
                 )
                 continue
-            granting_member, granting_obj, _granting_kind = granting
-            granting_scopes = granting_obj.get("scopes")
-            # The granting anchor must grant to the key that SIGNED this acceptance, not
-            # merely be an anchor that happens to hold may_accept_keys. Without this,
-            # any principal could anchor its own acceptance on someone else's
-            # may_accept_keys grant and inherit an authority it was never given — the same
-            # class of forgery as `accepted_by` naming a principal that did not sign, one
-            # indirection further out.
+            grantor = validated(grantor_hash)
+            if isinstance(grantor, _AnchorRefusedError):
+                refusals.append(
+                    f"anchor_grantor_invalid: the acceptance at {member.event_hash_text} "
+                    f"anchors on {grantor_hash}, which does not validate as an anchor "
+                    f"({grantor.reason})"
+                )
+                continue
+            if (grantor.principal_id, grantor.key_id) in revoked_pairs:
+                refusals.append(
+                    f"anchor_grantor_revoked: the acceptance at {member.event_hash_text} "
+                    f"anchors on {grantor_hash}, whose key "
+                    f"{grantor.principal_id!r}/{grantor.key_id!r} has been revoked"
+                )
+                continue
             if (
-                granting_obj.get("principal_id") != accepted_by.get("principal_id")
-                or granting_obj.get("key_id") != accepted_by.get("key_id")
+                grantor.principal_id != accepted_by.get("principal_id")
+                or grantor.key_id != accepted_by.get("key_id")
             ):
                 refusals.append(
-                    f"anchor_granting_authority_is_for_another_key: the acceptance at "
-                    f"{member.event_hash_text} anchors on "
-                    f"{granting_member.event_hash_text}, which grants scopes to "
-                    f"{granting_obj.get('principal_id')!r}/{granting_obj.get('key_id')!r} "
-                    f"— not to {accepted_by.get('principal_id')!r}/"
-                    f"{accepted_by.get('key_id')!r}, the pair that signed the acceptance. "
-                    "An anchor authorises the key it names and no other"
+                    f"anchor_grantor_is_for_another_key: the acceptance at "
+                    f"{member.event_hash_text} anchors on {grantor_hash}, which grants to "
+                    f"{grantor.principal_id!r}/{grantor.key_id!r} — not to the "
+                    f"{accepted_by.get('principal_id')!r}/{accepted_by.get('key_id')!r} that "
+                    "signed the acceptance"
                 )
                 continue
-            # And it must PRECEDE it. `_v6_writer` gets this for free by walking backward
-            # from the chain head; here the ordinals are the chain order, so it is a
-            # comparison. An anchor authorised by a later event is a loop in the authority
-            # graph, not a chain of authority.
-            if granting_member.scope_ordinal >= member.scope_ordinal:
+            if grantor.scope_ordinal >= member.scope_ordinal:
                 refusals.append(
-                    f"anchor_granting_authority_not_preceding: the acceptance at "
+                    f"anchor_grantor_not_preceding: the acceptance at "
                     f"{member.event_hash_text} (scope_ordinal {member.scope_ordinal}) "
-                    f"anchors on {granting_member.event_hash_text} (scope_ordinal "
-                    f"{granting_member.scope_ordinal}), which does not precede it. "
-                    "Authority flows forward along the chain"
+                    f"anchors on {grantor_hash} (scope_ordinal {grantor.scope_ordinal}), "
+                    "which does not precede it. Authority flows forward along the chain"
                 )
                 continue
-            if not (
-                isinstance(granting_scopes, Mapping)
-                and granting_scopes.get("may_accept_keys") is True
-            ):
+            if not grantor.may_accept_keys:
+                # The decisive rule, and the one the writer oracle makes airtight: a
+                # standalone grantor has may_accept_keys == False by construction, so this
+                # forces the grantor to be the project genesis.
                 refusals.append(
-                    f"anchor_granting_authority_may_not_accept: the acceptance at "
-                    f"{member.event_hash_text} anchors on "
-                    f"{granting_member.event_hash_text}, whose acceptance does not grant "
-                    "may_accept_keys, so that key may not accept another "
-                    "(TRUST-DOMAIN.md §5.8)"
+                    f"anchor_grantor_may_not_accept: the acceptance at "
+                    f"{member.event_hash_text} anchors on {grantor_hash}, whose acceptance "
+                    "does not grant may_accept_keys, so that key may not accept another "
+                    "(TRUST-DOMAIN.md §5.8). Only the project genesis grants may_accept_keys"
                 )
                 continue
 
-        resolved = SigningAuthority(
-            event_hash=member.event_hash_text,
-            kind=kind,
-            scope_ordinal=member.scope_ordinal,
-            may_sign_bundles=scopes.get("may_sign_bundles") is True,
-        )
-        # Chain order, so a later candidate is strictly newer. Rule 2.
-        if kind == "acceptance":
-            acceptance = resolved
-        else:
-            bootstrap = resolved
+        candidates.append(result)
 
-    return (acceptance or bootstrap), tuple(refusals)
+    # Rule 2/precedence — newest live standalone wins, else the bootstrap.
+    chosen_acceptance: SigningAuthority | None = None
+    chosen_bootstrap: SigningAuthority | None = None
+    for anchor in candidates:  # ascending scope_ordinal
+        if anchor.kind == "acceptance":
+            chosen_acceptance = anchor
+        else:
+            chosen_bootstrap = anchor
+    return (chosen_acceptance or chosen_bootstrap), tuple(refusals)
 
 
 def verify_bundle_v3_core(
@@ -2421,14 +2561,39 @@ def build_bundle_v3_document(
     # over the whole chain and the statement names the anchor it found. A verifier holding
     # only the chunk then reports `signer_authority_outside_scope` as a note, which is the
     # honest "not checkable here" rather than either a pass or a defect.
-    authority_material = (
-        ordered
-        if authority_records is None
-        else derive_chain_order(
+    if authority_records is None:
+        authority_material = ordered
+    else:
+        authority_material = derive_chain_order(
             [parse_event_member(env, sig) for env, sig in authority_records],
             preceding_event_hash=None,
         )
-    )
+        # NB-b: authority_records is a SUPERSET of the exported window, and both facts must
+        # hold or the resolved authority_event_hash describes a chain the artifact does not.
+        # It must (a) contain every exported event and (b) be the SAME project chain — a
+        # cross-project authority hash would otherwise survive into the signed statement and,
+        # for a contiguous-range window, reach a verifier as only a `note`. Reviewer A
+        # confirmed authority_records cannot alter the membership root or sections (those come
+        # from event_records), so this is purely about the authority field's integrity.
+        authority_hashes = {m.event_hash_text for m in authority_material}
+        missing = [m.event_hash_text for m in ordered if m.event_hash_text not in authority_hashes]
+        if missing:
+            raise _signer_refusal(
+                "authority_records must contain every exported event: "
+                f"{len(missing)} exported event(s) are absent from it, so an authority "
+                "resolved over it describes a different chain than the one being signed",
+                missing=missing[:5],
+            )
+        for member in authority_material:
+            if str(member.envelope.get("project_instance_id")) != project_instance_id:
+                raise _signer_refusal(
+                    "authority_records spans more than one project: "
+                    f"{member.event_hash_text} names project_instance_id "
+                    f"{member.envelope.get('project_instance_id')!r}, the export is "
+                    f"{project_instance_id!r}. Signing authority is resolved within one "
+                    "project chain, never across a domain",
+                    event_hash=member.event_hash_text,
+                )
     authority, authority_refusals = resolve_bundle_signing_authority(
         authority_material, principal_id=signer.principal_id, key_id=signer.key_id
     )

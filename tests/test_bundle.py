@@ -756,6 +756,50 @@ class TestOfflineSignatureVerification:
 class TestExportBounds:
     """WI-240: bounded, capped, self-verifying export."""
 
+    def test_the_grantor_of_a_real_standalone_acceptance_validates(
+        self, bundle_store: Any
+    ) -> None:
+        """The round-2 grantor rule against GENUINE writer-produced events, not hand-built
+        ones. ``open_v6_epoch`` accepts the worker with a standalone ``principal_key_accepted``
+        signed by the genesis principal and anchored on the genesis event — the exact
+        grantor path round 2 hardened. The offline resolver must validate that grantor (the
+        project genesis) and resolve the worker's ``may_sign_bundles``.
+
+        This is the faithful-mirror claim under test: the resolver reuses
+        ``_v6_writer.validate_key_acceptance_payload``, so a real acceptance the writer
+        produced must pass the very validator the writer applied when it wrote it.
+        """
+        from regista._bundle_v3 import (
+            SigningAuthority,
+            derive_chain_order,
+            parse_event_member,
+            resolve_bundle_signing_authority,
+        )
+
+        with bundle_store.store._mgr.transaction() as conn:
+            rows = conn.execute(
+                "SELECT canonical_envelope, signature FROM events ORDER BY global_seq"
+            ).fetchall()
+        ordered = derive_chain_order(
+            [
+                parse_event_member(bytes(r["canonical_envelope"]), bytes(r["signature"]))
+                for r in rows
+            ],
+            preceding_event_hash=None,
+        )
+        authority, refusals = resolve_bundle_signing_authority(
+            ordered,
+            principal_id=BUNDLE_SIGNER,
+            key_id=bundle_store.keyset.key_for(BUNDLE_SIGNER).key_id,
+        )
+        assert isinstance(authority, SigningAuthority), refusals
+        assert authority.kind == "acceptance", (
+            "the worker holds a standalone acceptance whose grantor is the genesis"
+        )
+        assert authority.may_sign_bundles is True
+        # No grantor refusal: the genesis grantor validated as a real bootstrap anchor.
+        assert not any("grantor" in r for r in refusals), refusals
+
     def test_a_revoked_signing_authority_refuses_at_both_gates(
         self, tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
     ) -> None:
@@ -865,10 +909,14 @@ class TestExportBounds:
             assert authority is None, (
                 "the revocation is in the material; no anchor for this key may be used"
             )
+            # The round-2 resolver keys the revocation on (principal, key) — exactly as the
+            # store's resolve_key_binding_anchor does ("a revocation ANYWHERE for this
+            # principal/key refuses") — so the refusal names the principal and key rather
+            # than one acceptance hash. `acceptance_hash` is retained above only to drive the
+            # revocation event; the invariant under test is that ANY revocation for the pair
+            # refuses the whole resolution.
             assert any("signer_authority_revoked" in r for r in refusals), refusals
-            assert acceptance_hash in " ".join(refusals), (
-                "the refusal must name the acceptance that was revoked"
-            )
+            assert BUNDLE_SIGNER in " ".join(refusals), refusals
         finally:
             store.close()
             drop_project_schema(DSN, name)
