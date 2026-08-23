@@ -25,7 +25,7 @@ import uuid
 import nacl.signing
 import pytest
 from _helpers import DSN
-from _trust_fixtures import mint_co_signed, mint_solo
+from _trust_fixtures import mint_co_signed, mint_solo, mint_solo_effective
 
 from regista._cli import (
     cmd_signer_sign_possession,
@@ -97,7 +97,7 @@ def _root_keyfile(path, fx) -> str:
     return str(path)
 
 
-def _init_log(fx, genesis, tmp_path, project) -> None:
+def _init_log(fx, genesis, tmp_path, project, root_principal_id=ROOT_PRINCIPAL) -> None:
     cmd_trust_init_log(
         argparse.Namespace(
             dsn=DSN,
@@ -105,7 +105,7 @@ def _init_log(fx, genesis, tmp_path, project) -> None:
             hmac_key_path=None,
             genesis=genesis,
             key=_seed_file(tmp_path / "root.seed", fx.seeds[fx.signer_ids[0]]),
-            root_principal_id=ROOT_PRINCIPAL,
+            root_principal_id=root_principal_id,
             dry_run=False,
             json=False,
         )
@@ -175,7 +175,7 @@ def _count_events(project: str, transition: str) -> int:
 def env(tmp_path):
     """An INITIALISED trust log with NO registrar yet (that is the command under test)."""
     project = f"wi321_{uuid.uuid4().hex[:8]}"
-    fx = mint_solo(project_name_hint=project)
+    fx = mint_solo(project_name_hint=project, declared_holder=ROOT_PRINCIPAL)
     genesis = _write_json(tmp_path / "genesis.json", fx.document)
     keyfile = _root_keyfile(tmp_path / "keys.json", fx)
     _init_log(fx, genesis, tmp_path, project)
@@ -315,7 +315,7 @@ def test_delegate_then_enroll_succeeds_end_to_end(env):
 def test_delegate_before_init_is_refused_cleanly(env):
     """Delegating into an UNINITIALISED trust log is a clean TRUST_LOG_STORE_UNAVAILABLE."""
     project = f"wi321none_{uuid.uuid4().hex[:8]}"
-    fx = mint_solo(project_name_hint=project)
+    fx = mint_solo(project_name_hint=project, declared_holder=ROOT_PRINCIPAL)
     genesis = _write_json(env["tmp_path"] / "g2.json", fx.document)
     with pytest.raises(RegistaError) as exc:
         cmd_trust_delegate_registrar(
@@ -361,7 +361,10 @@ def test_k_of_n_refused_from_single_root_seed(tmp_path):
     threshold reason regardless of init state.
     """
     project = f"wi321kofn_{uuid.uuid4().hex[:8]}"
-    fx = mint_co_signed(threshold=2, signer_count=2, project_name_hint=project)
+    fx = mint_co_signed(
+        threshold=2, signer_count=2, project_name_hint=project,
+        declared_holder=ROOT_PRINCIPAL,
+    )
     genesis = _write_json(tmp_path / "genesis.json", fx.document)
     reg_sk = nacl.signing.SigningKey.generate()
     reg_public_b64 = base64.b64encode(bytes(reg_sk.verify_key)).decode("ascii")
@@ -462,3 +465,84 @@ def test_re_delegate_different_terms_refused(env):
     assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
     assert exc.value.detail["reason"] == "registrar_already_delegated_live"
     assert _count_events(env["project"], "registrar_delegated") == 1
+
+
+# --- WI-320 (a-prime): --root-principal-id is VERIFY-ONLY here too ----------------
+
+
+def test_root_actor_defaults_from_declared_holder(env):
+    """Omitting --root-principal-id still defaults from the SIGNED initial_custody
+    declared_holder, reported as ``declared_holder``. WI-320 (a-prime) left this
+    untouched."""
+    plan = _delegate(env, root_principal_id=None, dry_run=True)
+    assert plan["root_principal_id"] == ROOT_PRINCIPAL
+    assert plan["root_principal_source"] == "declared_holder"
+
+
+def test_explicit_root_principal_matching_declared_holder_is_verified(env):
+    """An explicit --root-principal-id that AGREES with the signed custody declaration is
+    accepted and reported as ``explicit_verified`` (confirmation, not override)."""
+    plan = _delegate(env, dry_run=True)
+    assert plan["root_principal_id"] == ROOT_PRINCIPAL
+    assert plan["root_principal_source"] == "explicit_verified"
+
+    out = _delegate(env)
+    assert out["ok"] is True
+    assert out["root_principal_id"] == ROOT_PRINCIPAL
+    assert _count_events(env["project"], "registrar_delegated") == 1
+
+
+def test_explicit_root_principal_contradicting_declared_holder_is_refused(env):
+    """The WI-320 (a-prime) refusal: a genuine root seed can no longer attribute a
+    registrar delegation to a principal the genesis never declared. Nothing is written."""
+    with pytest.raises(RegistaError) as exc:
+        _delegate(env, root_principal_id="service:totally-unrelated-attacker")
+    assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+    detail = exc.value.detail
+    assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+    assert detail["declared_holder"] == ROOT_PRINCIPAL
+    assert detail["fingerprint"] == env["fx"].fingerprints[env["fx"].signer_ids[0]]
+    assert _count_events(env["project"], "registrar_delegated") == 0
+
+
+def test_explicit_root_principal_is_bound_to_the_selected_root_fingerprint(tmp_path):
+    """Per-SIGNER correspondence, not a blind scan: with two signers declaring different
+    holders, root-a's seed may confirm only root-a's declared holder."""
+    project = f"wi321fp_{uuid.uuid4().hex[:8]}"
+    fx = mint_solo_effective(
+        signer_count=2,
+        project_name_hint=project,
+        declared_holders=["service:root-a", "service:root-b"],
+    )
+    genesis = _write_json(tmp_path / "genesis.json", fx.document)
+    reg_sk = nacl.signing.SigningKey.generate()
+    reg_public_b64 = base64.b64encode(bytes(reg_sk.verify_key)).decode("ascii")
+    root_seed_path = _seed_file(tmp_path / "root2.seed", fx.seeds[fx.signer_ids[0]])
+    try:
+        _init_log(fx, genesis, tmp_path, project,
+                  root_principal_id="service:root-a")
+        base = dict(project=project, genesis=genesis,
+                    registrar_public_key=reg_public_b64, key=root_seed_path)
+
+        with pytest.raises(RegistaError) as exc:
+            cmd_trust_delegate_registrar(
+                _deleg_ns(**base, root_principal_id="service:root-b")
+            )
+        assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+        assert (
+            exc.value.detail["reason"]
+            == "root_principal_id_contradicts_declared_holder"
+        )
+        assert exc.value.detail["declared_holder"] == "service:root-a"
+        assert _count_events(project, "registrar_delegated") == 0
+
+        out = json.loads(
+            _capture(
+                cmd_trust_delegate_registrar,
+                _deleg_ns(**base, root_principal_id="service:root-a"),
+            )
+        )
+        assert out["root_principal_id"] == "service:root-a"
+        assert _count_events(project, "registrar_delegated") == 1
+    finally:
+        drop_project_schema(DSN, project)

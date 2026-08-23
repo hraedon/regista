@@ -4,6 +4,26 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Changed
+
+- **`--root-principal-id` is now VERIFY-ONLY on `trust init-log` and
+  `trust delegate-registrar` (WI-320, option a-prime).** An explicit value used to be
+  written into the event's `actor_id` verbatim, so a genuine root seed could attribute
+  the estate genesis (or a registrar delegation) to an arbitrary principal the genesis
+  never declared. It must now EQUAL the `initial_custody` `declared_holder` of the entry
+  belonging to the supplied `--key`'s fingerprint — the entry that root is entitled to
+  claim (WI-292 keys custody by signer fingerprint, 1:1 with the signers, enforced at
+  parse time), so in a multi-signer domain one root cannot assert a co-signer's declared
+  holder. A disagreeing value is refused with `ACTOR_SIGNER_MISMATCH` /
+  `root_principal_id_contradicts_declared_holder` and nothing is written; a matching one
+  proceeds and reports `root_principal_source: "explicit_verified"` (replacing
+  `"operator_override"`). Omitting the flag is unchanged: it still defaults from the
+  signed declaration and reports `"declared_holder"`. Signed formats, payload templates,
+  `validate_key_binding_bootstrap`, and the gate contract are untouched — this is a CLI
+  acceptance-semantics change only. Still open in WI-320: `declared_holder` is signed but
+  operator-declared rather than key-attested, and the resulting `actor_id` is still not
+  cryptographically bound inside the signed event bytes.
+
 ## [0.7.2] — 2026-08-23
 
 ### Added

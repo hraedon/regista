@@ -2041,10 +2041,13 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
     no ``--force``: re-initializing a trust log would fork its genesis, which is never a
     safe operation — an already-initialized log is a hard refusal, not an overwrite.
 
-    The genesis event's ``actor_id`` (``--root-principal-id``) is an operator assertion,
-    NOT cryptographically bound to the root signer. It defaults from the genesis's signed
-    ``initial_custody`` declared_holder so the common path binds it to a signed field; an
-    explicit override is trusted rather than proven. Closing that gap is tracked by WI-320.
+    The genesis event's ``actor_id`` (``--root-principal-id``) comes from the genesis's
+    SIGNED ``initial_custody`` declared_holder, either by default (flag omitted) or by
+    confirmation: WI-320 (a-prime) made an explicit ``--root-principal-id`` VERIFY-ONLY,
+    so a value contradicting the custody entry for the supplied root key's fingerprint is
+    refused (``ACTOR_SIGNER_MISMATCH``) instead of being written verbatim. Residual WI-320
+    gap: ``declared_holder`` is signed but operator-declared, and the actor_id is still
+    not cryptographically bound inside the signed event bytes.
     """
     import nacl.signing
 
@@ -2090,23 +2093,29 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             {"reason": "root_key_not_a_genesis_signer", "fingerprint": fingerprint},
         )
 
-    # The genesis actor is an operator assertion, NOT cryptographically bound to the
-    # signer (WI-320 tracks closing that gap). Interim binding (Opus NB-1 / deepseek N2):
-    # when --root-principal-id is omitted, DEFAULT it from the genesis's SIGNED
-    # initial_custody declared_holder, so the common path binds the actor to a signed
-    # field rather than a free operator choice. Only default when there is exactly ONE
-    # custody entry AND its holder is already a canonical principal id — otherwise the
-    # operator must choose explicitly rather than us guessing.
-    root_principal_id = args.root_principal_id
-    actor_source = "operator_override"
+    # The genesis actor is operator-DECLARED, not cryptographically bound to the signer
+    # (WI-320 tracks closing that gap). Interim binding (Opus NB-1 / deepseek N2): when
+    # --root-principal-id is omitted, DEFAULT it from the genesis's SIGNED initial_custody
+    # declared_holder, so the common path binds the actor to a signed field rather than a
+    # free operator choice. Only default when there is exactly ONE custody entry AND its
+    # holder is already a canonical principal id — otherwise the operator must choose
+    # explicitly rather than us guessing.
+    #
+    # WI-320 (a-prime): an EXPLICIT --root-principal-id is VERIFY-ONLY. It used to be
+    # written into actor_id verbatim, so a genuine root seed could attribute the estate
+    # genesis to any principal at all; it must now equal the declared_holder of the
+    # custody entry for THIS root's fingerprint (_verify_root_principal_override).
+    override = args.root_principal_id
+    root_principal_id = override
+    actor_source = "explicit_verified" if override is not None else "declared_holder"
     if root_principal_id is None:
-        actor_source = "declared_holder"
         if len(doc.initial_custody) != 1:
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
                 f"the genesis declares {len(doc.initial_custody)} custody entries, so "
                 "the root actor cannot be inferred; pass --root-principal-id explicitly "
-                "to name the genesis event's actor",
+                "to name the genesis event's actor (it must equal the declared_holder "
+                "this root signer's own custody entry names)",
                 {
                     "reason": "custody_ambiguous_for_actor_default",
                     "custody_count": len(doc.initial_custody),
@@ -2131,6 +2140,8 @@ def cmd_trust_init_log(args: argparse.Namespace) -> None:
             "actor is recorded permanently and must be well-formed",
             {"reason": "root_principal_id_not_canonical"},
         )
+    if override is not None:
+        _verify_root_principal_override(doc, root_principal_id, fingerprint)
 
     # The trust log is one estate-wide project whose first event is
     # trust_domain_established (§5.2). Its schema name is the document's SIGNED
@@ -3031,28 +3042,88 @@ def _parse_scope_args(raw_scopes: list[str] | None) -> list[str]:
     return out
 
 
-def _resolve_trust_root_actor(doc: Any, override: str | None) -> tuple[str, str]:
+def _verify_root_principal_override(
+    doc: Any, override: str, root_fingerprint: str
+) -> None:
+    """WI-320 (a-prime): an explicit ``--root-principal-id`` is VERIFY-ONLY, never an
+    override.
+
+    It used to be written into the event's ``actor_id`` verbatim, so a genuine root seed
+    could attribute a root-authorised trust-log write to an arbitrary principal the
+    domain never declared. An explicit value must now AGREE with the signed declaration,
+    and the comparison is bound to the SELECTED ROOT rather than being a blind global
+    scan: WI-292 keys ``initial_custody`` by signer fingerprint, exactly one entry per
+    signer, and ``parse_trust_genesis`` enforces that 1:1 correspondence — so the entry
+    for the fingerprint of the seed actually producing the signature is exactly the
+    declaration that root is entitled to claim. In a multi-signer domain root-b therefore
+    cannot assert root-a's declared holder.
+
+    Residual gap (still WI-320, options (b)/(d)): ``declared_holder`` is signed but
+    operator-declared rather than key-attested, and the resulting ``actor_id`` is still
+    not cryptographically bound inside the signed event bytes. This closes the free-form
+    override only.
+    """
+    custody = doc.custody_by_fingerprint(root_fingerprint)
+    if custody is None:
+        # Unreachable for a parsed document whose signer we already matched (the 1:1
+        # rule is a parse-time invariant). Fail closed rather than trust the override.
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"the genesis declares no initial_custody entry for the root signer "
+            f"(fingerprint {root_fingerprint}), so an explicit --root-principal-id "
+            "cannot be checked against the signed declaration",
+            {
+                "reason": "custody_absent_for_root_signer",
+                "fingerprint": root_fingerprint,
+            },
+        )
+    if override != custody.declared_holder:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"--root-principal-id {override!r} contradicts the genesis's SIGNED "
+            f"initial_custody declared_holder {custody.declared_holder!r} for the root "
+            f"signer whose seed was supplied (fingerprint {root_fingerprint}). An "
+            "explicit --root-principal-id is VERIFY-ONLY (WI-320): it may confirm the "
+            "signed declaration, never replace it. Pass --root-principal-id "
+            f"{custody.declared_holder} (or omit the flag to take the declaration); if "
+            "the declaration itself is wrong, correct it with a threshold-authorized "
+            "trust-log event, not at the CLI.",
+            {
+                "reason": "root_principal_id_contradicts_declared_holder",
+                "root_principal_id": override,
+                "declared_holder": custody.declared_holder,
+                "fingerprint": root_fingerprint,
+            },
+        )
+
+
+def _resolve_trust_root_actor(
+    doc: Any, override: str | None, root_fingerprint: str
+) -> tuple[str, str]:
     """Resolve the root actor principal id for a root-authorised trust-log write.
 
     Mirrors ``trust init-log`` exactly: when ``--root-principal-id`` is omitted, default
     it from the genesis's SIGNED ``initial_custody`` declared_holder — but only when there
     is exactly ONE custody entry whose holder is already a canonical principal id.
-    Otherwise the operator must name it explicitly. The actor is an UNAUTHENTICATED
-    operator assertion (WI-320), not cryptographically bound to the root signature; it
-    still has to be a well-formed canonical id because it is recorded permanently.
+    Otherwise the operator must name it explicitly. An explicit value is VERIFY-ONLY
+    (WI-320 (a-prime)): it must equal the declared_holder of the custody entry belonging
+    to *root_fingerprint*, the signer whose seed authorises this write. The actor remains an
+    operator-DECLARED identity, not one cryptographically bound to the root signature
+    (the residual WI-320 gap), and it still has to be a well-formed canonical id because
+    it is recorded permanently.
     """
     from regista._principals import classify_principal_id
 
     root_principal_id = override
-    source = "operator_override"
+    source = "explicit_verified" if override is not None else "declared_holder"
     if root_principal_id is None:
-        source = "declared_holder"
         if len(doc.initial_custody) != 1:
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
                 f"the genesis declares {len(doc.initial_custody)} custody entries, so "
                 "the root actor cannot be inferred; pass --root-principal-id explicitly "
-                "to name the delegation event's actor",
+                "to name the delegation event's actor (it must equal the declared_holder "
+                "this root signer's own custody entry names)",
                 {
                     "reason": "custody_ambiguous_for_actor_default",
                     "custody_count": len(doc.initial_custody),
@@ -3077,6 +3148,8 @@ def _resolve_trust_root_actor(doc: Any, override: str | None) -> tuple[str, str]
             "recorded permanently and must be well-formed",
             {"reason": "root_principal_id_not_canonical"},
         )
+    if override is not None:
+        _verify_root_principal_override(doc, root_principal_id, root_fingerprint)
     return root_principal_id, source
 
 
@@ -3170,7 +3243,7 @@ def cmd_trust_delegate_registrar(args: argparse.Namespace) -> None:
     _enroll_require_initialized(dsn, project)
 
     root_principal_id, actor_source = _resolve_trust_root_actor(
-        doc, args.root_principal_id
+        doc, args.root_principal_id, root_fingerprint
     )
 
     # (5) Validity window: anchored to CALL-TIME now() (never a fixed date — the trust
@@ -5090,10 +5163,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Canonical kind:subject principal id recorded as the genesis event's "
         "actor (e.g. service:root-a). OPTIONAL: when omitted it defaults from the "
         "genesis's SIGNED initial_custody declared_holder (requires exactly one custody "
-        "entry whose holder is a canonical principal id). NOTE: this actor is an "
-        "UNAUTHENTICATED operator assertion — it is NOT cryptographically bound to the "
-        "root signature, so an explicit override is trusted, not proven. Cryptographic "
-        "binding is tracked by WI-320.",
+        "entry whose holder is a canonical principal id). When given it is VERIFY-ONLY "
+        "(WI-320): it must EQUAL the declared_holder of the custody entry for the "
+        "supplied --key's fingerprint, else the write is refused — it confirms the signed "
+        "declaration, it cannot override it. NOTE: declared_holder is signed but "
+        "operator-declared, so the actor is still not cryptographically bound to the "
+        "root signature; that residual binding is tracked by WI-320.",
     )
     # SUPPRESS (see rebuild-projection): a subparser --project/--json with a None/False
     # default would clobber the global value the top-level parser already set.
@@ -5238,8 +5313,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Canonical kind:subject principal id recorded as the delegation event's "
         "actor (e.g. service:root-a). OPTIONAL: defaults from the genesis's SIGNED "
         "initial_custody declared_holder (requires exactly one custody entry whose "
-        "holder is canonical). NOTE: an UNAUTHENTICATED operator assertion, not bound to "
-        "the root signature (WI-320).",
+        "holder is canonical). When given it is VERIFY-ONLY (WI-320): it must EQUAL the "
+        "declared_holder of the custody entry for the supplied --key's fingerprint, else "
+        "the delegation is refused. NOTE: declared_holder is signed but operator-declared, "
+        "so the actor is still not cryptographically bound to the root signature (WI-320).",
     )
     trust_deleg.add_argument(
         "--scope",
