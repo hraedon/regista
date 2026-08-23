@@ -20,6 +20,17 @@ _STATUS_MAP: dict[str, int] = {
     # The written artifact failed its own hash — a server-side integrity
     # failure, not a client error (WI-240 review F6).
     ErrorCode.BUNDLE_WRITE_CORRUPT: 500,
+    # Bundle v3 (BUNDLE-V3.md). All four verification-side refusals are 400: the
+    # artifact the client presented is the thing at fault, and the remedy is a
+    # different artifact.
+    ErrorCode.BUNDLE_FORMAT_UNSUPPORTED: 400,
+    ErrorCode.BUNDLE_STATEMENT_INVALID: 400,
+    ErrorCode.BUNDLE_CHAIN_UNORDERABLE: 400,
+    ErrorCode.BUNDLE_STATEMENT_SIGNATURE_INVALID: 400,
+    # O3: the store's own signing key lacks may_sign_bundles. Not the caller's
+    # fault and not fixable by retrying with different arguments — it needs a
+    # key-acceptance event. 409: the server's state conflicts with the request.
+    ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED: 409,
     ErrorCode.INVALID_ACTOR_KIND: 400,
     ErrorCode.INVALID_PRINCIPAL_KIND: 400,
     ErrorCode.INVALID_MODEL_LINEAGE: 400,

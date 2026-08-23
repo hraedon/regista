@@ -43,6 +43,31 @@ class ErrorCode(StrEnum):
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     BUNDLE_UNVERIFIABLE = "BUNDLE_UNVERIFIABLE"
     BUNDLE_WRITE_CORRUPT = "BUNDLE_WRITE_CORRUPT"
+    # --- bundle v3 (BUNDLE-V3.md, WI-289 Phase B). Five distinct refusals, because
+    #     collapsing them is how an operator ends up reading "malformed" for a v2
+    #     artifact and re-exporting nothing.
+    #
+    # §2/§6: the presented artifact declares a format this build does not accept.
+    # format_version 1 and 2 are DELETED, not deprecated, and are never downgraded to.
+    BUNDLE_FORMAT_UNSUPPORTED = "BUNDLE_FORMAT_UNSUPPORTED"
+    # §3.1/§3.2: the document or its signed statement violates a closed key set, a closed
+    # value set, or a structural equality. Includes the retired members refused by name
+    # (`epoch` per decision E2, `governance` per collision 12, `scope.selection` per the
+    # declared-selection cut).
+    BUNDLE_STATEMENT_INVALID = "BUNDLE_STATEMENT_INVALID"
+    # §3.3: the presented events do not form one contiguous chain segment, so there is no
+    # total order and therefore no membership tree. Owner ruling O4 makes this a refusal
+    # rather than a degraded export: no diagnostic flag, no partial bundle.
+    BUNDLE_CHAIN_UNORDERABLE = "BUNDLE_CHAIN_UNORDERABLE"
+    # §3.4: the ed25519 statement signature did not verify, or its block names a scheme
+    # bundle v3 does not admit. Distinct from BUNDLE_STATEMENT_INVALID because a bad
+    # signature over a well-formed statement and a malformed statement call for different
+    # operator responses.
+    BUNDLE_STATEMENT_SIGNATURE_INVALID = "BUNDLE_STATEMENT_SIGNATURE_INVALID"
+    # Owner ruling O3: the key offered to sign a bundle statement does not bear
+    # `may_sign_bundles`. Deliberately NOT KEY_ROLE_NOT_PERMITTED: that is about a key's
+    # `role` column, and this is about a signed acceptance scope.
+    BUNDLE_SIGNER_NOT_PERMITTED = "BUNDLE_SIGNER_NOT_PERMITTED"
     WORKFLOW_COMPOSE_ERROR = "WORKFLOW_COMPOSE_ERROR"
     RECURRENCE_RULE_NOT_FOUND = "RECURRENCE_RULE_NOT_FOUND"
     RECURRENCE_RULE_EXHAUSTED = "RECURRENCE_RULE_EXHAUSTED"
