@@ -1293,6 +1293,73 @@ def _custody_for(parsed: TrustGenesisDocument, signer: GenesisSigner) -> Custody
     return declaration
 
 
+def custody_for_root_fingerprint(
+    doc: TrustGenesisDocument, fingerprint: str
+) -> CustodyDeclaration:
+    """The signed custody declaration belonging to root *fingerprint* — fail-closed.
+
+    Total for a signer of a parsed document (WI-292 keys ``initial_custody`` by signer
+    fingerprint and :func:`parse_trust_genesis` enforces the 1:1 correspondence), but a
+    *raising* function rather than an assert like :func:`_custody_for`: callers reach it
+    from write paths holding an operator-supplied key, and if the correspondence is ever
+    absent the answer must be a named refusal, never a signed event.
+    """
+    declaration = doc.custody_by_fingerprint(fingerprint)
+    if declaration is None:
+        _fail(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"the genesis declares no initial_custody entry for the root signer "
+            f"(fingerprint {fingerprint}), so the event's actor cannot be checked "
+            "against the signed custody declaration",
+            "custody_absent_for_root_signer",
+            fingerprint=fingerprint,
+        )
+    return declaration
+
+
+def verify_root_principal_binding(
+    doc: TrustGenesisDocument, principal_id: str, fingerprint: str
+) -> None:
+    """Require *principal_id* to be the holder the genesis declares for *fingerprint*.
+
+    WI-320 (a-prime). The genesis event's ``actor_id`` used to be whatever the caller
+    named — an explicit CLI ``--root-principal-id``, or ``write_trust_genesis``'s
+    ``root_principal_id`` argument — so a genuine root seed could attribute the estate
+    genesis to an arbitrary principal the domain never declared. That actor is now
+    VERIFY-ONLY: it must equal the ``declared_holder`` of the ``initial_custody`` entry
+    belonging to the key that actually SIGNS the event, which by WI-292's 1:1 rule is
+    exactly the one declaration that root is entitled to claim. In a multi-signer domain
+    root-b therefore cannot assert root-a's declared holder.
+
+    Genesis-scoped by design. The general root-authority append path
+    (``append_trust_log_event``) is deliberately NOT custody-bound: a root rotated in
+    after genesis legitimately has no ``initial_custody`` entry, so binding it to one
+    would refuse a legitimate write. That path binds fingerprint-to-signer-set only;
+    custody-binding post-genesis root actors is option (d), tracked by WI-331.
+
+    Residual gap (still WI-320): ``declared_holder`` is signed but operator-DECLARED, not
+    key-attested, and the resulting ``actor_id`` is still not cryptographically bound
+    inside the signed event bytes.
+    """
+    declaration = custody_for_root_fingerprint(doc, fingerprint)
+    if principal_id != declaration.declared_holder:
+        _fail(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"root principal {principal_id!r} contradicts the genesis's SIGNED "
+            f"initial_custody declared_holder {declaration.declared_holder!r} for the "
+            f"signing root (fingerprint {fingerprint}). The genesis actor is VERIFY-ONLY "
+            f"(WI-320): it may confirm the signed declaration, never replace it. Use "
+            f"{declaration.declared_holder} instead (at the CLI: --root-principal-id "
+            f"{declaration.declared_holder}, or omit the flag to take the declaration). "
+            "If the declaration itself is wrong, correct it with a threshold-authorized "
+            "trust-log event.",
+            "root_principal_id_contradicts_declared_holder",
+            root_principal_id=principal_id,
+            declared_holder=declaration.declared_holder,
+            fingerprint=fingerprint,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Governance monotonicity primitive (WI-280) — standalone, for P2.2's log replay
 # ---------------------------------------------------------------------------
@@ -1425,6 +1492,7 @@ __all__: Sequence[str] = [
     "TrustGenesisDocument",
     "TrustGenesisVerification",
     "TrustLogBlock",
+    "custody_for_root_fingerprint",
     "derive_core_digest",
     "derive_governance_mode",
     "derive_trust_domain_id",
@@ -1432,5 +1500,6 @@ __all__: Sequence[str] = [
     "genesis_signature_input",
     "parse_trust_genesis",
     "validate_governance_transition",
+    "verify_root_principal_binding",
     "verify_trust_genesis",
 ]

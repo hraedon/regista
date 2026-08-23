@@ -150,7 +150,7 @@ def _sign_possession_via_cli(tmp_path, enrollee_secret_ref, challenge_json: str)
 def env(tmp_path):
     """An initialised trust log with a live registrar delegated for enrolment."""
     project = f"wi319e_{uuid.uuid4().hex[:8]}"
-    fx = mint_solo(project_name_hint=project)
+    fx = mint_solo(project_name_hint=project, declared_holder=ROOT_PRINCIPAL)
     genesis = _write_json(tmp_path / "genesis.json", fx.document)
     keyfile = _root_keyfile(tmp_path / "keys.json", fx, extra={REGISTRAR: REGISTRAR_SEED})
 

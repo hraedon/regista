@@ -111,7 +111,9 @@ def _wkey(path, entries):
 
 def _env(tmp_path):
     fixture = mint_genesis(
-        threshold=1, signer_count=2, seeds=[bytes([i]) * 32 for i in range(1, 3)]
+        threshold=1, signer_count=2, seeds=[bytes([i]) * 32 for i in range(1, 3)],
+        # WI-320 (a-prime): the genesis writer custody-binds root_principal_id.
+        declared_holder=ROOT,
     )
     registrar = _tlogkey("k_registrar", bytes([9]) * 32)
     key_file = _wkey(

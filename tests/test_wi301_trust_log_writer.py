@@ -103,6 +103,10 @@ def _make_environment(tmp_path, *, threshold=1, signer_count=2):
         threshold=threshold,
         signer_count=signer_count,
         seeds=[bytes([i]) * 32 for i in range(1, signer_count + 1)],
+        # WI-320 (a-prime): write_trust_genesis now requires root_principal_id to equal
+        # the signing root's initial_custody declared_holder, so the fixture must declare
+        # the principal these tests write as.
+        declared_holder=ROOT,
     )
     root_seed = fixture.seeds[fixture.signer_ids[0]]
     second_seed = fixture.seeds.get(fixture.signer_ids[1]) if signer_count > 1 else None
@@ -355,6 +359,48 @@ def _signed_genesis_payload(fixture, signer_ids=("root-a",)):
 
 
 class TestGenesis:
+    def test_actor_contradicting_declared_custody_is_refused(self, tmp_path):
+        """WI-320 (a-prime) at the DURABLE boundary — the P7 library attack, fail-closed.
+
+        The attack needs no forged key material and never touches the CLI: a keyset that
+        labels the GENUINE root seed with an arbitrary principal_id satisfies
+        ``_writer_key`` (a key really is held for that principal) and satisfies the
+        signer check (the fingerprint really is a genesis signer), so before this guard
+        ``write_trust_genesis`` signed the estate genesis with an ``actor_id`` the domain
+        never declared. A CLI-only check could not close it: this is a public library
+        entry point, and ``trust init-log`` routes k-of-n operators straight to it.
+
+        The fixture deliberately contradicts the written principal — declared_holder is
+        ROOT, the write claims ATTACKER — which is exactly the regression this pins.
+        """
+        attacker = "service:totally-unrelated-attacker"
+        fixture = mint_genesis(
+            threshold=1, signer_count=1, seeds=[bytes([1]) * 32], declared_holder=ROOT
+        )
+        key_file = _write_key_file(
+            tmp_path / "attacker_keys.json",
+            {attacker: fixture.seeds[fixture.signer_ids[0]]},
+        )
+        project = f"wi301_{uuid.uuid4().hex[:8]}"
+        handle = Regista.create_project(DSN, project, hmac_key_path=key_file)
+        try:
+            with pytest.raises(RegistaError) as exc:
+                write_trust_genesis(
+                    handle._mgr, keys=handle._keys,
+                    genesis_document=fixture.document, root_principal_id=attacker,
+                )
+            assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+            detail = exc.value.detail
+            assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+            assert detail["root_principal_id"] == attacker
+            assert detail["declared_holder"] == ROOT
+            assert detail["fingerprint"] == fixture.fingerprints[fixture.signer_ids[0]]
+            # Nothing was written: the guard precedes every write in the transaction.
+            with handle._mgr.transaction() as conn:
+                assert read_trust_log_rows(conn) == []
+        finally:
+            _close(handle, project)
+
     def test_genesis_writes_and_payload_parses(self, tmp_path):
         fixture, handle, _kf, project = _make_environment(tmp_path)
         try:

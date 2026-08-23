@@ -38,6 +38,7 @@ from ._signing import (
 from ._trust_domain import (
     GovernanceState,
     parse_trust_genesis,
+    verify_root_principal_binding,
     verify_trust_genesis,
 )
 from ._trust_log import (
@@ -1738,6 +1739,22 @@ def write_trust_genesis(
                     "fingerprint": key.fingerprint(),
                 },
             )
+        # WI-320 (a-prime): the genesis actor is VERIFY-ONLY, and that has to hold HERE,
+        # not only at the CLI. This is a public library entry point, and `trust init-log`
+        # explicitly directs operators to it for a k-of-n genesis (threshold != 1), so a
+        # CLI-only check would leave the arbitrary-actor write reachable — a check that is
+        # not at the durable boundary is not an invariant. Bound to the WRITER key's
+        # fingerprint (the key just proven to be a genesis signer above, and the key that
+        # actually signs this event), so a multi-signer genesis cannot be attributed to a
+        # co-signer's declared holder either.
+        #
+        # Genesis-only. `append_trust_log_event`'s root-authority path is deliberately
+        # NOT custody-bound: a root rotated in after genesis has no initial_custody entry
+        # and would be refused. See verify_root_principal_binding's scope note (WI-331).
+        #
+        # Placed before every write in this transaction (only SELECTs and the head lock
+        # precede it), so a refusal leaves the store untouched.
+        verify_root_principal_binding(doc, root_principal_id, key.fingerprint())
         signed_payload = payload
         if signed_payload is None:
             if doc.initial_governance.threshold != 1:

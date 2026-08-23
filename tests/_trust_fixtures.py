@@ -107,15 +107,26 @@ def mint_genesis(
     project_name_hint: str = "regista_trust",
     declared_mode: str = "offline-host",
     declared_holder: str = "human:test-owner",
+    declared_holders: list[str] | None = None,
 ) -> TrustRootFixture:
     """Mint a signed genesis document with ephemeral keys.
 
     ``sign_with`` names the signer_ids that sign (default: all of them — extra
     valid signatures beyond the threshold are permitted). ``seeds`` supplies
     deterministic 32-byte Ed25519 seeds instead of random generation.
+
+    ``declared_holder`` gives every ``initial_custody`` entry the same holder;
+    ``declared_holders`` instead gives a DISTINCT holder per signer, positionally
+    aligned with ``signer_ids`` (root-a, root-b, ... in fingerprint-ascending order).
+    Needed to exercise per-signer custody correspondence (WI-320 (a-prime)), which a
+    single shared holder cannot distinguish.
     """
     if seeds is not None and len(seeds) != signer_count:
         raise ValueError(f"expected {signer_count} seeds, got {len(seeds)}")
+    if declared_holders is not None and len(declared_holders) != signer_count:
+        raise ValueError(
+            f"expected {signer_count} declared_holders, got {len(declared_holders)}"
+        )
     keypairs: list[tuple[bytes, bytes]] = []
     for i in range(signer_count):
         signing_key = (
@@ -136,7 +147,9 @@ def mint_genesis(
     # and sorted by it. The keypairs are already fingerprint-sorted, so appending in
     # step with the signers satisfies the ordering rule.
     initial_custody: list[dict[str, Any]] = []
-    for signer_id, (seed, public) in zip(signer_ids, keypairs, strict=True):
+    for index, (signer_id, (seed, public)) in enumerate(
+        zip(signer_ids, keypairs, strict=True)
+    ):
         fingerprint = _compute_fingerprint(public, "ed25519")
         seed_map[signer_id] = seed
         public_map[signer_id] = public
@@ -153,7 +166,10 @@ def mint_genesis(
             {
                 "fingerprint": fingerprint,
                 "declared_mode": declared_mode,
-                "declared_holder": declared_holder,
+                "declared_holder": (
+                    declared_holder if declared_holders is None
+                    else declared_holders[index]
+                ),
                 "attestation": None,
             }
         )

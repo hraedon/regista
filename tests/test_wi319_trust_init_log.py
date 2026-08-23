@@ -34,7 +34,10 @@ from regista.testing import drop_project_schema
 
 pytestmark = pytest.mark.skipif(not DSN, reason="REGISTA_TEST_DSN is not set")
 
-ROOT_PRINCIPAL = "service:root-a"
+# The holder ``_trust_fixtures`` declares in ``initial_custody``. Since WI-320 (a-prime)
+# an explicit --root-principal-id is VERIFY-ONLY — it must equal that SIGNED declaration
+# — so this is the only explicit value the default fixtures accept.
+ROOT_PRINCIPAL = "human:test-owner"
 
 
 @pytest.fixture(autouse=True)
@@ -280,18 +283,154 @@ def test_ambient_project_mismatch_refused(tmp_path, project_name, monkeypatch):
     assert not _schema_exists("regista_trust")
 
 
-def test_root_actor_defaults_from_declared_holder(tmp_path, project_name):
+def test_root_actor_defaults_from_declared_holder(tmp_path, project_name, capsys):
     """Opus NB-1 / deepseek N2 interim: with --root-principal-id omitted, the genesis
-    actor defaults from the SIGNED initial_custody declared_holder."""
+    actor defaults from the SIGNED initial_custody declared_holder. WI-320 (a-prime) left
+    this path untouched — including its ``declared_holder`` source label."""
     fx = mint_solo(project_name_hint=project_name, declared_holder="human:itadmin")
     gpath = _write(tmp_path / "genesis.json", fx.document)
     kpath = _seed_file(tmp_path / "root.seed", fx.seeds[fx.signer_ids[0]])
 
     cmd_trust_init_log(
         _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id=None, dry_run=True, json_mode=True)
+    )
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["root_principal_id"] == "human:itadmin"
+    assert plan["root_principal_source"] == "declared_holder"
+
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
             root_principal_id=None)
     )
     assert _genesis_actor(project_name) == "human:itadmin"
+
+
+def test_explicit_root_principal_matching_declared_holder_is_verified(
+    tmp_path, project_name, capsys
+):
+    """WI-320 (a-prime): an explicit --root-principal-id that AGREES with the signed
+    custody declaration is accepted — the explicit-confirmation form — and reports itself as
+    ``explicit_verified`` rather than as a free operator override."""
+    fx = mint_solo(project_name_hint=project_name, declared_holder="service:root-a")
+    gpath = _write(tmp_path / "genesis.json", fx.document)
+    kpath = _seed_file(tmp_path / "root.seed", fx.seeds[fx.signer_ids[0]])
+
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id="service:root-a", dry_run=True, json_mode=True)
+    )
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["would_write"] is True
+    assert plan["root_principal_id"] == "service:root-a"
+    assert plan["root_principal_source"] == "explicit_verified"
+
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id="service:root-a")
+    )
+    assert _genesis_actor(project_name) == "service:root-a"
+
+
+def test_explicit_root_principal_contradicting_declared_holder_is_refused(
+    tmp_path, project_name
+):
+    """WI-320 (a-prime) closes this hole: an explicit --root-principal-id used to be
+    written into ``actor_id`` verbatim, so a GENUINE root seed could attribute the estate genesis
+    to an arbitrary principal the domain never declared. It is now VERIFY-ONLY — a value
+    contradicting the signed declaration is refused and NOTHING is written."""
+    fx = mint_solo(project_name_hint=project_name, declared_holder="service:root-a")
+    gpath = _write(tmp_path / "genesis.json", fx.document)
+    kpath = _seed_file(tmp_path / "root.seed", fx.seeds[fx.signer_ids[0]])
+
+    with pytest.raises(RegistaError) as exc:
+        cmd_trust_init_log(
+            _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+                root_principal_id="service:totally-unrelated-attacker")
+        )
+    assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+    detail = exc.value.detail
+    assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+    assert detail["root_principal_id"] == "service:totally-unrelated-attacker"
+    assert detail["declared_holder"] == "service:root-a"
+    assert detail["fingerprint"] == fx.fingerprints[fx.signer_ids[0]]
+    # No schema, therefore no log and no trust_domain_established event.
+    assert not _schema_exists(project_name)
+
+
+def test_explicit_root_principal_is_bound_to_the_selected_root_fingerprint(
+    tmp_path, project_name
+):
+    """The verify-only check is per-SIGNER, not a blind scan of every declared holder.
+
+    WI-292 keys ``initial_custody`` by signer fingerprint, exactly one entry per signer,
+    so the entry for the seed actually producing the signature is the only declaration
+    that root may claim. root-a therefore cannot assert root-b's declared holder even
+    though it sits in the same signed document.
+    """
+    fx = mint_solo_effective(
+        signer_count=2,
+        project_name_hint=project_name,
+        declared_holders=["service:root-a", "service:root-b"],
+    )
+    gpath = _write(tmp_path / "genesis.json", fx.document)
+    kpath = _seed_file(tmp_path / "root.seed", fx.seeds[fx.signer_ids[0]])
+
+    with pytest.raises(RegistaError) as exc:
+        cmd_trust_init_log(
+            _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+                root_principal_id="service:root-b")
+        )
+    assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+    assert (
+        exc.value.detail["reason"] == "root_principal_id_contradicts_declared_holder"
+    )
+    assert exc.value.detail["declared_holder"] == "service:root-a"
+    assert not _schema_exists(project_name)
+
+    # Its OWN declared holder is accepted, which is also how a multi-custody genesis
+    # (where defaulting refuses as ambiguous) gets initialized at all.
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id="service:root-a")
+    )
+    assert _genesis_actor(project_name) == "service:root-a"
+
+
+def test_fingerprint_binding_holds_in_the_reverse_direction(tmp_path, project_name):
+    """The same document from root-b's side, so the check cannot be passing by accident.
+
+    A guard that always compared against ``initial_custody[0]`` would accept root-b
+    claiming root-a's holder and reject root-b claiming its own — the exact inverse of
+    what happens here.
+    """
+    fx = mint_solo_effective(
+        signer_count=2,
+        project_name_hint=project_name,
+        declared_holders=["service:root-a", "service:root-b"],
+    )
+    gpath = _write(tmp_path / "genesis.json", fx.document)
+    # root-b's seed this time: the SECOND custody entry is the one it may claim.
+    kpath = _seed_file(tmp_path / "root-b.seed", fx.seeds[fx.signer_ids[1]])
+
+    with pytest.raises(RegistaError) as exc:
+        cmd_trust_init_log(
+            _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+                root_principal_id="service:root-a")
+        )
+    assert exc.value.code is ErrorCode.ACTOR_SIGNER_MISMATCH
+    detail = exc.value.detail
+    assert detail["reason"] == "root_principal_id_contradicts_declared_holder"
+    assert detail["root_principal_id"] == "service:root-a"
+    assert detail["declared_holder"] == "service:root-b"
+    assert detail["fingerprint"] == fx.fingerprints[fx.signer_ids[1]]
+    assert not _schema_exists(project_name)
+
+    cmd_trust_init_log(
+        _ns(dsn=DSN, project=project_name, genesis=gpath, key=kpath,
+            root_principal_id="service:root-b")
+    )
+    assert _genesis_actor(project_name) == "service:root-b"
 
 
 def test_overridden_non_canonical_root_principal_refused(tmp_path, project_name):

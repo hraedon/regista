@@ -108,7 +108,8 @@ def trust_store(tmp_path, monkeypatch):
     monkeypatch.setenv("REGISTA_PRODUCER_MODEL_LINEAGE", "fable")
 
     project = f"p22_tl_{uuid.uuid4().hex[:8]}"
-    genesis = mint_solo()
+    # WI-320 (a-prime): the genesis writer custody-binds root_principal_id.
+    genesis = mint_solo(declared_holder=ROOT_PRINCIPAL)
     genesis_path = tmp_path / "trust-genesis.json"
     genesis_path.write_text(json.dumps(genesis.document), encoding="utf-8")
     monkeypatch.setenv("REGISTA_TRUST_GENESIS_PATH", str(genesis_path))

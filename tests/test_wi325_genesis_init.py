@@ -399,7 +399,7 @@ def trust(tmp_path_factory):
     """
     tmp_path = tmp_path_factory.mktemp("wi325-trust")
     project = f"wi325t_{uuid.uuid4().hex[:8]}"
-    fx = mint_solo(project_name_hint=project)
+    fx = mint_solo(project_name_hint=project, declared_holder=ROOT_PRINCIPAL)
     genesis = _write_json(tmp_path / "genesis.json", fx.document)
     root_seed = fx.seeds[fx.signer_ids[0]]
     root_seed_path = _seed_file(tmp_path / "root.seed", root_seed)
