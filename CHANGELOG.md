@@ -6,6 +6,51 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed
 
+- **Audit bundles are format v3 only; v1 and v2 are deleted, not deprecated (WI-289 Phase B,
+  `docs/0.6.0/BUNDLE-V3.md`).** A bundle is now a canonical-JSON document whose single
+  signed `statement` commits to the membership of every event in scope — an RFC 6962 Merkle
+  root over ordinals derived by walking `previous_project_event_hash`, never `global_seq` —
+  and to the digest of every section. What that replaces is a class of check rather than a
+  check: v2's `bundle_hash` was an **unkeyed** SHA-256 that anyone could recompute after
+  editing anything, so every claim it guarded (event count, key count, the export window)
+  had to be defended by a plausibility heuristic. Those are gone; a tamperer must now forge
+  a signature.
+
+  **Breaking, and deliberately so.** A v1 or v2 artifact is refused by name
+  (`BUNDLE_FORMAT_UNSUPPORTED`) before any other check, never verified with reduced
+  expectations — S3 was "signature enforcement is optional under format 1", and v3 removes
+  the configuration rather than hardening it. Bundles are regenerable artifacts, so a v1/v2
+  bundle an auditor already holds is re-exported; if the store is gone, the old bundle was
+  never authenticated to anything anyway. Also gone from the report: `bundle_hash_ok` (no
+  hash) and `signature_check` with its three magic strings (its information is the axis
+  model's). Event records are `{canonical_envelope, signature}` in base64 and nothing else —
+  the twenty row columns v2 exported beside the envelope were a second copy of signed data
+  for a consumer to read instead of the signed one, and the row projection is now recomputed
+  *from* the envelope.
+
+  `export_audit_bundle` gains two inputs with no fallback. Signing material, because there
+  is no unsigned v3 artifact to write. And the replayed `root_governance`
+  (`{mode, threshold, signer_count}`), because §3.2 requires the state obtained by replaying
+  the signed trust-domain governance log and forbids copying it from genesis, configuration
+  or a projection — a project store holds no governance state at all, so export refuses
+  rather than attesting a governance claim it invented. The statement signer must bear
+  `may_sign_bundles` in its signed project-local acceptance (owner ruling O3): holding the
+  writer key is not an implication of the authority, and the verifier re-derives the scope
+  from the acceptance event rather than believing the statement. A chain that cannot be
+  totally ordered means no bundle at all (owner ruling O4) — one named refusal, no
+  diagnostic flag, no partial artifact.
+
+  **Still to come, and named so the boundary is visible:** the required trust-material
+  argument and the verdict-axis model (`BUNDLE-V3.md` §4/§5) are Phase C, and until they
+  land `bundle verify` reports `verified: false` whenever no key was supplied, which is the
+  honest state rather than a pass. The §9 export ceremony — self-verify the `.partial`
+  before the atomic replace, the preflight comparison, `--allow-unverified`'s deletion, the
+  CLI trust flags and the exit-code rework — is Phase D, so `regista bundle export` errors
+  by name until D wires the flags. Signed portable credential transport
+  (`sections.action_delegation_credentials`) remains deferred post-cutover by owner ruling
+  O1; the section set is closed, so a bundle carrying one is refused rather than accepted
+  with a section nothing reads.
+
 - **The trust-genesis actor is now VERIFY-ONLY, at the CLI and at the writer (WI-320,
   option a-prime).** `trust init-log`'s and `trust delegate-registrar`'s
   `--root-principal-id`, and `write_trust_genesis`'s `root_principal_id` argument, were

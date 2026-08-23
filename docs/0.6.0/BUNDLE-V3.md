@@ -1008,3 +1008,48 @@ exists to remove. The operator's diagnostic need is real and is answered by a di
 tool, not by weakening this one.
 
 No bundle code is implemented by WI-289 Phase A. `src/regista/_bundle.py` is untouched.
+
+---
+
+## Bundle v3 implementation status — WI-289 Phase B, 2026-08-23
+
+Phase B implements the **verification-complete v3 core** and nothing beyond it. Recorded
+here so a reviewer can tell a deliberate phase boundary from a gap, and so Phase C and
+Phase D know exactly what they are extending.
+
+**Landed.** §2 and §6 (format acceptance and anti-downgrade; `_SUPPORTED_FORMAT_VERSIONS`
+is `frozenset({3})` and a v1/v2 artifact is refused by name before any other check), §3.1
+(document shape, closed top-level and section key sets, advisory-and-unread `index`), §3.2
+as amended (the closed statement member set including E2's forbidden `epoch`, `trust_root`,
+the single signer shape, `complete-store`/`contiguous-range` only), §3.3 (RFC 6962
+membership over chain-derived ordinals, conformant to the five frozen
+`tests/vectors/v6/bundle-merkle-*.json` through the production functions), §3.4 (the
+ed25519 statement signature over the domain-prefixed JCS bytes), §3.6 (base64 event
+records carrying envelope and signature and nothing else), §3.7 (section digests), owner
+ruling O3 (`may_sign_bundles` enforced at build **and** re-derived from the signed
+acceptance at verify) and owner ruling O4 (a chain that cannot be totally ordered is a
+refusal, with no diagnostic flag and no partial artifact).
+
+The reference sections (`key_lifecycle`, `project_key_acceptance`, `workflows`,
+`review_verdicts`, `checkpoints`) are **recomputed at verify** from a closed
+transition/payload-type map rather than read from the artifact — a section a verifier
+derives cannot be edited. §1's argument is that a check reading an attacker-writable field
+can only argue about plausibility, so anything derivable is derived.
+
+**Deliberately not landed, and where it goes.** None of these is an oversight:
+
+| Clause | Owner | Consequence at Phase B |
+|---|---|---|
+| §4.1–§4.6 trust-root resolution, `TrustPolicy` / `AcceptBundledKeys`, the required-argument signature | Phase C | The verifier takes an **optional** caller-supplied statement public key and reports its absence as "not checked". It never resolves a key from the artifact — not from `bundled_key_evidence`, not from an acceptance payload — because that is §5.2 rule C's clamp and a core that harvested the key would make the clamp unreachable. |
+| §5.1 axes, §5.2 `applicability` and the clamps, §5.3 | Phase C | The report carries per-check facts, not axes, and still emits the `verified` boolean §5.2 deletes. Its Phase B definition is *stricter* than v2's: it requires the statement signature to have been checked and valid. |
+| §3.2's `root_governance` as the **replayed** governance state | Phase C | Export requires it as a caller input and refuses by name without it. A project store holds no governance state at all, so deriving it would falsify the one field WI-272 requires to be true in every artifact. The other two `trust_root` digests *are* restated, from the genesis event's signed payload, and a verifier cross-checks them against that event when it is in scope. |
+| §3.2 item 2's direct root-threshold `root_signatures[]` | Phase C | Recognised and **refused**, not tolerated. Checking it needs the current root signer set and threshold; accepting the shape unchecked would be a signed object with no verifier. |
+| §9 rules 1–5 and 7: the export ceremony, the preflight comparison, `.partial`-then-self-verify-then-`os.replace` (D11), `--allow-unverified`'s deletion, exit codes, CLI flags | Phase D | The write order is still v2's (write, rename, verify) and is marked wrong in the module docstring rather than quietly fixed, so the reorder lands with the tests that pin it. `regista bundle export` errors cleanly until D wires the trust material. |
+| §9 rule 6's full dependency closure | Phase D | Phase B closes exactly one dependency, the one O3 needs: the signer's authority event must be inside a `complete-store` bundle, and a bounded range reports it as outside scope. Lifecycle, workflow, delegation and verdict-supersession closure are D's. |
+| §9 rule 6 credential transport (`sections.action_delegation_credentials`) | Phase E, deferred post-cutover by O1 | The section set is **closed**, so a bundle carrying one is refused rather than accepted with an unread section. Per O1 the deferral is safe because the pre-existing behaviour already fails closed. |
+
+**One construction detail that has no frozen vector**, stated rather than left for a second
+implementer to discover: §3.7's section-digest tag `regista.bundle.section.v1` is **not** in
+the P0.3 vector manifest — the frozen set covers the membership leaf, node and tree only.
+It is pinned by regista's own tests instead. A future vector for it would be cheap and is
+worth having.

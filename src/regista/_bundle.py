@@ -31,6 +31,15 @@ here, and why each deletion is safe:
     other way — :func:`_event_from_member` recomputes the row view *from* the envelope —
     which is the same discipline ``verify_event_strict`` applies to a live row.
 
+``_hash_event`` / ``_verify_work_item_chains``
+    Both walked chains over *row-shaped* :class:`~regista._types.Event` values. A v3 event
+    record has no row, so the per-entity walk became :func:`_verify_entity_chains`, which
+    reads ``chain.previous_entity_event_hash`` out of the signed envelope — the same
+    invariant with one fewer copy of the data. Keeping the row-shaped pair beside it would
+    have been the fifth and sixth copies of the chain-hash formula, and the copies have a
+    history: mutation M20 reverted ``_hash_event`` to the legacy formula and the suite
+    stayed green.
+
 ``_verify_global_chain``
     Replaced by ``_bundle_v3.derive_chain_order``, which is strictly stronger and for a
     reason found the hard way. The old walk treated an event whose predecessor was not in
@@ -65,7 +74,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import hmac as _hmac
 import os
 import uuid
 from collections.abc import Mapping, Sequence
@@ -1312,82 +1320,6 @@ def _verify_event_signatures(
         verified_count += 1
 
     return verified_count, unverifiable_count, errors, errors_unverifiable
-
-
-def _hash_event(event: Event) -> bytes | None:
-    """The chain head hash this event contributes, in ITS OWN version's formula.
-
-    Delegates to :func:`regista._signing.compute_chain_head_hash`, which is where the
-    formula lives for the whole tree. This function used to hand-copy the version
-    dispatch, which made it the **fifth** copy — and the copies have a history:
-    mutation M20 reverted this one to the legacy formula and the suite stayed green
-    (NOTES-P17 finding 15), and ``_in_memory_replay`` carried the legacy formula in
-    both its chain walks, which made a healthy in-memory v6 epoch report five chain
-    breaks (finding 16). Finding 16 centralised the formula; this is that
-    centralisation finishing the job it started, found by the phase-4 ceremony.
-
-    ``None`` when the event carries no bytes to chain on. Under bundle v3 that case is
-    unreachable from an artifact — §3.6 refuses to represent an event without an
-    envelope — but the helper is also called on live-store events, where a pre-002 row
-    can still turn up, and "no envelope" is not "a zero hash".
-    """
-
-    if event.canonical_envelope is None or event.signature is None:
-        return None
-    from ._signing import compute_chain_head_hash
-
-    return compute_chain_head_hash(
-        bytes(event.canonical_envelope), bytes(event.signature)
-    )
-
-
-def _verify_work_item_chains(events: list[Event]) -> tuple[bool, str]:
-    """Per-entity chain walk over :class:`~regista._types.Event` values.
-
-    Retained for callers holding row-shaped events (replay, the live-store paths). The
-    bundle-v3 verifier uses :func:`_verify_entity_chains`, which reads the signed envelope
-    instead of a projected row — the same invariant, one fewer copy of the data.
-    """
-    from collections import defaultdict
-
-    by_entity: dict[tuple[str, uuid.UUID], list[Event]] = defaultdict(list)
-    for evt in events:
-        entity_key = (evt.entity_kind, evt.effective_entity_id)
-        by_entity[entity_key].append(evt)
-
-    for (ek, eid), entity_events in by_entity.items():
-        entity_events.sort(key=lambda e: e.event_seq)
-
-        entity_event_hashes: set[bytes] = set()
-        for evt in entity_events:
-            head = _hash_event(evt)
-            if head is not None:
-                entity_event_hashes.add(head)
-
-        prev_hash: bytes | None = None
-        for i, evt in enumerate(entity_events):
-            if i == 0:
-                if evt.prev_event_hash is not None:
-                    if bytes(evt.prev_event_hash) in entity_event_hashes:
-                        return False, (
-                            f"first event for {ek}/{eid} references an event "
-                            f"within the slice — slice is incomplete"
-                        )
-            else:
-                if evt.prev_event_hash is None:
-                    return False, (
-                        f"event {evt.event_id} (seq {evt.event_seq}) "
-                        f"for {ek}/{eid} has null prev_event_hash"
-                    )
-                if prev_hash is not None:
-                    if not _hmac.compare_digest(prev_hash, bytes(evt.prev_event_hash)):
-                        return False, (
-                            f"hash chain mismatch for {ek}/{eid} at seq {evt.event_seq}"
-                        )
-            head = _hash_event(evt)
-            prev_hash = head
-
-    return True, ""
 
 
 __all__ = [
