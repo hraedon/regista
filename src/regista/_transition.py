@@ -420,16 +420,27 @@ def _verified_prior_delegation_principals(
 
     if material is None:
         material = _prior_event_delegation_material(conn)
+    v6_epoch_open = _v6_epoch_open(conn)
     principals: set[str] = set()
     for event in events:
         if not include_event(event):
             continue
         if not event.canonical_envelope:
-            continue
+            if not v6_epoch_open:
+                continue
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                "validator prior-event delegation envelope is missing",
+            )
         try:
             envelope = parse_v6_envelope_strict(bytes(event.canonical_envelope))
-        except (V6EnvelopeError, TypeError, ValueError):
-            continue
+        except (V6EnvelopeError, TypeError, ValueError) as exc:
+            if not v6_epoch_open:
+                continue
+            raise RegistaError(
+                ErrorCode.ACTION_DELEGATION_INVALID,
+                "validator prior-event delegation envelope is malformed",
+            ) from exc
         authorization = envelope["authorization"]
         if authorization["mode"] != "delegated":
             continue

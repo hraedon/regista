@@ -832,19 +832,32 @@ def store_referents(conn: Any, *, label: str = "project store") -> StoreReferent
 
     from psycopg.sql import SQL
 
-    statement = (
-        SQL("SELECT canonical_envelope, signature FROM events")
-        if getattr(conn, "provides_transactional_isolation", True) is False
-        else SQL(
-            "SELECT canonical_envelope, signature FROM events "
-            "UNION ALL SELECT canonical_envelope, signature FROM events_archive"
-        )
-    )
+    statement: Any | None = None
+
+    def event_statement() -> Any:
+        nonlocal statement
+        if statement is not None:
+            return statement
+        if getattr(conn, "provides_transactional_isolation", True) is False:
+            statement = SQL("SELECT canonical_envelope, signature FROM events")
+            return statement
+        row = conn.execute(
+            SQL("SELECT to_regclass(%s) AS relation"),
+            ["events_archive"],
+        ).fetchone()
+        if row is not None and row["relation"] is not None:
+            statement = SQL(
+                "SELECT canonical_envelope, signature FROM events "
+                "UNION ALL SELECT canonical_envelope, signature FROM events_archive"
+            )
+            return statement
+        statement = SQL("SELECT canonical_envelope, signature FROM events")
+        return statement
 
     def rows() -> Iterator[Mapping[str, Any]]:
         cursor_factory = getattr(conn, "cursor", None)
         if cursor_factory is None:
-            yield from conn.execute(statement).fetchall()
+            yield from conn.execute(event_statement()).fetchall()
             return
         import uuid as _uuid
 
@@ -852,9 +865,10 @@ def store_referents(conn: Any, *, label: str = "project store") -> StoreReferent
         # or takes a savepoint inside the caller's, and the scan is drained inside
         # this block so the savepoint's lifetime is the scan's.
         with conn.transaction():
+            scan_statement = event_statement()
             with cursor_factory(name=f"referents_{_uuid.uuid4().hex[:8]}") as scan:
                 scan.itersize = _REFERENT_STREAM_SIZE
-                scan.execute(statement)
+                scan.execute(scan_statement)
                 yield from scan
 
     def credential_rows() -> Iterator[Mapping[str, Any]]:
