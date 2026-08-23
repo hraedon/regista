@@ -137,12 +137,8 @@ Building on `ARCHITECTURE-0.6.0.md:198-233`, with the additions marked **[+]** (
     "external_evidence": "sha256:..."
   },
 
-  "epoch": {                                        // [+]
-    "cutover_event_hash": "sha256:...|null",
-    "legacy_event_count": 303820,
-    "v6_event_count": 48689,
-    "scheme_counts": {"hmac-sha256": 303820, "ed25519": 48689}
-  },
+  // SUPERSEDED — the `epoch` block is DROPPED and FORBIDDEN; see the E2 marker below §3.2's
+  // hard rules. It is not a member of the statement, and a statement carrying it is rejected.
 
   "trust_root": {                                   // [Δ] replaces `governance` — collision 12
     "trust_domain_id": "uuid",
@@ -172,7 +168,14 @@ Hard rules:
 
 - **Every section named in `section_digests` MUST be present in `sections`, and every section present MUST be named in `section_digests`.** A one-sided set is a rejection. This is what makes "delete a whole section" fail without enumerating fields — the *set of section names* is signed, not just their contents.
 - `scope.event_count` MUST equal the number of leaves in the membership tree AND the length of `sections.events`. Two independent equalities, one signature.
-- `epoch.legacy_event_count + epoch.v6_event_count` MUST equal `scope.event_count`.
+- ~~`epoch.legacy_event_count + epoch.v6_event_count` MUST equal `scope.event_count`.~~
+  **SUPERSEDED — decision E2, wording confirmed at the Phase B implementation review
+  (2026-08-23). The `epoch` block does not exist, so neither does this rule.**
+- `trust_root` and `signer` are **closed objects**: exactly the members listed above, no more.
+  A `trust_root` or `signer` carrying an unlisted member is a rejection, for the same reason
+  §3.1 rule 3 rejects an unlisted top-level key.
+- **Exactly one of `signer` and `root_signatures` is present.** A statement carrying both, or
+  neither, is a rejection.
 - `trust_root.root_governance` MUST be the current governance state obtained by replaying the
   signed trust-domain governance log through the authenticated trust-log checkpoint. It is not
   copied from genesis, configuration or a mutable projection. A verifier compares the replayed
@@ -205,6 +208,30 @@ Hard rules:
 >    checkpoints and verdict supersession. **Missing closure in `complete-store` is invalid**; a
 >    bounded range reports the named dependency as outside scope — never silently valid.
 
+> **SUPERSEDED — decision E2 (`EPOCH-RESET.md:69`), normative wording CONFIRMED at the Phase B
+> implementation review, 2026-08-23.** The statement `epoch` block — `cutover_event_hash`,
+> `legacy_event_count`, `v6_event_count`, `scheme_counts` — is **dropped**, and the E2 question
+> the 2026-08-23 amendment left open ("*forbidden* or merely *not emitted*") is settled in the
+> strict direction:
+>
+> 1. **`epoch` is not a member of the statement.** The statement's member set is **closed** to
+>    exactly `type`, `version`, `bundle_id`, `project_instance_id`, `trust_domain_id`,
+>    `created_at`, `scope`, `event_membership_root`, `section_digests`, `trust_root`, `exporter`,
+>    and exactly one of `signer` / `root_signatures`. Export does not emit `epoch`.
+> 2. **A statement carrying `epoch` is REJECTED, not ignored.** §3.1 rule 3 rejects unknown
+>    *top-level* keys because "a v2 verifier's tolerance of extra keys is how `public_keys`
+>    quietly became a trust root"; the same argument applies one level down and with more force,
+>    because the statement is the *signed* object. A tolerated `epoch` block would be signed
+>    content that no verifier checks — attacker-chosen counts inside a valid signature, which is
+>    the S4 shape this document exists to remove. So the closed member set is enforced at verify
+>    with a named error, and `epoch` is named explicitly in the refusal so an operator holding a
+>    pre-E2 artifact reads a diagnosis rather than "unknown key".
+> 3. **There is no migration path and none is owed.** §2's rationale applies unchanged: bundles
+>    are regenerable artifacts, no pre-E2 v3 bundle was ever exported (`BUNDLE-V3.md`'s §3.2 was
+>    contract-only until Phase B), and a re-export costs one command.
+> 4. **D8 loses its `epoch` limb** and L5 lapses with the field. The remaining D8 additions
+>    (`trust_root.root_governance`, `signer.fingerprint`, `exporter`) are unaffected.
+
 ### 3.3 Membership — the part that must not require enumerating fields
 
 **Leaf.** For the event at `scope_ordinal` `i` (0-based, **project-chain traversal order**, local
@@ -214,10 +241,20 @@ to the signed scope):
 leaf_i = SHA256( b"regista.bundle.member.v1\x00" ‖ uint64be(i) ‖ event_hash_i )
 ```
 
-where `event_hash_i` is the **version-aware** event hash: v1–v5 use
+> **SUPERSEDED — `EPOCH-RESET.md:69`, wording confirmed at the Phase B implementation review
+> (2026-08-23). There is ONE event-hash construction, because there is one epoch.**
+> `event_hash_i` is the v6 event hash: the domain-separated, length-framed construction at
+> `V6-ENVELOPE.md` §5.3 (`regista.event.hash.v1`). The version-aware dispatch below, and the
+> mixed-epoch requirement in correction 1 of the next marker, **lapse** with the mixed corpus
+> `EPOCH-RESET.md:69` deleted. A v3 bundle cannot contain a v1–v5 event at all: §3.6 already
+> refuses to represent an event with no v6 canonical envelope, so the legacy formula has no
+> reachable input. Keeping a second construction alive for an empty case is how two
+> implementations end up disagreeing about a hash nobody ever computes.
+
+~~where `event_hash_i` is the **version-aware** event hash: v1–v5 use
 `SHA256(canonical_envelope ‖ signature)`; **v6 uses the domain-separated, length-framed
 construction at `V6-ENVELOPE.md` §5.3.** Every event reference — here and everywhere else — uses
-the *referenced event's* version-derived hash.
+the *referenced event's* version-derived hash.~~
 
 **Tree.** RFC 6962 (Certificate Transparency) Merkle tree, with named domains:
 
@@ -230,10 +267,12 @@ MTH(D[n])      = SHA256( b"regista.bundle.node.v1\x00" ‖ MTH(D[0:k]) ‖ MTH(D
 
 > **SUPERSEDED — `RECONCILIATION.md` Resolution 4, collisions 9 and 10.** Three corrections:
 >
-> 1. **The event hash is version-aware.** Hardcoding the legacy formula would compute a v6
+> 1. ~~**The event hash is version-aware.** Hardcoding the legacy formula would compute a v6
 >    event's identity with the v1–v5 construction, so a v6 event's membership leaf would not
 >    match the hash the chain itself commits to. Every hash reference in a mixed-epoch bundle —
->    and every bundle over a cut-over project is mixed — depends on this.
+>    and every bundle over a cut-over project is mixed — depends on this.~~
+>    **SUPERSEDED by `EPOCH-RESET.md:69` — one epoch, one construction; see the marker above.**
+>    Corrections 2 and 3 stand unchanged and are the load-bearing half.
 > 2. **No leading `0x00` on the leaf, and no bare `0x01` on interior nodes.** The domain tags
 >    (`regista.bundle.member.v1\x00`, `regista.bundle.node.v1\x00`) *are* the separation; the
 >    extra byte was an unreconciled difference between this document and the architecture, and
@@ -242,8 +281,10 @@ MTH(D[n])      = SHA256( b"regista.bundle.node.v1\x00" ‖ MTH(D[0:k]) ‖ MTH(D
 > 3. **The ordinal is `scope_ordinal`, local to the signed scope**, derived from chain traversal.
 >    It is never `global_seq` and never a store-wide index.
 >
-> **Byte vectors for the leaf, the node, an odd-length tree and a mixed-epoch tree are frozen
-> under P0.3.** Do not implement this section without them.
+> **Byte vectors for the leaf, the node and an odd-length tree are frozen under P0.3**
+> (`tests/vectors/v6/bundle-merkle-empty.json`, `-single`, `-two`, `-three`, `-five`). Do not
+> implement this section without them. The mixed-epoch vector is retired with the mixed corpus
+> (`EPOCH-RESET.md:66`) and is not a conformance target for the bundle-v3 implementation.
 
 Three reasons this exact tree and not a rolling hash:
 
@@ -397,9 +438,24 @@ WI-209 specified this area first and most of it survives. Where it changes, it i
 |---|---|
 | 1. Registry⇄chain consistency — every registry key used for verification has a matching `principal_enrolled` event in the bundle whose fingerprint equals `sha256(public_key)` | **Kept, and strengthened.** No longer "a registry key with no enrollment is reported and treated as operator-asserted" — under v3 a key with no enrollment event is **not usable for verification at all**, because verification keys come from the policy. The consistency check becomes a corroboration finding (§4.3), which is the correct demotion. Enrollment events live in `sections.key_lifecycle` and are themselves strict-verified. |
 | 2. Enrollment-before-use ordering — a key verifies only events after its enrollment; rotation/revocation bound the window the same way | **Kept verbatim, and it is now checkable.** Enrollment-before-use MUST be evaluated on **chain ordinal** (membership-tree position) and on the signed `timestamp`; `global_seq` is only an unsigned locator and never a security ordering input. The ordinal check is new. |
-| 3. Anchor coverage report — distinguish anchored bindings from unanchored-tail bindings | **Replaced.** There are zero `anchor_receipts` estate-wide (verified: `affected_anchors=[]` for all 26 schemas in `preflight-s1.json`), and anchoring is being deleted. The axis WI-209 wanted survives as **`epoch_binding`** (§5.1 A6): bindings covered by an externally-authenticated **cutover checkpoint** versus bindings in the post-checkpoint tail. Same shape, honest mechanism. `ARCHITECTURE-0.6.0.md:271-273` says the same thing; I am agreeing with it explicitly and naming the replacement axis. |
+| 3. Anchor coverage report — distinguish anchored bindings from unanchored-tail bindings | ~~**Replaced.** There are zero `anchor_receipts` estate-wide (verified: `affected_anchors=[]` for all 26 schemas in `preflight-s1.json`), and anchoring is being deleted. The axis WI-209 wanted survives as **`epoch_binding`** (§5.1 A6): bindings covered by an externally-authenticated **cutover checkpoint** versus bindings in the post-checkpoint tail. Same shape, honest mechanism.~~ **SUPERSEDED — decision E3; see the marker below this table. `epoch_binding` is dropped: there is no cutover checkpoint to be covered by. WI-209 criterion 3 is DROPPED OUTRIGHT, not replaced.** |
 | 4. `--trusted-fingerprints <file>`; fail closed on disagreement with the bundle registry | **Kept and hardened.** WI-209 made it an option. Bundle v3 makes trust material a **required argument** (§4.1). "Fail closed on disagreement" is retained: a bundled key whose fingerprint contradicts a pinned fingerprint for the same key id is `invalid`, not merely reported. |
 | 5. Genesis ceremony runbook published through a channel the operator does not solely control | **Kept; owned by sibling B.** Owner decision Q2 (WI-272) settles the channel: a dedicated public git repository under an account distinct from the estate's operational identity, one command, canonical JSON. Bundle v3 consumes its output as `known_project_head` and `min_trust_log_checkpoint`. |
+
+> **SUPERSEDED — decision E3 (`EPOCH-RESET.md:69`), normative wording CONFIRMED at the Phase B
+> implementation review, 2026-08-23.** Axis A6 `epoch_binding` (§5.1) does not exist, and row 3
+> above therefore names no replacement. The reasoning is the same as E2's and it is worth being
+> exact about the difference from D6: D6 argued that WI-209's anchor-coverage axis should be
+> *replaced* rather than dropped, because the property it wanted — "which bindings are covered by
+> something external" — was real even after anchoring went. Under the epoch reset the *specific*
+> external thing A6 named, a cutover checkpoint over a legacy region, has no referent: there is
+> no legacy region. A6's four values are all statements about that checkpoint, so all four are
+> permanently `checkpoint_absent`. **The general property survives, and it survives where it was
+> always properly located** — A5 `event_trust_root` and A7 `scope_corroboration`, which say
+> whether the trust root and the head were externally pinned. So nothing measurable is lost;
+> what is removed is a third axis that would report the same constant on every artifact regista
+> can produce. A published axis whose value is fixed by construction teaches an auditor that a
+> distinction exists where none does.
 
 WI-209's stated out-of-scope (CT-style key transparency, witness countersignatures) remains out of scope, and the reasoning has *strengthened*: the owner's Q2 decision explicitly accepts that the channel cannot prevent a false publication, only make substitution detectable.
 
@@ -453,7 +509,7 @@ So: **keep WI-269's split, and add a fourth axis for membership.** WI-269 named 
 | A5 | `event_trust_root` | `externally_pinned` \| `trust_log_only` \| `bundled_only` \| `absent` — aggregated from per-event `TrustedKeySource` (`:102-107`) |
 | A11 | `event_attribution_counts` | `{individual, shared_secret, none}` — counts, not a verdict |
 | A12 | `key_binding_counts` | counts per `RESULT-MODEL.md` §10 `key_binding` value, **including `recovery_rotated` and `legacy_unbound`** |
-| A6 | `epoch_binding` | `checkpoint_externally_authenticated` \| `checkpoint_present_unauthenticated` \| `checkpoint_absent` \| `checkpoint_invalid` |
+| ~~A6~~ | ~~`epoch_binding`~~ | **DROPPED — decision E3, see §4.4's E3 marker and the E3 marker below this table. The axis does not exist and its number is not reused.** |
 | A7 | `scope_corroboration` | `matches_pinned_head` \| `no_pin_supplied` \| `contradicts_pinned_head` |
 | A8 | `registry_chain_consistency` | `consistent` \| `inconsistent` \| `not_applicable` (§4.3) |
 | A9 | `governance` | `matches_policy` \| `unverified_restatement` \| `contradicts_policy` |
@@ -482,6 +538,16 @@ WI-269's three map on as: `internally_consistent` → A1+A3; `signatures_valid_a
 >    Resolution 4; this is the precise form of "key-material source and trust source are
 >    separate", collision 11.)
 
+> **SUPERSEDED — decision E3, normative wording CONFIRMED at the Phase B implementation review,
+> 2026-08-23.** **A6 `epoch_binding` is struck from the axis table.** The axis set is
+> A1–A5 and A7–A12; the number 6 is retired and not reused, so a report emitted by an older
+> implementation and one emitted by this one cannot silently disagree about what "A6" meant.
+> Every other row is unaffected, and the AMENDED marker above stands in full. The reasoning is
+> in §4.4's E3 marker. **`legacy_epoch_policy` and `accept_legacy_shared_secret_events` in the
+> §4.2 policy field list are likewise vestigial under the reset** — a policy may carry them and a
+> verifier reads them, but with no legacy events in scope they can never change a verdict; that
+> is `TRUST-DOMAIN.md` §4.6's field to retire or keep, not this document's.
+
 ### 5.2 The summary field
 
 WI-269 permits "a single summary field only if it is defined as the WEAKEST of the three". Bundle v3 defines `applicability`, ordered, and it is the **minimum** over the rules below.
@@ -491,7 +557,7 @@ WI-269 permits "a single summary field only if it is defined as the WEAKEST of t
 | `invalid` | any axis is `malformed` / `mismatch` / `invalid` / `contradicts_*`, or any event is `Applicability.INVALID` |
 | `unauthenticated` | parses, A3 = `complete_for_claimed_scope`, but nothing was authenticated to anything: A2 = `absent`, or A2 = `valid_bundled_key` without an explicit `AcceptBundledKeys` |
 | `bundle_rooted` | A2 = `valid_bundled_key` **with** explicit `AcceptBundledKeys`, and/or A5 = `bundled_only`. **Never a trust statement.** Ceiling rule C below |
-| `legacy_checkpoint_bound` | A2 = `valid_external_root`, A6 = `checkpoint_externally_authenticated`, and the events in scope are legacy-epoch (A4 = `legacy_partial` or `none_verifiable`). **Requires an externally pinned checkpoint** — a bundled-only checkpoint is `checkpoint_present_unauthenticated` and cannot exceed `bundle_rooted` (collision 14). **Mixed `complete-store` scope** qualifies only if every legacy event is covered by the pinned checkpoint, every v6 event is fully authenticated, and no epoch violation exists |
+| ~~`legacy_checkpoint_bound`~~ | ~~A2 = `valid_external_root`, A6 = `checkpoint_externally_authenticated`, and the events in scope are legacy-epoch (A4 = `legacy_partial` or `none_verifiable`). **Requires an externally pinned checkpoint** — a bundled-only checkpoint is `checkpoint_present_unauthenticated` and cannot exceed `bundle_rooted` (collision 14). **Mixed `complete-store` scope** qualifies only if every legacy event is covered by the pinned checkpoint, every v6 event is fully authenticated, and no epoch violation exists~~ **DROPPED — decision E3; see the marker below the clamping rules.** |
 | `externally_authenticated` | A2 = `valid_external_root`, A5 = `externally_pinned`, A4 = `full` for every in-scope event |
 
 Clamping rules, applied after the table:
@@ -503,9 +569,41 @@ Clamping rules, applied after the table:
   `contiguous-range` remaining, there is no scope ceiling.
 - **Rule H (head ceiling):** `scope.kind = "complete-store"` with A7 = `no_pin_supplied` does **not** clamp, but the report MUST carry `tail_truncation_undetectable: true`. This is `ARCHITECTURE-0.6.0.md:875` residual 6 made machine-readable rather than left in release notes.
 
+> **SUPERSEDED — decision E3, normative wording CONFIRMED at the Phase B implementation review,
+> 2026-08-23.** The `legacy_checkpoint_bound` verdict value is **dropped from the lattice.** The
+> ordered values are `invalid` < `unauthenticated` < `bundle_rooted` < `externally_authenticated`.
+>
+> Two consequences a reviewer should check rather than assume:
+>
+> 1. **No verdict is silently promoted.** `legacy_checkpoint_bound` sat between `bundle_rooted`
+>    and `externally_authenticated`, and its entry conditions required A4 to be *worse* than
+>    `full`. Under the reset there are no legacy events, so the only bundles that could have
+>    reached it are bundles that now either reach `externally_authenticated` on their own merits
+>    (A4 = `full` for every event) or fall to `unauthenticated`/`invalid`. Removing the row
+>    cannot lift anything: nothing that failed `externally_authenticated`'s conditions passes
+>    them now.
+> 2. **Exit-code semantics collapse to three values, not two.** §9 rule 7 and §10's table both
+>    gave `legacy_checkpoint_bound` exit 0. With the row gone, exit 0 is reachable only from
+>    `externally_authenticated`, which is *stricter* — an HMAC-era store could have exited 0 and
+>    now no store can, because no store contains HMAC-era events.
+>
+> **Rule C and Rule H are unaffected.** Rule C's clamp target (`bundle_rooted`) survives, and
+> Rule H's `tail_truncation_undetectable` flag is orthogonal to the epoch.
+
 **There is no `verified: bool`.** Not deprecated — absent. If a caller-supplied policy is present, `policy_satisfied: bool` may be emitted, and it is true only when every requirement the caller named is met. `BundleVerificationReport.verified` (`src/regista/_bundle.py:84`) and its `to_dict` key (`:104`) are deleted.
 
 ### 5.3 Divergence from the architecture's verdict list
+
+> **SUPERSEDED in part — decision E3, normative wording CONFIRMED at the Phase B implementation
+> review, 2026-08-23.** This section's arithmetic ("I keep three of five and change two") is
+> restated: of the architecture's five values, **two are kept** (`externally_authenticated`,
+> `invalid`), **two are changed** (`internally_consistent` → `unauthenticated`; `unverifiable`
+> dropped as a final value), **one is dropped outright** (`legacy_checkpoint_bound`), and one is
+> added (`bundle_rooted`). The three bullets below stand as written; what changes is only that
+> `legacy_checkpoint_bound` is no longer among the kept values. This is a consequence of the
+> epoch reset, **not a reversal of the judgement** that recorded it as worth keeping: at the time
+> the estate held 303,820 unattributable events and the value was the only honest thing a report
+> could say about them. `EPOCH-RESET.md` removed the population, not the argument.
 
 `ARCHITECTURE-0.6.0.md:284-290` proposes final values `externally_authenticated | internally_consistent | legacy_checkpoint_bound | invalid | unverifiable`. I keep three of five and change two:
 
@@ -627,7 +725,7 @@ WI-269 flagged the real cost: 38 `assert not verified` sites, of which ~33 sit o
    artifact missing a referenced credential will be invalid; a partial artifact that names the
    missing dependency will be unverifiable. Bundle v2 does not transport credentials, and delegated
    audit from bundle-v2 evidence is therefore unverifiable rather than silently trusted.
-7. **HMAC-era export is a normal success.** With v3, exporting from an 86%-HMAC store produces a bundle whose statement signature is externally verifiable. `--allow-unverified` (`src/regista/_cli.py:990`) is deleted; the exit code is driven by the `applicability` the export's own self-verification reached, and `legacy_checkpoint_bound` is exit 0.
+7. ~~**HMAC-era export is a normal success.** With v3, exporting from an 86%-HMAC store produces a bundle whose statement signature is externally verifiable.~~ **SUPERSEDED in part — decision E3, wording confirmed at the Phase B implementation review (2026-08-23): there is no HMAC era to export from, and `legacy_checkpoint_bound` is dropped from the lattice (§5.2).** What survives, and is the operative rule: `--allow-unverified` (`src/regista/_cli.py:990`) is deleted; the exit code is driven by the `applicability` the export's own self-verification reached. Exit 0 requires `externally_authenticated`. A v3 export whose self-verification lands at `bundle_rooted` or `unauthenticated` is a non-zero exit, because there is no longer a legacy corpus for which a lower verdict was the honest ceiling.
 
 ---
 
@@ -685,7 +783,7 @@ There is no third form. If you supply neither, the command refuses to run (§4.1
 | `applicability` | Exit | What you may write in your report | What you must NOT write |
 |---|---|---|---|
 | `externally_authenticated` | 0 | "Every event in the declared scope is individually signature-verifiable against a key chaining to the root fingerprint I pinned on <date>, and the bundle's membership is signed by a permitted authority under that root." | that timestamps are true; that the operator could not have fabricated history before creating it — see below |
-| `legacy_checkpoint_bound` | 0 | "The membership statement and the cutover checkpoint verify against my pinned root. The N legacy events in this bundle are exactly the bytes the cutover signer committed to, and have not changed since. They are **not** individually attributable to the principals they name." | "the legacy history is verified"; "actor X performed action Y" for any legacy event |
+| ~~`legacy_checkpoint_bound`~~ | ~~0~~ | ~~"The membership statement and the cutover checkpoint verify against my pinned root. The N legacy events in this bundle are exactly the bytes the cutover signer committed to, and have not changed since. They are **not** individually attributable to the principals they name."~~ **DROPPED — decision E3 (§5.2). A 0.6.0 bundle never reaches this verdict; if a tool reports it to you, it is not a conforming v3 verifier.** | ~~"the legacy history is verified"; "actor X performed action Y" for any legacy event~~ |
 | `bundle_rooted` | 2 | "Signatures verify, but against keys carried inside the artifact. This is self-consistency, not authentication. I have no external evidence about this bundle." | anything containing the word "verified" without the qualifier |
 | `unauthenticated` | 2 | "The document is well-formed and internally consistent. Nothing in it was authenticated to anything I hold." | anything positive |
 | `invalid` | 1 | quote the failing axis and the finding verbatim | — |
@@ -718,16 +816,21 @@ Where I depart from `ARCHITECTURE-0.6.0.md` §2 or WI-209, or where they are amb
 
 **D5 — Enrollment-before-use is ordered by chain ordinal, not `global_seq`.** WI-209 acceptance criterion 2 says "events with global_seq after its enrollment event". `global_seq` is unsigned by design (`src/regista/_verification.py:430-434`) and a row-write attacker can move an event across any `global_seq` watermark. Ordering a security check on it is unsound. §4.4.
 
-**D6 — WI-209's anchor-coverage axis is replaced, not dropped.** WI-209 criterion 3 assumes anchoring. Zero receipts exist and anchoring is deleted. The axis becomes `epoch_binding` (A6): checkpoint-covered vs post-checkpoint tail. §4.4.
+**D6 — ~~WI-209's anchor-coverage axis is replaced, not dropped.~~** ~~WI-209 criterion 3 assumes anchoring. Zero receipts exist and anchoring is deleted. The axis becomes `epoch_binding` (A6): checkpoint-covered vs post-checkpoint tail.~~ **SUPERSEDED — decision E3, wording confirmed at the Phase B implementation review (2026-08-23). The divergence is now the opposite one: WI-209 criterion 3 is dropped outright and nothing replaces it, because the coverage relation it wanted (covered by an external checkpoint vs not) is answered by A5 and A7 rather than by an axis of its own. §4.4, §5.1.**
 
 **D7 — Event records are base64, not hex.** The current exporter hex-encodes (`src/regista/_bundle.py:1697-1706`); the architecture's example uses base64 (`:190-195`) without saying it is a change. It is, and it matters: at 352k events the difference is whether the estate's largest project fits under `MAX_BUNDLE_BYTES`. Flagged so it is a decision, not a transcription. §3.6.
 
-**D8 — `epoch`, `trust_root.root_governance`, `signer.fingerprint` and `exporter` are part of the
+**D8 — `trust_root.root_governance`, `signer.fingerprint` and `exporter` are part of the
 statement.** Architecture `:200-232` omits them. `root_governance` is the current state replayed
 from the signed trust-domain log, not a genesis-derived input to `trust_domain_id`; it is required
-by WI-272's visible-artifact constraint. `epoch` makes `legacy_checkpoint_bound` computable without
-re-scanning; `signer.fingerprint` lets pin comparison bypass the bundled registry; `exporter` is
-diagnostic. §3.2.
+by WI-272's visible-artifact constraint. `signer.fingerprint` lets pin comparison bypass the
+bundled registry; `exporter` is diagnostic. §3.2.
+
+> **SUPERSEDED in part — decision E2, wording confirmed at the Phase B implementation review
+> (2026-08-23).** D8 no longer lists `epoch`, and its justification for it ("`epoch` makes
+> `legacy_checkpoint_bound` computable without re-scanning") falls with E3's removal of that
+> verdict. The block is forbidden at verify, not merely unemitted — §3.2's E2 marker carries the
+> rule and the reasoning. The three remaining D8 additions are unchanged.
 
 **D9 — `external_evidence` may never raise a verdict axis.** Architecture `:186` says "optional externally obtained evidence, explicitly classified" but does not say what classification *does*. Left unstated, someone will make a bundled copy of a checkpoint count as external evidence, which is BC-016 again. §4.6.
 
@@ -751,7 +854,15 @@ Flagged for the owner and for implementation review.
 
 **L4 — RESOLVED (owner ruling O3, 2026-08-23 amendment): permitted, provided the key explicitly bears `may_sign_bundles`.** Whether the bundle-signing key should be permitted to equal the project writer key. I left it to the trust policy (§3.4). Separating them is better hygiene, but it is another key to provision in a one-way ceremony (`ARCHITECTURE-0.6.0.md:772`, WI-235's codec contract), and the marginal security is small when the same operator holds both. Sibling B owns this and should decide it deliberately.
 
-**L5 — `epoch.scheme_counts` in the statement is a self-report.** It is checkable by re-scanning the events in the bundle, and the verifier should do so. But for a `contiguous-range` bundle the counts describe only the range, while the natural reading is "the project". I specified range semantics; the field name invites the wrong reading and may want renaming to `scope_scheme_counts`.
+**L5 — LAPSED (decision E2, wording confirmed at the Phase B implementation review,
+2026-08-23): the `epoch` block is gone, so `epoch.scheme_counts` has no referent and the
+renaming question it raised has no subject.** ~~`epoch.scheme_counts` in the statement is a
+self-report. It is checkable by re-scanning the events in the bundle, and the verifier should do
+so. But for a `contiguous-range` bundle the counts describe only the range, while the natural
+reading is "the project". I specified range semantics; the field name invites the wrong reading
+and may want renaming to `scope_scheme_counts`.~~ The general warning L5 raised — that a signed
+self-report describing a *scope* invites reading as a report about the *project* — survives and
+applies to `scope` itself; §3.5's table is where that distinction is now carried.
 
 **L6 — Interaction with `events_archive` consolidation (§9.3).** WI-259 says export must read the complete logical stream. Stage 4 restores archived rows *before* cutover (`ARCHITECTURE-0.6.0.md:681-683`). If any project is exported between now and that restoration, a `complete-store` statement would be a signed false claim. The safe rule is: **`complete-store` is forbidden until archive consolidation is confirmed complete for that project**, and export must check rather than assume. I have specified the check but not the mechanism by which export learns consolidation is done; that likely belongs to sibling D's preflight.
 
@@ -767,8 +878,8 @@ least-confident areas.
 | # | Clause | Decision | Standing |
 |---|---|---|---|
 | E1 | §3.6 event record encoding | **Confirmed as written.** Event records ship `base64`. | Final |
-| E2 | §3.2 statement `epoch` block | **Direction: dropped as vacuous.** | Direction ratified; wording deferred to Phase B review |
-| E3 | §5.1 A6 `epoch_binding`, §5.2 `legacy_checkpoint_bound` | **Direction: dropped as vacuous.** | Direction ratified; wording deferred to Phase B review |
+| E2 | §3.2 statement `epoch` block | **Dropped as vacuous, and FORBIDDEN at verify.** | Wording landed at Phase B; awaiting review ratification |
+| E3 | §5.1 A6 `epoch_binding`, §5.2 `legacy_checkpoint_bound` | **Dropped as vacuous.** A6 struck from the axis table; the verdict value struck from the lattice. | Wording landed at Phase B; awaiting review ratification |
 | O1 | §9 export contract, §9 rule 6 credential transport | **Verification-complete v3 is the full production ceremony.** Credential transport deferred post-cutover. | Owner-ratified, final |
 | O3 | §12 L4 (`:752`), §3.4 | **RESOLVED.** The statement signer MAY be the project writer key, if that key bears `may_sign_bundles`. | Owner-ratified, final |
 | O4 | §12 L2 (`:748`) | **RESOLVED.** Export over a broken chain is refused, fail-closed. | Owner-ratified, final |
@@ -806,16 +917,45 @@ happen. The axes A1–A5 and A7–A12 are unaffected. §5.3's reasoning for *kee
 `legacy_checkpoint_bound` from the architecture's list is superseded by the reset, not
 by a reversal of judgement.
 
-**Status of E2 and E3.** Direction ratified by two-lineage concurrence 2026-08-23
-(Claude + gpt-5.6-sol); **wording subject to Phase B review**. Sol explicitly declined to
-endorse final normative wording without an implementation review, and that reservation is
-recorded rather than smoothed over: dropping a signed statement field and a verdict value
-touches §3.2, §4.4, §5.1, §5.2, §5.3, §9 and §10, and the exact normative text — including
-whether the `epoch` block becomes *forbidden* or merely *not emitted*, and whether a v3
-verifier must *reject* a statement carrying it under the unknown-top-level-key rule
-(§3.1 rule 3) — is to be confirmed at the Phase B implementation review. No **SUPERSEDED**
-markers are stamped on the affected clauses here for exactly that reason; they land with
-the confirmed wording, not with the direction.
+**Status of E2 and E3 — wording landed at Phase B, 2026-08-23.** Direction was ratified by
+two-lineage concurrence 2026-08-23 (Claude + gpt-5.6-sol) with the wording explicitly held
+back: Sol declined to endorse final normative text without an implementation review, and
+that reservation is recorded rather than smoothed over. **The Phase B implementation has now
+been done, and the wording is landed with SUPERSEDED / DROPPED / LAPSED markers on every
+affected clause: §3.2 (JSON example, hard rules, and a normative E2 marker), §3.3 (the
+version-aware event hash and the mixed-epoch vector, superseded by `EPOCH-RESET.md:69`),
+§4.4 (row 3 and a normative E3 marker), §5.1 (the A6 row and a normative E3 marker), §5.2
+(the `legacy_checkpoint_bound` row and a normative E3 marker), §5.3 (a restated
+divergence count), §9 rule 7, §10 (the auditor's verdict table), §11 D6 and D8, and §12 L5.**
+This paragraph is what a reviewer ratifies; the markers are what they check it against.
+
+**The open question is answered in the strict direction: the `epoch` block is FORBIDDEN at
+verify, not merely not emitted.** The amendment asked "whether the `epoch` block becomes
+*forbidden* or merely *not emitted*, and whether a v3 verifier must *reject* a statement
+carrying it under the unknown-top-level-key rule (§3.1 rule 3)". The answer is yes to
+rejection, on three grounds, in decreasing order of weight:
+
+1. **The statement is the signed object, so tolerance there is worse than tolerance at the
+   top level.** §3.1 rule 3's stated reason for rejecting unknown top-level keys is that "a v2
+   verifier's tolerance of extra keys is how `public_keys` quietly became a trust root". A
+   tolerated member *inside* the statement is attacker-chosen content carried under a valid
+   signature that no verifier checks — a signed field with no verifier is exactly the S4 shape.
+   So the statement's member set is closed and enforced, and rule 3's principle is applied one
+   level down rather than merely gestured at.
+2. **The standing repo rule is to prefer the stricter default**, because loosening later is
+   cheaper than tightening. If a later release wants an epoch-like block, it adds it to the
+   closed set in a reviewed diff; nothing about refusing it now makes that harder.
+3. **The refusal names the field.** A bare "unknown statement key" would leave an operator
+   holding a pre-E2 artifact guessing; the implementation names `epoch` and cites E2, so the
+   error is a diagnosis.
+
+**What Phase B deliberately did NOT decide**, so a reviewer does not read silence as a ruling:
+the sibling documents that still mention the dropped names are untouched —
+`ARCHITECTURE-0.6.0.md:345` (verdict list), `CUTOVER-CLASSIFICATION.md:444`
+(`legacy_checkpoint_bound` as a ceiling) and `RECONCILIATION.md`'s Resolution-4 discussion
+(exempt: it is the overlay). `BUNDLE-V3.md` owns the bundle verdict lattice, so its markers
+are authoritative for the lattice; whether the siblings carry their own markers is a spec-set
+sweep, not a bundle decision, and it is left for whoever owns that sweep.
 
 **O1 — verification-complete bundle v3 IS the full normative production ceremony.**
 The six properties this document specifies — the statement signature (§3.4), Merkle
