@@ -663,13 +663,15 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
             print(f"Bundle exported to {result['output_path']}")
             print(f"  events:           {result['event_count']}")
             print(f"  public_keys:      {result['public_key_count']}")
-            print(f"  bundle_hash:      {result['bundle_hash']}")
+            # Bundle v3 has no bundle_hash: the unkeyed digest is deleted and the
+            # statement signature over the membership root is what an edit breaks
+            # (BUNDLE-V3.md §1, §8).
+            print(f"  membership_root:  {result['event_membership_root']}")
             print(f"  bundle_bytes:     {result['bundle_bytes']}")
             print(
                 f"  self_verified:    {'yes' if sv['verified'] else 'NO'} "
                 f"(signatures {sv['signatures_verified']} verified, "
-                f"{sv['signatures_unverifiable']} unverifiable, "
-                f"check {sv['signature_check']})"
+                f"{sv['signatures_unverifiable']} unverifiable)"
             )
         if not sv["verified"]:
             print(
@@ -712,8 +714,7 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                     f"Bundle verified — {result['event_count']} event(s), "
                     f"{result['signatures_verified']} signature(s) verified, "
                     f"{result['signatures_unverifiable']} unverifiable "
-                    f"(symmetric scheme) "
-                    f"[signature_check={result['signature_check']}]."
+                    f"(symmetric scheme)."
                 )
             else:
                 print("Bundle verification FAILED:")
@@ -730,8 +731,20 @@ def cmd_bundle_verify(args: argparse.Namespace) -> None:
                         "carries — such a bundle proves internal consistency "
                         "and nothing cryptographic."
                     )
-                if not result["bundle_hash_ok"]:
-                    print(f"  bundle_hash: {result['bundle_hash_error']}")
+                # Bundle v3's structural checks. `.get` because the CLI contract tests
+                # stub this report, and a stub that predates a field must not traceback.
+                if not result.get("statement_signature_checked", True):
+                    print(
+                        "  statement_signature: NOT CHECKED — no trust material was "
+                        "supplied, so nothing authenticated this bundle to anything "
+                        "(BUNDLE-V3.md §4.1)"
+                    )
+                elif not result.get("statement_signature_valid", True):
+                    print("  statement_signature: INVALID")
+                if not result.get("membership_root_ok", True):
+                    print("  event_membership_root: recomputed root does not match")
+                if not result.get("section_digests_ok", True):
+                    print("  section_digests: a section does not match its signed digest")
                 if not result["global_chain_ok"]:
                     print(f"  global_chain: {result['global_chain_error']}")
                 if not result["work_item_chain_ok"]:

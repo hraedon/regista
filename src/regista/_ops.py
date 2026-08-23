@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -931,24 +931,44 @@ class ArchiveOps:
         self,
         output_path: str,
         *,
+        root_governance: Mapping[str, Any] | None = None,
+        signing_principal_id: str | None = None,
+        signing_key_id: str | None = None,
+        external_evidence: Sequence[Mapping[str, Any]] = (),
         since_seq: int | None = None,
         until_seq: int | None = None,
     ) -> dict[str, Any]:
+        """Export a bundle v3 artifact (``BUNDLE-V3.md``).
+
+        The store's own :class:`~regista._keys.KeySet` is passed through as the signing
+        material: a v3 bundle *is* a signed statement, so there is nothing to export
+        without it. ``root_governance`` has no default for the reason
+        ``_bundle._trust_root_from_genesis`` documents — the replayed governance state
+        cannot be derived from a project store, and inventing it would falsify the one
+        field WI-272 requires to be true in every artifact.
+        """
         from ._bundle import export_audit_bundle as _impl
 
         return _impl(
             self._mgr,
             self._project,
             output_path,
+            keys=self._keys,
+            root_governance=root_governance,
+            signing_principal_id=signing_principal_id,
+            signing_key_id=signing_key_id,
+            external_evidence=external_evidence,
             since_seq=since_seq,
             until_seq=until_seq,
         )
 
     @staticmethod
-    def verify_bundle_offline(bundle_path: str) -> dict[str, Any]:
+    def verify_bundle_offline(
+        bundle_path: str, *, statement_public_key: bytes | None = None
+    ) -> dict[str, Any]:
         from ._bundle import verify_audit_bundle_offline as _impl
 
-        return _impl(bundle_path).to_dict()
+        return _impl(bundle_path, statement_public_key=statement_public_key).to_dict()
 
 
 class WebhookOps:

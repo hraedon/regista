@@ -679,31 +679,56 @@ class Regista(
         self,
         output_path: str,
         *,
+        root_governance: dict[str, Any] | None = None,
+        signing_principal_id: str | None = None,
+        signing_key_id: str | None = None,
+        external_evidence: tuple[dict[str, Any], ...] = (),
         since_seq: int | None = None,
         until_seq: int | None = None,
     ) -> dict[str, Any]:
-        """Export events and the public-key registry as a self-contained JSON bundle.
+        """Export a signed **bundle v3** audit artifact (``docs/0.6.0/BUNDLE-V3.md``).
 
-        The bundle can be verified offline by a third-party auditor without
-        production database access or private keys (Plan 019 WI-3/WI-4,
-        Plan 028 WI-1.2). ``since_seq``/``until_seq`` bound the exported
-        ``global_seq`` window (exclusive/inclusive) so a corpus larger than
-        the verifier's size cap can be chunked; export refuses to write an
-        artifact the offline verifier would reject, and verifies what it
-        wrote before returning (WI-240).
+        The artifact is a canonical-JSON document whose single signed ``statement``
+        commits to the membership of every event in scope (an RFC 6962 Merkle root over
+        chain-derived ordinals) and to the digest of every section. A third-party auditor
+        verifies it offline, with no database access and no private keys.
+
+        ``root_governance`` — the replayed ``{mode, threshold, signer_count}`` — is
+        required and has no default: §3.2 requires the current governance state obtained
+        by replaying the signed trust-domain log, and forbids copying it from genesis,
+        configuration or a projection. Resolving it is §4 trust-root resolution (WI-289
+        Phase C); until that lands the caller supplies the state it replayed, and export
+        refuses by name rather than attesting a governance claim it invented.
+
+        ``since_seq``/``until_seq`` **select** rows (exclusive/inclusive) so a corpus
+        larger than the verifier's size cap can be chunked. They do not order them: the
+        membership tree's order is derived by walking the chain, and a windowed export
+        declares a ``contiguous-range`` scope anchored to the event before it.
         """
         return self.archive.export_bundle(
-            output_path, since_seq=since_seq, until_seq=until_seq
+            output_path,
+            root_governance=root_governance,
+            signing_principal_id=signing_principal_id,
+            signing_key_id=signing_key_id,
+            external_evidence=external_evidence,
+            since_seq=since_seq,
+            until_seq=until_seq,
         )
 
     @staticmethod
-    def verify_audit_bundle_offline(bundle_path: str) -> dict[str, Any]:
-        """Verify an exported audit bundle without a database connection.
+    def verify_audit_bundle_offline(
+        bundle_path: str, *, statement_public_key: bytes | None = None
+    ) -> dict[str, Any]:
+        """Verify an exported **bundle v3** artifact without a database connection.
 
-        Verifies the bundle hash, global and per-entity hash chains, and
-        event signatures against the bundled public-key registry. Returns a
-        detailed verification report.
+        Recomputes the membership root, every section digest, the chain-derived ordering
+        and the per-event signatures, and checks the statement signature against
+        ``statement_public_key`` — which must come from the caller, because a key taken
+        from the artifact it authenticates authenticates nothing (§4.3). A v1 or v2
+        artifact is refused by name; it is never read as v3 (§2, §6).
         """
         from ._bundle import verify_audit_bundle_offline
 
-        return verify_audit_bundle_offline(bundle_path).to_dict()
+        return verify_audit_bundle_offline(
+            bundle_path, statement_public_key=statement_public_key
+        ).to_dict()
