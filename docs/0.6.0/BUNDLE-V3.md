@@ -745,12 +745,126 @@ Flagged for the owner and for implementation review.
 
 **L1 — RESOLVED: `declared-selection` is deleted, not clamped.** The concern was that it is the one scope kind whose verdict rests on an attestation, and that Rule S's clamp was a policy decision this document made rather than one the architecture stated. `RECONCILIATION.md` Resolution 4 settles it in the safer direction — and adds the sharper reason: the clamp **mislabels an all-v6 selection as legacy**, so the "cautious" behaviour is itself wrong. No concrete 0.6.0 requirement needs filtered export. §3.5.
 
-**L2 — Chain-ordinal traversal at 352k events across a broken chain.** The membership tree requires a total order derived by following `prev_global_event_hash` from genesis. If the chain has a break, there is no traversal and therefore no bundle. That is correct behaviour, but it means a store with one broken link cannot export **any** bundle, including the diagnostic one an operator most wants at that moment. I do not have a good answer. A `--diagnostic` export producing an explicitly unsigned, explicitly `invalid`-verdict artifact is the obvious shape, and it is also exactly the escape hatch D12 argues against.
+**L2 — RESOLVED (owner ruling O4, 2026-08-23 amendment): export refuses, fail-closed; a forensic dump is a separately named non-evidentiary command.** Chain-ordinal traversal at 352k events across a broken chain. The membership tree requires a total order derived by following `prev_global_event_hash` from genesis. If the chain has a break, there is no traversal and therefore no bundle. That is correct behaviour, but it means a store with one broken link cannot export **any** bundle, including the diagnostic one an operator most wants at that moment. I do not have a good answer. A `--diagnostic` export producing an explicitly unsigned, explicitly `invalid`-verdict artifact is the obvious shape, and it is also exactly the escape hatch D12 argues against.
 
-**L3 — Base64 vs hex sizing (D7).** I have not measured actual envelope sizes at scale. If the largest project still exceeds `MAX_BUNDLE_BYTES` under base64, the chunking story returns and `contiguous-range` becomes the common case rather than the exception — which changes which axes are usually `not_checkable`. Sibling D's preflight should report a projected bundle size per project so this is decided on numbers.
+**L3 — MOOT (decision E1, 2026-08-23 amendment): the empty-genesis estate removes the sizing pressure; base64 stands.** Base64 vs hex sizing (D7). I have not measured actual envelope sizes at scale. If the largest project still exceeds `MAX_BUNDLE_BYTES` under base64, the chunking story returns and `contiguous-range` becomes the common case rather than the exception — which changes which axes are usually `not_checkable`. Sibling D's preflight should report a projected bundle size per project so this is decided on numbers.
 
-**L4 — Whether the bundle-signing key should be permitted to equal the project writer key.** I left it to the trust policy (§3.4). Separating them is better hygiene, but it is another key to provision in a one-way ceremony (`ARCHITECTURE-0.6.0.md:772`, WI-235's codec contract), and the marginal security is small when the same operator holds both. Sibling B owns this and should decide it deliberately.
+**L4 — RESOLVED (owner ruling O3, 2026-08-23 amendment): permitted, provided the key explicitly bears `may_sign_bundles`.** Whether the bundle-signing key should be permitted to equal the project writer key. I left it to the trust policy (§3.4). Separating them is better hygiene, but it is another key to provision in a one-way ceremony (`ARCHITECTURE-0.6.0.md:772`, WI-235's codec contract), and the marginal security is small when the same operator holds both. Sibling B owns this and should decide it deliberately.
 
 **L5 — `epoch.scheme_counts` in the statement is a self-report.** It is checkable by re-scanning the events in the bundle, and the verifier should do so. But for a `contiguous-range` bundle the counts describe only the range, while the natural reading is "the project". I specified range semantics; the field name invites the wrong reading and may want renaming to `scope_scheme_counts`.
 
 **L6 — Interaction with `events_archive` consolidation (§9.3).** WI-259 says export must read the complete logical stream. Stage 4 restores archived rows *before* cutover (`ARCHITECTURE-0.6.0.md:681-683`). If any project is exported between now and that restoration, a `complete-store` statement would be a signed false claim. The safe rule is: **`complete-store` is forbidden until archive consolidation is confirmed complete for that project**, and export must check rather than assume. I have specified the check but not the mechanism by which export learns consolidation is done; that likely belongs to sibling D's preflight.
+
+---
+
+## Bundle v3 pre-implementation decisions — 2026-08-23 (WI-289 Phase A)
+
+Six questions this document left open were settled before Phase B implementation begins.
+E1–E3 follow from `EPOCH-RESET.md`: the estate starts at genesis, so there is one epoch
+and no legacy seam. O1, O3 and O4 are owner rulings on scope and on two of §12's
+least-confident areas.
+
+| # | Clause | Decision | Standing |
+|---|---|---|---|
+| E1 | §3.6 event record encoding | **Confirmed as written.** Event records ship `base64`. | Final |
+| E2 | §3.2 statement `epoch` block | **Direction: dropped as vacuous.** | Direction ratified; wording deferred to Phase B review |
+| E3 | §5.1 A6 `epoch_binding`, §5.2 `legacy_checkpoint_bound` | **Direction: dropped as vacuous.** | Direction ratified; wording deferred to Phase B review |
+| O1 | §9 export contract, §9 rule 6 credential transport | **Verification-complete v3 is the full production ceremony.** Credential transport deferred post-cutover. | Owner-ratified, final |
+| O3 | §12 L4 (`:752`), §3.4 | **RESOLVED.** The statement signer MAY be the project writer key, if that key bears `may_sign_bundles`. | Owner-ratified, final |
+| O4 | §12 L2 (`:748`) | **RESOLVED.** Export over a broken chain is refused, fail-closed. | Owner-ratified, final |
+
+**E1 — event records ship base64 (§3.6), and the sizing argument that made it contentious
+is gone.** D7 and L3 flagged base64-vs-hex as a decision resting on unmeasured envelope
+sizes at 352k events, with `MAX_BUNDLE_BYTES = 512 MiB` as the constraint that would
+decide it. Under the empty-genesis estate there are no 352k events to size: the corpus
+starts at zero and the pressure that made this a judgement call does not exist. Base64
+stands as §3.6 specifies it — not because the sizing was measured, but because nothing
+turns on it any more. L3 is therefore closed as moot rather than resolved; if the estate
+later grows into `MAX_BUNDLE_BYTES`, the chunking story L3 describes returns on its own
+merits and this decision does not prejudge it.
+
+**E2 — the statement `epoch` block is dropped as vacuous.** §3.2's `epoch`
+(`cutover_event_hash`, `legacy_event_count`, `v6_event_count`, `scheme_counts`) and the
+§3.2 hard rule `epoch.legacy_event_count + epoch.v6_event_count == scope.event_count`
+exist to make a *mixed* corpus self-describing. `EPOCH-RESET.md:69` deletes the mixed
+corpus: "Version-aware event hashing and mixed-epoch membership trees are dropped: there
+is one construction, because there is one epoch." A signed block whose only possible
+value is `{cutover_event_hash: null, legacy_event_count: 0, v6_event_count: N,
+scheme_counts: {"ed25519": N}}` restates `scope.event_count` and asserts nothing a
+verifier could not derive — and D8's justification for it (making
+`legacy_checkpoint_bound` computable) falls with E3. L5's `scope_scheme_counts` renaming
+question lapses with the field.
+
+**E3 — axis A6 `epoch_binding` and the `legacy_checkpoint_bound` verdict path are
+dropped.** Same premise, same conclusion. A6's four values are all statements about a
+cutover checkpoint (§4.4, D6); `legacy_checkpoint_bound` (§5.2, §9 rule 7, §10) is
+reachable only when the events in scope are legacy-epoch (A4 = `legacy_partial` or
+`none_verifiable`). With no legacy epoch, A6 is permanently `checkpoint_absent` and the
+verdict is unreachable — and an unreachable verdict in a published verdict lattice is
+worse than an absent one, because auditors read the lattice as a description of what can
+happen. The axes A1–A5 and A7–A12 are unaffected. §5.3's reasoning for *keeping*
+`legacy_checkpoint_bound` from the architecture's list is superseded by the reset, not
+by a reversal of judgement.
+
+**Status of E2 and E3.** Direction ratified by two-lineage concurrence 2026-08-23
+(Claude + gpt-5.6-sol); **wording subject to Phase B review**. Sol explicitly declined to
+endorse final normative wording without an implementation review, and that reservation is
+recorded rather than smoothed over: dropping a signed statement field and a verdict value
+touches §3.2, §4.4, §5.1, §5.2, §5.3, §9 and §10, and the exact normative text — including
+whether the `epoch` block becomes *forbidden* or merely *not emitted*, and whether a v3
+verifier must *reject* a statement carrying it under the unknown-top-level-key rule
+(§3.1 rule 3) — is to be confirmed at the Phase B implementation review. No **SUPERSEDED**
+markers are stamped on the affected clauses here for exactly that reason; they land with
+the confirmed wording, not with the direction.
+
+**O1 — verification-complete bundle v3 IS the full normative production ceremony.**
+The six properties this document specifies — the statement signature (§3.4), Merkle
+membership over the event set (§3.3), chain-derived ordering (§3.3), anti-downgrade (§6:
+`format_version` 1 deleted outright rather than deprecated), a fail-closed required trust
+policy (§4.2, §4.6), and the export discipline (§9 rules 1–5, 7) — together satisfy the
+production ceremony in full. Shipping them is not a partial delivery awaiting a further
+tranche before v3 can be called done.
+
+**Credential transport is separate, deferred work, not a gap in the ceremony.** §9 rule 6
+anticipates action-delegation documents travelling in a closed
+`sections.action_delegation_credentials` section addressed by recomputed
+action-delegation hash. That is deferred to post-cutover work of its own. The deferral is
+safe for the specific reason that the pre-existing behaviour already fails closed rather
+than degrading quietly: `CHANGELOG.md:204` records that "Signed portable credential
+transport remains P3.3/WI-289 work; bundle-v2 delegated audit is unverifiable", and §9
+rule 6 says the same in normative form — a bundle missing a referenced credential is
+`invalid` (complete-store) or `unverifiable` (partial), never silently trusted. Deferring
+work whose absence already produces the honest verdict is a scheduling decision; deferring
+work whose absence produces a false verdict would not be.
+
+> Note on citation: earlier drafts referred to credential transport as "§9.6". `§9.5`/`§9.6`
+> do not exist — §9 carries numbered rules, not subsections — and `RECONCILIATION.md:578`
+> already ordered that spelling fixed. The clause is **§9 rule 6**.
+
+**O3 — L4 is RESOLVED: the bundle statement signer MAY be the project writer key, provided
+the key explicitly bears `may_sign_bundles`.** §12 L4 left the question to the trust policy
+(§3.4) and named the tension: separate keys are better hygiene, but each additional key is
+another one-way provisioning ceremony, and the marginal security is small when one operator
+holds both. The resolution takes the scope mechanism as the answer rather than key
+separation. `may_sign_bundles` is already a member of the project-local acceptance `scopes`
+block (`TRUST-DOMAIN.md` §5.8) and of the `bootstrap_key_acceptance` object, so the
+authority to sign bundles is an *explicit, signed* property of a key — not an implication of
+holding the writer key. A writer key without the scope cannot sign a bundle statement.
+Because the permission is scope-carried, separating the two keys later needs a new
+acceptance event and no format change: the artifact shape is identical whether one key or
+two bear the scope. This is the property that makes deciding it now cheap.
+
+**O4 — L2 is RESOLVED: evidentiary export over a broken chain is refused, fail-closed.**
+§12 L2 described the trap honestly — the membership tree needs a total order derived by
+following `prev_global_event_hash` from genesis, so one broken link means no bundle at all,
+including the diagnostic bundle an operator most wants at that moment — and offered
+`--diagnostic` as the obvious shape while noting it is exactly the escape hatch D12 argues
+against. **D12 prevails.** Export refuses. Any forensic capability must be a separately
+named command that is unmistakably non-evidentiary: not a flag on `export`, not a mode of
+it, and producing an artifact no verifier will accept as a bundle. A flag on the
+evidentiary command is eventually load-bearing in someone's CI, and the failure mode is a
+forensic dump that gets read as an audit bundle — the precise conflation this document
+exists to remove. The operator's diagnostic need is real and is answered by a different
+tool, not by weakening this one.
+
+No bundle code is implemented by WI-289 Phase A. `src/regista/_bundle.py` is untouched.

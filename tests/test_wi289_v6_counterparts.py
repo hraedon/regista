@@ -1,10 +1,14 @@
 """v6 counterparts for WI-289 clusters 1, 2, 3 and 5 (the P1.7 coverage debt).
 
-``tests/retired_tests_ledger.json`` retired 56 tests whose harnesses were
+``tests/retired_tests_ledger.json`` retired 57 tests whose harnesses were
 v5/HMAC-specific but whose **invariants survive the epoch reset**. Cluster 4
-(bundle v3) is owed to P3.3 and cluster 6 (in-memory parity) was discharged by
-WI-287 in ``tests/test_wi287_inmem_parity.py::TestWI289Cluster6``. The remaining
-39 entries are P1.7's, and this module is where they are discharged.
+(bundle v3, 11 entries) is owed to P3.3 — carrying an explicit
+``deferred_to: WI-289/P3.3`` marker since WI-289 Phase A — and cluster 6
+(in-memory parity, 6 entries) was discharged by WI-287 in
+``tests/test_wi287_inmem_parity.py::TestWI289Cluster6``. The remaining 40
+entries are P1.7's; 38 are discharged in this module and 2 in
+``tests/test_p17_v6_writer.py`` / ``tests/test_p17_v6_verifier_boundary.py``
+(the modules ``COUNTERPART_MODULES`` below admits).
 
 Three things distinguish these from the originals, and they are the whole content
 of the carry-forward strings:

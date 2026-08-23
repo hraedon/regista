@@ -540,6 +540,7 @@
       "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "CLI export exit 0 means exported AND verifiable; an unverifiable store exits 3 (artifact still written)",
       "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)"
     },
@@ -597,6 +598,7 @@
       "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_with_since_seq",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "since_seq is an exclusive lower bound on the exported global_seq window",
       "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); window bounds re-covered at P3.3"
     },
@@ -604,6 +606,7 @@
       "node_id": "tests/test_bundle.py::TestExportBounds::test_chunked_exports_both_verify_offline",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "a corpus split into chunks yields disjoint, jointly-complete, independently verifiable bundles",
       "carry_forward": "v3 chunk plan + preflight comparison (BUNDLE-V3.md §9.2); re-covered at P3.3"
     },
@@ -621,6 +624,7 @@
       "node_id": "tests/test_bundle.py::TestExportBounds::test_since_and_until_form_a_window",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "since/until together bound the exported window exactly",
       "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
     },
@@ -628,6 +632,7 @@
       "node_id": "tests/test_bundle.py::TestExportBounds::test_until_seq_is_an_inclusive_upper_bound",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "until_seq is an inclusive upper bound on the exported window",
       "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
     },
@@ -680,6 +685,7 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "actor↔signer binding mismatch fails closed",
       "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification"
     },
@@ -687,6 +693,7 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "offline verification verifies ed25519 signatures and counts HMAC events unverifiable in one bundle",
       "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch"
     },
@@ -699,6 +706,7 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "export records an absent key registry; offline verification of asymmetric events then fails closed",
       "carry_forward": "v3: absent key evidence recorded, never a silent pass"
     },
@@ -706,6 +714,7 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_unknown_scheme_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "relabelling an event's scheme_id is a scheme_mismatch against the trusted key, not a verifier selector",
       "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)"
     },
@@ -713,6 +722,7 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
       "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
     },
@@ -880,6 +890,7 @@
       "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
+      "deferred_to": "WI-289/P3.3",
       "invariant": "a clean exported bundle verifies offline with no findings",
       "carry_forward": "clean v3 bundle verifies offline (statement signature model)"
     },
@@ -892,6 +903,7 @@
       "node_id": "tests/test_cli_integration.py::TestPrincipalRotate::test_rotate_json_shape",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "`regista principal rotate` reports the new key and leaves valid_to null",
       "carry_forward": "the CLI write subcommands now refuse by name (TestPrincipalWriteSubcommandsAreRefused); rotation reporting returns with the event-driven ceremony under P1.7"
     },
@@ -899,6 +911,7 @@
       "node_id": "tests/test_cli_integration.py::TestPrincipalRotate::test_rotate_supersedes_with_validity_window",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "rotation supersedes the old key and closes its validity window",
       "carry_forward": "asserted directly on the applier (test_principal_keys.TestRotatePrincipalKey) and on the rebuild (test_trust_projection.test_rotation_supersedes_the_named_key_and_closes_its_window)"
     },
@@ -906,6 +919,7 @@
       "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_file_backend_provision_round_trip",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "file backend writes a 0600 private key that matches the registered public key",
       "carry_forward": "asserted directly against store_private_key (TestProvisionPrincipalBackendAware.test_file_backend_round_trip); provisioning is refused pending P1.7"
     },
@@ -913,6 +927,7 @@
       "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_operator_backend_provision_raises_loud",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "the operator backend fails loudly with SECRET_WRITE_EXTERNAL and writes nothing",
       "carry_forward": "asserted directly against store_private_key (test_operator_backend_raises_loud)"
     },
@@ -920,6 +935,7 @@
       "node_id": "tests/test_custody.py::TestProvisionPrincipalBackendAware::test_vault_backend_provision_writes_no_plaintext_key",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "a non-file backend never writes a plaintext key to local disk",
       "carry_forward": "asserted directly against store_private_key (test_vault_backend_writes_no_plaintext_key)"
     },
@@ -947,6 +963,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_does_not_break_replay",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "enrolment leaves replay drift-free",
       "carry_forward": "asserted for the refusal path now (test_replay_is_unaffected_by_a_refused_enrolment); re-asserted for the signed path under P1.7"
     },
@@ -954,6 +971,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_enroll_principal_entity_id_stable",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "the principal entity id is uuid5(NAMESPACE_OID, 'principal:' + id) and stays stable",
       "carry_forward": "asserted directly on the derivation (test_the_principal_entity_id_derivation_is_unchanged) — TRUST-DOMAIN §5.2 requires keeping the v1 derivation"
     },
@@ -961,6 +979,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_idempotent_re_enroll_no_duplicate_event",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "re-enrolling an already-enrolled principal emits no duplicate event",
       "carry_forward": "idempotency moves onto the signed enrolment path under P1.7"
     },
@@ -968,6 +987,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_new_enrollment_issues_keypair_and_emits_event",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "enrolment issues a keypair, registers the public key, and emits a signed enrolment event",
       "carry_forward": "returns as a signed principal_key_enrolled event carrying public_key bytes (TRUST-DOMAIN §5.5) once P1.7 provides the v6 append path; the refusal is asserted now"
     },
@@ -975,6 +995,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipal::test_self_heal_re_emits_event_after_gap",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "a registry row with no enrolment event is repaired by re-emitting the event",
       "carry_forward": "structurally impossible after §5.9 rule 2: the applier requires source_event_hash, so a row cannot exist without its event — the gap this healed cannot form"
     },
@@ -982,6 +1003,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_idempotent",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "a second CLI enrolment reports already_existed and emits no second event",
       "carry_forward": "returns with the signed enrolment path under P1.7"
     },
@@ -989,6 +1011,7 @@
       "node_id": "tests/test_enroll_principal.py::TestEnrollPrincipalCLI::test_cli_enroll_principal",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "`regista principal enroll` reports the enrolled key as JSON and emits one event",
       "carry_forward": "the CLI path refuses by name now (TestEnrollPrincipalCLIIsRefused); reporting returns with P1.7"
     },
@@ -996,6 +1019,7 @@
       "node_id": "tests/test_enroll_principal.py::TestProvisionPrincipalScheme::test_provision_principal_returns_scheme",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "provision_principal reports scheme 'ed25519'",
       "carry_forward": "asserted on the dry-run path (test_dry_run_still_reports_the_scheme_without_writing); the writing path is refused pending P1.7"
     },
@@ -1167,6 +1191,7 @@
       "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_register_via_facade",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "Regista.principals.register returns an active entry",
       "carry_forward": "the facade write methods refuse by name (TestFacadeAPI.test_register_via_facade_is_refused); enrolment returns as a signed event under P1.7"
     },
@@ -1174,6 +1199,7 @@
       "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_revoke_via_facade",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "Regista.principals.revoke returns a revoked entry",
       "carry_forward": "refusal asserted (test_revoke_via_facade_is_refused); revocation semantics asserted on the applier and the rebuild"
     },
@@ -1181,6 +1207,7 @@
       "node_id": "tests/test_principal_keys.py::TestFacadeAPI::test_rotate_via_facade",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "Regista.principals.rotate returns an active entry",
       "carry_forward": "refusal asserted (test_rotate_via_facade_is_refused); rotation semantics asserted on the applier and the rebuild"
     },
@@ -1188,6 +1215,7 @@
       "node_id": "tests/test_provision.py::TestProvisionPrincipal::test_provision_principal_idempotent",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "re-provisioning an existing principal is idempotent and stores no second key",
       "carry_forward": "the already-existing short-circuit is asserted (test_already_existing_key_is_still_reported_without_a_write)"
     },
@@ -1195,6 +1223,7 @@
       "node_id": "tests/test_provision.py::TestProvisionPrincipal::test_provision_principal_issues_keypair",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "provisioning mints a keypair, registers the public key, and updates the key file",
       "carry_forward": "refusal asserted (test_provision_principal_is_refused_post_cutover); the capability returns as Gate 2 key provisioning over a signed enrolment event"
     },
@@ -1458,6 +1487,7 @@
       "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_reprovisioning_same_project_is_still_idempotent",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "re-provisioning the same principal in the same project stays idempotent",
       "carry_forward": "the already-existing short-circuit is asserted in test_provision.py"
     },
@@ -1465,6 +1495,7 @@
       "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_reuse_existing_key_registers_the_same_public_key",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "--reuse-existing-key registers the same public key in the second project",
       "carry_forward": "the reuse path resolves the key then refuses the write (test_reuse_existing_key_is_also_refused_but_validates_first); registration returns with P1.7"
     },
@@ -1472,6 +1503,7 @@
       "node_id": "tests/test_wi223_principal_binding.py::TestProvisionPrincipalRefusesCollision::test_second_project_provisioning_is_refused",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "provisioning a principal into a second project that shares a key file is refused",
       "carry_forward": "the WI-223 guard is asserted directly and shown to fire BEFORE the projection refusal (test_the_wi223_guard_still_fires_before_the_projection_refusal)"
     },
@@ -1694,6 +1726,7 @@
       "node_id": "tests/test_witness_integration.py::TestBC297AsymmetricWitnessKeys::test_register_witness_with_ed25519_public_key",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "registering an ed25519 witness records key_scheme='ed25519'",
       "carry_forward": "witness lifecycle is CUT from 0.6.0; the refusal is asserted (test_register_witness_with_ed25519_public_key_is_cut) and the capability returns only in a release that has an actual external witness"
     },
@@ -1701,6 +1734,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_ed25519_witness_enrolls_into_registry",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "registering an ed25519 witness enrols its key into principal_keys",
       "carry_forward": "CUT from 0.6.0 (§7/D-7): the enrolment was an unsourced projection write; refusal asserted in TestRegisterEd25519WitnessIsRefused"
     },
@@ -1708,6 +1742,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_enrolled_key_discoverable_via_principals_facade",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "an enrolled witness key is discoverable through Regista.principals",
       "carry_forward": "CUT from 0.6.0: there is no enrolled witness key to discover"
     },
@@ -1715,6 +1750,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_enrolled_key_fingerprint_matches",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "the enrolled witness key's fingerprint matches sha256 of its public key",
       "carry_forward": "CUT from 0.6.0; fingerprint derivation itself is asserted in test_principal_keys.TestFingerprint"
     },
@@ -1722,6 +1758,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestEnrollOnRegister::test_hmac_witness_not_enrolled",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "an hmac witness enrols no principal key",
       "carry_forward": "retained as TestRegisterEd25519WitnessIsRefused.test_hmac_witness_registration_still_works — webhook delivery is preserved as non-evidentiary transport"
     },
@@ -1729,6 +1766,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRevokeOnUnregister::test_unregister_hmac_witness_no_principal_change",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "unregistering an hmac witness changes no principal keys",
       "carry_forward": "retained under the same assertion in TestUnregisterWithActiveKeyRows"
     },
@@ -1736,6 +1774,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRevokeOnUnregister::test_unregister_revokes_enrolled_key",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "unregistering a witness revokes its enrolled key",
       "carry_forward": "CUT from 0.6.0: revocation needs a signed principal_key_revoked event the cut lifecycle cannot produce, so unregister refuses when active rows exist (TestUnregisterWithActiveKeyRows)"
     },
@@ -1743,6 +1782,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_hmac_witness_rejected",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "rotating an hmac witness key is an INVALID_ARGUMENT",
       "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
     },
@@ -1750,6 +1790,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_nonexistent_raises",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "rotating an unknown witness raises WITNESS_NOT_FOUND",
       "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
     },
@@ -1757,6 +1798,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_supersedes_old_key",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "rotating a witness key supersedes the old registry entry",
       "carry_forward": "CUT from 0.6.0; refusal asserted in TestRotateWitnessKeyIsRefused"
     },
@@ -1764,6 +1806,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_updates_witness_registration_pubkey",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "rotation updates witness_registrations.public_key",
       "carry_forward": "CUT from 0.6.0; the refusal is shown to leave the registration unchanged (test_the_refusal_does_not_update_the_registration)"
     },
@@ -1771,6 +1814,7 @@
       "node_id": "tests/test_witness_key_enrollment.py::TestRotateWitnessKey::test_rotate_wrong_length_rejected",
       "disposition": "coverage_owed",
       "work_item": "WI-293",
+      "deferred_to": "WI-293",
       "invariant": "a wrong-length ed25519 key is an INVALID_ARGUMENT, checked before capability",
       "carry_forward": "retained under the same assertion in TestRotateWitnessKeyIsRefused"
     },
@@ -1981,67 +2025,78 @@
       "node_id": "tests/test_plan023_review_validators.py::TestFullReviewCycle::test_multi_cycle_independence",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_adversarial_passer_cannot_accept",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_agent_self_close_after_cross_lineage_review",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_finding_only_workflow_allows_author_to_request_changes",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_finding_only_workflow_request_changes_still_requires_note",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_human_accept_after_agent_review",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_same_lineage_adversarial_review_without_ack_rejected",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestRelaxedFlowIntegration::test_self_review_at_adversarial_review_rejected",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestReviewerDelegationLineage::test_end_to_end_delegated_same_lineage_review_blocked",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestStrictFlowIntegration::test_agent_accept_rejected_not_human",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_plan023_review_validators.py::TestStrictFlowIntegration::test_human_accept_after_agent_review",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_signer_binding.py::TestKeyRotationHistoricalVerification::test_rotated_key_still_verifies_old_events",
@@ -2218,31 +2273,36 @@
       "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_cli_opt_out_is_labelled_not_verified",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_cli_replay_verifies_by_default",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_in_memory_backend_never_claims_verification",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_unverified_report_says_so",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi223_principal_binding.py::TestReportNeverClaimsAnUncheckedZero::test_verified_report_publishes_the_zero",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi224_claim_lineage.py::TestClaimEventsRecordActorMetadata::test_claim_acquired_records_actor_metadata",
@@ -2268,31 +2328,36 @@
       "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_claimed_item_passes_cross_lineage_review",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_heartbeat_with_lineage_does_not_poison_the_gate",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi224_claim_lineage.py::TestCrossLineageGateOnClaimedItem::test_unattributed_claim_still_requires_acknowledgment",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi224_claim_lineage.py::TestDeriveAuthorsReadsClaimLineage::test_claim_acquired_with_lineage_declares_the_author",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_wi224_claim_lineage.py::TestDeriveAuthorsReadsClaimLineage::test_claim_acquired_without_lineage_still_flags_undeclared",
       "disposition": "coverage_owed",
       "invariant": "survives over the v6 vehicles (process-level producer author lineage + signed verdict reviewer_claims + v6 acceptance-chain binding); covered by tests/test_wi305_v6_review_gate.py and tests/test_wi305_reviewer_lineage_payload.py",
-      "work_item": "WI-305"
+      "work_item": "WI-305",
+      "deferred_to": "WI-305"
     },
     {
       "node_id": "tests/test_lineage.py::TestOrdinaryDelegationUndeclared::test_end_to_end_delegated_undeclared_principal_blocks_review",
