@@ -833,6 +833,119 @@ is explicitly `policy_not_supplied` and never a silent skip.
 
 Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 
+> **IMPLEMENTED BY — WI-330.** `regista trust catalog` produces and root-signs this
+> document; `regista trust sign-catalog` appends a further root signature offline (the
+> airgapped k-of-n leg); `regista trust verify-catalog` verifies a published one,
+> fail-closed and offline. The signed core is the document minus `{root_signatures,
+> countersignatures, anchors}`, canonicalised with JCS and framed as above; the frozen
+> bytes are `tests/vectors/v6/estate-catalog.json`.
+>
+> **Authority chains from genesis, and no document authorises itself.** The signer set,
+> threshold and public keys are derived from the pinned genesis and advanced *only* by
+> the verified trust log — the model `_genesis_open.load_published_checkpoint` already
+> uses (`verify_trust_log_chain` → `chain.state`). `verify-catalog` REQUIRES the
+> published `regista.trust-checkpoint` the catalog binds, parses it, checks its
+> canonical form and verifies its root signatures **against that derived state**; its
+> declared `active_root_fingerprints` and threshold must then EQUAL the derived set, and
+> the catalog must restate the same governance. Verifying a checkpoint against its own
+> `active_root_fingerprints` is circular and was exploitable: an attacker knowing the
+> estate's public `trust_domain_id` and `trust_domain_core_digest` could mint a
+> checkpoint naming their own fresh key as the sole active root, sign it with that key,
+> and be believed.
+>
+> **The trust log is REQUIRED, not optional.** `--trust-log-project` (with
+> `--trust-log-dsn`, defaulting to `--dsn`/`REGISTA_DSN`) names the schema holding it;
+> the log is replayed from the pinned genesis under full verification and the resulting
+> signer set and threshold **are** the authority. Omitting it is a named refusal
+> (`trust_log_not_presented`), never a fallback to "the zero-rotation state": treating
+> the ABSENCE of the log as proof that no rotation happened is a downgrade path — after
+> a real A/B→C rotation the *removed* roots A and B can forge a checkpoint and catalog
+> claiming the genesis A/B set, and withholding the log made that VALID. Withholding
+> evidence must never be more permissive than presenting it. Nothing is lost by always
+> walking: a rotation-free log legitimately yields the genesis set, so "no rotation" is
+> *proven* rather than assumed.
+>
+> Presenting the log is also what proves a rotation in the other direction: the log's
+> `trust_root_rotated` event carries the added root's public key, which is how the
+> replayed state learns material genesis never had. So a rotated-in root is honoured only
+> when the log proves the rotation, and a root **removed** by a rotation is refused even
+> while the checkpoint still lists it. There is deliberately **no operator channel for
+> root public keys**: supplying bytes for a fingerprint the checkpoint merely *claimed*
+> active was the hole. And there is no verification mode in which the checkpoint is
+> skipped and the verdict still reads VALID.
+>
+> **CONSEQUENCE for §5.4 step 5.** "Re-fetch the publication through an independent
+> checkout and verify" therefore needs **read access to the trust-log store**, because
+> §4.2 publishes no trust-log export. An auditor with only the publication repository
+> cannot establish the current root set at all. Closing that gap means publishing the
+> log (or a verifiable extract of it) as a §4.2 artifact, which is `regista trust
+> publish`'s territory and is deliberately NOT invented here.
+>
+> **Authority is evaluated at the log's CURRENT HEAD**, not as of the checkpoint's own
+> position, so a rotation appended after publication makes a historically valid catalog
+> fail verification. Point-in-time authority is not implementable today:
+> `verify_trust_log_chain` takes no upper bound, and `trust_root_rotated`'s
+> `effective_from_checkpoint_seq` is parsed but never consulted when governance is
+> applied — so "the signer set as of `checkpoint_seq` N" has no defined meaning in either
+> the machinery or §5.4 above. The limitation is printed on every verdict rather than
+> resolved by inventing semantics.
+>
+> Signing is **direct root threshold** per rule 1 of the amendment below —
+> `root_signatures[]`, `signer` absent — and a scoped-authority catalog is refused
+> rather than accepted, because no ratified document names such an authority for the
+> artifact that says the ceremony finished.
+>
+> **Completeness is checked against an operator-supplied manifest.**
+> `RECONCILIATION.md`:682-684 requires the published catalog to be the COMPLETE one and
+> a partial catalog to say `catalog_status: partial` ("ceremony failure, not success").
+> Because the frozen vector carries no `catalog_status` key, **absence is the complete
+> claim and presence is the partial one** — the field appears only on partial catalogs,
+> which keeps byte conformance intact, and it sits inside the signed core so it cannot
+> be stripped after signing. §4.3's "all 26" is this estate's current count, not a
+> contract, so both commands take a `regista.estate-manifest/v1` document naming the
+> expected `project_instance_id`s; nothing hardcodes 26. A catalog that omits
+> `catalog_status` while missing an expected project is a refusal (a false claim inside
+> signed bytes), and a catalog that declares itself partial verifies cryptographically
+> and still returns a non-success verdict (`verify-catalog` exits 3).
+>
+> **Every per-project HASH is recomputed from signed event bytes**, never read from a
+> mutable posture row: the head and the epoch-opening hash come from
+> `_signing.compute_chain_head_hash` over the max- and min-`global_seq` events, the
+> project's identity comes from inside its signed genesis envelope, and
+> `event_chain_head` / `project_identity` are then treated as claims to be checked.
+> That is `ARCHITECTURE-0.6.0.md`:802-810's rule — "the signed event, not the mutable
+> posture row, tells future verifiers where strict v6 rules begin" — and the operator's
+> approved preflight head and count are a mandatory second witness that must agree.
+>
+> **`legacy_event_count` and `scheme_counts` are the exception, and are aggregates.**
+> They are `COUNT(*)` and `GROUP BY scheme_id` over `events`; there is no signed
+> counterpart to recompute them against, because no event attests the size of the set it
+> belongs to. Consequently a row *inserted mid-chain* inflates both while the head hash
+> stays valid — detectable only by the `sum(scheme_counts) == legacy_event_count` rule
+> (which such an insertion satisfies) or by the operator's §2.4 record, which is why the
+> recorded-and-measured cross-check exists and why the measured-only mode is the weaker
+> one. Counting a population is not the same kind of claim as naming its head, and this
+> section does not pretend otherwise.
+>
+> Three points this section leaves open are resolved in
+> `src/regista/_estate_catalog.py`'s module docstring and recorded there, not here:
+> `trust_log_checkpoint_digest` is a plain SHA-256 over the published checkpoint's exact
+> canonical bytes (the same value
+> `bootstrap_key_acceptance.trust_log_checkpoint.document_digest` binds);
+> `cutover_event_hash` is the event that opened the project's new epoch, which under
+> `EPOCH-RESET.md` §5 is its `project_initialized`; and `scheme_counts` must sum to
+> `legacy_event_count`, which the frozen vector satisfies. `catalog_kind:
+> project_heads` (rule 4) is **not** implemented and is a named refusal.
+>
+> **What the artifact does not carry.** The provenance of the frozen-legacy numbers —
+> whether `legacy_head_event_hash` / `legacy_event_count` / `scheme_counts` were
+> re-measured from the still-reachable frozen schema or transcribed from the §2.4
+> record — appears only in the **command's report**, never in the document. Adding a
+> field would change the canonical bytes and break the frozen vector, so it was
+> deliberately not added. A reader of a published catalog therefore cannot distinguish
+> the two; what stands behind those numbers is the build-time cross-check, which refuses
+> when a recorded value disagrees with a live measurement.
+
 > **AMENDED — `RECONCILIATION.md` collisions 19, 21, 22.** Four rules govern every document in
 > §4.3, including the two above:
 >
@@ -897,6 +1010,16 @@ Contract:
 
 **Failure to publish is a ceremony failure, not a warning.** Stage 7 step 9 gates on this command
 exiting 0.
+
+> **NOT YET IMPLEMENTED — WI-330 note.** `regista trust publish` does not exist in the
+> codebase. What does exist is the *production* half for one kind: `regista trust catalog`
+> (§4.3) builds, signs and writes the estate cutover catalog's exact canonical
+> publication bytes, and prints the §4.2 path they belong at — it never touches git or a
+> network, matching this section's "publish never touches a private key" separation from
+> the other side. Committing those bytes into the publication clone, updating
+> `index.json` and pushing therefore remain operator-manual until this command lands.
+> The same gap applies to genesis, checkpoint, producer-policy and attestation
+> publication.
 
 ### 4.5 The verifier's pinning workflow
 

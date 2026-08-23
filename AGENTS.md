@@ -75,6 +75,7 @@ src/regista/
   _principal_keys.py   # principal_keys PROJECTION of signed trust-log events (Plan 026 + P2.2/§5.9)
   _trust_log.py        # Trust-domain-log event contracts: enrolment/rotation/revocation (P2.2)
   _trust_projection.py # Rebuild principal_keys from signed events (P2.2, §5.9 rule 4)
+  _estate_catalog.py   # Signed estate cutover catalog: build/sign/verify (WI-330, §4.3)
   _custody.py          # Backend-aware private-key custody helper (Plan 029)
   _encryption.py       # Payload encryption-at-rest primitive: field-level AES-256-GCM (Plan 030)
   _provision.py        # Schema + service-role + principal-key provisioning (Plan 025 WI-2.1)

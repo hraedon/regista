@@ -112,6 +112,18 @@ class ErrorCode(StrEnum):
     TRUST_GENESIS_DERIVATION_MISMATCH = "TRUST_GENESIS_DERIVATION_MISMATCH"
     TRUST_GENESIS_SIGNATURE_INVALID = "TRUST_GENESIS_SIGNATURE_INVALID"
     TRUST_GOVERNANCE_TRANSITION_INVALID = "TRUST_GOVERNANCE_TRANSITION_INVALID"
+    # WI-330: the signed estate cutover catalog (TRUST-DOMAIN.md §4.3). Two codes,
+    # because the operator's next action differs. SCHEMA_INVALID: the document is
+    # malformed — an unknown top-level key, a non-canonical publication file, a
+    # scheme_counts sum that contradicts legacy_event_count, an unimplemented
+    # catalog_kind. Rebuild it. UNVERIFIED: the document is well-formed and its
+    # CLAIMS did not hold up — a signature that does not verify, a signer the pinned
+    # genesis never committed to, a threshold not met, a digest that disagrees with
+    # an out-of-band pin, a store that cannot substantiate a measured field. Neither
+    # is ever a warning: the catalog is the only artifact that says the cutover
+    # ceremony finished (CUTOVER-CLASSIFICATION.md:588).
+    ESTATE_CATALOG_SCHEMA_INVALID = "ESTATE_CATALOG_SCHEMA_INVALID"
+    ESTATE_CATALOG_UNVERIFIED = "ESTATE_CATALOG_UNVERIFIED"
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Each error carries a
     # machine-readable `reason` in detail naming the exact rule violated.
     # NOT_CANONICAL is kept distinct from UNGRAMMATICAL so a legacy bare name (§2.4
