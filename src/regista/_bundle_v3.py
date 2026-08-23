@@ -2584,8 +2584,19 @@ def build_bundle_v3_document(
                 "resolved over it describes a different chain than the one being signed",
                 missing=missing[:5],
             )
+        # The identity an authority record must match is BOTH the project instance and the
+        # trust domain, and the domain is compared to the SIGNED statement's own
+        # `trust_root.trust_domain_id` — not merely to some value shared across the records.
+        # Round 2 closed the cross-project face of this laundering class; FR3-1 is its last
+        # dimension: a record sharing project_instance_id but carrying a different
+        # trust_domain_id could be selected as the newest authority and named in the
+        # statement, so `authority_event_hash` would point at an anchor from a domain the
+        # statement does not describe. A project instance belongs to one trust domain, so a
+        # record disagreeing on either is not part of this chain's authority.
         for member in authority_material:
-            if str(member.envelope.get("project_instance_id")) != project_instance_id:
+            member_project = str(member.envelope.get("project_instance_id"))
+            member_domain = str(member.envelope.get("trust_domain_id"))
+            if member_project != project_instance_id:
                 raise _signer_refusal(
                     "authority_records spans more than one project: "
                     f"{member.event_hash_text} names project_instance_id "
@@ -2593,6 +2604,18 @@ def build_bundle_v3_document(
                     f"{project_instance_id!r}. Signing authority is resolved within one "
                     "project chain, never across a domain",
                     event_hash=member.event_hash_text,
+                )
+            if member_domain != trust_root.trust_domain_id:
+                raise _signer_refusal(
+                    "authority_records spans more than one trust domain: "
+                    f"{member.event_hash_text} names trust_domain_id "
+                    f"{member.envelope.get('trust_domain_id')!r}, but the signed statement's "
+                    f"trust_root names {trust_root.trust_domain_id!r}. An authority anchor "
+                    "from another domain must not be named in a statement this domain signs "
+                    "(FR3-1: the cross-domain face of authority-material laundering)",
+                    event_hash=member.event_hash_text,
+                    member_trust_domain_id=member_domain,
+                    statement_trust_domain_id=trust_root.trust_domain_id,
                 )
     authority, authority_refusals = resolve_bundle_signing_authority(
         authority_material, principal_id=signer.principal_id, key_id=signer.key_id

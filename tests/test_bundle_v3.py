@@ -2041,6 +2041,59 @@ class TestBuilderAuthorityRecordsIntegrity:
             ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED,
         }
 
+    def test_authority_records_from_another_trust_domain_are_refused(
+        self, keyset: Any
+    ) -> None:
+        """Round-3 blocker FR3-1: the cross-DOMAIN face of the round-2 laundering class.
+
+        Round 2 required authority records to share ``project_instance_id`` but did not check
+        ``trust_domain_id``. A single forged acceptance that keeps the project instance but
+        carries a different domain chain-links as the newest anchor, is selected as the
+        authority, and is named in a statement whose ``trust_root`` describes a *different*
+        domain — so ``authority_event_hash`` points at an anchor from a domain the statement
+        does not describe. A project instance belongs to one trust domain, so a record
+        disagreeing on the domain is not part of this chain's authority, and the builder must
+        refuse before authority resolution.
+        """
+        chain = _Chain(keyset, may_sign_bundles=True, ordinary_events=0)
+        foreign_domain = str(uuid.uuid4())
+        assert foreign_domain != chain.trust_domain_id
+        foreign = chain.acceptance_envelope(
+            WORKER, may_sign_bundles=True, entity_label="-foreign-domain"
+        )
+        # Same project instance, DIFFERENT trust domain — kept internally consistent so the
+        # event is a well-formed v6 envelope that only the domain check should reject.
+        foreign["trust_domain_id"] = foreign_domain
+        foreign["payload"]["trust_domain_id"] = foreign_domain
+        chain.append(foreign, BOOTSTRAP)
+
+        with pytest.raises(RegistaError) as exc:
+            chain.build(
+                event_records=chain.records[:-1],   # the honest window
+                authority_records=chain.records,     # + the foreign-domain anchor
+            )
+        assert exc.value.code is ErrorCode.BUNDLE_SIGNER_NOT_PERMITTED
+        assert "more than one trust domain" in str(exc.value)
+        assert exc.value.detail is not None
+        assert exc.value.detail["member_trust_domain_id"] == foreign_domain
+        assert exc.value.detail["statement_trust_domain_id"] == chain.trust_domain_id
+
+    def test_a_same_domain_superset_still_exports(self, keyset: Any) -> None:
+        """The counterweight to FR3-1: a legitimate same-project, same-domain superset — the
+        chunking case the superset argument exists for — still builds and verifies."""
+        chain = _Chain(keyset, may_sign_bundles=True)
+        document = chain.build(
+            event_records=chain.records[2:],
+            authority_records=chain.records,  # full chain, one project, one domain
+            scope_kind="contiguous-range",
+            preceding_event_hash=chain.hashes[1],
+        )
+        report = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert report.statement_signature_valid is True
+        assert report.membership_root_ok is True
+
 
 class TestSignerKeyBinding:
     """§3.2 says ``signer.fingerprint`` is redundant with ``key_id`` **on purpose**: "the
