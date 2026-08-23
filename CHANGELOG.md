@@ -4,6 +4,8 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-23
+
 ### Added
 
 - **`regista genesis init` — the per-project v6 epoch opener (WI-325).** The per-project
@@ -106,6 +108,26 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   wrapper are explicitly excluded because their actor mapping happens before the temporary
   keyset boundary; that attribution gap remains WI-320. No existing check, status or ID changed;
   `probe_version` stays `1`.
+
+### Changed
+
+- **Fresh-schema cutover policy ratified.** The v6 evidentiary record begins at deliberate
+  genesis in an empty store; legacy events are excluded rather than migrated or deleted.
+  The legacy schema remains read-only with its restore-proven dump and signed catalog
+  binding.
+
+### Fixed
+
+- **Delegation-revocation authority parity (WI-310).** A standalone
+  `principal_key_accepted` event no longer grants revocation authority that the writer
+  would refuse; only the bootstrap acceptance events or the credential issuer authorize
+  revocation.
+- **Archive-optional v6 referent scans (WI-311).** Verification now probes and caches
+  `events_archive` presence in the scan transaction instead of requiring the optional
+  archive relation to exist.
+- **Fail-closed v6 delegation history (WI-312).** Missing or malformed prior signed
+  envelopes are refused after v6 genesis, while legitimate pre-epoch legacy history
+  retains its historical tolerant behavior.
 
 ## [0.7.1] — 2026-08-22
 
