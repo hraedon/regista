@@ -2396,6 +2396,20 @@
       "node_id": "tests/test_version_info.py::TestVersions::test_envelope_version_remains_5_until_v6_is_writable",
       "disposition": "dies_with_v5",
       "invariant": "ENVELOPE_VERSION remained 5 until the v6 write path existed (a v5-era gate); superseded now that v6 is the sole writable envelope. Successor coverage: TestVersions::test_envelope_version_is_6_now_that_v6_is_the_write_path (collected)."
+    },
+    {
+      "node_id": "tests/test_custody.py::TestCustodyHelper::test_build_ref_azure_sanitizes",
+      "disposition": "coverage_owed",
+      "invariant": "build_ref('azure', ...) produces a Key-Vault-legal secret name. The test asserted the exact ':'->'-' substitution that TRUST-DOMAIN.md §2.2 rejects as colliding, so the assertion had to change with the naming rule; the invariant itself is unchanged and is now pinned against the §2.2 derived name.",
+      "covered_by": "tests/test_custody.py::TestCustodyHelper::test_build_ref_azure_derives_the_principal_segment",
+      "work_item": "WI-297"
+    },
+    {
+      "node_id": "tests/test_custody.py::TestCustodyHelper::test_build_ref_azure_truncation_includes_hash",
+      "disposition": "coverage_owed",
+      "invariant": "an azure custody name stays inside Key Vault's 127-character limit. WI-297 deleted the truncate-and-hash branch this test pinned — the derived name is bounded by construction, so there is no truncation left to disambiguate — and the length bound is now pinned directly, together with a collision pin for the long-shared-prefix case the old head-cut relied on its 16-hex suffix to separate.",
+      "covered_by": "tests/test_custody.py::TestCustodyHelper::test_build_ref_azure_needs_no_truncation_branch",
+      "work_item": "WI-297"
     }
   ]
 }

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import pathlib
+import re
 import sys
 import uuid
 
@@ -28,6 +30,21 @@ from regista._secrets import (
     store as store_secret,
 )
 from regista.testing import drop_project_schema
+
+#: Azure Key Vault's secret-name rule, transcribed from the service contract rather than
+#: from regista: ``^[0-9a-zA-Z-]+$``, 1-127 characters.
+AZURE_SECRET_NAME_RE = re.compile(r"[0-9a-zA-Z-]{1,127}")
+
+#: Every backend that regista can custody a generated key on. ``file`` is excluded from the
+#: name-shape pins below on purpose: it keeps the ratified dual convention (WI-294), where a
+#: path-safe legacy id stays verbatim so existing refs resolve.
+WRITABLE_NAME_DERIVING_BACKENDS = ("azure", "windows", "vault")
+
+
+def _bn(principal_id: str) -> str:
+    from regista._principals import backend_name
+
+    return backend_name(principal_id)
 
 
 def _drop(project: str) -> None:
@@ -190,23 +207,52 @@ class TestCustodyHelper:
         assert ref == f"file:{tmp_path / 'eve_ed25519.key'}"
 
     def test_build_ref_vault(self):
+        from regista._principals import backend_name
+
         ref = build_ref("vault", "eve", project="proj")
-        assert ref == "vault:secret/regista/proj/principals/eve/private_key"
+        assert ref == (
+            f"vault:secret/regista/proj/principals/{backend_name('eve')}/private_key"
+        )
 
-    def test_build_ref_azure_sanitizes(self):
-        ref = build_ref("azure", "eve.example.com", project="my_proj")
-        assert ref == "azure:regista-my-proj-eve-example-com"
+    def test_build_ref_azure_derives_the_principal_segment(self):
+        """WI-297: the principal segment is §2.2's derived name, not a ``-`` substitution.
 
-    def test_build_ref_azure_truncation_includes_hash(self):
-        import hashlib
+        The project segment stays readable — a Key Vault may be shared across projects, so
+        dropping it would let two projects collide on one secret.
+        """
+        from regista._principals import backend_name
 
-        long_id = "a" * 200
-        ref = build_ref("azure", long_id, project="p")
-        name = ref.removeprefix("azure:")
+        ref = build_ref("azure", "eve.example.com", project="myproj")
+        assert ref == f"azure:regista-myproj-{backend_name('eve.example.com')}"
+
+    def test_build_ref_azure_derives_a_project_key_vault_cannot_spell(self):
+        """``my_proj`` is a legal upstream project name but ``_`` is illegal in Key Vault."""
+        from regista._custody import _project_segment
+        from regista._principals import backend_name
+
+        ref = build_ref("azure", "eve", project="my_proj")
+        seg = _project_segment("my_proj")
+        assert seg == "px-" + hashlib.sha256(
+            b"regista.custody.project-name.v1\x00my_proj"
+        ).hexdigest()[:32]
+        assert ref == f"azure:regista-{seg}-{backend_name('eve')}"
+
+    def test_build_ref_azure_needs_no_truncation_branch(self):
+        """The derived form is bounded by construction, so the old lossy truncate-and-hash
+        fallback is gone: a 200-character principal id and a 200-character project both
+        land inside Key Vault's 127-character limit."""
+        name = build_ref("azure", "a" * 200, project="p" * 200).removeprefix("azure:")
         assert len(name) <= 127
-        raw = f"regista-p-{long_id}"
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-        assert name.endswith(digest)
+        assert AZURE_SECRET_NAME_RE.fullmatch(name)
+
+    def test_build_ref_windows_is_colon_free(self):
+        """§2.2 applies to every name regista produces. The value is superseded at store
+        time (``WindowsProvider.store`` returns the DPAPI blob as the ref), but a
+        ``:``-bearing credential name is a violation wherever it is minted."""
+        from regista._principals import backend_name
+
+        ref = build_ref("windows", "human:it-admin", project="proj")
+        assert ref == f"windows:regista-proj-{backend_name('human:it-admin')}"
 
     def test_resolve_backend_defaults_to_file(self, monkeypatch):
         monkeypatch.delenv("REGISTA_SECRET_BACKEND", raising=False)
@@ -221,8 +267,12 @@ class TestCustodyHelper:
         assert resolve_backend("windows") == "windows"
 
     def test_operator_ref_template(self):
+        from regista._principals import backend_name
+
         tmpl = operator_ref_template("alice", project="myproj")
-        assert tmpl == "vault:secret/regista/myproj/principals/alice/private_key"
+        assert tmpl == (
+            f"vault:secret/regista/myproj/principals/{backend_name('alice')}/private_key"
+        )
 
     def test_resolve_key_dir_file_ref_strips_prefix(self):
         from regista._provision import _resolve_key_dir
@@ -412,6 +462,263 @@ class TestProvisionPrincipalBackendAware:
         )
         assert result.secret_backend == "vault"
         assert result.private_key_stored is False
+
+
+# ---------------------------------------------------------------------------
+# WI-297: §2.2 conformance of the names build_ref mints
+# ---------------------------------------------------------------------------
+
+
+class TestWI297BackendSafeNaming:
+    """Fix-forward, not a migration: refs are resolved verbatim from the record they were
+    written into, so these pins constrain what regista *mints* from now on. Nothing here
+    asserts anything about an existing ref."""
+
+    def test_distinct_principals_never_share_a_name_on_any_writable_backend(self):
+        """The collision the old ``:``->``-`` substitution had, mirrored from
+        ``test_p23_principal_grammar.py::test_backend_name_is_not_a_colon_to_hyphen_substitution``.
+        Under substitution both of these spell ``human-it-admin``."""
+        for backend in WRITABLE_NAME_DERIVING_BACKENDS:
+            a = build_ref(backend, "human:it-admin", project="proj")
+            b = build_ref(backend, "human-it:admin", project="proj")
+            assert a != b, backend
+
+    def test_distinct_principals_never_share_a_name_on_the_file_backend(self, tmp_path):
+        """The file backend keeps the WI-294 dual convention, so it gets the same pin by a
+        different route: both ids contain no path separator, so both take the verbatim
+        branch, and the verbatim branch is the identity map."""
+        a = build_ref("file", "human:it-admin", private_key_dir=str(tmp_path))
+        b = build_ref("file", "human-it:admin", private_key_dir=str(tmp_path))
+        assert a != b
+
+    def test_a_long_principal_id_does_not_collide_by_truncation(self):
+        """The deleted azure truncation branch cut the *head* of the name to fit 127 and
+        appended 16 hex of the raw string; two ids sharing a long prefix relied entirely on
+        that suffix. The derived name has no truncation at all."""
+        long_a = "agent:" + "a" * 240
+        long_b = "agent:" + "a" * 239 + "b"
+        for backend in WRITABLE_NAME_DERIVING_BACKENDS:
+            assert build_ref(backend, long_a, project="p") != build_ref(
+                backend, long_b, project="p"
+            ), backend
+
+    def test_distinct_projects_never_share_a_name(self):
+        """Why the project segment survived the rewrite (WI-297 review): a Key Vault may be
+        shared across projects, so a principal-only name would collide across them. Includes
+        the pair the old lossy substitution merged (``my_proj``/``my-proj``)."""
+        projects = ["my_proj", "my-proj", "myproj", "p" * 200, "p" * 201, "prod/eu"]
+        for backend in WRITABLE_NAME_DERIVING_BACKENDS:
+            names = {build_ref(backend, "agent:a", project=p) for p in projects}
+            assert len(names) == len(projects), backend
+
+    def test_a_project_named_like_the_derived_form_cannot_alias_another_project(self):
+        """The verbatim and derived branches must have disjoint ranges, or a project
+        *named* ``px-<32 hex>`` could squat on the derived segment of another project."""
+        from regista._custody import _project_segment
+
+        squatter = _project_segment("prod/eu")
+        assert squatter.startswith("px-")
+        assert _project_segment(squatter) != squatter
+
+    def test_case_differing_projects_do_not_fold_together_on_azure(self):
+        """Key Vault secret names are **case-insensitive**, so plain inequality is not the
+        test — the names must differ *after case folding*. ``MyProj`` therefore takes the
+        derived branch instead of being spelled verbatim next to ``myproj``."""
+        upper = build_ref("azure", "agent:a", project="MyProj").removeprefix("azure:")
+        lower = build_ref("azure", "agent:a", project="myproj").removeprefix("azure:")
+        assert upper != lower
+        assert upper.casefold() != lower.casefold()
+        assert lower == f"regista-myproj-{_bn('agent:a')}"
+        assert "px-" in upper  # MyProj derived rather than kept verbatim
+
+    def test_no_two_projects_fold_together_on_azure(self):
+        """The case-folded generalisation of the disjointness pin, over the spellings that
+        probe the branch boundary."""
+        projects = [
+            "myproj", "MyProj", "MYPROJ", "my_proj", "my-proj",
+            "px-" + "a" * 32, "PX-" + "A" * 32, "p" * 63, "p" * 64,
+        ]
+        folded = {
+            build_ref("azure", "agent:a", project=p).removeprefix("azure:").casefold()
+            for p in projects
+        }
+        assert len(folded) == len(projects)
+
+    def test_an_uppercase_derived_shape_project_cannot_case_fold_squat(self):
+        """The specific escape the lowercase-only class closes: ``px-<UPPERCASE 32 hex>``
+        passed the old ``[A-Za-z0-9-]`` class and the lowercase-only shape refusal, so it
+        was emitted verbatim and case-folded straight onto a real derived segment."""
+        from regista._custody import _project_segment
+
+        victim = _project_segment("prod/eu")
+        assert victim == victim.casefold()
+        squatter = "px-" + victim.removeprefix("px-").upper()
+        assert squatter.casefold() == victim  # it *would* fold, if emitted verbatim
+        assert _project_segment(squatter).casefold() != victim
+
+    def test_the_verbatim_class_is_stricter_than_key_vaults_own(self):
+        """Not a redundant restatement of the service grammar: uppercase and 64-plus are
+        legal at Key Vault and refused here, and that gap is the whole safety argument."""
+        from regista._custody import _VERBATIM_PROJECT_RE
+
+        assert _VERBATIM_PROJECT_RE.fullmatch("myproj")
+        assert not _VERBATIM_PROJECT_RE.fullmatch("MyProj")
+        assert not _VERBATIM_PROJECT_RE.fullmatch("p" * 64)
+        assert AZURE_SECRET_NAME_RE.fullmatch("MyProj")
+        assert AZURE_SECRET_NAME_RE.fullmatch("p" * 64)
+
+    @pytest.mark.parametrize("backend", WRITABLE_NAME_DERIVING_BACKENDS)
+    def test_the_principal_segment_is_colon_free(self, backend):
+        """§2.2's premise: Azure Key Vault and the Windows credential store forbid ``:``."""
+        from regista._principals import backend_name
+
+        ref = build_ref(backend, "service:idp:tenant-a/svc-7", project="proj")
+        value = ref.partition(":")[2]
+        assert ":" not in value
+        assert backend_name("service:idp:tenant-a/svc-7") in value
+
+    def test_azure_names_match_the_key_vault_grammar_and_length(self):
+        """Not just colon-free: Key Vault accepts only ``[0-9a-zA-Z-]``, max 127."""
+        hostile = [
+            "eve.example.com",
+            "human:it-admin",
+            "service:idp:tenant-a/svc-7",
+            "agent:a/../../../etc/cron.d/evil",
+            "agent:ünïcøde",
+            "agent:" + "a" * 240,
+        ]
+        projects = ["proj", "my_proj", "prod/eu", "pr oj", "ünïcøde", "p" * 200]
+        for principal_id in hostile:
+            for project in projects:
+                name = build_ref(
+                    "azure", principal_id, project=project
+                ).removeprefix("azure:")
+                assert AZURE_SECRET_NAME_RE.fullmatch(name), (principal_id, project, name)
+
+    def test_the_principal_segment_is_the_fixed_width_trailing_token(self):
+        """Why ``regista-<project>-<backend_name>`` is unambiguous without an escape rule:
+        ``backend_name`` is exactly 35 characters, so the name parses right-to-left however
+        many hyphens the project segment contains."""
+        from regista._principals import backend_name, is_backend_name
+
+        name = build_ref(
+            "azure", "human:it-admin", project="a-b-c-d"
+        ).removeprefix("azure:")
+        assert is_backend_name(name[-35:])
+        assert name[-35:] == backend_name("human:it-admin")
+        assert name == "regista-a-b-c-d-" + name[-35:]
+
+    def test_vault_keeps_its_path_structure(self):
+        """Only the principal segment changed; the tree stays browsable by project."""
+        ref = build_ref("vault", "human:it-admin", project="proj")
+        assert ref.startswith("vault:secret/regista/proj/principals/")
+        assert ref.endswith("/private_key")
+
+    def test_operator_ref_template_and_vault_agree(self):
+        """The template an operator is told to populate must be the ref regista would have
+        built, or operator-writes custody lands the key somewhere nothing reads."""
+        assert operator_ref_template("human:it-admin", project="proj") == build_ref(
+            "vault", "human:it-admin", project="proj"
+        )
+
+
+class TestWI297OperatorPrefixIsRefused:
+    """``operator`` names a custody mode, not a provider. It is absent from
+    ``_KNOWN_PROVIDER_NAMES``, so before WI-297 ``_detect_prefix`` fell through to
+    ``literal`` and ``resolve()`` returned the *reference text* as secret bytes."""
+
+    def test_resolve_refuses_an_operator_ref_instead_of_returning_bytes(self):
+        ref = "operator:secret/regista/proj/principals/alice/private_key"
+        with pytest.raises(RegistaError) as exc:
+            resolve_secret(ref)
+        assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+        assert "custody mode" in str(exc.value)
+
+    def test_the_refusal_is_not_a_literal_fallback(self):
+        """The regression in one line: whatever happens, it is never the ref itself."""
+        ref = "operator:whatever"
+        try:
+            out = resolve_secret(ref)
+        except RegistaError:
+            return
+        assert out != ref.encode("utf-8")
+        raise AssertionError(f"operator: ref resolved to {out!r} instead of raising")
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "operator:some/path",
+            "OPERATOR:some/path",
+            "Operator:some/path",
+            " operator:some/path",
+            "operator :some/path",
+            "\toperator:some/path",
+        ],
+    )
+    def test_the_refusal_is_not_defeated_by_case_or_whitespace(self, ref):
+        """The fail-open this closes is not case-sensitive: every one of these took the
+        same fall-through to the literal provider, so every one has to be refused."""
+        with pytest.raises(RegistaError) as exc:
+            resolve_secret(ref)
+        assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+        assert exc.value.detail["reason"] == "reserved_custody_prefix"
+
+    def test_normalising_the_prefix_does_not_widen_anything_else(self):
+        """The normalisation applies to the reserved-name test only. A prefix that is not
+        reserved under any spelling must resolve exactly as it did before — otherwise this
+        would quietly become a case-insensitive provider lookup."""
+        assert resolve_secret("NOSUCHBACKEND:whatever") == b"NOSUCHBACKEND:whatever"
+        assert resolve_secret("FILE:whatever") == b"FILE:whatever"
+        assert resolve_secret(" literal:x") == b" literal:x"
+
+    def test_store_refuses_an_operator_ref(self):
+        with pytest.raises(RegistaError) as exc:
+            store_secret("operator:some/path", b"secret-bytes")
+        assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+
+    def test_reference_provider_refuses_operator_in_both_modes(self):
+        from regista._secrets import reference_provider
+
+        for require_explicit in (False, True):
+            with pytest.raises(RegistaError) as exc:
+                reference_provider("operator:some/path", require_explicit=require_explicit)
+            assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+            assert "custody mode" in str(exc.value)
+
+    def test_operator_is_still_not_advertised_as_a_provider(self):
+        from regista._secrets import available_providers, known_providers
+
+        assert "operator" not in known_providers()
+        assert "operator" not in available_providers()
+
+    def test_an_ordinary_unknown_prefix_still_falls_back_to_literal(self):
+        """The refusal is a narrow reserved-name rule, not a change to the module-wide
+        literal convention that ``test_secret_delete.py`` pins."""
+        assert resolve_secret("nosuchbackend:whatever") == b"nosuchbackend:whatever"
+
+    def test_doctor_reports_the_refusal_instead_of_raising(self):
+        """Doctor's contract is a report, never a traceback, so the new refusal has to
+        degrade to a skipped check where doctor sniffs a key_path prefix."""
+        from regista._doctor import run_doctor
+
+        report = run_doctor(dsn=None, key_path="operator:secret/x/private_key")
+        consistency = [c for c in report.checks if c.name == "custody:consistency"]
+        assert consistency and consistency[0].status == "skip"
+        assert "operator:secret/x/private_key" in consistency[0].detail
+
+    def test_doctor_only_swallows_this_refusal_not_every_future_one(self, monkeypatch):
+        """A bare ``except RegistaError`` there would silently downgrade the *next*
+        fail-closed check added to ``_detect_prefix`` into a skipped health row."""
+        import regista._secrets as secrets_mod
+        from regista._doctor import _resolve_key_file_path
+
+        def _boom(ref):
+            raise RegistaError(ErrorCode.SECRET_RESOLVE_FAILED, "some future gate")
+
+        monkeypatch.setattr(secrets_mod, "_detect_prefix", _boom)
+        with pytest.raises(RegistaError) as exc:
+            _resolve_key_file_path("file:/tmp/keys.json")
+        assert exc.value.code is ErrorCode.SECRET_RESOLVE_FAILED
 
 
 def _assert_keypair_verifies(private_key: bytes, public_key: bytes) -> None:

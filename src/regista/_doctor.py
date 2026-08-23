@@ -287,9 +287,23 @@ def _check_witness_key_enrollment(
 
 def _resolve_key_file_path(key_path: str) -> str | None:
     from ._errors import RegistaError
-    from ._secrets import _detect_prefix, resolve_str
+    from ._secrets import RESERVED_PREFIX_REASON, _detect_prefix, resolve_str
 
-    prefix, stripped = _detect_prefix(key_path)
+    try:
+        prefix, stripped = _detect_prefix(key_path)
+    except RegistaError as e:
+        # Since WI-297 `_detect_prefix` refuses a reserved custody-mode prefix
+        # (`operator:`) instead of silently treating it as a literal. Doctor reports, it
+        # does not raise: an unresolvable key_path is a skipped check with the path named,
+        # which is what every other unresolvable key_path here already produces.
+        #
+        # Narrowed to *that* refusal on purpose. A bare `except RegistaError` here would
+        # silently downgrade any fail-closed check added to `_detect_prefix` in future to a
+        # skipped doctor row — turning the next security fix into a health surface that
+        # reports nothing. Anything else propagates.
+        if (e.detail or {}).get("reason") != RESERVED_PREFIX_REASON:
+            raise
+        return None
     if prefix == "file":
         return stripped
     if prefix == "literal":
