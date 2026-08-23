@@ -202,6 +202,11 @@ class BundleVerificationReport:
     signatures_verified: int = 0
     signatures_unverifiable: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Named facts that are not failures and must not be read as satisfaction either —
+    #: ``RECONCILIATION.md`` Resolution 4's "reports the named dependency as outside scope,
+    #: never silently valid". A ``contiguous-range`` bundle whose signing-authority event
+    #: lies outside its window lands here.
+    notes: list[str] = field(default_factory=list)
     #: Why each unverifiable signature was unverifiable. A count with no reason is
     #: how "nothing was checked" gets read as "everything checks out"; the two v6
     #: cases that land here (an unpinned bootstrap event, a referent outside a
@@ -229,6 +234,7 @@ class BundleVerificationReport:
             "signatures_verified": self.signatures_verified,
             "signatures_unverifiable": self.signatures_unverifiable,
             "errors": self.errors,
+            "notes": self.notes,
             "unverifiable_details": self.unverifiable_details,
         }
 
@@ -1001,13 +1007,24 @@ def verify_audit_bundle_offline(
     errors.extend(sig_errors)
 
     # WI-267 survives verbatim: `signatures_verified > 0` is part of the verdict, because
-    # "nothing was checked" must never read as "everything checks out". Bundle v3 adds the
-    # statement signature to the same rule — an artifact whose membership statement nobody
-    # could check is not verified either, and §4.1 is why the key is a caller input.
+    # "nothing was checked" must never read as "everything checks out". Bundle v3 adds two
+    # more clauses to the same rule, both in the stricter direction:
+    #
+    # * the statement signature must have been CHECKED and valid — an artifact whose
+    #   membership statement nobody could check is not verified either, and §4.1 is why the
+    #   key is a caller input rather than something resolved from the artifact;
+    # * the signer's `may_sign_bundles` scope must have been re-derived from its signed
+    #   acceptance (owner ruling O3). A `contiguous-range` bundle whose authority event lies
+    #   outside its window therefore reports False, with the reason in `notes`. That is
+    #   Resolution 4's "never silently valid" applied to the boolean: the bundle may be
+    #   perfectly well-formed, and it still has not established that its signer was
+    #   permitted to sign it.
     verified = (
         core.structural_checks_ok
         and core.statement_signature_checked
         and core.statement_signature_valid
+        and core.signer_authority_checked
+        and core.signer_may_sign_bundles
         and ok_entity
         and len(errors) == 0
         and sigs_verified > 0
@@ -1039,6 +1056,7 @@ def verify_audit_bundle_offline(
         signatures_verified=sigs_verified,
         signatures_unverifiable=sigs_unverifiable,
         errors=errors,
+        notes=list(core.notes),
         unverifiable_details=sigs_unverifiable_details,
     )
 

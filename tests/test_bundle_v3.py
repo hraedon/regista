@@ -489,6 +489,10 @@ class TestDocumentShape:
         )
         assert report.core_ok, report.findings
         assert report.findings == ()
+        assert report.notes == (), (
+            "a complete-store bundle contains its own signing authority, so there is "
+            "nothing to report as outside scope"
+        )
         assert report.event_count == len(chain.records)
         assert report.statement_signature_checked is True
         assert report.statement_signature_valid is True
@@ -1147,8 +1151,13 @@ class TestBuilder:
         )
         # The signing authority is the acceptance event, which this window excludes. That
         # is `not_checkable`, not a pass and not a failure — and for a bounded range it is
-        # the honest answer rather than the complete-store invalidity.
+        # the honest answer rather than the complete-store invalidity. RECONCILIATION.md
+        # Resolution 4 requires it be NAMED rather than treated as satisfaction, so it
+        # lands in `notes`: not a finding (the artifact is not defective) and not silence.
         assert report.signer_authority_checked is False
+        assert report.signer_may_sign_bundles is False
+        assert any("signer_authority_outside_scope" in n for n in report.notes), report.notes
+        assert not any("signer_authority" in f for f in report.findings)
         assert report.membership_root_ok is True
         assert report.section_digests_ok is True
         assert report.scope_consistent is True

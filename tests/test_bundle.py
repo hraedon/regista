@@ -962,6 +962,33 @@ class TestExportBounds:
             assert report.scope_consistent is True, path
             assert report.global_chain_ok is True, path
 
+        # The head chunk contains the acceptance that grants may_sign_bundles, so O3 is
+        # re-derived and the chunk is `verified`. The tail chunk does NOT, and reports so
+        # rather than passing: RECONCILIATION.md Resolution 4's "reports the named
+        # dependency as outside scope — never silently valid", applied to the boolean.
+        head_report = bundle_store.verify(head)
+        tail_report = bundle_store.verify(tail)
+        assert head_report.signer_authority_checked is True
+        assert head_report.verified is True, head_report.errors
+        assert tail_report.signer_authority_checked is False
+        assert tail_report.verified is False
+        assert any(
+            "signer_authority_outside_scope" in n for n in tail_report.notes
+        ), tail_report.notes
+
+        # NOTE, flagged rather than fixed here: the tail chunk's per-event findings are
+        # "No public key for key_id ..." — an *error*, because the acceptance events that
+        # carry the key material fall outside the window. Under §9 criterion 15 and
+        # `MaterialCompleteness.CONTIGUOUS_RANGE` a referent absent from a bounded scope
+        # "is outside scope and must be NAMED as such", which is closer to A3
+        # `not_checkable` than to a defect. Reclassifying it is the §5.1 axis model's job
+        # (WI-289 Phase C), not Phase B's: `_verify_event_signatures` is shared with the
+        # live-store path and its error/unverifiable split is what the axes aggregate. This
+        # assertion pins the CURRENT behaviour so the reclassification is a visible diff.
+        assert all(
+            "No public key for key_id" in e for e in tail_report.errors
+        ), tail_report.errors
+
     def test_a_windowed_export_that_is_not_contiguous_refuses(
         self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

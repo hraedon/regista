@@ -1335,6 +1335,16 @@ class BundleV3CoreReport:
     section_digest_mismatches: tuple[str, ...] = ()
     ordered_event_hashes: tuple[str, ...] = ()
     findings: tuple[str, ...] = ()
+    #: Named facts that are **not** failures, and must not be read as satisfaction either.
+    #:
+    #: ``RECONCILIATION.md`` Resolution 4: a bounded range "reports the named dependency as
+    #: outside scope — never silently valid". That is a third state, and it needs a third
+    #: channel: putting it in :attr:`findings` would make every legitimate
+    #: ``contiguous-range`` bundle fail, and leaving it out entirely would let
+    #: ``core_ok=True`` on such a bundle read as "the signer's authority was verified" when
+    #: the authority event was simply not present to verify. Notes do not affect
+    #: :attr:`core_ok`; a caller that ignores them is reporting less than it holds.
+    notes: tuple[str, ...] = ()
 
     @property
     def structural_checks_ok(self) -> bool:
@@ -1380,12 +1390,14 @@ class BundleV3CoreReport:
             "recomputed_membership_root": self.recomputed_membership_root,
             "section_digest_mismatches": list(self.section_digest_mismatches),
             "findings": list(self.findings),
+            "notes": list(self.notes),
         }
 
 
 @dataclass
 class _CoreAccumulator:
     findings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     def check(self, condition: bool, finding: str) -> bool:
         if not condition:
@@ -1592,6 +1604,18 @@ def verify_bundle_v3_core(
             "in a bundle claiming the whole chain. A complete-store scope missing a "
             "dependency it must contain is invalid, not unverifiable"
         )
+    else:
+        # A bounded range legitimately may not contain it — and Resolution 4 requires that
+        # be *named* rather than treated as satisfaction. This is not a finding: the
+        # artifact is not defective. It is the third state, and a caller that reports
+        # `core_ok` without it is claiming O3 was checked when it was not.
+        acc.notes.append(
+            "signer_authority_outside_scope: "
+            f"statement.signer.authority_event_hash names {authority_hash}, which lies "
+            f"outside this {scope['kind']} scope, so may_sign_bundles could not be "
+            "re-derived from the signed acceptance (owner ruling O3). Not checkable here — "
+            "not satisfied"
+        )
 
     statement_signature_checked = statement_public_key is not None
     statement_signature_valid = False
@@ -1620,6 +1644,7 @@ def verify_bundle_v3_core(
         section_digest_mismatches=tuple(sorted(mismatches)),
         ordered_event_hashes=tuple(m.event_hash_text for m in ordered),
         findings=tuple(acc.findings),
+        notes=tuple(acc.notes),
     )
 
 
