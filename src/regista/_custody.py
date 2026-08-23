@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,16 +55,54 @@ def resolve_backend(explicit: str | None) -> str:
     return cfg.secret_backend or _DEFAULT_BACKEND
 
 
-def _sanitize_azure_name(project: str, principal_id: str) -> str:
-    import hashlib
+#: A project name that may be used *verbatim* as a backend name segment: Azure Key Vault's
+#: secret-name class (``[A-Za-z0-9-]``) and short enough that the whole azure name cannot
+#: exceed Key Vault's 127-character limit — ``len("regista-") + 63 + len("-") + 35 == 107``.
+#: 63 is not arbitrary: it is the upstream project cap (``_connection._SCHEMA_RE``, a
+#: Postgres schema name). Note that the upstream grammar also permits ``_``, which Key Vault
+#: forbids, so ordinary project names like ``my_proj`` land on the derived branch below.
+_VERBATIM_PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}")
+#: The shape :func:`_project_segment` derives. The verbatim branch refuses this shape so the
+#: two branches have **disjoint ranges**: a project literally named ``px-<32 hex>`` can never
+#: alias the derived segment of some other project.
+_DERIVED_PROJECT_RE = re.compile(r"px-[0-9a-f]{32}")
+#: Domain separation, as for ``_principals.BACKEND_NAME_DOMAIN``. A project segment and a
+#: principal segment must never be derivable from each other.
+_PROJECT_NAME_DOMAIN = b"regista.custody.project-name.v1\x00"
 
-    raw = f"regista-{project}-{principal_id}"
-    cleaned = re.sub(r"[^a-zA-Z0-9-]", "-", raw)
-    if len(cleaned) <= 127:
-        return cleaned
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-    head = cleaned[: 127 - len(digest) - 1]
-    return f"{head}-{digest}"
+
+def _project_segment(project: str) -> str:
+    """A backend-safe, injective rendering of ``project`` for a custody name.
+
+    The project stays in the name on purpose (WI-297 review): a Key Vault may be shared
+    across projects, so a principal-only name would let two projects' keys collide on one
+    secret. Verbatim when it is already safe — §2.2 keeps derived names auditable by hand,
+    and an opaque project segment has no lookup verb to recover it — otherwise a
+    domain-separated digest, which is the only representation for a project name Key Vault
+    cannot spell. Both branches are injective and their ranges are disjoint, so distinct
+    projects never share a segment.
+    """
+    if _VERBATIM_PROJECT_RE.fullmatch(project) and not _DERIVED_PROJECT_RE.fullmatch(
+        project
+    ):
+        return project
+    digest = hashlib.sha256(_PROJECT_NAME_DOMAIN + project.encode("utf-8")).digest()[:16]
+    return f"px-{digest.hex()}"
+
+
+def _derived_custody_name(project: str, principal_id: str) -> str:
+    """The §2.2 backend-safe custody name: ``regista-<project>-<backend_name>``.
+
+    The layout is unambiguous by construction rather than by convention. ``backend_name``
+    is a **fixed-width trailing token** (``"rp-"`` plus exactly 32 lowercase hex, 35
+    characters), so the name parses right-to-left: the last 35 characters are always the
+    principal segment and everything between ``regista-`` and it is always the project
+    segment. Two distinct canonical principal ids therefore never map to one name — the
+    trailing token differs and no project segment, of any length, can absorb the difference.
+    """
+    from ._principals import backend_name
+
+    return f"regista-{_project_segment(project)}-{backend_name(principal_id)}"
 
 
 def _contained_key_path(key_dir: Path, principal_id: str) -> Path:
@@ -108,8 +147,11 @@ def _contained_key_path(key_dir: Path, principal_id: str) -> Path:
     make a legal canonical identity un-enrollable on the file backend, and rewriting case 1
     would invalidate existing refs. The derived form stays auditable by hand through
     ``regista principal resolve-backend-name``, which §2.2 requires for exactly this reason.
-    WI-297 tracks moving *every* backend to the derived name as a deliberate custody
-    migration; this is a forward-compatible step toward it, not a competing scheme.
+
+    WI-297 moved the *other* writable backends (azure/windows/vault) onto the derived name
+    and deliberately left this branch alone: those backends had no path-safety problem to
+    solve, only a §2.2 one, whereas here condition 1 is what keeps every legacy file-backend
+    ref resolving. The dual convention is therefore the settled state, not a way station.
     """
     base = key_dir.resolve(strict=False)
 
@@ -158,13 +200,26 @@ def build_ref(
             key_dir = Path.cwd() / "principals"
         return f"file:{_contained_key_path(key_dir, principal_id)}"
     if backend == "windows":
-        return f"windows:{principal_id}"
+        # This value is superseded in practice — `_secrets.WindowsProvider.store` ignores
+        # the ref it is handed and returns `windows:<DPAPI blob>` as the ref, because a
+        # `windows:` ref *carries* the secret rather than addressing a store entry. It is
+        # still derived here: the credential store forbids `:`, and §2.2 is a rule about
+        # every name regista produces, not only the ones something later reads.
+        return f"windows:{_derived_custody_name(project or 'default', principal_id)}"
     if backend == "vault":
-        safe = re.sub(r"[^a-zA-Z0-9._-]", "-", principal_id)
+        # Vault paths accept far more than Key Vault does, but §2.2's collision-resistance
+        # rule is backend-agnostic: the old `[^a-zA-Z0-9._-]` -> `-` substitution collided
+        # (`human:it-admin` and `human-it:admin` shared a path). The path structure is
+        # unchanged so the tree stays browsable.
+        from ._principals import backend_name
+
         proj = project or "default"
-        return f"vault:secret/regista/{proj}/principals/{safe}/private_key"
+        return (
+            f"vault:secret/regista/{proj}/principals/"
+            f"{backend_name(principal_id)}/private_key"
+        )
     if backend == "azure":
-        return f"azure:{_sanitize_azure_name(project or 'default', principal_id)}"
+        return f"azure:{_derived_custody_name(project or 'default', principal_id)}"
     from ._secrets import _PROVIDERS
 
     if backend in _PROVIDERS:
@@ -182,9 +237,13 @@ def operator_ref_template(
     *,
     project: str | None = None,
 ) -> str:
-    safe = re.sub(r"[^a-zA-Z0-9._-]", "-", principal_id)
+    from ._principals import backend_name
+
     proj = project or "<project>"
-    return f"vault:secret/regista/{proj}/principals/{safe}/private_key"
+    return (
+        f"vault:secret/regista/{proj}/principals/"
+        f"{backend_name(principal_id)}/private_key"
+    )
 
 
 def store_private_key(

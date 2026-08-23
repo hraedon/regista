@@ -259,6 +259,32 @@ _KNOWN_PROVIDER_NAMES = frozenset(
 )
 
 
+#: Prefixes that look like a provider but name a *custody mode*, and must therefore be
+#: refused rather than resolved (WI-297). ``operator`` is the operator-writes mode
+#: (``_custody.store_private_key``): regista never holds the key, so an ``operator:`` string
+#: is a template for a human to populate, never a resolvable reference. Without this,
+#: ``_detect_prefix`` fell through to ``literal`` and ``resolve()`` handed the template text
+#: back *as if it were key bytes* — a fail-open that turns a custody declaration into a
+#: silently wrong secret. Reserved names are deliberately kept out of
+#: ``_KNOWN_PROVIDER_NAMES``: they are not providers, and listing them there would make
+#: ``known_providers()`` advertise something that can never resolve.
+_RESERVED_NON_PROVIDER_PREFIXES = frozenset({"operator"})
+
+
+def _refuse_reserved_prefix(prefix: str, ref: str) -> None:
+    """Fail closed on a custody-mode prefix. No-op for anything else."""
+    if prefix not in _RESERVED_NON_PROVIDER_PREFIXES:
+        return
+    raise RegistaError(
+        ErrorCode.INVALID_ARGUMENT,
+        f"{prefix!r} is a custody mode, not a secret provider, so {ref!r} cannot be "
+        f"resolved or written. An 'operator:' value marks a key regista never holds: "
+        f"populate the secret out-of-band, then record the real reference "
+        f"(vault:/azure:/windows:/file:) instead.",
+        {"reason": "reserved_custody_prefix", "prefix": prefix},
+    )
+
+
 def known_providers() -> list[str]:
     """Return every canonical provider name, installed or not.
 
@@ -289,6 +315,7 @@ def reference_provider(ref: str, *, require_explicit: bool = False) -> str:
                 "Secret reference requires an explicit provider prefix",
             )
         prefix, _, value = ref.partition(":")
+        _refuse_reserved_prefix(prefix, ref)
         if prefix not in _KNOWN_PROVIDER_NAMES:
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -308,6 +335,11 @@ def _detect_prefix(ref: str) -> tuple[str, str]:
     if ":" not in ref:
         return "file", ref
     prefix, _, rest = ref.partition(":")
+    # Before any provider lookup and before the literal fallback: a reserved custody-mode
+    # prefix must never reach a provider, and must never be mistaken for opaque bytes.
+    # Placed here so every dispatcher inherits it — resolve/store/store_new/delete and
+    # `reference_provider` without ``require_explicit``.
+    _refuse_reserved_prefix(prefix, ref)
     if prefix in _PROVIDERS:
         return prefix, rest
     if prefix in _KNOWN_PROVIDER_NAMES:

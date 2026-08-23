@@ -39,6 +39,44 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   NOT custody-bound — a root rotated in after genesis legitimately has no
   `initial_custody` entry, so binding it to one would refuse a legitimate write. Both are
   option (b)/(d) territory, tracked by WI-331.
+- **Custody names on azure/windows/vault now use the §2.2 derived principal name
+  (WI-297).** `_custody.build_ref` derived the principal segment by substituting
+  disallowed characters with `-`, which TRUST-DOMAIN.md §2.2 explicitly rejects because
+  the substitution collides: `human:it-admin` and `human-it:admin` both spelled
+  `human-it-admin` and therefore addressed **one secret**. The segment is now
+  `_principals.backend_name(principal_id)` — `"rp-"` plus 16 bytes of domain-separated
+  SHA-256 — on every writable backend except `file`, which keeps its ratified WI-294 dual
+  convention. Azure's truncate-and-hash fallback is gone: the derived form is bounded by
+  construction, so no name needs cutting.
+
+  The name **keeps its project segment** (`regista-<project>-<backend_name>`) rather than
+  collapsing to the principal alone. A Key Vault may be shared across projects, so a
+  principal-only name would let two projects' keys collide on one secret. Because
+  `backend_name` is a fixed-width trailing token, the layout parses right-to-left and two
+  distinct principal ids can never map to one name whatever the project segment contains.
+  A project name Key Vault cannot spell — including `my_proj`, legal upstream but illegal
+  in Key Vault — is rendered as a domain-separated `px-<32 hex>` digest instead; the
+  verbatim and derived branches have disjoint ranges, so distinct projects never share a
+  segment.
+
+  The `windows:` value was already dead at store time (`WindowsProvider.store` ignores the
+  ref it is handed and returns the DPAPI blob as the ref) but is derived too: §2.2 governs
+  every name regista produces, not only the ones something later reads.
+
+  **Fix-forward: no migration, and none is needed.** A `secret_ref` is resolved verbatim
+  from the record that holds it and is never re-derived, so every ref written by an earlier
+  release keeps resolving exactly as before. Only newly minted refs take the new shape.
+
+### Fixed
+
+- **`operator:` no longer resolves as literal secret bytes (WI-297).** `operator` names a
+  custody mode, not a provider, and is absent from `_KNOWN_PROVIDER_NAMES` — so
+  `_secrets._detect_prefix` fell through to the `literal` provider and `resolve()` handed
+  back the *reference text* as if it were key material. A reserved-prefix refusal now
+  fails closed in `_detect_prefix`, which every dispatcher
+  (`resolve`/`store`/`store_new`/`delete`/`reference_provider`) inherits, with an error
+  naming the real reference forms to use instead. `doctor` degrades such a `key_path` to a
+  skipped check rather than raising, keeping its report-never-traceback contract.
 
 ## [0.7.2] — 2026-08-23
 

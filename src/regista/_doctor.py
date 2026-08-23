@@ -289,7 +289,14 @@ def _resolve_key_file_path(key_path: str) -> str | None:
     from ._errors import RegistaError
     from ._secrets import _detect_prefix, resolve_str
 
-    prefix, stripped = _detect_prefix(key_path)
+    try:
+        prefix, stripped = _detect_prefix(key_path)
+    except RegistaError:
+        # Since WI-297 `_detect_prefix` refuses a reserved custody-mode prefix
+        # (`operator:`) instead of silently treating it as a literal. Doctor reports, it
+        # does not raise: an unresolvable key_path is a skipped check with the path named,
+        # which is what every other unresolvable key_path here already produces.
+        return None
     if prefix == "file":
         return stripped
     if prefix == "literal":
