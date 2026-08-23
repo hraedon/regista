@@ -40,6 +40,27 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   totally ordered means no bundle at all (owner ruling O4) — one named refusal, no
   diagnostic flag, no partial artifact.
 
+  **O3 is re-derived offline with the store's own rules, not inferred from payload shape.**
+  A first cut of the verify-side gate accepted any acceptance-*shaped* payload from any
+  event, which let four documents the writer refuses to create verify clean: a grant
+  embedded in a self-authored ordinary event, a `regista.key-acceptance` payload on an
+  ordinary transition, a grant whose revocation is *inside the same bundle*, and a
+  superseded grant named while the current one denies the scope. The verifier now mirrors
+  `_v6_writer.resolve_key_binding_anchor` — anchor transitions only, newest live anchor
+  wins, any revocation for the key refuses the whole resolution, and a standalone
+  acceptance must be signed by the principal its own `accepted_by` block names and be
+  anchored on a key holding `may_accept_keys`. The verifying key is also bound to the signed
+  signer block (`fingerprint(key) == signer.fingerprint`, `statement_signature.key_id ==
+  signer.key_id`), which is the stated purpose of `signer.fingerprint`'s redundancy. And a
+  `complete-store` scope must be headed by an actual `project_initialized` genesis rather
+  than merely by an event with a null project link — a `trust_domain_established` event
+  legitimately carries one, and it heads the trust-log chain, not a project's.
+
+  Hostile input is refused by name rather than by traceback: non-finite and out-of-range
+  JSON numbers, unpaired surrogates and duplicate object keys are all rejected, and the
+  artifact's bytes must BE their RFC 8785 fixed point (§3.1 rule 4) — the same discipline
+  `parse_v6_envelope_strict` applies to an envelope.
+
   **Still to come, and named so the boundary is visible:** the required trust-material
   argument and the verdict-axis model (`BUNDLE-V3.md` §4/§5) are Phase C, and until they
   land `bundle verify` reports `verified: false` whenever no key was supplied, which is the
