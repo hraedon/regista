@@ -833,6 +833,23 @@ is explicitly `policy_not_supplied` and never a silent skip.
 
 Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 
+> **IMPLEMENTED BY — WI-330.** `regista trust catalog` produces and root-signs this
+> document; `regista trust verify-catalog` verifies a published one, fail-closed and
+> offline. The signed core is the document minus `{root_signatures, countersignatures,
+> anchors}`, canonicalised with JCS and framed as above; the frozen bytes are
+> `tests/vectors/v6/estate-catalog.json`. Signing is **direct root threshold** per rule 1
+> of the amendment below — `root_signatures[]`, `signer` absent — and a scoped-authority
+> catalog is refused rather than accepted, because no ratified document names such an
+> authority for the artifact that says the ceremony finished. Three points this section
+> leaves open are resolved in `src/regista/_estate_catalog.py`'s module docstring and
+> recorded there, not here: `trust_log_checkpoint_digest` is a plain SHA-256 over the
+> published checkpoint's exact canonical bytes (the same value
+> `bootstrap_key_acceptance.trust_log_checkpoint.document_digest` binds);
+> `cutover_event_hash` is the event that opened the project's new epoch, which under
+> `EPOCH-RESET.md` §5 is its `project_initialized`; and `scheme_counts` must sum to
+> `legacy_event_count`, which the frozen vector satisfies. `catalog_kind:
+> project_heads` (rule 4) is **not** implemented and is a named refusal.
+
 > **AMENDED — `RECONCILIATION.md` collisions 19, 21, 22.** Four rules govern every document in
 > §4.3, including the two above:
 >
@@ -897,6 +914,16 @@ Contract:
 
 **Failure to publish is a ceremony failure, not a warning.** Stage 7 step 9 gates on this command
 exiting 0.
+
+> **NOT YET IMPLEMENTED — WI-330 note.** `regista trust publish` does not exist in the
+> codebase. What does exist is the *production* half for one kind: `regista trust catalog`
+> (§4.3) builds, signs and writes the estate cutover catalog's exact canonical
+> publication bytes, and prints the §4.2 path they belong at — it never touches git or a
+> network, matching this section's "publish never touches a private key" separation from
+> the other side. Committing those bytes into the publication clone, updating
+> `index.json` and pushing therefore remain operator-manual until this command lands.
+> The same gap applies to genesis, checkpoint, producer-policy and attestation
+> publication.
 
 ### 4.5 The verifier's pinning workflow
 

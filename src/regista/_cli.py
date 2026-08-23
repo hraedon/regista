@@ -3452,6 +3452,527 @@ def cmd_trust_delegate_registrar(args: argparse.Namespace) -> None:
         print("  the registrar may now authorise `regista trust enroll`")
 
 
+# --- WI-330: the signed estate cutover catalog (TRUST-DOMAIN.md §4.3) -------------
+#
+# agent-suite's cutover runbook §5.4 step 4 says "produce and publish the signed estate
+# cutover catalog through regista's documented catalog command ... do not hand-author
+# catalog JSON". No such command existed: the artifact was fully specified (§4.3) and
+# byte-frozen (tests/vectors/v6/estate-catalog.json) with nothing able to emit it.
+#
+# Naming. `trust catalog` produces and signs; `trust verify-catalog` is the
+# fail-closed counterpart the runbook's step 5 ("re-fetch the publication through an
+# independent checkout and verify its signatures, catalog fields, and referenced
+# heads") runs. `catalog` matches the runbook's own wording and §4.4's
+# `trust publish --kind catalog`; `verify-catalog` matches the existing
+# `trust verify-genesis` verb. ARCHITECTURE-0.6.0.md:942-943 makes produce-and-sign
+# ONE step and publish the NEXT one, which is why signing is folded in here and
+# nothing in this file touches git or a network.
+#
+# PUBLISHING IS NOT DONE HERE. §4.4's `regista trust publish --kind catalog --input
+# <signed.json> --repo <clone>` is a separate, keyless command that does not yet exist
+# in this codebase. `trust catalog` writes the exact canonical publication bytes and
+# prints the §4.2 path they belong at; committing them to the publication clone stays
+# an operator step until that command lands.
+
+
+def cmd_trust_catalog(args: argparse.Namespace) -> None:
+    """Produce and sign the estate cutover catalog (TRUST-DOMAIN.md §4.3).
+
+    The ordered ceremony, every step of which happens BEFORE anything is written:
+
+      1. resolve config; refuse without a DSN
+      2. load and fully verify the pinned trust-genesis document
+      3. refuse a k-of-n domain: one ``--key`` seed is one signature
+      4. parse the operator's measurements file (closed key sets; the frozen legacy
+         numbers §2.4 told them to record, which no live store still holds)
+      5. prove the root key is a genesis signer
+      6. walk the LIVE trust log and reconcile the PUBLISHED checkpoint against it
+      7. measure each project's opened epoch: identity, epoch-opening event, head
+      8. cross-check any re-measurable legacy store against the recorded numbers
+      9. build, validate, sign, re-verify, and write canonical JCS bytes
+
+    ``--dry-run`` performs 1-8, prints the digest the real run would produce, and
+    writes nothing. The digest covers the core only (signatures are excluded from the
+    signed bytes), so the dry run reports the *same* digest the signed artifact carries
+    — it is not an approximation.
+    """
+    import nacl.signing
+
+    from regista._connection import ConnectionManager
+    from regista._estate_catalog import (
+        CatalogProject,
+        build_estate_catalog,
+        estate_catalog_digest,
+        measure_frozen_legacy,
+        measure_new_epoch,
+        parse_catalog_inputs,
+        sign_estate_catalog,
+        verify_estate_catalog,
+    )
+    from regista._genesis_open import load_published_checkpoint
+    from regista._jcs import canonicalize
+    from regista._principal_keys import _compute_fingerprint
+    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+
+    json_mode = getattr(args, "json", False)
+
+    # (1) Config. Every project in the catalog is a schema on this one DSN, which is
+    # the estate's actual deployment shape; a per-project DSN would mean putting
+    # connection strings in a file the runbook forbids holding secret values.
+    dsn, _, _ = _resolve_config(args)
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --dsn or REGISTA_DSN",
+            {"reason": "dsn_absent"},
+        )
+
+    # (2) The pinned genesis document, fully verified.
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. The catalog states which trust domain the "
+            "cutover happened in; without the pinned document there is nothing to "
+            "bind it to.",
+            {"reason": "genesis_document_absent"},
+        )
+    verify_trust_genesis(genesis_document)
+    doc = parse_trust_genesis(genesis_document)
+    trust_project = args.trust_project or doc.trust_log.project_name_hint
+
+    # (3) One --key seed is exactly ONE root signature. A k-of-n domain needs detached
+    # signatures from several offline roots, which this CLI cannot collect — the same
+    # refusal `trust init-log` and `trust delegate-registrar` make.
+    threshold = doc.initial_governance.threshold
+    if threshold != 1:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+            f"this trust domain needs {threshold} root signatures (k-of-n), but "
+            "`trust catalog` signs with a single --key. Collecting detached signatures "
+            "from several offline roots is not implemented for the catalog.",
+            {"reason": "threshold_exceeds_single_key", "threshold": threshold},
+        )
+
+    # Validate the two operator-supplied literals BEFORE any store read. Both are
+    # validated again inside `build_estate_catalog`, but that happens after the trust-log
+    # walk and every project measurement — and an offline ceremony discovers a typo in
+    # `--created-at` with the keys already back in the safe. Same reasoning as
+    # `trust sign-genesis`'s early `--signed-at` check.
+    if args.created_at is not None:
+        try:
+            datetime.strptime(args.created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError as exc:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "--created-at must be a microsecond-precision UTC Z timestamp "
+                "(YYYY-MM-DDTHH:MM:SS.ffffffZ)",
+                {"reason": "created_at_malformed", "created_at": args.created_at},
+            ) from exc
+    if args.prev_commit is not None and (
+        len(args.prev_commit) != 40
+        or any(char not in "0123456789abcdef" for char in args.prev_commit)
+    ):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--prev-commit must be a full lowercase 40-hex git commit",
+            {"reason": "prev_commit_malformed", "prev_commit": args.prev_commit},
+        )
+
+    # A published checkpoint is the only acceptable source for
+    # trust_log_checkpoint_digest: a local observation is not a checkpoint
+    # (`_genesis_open.TRUST_LOG_OBSERVATION_TYPE`), and binding one would put an
+    # unobserved claim in a field that reads as published.
+    publication_args = (args.trust_publication_repo, args.trust_publication_commit)
+    if any(value is None for value in publication_args):
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--trust-checkpoint requires both --trust-publication-repo and the "
+            "out-of-band --trust-publication-commit pin",
+            {"reason": "checkpoint_publication_pin_absent"},
+        )
+
+    # (4) The operator's measurements.
+    try:
+        with open(args.inputs, encoding="utf-8") as handle:
+            inputs_raw = json.load(handle)
+    except OSError as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"cannot read --inputs {args.inputs!r}: {exc}",
+            {"reason": "inputs_file_unreadable", "path": args.inputs},
+        ) from exc
+    except (ValueError, UnicodeError) as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"--inputs {args.inputs!r} is not valid JSON: {exc}",
+            {"reason": "inputs_file_invalid_json", "path": args.inputs},
+        ) from exc
+    inputs = parse_catalog_inputs(inputs_raw)
+    for entry in inputs:
+        if trust_project in (entry.project, entry.legacy_project):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"{entry.project!r} is the trust log's own schema. The cutover catalog "
+                "lists ORDINARY projects; the trust log's state is bound through "
+                "trust_log_checkpoint_digest, not as a projects[] entry.",
+                {"reason": "input_project_is_trust_log", "project": entry.project},
+            )
+
+    if os.path.exists(args.out) and not args.force and not args.dry_run:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"refusing to overwrite existing catalog file {args.out}; choose another "
+            "--out path or pass --force. A catalog is published immutably, so silently "
+            "replacing one on disk is how the wrong bytes reach the channel.",
+            {"reason": "output_exists", "path": args.out},
+        )
+
+    # (5) The root key must be a genesis signer.
+    seed = _read_ed25519_seed(args.key)
+    root_public = bytes(nacl.signing.SigningKey(seed).verify_key)
+    root_fingerprint = _compute_fingerprint(root_public, "ed25519")
+    signer = doc.signer_by_fingerprint(root_fingerprint)
+    if signer is None:
+        raise RegistaError(
+            ErrorCode.ACTOR_SIGNER_MISMATCH,
+            f"the root key (fingerprint {root_fingerprint}) is not a signer in the "
+            "genesis document's binding_core; refusing to sign a cutover catalog with "
+            "a key the domain never committed to",
+            {"reason": "root_key_not_a_genesis_signer", "fingerprint": root_fingerprint},
+        )
+
+    # (6) The published checkpoint, reconciled against the LIVE trust log. This is the
+    # same routine `genesis init` uses, so the digest the catalog binds is the same
+    # value every project's bootstrap acceptance already binds.
+    _genesis_require_trust_log(dsn, trust_project)
+    trust_mgr = ConnectionManager(dsn, trust_project)
+    try:
+        trust_mgr.open()
+        # NOT `SET TRANSACTION READ ONLY`: the verified walk takes `SELECT ... FOR
+        # SHARE` row locks, which PostgreSQL forbids in a read-only transaction. Every
+        # statement on this path is a SELECT.
+        with trust_mgr.transaction() as conn:
+            checkpoint = load_published_checkpoint(
+                args.trust_checkpoint,
+                conn,
+                genesis_document,
+                publication_repo=args.trust_publication_repo,
+                publication_commit=args.trust_publication_commit,
+            )
+    finally:
+        trust_mgr.close()
+    checkpoint_governance = checkpoint.document["root_governance"]
+
+    # (7)/(8) Per project: measure the opened epoch, and cross-check the recorded
+    # legacy numbers against the frozen store whenever it is still reachable.
+    projects: list[CatalogProject] = []
+    legacy_sources: dict[str, str] = {}
+    for entry in inputs:
+        target_mgr = ConnectionManager(dsn, entry.project)
+        try:
+            target_mgr.open()
+            with target_mgr.transaction() as conn:
+                conn.execute("SET TRANSACTION READ ONLY")
+                measured = measure_new_epoch(conn, project=entry.project)
+        finally:
+            target_mgr.close()
+        if measured.trust_domain_id != doc.trust_domain_id:
+            raise RegistaError(
+                ErrorCode.ESTATE_CATALOG_UNVERIFIED,
+                f"project {entry.project!r} was opened in trust domain "
+                f"{measured.trust_domain_id} but the pinned genesis document is "
+                f"{doc.trust_domain_id}; a project from another domain does not belong "
+                "in this catalog",
+                {
+                    "reason": "project_trust_domain_mismatch",
+                    "project": entry.project,
+                    "project_trust_domain_id": measured.trust_domain_id,
+                    "catalog_trust_domain_id": doc.trust_domain_id,
+                },
+            )
+
+        legacy_head = entry.legacy_head_event_hash
+        legacy_count = entry.legacy_event_count
+        scheme_counts = entry.scheme_counts
+        source = "operator_recorded"
+        if entry.legacy_project is not None:
+            legacy_mgr = ConnectionManager(dsn, entry.legacy_project)
+            try:
+                legacy_mgr.open()
+                with legacy_mgr.transaction() as conn:
+                    conn.execute("SET TRANSACTION READ ONLY")
+                    legacy = measure_frozen_legacy(conn, project=entry.legacy_project)
+            finally:
+                legacy_mgr.close()
+            if entry.has_recorded_legacy_facts:
+                recorded = (legacy_head, legacy_count, dict(scheme_counts or {}))
+                observed = (
+                    legacy.head_event_hash,
+                    legacy.event_count,
+                    dict(legacy.scheme_counts),
+                )
+                if recorded != observed:
+                    raise RegistaError(
+                        ErrorCode.ESTATE_CATALOG_UNVERIFIED,
+                        f"the recorded legacy measurements for {entry.project!r} "
+                        f"disagree with schema {entry.legacy_project!r} as measured "
+                        "now; one of the two is wrong and the catalog is not signed "
+                        "over either",
+                        {
+                            "reason": "legacy_measurement_mismatch",
+                            "project": entry.project,
+                            "legacy_project": entry.legacy_project,
+                            "recorded": {
+                                "legacy_head_event_hash": legacy_head,
+                                "legacy_event_count": legacy_count,
+                                "scheme_counts": dict(scheme_counts or {}),
+                            },
+                            "measured": {
+                                "legacy_head_event_hash": legacy.head_event_hash,
+                                "legacy_event_count": legacy.event_count,
+                                "scheme_counts": dict(legacy.scheme_counts),
+                            },
+                        },
+                    )
+                source = "operator_recorded_and_measured"
+            else:
+                source = "measured"
+            legacy_head = legacy.head_event_hash
+            legacy_count = legacy.event_count
+            scheme_counts = legacy.scheme_counts
+        assert legacy_head is not None and legacy_count is not None
+        assert scheme_counts is not None
+        legacy_sources[entry.project_name_hint] = source
+        projects.append(
+            CatalogProject(
+                project_instance_id=measured.project_instance_id,
+                project_name_hint=entry.project_name_hint,
+                cutover_event_hash=measured.cutover_event_hash,
+                legacy_head_event_hash=legacy_head,
+                legacy_event_count=legacy_count,
+                scheme_counts=scheme_counts,
+                new_epoch_head_event_hash=measured.new_epoch_head_event_hash,
+            )
+        )
+
+    created_at = args.created_at or (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z")
+    document = build_estate_catalog(
+        trust_domain_id=doc.trust_domain_id,
+        trust_domain_core_digest=doc.trust_domain_core_digest,
+        root_governance=checkpoint_governance,
+        projects=projects,
+        trust_log_checkpoint_digest=checkpoint.document_digest,
+        created_at=created_at,
+        prev_commit=args.prev_commit,
+    )
+    digest = estate_catalog_digest(document)
+    # §4.2's layout. Printed, never written to: choosing the path inside the
+    # publication clone is `trust publish`'s job, and this command never touches git.
+    stamp = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y%m%dT%H%M%SZ")
+    publication_path = f"catalogs/{stamp}-{document['catalog_kind']}.json"
+
+    plan: dict[str, Any] = {
+        "action": "trust-catalog",
+        "catalog_kind": document["catalog_kind"],
+        "trust_domain_id": doc.trust_domain_id,
+        "trust_domain_core_digest": doc.trust_domain_core_digest,
+        "root_governance": dict(checkpoint_governance),
+        "trust_log_checkpoint_digest": checkpoint.document_digest,
+        "trust_log_checkpoint_seq": checkpoint.checkpoint_seq,
+        "trust_log_checkpoint_source": checkpoint.source,
+        "trust_log_publication_commit": checkpoint.publication_commit,
+        "created_at": created_at,
+        "prev_commit": args.prev_commit,
+        "estate_catalog_digest": digest,
+        "project_count": len(projects),
+        "projects": [entry.as_document_member() for entry in sorted(
+            projects, key=lambda item: item.project_name_hint
+        )],
+        "legacy_measurement_sources": legacy_sources,
+        "root_signer_id": signer.signer_id,
+        "root_fingerprint": root_fingerprint,
+        "out": args.out,
+        "recommended_publication_path": publication_path,
+        "publication": "operator_step",
+    }
+
+    if args.dry_run:
+        plan["dry_run"] = True
+        plan["would_write"] = args.out
+        if json_mode:
+            _dump_json(plan)
+        else:
+            print("trust catalog: dry-run (nothing written)")
+            _print_catalog_plan(plan)
+        return
+
+    signed = sign_estate_catalog(
+        document, seed=seed, signer_id=signer.signer_id, fingerprint=root_fingerprint
+    )
+    canonical = canonicalize(signed)
+    # Self-verify BEFORE writing, the discipline §4.4 requires of publish and
+    # ARCHITECTURE-0.6.0.md:314 requires of bundle export. A catalog this build's own
+    # verifier rejects never reaches the disk.
+    verify_estate_catalog(
+        signed,
+        genesis_document=genesis_document,
+        file_bytes=canonical,
+        expect_digest=digest,
+    )
+    with open(args.out, "wb") as handle:
+        handle.write(canonical)
+    # Re-read the bytes that actually landed and verify those, not the in-memory copy.
+    with open(args.out, "rb") as handle:
+        written = handle.read()
+    report = verify_estate_catalog(
+        json.loads(written.decode("utf-8")),
+        genesis_document=genesis_document,
+        file_bytes=written,
+        expect_digest=digest,
+    )
+
+    plan["dry_run"] = False
+    plan["written"] = args.out
+    plan["canonical_len"] = len(written)
+    plan["signatures_verified"] = report.signatures_verified
+    plan["verdict"] = report.verdict
+    if json_mode:
+        _dump_json(plan)
+    else:
+        print("trust catalog: signed estate cutover catalog written")
+        _print_catalog_plan(plan)
+        print(f"  written:                 {args.out} ({len(written)} canonical bytes)")
+        print(f"  self-verify:             {report.verdict} "
+              f"({report.signatures_verified}/{plan['root_governance']['threshold']})")
+        print("  PUBLISH IS A SEPARATE OPERATOR STEP: commit these exact bytes to the")
+        print(f"  §4.2 publication clone at {publication_path}, then re-fetch through an")
+        print("  independent checkout and run `regista trust verify-catalog`.")
+
+
+def _print_catalog_plan(plan: dict[str, Any]) -> None:
+    print(f"  catalog_kind:            {plan['catalog_kind']}")
+    print(f"  trust_domain_id:         {plan['trust_domain_id']}")
+    governance = plan["root_governance"]
+    print(
+        f"  root_governance:         {governance['mode']} "
+        f"({governance['threshold']} of {governance['signer_count']})"
+    )
+    print(f"  root signer_id:          {plan['root_signer_id']}")
+    print(f"  trust checkpoint:        seq {plan['trust_log_checkpoint_seq']} "
+          f"{plan['trust_log_checkpoint_digest']}")
+    print(f"  created_at:              {plan['created_at']}")
+    print(f"  prev_commit:             {plan['prev_commit']}")
+    print(f"  projects:                {plan['project_count']}")
+    for entry in plan["projects"]:
+        source = plan["legacy_measurement_sources"][entry["project_name_hint"]]
+        print(f"    - {entry['project_name_hint']}")
+        print(f"        project_instance_id:      {entry['project_instance_id']}")
+        print(f"        cutover_event_hash:       {entry['cutover_event_hash']}")
+        print(f"        legacy_head_event_hash:   {entry['legacy_head_event_hash']} ({source})")
+        print(f"        legacy_event_count:       {entry['legacy_event_count']}")
+        print(f"        new_epoch_head:           {entry['new_epoch_head_event_hash']}")
+    print(f"  estate_catalog_digest:   {plan['estate_catalog_digest']}")
+
+
+def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
+    """Verify a published estate cutover catalog; nonzero exit on anything but VALID.
+
+    Offline and read-only: it reads the named files and nothing else. This is the
+    runbook §5.4 step 5 check — run it against an INDEPENDENT checkout of the
+    publication repository, with the pinned genesis document and, ideally, the
+    ``--expect-digest`` value obtained by direct exchange.
+
+    What it does NOT prove, and prints: the publication channel detects
+    *substitution*, not initial dishonesty (§4.1, OPERATOR-FORGERY R3). A fresh clone
+    cannot establish that the first publication was honest. Detection requires a prior
+    observation — which is exactly what ``--expect-digest`` supplies.
+    """
+    from regista._estate_catalog import verify_estate_catalog
+
+    json_mode = getattr(args, "json", False)
+
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. The genesis supplies the ONLY root public "
+            "keys a catalog signature may verify under; without it nothing about the "
+            "catalog's authority can be checked and the verdict would be vacuous.",
+            {"reason": "genesis_document_absent"},
+        )
+
+    file_bytes = _read_catalog_bytes(args.file, "catalog")
+    try:
+        document = json.loads(file_bytes.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RegistaError(
+            ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID,
+            f"{args.file!r} is not valid JSON: {exc}",
+            {"reason": "catalog_file_invalid_json", "path": args.file},
+        ) from exc
+
+    checkpoint_bytes = (
+        _read_catalog_bytes(args.trust_checkpoint, "trust-checkpoint")
+        if args.trust_checkpoint is not None
+        else None
+    )
+    report = verify_estate_catalog(
+        document,
+        genesis_document=genesis_document,
+        file_bytes=file_bytes,
+        expect_digest=args.expect_digest,
+        trust_log_checkpoint_bytes=checkpoint_bytes,
+    )
+    if json_mode:
+        _dump_json(report.to_dict())
+        return
+    print(f"catalog_kind: {report.catalog_kind}")
+    print(f"trust_domain_id: {report.trust_domain_id}")
+    print(f"trust_domain_core_digest: {report.trust_domain_core_digest}")
+    print(f"estate_catalog_digest: {report.estate_catalog_digest}")
+    print(f"digest_pin: {report.digest_pin_status}")
+    print(
+        f"root_governance: {report.root_governance.mode} "
+        f"({report.root_governance.threshold} of {report.root_governance.signer_count})"
+    )
+    print(f"signatures_verified: {report.signatures_verified}")
+    print(f"extra_signatures: {report.extra_signatures}")
+    print(f"verified_fingerprints: {', '.join(report.verified_fingerprints)}")
+    print(f"trust_log_checkpoint_digest: {report.trust_log_checkpoint_digest}")
+    print(f"trust_log_checkpoint: {report.trust_log_checkpoint_status}")
+    print(f"projects: {report.project_count}")
+    for hint in report.project_name_hints:
+        print(f"  - {hint}")
+    print("verdict: VALID")
+    if report.digest_pin_status != "matched":
+        print(
+            "NOTE: no --expect-digest was supplied. This checkout is internally "
+            "coherent, which is NOT evidence that the first publication was honest "
+            "(§4.1, OPERATOR-FORGERY R3). Substitution is detectable only against a "
+            "prior observation."
+        )
+    if report.trust_log_checkpoint_status != "matched":
+        print(
+            "NOTE: no --trust-checkpoint was supplied, so the bound "
+            "trust_log_checkpoint_digest was not compared with a checkpoint document."
+        )
+
+
+def _read_catalog_bytes(path: str, what: str) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError as exc:
+        raise RegistaError(
+            ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID,
+            f"cannot read the {what} file {path!r}: {exc}",
+            {"reason": f"{what.replace('-', '_')}_file_unreadable", "path": path},
+        ) from exc
+
+
 # --- WI-325: `regista genesis init` — the per-project v6 epoch opener -------------
 #
 # The per-project analog of `trust init-log`, and the last missing link of the
@@ -5336,6 +5857,133 @@ def main(argv: list[str] | None = None) -> None:
         "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output",
     )
     trust_deleg.set_defaults(func=cmd_trust_delegate_registrar)
+
+    # WI-330: the signed estate cutover catalog (§4.3). The artifact agent-suite's
+    # cutover runbook §5.4 step 4 requires and nothing could emit. `catalog` produces
+    # and signs (ARCHITECTURE-0.6.0.md:942); `verify-catalog` is step 5's check and
+    # mirrors the existing `verify-genesis` verb. Publishing (§4.4 `trust publish`) is
+    # a separate, still-unimplemented command; this one writes the file and never
+    # touches git or a network.
+    trust_catalog = trust_sub.add_parser(
+        "catalog",
+        help="Produce and sign the estate cutover catalog (§4.3)",
+        description="Build the signed estate cutover catalog from live store state and "
+        "the operator's recorded frozen-legacy measurements, and write its exact "
+        "canonical JCS publication bytes. Publishing those bytes to the §4.2 "
+        "publication clone is a separate operator step.",
+    )
+    # Deliberately NOT `--projects`: argparse abbreviation matching would accept the
+    # global `--project` as a prefix of it and silently bind a project name to the
+    # inputs path. `--inputs` makes that typo an unrecognised-argument error instead.
+    trust_catalog.add_argument(
+        "--inputs",
+        required=True,
+        help="Path to the regista.estate-catalog-inputs/v1 measurements file: one "
+        "entry per project with {project, project_name_hint?, legacy_project?, "
+        "legacy_head_event_hash?, legacy_event_count?, scheme_counts?}. Either "
+        "legacy_project (to re-measure the frozen store) or all three recorded legacy "
+        "values (runbook §2.4) is REQUIRED per entry; supplying both cross-checks them. "
+        "This is a measurements file, NOT the catalog document — the catalog itself is "
+        "never hand-authored.",
+    )
+    trust_catalog.add_argument(
+        "--out", required=True, help="Path the canonical signed catalog bytes are written to"
+    )
+    trust_catalog.add_argument(
+        "--key",
+        required=True,
+        help="Path to the ROOT authorising 32-byte Ed25519 seed (64 hex chars or "
+        "base64); its fingerprint must be a genesis signer. A k-of-n domain is refused: "
+        "one seed is one signature.",
+    )
+    trust_catalog.add_argument(
+        "--trust-checkpoint",
+        required=True,
+        help="Path to the PUBLISHED regista.trust-checkpoint document whose digest the "
+        "catalog binds. It is reconciled against the live trust log before use; a local "
+        "observation is not a checkpoint and is not accepted.",
+    )
+    trust_catalog.add_argument(
+        "--trust-publication-repo",
+        default=None,
+        help="Root of the §4.2 publication clone containing --trust-checkpoint",
+    )
+    trust_catalog.add_argument(
+        "--trust-publication-commit",
+        default=None,
+        help="Full 40-hex git commit pinned out of band for the publication channel",
+    )
+    trust_catalog.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH)",
+    )
+    trust_catalog.add_argument(
+        "--trust-project",
+        default=None,
+        help="Trust-log schema; defaults to the genesis document's signed "
+        "project_name_hint (regista_trust)",
+    )
+    trust_catalog.add_argument(
+        "--created-at",
+        default=None,
+        help="Override created_at (microsecond UTC Z form); default: now. Pin it to "
+        "reproduce a byte-identical catalog.",
+    )
+    trust_catalog.add_argument(
+        "--prev-commit",
+        default=None,
+        help="Publication-channel prev_commit (full 40-hex git commit); default null",
+    )
+    trust_catalog.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing --out file (refused by default)",
+    )
+    trust_catalog.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build and validate, print the digest the real run would produce, and "
+        "write NOTHING",
+    )
+    # SUPPRESS (see rebuild-projection): a subparser --json/--project with a
+    # False/None default would clobber the global value the top-level parser set.
+    trust_catalog.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    trust_catalog.set_defaults(func=cmd_trust_catalog)
+
+    trust_verify_catalog = trust_sub.add_parser(
+        "verify-catalog",
+        help="Verify a published estate cutover catalog; nonzero exit on invalid",
+        description="Runbook §5.4 step 5: verify a published catalog's signatures, "
+        "fields and referenced digests. Offline and read-only — it reads the named "
+        "files and nothing else.",
+    )
+    trust_verify_catalog.add_argument("file", help="Path to the published catalog JSON")
+    trust_verify_catalog.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH). "
+        "REQUIRED: it supplies the only root public keys a signature may verify under.",
+    )
+    trust_verify_catalog.add_argument(
+        "--expect-digest",
+        default=None,
+        help="estate_catalog_digest obtained by direct exchange. Without it the check "
+        "proves internal coherence only, never that the first publication was honest.",
+    )
+    trust_verify_catalog.add_argument(
+        "--trust-checkpoint",
+        default=None,
+        help="Path to the published trust-checkpoint document, to compare against the "
+        "catalog's bound trust_log_checkpoint_digest. Absent, that binding is reported "
+        "not_presented rather than silently skipped.",
+    )
+    trust_verify_catalog.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    trust_verify_catalog.set_defaults(func=cmd_trust_verify_catalog)
 
     # WI-325: `genesis init` — open an ordinary project's clean v6 epoch. The
     # per-project analog of `trust init-log`. Verify-before-touch, accurate --dry-run,

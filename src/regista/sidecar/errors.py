@@ -105,6 +105,12 @@ _STATUS_MAP: dict[str, int] = {
     ErrorCode.TRUST_GENESIS_DERIVATION_MISMATCH: 400,
     ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID: 400,
     ErrorCode.TRUST_GOVERNANCE_TRANSITION_INVALID: 400,
+    # WI-330 estate cutover catalog (§4.3). Also offline-only — the catalog is built,
+    # signed and verified by the CLI and the sidecar exposes no catalog endpoint — so
+    # these mappings exist to satisfy total coverage. Both are defects in the
+    # submitted document or its claims, hence 400.
+    ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID: 400,
+    ErrorCode.ESTATE_CATALOG_UNVERIFIED: 400,
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Every one of these is a
     # defect in the *submitted* identifier or payload, never a server fault, hence 400.
     ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL: 400,

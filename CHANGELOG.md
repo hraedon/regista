@@ -98,6 +98,67 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
+- **`regista trust catalog` / `regista trust verify-catalog` — the signed estate cutover
+  catalog (WI-330, `TRUST-DOMAIN.md` §4.3).** agent-suite's cutover runbook §5.4 step 4
+  instructs the operator to "produce and publish the signed estate cutover catalog
+  through regista's documented catalog command … do not hand-author catalog JSON", and
+  no such command existed: the `trust` subparser offered only
+  sign/verify/rebuild/init/enroll/delegate-registrar. The artifact itself was fully
+  specified (§4.3) and byte-frozen (`tests/vectors/v6/estate-catalog.json`) with nothing
+  able to emit it — a cutover blocker.
+
+  **Naming.** `catalog` matches the runbook's own wording and §4.4's `trust publish
+  --kind catalog`; `verify-catalog` mirrors the existing `verify-genesis` verb and is
+  what runbook §5.4 step 5 ("re-fetch the publication through an independent checkout
+  and verify its signatures, catalog fields, and referenced heads") runs.
+  `ARCHITECTURE-0.6.0.md`:942-943 makes "produce and sign" ONE step and "publish" the
+  next one, which is why signing is folded into `catalog` and neither command touches
+  git or a network.
+
+  `trust catalog` builds the document from **measured** store state — each project's
+  `project_instance_id`, its epoch-opening event and its current chain head, plus a
+  PUBLISHED §4.3 trust-log checkpoint reconciled against the live trust log through the
+  same `load_published_checkpoint` path `genesis init` uses — canonicalises it (JCS),
+  derives the digest under `b"regista.estate-catalog.v1\x00"` with §5.3 length framing,
+  root-signs it, self-verifies the bytes it is about to write, writes them, re-reads
+  them and verifies again. `--dry-run` reports the digest the real run would produce
+  (signatures are outside the signed core, so it is the same value, not an
+  approximation), and a pinned `--created-at` makes the whole artifact byte-reproducible.
+
+  The frozen legacy head hash, event count and scheme counts come from an operator
+  measurements file (`--inputs`, a closed-key-set `regista.estate-catalog-inputs/v1`
+  document — **not** the catalog): the legacy schema is read-only by the time this runs
+  and those numbers were recorded by runbook §2.4 before the freeze. Supplying
+  `legacy_project` re-measures the frozen store instead, and supplying both cross-checks
+  them and refuses a disagreement.
+
+  Fail-closed throughout, every refusal named: unknown or missing top-level keys, a
+  publication file that is not exact canonical JCS, `scheme_counts` that do not sum to
+  `legacy_event_count`, a restated governance mode that is not the derived one, a
+  threshold below the pinned genesis's (WI-280 monotonicity), a signature by a key the
+  pinned genesis never committed to (refused, never dropped — dropping turns k-of-n into
+  1-of-n), inline countersignatures/anchors (§4.3 rule 3 makes those separate immutable
+  records), a project with no opened epoch, an out-of-band `--expect-digest` mismatch.
+  Two new error codes carry them: `ESTATE_CATALOG_SCHEMA_INVALID` (malformed — rebuild
+  it) and `ESTATE_CATALOG_UNVERIFIED` (well-formed, claims did not hold up).
+
+  Under-specified points, resolved and recorded in `_estate_catalog.py`'s module
+  docstring rather than chosen silently: signing is **direct root threshold**
+  (`root_signatures[]`, `signer` absent — §4.3's AMENDED rule 1, superseding the JSON
+  skeleton's `"signer": {}`; a scoped-authority catalog is refused, not accepted);
+  `trust_log_checkpoint_digest` is a plain SHA-256 over the published checkpoint's exact
+  canonical bytes, the same value every project's `bootstrap_key_acceptance` already
+  binds; `cutover_event_hash` is the event that opened the project's new epoch, since
+  under `EPOCH-RESET.md` §5 the fresh schema's `project_initialized` *is* its cutover
+  event; and `catalog_kind: project_heads` (§4.3 rule 4, optional and explicitly not a
+  release gate) is a named refusal rather than a guessed entry shape.
+
+  **Publishing is still an operator step.** §4.4's keyless `regista trust publish --kind
+  catalog --input <signed.json> --repo <clone>` does not exist yet; `trust catalog`
+  writes the exact canonical publication bytes and prints the §4.2 path they belong at.
+  A k-of-n root domain is refused by name (`threshold_exceeds_single_key`), the same way
+  `trust init-log` and `trust delegate-registrar` refuse it.
+
 - **`regista genesis init` — the per-project v6 epoch opener (WI-325).** The per-project
   analog of `trust init-log`, and the last step of the EPOCH-RESET ceremony that had no
   CLI. `Regista.initialize_epoch()` was Python-API-only and consumed a finished,
