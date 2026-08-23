@@ -3593,29 +3593,47 @@ def _load_json_document(path: str, what: str, reason_prefix: str) -> Any:
 def _resolve_root_authority(
     args: argparse.Namespace, genesis_document: Mapping[str, Any]
 ) -> RootAuthorityState:
-    """Derive the root authority: genesis, advanced by the verified trust log if given.
+    """Derive the root authority by WALKING the trust log. The log is never optional.
 
     THE trust-log input design (WI-330 review FR2-1). regista's trust log is a
     PostgreSQL project and §4.2 publishes no trust-log export, so "present the log"
-    means naming the schema that holds it: ``--trust-log-dsn`` (defaulting to the
-    global ``--dsn``/``REGISTA_DSN``) plus ``--trust-log-project``. When it is
-    presented, ``verify_trust_log_chain`` replays it from the pinned genesis under full
-    verification and the authority is the replayed state — the same walk the in-store
+    means naming the schema that holds it: ``--trust-log-project`` plus
+    ``--trust-log-dsn`` (defaulting to the global ``--dsn``/``REGISTA_DSN``).
+    ``verify_trust_log_chain`` then replays it from the pinned genesis under full
+    verification, and the authority is the replayed state — the same walk the in-store
     verifier uses.
 
-    When it is NOT presented — the offline auditor's case, with only the §4.2
-    publication in hand — the authority is genesis. That is not a weaker check: genesis
-    is the chain's root, so it is the state of a domain with zero rotation events, and a
-    checkpoint claiming any other signer set is REFUSED by name with instructions to
-    present the log. An unproven rotation is never believed, and there is deliberately
-    no operator channel for root public keys.
+    **Omitting it is a refusal, not a fallback (WI-330 review FR3-1).** An earlier
+    version fell back to genesis — "the zero-rotation state" — which read the ABSENCE of
+    evidence as proof that no rotation had happened. Both reviewers demonstrated the
+    consequence: after a real A/B→C rotation, the REMOVED roots A and B could forge a
+    checkpoint and catalog claiming the genesis A/B set, withhold
+    ``--trust-log-project``, and get VALID. Withholding evidence must never be more
+    permissive than presenting it. "No rotation" is a claim about the log and can only be
+    established BY the log — and a rotation-free walk legitimately yields the genesis
+    set, so nothing is lost by always consulting it.
+
+    Authority is evaluated at the log's CURRENT HEAD, not at the checkpoint's position
+    (see :data:`_AT_HEAD_AUTHORITY_NOTE`).
     """
     from regista._connection import ConnectionManager
-    from regista._estate_catalog import genesis_root_authority, trust_log_root_authority
+    from regista._estate_catalog import trust_log_root_authority
 
     project = getattr(args, "trust_log_project", None)
     if project is None:
-        return genesis_root_authority(genesis_document)
+        raise RegistaError(
+            ErrorCode.ESTATE_CATALOG_UNVERIFIED,
+            "no trust log was presented, so the current root signer set cannot be "
+            "established. Pass --trust-log-project (and --trust-log-dsn, or "
+            "--dsn/REGISTA_DSN) so the log can be replayed from the pinned genesis. "
+            "This is REQUIRED even for a domain you believe has never rotated: "
+            "assuming zero rotations from the absence of the log is exactly what lets "
+            "roots removed by a rotation forge a catalog under the old genesis set. "
+            "NOTE: §5.4 step 5's independent verification therefore needs READ ACCESS "
+            "to the trust-log store until a published trust-log export exists; that "
+            "artifact is `regista trust publish`'s territory and does not exist yet.",
+            {"reason": "trust_log_not_presented"},
+        )
     dsn = getattr(args, "trust_log_dsn", None) or (args.dsn or os.environ.get("REGISTA_DSN"))
     if not dsn:
         raise RegistaError(
@@ -3634,6 +3652,22 @@ def _resolve_root_authority(
             return trust_log_root_authority(conn, genesis_document)
     finally:
         mgr.close()
+
+
+#: Follow-up territory, stated at the site rather than implied (WI-330 review FR3-2).
+#: The authority above is the log's state at its CURRENT HEAD. A rotation appended after
+#: a catalog was published therefore makes that historically valid catalog fail
+#: verification today. Evaluating authority as of the checkpoint's own position would fix
+#: that, and is NOT implementable yet: `verify_trust_log_chain` takes no upper bound, and
+#: `trust_root_rotated.effective_from_checkpoint_seq` is parsed by
+#: `_trust_log.parse_trust_root_rotated` but never consulted by
+#: `_trust_log.apply_root_rotation` — so "the signer set as of checkpoint_seq N" has no
+#: defined meaning in either the machinery or §5.4. Inventing one silently would be worse
+#: than the limitation, so it is reported instead.
+_AT_HEAD_AUTHORITY_NOTE = (
+    "root authority is evaluated at the trust log's CURRENT head; a rotation appended "
+    "after this catalog was published will make it fail verification here (WI-330 FR3-2)"
+)
 
 
 def _catalog_signers(
@@ -4413,7 +4447,13 @@ def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
         expect_digest=args.expect_digest,
     )
     if json_mode:
-        _dump_json(report.to_dict())
+        _dump_json(
+            {
+                **report.to_dict(),
+                "authority_evaluated_at": "trust_log_head",
+                "authority_limitation": _AT_HEAD_AUTHORITY_NOTE,
+            }
+        )
     else:
         print(f"catalog_kind: {report.catalog_kind}")
         print(f"catalog_status: {report.catalog_status}")
@@ -4435,7 +4475,10 @@ def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
             f"(seq {report.checkpoint.checkpoint_seq}, "
             f"{report.checkpoint.signatures_verified} root signature(s))"
         )
-        print(f"root_authority: {report.root_authority.source}")
+        print(
+            f"root_authority: {report.root_authority.source} "
+            f"(trust-log events walked: {report.root_authority.trust_log_event_count})"
+        )
         print(
             "active_root_fingerprints: "
             + ", ".join(report.root_authority.signer_fingerprints)
@@ -4447,6 +4490,7 @@ def cmd_trust_verify_catalog(args: argparse.Namespace) -> None:
         for missing in report.missing_project_instance_ids:
             print(f"  ! MISSING: {missing}")
         print(f"verdict: {report.verdict}")
+        print(f"NOTE: {_AT_HEAD_AUTHORITY_NOTE}.")
         if report.digest_pin_status != "matched":
             print(
                 "NOTE: no --expect-digest was supplied. This checkout is internally "
@@ -6527,13 +6571,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     trust_sign_catalog.add_argument(
         "--trust-log-project",
-        default=None,
-        help="Schema holding the estate trust log. Present it to prove a ROOT ROTATION: "
-        "the log is replayed from the pinned genesis under full verification and the "
-        "resulting signer set/threshold become the authority. Omit it and the authority "
-        "is genesis itself (the zero-rotation state) — correct for a domain that has "
-        "never rotated, and any checkpoint claiming a different root set is refused by "
-        "name. There is no operator channel for root public keys by design.",
+        required=True,
+        help="REQUIRED. Schema holding the estate trust log. It is replayed from the "
+        "pinned genesis under full verification and the resulting signer set/threshold "
+        "ARE the authority. There is no way to omit it: assuming zero rotations from the "
+        "absence of the log is what lets roots removed by a rotation forge a catalog "
+        "under the old genesis set (a rotation-free walk yields the genesis set anyway, "
+        "so nothing is lost). CONSEQUENCE: §5.4 step 5's independent verification needs "
+        "READ ACCESS to the trust-log store until a published trust-log export exists. "
+        "There is no operator channel for root public keys by design.",
     )
     trust_sign_catalog.add_argument(
         "--trust-log-dsn",
@@ -6589,13 +6635,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     trust_verify_catalog.add_argument(
         "--trust-log-project",
-        default=None,
-        help="Schema holding the estate trust log. Present it to prove a ROOT ROTATION: "
-        "the log is replayed from the pinned genesis under full verification and the "
-        "resulting signer set/threshold become the authority. Omit it and the authority "
-        "is genesis itself (the zero-rotation state) — correct for a domain that has "
-        "never rotated, and any checkpoint claiming a different root set is refused by "
-        "name. There is no operator channel for root public keys by design.",
+        required=True,
+        help="REQUIRED. Schema holding the estate trust log. It is replayed from the "
+        "pinned genesis under full verification and the resulting signer set/threshold "
+        "ARE the authority. There is no way to omit it: assuming zero rotations from the "
+        "absence of the log is what lets roots removed by a rotation forge a catalog "
+        "under the old genesis set (a rotation-free walk yields the genesis set anyway, "
+        "so nothing is lost). CONSEQUENCE: §5.4 step 5's independent verification needs "
+        "READ ACCESS to the trust-log store until a published trust-log export exists. "
+        "There is no operator channel for root public keys by design.",
     )
     trust_verify_catalog.add_argument(
         "--trust-log-dsn",

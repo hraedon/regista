@@ -853,17 +853,42 @@ Domain separator `b"regista.estate-catalog.v1\x00"`, same framing.
 > checkpoint naming their own fresh key as the sole active root, sign it with that key,
 > and be believed.
 >
-> Presenting the trust log (`--trust-log-project`, plus `--trust-log-dsn`) is what proves
-> a §5.4 rotation: the log's `trust_root_rotated` event carries the added root's public
-> key, which is how the replayed state learns material genesis never had. Omitting it
-> leaves the authority at genesis — the zero-rotation state, correct for a domain that
-> has never rotated — and any checkpoint claiming a different signer set is refused by
-> name with instructions to present the log. So a rotated-in root is honoured only when
-> the log proves the rotation, and a root **removed** by a rotation is refused even
+> **The trust log is REQUIRED, not optional.** `--trust-log-project` (with
+> `--trust-log-dsn`, defaulting to `--dsn`/`REGISTA_DSN`) names the schema holding it;
+> the log is replayed from the pinned genesis under full verification and the resulting
+> signer set and threshold **are** the authority. Omitting it is a named refusal
+> (`trust_log_not_presented`), never a fallback to "the zero-rotation state": treating
+> the ABSENCE of the log as proof that no rotation happened is a downgrade path — after
+> a real A/B→C rotation the *removed* roots A and B can forge a checkpoint and catalog
+> claiming the genesis A/B set, and withholding the log made that VALID. Withholding
+> evidence must never be more permissive than presenting it. Nothing is lost by always
+> walking: a rotation-free log legitimately yields the genesis set, so "no rotation" is
+> *proven* rather than assumed.
+>
+> Presenting the log is also what proves a rotation in the other direction: the log's
+> `trust_root_rotated` event carries the added root's public key, which is how the
+> replayed state learns material genesis never had. So a rotated-in root is honoured only
+> when the log proves the rotation, and a root **removed** by a rotation is refused even
 > while the checkpoint still lists it. There is deliberately **no operator channel for
 > root public keys**: supplying bytes for a fingerprint the checkpoint merely *claimed*
 > active was the hole. And there is no verification mode in which the checkpoint is
 > skipped and the verdict still reads VALID.
+>
+> **CONSEQUENCE for §5.4 step 5.** "Re-fetch the publication through an independent
+> checkout and verify" therefore needs **read access to the trust-log store**, because
+> §4.2 publishes no trust-log export. An auditor with only the publication repository
+> cannot establish the current root set at all. Closing that gap means publishing the
+> log (or a verifiable extract of it) as a §4.2 artifact, which is `regista trust
+> publish`'s territory and is deliberately NOT invented here.
+>
+> **Authority is evaluated at the log's CURRENT HEAD**, not as of the checkpoint's own
+> position, so a rotation appended after publication makes a historically valid catalog
+> fail verification. Point-in-time authority is not implementable today:
+> `verify_trust_log_chain` takes no upper bound, and `trust_root_rotated`'s
+> `effective_from_checkpoint_seq` is parsed but never consulted when governance is
+> applied — so "the signer set as of `checkpoint_seq` N" has no defined meaning in either
+> the machinery or §5.4 above. The limitation is printed on every verdict rather than
+> resolved by inventing semantics.
 >
 > Signing is **direct root threshold** per rule 1 of the amendment below —
 > `root_signatures[]`, `signer` absent — and a scoped-authority catalog is refused

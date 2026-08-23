@@ -552,6 +552,19 @@ def estate(tmp_path_factory):
     drop_project_schema(DSN, trust_project)
 
 
+def _walked_authority(estate):
+    """The authority a real walk of ``estate``'s trust log yields."""
+    from regista._connection import ConnectionManager
+
+    mgr = ConnectionManager(DSN, estate.trust_project)
+    try:
+        mgr.open()
+        with mgr.transaction() as conn:
+            return trust_log_root_authority(conn, estate.fx.document)
+    finally:
+        mgr.close()
+
+
 def _catalog_ns(estate, **overrides) -> argparse.Namespace:
     base: dict[str, Any] = {
         "dsn": DSN,
@@ -587,8 +600,9 @@ def _verify_ns(estate, **overrides) -> argparse.Namespace:
         "genesis": estate.genesis,
         "trust_checkpoint": estate.checkpoint,
         "expected_estate": None,
-        "trust_log_project": None,
-        "trust_log_dsn": None,
+        # FR3-1: the log is never optional. The default presents the estate's own.
+        "trust_log_project": estate.trust_project,
+        "trust_log_dsn": DSN,
         "expect_digest": None,
         "json": True,
     }
@@ -702,7 +716,7 @@ def test_trust_catalog_end_to_end(estate, tmp_path) -> None:
     report = verify_estate_catalog(
         document,
         genesis_document=estate.fx.document,
-        authority=genesis_root_authority(estate.fx.document),
+        authority=_walked_authority(estate),
         trust_log_checkpoint_bytes=estate.checkpoint_bytes,
         expected_estate=json.loads(
             pathlib.Path(_manifest_file(estate, tmp_path, estate.target_project)).read_text()
@@ -1075,7 +1089,7 @@ def test_trust_catalog_refuses_an_under_signed_catalog_by_default(
     checkpoint = verify_published_checkpoint(
         estate.checkpoint_bytes,
         genesis_document=estate.fx.document,
-        authority=genesis_root_authority(estate.fx.document),
+        authority=_walked_authority(estate),
     )
     assert checkpoint.governance.threshold == 1
     assert checkpoint.active_root_fingerprints == (
@@ -1127,8 +1141,9 @@ def test_trust_catalog_and_sign_catalog_compose(estate, tmp_path) -> None:
             argparse.Namespace(
                 dsn=None, project=None, hmac_key_path=None,
                 file=str(out), out=str(signed_path), key=[estate.root_seed_path],
-                trust_checkpoint=estate.checkpoint, trust_log_project=None,
-                trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+                trust_checkpoint=estate.checkpoint,
+                trust_log_project=estate.trust_project, trust_log_dsn=DSN,
+                genesis=estate.genesis, force=False, json=True,
             ),
         )
     )
@@ -1164,8 +1179,9 @@ def test_sign_catalog_refuses_a_key_outside_the_active_root_set(
         argparse.Namespace(
             dsn=None, project=None, hmac_key_path=None,
             file=str(out), out=str(tmp_path / "signed.json"), key=[stranger],
-            trust_checkpoint=estate.checkpoint, trust_log_project=None,
-            trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+            trust_checkpoint=estate.checkpoint,
+            trust_log_project=estate.trust_project, trust_log_dsn=DSN,
+            genesis=estate.genesis, force=False, json=True,
         ),
     )
     assert _reason(error) == "root_key_not_active"
@@ -1652,6 +1668,117 @@ def test_verify_catalog_refuses_a_trust_log_project_without_a_dsn(estate, tmp_pa
     assert _reason(error) == "trust_log_dsn_absent"
 
 
+def test_verify_catalog_refuses_when_the_trust_log_is_withheld(estate, tmp_path) -> None:
+    """FR3-1, at the live CLI: no log, no verdict — even for the genuine estate."""
+    out = tmp_path / "catalog.json"
+    _run(estate, tmp_path, out=out)
+    error = _refusal(
+        cmd_trust_verify_catalog,
+        _verify_ns(
+            estate, file=str(out),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            trust_log_project=None,
+        ),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "trust_log_not_presented"
+
+
+def test_verify_catalog_reports_the_at_head_authority_limitation(
+    estate, tmp_path
+) -> None:
+    """FR3-2 is deferred, so the limitation is REPORTED at every verdict.
+
+    Authority is the log's state at its current head, which means a rotation appended
+    after publication invalidates a historically valid catalog here. Bounded replay is
+    not implementable yet (``effective_from_checkpoint_seq`` has no verifier semantics),
+    so the honest move is to say so on every report rather than let a reader assume
+    point-in-time semantics.
+    """
+    out = tmp_path / "catalog.json"
+    built = _run(estate, tmp_path, out=out)
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    report = json.loads(
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(
+                estate, file=str(out), expected_estate=manifest,
+                expect_digest=built["estate_catalog_digest"],
+            ),
+        )
+    )
+    assert report["authority_evaluated_at"] == "trust_log_head"
+    assert "CURRENT head" in report["authority_limitation"]
+
+    human = _capture(
+        cmd_trust_verify_catalog,
+        _verify_ns(estate, file=str(out), expected_estate=manifest, json=False),
+    )
+    assert "CURRENT head" in human
+    assert "root_authority: verified_trust_log" in human
+
+
+def test_cli_verify_catalog_round_trip(estate, tmp_path) -> None:
+    """The full §5.4 step 5 check, which now requires the trust log."""
+    out = tmp_path / "catalog.json"
+    built = _run(estate, tmp_path, out=out)
+    manifest = _manifest_file(estate, tmp_path, estate.target_project)
+    report = json.loads(
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(
+                estate, file=str(out), expected_estate=manifest,
+                expect_digest=built["estate_catalog_digest"],
+            ),
+        )
+    )
+    assert report["verdict"] == "VALID"
+    assert report["digest_pin_status"] == "matched"
+    assert report["signatures_verified"] == 1
+    assert report["completeness"] == "complete"
+    assert report["checkpoint"]["signatures_verified"] == 1
+    # FR3-4: never a genesis-sourced verdict.
+    assert report["root_authority"]["source"] == "verified_trust_log"
+
+
+def test_cli_verify_catalog_exits_3_on_a_partial_catalog(estate, tmp_path) -> None:
+    """A ceremony failure must not look like success to a pipeline."""
+    out = tmp_path / "partial.json"
+    manifest = _manifest_file(
+        estate, tmp_path, estate.target_project, estate.second_project
+    )
+    _run(estate, tmp_path, out=out, expected_estate=manifest, allow_partial=True)
+    with pytest.raises(SystemExit) as excinfo:
+        _capture(
+            cmd_trust_verify_catalog,
+            _verify_ns(estate, file=str(out), expected_estate=manifest),
+        )
+    assert excinfo.value.code == 3
+
+
+def test_cli_verify_catalog_human_output_names_what_it_did_not_prove(
+    estate, tmp_path
+) -> None:
+    """The default (non-``--json``) report is what an operator actually reads."""
+    out = tmp_path / "catalog.json"
+    built = _run(estate, tmp_path, out=out)
+    output = _capture(
+        cmd_trust_verify_catalog,
+        _verify_ns(
+            estate, file=str(out),
+            expected_estate=_manifest_file(estate, tmp_path, estate.target_project),
+            json=False,
+        ),
+    )
+    assert "verdict: VALID" in output
+    assert f"estate_catalog_digest: {built['estate_catalog_digest']}" in output
+    assert "digest_pin: not_pinned" in output
+    assert "trust_log_checkpoint: VERIFIED" in output
+    assert "completeness: complete" in output
+    assert "active_root_fingerprints:" in output
+    assert "OPERATOR-FORGERY R3" in output
+
+
 # ---------------- FR2-2: sign-catalog must not count unverified entries ----------
 
 
@@ -1699,8 +1826,9 @@ def test_sign_catalog_refuses_a_catalog_carrying_an_invalid_signature(
         argparse.Namespace(
             dsn=None, project=None, hmac_key_path=None,
             file=str(tampered), out=str(signed_out), key=[estate.root_seed_path],
-            trust_checkpoint=estate.checkpoint, trust_log_project=None,
-            trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+            trust_checkpoint=estate.checkpoint,
+            trust_log_project=estate.trust_project, trust_log_dsn=DSN,
+            genesis=estate.genesis, force=False, json=True,
         ),
     )
     assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
@@ -1728,15 +1856,18 @@ def test_sign_catalog_counts_only_verified_signatures(estate, tmp_path) -> None:
             argparse.Namespace(
                 dsn=None, project=None, hmac_key_path=None,
                 file=str(out), out=str(signed_out), key=[estate.root_seed_path],
-                trust_checkpoint=estate.checkpoint, trust_log_project=None,
-                trust_log_dsn=None, genesis=estate.genesis, force=False, json=True,
+                trust_checkpoint=estate.checkpoint,
+                trust_log_project=estate.trust_project, trust_log_dsn=DSN,
+                genesis=estate.genesis, force=False, json=True,
             ),
         )
     )
     assert result["signatures_verified"] == 1
     assert result["signatures_total"] == 1
     assert result["threshold_met"] is True
-    assert result["root_authority"]["source"] == "genesis"
+    # FR3-1/FR3-4: sign-catalog has no genesis fallback either, so the authority it
+    # signed under is always the walked one.
+    assert result["root_authority"]["source"] == "verified_trust_log"
     # And the artifact an independent verifier sees agrees.
     report = json.loads(
         _capture(

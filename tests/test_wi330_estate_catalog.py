@@ -594,6 +594,17 @@ def _sign_catalog(
     return signed
 
 
+def _walked(fixture) -> Any:
+    """What a ROTATION-FREE trust-log walk yields: the genesis set, log-sourced.
+
+    Post-FR3-1 the CLI always walks the log, so this — not a genesis-sourced authority —
+    is the state the common case actually produces. ``verify_trust_log_chain`` seeds
+    itself from genesis and applies no rotations, so the set and threshold are genesis's;
+    only the provenance label differs, and that label is the point.
+    """
+    return _log_authority(fixture, fixture.signer_ids, threshold=fixture.threshold)
+
+
 def _log_authority(fixture, signer_ids: tuple[str, ...], *, threshold: int) -> Any:
     """A ``RootAuthorityState`` standing for a REPLAYED trust log.
 
@@ -718,7 +729,7 @@ def test_verify_happy_path() -> None:
     report = verify_estate_catalog(
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
         file_bytes=canonicalize(signed),
@@ -754,7 +765,7 @@ def test_verify_refuses_arbitrary_bytes_presented_as_a_checkpoint() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=blob,
         expected_estate=_manifest_for(signed),
     )
@@ -782,7 +793,7 @@ def test_verify_refuses_a_checkpoint_with_invented_governance() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -799,7 +810,7 @@ def test_verify_refuses_a_checkpoint_with_no_signatures() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -820,7 +831,7 @@ def test_verify_refuses_a_checkpoint_whose_signature_does_not_verify() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=tampered_bytes,
         expected_estate=_manifest_for(signed),
     )
@@ -839,7 +850,7 @@ def test_verify_refuses_a_non_canonical_checkpoint_file() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=pretty,
         expected_estate=_manifest_for(signed),
     )
@@ -855,7 +866,7 @@ def test_verify_refuses_a_checkpoint_the_catalog_does_not_bind() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=other,
         expected_estate=_manifest_for(signed),
     )
@@ -875,7 +886,7 @@ def test_verify_refuses_a_catalog_whose_governance_contradicts_the_checkpoint() 
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -894,7 +905,7 @@ def test_verify_refuses_a_checkpoint_for_another_trust_domain() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -910,7 +921,7 @@ def test_verify_refuses_an_unsorted_active_root_list() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -961,7 +972,7 @@ def test_verify_refuses_a_self_authorizing_checkpoint() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -977,7 +988,7 @@ def test_verify_refuses_a_self_authorizing_checkpoint() -> None:
         verify_published_checkpoint,
         checkpoint,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
     )
     assert _reason(standalone) == "checkpoint_actives_contradict_authority"
 
@@ -985,9 +996,9 @@ def test_verify_refuses_a_self_authorizing_checkpoint() -> None:
 def test_verify_refuses_a_checkpoint_that_narrows_the_root_set_without_log_proof() -> None:
     """A rotation must be PROVEN by the log, not asserted by the checkpoint.
 
-    This is the offline half of "a removed root is refused": with only the §4.2
-    publication in hand the authority is genesis, so a checkpoint that drops a genesis
-    root is refused and the operator is told to present the log.
+    The walk found no rotation, so the authority is the genesis set; a checkpoint that
+    drops one of those roots is refused, and the operator is told to present the log that
+    carries the rotation it is implying.
     """
     fixture = mint_solo_effective(signer_count=3)
     kept = fixture.signer_ids[0]
@@ -1001,10 +1012,11 @@ def test_verify_refuses_a_checkpoint_that_narrows_the_root_set_without_log_proof
         verify_published_checkpoint,
         checkpoint,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
     )
     assert _reason(error) == "checkpoint_actives_contradict_authority"
-    assert error.detail["authority_source"] == "genesis"
+    assert error.detail["authority_source"] == "verified_trust_log"
+    assert error.detail["derived_actives"] == list(_walked(fixture).signer_fingerprints)
 
 
 def test_verify_refuses_a_checkpoint_that_restates_the_wrong_threshold() -> None:
@@ -1020,7 +1032,7 @@ def test_verify_refuses_a_checkpoint_that_restates_the_wrong_threshold() -> None
         verify_published_checkpoint,
         checkpoint,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
     )
     assert _reason(error) == "checkpoint_threshold_contradicts_authority"
     assert error.detail["stated"] == 2
@@ -1117,7 +1129,7 @@ def test_a_rotated_in_root_is_accepted_only_when_the_log_proves_the_rotation() -
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1165,7 +1177,7 @@ def test_checkpoint_verifier_verifies_its_own_genesis_argument() -> None:
         genesis_document=under_signed,
         # A caller could even hand in an authority derived elsewhere; the genesis check
         # still runs first.
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
     )
     assert error.code == ErrorCode.TRUST_GENESIS_SIGNATURE_INVALID
     assert _reason(error) == "threshold_not_met"
@@ -1205,7 +1217,7 @@ def test_verify_refuses_a_catalog_below_the_checkpoint_threshold() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1222,7 +1234,7 @@ def test_verify_accepts_a_k_of_n_catalog_at_threshold() -> None:
     report = verify_estate_catalog(
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1250,7 +1262,7 @@ def test_signatures_can_be_appended_one_root_at_a_time() -> None:
     report = verify_estate_catalog(
         complete,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(complete),
     )
@@ -1288,7 +1300,7 @@ def test_verify_refuses_a_tampered_catalog() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1304,7 +1316,7 @@ def test_verify_refuses_a_signer_id_that_contradicts_the_genesis() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1320,7 +1332,7 @@ def test_verify_refuses_a_catalog_for_another_trust_domain() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=other.document,
-        authority=genesis_root_authority(other.document),
+        authority=_walked(other),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1337,7 +1349,7 @@ def test_verify_refuses_a_non_canonical_publication_file() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
         file_bytes=pretty,
@@ -1354,7 +1366,7 @@ def test_verify_refuses_a_digest_that_disagrees_with_the_out_of_band_pin() -> No
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
         expect_digest="sha256:" + "00" * 32,
@@ -1378,7 +1390,7 @@ def test_verify_refuses_an_under_signed_genesis_document() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=genesis,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1405,7 +1417,7 @@ def test_verify_refuses_a_catalog_that_claims_complete_but_is_not() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=manifest,
     )
@@ -1427,7 +1439,7 @@ def test_verify_reports_partial_as_non_success() -> None:
     report = verify_estate_catalog(
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=manifest,
     )
@@ -1448,7 +1460,7 @@ def test_verify_refuses_a_false_partial_claim() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=_manifest_for(signed),
     )
@@ -1464,7 +1476,7 @@ def test_verify_refuses_a_catalog_covering_an_unexpected_project() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=manifest,
     )
@@ -1482,7 +1494,7 @@ def test_verify_refuses_a_manifest_for_another_trust_domain() -> None:
         verify_estate_catalog,
         signed,
         genesis_document=fixture.document,
-        authority=genesis_root_authority(fixture.document),
+        authority=_walked(fixture),
         trust_log_checkpoint_bytes=checkpoint,
         expected_estate=manifest,
     )
@@ -1671,92 +1683,6 @@ def _cli_files(tmp_path, fixture, signed, checkpoint, manifest=None):
     )
 
 
-def test_cli_verify_catalog_round_trip(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    fixture = mint_solo()
-    checkpoint = _checkpoint(fixture)
-    signed = _sign_catalog(fixture, checkpoint=checkpoint)
-    catalog, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
-
-    report = json.loads(
-        _capture(
-            cmd_trust_verify_catalog,
-            _verify_ns(
-                file=catalog,
-                genesis=genesis,
-                trust_checkpoint=cp,
-                expected_estate=manifest,
-                expect_digest=estate_catalog_digest(signed),
-            ),
-        )
-    )
-    assert report["verdict"] == "VALID"
-    assert report["digest_pin_status"] == "matched"
-    assert report["signatures_verified"] == 1
-    assert report["completeness"] == "complete"
-    assert report["checkpoint"]["signatures_verified"] == 1
-
-
-def test_cli_verify_catalog_exits_3_on_a_partial_catalog(tmp_path, monkeypatch) -> None:
-    """A ceremony failure must not look like success to a pipeline.
-
-    ``RECONCILIATION.md``:682-684 — a partial catalog "is ceremony failure, not
-    success". The report still prints (it authenticated), and the process exits 3.
-    """
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    fixture = mint_solo()
-    checkpoint = _checkpoint(fixture)
-    signed = _sign_catalog(fixture, checkpoint=checkpoint, catalog_status="partial")
-    absent = str(uuid.uuid4())
-    manifest = _manifest(
-        fixture.trust_domain_id,
-        (signed["projects"][0]["project_instance_id"], absent),
-    )
-    catalog, genesis, cp, manifest_path = _cli_files(
-        tmp_path, fixture, signed, checkpoint, manifest
-    )
-    with pytest.raises(SystemExit) as excinfo:
-        _capture(
-            cmd_trust_verify_catalog,
-            _verify_ns(
-                file=catalog,
-                genesis=genesis,
-                trust_checkpoint=cp,
-                expected_estate=manifest_path,
-            ),
-        )
-    assert excinfo.value.code == 3
-
-
-def test_cli_verify_catalog_human_output_names_what_it_did_not_prove(
-    tmp_path, monkeypatch
-) -> None:
-    """The default (non-``--json``) report is what an operator actually reads."""
-    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
-    fixture = mint_solo()
-    checkpoint = _checkpoint(fixture)
-    signed = _sign_catalog(fixture, checkpoint=checkpoint)
-    catalog, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
-
-    output = _capture(
-        cmd_trust_verify_catalog,
-        _verify_ns(
-            file=catalog,
-            genesis=genesis,
-            trust_checkpoint=cp,
-            expected_estate=manifest,
-            json=False,
-        ),
-    )
-    assert "verdict: VALID" in output
-    assert f"estate_catalog_digest: {estate_catalog_digest(signed)}" in output
-    assert "digest_pin: not_pinned" in output
-    assert "trust_log_checkpoint: VERIFIED" in output
-    assert "completeness: complete" in output
-    assert "active_root_fingerprints:" in output
-    assert "OPERATOR-FORGERY R3" in output
-
-
 def test_cli_verify_catalog_refuses_without_a_genesis(tmp_path, monkeypatch) -> None:
     """Without the pinned genesis there are no root keys, so a verdict would be vacuous."""
     monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
@@ -1806,6 +1732,90 @@ def test_cli_verify_catalog_refuses_non_json(tmp_path, monkeypatch) -> None:
     assert _reason(error) == "catalog_file_invalid_json"
 
 
+def test_cli_verify_catalog_refuses_when_no_trust_log_is_presented(
+    tmp_path, monkeypatch
+) -> None:
+    """FR3-1: withholding the log must never be MORE permissive than presenting it.
+
+    Sol's and Opus's probe: after a real A/B→C rotation, the REMOVED roots A and B still
+    hold their keys. They forge a checkpoint declaring the *genesis* A/B set and a
+    catalog signed under it. While `verify-catalog` fell back to
+    ``genesis_root_authority`` when ``--trust-log-project`` was absent, that forgery
+    verified VALID — the absence of evidence was being read as proof that no rotation had
+    happened. There is now no such path: no log, no verdict.
+    """
+    monkeypatch.delenv("REGISTA_TRUST_GENESIS_PATH", raising=False)
+    fixture = mint_co_signed(threshold=2, signer_count=2)
+    # The forgery: a checkpoint + catalog perfectly consistent with the GENESIS set,
+    # which is exactly what removed roots can still produce.
+    checkpoint = _checkpoint(fixture, sign_with=fixture.signer_ids)
+    signed = _sign_catalog(fixture, checkpoint=checkpoint, sign_with=fixture.signer_ids)
+    catalog, genesis, cp, manifest = _cli_files(tmp_path, fixture, signed, checkpoint)
+
+    error = _refusal(
+        cmd_trust_verify_catalog,
+        _verify_ns(
+            file=catalog, genesis=genesis, trust_checkpoint=cp,
+            expected_estate=manifest, trust_log_project=None,
+        ),
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "trust_log_not_presented"
+    # The refusal has to tell the operator what to do, and disclose the consequence.
+    assert "--trust-log-project" in str(error)
+    assert "READ ACCESS" in str(error)
+
+    # The same withholding is refused for the signing side too.
+    from regista._cli import cmd_trust_sign_catalog
+
+    sign_error = _refusal(
+        cmd_trust_sign_catalog,
+        argparse.Namespace(
+            dsn=None, project=None, hmac_key_path=None, file=catalog,
+            out=str(tmp_path / "signed.json"), key=["k.seed"], trust_checkpoint=cp,
+            trust_log_project=None, trust_log_dsn=None, genesis=genesis,
+            force=False, json=True,
+        ),
+    )
+    assert _reason(sign_error) == "trust_log_not_presented"
+
+
+def test_no_cli_verdict_path_can_reach_a_genesis_sourced_authority() -> None:
+    """FR3-4: ``genesis_root_authority`` survives as a base case, not as a fallback.
+
+    ``_resolve_root_authority`` is the ONLY way the CLI obtains an authority, and it
+    raises rather than returning when the log is absent — so no report can print
+    ``root_authority: genesis``. Asserted structurally, because a future refactor that
+    reintroduced the fallback would otherwise pass every other test in this file.
+    """
+    import inspect
+
+    from regista._cli import _resolve_root_authority
+
+    source = inspect.getsource(_resolve_root_authority)
+    assert "genesis_root_authority" not in source, (
+        "the CLI authority resolver can reach the genesis base case again"
+    )
+    assert "trust_log_not_presented" in source
+
+
+def test_genesis_authority_is_the_base_case_a_rotation_free_walk_reproduces() -> None:
+    """Why requiring the log costs nothing for an un-rotated domain.
+
+    ``verify_trust_log_chain`` seeds itself from genesis and applies rotations on top, so
+    a rotation-free walk yields exactly the genesis signer set and threshold. The live
+    module pins that against a real walk; this pins the claim the refusal message rests
+    on — that presenting the log is never *worse* than the old fallback.
+    """
+    fixture = mint_solo_effective(signer_count=3)
+    base = genesis_root_authority(fixture.document)
+    walked = _walked(fixture)
+    assert walked.signer_fingerprints == base.signer_fingerprints
+    assert walked.threshold == base.threshold
+    assert base.source == "genesis"
+    assert walked.source == "verified_trust_log"
+
+
 def test_catalog_verbs_are_wired_into_the_trust_subparser() -> None:
     """The defect WI-330 reports is that no catalog verb exists. Pin that it does."""
     from regista._cli import main
@@ -1843,7 +1853,13 @@ def test_trust_catalog_rejects_project_and_projects_flags() -> None:
         "--key", "k.seed",
         "--trust-checkpoint", "c.json",
     ]
-    for flag in ("--project", "--projects"):
+    # Review NEW-8/FR3-3: `--project` and `--projects` are rejected whether or not
+    # `allow_abbrev` is off, because no option they could abbreviate to exists any more.
+    # `--input` is the DISCRIMINATING probe: it is a unique prefix of `--inputs`, so with
+    # allow_abbrev=True argparse binds it and the command proceeds to fail on missing
+    # CONFIG instead — a completely different error. Only allow_abbrev=False makes it
+    # "unrecognized arguments".
+    for flag in ("--project", "--projects", "--input", "--out-", "--ke"):
         err = io.StringIO()
         with pytest.raises(SystemExit) as excinfo, contextlib.redirect_stderr(err):
             main([*complete, flag, "x"])
@@ -1868,6 +1884,9 @@ def test_verify_catalog_requires_checkpoint_and_manifest_at_the_cli() -> None:
     message = err.getvalue()
     assert "--trust-checkpoint" in message
     assert "--expected-estate" in message
+    # FR3-1: the log is REQUIRED at the parser too, so an operator cannot even spell an
+    # invocation that would have taken the old genesis fallback.
+    assert "--trust-log-project" in message
 
 
 def test_created_at_requires_exactly_six_fractional_digits() -> None:
