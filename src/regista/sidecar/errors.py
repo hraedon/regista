@@ -140,6 +140,10 @@ _STATUS_MAP: dict[str, int] = {
     # submitted, hence 400.
     ErrorCode.TRUST_LOG_PAYLOAD_INVALID: 400,
     ErrorCode.TRUST_LOG_AUTHORITY_INVALID: 403,
+    # 403: naming a non-current key as the rotation's supersedes_key_id is an authority
+    # failure — the requester has not proven authority over the CURRENT key — so it maps
+    # alongside TRUST_LOG_AUTHORITY_INVALID.
+    ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY: 403,
     ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED: 400,
     # 503: the trust-log store is unreachable or the target schema is not a trust
     # log — an infrastructure/config condition the caller cannot fix by reformatting.

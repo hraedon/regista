@@ -1008,6 +1008,147 @@ class TestRotationAdmission:
         finally:
             _close(handle, project)
 
+    def test_dual_rotation_superseding_a_non_current_key_is_refused(self, tmp_path):
+        """WI-347: admission refuses a dual rotation that names a SUPERSEDED key.
+
+        The pre-existing gap (Sol #3 / Opus finding #1): enrol K1 → rotate K1→K2 →
+        rotate K1→K3 all admitted, because the prior guard rejected only a REVOKED
+        superseded key. That left K2 AND K3 active — a rotated-out key forking the active
+        set. The writer's ``append_trust_log_event`` must refuse the third event; the
+        replay half is proven in ``tests/test_wi337_trust_log_export.py`` (same
+        ``_classify_rotation`` chokepoint).
+        """
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:dual-non-current"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_k1")
+            _enroll(
+                handle, fixture, principal=principal, delegation_hash=delegation_hash, key=k1
+            )
+            k2 = TrustLogKey.mint("pk_k2")
+            payload2, challenge2 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k2,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge2, payload2)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload2,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            # K1 is now SUPERSEDED. A second rotation naming K1 must be refused.
+            k3 = TrustLogKey.mint("pk_k3")
+            payload3, challenge3 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k3,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge3, payload3)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload3,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
+            assert exc.value.detail["reason"] == "superseded_key_superseded"
+        finally:
+            _close(handle, project)
+
+    def test_recovery_rotation_naming_an_already_superseded_key_is_refused(self, tmp_path):
+        """WI-347: the same guard binds a root-authorised recovery.
+
+        A recovery that names an already-superseded key would fork the active set exactly
+        like the dual case, so it is refused BEFORE the root-threshold check — the supersedes
+        key must be the principal's current active key regardless of authority.
+        """
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:recovery-non-current"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_rk1")
+            _enroll(
+                handle, fixture, principal=principal, delegation_hash=delegation_hash, key=k1
+            )
+            k2 = TrustLogKey.mint("pk_rk2")
+            payload2, challenge2 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k2,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge2, payload2)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload2,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            # K1 superseded, K2 active. A recovery naming K1 (root authority) is refused.
+            k3 = TrustLogKey.mint("pk_rk3")
+            payload3, challenge3 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k3,
+                supersedes_key_id=k1.key_id,
+                mode="recovery",
+                recovery_reason="key-lost",
+                root_keys=_root_keys(fixture),
+                authorized_by=_make_root_auth(),
+            )
+            _persist_challenge(handle, challenge3, payload3)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload3,
+                    authority="root",
+                    actor_id=ROOT,
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
+            assert exc.value.detail["reason"] == "superseded_key_superseded"
+        finally:
+            _close(handle, project)
+
     def test_bad_dual_signature_does_not_consume_last_registrar_operation(self, tmp_path):
         fixture, handle, _kf, project = _make_environment(tmp_path)
         principal = "agent:dual-bad-signature"
@@ -1113,7 +1254,14 @@ class TestRotationAdmission:
                     authority="registrar",
                     actor_id=REGISTRAR,
                 )
-            assert exc.value.detail["reason"] == "superseded_public_key_unavailable"
+            # WI-347: naming a key that is not the principal's CURRENT active key is now
+            # refused by the earlier supersedes-must-be-active guard. `pk_not_in_chain`
+            # was never enrolled, so its status is unknown — refused before the
+            # superseded-public-key lookup (which produced the older
+            # `superseded_public_key_unavailable` reason) is ever reached. The denial
+            # still precedes any registrar-operation increment, which is what this test
+            # exists to prove.
+            assert exc.value.detail["reason"] == "superseded_key_unknown"
         finally:
             _close(handle, project)
 
@@ -1127,13 +1275,27 @@ class TestRotationAdmission:
                 genesis_document=fixture.document,
                 root_principal_id=ROOT,
             )
+            # WI-347: a recovery must name the principal's CURRENTLY ACTIVE key, so the
+            # principal must first HAVE one. The realistic scenario is "holder lost the
+            # private key of a still-active key": enrol it (registrar), then recover it
+            # (root authority) because the lost key cannot co-sign a dual rotation.
+            _delegate(handle, fixture, max_operations=2)
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_recovered")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
                 root_keys=_root_keys(fixture),
@@ -1162,16 +1324,30 @@ class TestRotationAdmission:
                 payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
                 root_principal_id=ROOT,
             )
+            # WI-347: enrol the active key the recovery supersedes (2-root delegation, to
+            # match the threshold-2 genesis) so the request reaches the root-threshold
+            # check the truncated signature set is meant to fail — the supersedes-active
+            # guard would otherwise refuse an unknown key first.
+            _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a", "root-b")))
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_recovery_threshold")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
-                root_keys=_root_keys(fixture),
+                root_keys=_root_keys(fixture, ("root-a", "root-b")),
                 authorized_by=_make_root_auth(),
             )
             payload["root_signatures"] = payload["root_signatures"][:1]
@@ -1372,13 +1548,26 @@ class TestReplayVerifies:
                 payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
                 root_principal_id=ROOT,
             )
+            # WI-347: the recovery supersedes an ACTIVE key, so enrol one first (2-root
+            # delegation matching the threshold-2 genesis). The row-rewrite below then
+            # attacks the STORED recovery, and replay must still refuse it on threshold.
+            _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a", "root-b")))
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_stored_recovery_threshold")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
                 root_keys=_root_keys(fixture, ("root-a", "root-b")),

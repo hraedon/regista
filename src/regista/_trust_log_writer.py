@@ -1196,22 +1196,42 @@ def _classify_rotation(
     principal_public_keys: Mapping[tuple[str, str], bytes],
     principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> str:
-    superseded = None
-    if not parsed.is_recovery:
-        superseded_key = (parsed.principal_id, parsed.supersedes_key_id)
-        if principal_key_status.get(superseded_key) == "revoked":
-            raise RegistaError(
-                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
-                "a dual rotation cannot use a revoked superseded key",
-                {
-                    "reason": "superseded_key_revoked",
-                    "principal_id": parsed.principal_id,
-                    "key_id": parsed.supersedes_key_id,
-                },
-            )
-        superseded = principal_public_keys.get(
-            superseded_key
+    # WI-347: a rotation — dual OR recovery — must name the principal's CURRENTLY ACTIVE
+    # key as `supersedes_key_id`. This is the single chokepoint both admission
+    # (`append_trust_log_event`) and replay (`_verify_lifecycle`) route through, so the
+    # guard binds every path; a direct `append_trust_log_event` cannot slip past it and a
+    # published log carrying such an event fails `verify_trust_log_chain` for the same
+    # reason. The prior check rejected only a REVOKED superseded key (and only for dual),
+    # leaving the fork open: enrol K1 → rotate K1→K2 → rotate K1→K3 all verified because
+    # the second rotation named K1 (now merely SUPERSEDED, not revoked), so K2 AND K3 were
+    # both left active — a rotated-out key minting a new current-authority key. Requiring
+    # the outgoing key to be ACTIVE makes each rotation supersede exactly the one live key,
+    # which is precisely the "at most one active key per principal" invariant the
+    # projection applier (`_principal_keys._apply_rotation_projection`) enforces by
+    # superseding every active key on each new key. Replay and projection therefore agree:
+    # for any admissible rotation there is exactly one active key to supersede, so both
+    # land on the same active set. Recovery is included — a root-authorised recovery could
+    # otherwise name an already-superseded key and fork the set the same way.
+    superseded_key = (parsed.principal_id, parsed.supersedes_key_id)
+    superseded_status = principal_key_status.get(superseded_key)
+    if superseded_status != "active":
+        reason = {
+            "revoked": "superseded_key_revoked",
+            "superseded": "superseded_key_superseded",
+        }.get(superseded_status or "", "superseded_key_unknown")
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY,
+            "a rotation must supersede the principal's currently active key; "
+            f"supersedes_key_id names a key whose status is "
+            f"{superseded_status or 'unknown'!r}, not 'active'",
+            {
+                "reason": reason,
+                "principal_id": parsed.principal_id,
+                "key_id": parsed.supersedes_key_id,
+                "status": superseded_status or "unknown",
+            },
         )
+    superseded = None if parsed.is_recovery else principal_public_keys.get(superseded_key)
     return classify_rotation_authority(
         parsed,
         governance=governance,

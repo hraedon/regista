@@ -60,6 +60,7 @@ machine-readable `reason` (or a fail-closed ErrorCode), never message text.
 | Unsigned/sub-threshold drawn for authority via `require_signatures=False` | the bundle consumption path re-asserts signature sufficiency (`verified_root_signatures >= root_threshold`), independent of how the verification object was produced (Opus footgun) | `trust_log_export_signatures_insufficient` (`TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT`) | `test_bundle_refuses_an_unsigned_or_subthreshold_export_for_authority` |
 | Revoked-key laundering | `export_referents` withholds the enrolment/rotation that introduced a key the replay shows REVOKED; supersession is NOT withheld | (withheld set) | `test_revoked_key_introduction_is_withheld_from_referents` |
 | Rotated-out key as current authority (Sol #3/#4) | the replay now marks a rotated-out key `superseded`; offline classification keeps its introduction as a historical referent but excludes it from `active_principal_keys`, so the resolver never returns it as externally pinned | (excluded from active; named finding on use) | `test_rotation_supersedes_the_old_key_but_keeps_its_history` |
+| Active-set FORK via a rotation from a dead key (WI-347, Sol #3 / Opus #1) | admission AND replay require `supersedes_key_id` to be the principal's CURRENT active key (dual + recovery); superseding a `superseded`/`revoked`/unknown key is refused, so at most one active key per principal — matching the projection applier | `superseded_key_superseded` / `superseded_key_revoked` / `superseded_key_unknown` (`TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY`) | `test_rotation_superseding_a_non_current_key_is_refused_on_replay`, `test_rotation_chain_supersedes_each_current_key_leaving_exactly_one_active`, `TestRotationAdmission::test_dual_rotation_superseding_a_non_current_key_is_refused`, `::test_recovery_rotation_naming_an_already_superseded_key_is_refused` |
 | Non-canonical bytes | file bytes must equal `canonicalize(document)` | `not_canonical_publication_bytes` | `test_non_canonical_publication_bytes_are_refused` |
 | Substitution | `expect_digest` over the framed input | `export_digest_mismatch` | `test_substituted_artifact_is_caught_by_expect_digest` |
 | Tampered event | flipping a byte breaks the hash chain; the walk rejects it | fail-closed `TRUST_LOG*` code | `test_tampered_event_bytes_fail_closed` |
@@ -142,6 +143,73 @@ PASS + 1 footgun) found four issues. All four are fixed here, each with a fail-c
   ceremony must obtain that head from the custodian channel (§4.6 publication), not from the
   export. This is inherent to offline verification and is now labelled honestly rather than
   papered over by must_cover.
+
+## Round-2 remediation — WI-347 rotation-admission gap (Sol #3 / Opus finding #1)
+
+**Pre-existing gap the WI-337 re-ceremony surfaced (both reviewers demonstrated it).**
+Rotation admission never required `supersedes_key_id` to name the principal's *currently
+active* key. The prior `_classify_rotation` guard rejected the outgoing key only when its
+status was `revoked` (and only for a dual rotation); `classify_rotation_authority` only
+required the outgoing key co-sign. So `enrol K1 → rotate K1→K2 → rotate K1→K3` all
+verified — the second rotation named K1, which fix B had marked merely `superseded` (not
+revoked). Result: **BOTH K2 and K3 left `active`** / `EXTERNALLY_PINNED`, a rotated-out
+key minting a NEW current-authority key and forking the active set. Recovery
+(`mode="recovery"`, root-authorised) had the same hole — it could name an
+already-superseded outgoing key. This is a trust-model fork, cutover-critical.
+
+**Divergence it reconciles.** The projection applier
+`_principal_keys._apply_rotation_projection` supersedes EVERY active key for the principal
+on each new key (`UPDATE ... SET status='superseded' WHERE principal_id=%s AND
+status='active'`) — i.e. it enforces "at most one active key per principal". The offline
+replay did not, so replay and projection disagreed on the malicious chain (replay left
+{K2,K3} active; the projection would have left {K3}).
+
+**The fix (`_trust_log_writer.py:_classify_rotation`, ~line 1199).** A rotation — dual OR
+recovery — must name a `supersedes_key_id` whose status is `"active"`; `superseded`,
+`revoked`, and unknown are all refused, with `reason` distinguishing
+`superseded_key_superseded` / `superseded_key_revoked` / `superseded_key_unknown`. Because
+`_classify_rotation` is the single chokepoint that BOTH admission
+(`append_trust_log_event`) and replay (`_verify_lifecycle` inside
+`verify_trust_log_chain`) route through, one change binds both paths — no public-API
+bypass. Requiring the outgoing key to be the one live key makes each rotation supersede
+exactly it, which is precisely the projection's "at most one active" invariant, so replay
+and projection now land on the same active set for every admissible rotation. New
+ErrorCode `TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY` with a `_STATUS_MAP` 403 sidecar
+entry (enforced by the sidecar total-coverage meta-test).
+
+**Semantic consequence (intended).** Recovery is for a *lost-but-not-revoked* key: the key
+is still `active` (nobody revoked it) and root authority rotates it because the lost key
+cannot co-sign. It must name that active key. A *revoked* (compromised) key leaves the
+principal with no active key, and the fresh-key path is then `principal_key_enrolled` (which
+`_check_enrollment_binds_fresh_key` allows precisely because no active key exists), not a
+rotation. Four existing recovery/placeholder tests used a never-enrolled `pk_lost`; they now
+enrol a real active key first (the realistic scenario), and one dual test that named an
+unknown key now asserts the earlier `superseded_key_unknown` refusal instead of the
+now-unreachable-in-this-path `superseded_public_key_unavailable`.
+
+Tests: `test_wi337_trust_log_export.py::{test_rotation_chain_supersedes_each_current_key_leaving_exactly_one_active,
+test_rotation_superseding_a_non_current_key_is_refused_on_replay}` (valid K1→K2→K3 leaves
+exactly K3 active; the K1→K3-after-K1→K2 fork is refused by `verify_trust_log_chain`
+directly AND cannot be built by the honest exporter);
+`test_wi301_trust_log_writer.py::TestRotationAdmission::{test_dual_rotation_superseding_a_non_current_key_is_refused,
+test_recovery_rotation_naming_an_already_superseded_key_is_refused}` (admission half, both
+dual and recovery). The revoked-key coverage (`superseded_key_revoked`) is retained.
+
+### Documentation-accuracy fixes folded in (Sol, non-blocking)
+
+- `_genesis_open.py:~1059` — the comment claimed the writer does NOT flip the superseded
+  key's status so a rotated-out key "STILL [reads] active". False since fix B. The code
+  (reading supersession off the rotation events, independent of the status map) is still
+  correct defence in depth; the comment now says so.
+- `test_wi325_genesis_init.py:test_rotation_selects_new_key_even_though_old_status_stays_active`
+  — its "exactly the state the real replay leaves: BOTH keys active" claim is stale.
+  Relabelled as a DELIBERATE synthetic legacy/inconsistent state that proves
+  `resolve_enrolled_key`'s independence from the status map (the test's real value), not
+  what the writer now produces.
+- `test_wi337_trust_log_export.py:~596` — the comment said K1 signed its enrolment event;
+  the fixture's enrolment envelope is REGISTRAR-signed. Corrected to describe what is
+  actually proven: retention of K1's introduction as a referent + K1's rotation
+  co-signature.
 
 ## Named residuals (reviewers will probe these)
 

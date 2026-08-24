@@ -180,6 +180,16 @@ class ErrorCode(StrEnum):
     # rule violated, so a caller asserts the named failure rather than a message.
     TRUST_LOG_PAYLOAD_INVALID = "TRUST_LOG_PAYLOAD_INVALID"
     TRUST_LOG_AUTHORITY_INVALID = "TRUST_LOG_AUTHORITY_INVALID"
+    # WI-347: a rotation (dual OR recovery) must name the principal's CURRENTLY ACTIVE
+    # key as `supersedes_key_id`. Naming a superseded / revoked / unknown key is refused
+    # by name so the "at most one active key per principal" invariant that the
+    # principal_keys projection enforces (it supersedes every active key on each new key)
+    # holds identically in the offline replay. Without it, an attacker holding a
+    # rotated-out (non-revoked) key plus registrar authority could mint a NEW
+    # current-authority key from a dead key, forking the active set. The `reason` in
+    # detail distinguishes superseded_key_superseded / superseded_key_revoked /
+    # superseded_key_unknown.
+    TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY = "TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY"
     TRUST_LOG_BOOTSTRAP_NOT_PERMITTED = "TRUST_LOG_BOOTSTRAP_NOT_PERMITTED"
     # The trust-log store could not be probed: the DSN is unreachable, or the target
     # namespace is occupied by something other than a trust-log project (no `events`

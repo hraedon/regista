@@ -593,9 +593,12 @@ def test_rotation_supersedes_the_old_key_but_keeps_its_history(tmp_path: Any) ->
     matches the online resolver (`_genesis_open.resolve_enrolled_key`), which already
     excludes rotated-out keys. Two properties, both fail-closed:
 
-    1. **History is preserved.** Superseded is not revoked: K1's enrolment event stays in
-       ``export_referents`` (an event K1 validly signed before the rotation still roots),
-       so a rotation does not retroactively unauthenticate honest history.
+    1. **History is preserved.** Superseded is not revoked: the enrolment event that
+       INTRODUCED K1 stays in ``export_referents``. (The fixture's enrolment envelope is
+       REGISTRAR-signed, so this does not prove a K1-signed historical enrolment; what it
+       proves is that K1's introduction is RETAINED as a referent, and K1's own signing
+       capability is demonstrated by the rotation's old-key co-signature.) A rotation thus
+       does not retroactively unauthenticate honest history.
     2. **K1 is no longer current authority.** The replay marks K1 SUPERSEDED, so it is not
        in ``active_principal_keys`` and ``PolicyKeyResolver`` never returns it as
        ``EXTERNALLY_PINNED`` — an attacker retaining K1 cannot authenticate NEW material.
@@ -646,6 +649,91 @@ def test_rotation_supersedes_the_old_key_but_keeps_its_history(tmp_path: Any) ->
     resolved_k2 = resolver.resolve("pk_w2")
     assert resolved_k2 is not None
     assert resolved_k2.source is TrustedKeySource.EXTERNALLY_PINNED
+
+
+def test_rotation_chain_supersedes_each_current_key_leaving_exactly_one_active(
+    tmp_path: Any,
+) -> None:
+    """WI-347: a legitimate K1→K2→K3 chain (each rotation names the CURRENT active key)
+    verifies, and leaves EXACTLY one active key — the invariant the projection enforces.
+
+    Each rotation supersedes the one live key, so replay lands on the same single-active
+    set the projection applier reaches by superseding every active key on each new key.
+    This is the positive companion to the refusal below: the guard does not over-refuse a
+    well-formed chain.
+    """
+
+    principal = "agent:w1"
+    k1 = TrustLogKey.mint("pk_w1")
+    k2 = TrustLogKey.mint("pk_w2")
+    k3 = TrustLogKey.mint("pk_w3")
+    log = mint_trust_log()
+    log.register(principal)
+    log.enrol(principal, k1)
+    log.rotate(principal, supersedes=k1, new_key=k2)  # names the active key (K1)
+    log.rotate(principal, supersedes=k2, new_key=k3)  # names the active key (K2)
+
+    v = verify_trust_log_export(
+        log.export(),
+        genesis_document=log.genesis.document,
+        expect_head=(log.hashes[-1], len(log.events)),
+    )
+    status = v.chain.state.principal_key_status
+    assert status[(principal, "pk_w1")] == "superseded"
+    assert status[(principal, "pk_w2")] == "superseded"
+    assert status[(principal, "pk_w3")] == "active"
+    # The invariant, stated directly: at most one active key per principal.
+    active = [k for (p, k), s in status.items() if p == principal and s == "active"]
+    assert active == ["pk_w3"]
+
+    authority = _trust_log_export_material(v, None)
+    assert "pk_w3" in authority.active_principal_keys
+    assert "pk_w1" not in authority.active_principal_keys
+    assert "pk_w2" not in authority.active_principal_keys
+
+
+def test_rotation_superseding_a_non_current_key_is_refused_on_replay(
+    tmp_path: Any,
+) -> None:
+    """WI-347 (Sol #3 / Opus finding #1): a rotation that names a SUPERSEDED key is
+    refused by the replay — closing a pre-existing rotation-admission gap.
+
+    Without the guard, enrol K1 → rotate K1→K2 → rotate K1→K3 all verified, because the
+    second rotation named K1 (now merely SUPERSEDED, not revoked). That left K2 AND K3
+    both active — a rotated-out key minting a new current-authority key and forking the
+    active set. ``verify_trust_log_chain`` (via ``verify_trust_log_export``) must refuse.
+    The admission half (``append_trust_log_event``) is covered in
+    ``tests/test_wi301_trust_log_writer.py`` — both route through the same
+    ``_classify_rotation`` chokepoint, so neither the public replay API nor the writer can
+    slip past it.
+    """
+
+    from regista._trust_log_writer import verify_trust_log_chain
+
+    principal = "agent:w1"
+    k1 = TrustLogKey.mint("pk_w1")
+    k2 = TrustLogKey.mint("pk_w2")
+    k3 = TrustLogKey.mint("pk_w3")
+    log = mint_trust_log()
+    log.register(principal)
+    log.enrol(principal, k1)
+    log.rotate(principal, supersedes=k1, new_key=k2)
+    log.rotate(principal, supersedes=k1, new_key=k3)  # ATTACK: supersedes the dead K1
+
+    # Drive the replay walk itself — the same ``verify_trust_log_chain`` that both the
+    # export builder and ``verify_trust_log_export`` route through — so the refusal is
+    # the replay's, not a byproduct of signing or bundle admission.
+    error = _refuses(
+        verify_trust_log_chain,
+        conn=log.material(),
+        genesis_document=log.genesis.document,
+    )
+    assert error.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
+    assert _reason(error) == "superseded_key_superseded"
+
+    # And the honest export builder cannot even PRODUCE such a document — it replays first.
+    build_error = _refuses(lambda: log.export())
+    assert build_error.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
 
 
 # ---------------------------------------------------------------------------

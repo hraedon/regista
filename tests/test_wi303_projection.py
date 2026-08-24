@@ -827,7 +827,7 @@ class TestVerifiedRebuild:
             _close(handle, project)
 
     def test_replay_accepts_valid_root_recovery(self, tmp_path):
-        fixture, handle, _kf, project, _registrar = _env(tmp_path)
+        fixture, handle, _kf, project, registrar = _env(tmp_path)
         principal = "agent:recovery-replay"
         try:
             write_trust_genesis(
@@ -836,6 +836,19 @@ class TestVerifiedRebuild:
                 genesis_document=fixture.document,
                 payload=_signed_genesis_payload(fixture),
                 root_principal_id=ROOT,
+            )
+            # WI-347: a recovery must supersede the principal's CURRENTLY ACTIVE key, so
+            # enrol one first (registrar), then recover it with root authority. The
+            # projection then supersedes the lost key and activates the recovered one.
+            _delegate(handle, fixture, registrar)
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_recovery_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
             )
             new = TrustLogKey.mint("pk_recovery_replay")
             challenge = make_possession_challenge(
@@ -848,7 +861,7 @@ class TestVerifiedRebuild:
                 trust_domain_id=fixture.trust_domain_id,
                 principal_id=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
                 root_keys=[_tlogkey("k_root-a", fixture.seeds[fixture.signer_ids[0]])],
@@ -874,6 +887,17 @@ class TestVerifiedRebuild:
                 project=project,
                 genesis_document=fixture.document,
             )
-            assert report.events_replayed == 1
+            # Enrolment + recovery are both projection-driving transitions.
+            assert report.events_replayed == 2
+            with handle._mgr.transaction() as conn:
+                rows = conn.execute(
+                    "SELECT key_id, status FROM principal_keys "
+                    "WHERE principal_id = %s ORDER BY key_id",
+                    [principal],
+                ).fetchall()
+            assert {row["key_id"]: row["status"] for row in rows} == {
+                lost.key_id: "superseded",
+                new.key_id: "active",
+            }
         finally:
             _close(handle, project)

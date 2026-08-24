@@ -1056,13 +1056,14 @@ def resolve_enrolled_key(
             continue
         candidates.append((record, parsed))
 
-    # This principal's rotations, and the key_ids they SUPERSEDE. This matters more than
-    # it looks: `_trust_log_writer._classify_rotation` does NOT flip the superseded key's
-    # entry in `principal_key_status` — a rotation only records the incoming key as
-    # "active" (`_remember_principal_key`). So after a rotation the outgoing key is
-    # STILL "active" in the replayed status map, and an "is it active?" test alone would
-    # happily resolve a superseded key and sign a project's genesis with it. Supersession
-    # has to be read off the rotation events themselves.
+    # This principal's rotations, and the key_ids they SUPERSEDE. Since WI-337 fix B
+    # `_remember_principal_key` DOES flip the superseded key to "superseded" in the
+    # replayed `principal_key_status`, so the status map alone would now also exclude it.
+    # This resolver nonetheless reads supersession directly off the rotation events, which
+    # is deliberate defence in depth: it does not depend on the status-map bookkeeping
+    # being correct, so a regression there cannot silently let this path resolve a
+    # rotated-out key and sign a project's genesis with it. (WI-347 additionally requires
+    # a rotation to supersede the CURRENT active key, keeping the two views in agreement.)
     rotations = [
         r
         for r in chain.verified
