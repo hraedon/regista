@@ -1,0 +1,64 @@
+{
+  "category": "trust-log-export",
+  "description": "Published trust-log export signed core: domain-separated + length-framed digest (WI-337, TRUST-DOMAIN \u00a74.2).",
+  "expected": {
+    "canonical_bytes": "{\"active_root_fingerprints\":[\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\",\"ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827\"],\"created_at\":\"2026-08-20T12:00:00.000000Z\",\"events\":[{\"canonical_envelope\":\"ZW52ZWxvcGUtMA==\",\"signature\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==\"},{\"canonical_envelope\":\"ZW52ZWxvcGUtMQ==\",\"signature\":\"QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+fw==\"}],\"genesis_document_digest\":\"sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\",\"possession_challenges\":[{\"challenge_id\":\"3f2504e0-4f89-41d3-9a0c-0305e82c3301\",\"enrollment_request_digest\":\"sha256:e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0\",\"expires_at\":\"2026-08-20T12:59:00.000000Z\",\"fingerprint\":\"ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e\",\"issued_at\":\"2026-08-20T11:59:00.000000Z\",\"kind\":\"possession\",\"operation_digest\":\"sha256:d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0\",\"operation_id\":\"op-1\",\"principal_id\":\"agent:worker-1\",\"project\":\"regista_trust\",\"proof_signature\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==\",\"scheme\":\"ed25519\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"used\":true,\"verifier_nonce\":\"bm9uY2UtMQ==\"}],\"prev_commit\":null,\"root_governance\":{\"mode\":\"solo_effective\",\"signer_count\":2,\"threshold\":1},\"trust_domain_core_digest\":\"sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"trust_domain_id\":\"018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6\",\"trust_log\":{\"event_count\":2,\"genesis_event_hash\":\"sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0\",\"head_event_hash\":\"sha256:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\",\"project_instance_id\":\"9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d\"},\"type\":\"regista.trust-log-export\",\"version\":1}",
+    "canonical_len": 2001,
+    "trust_log_export_digest": "sha256:65a38c6ed5a0437ac7978e43ffcf99295bd4884fdfaac890bf5e03bcb94a664f"
+  },
+  "input": {
+    "document": {
+      "active_root_fingerprints": [
+        "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+        "ed25519:sha256:6a3803d5f059902a1c6dafbc9ba4729212f7caac08634cc3ae76b27529f03827"
+      ],
+      "created_at": "2026-08-20T12:00:00.000000Z",
+      "events": [
+        {
+          "canonical_envelope": "ZW52ZWxvcGUtMA==",
+          "signature": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "canonical_envelope": "ZW52ZWxvcGUtMQ==",
+          "signature": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+fw=="
+        }
+      ],
+      "genesis_document_digest": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "possession_challenges": [
+        {
+          "challenge_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+          "enrollment_request_digest": "sha256:e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+          "expires_at": "2026-08-20T12:59:00.000000Z",
+          "fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+          "issued_at": "2026-08-20T11:59:00.000000Z",
+          "kind": "possession",
+          "operation_digest": "sha256:d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+          "operation_id": "op-1",
+          "principal_id": "agent:worker-1",
+          "project": "regista_trust",
+          "proof_signature": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==",
+          "scheme": "ed25519",
+          "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+          "used": true,
+          "verifier_nonce": "bm9uY2UtMQ=="
+        }
+      ],
+      "prev_commit": null,
+      "root_governance": {
+        "mode": "solo_effective",
+        "signer_count": 2,
+        "threshold": 1
+      },
+      "trust_domain_core_digest": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "trust_domain_id": "018f3a5c-7b21-4e6d-8f90-a1b2c3d4e5f6",
+      "trust_log": {
+        "event_count": 2,
+        "genesis_event_hash": "sha256:c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        "head_event_hash": "sha256:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+        "project_instance_id": "9f1c6a2e-3d5b-4c8a-9e07-1b2d3f4a5c6d"
+      },
+      "type": "regista.trust-log-export",
+      "version": 1
+    }
+  }
+}

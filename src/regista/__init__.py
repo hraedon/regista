@@ -743,6 +743,7 @@ class Regista(
         trust: Any,
         *,
         known_head: tuple[str, int] | None = None,
+        trust_log: Any = None,
     ) -> dict[str, Any]:
         """Verify a **bundle v3** artifact against auditor-supplied trust material (§4.1).
 
@@ -750,9 +751,15 @@ class Regista(
         ``AcceptBundledKeys`` (bundle-rooted, clamped) — §4.1 admits no default and no
         ``None``. Returns the §5.1 axis report as a dict, whose ``applicability`` is the
         §5.2 verdict. No store, no network, no fetch (§8.4).
+
+        ``trust_log`` is an optional ``TrustLogExportVerification`` from
+        ``verify_trust_log_export`` (WI-337) — the published §4.2 artifact, already replayed
+        from the auditor's own pinned genesis. It is what completes a non-root project key's
+        chain to the pinned root offline, and hence what makes ``externally_authenticated``
+        reachable for a project bundle. Still no fetch: the artifact is handed in.
         """
         from ._bundle import verify_audit_bundle_v3
 
         return verify_audit_bundle_v3(
-            bundle_path, trust, known_head=known_head
+            bundle_path, trust, known_head=known_head, trust_log=trust_log
         ).to_dict()

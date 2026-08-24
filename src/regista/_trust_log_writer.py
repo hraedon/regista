@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hmac
 import uuid as _uuid
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -330,6 +331,73 @@ def _actor_id(envelope: Mapping[str, Any]) -> str:
     return ""
 
 
+class TrustLogMaterial(ABC):
+    """The material a verified trust-log walk reads, decoupled from *where* it lives.
+
+    ``verify_trust_log_chain`` used to take a live ``DictConn`` and issue SQL inline, so
+    "replay the log under full verification" was reachable only with database
+    credentials. That is the whole of WI-337's blocker: `TRUST-DOMAIN.md` §8.4 forbids an
+    offline verifier from fetching its own trust material, and §4.2 published no
+    trust-log artifact, so an auditor holding only the publication repository could not
+    establish the current root set at all.
+
+    The fix is deliberately an **extraction, not a second implementation**. There is
+    exactly one verified walk (WI-303) and it stays that way: this class names the two
+    reads the walk performs, ``_StoreMaterial`` answers them from PostgreSQL exactly as
+    before, and :class:`~regista._trust_log_export.OfflineTrustLogMaterial` answers them
+    from a signed published artifact. A parallel offline replay would drift from the
+    store one, and the drift would be in authority semantics — the worst place for it.
+    """
+
+    @abstractmethod
+    def rows(self) -> list[dict[str, Any]]:
+        """Every stored trust-log event, in no particular order, row-shaped."""
+
+    @abstractmethod
+    def lifecycle_challenge(self, challenge_id: str) -> Mapping[str, Any] | None:
+        """The durable possession-challenge record, or ``None`` when it is absent."""
+
+    @abstractmethod
+    def describe(self) -> str:
+        """A short phrase naming this material, for refusal details."""
+
+
+@dataclass(frozen=True)
+class _StoreMaterial(TrustLogMaterial):
+    """The live-store answer to :class:`TrustLogMaterial` — the pre-WI-337 behaviour."""
+
+    conn: DictConn
+
+    def rows(self) -> list[dict[str, Any]]:
+        return read_trust_log_rows(self.conn)
+
+    def lifecycle_challenge(self, challenge_id: str) -> Mapping[str, Any] | None:
+        try:
+            return self.conn.execute(
+                "SELECT challenge_id, operation_id, operation_digest, project, "
+                "principal_id, fingerprint, scheme, verifier_nonce, issued_at, "
+                "expires_at, used, kind, trust_domain_id, enrollment_request_digest, "
+                "proof_signature "
+                "FROM lifecycle_challenges WHERE challenge_id = %s FOR SHARE",
+                [_uuid.UUID(challenge_id)],
+            ).fetchone()
+        except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                "the durable possession-challenge evidence store is unavailable",
+                {"reason": "possession_challenge_table_missing"},
+            ) from exc
+
+    def describe(self) -> str:
+        return "live trust-log store"
+
+
+def trust_log_material(source: DictConn | TrustLogMaterial) -> TrustLogMaterial:
+    """Accept either a live connection or already-extracted material."""
+
+    return source if isinstance(source, TrustLogMaterial) else _StoreMaterial(source)
+
+
 def read_trust_log_rows(conn: DictConn) -> list[dict[str, Any]]:
     selected_by_event_id: dict[str, dict[str, Any]] = {}
     for relation in ("events", "events_archive"):
@@ -508,14 +576,14 @@ def _treq(verified: Sequence[str], governance: GovernanceState) -> None:
 
 
 def replay_trust_state(
-    conn: DictConn,
+    conn: DictConn | TrustLogMaterial,
     genesis_document: Mapping[str, Any],
 ) -> TrustState:
     return verify_trust_log_chain(conn, genesis_document).state
 
 
 def verify_trust_log_chain(
-    conn: DictConn,
+    conn: DictConn | TrustLogMaterial,
     genesis_document: Mapping[str, Any],
 ) -> VerifiedChain:
     """The single verified trust-log walk (WI-303).
@@ -525,7 +593,12 @@ def verify_trust_log_chain(
     continuity or authority raises here — before any caller mutates state. Registrar
     liveness is evaluated at each event's own ``occurred_at``, never at wall-clock
     replay time.
+
+    ``conn`` may be a live connection (the store case, unchanged) or a
+    :class:`TrustLogMaterial` — the WI-337 extraction that lets a published, root-signed
+    trust-log artifact be replayed by **this** walk rather than by a second one.
     """
+    material = trust_log_material(conn)
     doc = parse_trust_genesis(genesis_document)
     report = verify_trust_genesis(genesis_document)
     if report.signatures_verified < report.root_governance.threshold:
@@ -538,12 +611,12 @@ def verify_trust_log_chain(
         project_instance_id=str(doc.trust_log.project_instance_id),
         trust_domain_id=str(doc.trust_domain_id),
     )
-    rows = read_trust_log_rows(conn)
+    rows = material.rows()
     if not rows:
         raise RegistaError(
             ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED,
             "the trust-log store is empty: no trust_domain_established genesis exists",
-            {"reason": "empty_trust_log"},
+            {"reason": "empty_trust_log", "material": material.describe()},
         )
     order = chain_order(rows)
     genesis_row = order[0]
@@ -697,7 +770,7 @@ def verify_trust_log_chain(
             key_id = _signer_key_id(envelope)
             binding = _binding_hash(envelope)
             record = _verify_lifecycle(
-                conn,
+                material,
                 row,
                 envelope,
                 identity,
@@ -907,7 +980,7 @@ def _possession_challenge_from_row(
 
 
 def _verify_possession_evidence(
-    conn: DictConn,
+    material: TrustLogMaterial,
     payload: Mapping[str, Any] | None,
     transition: str,
     *,
@@ -925,20 +998,7 @@ def _verify_possession_evidence(
         )
     parsed = _parse_lifecycle_payload(transition, payload)
     proof = parsed.possession_proof
-    try:
-        row = conn.execute(
-            "SELECT challenge_id, operation_id, operation_digest, project, "
-            "principal_id, fingerprint, scheme, verifier_nonce, issued_at, expires_at, "
-            "used, kind, trust_domain_id, enrollment_request_digest, proof_signature "
-            "FROM lifecycle_challenges WHERE challenge_id = %s FOR SHARE",
-            [_uuid.UUID(proof.challenge_id)],
-        ).fetchone()
-    except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
-        raise RegistaError(
-            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
-            "the durable possession-challenge evidence store is unavailable",
-            {"reason": "possession_challenge_table_missing", "transition": transition},
-        ) from exc
+    row = material.lifecycle_challenge(proof.challenge_id)
     if row is None:
         raise RegistaError(
             ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
@@ -946,6 +1006,7 @@ def _verify_possession_evidence(
             {
                 "reason": "possession_challenge_not_found",
                 "challenge_id": proof.challenge_id,
+                "material": material.describe(),
             },
         )
     if row.get("kind") != "possession":
@@ -1310,7 +1371,7 @@ def _remember_principal_key_revocation(
 
 
 def _verify_lifecycle(
-    conn: DictConn,
+    material: TrustLogMaterial,
     row: Mapping[str, Any],
     envelope: Mapping[str, Any],
     identity: TrustLogIdentity,
@@ -1333,7 +1394,7 @@ def _verify_lifecycle(
     parsed = _parse_lifecycle_payload(transition, payload)
     _check_payload_trust_domain(parsed, identity.trust_domain_id)
     _verify_possession_evidence(
-        conn,
+        material,
         payload,
         transition,
         mode="replay",
@@ -1963,7 +2024,7 @@ def _append_trust_log_event_conn(
     ):
         admission_at = max(admission_at, occurred_at.astimezone(UTC))
     _verify_possession_evidence(
-        conn,
+        _StoreMaterial(conn),
         payload,
         transition,
         mode="admission",

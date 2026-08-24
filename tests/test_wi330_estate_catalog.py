@@ -1761,9 +1761,12 @@ def test_cli_verify_catalog_refuses_when_no_trust_log_is_presented(
     )
     assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
     assert _reason(error) == "trust_log_not_presented"
-    # The refusal has to tell the operator what to do, and disclose the consequence.
+    # The refusal has to tell the operator what to do. WI-337 added the offline remedy:
+    # the refusal now names BOTH the store-backed replay (--trust-log-project) and the
+    # published-artifact path (--trust-log-export) rather than the pre-WI-337 note that
+    # §5.4 step 5 needs READ ACCESS to the store until an export exists.
     assert "--trust-log-project" in str(error)
-    assert "READ ACCESS" in str(error)
+    assert "--trust-log-export" in str(error)
 
     # The same withholding is refused for the signing side too.
     from regista._cli import cmd_trust_sign_catalog
@@ -1884,9 +1887,12 @@ def test_verify_catalog_requires_checkpoint_and_manifest_at_the_cli() -> None:
     message = err.getvalue()
     assert "--trust-checkpoint" in message
     assert "--expected-estate" in message
-    # FR3-1: the log is REQUIRED at the parser too, so an operator cannot even spell an
-    # invocation that would have taken the old genesis fallback.
+    # FR3-1: the log must be presentable at the parser. WI-337 made it EITHER
+    # --trust-log-project (store replay) or --trust-log-export (published artifact) — both
+    # appear in the usage line, and _resolve_root_authority still refuses when neither is
+    # given, so no invocation can take the old genesis fallback.
     assert "--trust-log-project" in message
+    assert "--trust-log-export" in message
 
 
 def test_created_at_requires_exactly_six_fractional_digits() -> None:

@@ -212,8 +212,17 @@ def genesis_envelope(
     trust_domain_id: str | None = None,
     entity_kinds: tuple[str, ...] = GENESIS_ENTITY_KINDS,
     producer: Producer | None = None,
+    bootstrap_trust_event_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Build a self-contained v6 project genesis without repository artifacts."""
+    """Build a self-contained v6 project genesis without repository artifacts.
+
+    ``bootstrap_trust_event_hash`` overrides the ``bootstrap_key_acceptance``'s
+    ``trust_event_hash``. It defaults to a synthetic digest that resolves to nothing —
+    fine when the genesis is only checked for its own shape — but a caller wiring the
+    genesis to a REAL published trust log (WI-337 offline external authentication) sets it
+    to the actual ``principal_key_enrolled`` event hash the trust log carries for this
+    bootstrap key, so §5.10 step 5's cross-chain import point resolves.
+    """
 
     key = keyset.key_for(principal_id)
     project = project_instance_id if project_instance_id is not None else str(uuid.uuid4())
@@ -229,8 +238,10 @@ def genesis_envelope(
         "scheme_id": "ed25519",
         "public_key": key.public_key_b64,
         "fingerprint": key.fingerprint,
-        "trust_event_hash": _test_digest(
-            "regista.testing.v6.test-root-enrolment:" + principal_id
+        "trust_event_hash": (
+            bootstrap_trust_event_hash
+            if bootstrap_trust_event_hash is not None
+            else _test_digest("regista.testing.v6.test-root-enrolment:" + principal_id)
         ),
         "trust_log_checkpoint": checkpoint,
         "scopes": {

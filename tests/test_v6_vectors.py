@@ -675,6 +675,25 @@ def test_estate_catalog() -> None:
     assert digest == case["expected"]["estate_catalog_digest"]
 
 
+def test_trust_log_export() -> None:
+    case = _load_case("trust-log-export")
+    doc = case["input"]["document"]
+    b = canonicalize(doc)
+    assert b == case["expected"]["canonical_bytes"].encode()
+    digest = domain_digest_framed(DOMAINS["trust_log_export"], b)
+    assert digest == case["expected"]["trust_log_export_digest"]
+    # The production framing helper must reproduce the frozen digest from the same core
+    # document (WI-337). The case document carries no signature sections, so its core is
+    # itself, which is exactly what trust_log_export_signature_input covers.
+    from regista._trust_log_export import (
+        TRUST_LOG_EXPORT_DOMAIN,
+        trust_log_export_digest,
+    )
+
+    assert TRUST_LOG_EXPORT_DOMAIN == DOMAINS["trust_log_export"]
+    assert trust_log_export_digest(doc) == case["expected"]["trust_log_export_digest"]
+
+
 def test_producer_lineage_is_a_family_not_a_versioned_model() -> None:
     """`model_lineage` is the family; `model` is the build (V6-ENVELOPE §1.8).
 

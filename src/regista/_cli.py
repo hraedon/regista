@@ -800,12 +800,67 @@ def _parse_known_head(value: str | None) -> tuple[str, int] | None:
     return head_hash, int(count)
 
 
+def _verified_trust_log_from_args(args: argparse.Namespace, trust: Any) -> Any:
+    """Load and VERIFY a published trust-log export named on the command line (WI-337).
+
+    Named, not fetched. §8.4's rule is that the offline verifier is *given* its trust
+    material and never reaches for it: this reads the file the auditor points at, verifies
+    it against the genesis the auditor pinned, and would refuse just as hard if the operator
+    handed over a beautifully signed export for a different domain.
+
+    The truncation pin comes from one of two places and at least one is required downstream
+    (``_bundle._trust_log_export_material``): ``--trust-log-expect-head``, or the §4.6
+    policy's ``min_trust_log_checkpoint``. Neither present → the export verifies but is
+    refused for authority, loudly, rather than silently producing a weaker verdict.
+    """
+
+    from ._bundle import TrustPolicy
+    from ._trust_log_export import verify_trust_log_export
+
+    path = getattr(args, "trust_log", None)
+    if not path:
+        return None
+    genesis_document = _load_genesis_document(getattr(args, "genesis", None))
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "--trust-log needs the pinned genesis: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. The genesis is the root of the authority chain "
+            "the export is replayed against; without it the export could only be checked "
+            "against its own claims, which is the circularity this design removes.",
+            {"reason": "trust_log_genesis_absent"},
+        )
+    file_bytes = _read_catalog_bytes(path, "trust-log-export")
+    try:
+        document = json.loads(file_bytes.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+            f"{path!r} is not valid JSON: {exc}",
+            {"reason": "trust_log_export_invalid_json", "path": path},
+        ) from exc
+    must_cover = (
+        trust.min_trust_log_checkpoint
+        if isinstance(trust, TrustPolicy) and not trust.is_ad_hoc
+        else None
+    )
+    return verify_trust_log_export(
+        document,
+        genesis_document=genesis_document,
+        file_bytes=file_bytes,
+        expect_digest=getattr(args, "trust_log_expect_digest", None),
+        expect_head=_parse_known_head(getattr(args, "trust_log_expect_head", None)),
+        must_cover=must_cover if isinstance(must_cover, Mapping) else None,
+    )
+
+
 def cmd_bundle_verify(args: argparse.Namespace) -> None:
     try:
         trust = _bundle_trust_from_args(args)
         known_head = _parse_known_head(getattr(args, "known_head", None))
+        trust_log = _verified_trust_log_from_args(args, trust)
         result = Regista.verify_audit_bundle_v3(
-            args.bundle_path, trust, known_head=known_head
+            args.bundle_path, trust, known_head=known_head, trust_log=trust_log
         )
         applicability = str(result["applicability"])
         if getattr(args, "json", False):
@@ -3754,19 +3809,49 @@ def _resolve_root_authority(
     from regista._connection import ConnectionManager
     from regista._estate_catalog import trust_log_root_authority
 
+    # WI-337: the log may now be presented as a PUBLISHED ARTIFACT rather than a schema.
+    # This is the offline half of §5.4 step 5 — same verified walk, same derived authority,
+    # no DSN. It is checked first because an auditor holding the publication repository has
+    # no store to name, and it is never a *fallback* for a missing log: presenting nothing
+    # is still the refusal below.
+    export_path = getattr(args, "trust_log_export", None)
+    if export_path is not None:
+        from regista._trust_log_export import verify_trust_log_export
+
+        file_bytes = _read_catalog_bytes(export_path, "trust-log-export")
+        try:
+            document = json.loads(file_bytes.decode("utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+                f"{export_path!r} is not valid JSON: {exc}",
+                {"reason": "trust_log_export_invalid_json", "path": export_path},
+            ) from exc
+        verification = verify_trust_log_export(
+            document,
+            genesis_document=genesis_document,
+            file_bytes=file_bytes,
+            expect_digest=getattr(args, "trust_log_export_digest", None),
+            expect_head=_parse_known_head(
+                getattr(args, "trust_log_export_expect_head", None)
+            ),
+        )
+        from regista._trust_domain import parse_trust_genesis
+
+        return verification_root_authority(verification, parse_trust_genesis(genesis_document))
+
     project = getattr(args, "trust_log_project", None)
     if project is None:
         raise RegistaError(
             ErrorCode.ESTATE_CATALOG_UNVERIFIED,
             "no trust log was presented, so the current root signer set cannot be "
             "established. Pass --trust-log-project (and --trust-log-dsn, or "
-            "--dsn/REGISTA_DSN) so the log can be replayed from the pinned genesis. "
+            "--dsn/REGISTA_DSN) so the log can be replayed from the pinned genesis, or "
+            "--trust-log-export naming a published regista.trust-log-export/v1 artifact "
+            "(WI-337) so the same walk runs offline. "
             "This is REQUIRED even for a domain you believe has never rotated: "
             "assuming zero rotations from the absence of the log is exactly what lets "
-            "roots removed by a rotation forge a catalog under the old genesis set. "
-            "NOTE: §5.4 step 5's independent verification therefore needs READ ACCESS "
-            "to the trust-log store until a published trust-log export exists; that "
-            "artifact is `regista trust publish`'s territory and does not exist yet.",
+            "roots removed by a rotation forge a catalog under the old genesis set.",
             {"reason": "trust_log_not_presented"},
         )
     dsn = getattr(args, "trust_log_dsn", None) or (args.dsn or os.environ.get("REGISTA_DSN"))
@@ -3855,6 +3940,374 @@ def _catalog_signers(
             (seed, authority.signer_ids.get(fingerprint, fingerprint), fingerprint)
         )
     return resolved
+
+
+def cmd_trust_publish_log(args: argparse.Namespace) -> None:
+    """Export the trust log as a §4.2 publication artifact (WI-337).
+
+    The ceremony, in order, all of it before anything is written:
+
+      1. refuse an unusable ``--out`` before the keys come out
+      2. load and FULLY verify the pinned genesis document
+      3. walk the LIVE trust log under full verification (``verify_trust_log_chain``)
+         and derive every declared field from that walk — head, count, governance,
+         active roots. The command is never the source of a claim it publishes.
+      4. build the exact canonical publication bytes, and self-verify them through the
+         offline verifier before signing (a builder that can emit something its own
+         verifier rejects is a defect generator)
+      5. append each ``--key``'s root signature over the *existing* signed core
+      6. re-verify the SIGNED document end to end, then write atomically
+
+    Signing is separate and optional here for the same reason ``trust catalog`` /
+    ``trust sign-catalog`` are separate: with ``--incomplete-signatures`` the connected
+    host produces the document and each remaining root signs it offline with
+    ``trust sign-log``. §4.4's "publish never touches a private key" separation is
+    preserved from the other side — this command touches the store, and
+    ``trust sign-log`` touches only keys.
+    """
+    from regista._connection import ConnectionManager
+    from regista._jcs import canonicalize
+    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+    from regista._trust_log_export import (
+        build_trust_log_export,
+        sign_trust_log_export,
+        trust_log_export_digest,
+        verify_trust_log_export,
+    )
+
+    json_mode = getattr(args, "json", False)
+    dsn, _, _ = _resolve_config(args)
+    if not dsn:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "missing required config: --dsn or REGISTA_DSN",
+            {"reason": "dsn_absent"},
+        )
+    _precheck_out_path(args.out, force=args.force, dry_run=args.dry_run)
+
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. The export declares which trust domain it is a "
+            "log of, and the verifier replays it FROM that document; without the pinned "
+            "genesis there is nothing to root the export at.",
+            {"reason": "genesis_document_absent"},
+        )
+    verify_trust_genesis(genesis_document)
+    doc = parse_trust_genesis(genesis_document)
+    trust_project = args.trust_project or doc.trust_log.project_name_hint
+    created_at = args.created_at or (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z")
+
+    _genesis_require_trust_log(dsn, trust_project)
+    mgr = ConnectionManager(dsn, trust_project)
+    try:
+        mgr.open()
+        # NOT `SET TRANSACTION READ ONLY`: the verified walk takes `SELECT ... FOR SHARE`
+        # row locks, which PostgreSQL forbids in a read-only transaction.
+        with mgr.transaction() as conn:
+            document = build_trust_log_export(
+                conn,
+                genesis_document=genesis_document,
+                created_at=created_at,
+                prev_commit=args.prev_commit,
+            )
+    finally:
+        mgr.close()
+
+    verification = verify_trust_log_export(
+        document, genesis_document=genesis_document, require_signatures=False
+    )
+    signers = _catalog_signers(
+        list(args.key or []), authority=verification_root_authority(verification, doc)
+    )
+    signed: dict[str, Any] = dict(document)
+    for seed, signer_id, fingerprint in signers:
+        signed = sign_trust_log_export(
+            signed, seed=seed, signer_id=signer_id, fingerprint=fingerprint
+        )
+    threshold = verification.root_threshold
+    if len(signers) < threshold and not args.incomplete_signatures:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_UNVERIFIED,
+            f"{len(signers)} root signature(s) supplied but the replayed log's threshold "
+            f"is {threshold}. An export below threshold never verifies, so it is refused "
+            "by default; pass --incomplete-signatures to produce one for couriering to "
+            "the remaining offline roots and finish with `regista trust sign-log`.",
+            {
+                "reason": "root_threshold_not_met",
+                "supplied": len(signers),
+                "threshold": threshold,
+            },
+        )
+    if signers and len(signers) >= threshold:
+        # Re-verify the SIGNED document exactly as an auditor will, before it is written.
+        verification = verify_trust_log_export(signed, genesis_document=genesis_document)
+
+    canonical = canonicalize(signed)
+    digest = trust_log_export_digest(signed)
+    publication_path = f"trust-log/{doc.trust_domain_id}/{created_at}.json"
+    result = {
+        "ok": True,
+        "action": "trust-publish-log",
+        "written": None if args.dry_run else args.out,
+        "publication_path": publication_path,
+        "trust_log_export_digest": digest,
+        "bytes": len(canonical),
+        "event_count": verification.event_count,
+        "head_event_hash": verification.head_event_hash,
+        "genesis_event_hash": verification.genesis_event_hash,
+        "root_governance": {
+            "mode": verification.root_governance_mode,
+            "threshold": threshold,
+            "signer_count": len(verification.root_signer_fingerprints),
+        },
+        "active_root_fingerprints": list(verification.root_signer_fingerprints),
+        "signatures_added": len(signers),
+        "threshold_met": len(signers) >= threshold,
+        "created_at": created_at,
+    }
+    if not args.dry_run:
+        _write_canonical_atomic(args.out, canonical)
+    if json_mode:
+        _dump_json(result)
+        return
+    print(
+        "trust publish-log: "
+        + ("DRY RUN, nothing written" if args.dry_run else f"written to {args.out}")
+    )
+    print(f"  publication path:        {publication_path}")
+    print(f"  trust_log_export_digest: {digest}")
+    print(f"  events:                  {verification.event_count}")
+    print(f"  head_event_hash:         {verification.head_event_hash}")
+    print(
+        f"  root_governance:         {verification.root_governance_mode} "
+        f"({threshold} of {len(verification.root_signer_fingerprints)})"
+    )
+    print(f"  signatures:              {len(signers)} of {threshold} required")
+    if len(signers) < threshold:
+        print(
+            f"  threshold NOT met: {threshold - len(signers)} more root signature(s) "
+            "needed. Finish with `regista trust sign-log`."
+        )
+    print(
+        "  NOTE: publish the head and event count above through the direct-exchange "
+        "block too. Without a prior observation an auditor cannot tell a complete "
+        "export from a truncated PREFIX, and `bundle verify --trust-log` refuses to "
+        "establish key authority from an unpinned one."
+    )
+
+
+def verification_root_authority(
+    verification: Any, genesis: Any
+) -> RootAuthorityState:
+    """The root authority a verified export derives, in ``RootAuthorityState`` shape.
+
+    Lets ``_catalog_signers`` (which resolves ``--key`` seeds against a derived root set,
+    refusing a seed that is not a current root) be reused verbatim rather than copied — the
+    same reasoning that made ``verify_catalog_root_signatures`` a shared function.
+    """
+    from regista._estate_catalog import RootAuthorityState
+
+    return RootAuthorityState(
+        signer_fingerprints=verification.root_signer_fingerprints,
+        threshold=verification.root_threshold,
+        public_keys={
+            fingerprint: key
+            for fingerprint, key in verification.chain.state.root_public_keys.items()
+            if fingerprint in verification.root_signer_fingerprints
+        },
+        signer_ids={s.fingerprint: s.signer_id for s in genesis.signers},
+        source="published_trust_log_export",
+        trust_log_event_count=verification.event_count,
+    )
+
+
+def cmd_trust_sign_log(args: argparse.Namespace) -> None:
+    """Append root signature(s) to an existing trust-log export. Offline, no database.
+
+    The airgapped leg of a k-of-n publication, mirroring ``trust sign-catalog``. The signed
+    core is never rebuilt — it is parsed, re-verified against the pinned genesis, and only
+    ``root_signatures`` grows. Nothing here can change what the export carries, and the
+    replay that derives the root set runs over the export's OWN events, so this machine
+    needs no database at all.
+    """
+    from regista._jcs import canonicalize
+    from regista._trust_domain import parse_trust_genesis, verify_trust_genesis
+    from regista._trust_log_export import (
+        sign_trust_log_export,
+        trust_log_export_canonical_core,
+        trust_log_export_digest,
+        verify_trust_log_export,
+    )
+
+    json_mode = getattr(args, "json", False)
+    _precheck_out_path(args.out, force=args.force, dry_run=False)
+
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH",
+            {"reason": "genesis_document_absent"},
+        )
+    verify_trust_genesis(genesis_document)
+    doc = parse_trust_genesis(genesis_document)
+
+    file_bytes = _read_catalog_bytes(args.file, "trust-log-export")
+    try:
+        incoming = json.loads(file_bytes.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+            f"{args.file!r} is not valid JSON: {exc}",
+            {"reason": "trust_log_export_invalid_json", "path": args.file},
+        ) from exc
+    if file_bytes != canonicalize(dict(incoming)):
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+            "the export being signed is not exact canonical JCS bytes; signing "
+            "non-canonical bytes produces an artifact that fails verification",
+            {"reason": "not_canonical_publication_bytes", "path": args.file},
+        )
+    # Every EXISTING signature is verified before anything is appended, so the counts
+    # below count verified signatures rather than array entries (the WI-330 FR2-2 lesson).
+    before = verify_trust_log_export(
+        incoming, genesis_document=genesis_document, require_signatures=False
+    )
+    core_before = trust_log_export_canonical_core(incoming)
+    signers = _catalog_signers(
+        list(args.key), authority=verification_root_authority(before, doc)
+    )
+    signed: dict[str, Any] = dict(incoming)
+    for seed, signer_id, fingerprint in signers:
+        signed = sign_trust_log_export(
+            signed, seed=seed, signer_id=signer_id, fingerprint=fingerprint
+        )
+    if trust_log_export_canonical_core(signed) != core_before:
+        raise RegistaError(  # pragma: no cover - defensive
+            ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+            "signing changed the export's signed core; refusing to write",
+            {"reason": "signed_core_mutated"},
+        )
+    after = verify_trust_log_export(
+        signed, genesis_document=genesis_document, require_signatures=False
+    )
+    verified = len(after.verified_root_signatures)
+    threshold = after.root_threshold
+    _write_canonical_atomic(args.out, canonicalize(signed))
+    result = {
+        "ok": True,
+        "action": "trust-sign-log",
+        "written": args.out,
+        "trust_log_export_digest": trust_log_export_digest(signed),
+        "signatures_added": len(signers),
+        "signatures_verified": verified,
+        "threshold": threshold,
+        "threshold_met": verified >= threshold,
+        "root_fingerprints_added": [fingerprint for _, _, fingerprint in signers],
+    }
+    if json_mode:
+        _dump_json(result)
+        return
+    print("trust sign-log: root signature(s) appended")
+    print(f"  in:                      {args.file}")
+    print(f"  out:                     {args.out}")
+    print(f"  trust_log_export_digest: {result['trust_log_export_digest']}")
+    print(f"  signatures VERIFIED:     {verified} of {threshold} required")
+    if verified >= threshold:
+        print("  threshold MET: run `regista trust verify-log` before publishing.")
+    else:
+        print(f"  threshold NOT met: {threshold - verified} more root signature(s) needed.")
+
+
+def cmd_trust_verify_log(args: argparse.Namespace) -> None:
+    """Verify a published trust-log export; nonzero exit on anything but VALID.
+
+    Offline and read-only: it reads the named files and nothing else. This is what makes
+    runbook §5.4 step 5 executable from an INDEPENDENT checkout of the publication
+    repository with no database credentials — the gap WI-330 recorded and could not close.
+
+    What it does NOT prove, and prints: without ``--expect-digest`` the checkout is
+    internally coherent, which is not evidence that the first publication was honest
+    (§4.1, OPERATOR-FORGERY R3); and without ``--expect-head`` or ``--must-cover-head`` a
+    published PREFIX of the log replays cleanly and nothing here can reveal it.
+    """
+    from regista._trust_log_export import verify_trust_log_export
+
+    json_mode = getattr(args, "json", False)
+    genesis_document = _load_genesis_document(args.genesis)
+    if genesis_document is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "no trust-genesis document: pass --genesis PATH or set "
+            "REGISTA_TRUST_GENESIS_PATH. The genesis supplies the initial root public "
+            "keys; without it nothing about the export's authority can be checked and the "
+            "verdict would be vacuous.",
+            {"reason": "genesis_document_absent"},
+        )
+    file_bytes = _read_catalog_bytes(args.file, "trust-log-export")
+    try:
+        document = json.loads(file_bytes.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID,
+            f"{args.file!r} is not valid JSON: {exc}",
+            {"reason": "trust_log_export_invalid_json", "path": args.file},
+        ) from exc
+    must_cover = (
+        {"head_event_hash": args.must_cover_head} if args.must_cover_head else None
+    )
+    report = verify_trust_log_export(
+        document,
+        genesis_document=genesis_document,
+        file_bytes=file_bytes,
+        expect_digest=args.expect_digest,
+        expect_head=_parse_known_head(args.expect_head),
+        must_cover=must_cover,
+    )
+    if json_mode:
+        _dump_json({**report.to_dict(), "verdict": "VALID"})
+    else:
+        print("verdict: VALID")
+        print(f"trust_domain_id: {report.trust_domain_id}")
+        print(f"trust_domain_core_digest: {report.trust_domain_core_digest}")
+        print(f"genesis_document_digest: {report.genesis_document_digest}")
+        print(f"trust_log_project_instance_id: {report.project_instance_id}")
+        print(f"document_digest: {report.document_digest}")
+        print(f"events walked: {report.event_count}")
+        print(f"genesis_event_hash: {report.genesis_event_hash}")
+        print(f"head_event_hash: {report.head_event_hash}")
+        print(
+            f"root_governance: {report.root_governance_mode} "
+            f"({report.root_threshold} of {len(report.root_signer_fingerprints)})"
+        )
+        print(
+            "active_root_fingerprints: " + ", ".join(report.root_signer_fingerprints)
+        )
+        print(f"root signatures verified: {len(report.verified_root_signatures)}")
+        if report.revoked_key_introductions:
+            print("revoked key introductions (withheld as referents):")
+            for event_hash in report.revoked_key_introductions:
+                print(f"  - {event_hash}")
+        if report.tail_truncation_undetectable:
+            print(
+                "NOTE tail_truncation_undetectable: no --expect-head and no "
+                "--must-cover-head was supplied. A published PREFIX of the log replays "
+                "cleanly, so this run cannot tell a complete export from a truncated one, "
+                "and `bundle verify --trust-log` will REFUSE to establish key authority "
+                "from it."
+            )
+        if args.expect_digest is None:
+            print(
+                "NOTE: no --expect-digest was supplied. This checkout is internally "
+                "coherent, which is NOT evidence that the first publication was honest "
+                "(§4.1, OPERATOR-FORGERY R3). Substitution is detectable only against a "
+                "prior observation."
+            )
+        print(f"NOTE: {_AT_HEAD_AUTHORITY_NOTE}.")
 
 
 def cmd_trust_catalog(args: argparse.Namespace) -> None:
@@ -5873,6 +6326,42 @@ def main(argv: list[str] | None = None) -> None:
         metavar="<head_hash>:<count>",
         help="A head pinned out of band, e.g. sha256:...:352509 (drives A7 and Rule H)",
     )
+    bnd_verify.add_argument(
+        "--trust-log",
+        metavar="FILE",
+        help="Path to a PUBLISHED regista.trust-log-export/v1 artifact (WI-337, §4.2). "
+        "It is verified here — replayed from --genesis under the same walk the live "
+        "store uses — and never fetched. This is what completes a non-root project "
+        "key's chain to the pinned root offline, and hence the only way a project "
+        "bundle reaches externally_authenticated (exit 0). Requires a FULL "
+        "--trust-policy: the ad-hoc --trusted-fingerprint form carries no genesis pin "
+        "to bind the log to.",
+    )
+    bnd_verify.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH). "
+        "REQUIRED with --trust-log: the genesis is the ROOT of the authority chain the "
+        "export is replayed against.",
+    )
+    bnd_verify.add_argument(
+        "--trust-log-expect-head",
+        metavar="<head_hash>:<count>",
+        default=None,
+        help="The trust log's head and event count, obtained by direct exchange. A "
+        "published export can be a truncated PREFIX of the real log and still replay "
+        "cleanly, which would hide every revocation after the cut — so a truncation pin "
+        "is MANDATORY before the export may establish key authority. Supply this, or a "
+        "--trust-policy carrying min_trust_log_checkpoint.",
+    )
+    bnd_verify.add_argument(
+        "--trust-log-expect-digest",
+        metavar="sha256:...",
+        default=None,
+        help="The trust-log export's document digest, obtained by direct exchange. "
+        "Detects substitution of the published artifact (§4.1); without a prior "
+        "observation the channel proves coherence only.",
+    )
     bnd_verify.add_argument("--json", action="store_true", help="JSON output")
     bnd_verify.set_defaults(func=cmd_bundle_verify)
 
@@ -6615,6 +7104,158 @@ def main(argv: list[str] | None = None) -> None:
     # to a subcommand option it happens to prefix. These are ceremony commands whose
     # arguments name key material and signed inputs, so a typo must be an error rather
     # than a guess.
+    # WI-337: publish the trust log itself as a §4.2 artifact, so the verified walk that
+    # every authority derivation depends on is reachable WITHOUT database credentials.
+    trust_publish_log = trust_sub.add_parser(
+        "publish-log",
+        help="Export the trust log as a signed §4.2 publication artifact (WI-337)",
+        allow_abbrev=False,
+        description="Walk the live trust log under full verification and write its exact "
+        "canonical JCS publication bytes as a regista.trust-log-export/v1 document, "
+        "root-threshold signed. Every declared field — head, event count, governance, "
+        "active roots — is DERIVED from that walk, never read from a posture row. This is "
+        "the artifact that lets an auditor holding only the publication repository derive "
+        "the current root set, verify a catalog, and complete a project bundle's "
+        "chain-to-root offline. Committing the bytes into the publication clone is a "
+        "separate operator step.",
+    )
+    trust_publish_log.add_argument(
+        "--out", required=True, help="Path the canonical signed export bytes are written to"
+    )
+    trust_publish_log.add_argument(
+        "--key",
+        action="append",
+        default=None,
+        help="Path to a ROOT 32-byte Ed25519 seed (64 hex chars or base64); REPEATABLE, "
+        "one per root, to satisfy a k-of-n threshold in a single invocation. Each "
+        "fingerprint must be a CURRENT root in the replayed log. For an airgapped "
+        "ceremony pass what you have with --incomplete-signatures and finish with "
+        "`regista trust sign-log`.",
+    )
+    trust_publish_log.add_argument(
+        "--incomplete-signatures",
+        action="store_true",
+        help="Write an export that does NOT yet meet the root threshold, for couriering "
+        "to the remaining offline roots. Such an export never verifies; refused by "
+        "default so it is not produced by accident.",
+    )
+    trust_publish_log.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH). "
+        "REQUIRED: the export is replayed FROM this document by every verifier.",
+    )
+    trust_publish_log.add_argument(
+        "--trust-project",
+        default=None,
+        help="Trust-log schema; defaults to the genesis document's signed "
+        "project_name_hint (regista_trust)",
+    )
+    trust_publish_log.add_argument(
+        "--created-at",
+        default=None,
+        help="Override created_at (UTC Z, EXACTLY six fractional digits); default: now. "
+        "Pin it to reproduce a byte-identical export.",
+    )
+    trust_publish_log.add_argument(
+        "--prev-commit",
+        default=None,
+        help="Publication-channel prev_commit (full 40-hex git commit); default null",
+    )
+    trust_publish_log.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing --out file (refused by default). The write is atomic, "
+        "so a failure leaves the previous file intact.",
+    )
+    trust_publish_log.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build, verify and print the digest the real run would produce, and write "
+        "NOTHING",
+    )
+    trust_publish_log.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    trust_publish_log.set_defaults(func=cmd_trust_publish_log)
+
+    trust_sign_log = trust_sub.add_parser(
+        "sign-log",
+        help="Offline: append root signature(s) to an existing trust-log export",
+        allow_abbrev=False,
+        description="The airgapped leg of a k-of-n trust-log publication. Reads an export, "
+        "appends one or more root signatures over its EXISTING signed core, and writes the "
+        "result. Never contacts a database — the root set is derived by replaying the "
+        "export's own events from the pinned genesis — and never writes to the publication "
+        "repo.",
+    )
+    trust_sign_log.add_argument("file", help="Path to the trust-log export JSON to sign")
+    trust_sign_log.add_argument(
+        "--out", required=True, help="Path the newly signed canonical bytes are written to"
+    )
+    trust_sign_log.add_argument(
+        "--key",
+        required=True,
+        action="append",
+        help="Path to a ROOT 32-byte Ed25519 seed (64 hex chars or base64); repeatable. "
+        "Each fingerprint must be a CURRENT root in the replayed log and must not already "
+        "appear in the export.",
+    )
+    trust_sign_log.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH)",
+    )
+    trust_sign_log.add_argument(
+        "--force", action="store_true", help="Replace an existing --out file"
+    )
+    trust_sign_log.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    trust_sign_log.set_defaults(func=cmd_trust_sign_log)
+
+    trust_verify_log = trust_sub.add_parser(
+        "verify-log",
+        help="Verify a published trust-log export offline; nonzero exit on invalid",
+        allow_abbrev=False,
+        description="Runbook §5.4 step 5, without database credentials: verify a published "
+        "regista.trust-log-export/v1 against the pinned genesis. Offline and read-only — it "
+        "reads the named files and nothing else. Exit 0 = VALID; exit 1 = refused.",
+    )
+    trust_verify_log.add_argument("file", help="Path to the published trust-log export JSON")
+    trust_verify_log.add_argument(
+        "--genesis",
+        default=None,
+        help="Path to the pinned trust-genesis JSON (or REGISTA_TRUST_GENESIS_PATH). "
+        "REQUIRED: it is the ROOT of the authority chain the export is replayed against.",
+    )
+    trust_verify_log.add_argument(
+        "--expect-digest",
+        default=None,
+        help="trust_log_export_digest obtained by direct exchange. Without it the check "
+        "proves internal coherence only, never that the first publication was honest.",
+    )
+    trust_verify_log.add_argument(
+        "--expect-head",
+        metavar="<head_hash>:<count>",
+        default=None,
+        help="The trust log's head and event count obtained by direct exchange. A "
+        "published PREFIX of the log replays cleanly, so this is one of only two ways to "
+        "detect truncation.",
+    )
+    trust_verify_log.add_argument(
+        "--must-cover-head",
+        metavar="sha256:...",
+        default=None,
+        help="A trust-log event hash (typically a published checkpoint's head) the export "
+        "MUST reach. The other truncation defence, and the one an auditor can source from "
+        "the publication repository itself.",
+    )
+    trust_verify_log.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="JSON output"
+    )
+    trust_verify_log.set_defaults(func=cmd_trust_verify_log)
+
     trust_catalog = trust_sub.add_parser(
         "catalog",
         help="Produce and sign the estate cutover catalog (§4.3)",
@@ -6831,20 +7472,40 @@ def main(argv: list[str] | None = None) -> None:
     )
     trust_verify_catalog.add_argument(
         "--trust-log-project",
-        required=True,
-        help="REQUIRED. Schema holding the estate trust log. It is replayed from the "
-        "pinned genesis under full verification and the resulting signer set/threshold "
-        "ARE the authority. There is no way to omit it: assuming zero rotations from the "
-        "absence of the log is what lets roots removed by a rotation forge a catalog "
-        "under the old genesis set (a rotation-free walk yields the genesis set anyway, "
-        "so nothing is lost). CONSEQUENCE: §5.4 step 5's independent verification needs "
-        "READ ACCESS to the trust-log store until a published trust-log export exists. "
-        "There is no operator channel for root public keys by design.",
+        default=None,
+        help="Schema holding the estate trust log. It is replayed from the pinned genesis "
+        "under full verification and the resulting signer set/threshold ARE the "
+        "authority. Present EITHER this or --trust-log-export: omitting both is a "
+        "refusal, because assuming zero rotations from the absence of the log is what "
+        "lets roots removed by a rotation forge a catalog under the old genesis set (a "
+        "rotation-free walk yields the genesis set anyway, so nothing is lost). There is "
+        "no operator channel for root public keys by design.",
     )
     trust_verify_catalog.add_argument(
         "--trust-log-dsn",
         default=None,
         help="DSN for --trust-log-project; defaults to --dsn/REGISTA_DSN",
+    )
+    trust_verify_catalog.add_argument(
+        "--trust-log-export",
+        default=None,
+        help="Path to a PUBLISHED regista.trust-log-export/v1 artifact (WI-337, §4.2). "
+        "The offline alternative to --trust-log-project: the SAME verified walk runs over "
+        "the export's own events, rooted at the pinned genesis, so §5.4 step 5 no longer "
+        "needs read access to the trust-log store. Takes precedence when both are given.",
+    )
+    trust_verify_catalog.add_argument(
+        "--trust-log-export-digest",
+        default=None,
+        help="trust_log_export_digest obtained by direct exchange, pinning "
+        "--trust-log-export against substitution",
+    )
+    trust_verify_catalog.add_argument(
+        "--trust-log-export-expect-head",
+        metavar="<head_hash>:<count>",
+        default=None,
+        help="The trust log's head and count obtained by direct exchange. Without it a "
+        "published PREFIX of the log replays cleanly and could hide a rotation.",
     )
     trust_verify_catalog.add_argument(
         "--expect-digest",

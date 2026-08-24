@@ -149,6 +149,17 @@ class ErrorCode(StrEnum):
     # ceremony finished (CUTOVER-CLASSIFICATION.md:588).
     ESTATE_CATALOG_SCHEMA_INVALID = "ESTATE_CATALOG_SCHEMA_INVALID"
     ESTATE_CATALOG_UNVERIFIED = "ESTATE_CATALOG_UNVERIFIED"
+    # WI-337: the published trust-log export (TRUST-DOMAIN.md §4.2/§4.3), the artifact
+    # that makes the verified trust-log walk reachable WITHOUT database credentials.
+    # Split for the same reason as the catalog's pair: SCHEMA_INVALID means the
+    # artifact is malformed (unknown key, non-canonical bytes, an event record that
+    # does not decode) and must be re-exported; UNVERIFIED means it is well-formed and
+    # its CLAIMS did not hold up (a root signature that does not verify, a declared
+    # head that is not the head the replay reached, a different trust domain, a log
+    # truncated before a pinned checkpoint). Never a warning: a trust-log artifact
+    # that does not verify is not weaker evidence, it is no evidence.
+    TRUST_LOG_EXPORT_SCHEMA_INVALID = "TRUST_LOG_EXPORT_SCHEMA_INVALID"
+    TRUST_LOG_EXPORT_UNVERIFIED = "TRUST_LOG_EXPORT_UNVERIFIED"
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Each error carries a
     # machine-readable `reason` in detail naming the exact rule violated.
     # NOT_CANONICAL is kept distinct from UNGRAMMATICAL so a legacy bare name (§2.4
