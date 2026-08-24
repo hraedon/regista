@@ -1971,6 +1971,46 @@ class TestPhaseDConcurrencyAndTOCTOU:
         )
         assert _v3(real_a / "bundle.json").applicability != "invalid"
 
+    def test_fr2_2_repro_a_overwrite_staging_substitution_aborts(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 round 4): the ``overwrite=True`` path links the held inode to a
+        staging name then ``os.replace``s it, and ``os.replace`` resolves the staging name BY
+        NAME — reopening a Repro-A substitution window. A racer that swaps the staging entry
+        between the linkat and the replace must make the export ABORT (BUNDLE_WRITE_CORRUPT)
+        with the destination untouched, NOT publish the racer's bytes and return success.
+        Red-on-pre-fix (8ebb6cd): the staging entry was os.replace'd by name with no inode
+        re-check, so the racer's inode was published."""
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "ow.json"
+        archive_store.export(out)  # a clean bundle exists, so overwrite=True is meaningful
+        before = out.read_bytes()
+
+        real_linkat = bundle_mod._linkat_held_inode
+        swapped: dict[str, bool] = {}
+
+        def linkat_hook(fd: int, dir_fd: int, name: str) -> None:
+            real_linkat(fd, dir_fd, name)  # stage-links OUR verified inode at `name`
+            if name.endswith(".partial") and not swapped:
+                swapped["done"] = True
+                # The racer swaps the staging entry for an inode of its own choosing.
+                os.unlink(name, dir_fd=dir_fd)
+                racer_fd = os.open(
+                    name, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600, dir_fd=dir_fd
+                )
+                os.write(racer_fd, b'{"racer": true}')
+                os.close(racer_fd)
+
+        monkeypatch.setattr(bundle_mod, "_linkat_held_inode", linkat_hook)
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out, overwrite=True)
+        assert exc.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
+        assert "substituted" in str(exc.value)
+        assert out.read_bytes() == before, "the destination must be untouched on a substitution"
+        # Cleanup debt: no staging link left behind.
+        assert not list(tmp_path.glob("ow.json.*.partial")), "a staging link leaked"
+
 
 # ---------------------------------------------------------------------------
 # WI-289 rule 6 — dependency closure beyond the signer's authority

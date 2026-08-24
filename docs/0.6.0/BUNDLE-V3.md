@@ -1213,11 +1213,29 @@ or symlink-plant (closing the post-verify substitution and the symlink-plant CWE
 and `dir_fd` is opened once so a parent-directory symlink swap cannot redirect the link (the
 third vector). `overwrite=False` is no-clobber (`linkat` fails `EEXIST` if the destination
 exists); `overwrite=True` links the held inode to a fresh dir-relative name and `os.replace`s
-it, still the verified inode. A platform without `O_TMPFILE`/`AT_EMPTY_PATH` is a documented
-refusal, never a silently weaker by-name path. The earlier fix (a uniquely-named `mkstemp`
-temp re-opened by name) was insufficient: the unique name stopped accidental collisions but
-not a determined racer, because create/write/verify/publish were not guaranteed the same
-inode.
+it, still the verified inode — and because `os.replace` resolves the staging name by name, the
+staging entry is re-checked by inode identity (`fstatat` under the held `dir_fd`, comparing
+`st_ino`/`st_dev` to the held fd) immediately before the replace, so a racer that swaps the
+staging entry makes the export **abort** rather than publish an unverified inode (round 4). A
+platform without `O_TMPFILE`/`AT_EMPTY_PATH` is a documented refusal, never a silently weaker
+by-name path.
+
+**Trust boundary.** This guarantee holds against a concurrent OTHER-principal exporter and any
+process that can write a shared output *directory*: nameless-until-publication, dir-fd
+anchoring, and the overwrite inode re-check make every by-name substitution fail closed. It
+does NOT defend against a **same-UID hostile process** — one that can open
+`/proc/<pid>/fd/<n>` to mutate the held inode can equally `ptrace` the exporter, rewrite its
+memory, or swap its binary, so no fd/inode discipline defends it and none is attempted. The
+boundary is the trusted process and its trusted output directory. (Note the severity ceiling:
+even before the round-4 fix a substituted bundle FAILS downstream signature verification — it
+was never a false-authentic-bundle hole; the bug was export falsely reporting success, now
+fail-closed.)
+
+The intermediate fixes were insufficient in ways worth recording: a uniquely-named `mkstemp`
+temp re-opened by name stopped accidental collisions but not a determined racer (create/write/
+verify/publish were not one inode); holding the inode by descriptor closed the write and the
+`overwrite=False` publish but left the `overwrite=True` staging `os.replace` re-resolving a
+name, which round 4 closes with the inode re-check.
 
 **Deliberately NOT landed, and where it goes.** None is an oversight:
 

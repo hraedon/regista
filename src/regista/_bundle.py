@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import errno
 import hashlib
 import json
@@ -551,6 +552,19 @@ def _write_selfverify_publish(
     name and ``BUNDLE_WRITE_CORRUPT`` fires; the destination is never touched. This is Linux
     (``O_TMPFILE`` + ``AT_EMPTY_PATH``); a platform without them is a documented refusal rather
     than a silently weaker by-name path.
+
+    **Trust boundary (WI-340 round 4, stated so it is not mistaken for a gap).** The integrity
+    guarantee here — that what is published is exactly the self-verified inode — holds against a
+    concurrent OTHER-principal exporter and any process that can write a shared output
+    *directory*: the artifact is nameless until publication (no path to substitute or
+    symlink-plant), the destination link is anchored to a dir descriptor opened once (no
+    parent-symlink redirection), and the ``overwrite=True`` staging entry is re-checked by
+    inode identity immediately before ``os.replace`` (a substituted staging entry aborts rather
+    than publishes). It does NOT defend against a **same-UID hostile process**: such a process
+    can open ``/proc/<pid>/fd/<n>`` and mutate the held inode, but it can equally ``ptrace``
+    the exporter, rewrite its memory, or swap its binary — so no fd/inode discipline can defend
+    it, and none is attempted. The boundary is the trusted process and its trusted output
+    directory; within it, publication is inode-identity and fail-closed.
     """
 
     o_tmpfile = getattr(os, "O_TMPFILE", None)
@@ -601,9 +615,34 @@ def _write_selfverify_publish(
 
         # Publish the held (verified) inode.
         if overwrite:
+            # There is no syscall to rename a held inode over a destination, so the held inode
+            # is linked to a fresh dir-relative staging name and `os.replace`d onto the
+            # destination. `os.replace` resolves the staging name BY NAME, so a racer that can
+            # write the output directory could swap the staging entry between the linkat and
+            # the replace and have os.replace publish ITS inode (WI-340 FR2-2 round 4). Re-
+            # assert, under the held dir_fd, that the staging entry STILL names our verified
+            # inode (same st_ino/st_dev as the held fd) immediately before replacing; abort
+            # fail-closed on any mismatch rather than publish bytes we did not verify.
             staging = f"{output.name}.{os.urandom(6).hex()}.partial"
             _linkat_held_inode(fd, dir_fd, staging)
-            os.replace(staging, output.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            try:
+                staged = os.stat(staging, dir_fd=dir_fd, follow_symlinks=False)
+                held = os.fstat(fd)
+                if (staged.st_ino, staged.st_dev) != (held.st_ino, held.st_dev):
+                    raise RegistaError(
+                        ErrorCode.BUNDLE_WRITE_CORRUPT,
+                        "the overwrite staging entry was substituted before publication "
+                        f"(staged inode {staged.st_ino} != verified inode {held.st_ino}); "
+                        "refusing to os.replace an inode we did not verify (BUNDLE-V3.md §9 "
+                        "rule 5, WI-340 FR2-2). The destination was NOT touched.",
+                    )
+                os.replace(staging, output.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            except BaseException:
+                # Cleanup debt: unlink the leaked staging link on any failure (a mismatch
+                # abort, a replace error, or the racer's substitute) so no partial is left.
+                with contextlib.suppress(OSError):
+                    os.unlink(staging, dir_fd=dir_fd)
+                raise
         else:
             try:
                 _linkat_held_inode(fd, dir_fd, output.name)
