@@ -2369,13 +2369,21 @@ def verify_bundle_v3_core(
     has_named_signer = isinstance(signer, Mapping)
     signer_authority_checked = False
     signer_may_sign_bundles = False
-    # The tri-state a Phase C A2 decision needs (FR3-FINAL). Default ``outside_scope`` covers
-    # the not-run cases (root-threshold statement, or a chain that could not be ordered); it is
-    # the neutral "not established, not a hard failure" state, and for an unorderable chain the
-    # membership-consistency mismatch already forces the verdict invalid.
-    signer_authority_status: Literal["established", "outside_scope", "invalid"] = (
-        "outside_scope"
-    )
+    # The tri-state a Phase C A2 decision needs (FR3-FINAL). The default ``outside_scope`` is
+    # for the DIRECT-ROOT statement only — no named signer, so this field is irrelevant and A2
+    # comes from ``root_signatures`` verification in ``regista._bundle``. It must NOT silently
+    # cover a named signer whose authority was never checked: when the chain cannot be ordered,
+    # resolution is skipped, and leaving a named signer at ``outside_scope`` would map to a
+    # passing A2 (``valid_bundled_key``) for an unchecked authority — the not_checkable-vs-pass
+    # conflation this phase exists to remove. A2 has no not_checkable value, so a named signer
+    # whose authority could not be established because the chain won't order is ``invalid``
+    # (fail-closed). ``outside_scope`` is set below ONLY for an ordered bounded range where
+    # resolution specifically established the outside-window condition.
+    signer_authority_status: Literal["established", "outside_scope", "invalid"]
+    if has_named_signer and not chain_ordered:
+        signer_authority_status = "invalid"
+    else:
+        signer_authority_status = "outside_scope"
     if has_named_signer and chain_ordered:
         assert isinstance(signer, Mapping)
         authority_hash = str(signer["authority_event_hash"])

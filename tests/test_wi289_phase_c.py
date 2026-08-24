@@ -651,6 +651,60 @@ class TestFR3FinalRangeAuthorityFailures:
         assert report.applicability is not BundleApplicability.INVALID
 
 
+class TestFR3FinalUnorderableNamedSigner:
+    """FR3-FINAL round-3 — a named signer on an unorderable chain must be A2 invalid.
+
+    When the chain cannot be ordered, authority resolution is skipped, so the tri-state must
+    NOT leave a named signer at its `outside_scope` default (which maps to a passing
+    `valid_bundled_key`). A2 has no not_checkable value, so the honest fail-closed answer for a
+    named signer whose authority was never checked is `invalid`. The overall verdict is invalid
+    via A3 anyway, but A2 is an INDEPENDENT axis and must not report a pass for an unchecked
+    check — the exact not_checkable-vs-pass conflation this phase exists to eliminate.
+    """
+
+    def _corrupt_to_unorderable(self, document: dict[str, Any]) -> dict[str, Any]:
+        # Drop the middle event records so the chain cannot be ordered (the tail no longer
+        # links back to the genesis), while leaving the SIGNED statement untouched — so the
+        # statement signature still verifies and only the chain ordering fails.
+        events = document["sections"]["events"]
+        assert len(events) >= 3
+        document["sections"]["events"] = [events[0], events[-1]]
+        return document
+
+    def test_a_named_signer_on_an_unorderable_chain_is_a2_invalid(
+        self, chain: _Chain, tmp_path: Path
+    ) -> None:
+        document = self._corrupt_to_unorderable(chain.build())
+        path = tmp_path / "unorderable_named.json"
+        path.write_bytes(canonical_bundle_bytes(document))
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        # A2 specifically — not valid_bundled_key for an authority that was never checked.
+        assert report.membership_signature is MembershipSignature.INVALID
+        assert report.membership_consistency is MembershipConsistency.MISMATCH
+        assert report.applicability is BundleApplicability.INVALID
+
+    def test_a_direct_root_statement_on_an_unorderable_chain_is_unaffected(
+        self, chain: _Chain, tmp_path: Path
+    ) -> None:
+        # Counterweight: the direct-root path (no named signer) derives A2 from root_signatures
+        # verification over the unchanged statement, so this change must not spuriously
+        # invalidate it. A2 stays valid_external_root even though the chain won't order (the
+        # overall verdict is still invalid via A3).
+        signed_path, fingerprint = TestDirectRootSignatures()._root_signed_bundle(
+            chain, tmp_path, root_principal=BOOTSTRAP_PRINCIPAL
+        )
+        document = json.loads(signed_path.read_text(encoding="utf-8"))
+        self._corrupt_to_unorderable(document)
+        path = tmp_path / "unorderable_root.json"
+        path.write_bytes(canonical_bundle_bytes(document))
+        report = verify_audit_bundle_v3(path, TrustPolicy.from_fingerprints([fingerprint]))
+        assert report.membership_signature is MembershipSignature.VALID_EXTERNAL_ROOT
+        assert report.membership_consistency is MembershipConsistency.MISMATCH
+        assert report.applicability is BundleApplicability.INVALID
+
+
 class TestF5NotCheckableOnMalformed:
     """F5 — A10/A11/A12 do not assert a factual '0 conflicts' on input that never verified."""
 
