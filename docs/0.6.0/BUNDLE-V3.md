@@ -1040,10 +1040,10 @@ can only argue about plausibility, so anything derivable is derived.
 
 | Clause | Owner | Consequence at Phase B |
 |---|---|---|
-| §4.1–§4.6 trust-root resolution, `TrustPolicy` / `AcceptBundledKeys`, the required-argument signature | Phase C | The verifier takes an **optional** caller-supplied statement public key and reports its absence as "not checked". It never resolves a key from the artifact — not from `bundled_key_evidence`, not from an acceptance payload — because that is §5.2 rule C's clamp and a core that harvested the key would make the clamp unreachable. |
-| §5.1 axes, §5.2 `applicability` and the clamps, §5.3 | Phase C | The report carries per-check facts, not axes, and still emits the `verified` boolean §5.2 deletes. Its Phase B definition is *stricter* than v2's: it requires the statement signature to have been checked and valid. |
-| §3.2's `root_governance` as the **replayed** governance state | Phase C | Export requires it as a caller input and refuses by name without it. A project store holds no governance state at all, so deriving it would falsify the one field WI-272 requires to be true in every artifact. The other two `trust_root` digests *are* restated, from the genesis event's signed payload, and a verifier cross-checks them against that event when it is in scope. |
-| §3.2 item 2's direct root-threshold `root_signatures[]` | Phase C | Recognised and **refused**, not tolerated. Checking it needs the current root signer set and threshold; accepting the shape unchecked would be a signed object with no verifier. |
+| §4.1–§4.6 trust-root resolution, `TrustPolicy` / `AcceptBundledKeys`, the required-argument signature | Phase C — **landed** | The verifier takes an **optional** caller-supplied statement public key and reports its absence as "not checked". It never resolves a key from the artifact — not from `bundled_key_evidence`, not from an acceptance payload — because that is §5.2 rule C's clamp and a core that harvested the key would make the clamp unreachable. |
+| §5.1 axes, §5.2 `applicability` and the clamps, §5.3 | Phase C — **landed** | The report carries per-check facts, not axes, and still emits the `verified` boolean §5.2 deletes. Its Phase B definition is *stricter* than v2's: it requires the statement signature to have been checked and valid. |
+| §3.2's `root_governance` as the **replayed** governance state | Phase C — **landed (partial)** | Export requires it as a caller input and refuses by name without it. A project store holds no governance state at all, so deriving it would falsify the one field WI-272 requires to be true in every artifact. The other two `trust_root` digests *are* restated, from the genesis event's signed payload, and a verifier cross-checks them against that event when it is in scope. |
+| §3.2 item 2's direct root-threshold `root_signatures[]` | Phase C — **landed** | Recognised and **refused**, not tolerated. Checking it needs the current root signer set and threshold; accepting the shape unchecked would be a signed object with no verifier. |
 | §9 rules 1–5 and 7: the export ceremony, the preflight comparison, `.partial`-then-self-verify-then-`os.replace` (D11), `--allow-unverified`'s deletion, exit codes, CLI flags | Phase D | The write order is still v2's (write, rename, verify) and is marked wrong in the module docstring rather than quietly fixed, so the reorder lands with the tests that pin it. `regista bundle export` errors cleanly until D wires the trust material. |
 | §9 rule 6's full dependency closure | Phase D | Phase B closes exactly one dependency, the one O3 needs: the signer's authority event must be inside a `complete-store` bundle, and a bounded range reports it as outside scope. Lifecycle, workflow, delegation and verdict-supersession closure are D's. |
 | §9 rule 6 credential transport (`sections.action_delegation_credentials`) | Phase E, deferred post-cutover by O1 | The section set is **closed**, so a bundle carrying one is refused rather than accepted with an unread section. Per O1 the deferral is safe because the pre-existing behaviour already fails closed. |
@@ -1053,3 +1053,53 @@ implementer to discover: §3.7's section-digest tag `regista.bundle.section.v1` 
 the P0.3 vector manifest — the frozen set covers the membership leaf, node and tree only.
 It is pinned by regista's own tests instead. A future vector for it would be cheap and is
 worth having.
+
+---
+
+## Bundle v3 implementation status — WI-289 Phase C, 2026-08-23
+
+Phase C implements the **trust root, the axis model and the auditor CLI** — §4, §5 and §10.
+Recorded here so a reviewer can tell a deliberate phase boundary from a gap; this note
+mirrors Phase B's and is what a reviewer ratifies against the code.
+
+**Landed.** §4.1 the required-argument signature `verify_audit_bundle_v3(bundle_path, trust:
+TrustPolicy | AcceptBundledKeys) -> BundleReport` — no default, no `None`, and a dynamic
+caller supplying anything else is refused; §4.1 the two distinct trust types (`AcceptBundledKeys`
+is not a `TrustPolicy`, does not subclass one, and is un-constructable without typing its
+acknowledgement, so there is no implicit conversion); §4.2 `TrustPolicy` consumes the
+`TRUST-DOMAIN.md` §4.6 schema and refuses a policy missing a required field, plus the minimal
+ad-hoc `--trusted-fingerprint` form whose policy-dependent axes report their not-checkable
+value; §4.3 `BundleKeyResolver` renamed `BundledKeyEvidenceResolver`, the default path built
+from a separate `PolicyKeyResolver` (bytes from evidence, trust from the pin — §5.1 amendment
+4), and any `BUNDLE_EMBEDDED` use clamped by Rule C; §4.6 external evidence never raises an
+axis (it is not read into any axis); §3.2 item 2 direct `root_signatures[]` now **verified**
+against the policy's pinned root signer set and `min_root_signatures` (Phase B refused the
+shape; Phase C accepts a well-formed one and checks it); §5.1 the axes A1–A5 and A7–A12, each
+reported independently and each with a not-checkable value distinct from a failure; §5.2 the
+ordered lattice `invalid < unauthenticated < bundle_rooted < externally_authenticated`, the
+summary as the weakest over the table, Rule C (circularity ceiling) and Rule H
+(`tail_truncation_undetectable`); the deletion of `verified: bool` from
+`BundleVerificationReport` and its `to_dict` key, with every reader migrated
+(`verify_audit_bundle_offline`'s report property `self_verification_ok`, export's self-check,
+the CLI, `_ops`, `__init__`); §10 the auditor CLI — `regista bundle verify` takes
+`--trust-policy` | repeated `--trusted-fingerprint` | `--accept-bundled-keys`, plus
+`--known-head <hash>:<count>` and `--json`, **refuses to run** with none, and maps the verdict
+to the §10 exit codes (0 externally_authenticated only, 2 bundle_rooted | unauthenticated,
+1 invalid) with the per-axis facts and the tail-truncation / unverified-restatement / registry
+notes in the human output.
+
+**Reused rather than reimplemented** (the Phase B lesson — a parallel implementation drifts):
+event authentication (A4) and the per-event trust source (A5) come from `verify_event_strict`
+with the policy's pins threaded in (`pinned_trust_domain_id`, `pinned_project_instance_id`,
+`cutover_checkpoint_event_hash`); the signer-authority (O3) and structural checks come from
+Phase B's `verify_bundle_v3_core`; the offline signing-authority resolver
+(`resolve_bundle_signing_authority`) is unchanged.
+
+**Deliberately not landed, and where it goes.** None of these is an oversight:
+
+| Clause | Owner | Consequence at Phase C |
+|---|---|---|
+| §4.5 `root_governance` as a **replay-confirmed** `matches_policy` | future / Phase D-adjacent | A9 lands the axis and the policy comparison: a restated mode outside `required_root_governance` is `contradicts_policy` (a finding → `invalid`), and a consistent one is `unverified_restatement` — because the `bundle verify` path is handed the policy and the head pin (§10), **not** an authenticated trust log to replay. `matches_policy` is reachable only with a trust-log replay, which §10's CLI does not feed to bundle verify; A9 therefore never silently claims a match it did not confirm (§4.5: "a verifier that cannot replay reports `unverified_restatement`"). |
+| §4.4 criterion 2 event key material chaining to the pinned root via the presented trust log | future | `verify_audit_bundle_v3` accepts an optional `presented_trust_log` of enrolment referents (the material an auditor holds out of band, §8.4), which is what lets a `complete-store` bundle's genesis bootstrap reach `externally_pinned` full authentication. The **CLI does not yet have a flag to supply it**, so a `complete-store` bundle verified through the CLI tops out below `externally_authenticated` (its genesis bootstrap stays `bundled_only`). This is the honest boundary named at §9 residual 6, not a defect: the verdict reports exactly what the presented material established. |
+| §9 export ceremony, preflight, `.partial`-then-self-verify-then-`os.replace`, `--allow-unverified`'s deletion, export exit codes | Phase D | Unchanged from Phase B. `verify_audit_bundle_offline` survives as the export self-check vehicle only; its verdict boolean is gone, replaced by the honestly-named `self_verification_ok` property. |
+| §9 rule 6 credential transport | Phase E (deferred post-cutover by O1) | Unchanged: the section set is closed, so a bundle carrying one is refused. |
