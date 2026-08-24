@@ -20,7 +20,6 @@ The pins these tests hardest, because they are the entire reason the phase exist
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -42,15 +41,12 @@ from regista._bundle import (
     TrustPolicy,
     verify_audit_bundle_v3,
 )
-from regista._bundle_v3 import canonical_bundle_bytes, digest_text
+from regista._bundle_v3 import canonical_bundle_bytes
 from regista._errors import RegistaError
 from regista._testing_v6 import (
     BOOTSTRAP_PRINCIPAL,
-    _test_digest,
     make_v6_keyset,
-    v6_producer,
 )
-from regista._v6_referents import ReferentEvent
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -96,57 +92,6 @@ def _full_policy(chain: _Chain, *, required_governance: tuple[str, ...] = ("solo
         },
         source="trust_policy",
     )
-
-
-def _enrolment_referent(chain: _Chain, principal_id: str) -> ReferentEvent:
-    """A synthetic trust-log ``principal_key_enrolled`` referent the acceptance points at.
-
-    This is the trust-domain lifecycle material an auditor holds out of band (§8.4, §10). It
-    lives on a separate chain (its own ``project_instance_id``), so it is never ordered into
-    the project chain; it is a pure lookup by referent hash.
-    """
-
-    key = chain.keyset.key_for(principal_id)
-    envelope = {
-        "type": "regista.event",
-        "version": 6,
-        "project_instance_id": str(uuid.uuid4()),
-        "trust_domain_id": chain.trust_domain_id,
-        "event_id": str(uuid.uuid4()),
-        "entity": {"kind": "principal", "id": str(uuid.uuid4())},
-        "entity_seq": 1,
-        "actor": {"principal_id": "service:root", "kind": "system", "metadata": {}},
-        "signing": {"scheme_id": "ed25519", "key_id": "pk_root", "key_binding_event_hash": None},
-        "authorization": {"mode": "direct", "credentials": []},
-        "workflow": None,
-        "occurred_at": "2026-08-23T11:00:00.000000Z",
-        "transition": "principal_key_enrolled",
-        "payload": {
-            "type": "regista.principal-key-enrolled",
-            "principal_id": principal_id,
-            "key_id": key.key_id,
-            "fingerprint": key.fingerprint,
-            "public_key": key.public_key_b64,
-        },
-        "chain": {
-            "hash_algorithm": "sha-256",
-            "previous_entity_event_hash": None,
-            "previous_project_event_hash": None,
-        },
-        "producer": v6_producer().as_envelope_member(),
-    }
-    return ReferentEvent(event_hash="placeholder", envelope=envelope)
-
-
-def _presented_trust_log(chain: _Chain) -> dict[str, ReferentEvent]:
-    """Enrolment referents keyed by the exact ``trust_event_hash`` each acceptance names."""
-
-    genesis_teh = _test_digest("regista.testing.v6.test-root-enrolment:" + BOOTSTRAP_PRINCIPAL)
-    worker_teh = digest_text(hashlib.sha256(b"enrolment").digest())
-    return {
-        genesis_teh: _enrolment_referent(chain, BOOTSTRAP_PRINCIPAL),
-        worker_teh: _enrolment_referent(chain, WORKER),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +252,14 @@ class TestScopeCorroborationAndRuleH:
 
 
 class TestRuleCCircularityCeiling:
+    """G2 — Rule C is the SOLE trust-source ceiling and is demonstrably load-bearing.
+
+    ``_summarize`` computes ``externally_authenticated`` from A2 + A4 alone; Rule C is what
+    enforces the A5=externally_pinned requirement. Removing the Rule C clamp lets a root-signed
+    statement over bundle-keyed events read as externally_authenticated — the F1 false
+    assurance — so a unit test of the clamp fails if it is removed.
+    """
+
     def test_accept_bundled_keys_is_clamped_to_bundle_rooted(
         self, bundle_path: Path
     ) -> None:
@@ -315,77 +268,299 @@ class TestRuleCCircularityCeiling:
         )
         assert report.applicability is BundleApplicability.BUNDLE_ROOTED
 
-    def test_a_bundle_embedded_key_can_never_exceed_bundle_rooted(
+    def _summarize(self, **overrides: Any) -> Any:
+        from regista._bundle import _summarize
+
+        kwargs: dict[str, Any] = {
+            "membership_signature": MembershipSignature.VALID_EXTERNAL_ROOT,
+            "membership_consistency": MembershipConsistency.COMPLETE_FOR_CLAIMED_SCOPE,
+            "event_authentication": EventAuthentication.FULL,
+            "event_trust_root": EventTrustRootAxis.EXTERNALLY_PINNED,
+            "scope_corroboration": ScopeCorroboration.MATCHES_PINNED_HEAD,
+            "governance": Governance.UNVERIFIED_RESTATEMENT,
+            "accept_bundled": False,
+            "any_bundle_embedded_used": False,
+            "scope_kind": "complete-store",
+            "policy_conformant": True,
+            "trust_root_contradicts_genesis": False,
+        }
+        kwargs.update(overrides)
+        return _summarize(**kwargs)[0]
+
+    def test_rule_c_clamps_a_bundle_embedded_key_to_bundle_rooted(self) -> None:
+        # A2 external + A4 full, but a bundle-embedded key was used (A5 bundled_only). Without
+        # Rule C the base (A2 external + A4 full) would read externally_authenticated; the clamp
+        # caps it at bundle_rooted. This is the exact false-assurance case F1 removes.
+        assert (
+            self._summarize(
+                event_trust_root=EventTrustRootAxis.BUNDLED_ONLY,
+                any_bundle_embedded_used=True,
+            )
+            is BundleApplicability.BUNDLE_ROOTED
+        )
+
+    def test_the_top_verdict_is_reachable_only_with_no_bundle_embedded_key(self) -> None:
+        # The complement: A2 external + A4 full + A5 externally_pinned + no bundle-embedded key
+        # → externally_authenticated. Proves the lattice's top verdict is computable and that
+        # Rule C does not fire when it must not.
+        assert (
+            self._summarize()  # all-clean defaults
+            is BundleApplicability.EXTERNALLY_AUTHENTICATED
+        )
+
+    def test_g1_bundled_only_reaches_bundle_rooted_under_a_trust_policy(self) -> None:
+        # §5.2 "…and/or A5 = bundled_only" → bundle_rooted, reachable under a TrustPolicy (no
+        # explicit AcceptBundledKeys), not only under acceptance (G1).
+        assert (
+            self._summarize(
+                membership_signature=MembershipSignature.VALID_EXTERNAL_ROOT,
+                event_authentication=EventAuthentication.LEGACY_PARTIAL,
+                event_trust_root=EventTrustRootAxis.BUNDLED_ONLY,
+                any_bundle_embedded_used=True,
+            )
+            is BundleApplicability.BUNDLE_ROOTED
+        )
+
+
+# ---------------------------------------------------------------------------
+# §5.2 / F1 — externally_authenticated is chain-to-root, and WI-337-blocked offline
+# ---------------------------------------------------------------------------
+
+
+class TestExternallyAuthenticatedIsChainToRoot:
+    def test_pinning_the_root_alone_does_not_reach_externally_authenticated(
         self, chain: _Chain, tmp_path: Path
     ) -> None:
-        # A policy that pins NO fingerprints: every event key resolves as BUNDLE_EMBEDDED, so
-        # Rule C forbids the verdict from ever exceeding bundle_rooted even with a full policy
-        # and the trust log presented. The ceiling is mechanical, not a function of intent.
+        # The §10 workflow pins the ROOT and expects the acceptance chain to authenticate the
+        # rest. That chain crosses into the trust log, which no offline verifier can check
+        # (WI-337), so a complete-store project bundle does NOT reach externally_authenticated:
+        # its genesis bootstrap is not externally authenticated, so A4 is not `full`.
         path = tmp_path / "bundle.json"
         path.write_bytes(canonical_bundle_bytes(chain.build()))
+        root_only = TrustPolicy.from_fingerprints(
+            [chain.keyset.key_for(BOOTSTRAP_PRINCIPAL).fingerprint]
+        )
+        report = verify_audit_bundle_v3(path, root_only)
+        assert report.applicability is not BundleApplicability.EXTERNALLY_AUTHENTICATED
+        assert report.event_authentication is not EventAuthentication.FULL
+
+    def test_a_key_not_chained_to_a_pinned_root_is_not_externally_pinned(
+        self, chain: _Chain, tmp_path: Path
+    ) -> None:
+        # A policy pinning an UNRELATED fingerprint: no event key matches it, none chains to it,
+        # so every event key is bundled_only — never externally_pinned. (Red before the F1 fix
+        # would have required pinning each event key's own fingerprint to lift A5.)
+        path = tmp_path / "bundle.json"
+        path.write_bytes(canonical_bundle_bytes(chain.build()))
+        unrelated = TrustPolicy.from_fingerprints(["ed25519:sha256:" + "c" * 64])
+        report = verify_audit_bundle_v3(path, unrelated)
+        assert report.event_trust_root is EventTrustRootAxis.BUNDLED_ONLY
+        assert report.applicability is not BundleApplicability.EXTERNALLY_AUTHENTICATED
+
+    def test_no_trust_form_reaches_externally_authenticated_for_a_project_bundle(
+        self, chain: _Chain, bundle_path: Path
+    ) -> None:
+        # The WI-337 block, stated as a property: no trust form the verifier accepts today can
+        # lift a self-contained project bundle to externally_authenticated, because the event
+        # keys' chain-to-root needs authenticated trust-log material that is not presentable
+        # offline. Documented, not silently unreachable.
+        for trust in (
+            AcceptBundledKeys(operator_acknowledges_no_external_trust=True),
+            TrustPolicy.from_fingerprints(_worker_bootstrap_fingerprints(chain)),
+            _full_policy(chain),
+        ):
+            report = verify_audit_bundle_v3(bundle_path, trust)
+            assert (
+                report.applicability is not BundleApplicability.EXTERNALLY_AUTHENTICATED
+            ), trust
+
+
+class TestF2PolicyConformance:
+    """F2 — every named full-policy requirement is evaluated; a contradiction → invalid."""
+
+    def test_a_bogus_core_digest_is_invalid_not_a_pass(
+        self, chain: _Chain, bundle_path: Path
+    ) -> None:
+        policy = _full_policy(chain)
+        bogus = TrustPolicy(
+            trust_domain_id=policy.trust_domain_id,
+            trust_domain_core_digest="sha256:" + "0" * 64,  # wrong
+            genesis_document_digest=policy.genesis_document_digest,
+            required_root_governance=policy.required_root_governance,
+            root_signer_fingerprints=policy.root_signer_fingerprints,
+            min_root_signatures=1,
+            accepted_project_instance_ids=policy.accepted_project_instance_ids,
+            bundle_signing=policy.bundle_signing,
+            source="trust_policy",
+        )
+        report = verify_audit_bundle_v3(bundle_path, bogus)
+        assert report.applicability is BundleApplicability.INVALID
+        assert report.policy_satisfied is not True
+
+    def test_an_excluded_project_is_invalid_not_silently_disabled(
+        self, chain: _Chain, bundle_path: Path
+    ) -> None:
+        policy = _full_policy(chain)
+        excluded = TrustPolicy(
+            trust_domain_id=policy.trust_domain_id,
+            trust_domain_core_digest=policy.trust_domain_core_digest,
+            genesis_document_digest=policy.genesis_document_digest,
+            root_signer_fingerprints=policy.root_signer_fingerprints,
+            min_root_signatures=1,
+            accepted_project_instance_ids=frozenset([str(uuid.uuid4())]),  # not this project
+            bundle_signing=policy.bundle_signing,
+            source="trust_policy",
+        )
+        report = verify_audit_bundle_v3(bundle_path, excluded)
+        assert report.applicability is BundleApplicability.INVALID
+        assert report.policy_satisfied is not True
+
+    def test_a_trust_root_contradicting_its_own_genesis_is_invalid(
+        self, chain: _Chain, tmp_path: Path
+    ) -> None:
+        # The statement's trust_root restates the genesis digests; if it disagrees with the
+        # bundle's OWN signed genesis event, that is a contradiction (invalid), not a finding.
+        document = chain.build(
+            trust_root=chain.trust_root(trust_domain_core_digest="sha256:" + "0" * 64)
+        )
+        path = tmp_path / "bundle.json"
+        path.write_bytes(canonical_bundle_bytes(document))
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.applicability is BundleApplicability.INVALID
+        assert any("trust_root_contradicts_genesis" in f for f in report.findings), report.findings
+
+
+class TestF3BundleSigningAuthority:
+    """F3 — a signer lacking bundle-signing authority gets A2 invalid, not a passing value."""
+
+    def test_a_policy_forbidden_signer_is_invalid(
+        self, chain: _Chain, bundle_path: Path
+    ) -> None:
         policy = TrustPolicy(
             trust_domain_id=chain.trust_domain_id,
             trust_domain_core_digest=chain.core_digest,
             genesis_document_digest=chain.document_digest,
-            required_root_governance=("solo",),
-            root_signer_fingerprints=frozenset(),  # nothing pinned
+            root_signer_fingerprints=frozenset(_worker_bootstrap_fingerprints(chain)),
             min_root_signatures=1,
             accepted_project_instance_ids=frozenset([chain.project_instance_id]),
-            bundle_signing={"permitted_principal_ids": [WORKER], "permitted_schemes": ["ed25519"]},
+            bundle_signing={"permitted_principal_ids": [], "permitted_schemes": ["ed25519"]},
             source="trust_policy",
         )
-        report = verify_audit_bundle_v3(
-            path, policy, presented_trust_log=_presented_trust_log(chain)
+        report = verify_audit_bundle_v3(bundle_path, policy)
+        assert report.membership_signature is MembershipSignature.INVALID
+        assert report.applicability is BundleApplicability.INVALID
+
+    def test_an_in_scope_anchor_without_may_sign_bundles_makes_a2_invalid(self) -> None:
+        # The builder refuses to SIGN a bundle whose key lacks may_sign_bundles (O3, fail-closed
+        # at export), so this verify-side defence is exercised at the axis boundary against a
+        # forged core report: a crypto-valid signature whose in-scope anchor was checked and
+        # does NOT grant may_sign_bundles is A2 invalid, never valid_bundled_key (F3/§3.4).
+        from types import SimpleNamespace
+
+        from regista._bundle import _membership_signature_axis
+
+        core = SimpleNamespace(
+            statement_signature_valid=True,
+            signer_authority_checked=True,
+            signer_may_sign_bundles=False,  # in-scope anchor lacks the scope → failure
         )
-        # No pin matched, so nothing is externally rooted; the verdict never exceeds
-        # bundle_rooted, and here it is even lower (unauthenticated) because no accept was given.
-        rank = {
-            BundleApplicability.INVALID: 0,
-            BundleApplicability.UNAUTHENTICATED: 1,
-            BundleApplicability.BUNDLE_ROOTED: 2,
-            BundleApplicability.EXTERNALLY_AUTHENTICATED: 3,
+        statement = {
+            "signer": {
+                "principal_id": "agent:worker",
+                "key_id": "pk_x",
+                "scheme_id": "ed25519",
+                "fingerprint": "ed25519:sha256:" + "a" * 64,
+            }
         }
-        assert rank[report.applicability] <= rank[BundleApplicability.BUNDLE_ROOTED]
-        assert report.event_trust_root is EventTrustRootAxis.BUNDLED_ONLY
+        axis = _membership_signature_axis(
+            statement=statement,
+            core=core,  # type: ignore[arg-type]
+            accept_bundled=True,
+            policy=None,
+            pinned_fingerprints=frozenset(),
+            signer_public_key=b"\x00" * 32,
+            scope_kind="complete-store",
+            findings=[],
+        )
+        assert axis is MembershipSignature.INVALID
 
 
-# ---------------------------------------------------------------------------
-# §5.2 — the full externally_authenticated happy path
-# ---------------------------------------------------------------------------
+class TestF4RangeAwareCorroboration:
+    """F4 — a whole-project head pin does not falsely invalidate a valid contiguous-range."""
 
+    def _range_bundle(self, chain: _Chain, tmp_path: Path) -> Path:
+        document = chain.build(
+            event_records=chain.records[2:],
+            authority_records=chain.records,
+            scope_kind="contiguous-range",
+            preceding_event_hash=chain.hashes[1],
+        )
+        path = tmp_path / "range.json"
+        path.write_bytes(canonical_bundle_bytes(document))
+        return path
 
-class TestExternallyAuthenticatedHappyPath:
-    def test_a_real_v6_epoch_reaches_externally_authenticated(
+    def test_a_project_head_pin_does_not_contradict_a_range(
         self, chain: _Chain, tmp_path: Path
     ) -> None:
-        path = tmp_path / "bundle.json"
-        path.write_bytes(canonical_bundle_bytes(chain.build()))
+        path = self._range_bundle(chain, tmp_path)
+        # The §10-prescribed whole-project head (count=4) against a range of 2 events: a
+        # subset, not a contradiction. A7 must be no_pin_supplied, and the verdict must not be
+        # invalid *because of* the head.
         report = verify_audit_bundle_v3(
             path,
-            _full_policy(chain),
+            AcceptBundledKeys(operator_acknowledges_no_external_trust=True),
             known_head=(chain.hashes[-1], len(chain.records)),
-            presented_trust_log=_presented_trust_log(chain),
         )
-        assert report.membership_signature is MembershipSignature.VALID_EXTERNAL_ROOT
-        assert report.event_trust_root is EventTrustRootAxis.EXTERNALLY_PINNED
-        assert report.event_authentication is EventAuthentication.FULL
-        assert report.applicability is BundleApplicability.EXTERNALLY_AUTHENTICATED
-        assert report.policy_satisfied is True
-        assert report.registry_chain_consistency is RegistryChainConsistency.CONSISTENT
+        assert report.scope_corroboration is ScopeCorroboration.NO_PIN_SUPPLIED
+        assert report.applicability is not BundleApplicability.INVALID
 
-    def test_without_the_trust_log_the_same_bundle_falls_short(
-        self, chain: _Chain, bundle_path: Path
+    def test_a_range_matching_its_own_head_corroborates(
+        self, chain: _Chain, tmp_path: Path
     ) -> None:
-        # The genesis bootstrap cannot reach externally-pinned full authentication without the
-        # trust-log enrolment, so A4 is not `full` and the verdict is below externally
-        # authenticated — the honest boundary, not a defect (§9 residual 6).
+        path = self._range_bundle(chain, tmp_path)
+        # A pin that IS the range's own last event + count corroborates it.
         report = verify_audit_bundle_v3(
-            bundle_path,
-            _full_policy(chain),
-            known_head=(chain.hashes[-1], len(chain.records)),
+            path,
+            AcceptBundledKeys(operator_acknowledges_no_external_trust=True),
+            known_head=(chain.hashes[-1], 2),
         )
-        assert report.applicability is not BundleApplicability.EXTERNALLY_AUTHENTICATED
-        assert report.event_authentication is not EventAuthentication.FULL
+        assert report.scope_corroboration is ScopeCorroboration.MATCHES_PINNED_HEAD
+
+    def test_an_outside_range_acceptance_is_not_registry_inconsistent(
+        self, chain: _Chain, tmp_path: Path
+    ) -> None:
+        path = self._range_bundle(chain, tmp_path)
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        # The key acceptances lie outside the window; A8 must not read that as inconsistent.
+        assert report.registry_chain_consistency is not RegistryChainConsistency.INCONSISTENT
+
+
+class TestF5NotCheckableOnMalformed:
+    """F5 — A10/A11/A12 do not assert a factual '0 conflicts' on input that never verified."""
+
+    def test_malformed_input_does_not_claim_zero_conflicts(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.json"
+        bad.write_text('{"statement": {"version": 2}}', encoding="utf-8")
+        report = verify_audit_bundle_v3(
+            bad, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.event_verification_ran is False
+        rendered = report.to_dict()
+        # not_checkable, not a false factual zero/empty.
+        assert rendered["identity_conflict_count"] is None
+        assert rendered["event_attribution_counts"] is None
+        assert rendered["key_binding_counts"] is None
+
+    def test_a_verified_bundle_does_report_the_counts(self, bundle_path: Path) -> None:
+        report = verify_audit_bundle_v3(
+            bundle_path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.event_verification_ran is True
+        assert report.to_dict()["event_attribution_counts"] is not None
 
 
 # ---------------------------------------------------------------------------

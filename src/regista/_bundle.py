@@ -1708,12 +1708,24 @@ class PolicyKeyResolver:
     """The default-path resolver, built ONLY from a :class:`TrustPolicy` (§4.3 mechanism 2).
 
     Key *material* (bytes) travels in the bundle's ``bundled_key_evidence``; *trust* comes
-    only from the auditor's pin (§4.2). So this resolver reads the bytes from the evidence
-    but tags each key ``EXTERNALLY_PINNED`` **iff its recomputed fingerprint matches a pinned
-    fingerprint** (§5.1 amendment 4: "a key whose bytes travelled inside the bundle is
-    externally_pinned if its recomputed fingerprint matches an auditor pin. Trust comes from
-    the pin, not from the transport"). A key with no matching pin is ``BUNDLE_EMBEDDED``,
-    which clamps the verdict (Rule C). It is a different type from
+    only from the auditor's pin (§4.2). This resolver reads the bytes from the evidence and
+    tags a key ``EXTERNALLY_PINNED`` **only in the base case**: its recomputed fingerprint is
+    itself a policy-pinned ROOT fingerprint — i.e. a root key signing directly, a chain-to-root
+    of length zero.
+
+    **This is the operative reading of §5.1 amendment 4, reconciled with §10 and §4.4
+    criterion 2 (see the Phase-C clarifies marker in BUNDLE-V3.md).** Amendment 4's literal
+    "externally_pinned iff the fingerprint matches a pin" is the base case only. The §10
+    auditor workflow pins the ROOT and lets the acceptance/enrolment chain authenticate the
+    keys beneath it (worker → project acceptance → project genesis bootstrap → trust-log
+    enrolment → pinned root, with enrolment-before-use and rotation/revocation windowing).
+    That chain-to-root walk crosses into the trust log, and every trust-log verifier
+    (``verify_trust_log_chain``, ``resolve_enrolled_key``) is store-backed — there is no
+    offline, signature-verified trust-log artifact yet (WI-337). So a **non-root** project key
+    resolves to ``BUNDLE_EMBEDDED`` here: its authority to a pinned root is real but not
+    establishable offline, and reporting it as externally pinned would be the F1 false
+    assurance. A key with no matching pin is likewise ``BUNDLE_EMBEDDED``, which clamps the
+    verdict (Rule C). It is a different type from
     :class:`~regista._verification.BundledKeyEvidenceResolver` on purpose, so the default path
     can never resolve a bundled key as trusted by habit.
     """
@@ -1762,6 +1774,12 @@ class BundleReport:
     scope_corroboration: ScopeCorroboration  # A7
     registry_chain_consistency: RegistryChainConsistency  # A8
     governance: Governance  # A9
+    #: A10/A11/A12 are per-event *factual* counts. When event verification did not run — the
+    #: bundle was malformed or its chain could not be ordered — they are NOT a claim: a
+    #: reported ``identity_conflict_count: 0`` on unparseable input would be an unearned "no
+    #: conflicts". This flag is ``False`` in exactly that case, and a consumer must read the
+    #: counts as ``not_checkable`` (§5.1 not_checkable ≠ false, F5).
+    event_verification_ran: bool  # gates A10/A11/A12
     identity_conflict_count: int  # A10
     identity_conflicts: tuple[str, ...]  # A10 list
     event_attribution_counts: Mapping[str, int]  # A11
@@ -1784,10 +1802,20 @@ class BundleReport:
             "scope_corroboration": self.scope_corroboration.value,
             "registry_chain_consistency": self.registry_chain_consistency.value,
             "governance": self.governance.value,
-            "identity_conflict_count": self.identity_conflict_count,
+            "event_verification_ran": self.event_verification_ran,
+            # A10/A11/A12 are meaningful only when event_verification_ran is True; a consumer
+            # reads them as not_checkable otherwise (F5). Emitted as null in that case so a JSON
+            # consumer cannot mistake an unrun check for a factual zero.
+            "identity_conflict_count": (
+                self.identity_conflict_count if self.event_verification_ran else None
+            ),
             "identity_conflicts": list(self.identity_conflicts),
-            "event_attribution_counts": dict(self.event_attribution_counts),
-            "key_binding_counts": dict(self.key_binding_counts),
+            "event_attribution_counts": (
+                dict(self.event_attribution_counts) if self.event_verification_ran else None
+            ),
+            "key_binding_counts": (
+                dict(self.key_binding_counts) if self.event_verification_ran else None
+            ),
             "tail_truncation_undetectable": self.tail_truncation_undetectable,
             "policy_satisfied": self.policy_satisfied,
             "event_count": self.event_count,
@@ -1883,16 +1911,25 @@ def _verify_root_signatures(
 def _build_referents(
     events: Sequence[Event],
     scope_kind: str,
-    presented_trust_log: Mapping[str, ReferentEvent] | None,
 ) -> BundleReferents:
-    """The presented material: the bundle's own events, plus any auditor-presented trust log.
+    """The presented material: the bundle's own events, and nothing else.
 
-    ``presented_trust_log`` is the trust-domain lifecycle material the auditor holds out of
-    band (§8.4, §10 "the published trust-log checkpoint"). It is a lookup by referent hash,
-    NOT part of the project chain, so it never enters :func:`derive_chain_order`; supplying it
-    is what lets a project bundle's key acceptances resolve their ``trust_event_hash`` to a
-    real enrolment and reach ``trust_root: externally_pinned`` (§5.8). Absent it, a
-    self-contained project bundle reports ``bundled_only`` — the honest weaker state.
+    A previous cut accepted a caller-supplied ``presented_trust_log`` of trust-domain
+    lifecycle referents, indexed by the hash an acceptance names, and let
+    ``verify_event_strict`` resolve a key's ``trust_event_hash`` against it. That was the F1
+    defect both reviewers caught: those referents were **never signature-verified or
+    chain-checked** — ``_resolve_v6_trust_root`` cross-checks their payload *fields*, not
+    their signatures or ancestry — so ``event_authentication: full`` and
+    ``event_trust_root: externally_pinned`` could rest on blindly-trusted caller material.
+    That is the exact false-external-authentication class this phase exists to remove, so the
+    parameter is gone.
+
+    Authenticating a project key's chain to a policy-pinned ROOT requires the trust log
+    (worker → project acceptance → project genesis bootstrap → trust-log enrolment → root),
+    and every trust-log verifier — ``verify_trust_log_chain``, ``resolve_enrolled_key`` — is
+    store-backed: there is no offline, signature-verified trust-log artifact yet (that is
+    WI-337). So a self-contained project bundle's events resolve to ``bundled_only`` here, the
+    honest weaker state, and ``externally_authenticated`` is WI-337-blocked for such a bundle.
     """
 
     indexed: dict[str, ReferentEvent] = {}
@@ -1900,9 +1937,6 @@ def _build_referents(
         referent = referent_from_bytes(event.canonical_envelope, event.signature)
         if referent is not None:
             indexed[referent.event_hash] = referent
-    if presented_trust_log:
-        for event_hash, referent in presented_trust_log.items():
-            indexed.setdefault(event_hash, referent)
     return BundleReferents(
         events=indexed,
         material_completeness=(
@@ -1928,6 +1962,7 @@ def _malformed_report(message: str) -> BundleReport:
         scope_corroboration=ScopeCorroboration.NOT_CHECKABLE,
         registry_chain_consistency=RegistryChainConsistency.NOT_APPLICABLE,
         governance=Governance.NOT_CHECKABLE,
+        event_verification_ran=False,
         identity_conflict_count=0,
         identity_conflicts=(),
         event_attribution_counts={},
@@ -1945,7 +1980,6 @@ def verify_audit_bundle_v3(
     trust: TrustPolicy | AcceptBundledKeys,
     *,
     known_head: tuple[str, int] | None = None,
-    presented_trust_log: Mapping[str, ReferentEvent] | None = None,
 ) -> BundleReport:
     """Verify a bundle v3 artifact against auditor-supplied trust material (§4.1, §5, §10).
 
@@ -1955,11 +1989,16 @@ def verify_audit_bundle_v3(
     clamped) and live with the ceiling that choice imposes (§5.2). There is no third state.
 
     ``known_head`` is the ``(head_event_hash, event_count)`` the auditor pinned from a channel
-    the operator does not solely control (§10); it drives A7 and Rule H. ``presented_trust_log``
-    is the trust-domain lifecycle material the auditor holds out of band, keyed by referent
-    hash — see :func:`_build_referents`. The CLI does not populate it in Phase C, so a
-    complete-store bundle's genesis bootstrap remains ``bundled_only`` there; that is the
-    honest boundary, not a defect (§9 residual 6, §8.4).
+    the operator does not solely control (§10); it drives A7 and Rule H.
+
+    **externally_authenticated is WI-337-blocked for a project bundle.** Reaching it requires
+    every event key to be authenticated by a signature chain to a policy-pinned root, and that
+    chain crosses into the trust log, whose only verifiers are store-backed (§8.4 forbids the
+    offline verifier from fetching, and there is no offline signature-verified trust-log
+    artifact yet — WI-337). So a self-contained project bundle verified here reports
+    ``bundle_rooted``/``unauthenticated`` honestly; it does not, and must not, reach
+    ``externally_authenticated`` off bundle-only material. See the Phase-C status note in
+    BUNDLE-V3.md.
     """
 
     if not isinstance(trust, TrustPolicy | AcceptBundledKeys):
@@ -1987,12 +2026,7 @@ def verify_audit_bundle_v3(
         # axis is not_checkable, because nothing parsed to check.
         return _malformed_report(f"{exc.code.value}: {exc.message}")
 
-    return _assess_bundle_v3(
-        document,
-        trust,
-        known_head=known_head,
-        presented_trust_log=presented_trust_log,
-    )
+    return _assess_bundle_v3(document, trust, known_head=known_head)
 
 
 def _assess_bundle_v3(
@@ -2000,7 +2034,6 @@ def _assess_bundle_v3(
     trust: TrustPolicy | AcceptBundledKeys,
     *,
     known_head: tuple[str, int] | None,
-    presented_trust_log: Mapping[str, ReferentEvent] | None,
 ) -> BundleReport:
     statement = document.statement
     scope = document.scope
@@ -2044,7 +2077,15 @@ def _assess_bundle_v3(
             ],
             preceding_event_hash=scope["preceding_event_hash"],
         )
-        findings.extend(_check_trust_root_against_genesis(document, members))
+        # The signed trust_root MUST agree with the bundle's own genesis event where it is in
+        # scope: a statement that restates its own genesis incorrectly is contradicted by the
+        # bundle it describes. Phase B reported this only as a finding; Phase C makes it a hard
+        # invalid (F2), independent of any policy.
+        genesis_contradiction = _check_trust_root_against_genesis(document, members)
+        findings.extend(genesis_contradiction)
+        trust_root_contradicts_genesis = bool(genesis_contradiction)
+    else:
+        trust_root_contradicts_genesis = False
 
     # --- A1 structure ---------------------------------------------------------------------
     structure = BundleStructure.PARSED
@@ -2085,7 +2126,7 @@ def _assess_bundle_v3(
         )
 
     event_policy = _event_verification_policy(document, policy, members)
-    referents = _build_referents(events, str(scope["kind"]), presented_trust_log)
+    referents = _build_referents(events, str(scope["kind"]))
 
     per_event_applicability: list[Applicability] = []
     per_event_trust_axis: list[EventTrustRootAxis] = []
@@ -2153,6 +2194,7 @@ def _assess_bundle_v3(
         policy=policy,
         pinned_fingerprints=pinned_fingerprints,
         signer_public_key=signer_public_key,
+        scope_kind=str(scope["kind"]),
         findings=findings,
     )
 
@@ -2167,15 +2209,21 @@ def _assess_bundle_v3(
 
     # --- A8 registry_chain_consistency ----------------------------------------------------
     registry_chain_consistency = _registry_chain_consistency_axis(
-        document, members, findings
+        document, members, str(scope["kind"]), findings, notes
     )
 
     # --- A9 governance --------------------------------------------------------------------
     governance = _governance_axis(statement, policy, findings)
 
+    # --- F2 policy conformance: every named full-policy requirement is EVALUATED, and a
+    #     contradiction of any of them (or of the bundle's own signed genesis) is a hard
+    #     `invalid`, not a finding a caller might skim past (a name must not promise more than
+    #     the check — WI-272). An ad-hoc fingerprint policy carries none of these fields, so it
+    #     evaluates none of them.
+    policy_conformant = _policy_conformance(document, policy, findings)
+
     # --- summary + clamps (§5.2) ----------------------------------------------------------
     applicability, tail_flag = _summarize(
-        structure=structure,
         membership_signature=membership_signature,
         membership_consistency=membership_consistency,
         event_authentication=event_authentication,
@@ -2185,12 +2233,20 @@ def _assess_bundle_v3(
         accept_bundled=accept_bundled,
         any_bundle_embedded_used=any_bundle_embedded_used,
         scope_kind=str(scope["kind"]),
+        policy_conformant=policy_conformant,
+        trust_root_contradicts_genesis=trust_root_contradicts_genesis,
     )
 
     policy_satisfied: bool | None = None
     if policy is not None and not policy.is_ad_hoc:
+        # True ONLY after every named requirement was actually checked and met (F2): the full
+        # policy conformance held, the verdict is externally authenticated, and no axis
+        # contradicts. Because externally_authenticated is WI-337-blocked for a project bundle,
+        # this is honestly False today for such a bundle — it never claims a satisfaction the
+        # checks did not establish.
         policy_satisfied = (
-            applicability is BundleApplicability.EXTERNALLY_AUTHENTICATED
+            policy_conformant
+            and applicability is BundleApplicability.EXTERNALLY_AUTHENTICATED
             and governance is not Governance.CONTRADICTS_POLICY
             and scope_corroboration is not ScopeCorroboration.CONTRADICTS_PINNED_HEAD
         )
@@ -2204,6 +2260,7 @@ def _assess_bundle_v3(
         scope_corroboration=scope_corroboration,
         registry_chain_consistency=registry_chain_consistency,
         governance=governance,
+        event_verification_ran=bool(members),
         identity_conflict_count=len(identity_conflicts),
         identity_conflicts=tuple(identity_conflicts),
         event_attribution_counts=attribution_counts,
@@ -2215,6 +2272,68 @@ def _assess_bundle_v3(
         findings=tuple(findings),
         notes=tuple(notes),
     )
+
+
+def _policy_conformance(
+    document: BundleV3Document,
+    policy: TrustPolicy | None,
+    findings: list[str],
+) -> bool:
+    """F2 — evaluate every named full-policy requirement; any contradiction → not conformant.
+
+    Returns ``True`` when there is nothing to check (no policy, or the ad-hoc fingerprint form
+    which carries none of these fields) OR when every named requirement is present and matches.
+    A ``False`` here is fed to :func:`_summarize` as a hard ``invalid``: a bundle whose trust
+    domain, genesis digest, accepted-project set or signed genesis contradicts the auditor's
+    pinned policy is not "unauthenticated", it is a bundle the auditor's own policy rejects.
+    """
+
+    if policy is None or policy.is_ad_hoc:
+        return True
+
+    statement = document.statement
+    trust_root = statement.get("trust_root")
+    trust_root = trust_root if isinstance(trust_root, Mapping) else {}
+    ok = True
+
+    if policy.trust_domain_id is not None and (
+        str(statement.get("trust_domain_id")) != policy.trust_domain_id
+    ):
+        findings.append(
+            f"policy_conformance: the bundle binds trust_domain_id "
+            f"{statement.get('trust_domain_id')!r} but the policy pins "
+            f"{policy.trust_domain_id!r} (§4.6)"
+        )
+        ok = False
+    if policy.trust_domain_core_digest is not None and (
+        str(trust_root.get("trust_domain_core_digest")) != policy.trust_domain_core_digest
+    ):
+        findings.append(
+            "policy_conformance: the bundle's trust_root.trust_domain_core_digest "
+            f"{trust_root.get('trust_domain_core_digest')!r} does not match the policy's "
+            f"pinned {policy.trust_domain_core_digest!r} (§4.6)"
+        )
+        ok = False
+    if policy.genesis_document_digest is not None and (
+        str(trust_root.get("genesis_document_digest")) != policy.genesis_document_digest
+    ):
+        findings.append(
+            "policy_conformance: the bundle's trust_root.genesis_document_digest "
+            f"{trust_root.get('genesis_document_digest')!r} does not match the policy's "
+            f"pinned {policy.genesis_document_digest!r} (§4.6)"
+        )
+        ok = False
+    if policy.accepted_project_instance_ids is not None and (
+        str(statement.get("project_instance_id")) not in policy.accepted_project_instance_ids
+    ):
+        findings.append(
+            f"policy_conformance: the bundle project {statement.get('project_instance_id')!r} "
+            "is not among the policy's accepted_project_instance_ids — the auditor's policy "
+            "does not cover this project (§4.6). An excluded project is a rejection, not a "
+            "silently disabled check"
+        )
+        ok = False
+    return ok
 
 
 def _event_verification_policy(
@@ -2263,9 +2382,17 @@ def _membership_signature_axis(
     policy: TrustPolicy | None,
     pinned_fingerprints: frozenset[str],
     signer_public_key: bytes | None,
+    scope_kind: str,
     findings: list[str],
 ) -> MembershipSignature:
-    """A2 — the statement signature, and against whose key (§5.1, §3.4)."""
+    """A2 — the statement signature, and against whose key (§5.1, §3.4, O3).
+
+    §3.4 makes ``may_sign_bundles`` MANDATORY: a signature is a valid *membership* signature
+    only if the signer was authorised to sign bundles. So a cryptographically valid signature
+    from a signer the policy forbids, or whose in-scope acceptance does not grant the scope, is
+    ``invalid`` — NOT a ``valid_bundled_key`` success (F3). "Valid" must never promise more
+    than the authority check performed (WI-272).
+    """
 
     root_signatures = statement.get("root_signatures")
     if isinstance(root_signatures, list):
@@ -2295,46 +2422,62 @@ def _membership_signature_axis(
         return MembershipSignature.ABSENT
     if not core.statement_signature_valid:
         return MembershipSignature.INVALID
-    if accept_bundled:
-        return MembershipSignature.VALID_BUNDLED_KEY
 
     assert isinstance(statement.get("signer"), Mapping)
     signer = statement["signer"]
-    fingerprint = str(signer["fingerprint"])
-    externally_rooted = fingerprint in pinned_fingerprints
-    if externally_rooted and policy is not None and policy.bundle_signing is not None:
+
+    # F3 — policy bundle-signing authority. A signer the policy does not permit is a signature
+    # from a forbidden authority: invalid, not a pass, under either trust form.
+    if policy is not None and policy.bundle_signing is not None:
         permitted_principals = policy.bundle_signing.get("permitted_principal_ids")
         permitted_schemes = policy.bundle_signing.get("permitted_schemes")
         if (
             isinstance(permitted_principals, Sequence)
+            and not isinstance(permitted_principals, str | bytes)
             and str(signer["principal_id"]) not in permitted_principals
         ):
             findings.append(
-                f"the statement signer {signer['principal_id']!r} is not among the policy's "
-                "bundle_signing.permitted_principal_ids, so the signature is valid but not "
-                "from a permitted bundle-signing authority (§3.4)"
+                f"membership_signature: the statement signer {signer['principal_id']!r} is "
+                "not among the policy's bundle_signing.permitted_principal_ids — a valid "
+                "signature from a signer the policy forbids is not a valid membership "
+                "signature (§3.4). Invalid, not merely reported"
             )
-            externally_rooted = False
-        elif (
+            return MembershipSignature.INVALID
+        if (
             isinstance(permitted_schemes, Sequence)
+            and not isinstance(permitted_schemes, str | bytes)
             and str(signer["scheme_id"]) not in permitted_schemes
         ):
             findings.append(
-                f"the statement signer's scheme {signer['scheme_id']!r} is not permitted by "
-                "the policy's bundle_signing.permitted_schemes"
+                f"membership_signature: the statement signer's scheme {signer['scheme_id']!r} "
+                "is not permitted by the policy's bundle_signing.permitted_schemes (§3.4)"
             )
-            externally_rooted = False
-    if externally_rooted and not (
-        core.signer_authority_checked and core.signer_may_sign_bundles
-    ):
-        # The fingerprint is pinned, but O3's may_sign_bundles could not be re-derived from a
-        # signed acceptance in scope — so the key is not established as a permitted authority.
-        externally_rooted = False
-    return (
-        MembershipSignature.VALID_EXTERNAL_ROOT
-        if externally_rooted
-        else MembershipSignature.VALID_BUNDLED_KEY
-    )
+            return MembershipSignature.INVALID
+
+    # F3 — O3 may_sign_bundles authority, re-derived by the core from the signed acceptance.
+    # An in-scope acceptance that does NOT grant may_sign_bundles (checked and false), or a
+    # complete-store bundle that must contain the authority but does not (a finding), is an
+    # authority FAILURE → invalid. A `contiguous-range` whose authority event lies legitimately
+    # OUTSIDE the window (a note, not a finding) is not a failure — it simply cannot be shown
+    # external, so it caps at `valid_bundled_key` (→ unauthenticated), never invalid (F4-safe).
+    authority_established = core.signer_authority_checked and core.signer_may_sign_bundles
+    if not authority_established:
+        if core.signer_authority_checked and not core.signer_may_sign_bundles:
+            return MembershipSignature.INVALID  # in-scope anchor exists but lacks the scope
+        if scope_kind == "complete-store":
+            # A complete-store bundle MUST contain the authority; its absence or a stale/
+            # wrong-anchor reference is a hard failure, not a mere scope limitation.
+            return MembershipSignature.INVALID
+        # contiguous-range, authority outside the window: cannot be shown external.
+        return MembershipSignature.VALID_BUNDLED_KEY
+
+    if accept_bundled:
+        return MembershipSignature.VALID_BUNDLED_KEY
+    # Authority established. External iff the signer's fingerprint is a pinned root (base case
+    # of chain-to-root; the chain extension for a non-root signer is WI-337-blocked).
+    if str(signer["fingerprint"]) in pinned_fingerprints:
+        return MembershipSignature.VALID_EXTERNAL_ROOT
+    return MembershipSignature.VALID_BUNDLED_KEY
 
 
 def _scope_corroboration_axis(
@@ -2361,10 +2504,17 @@ def _scope_corroboration_axis(
     head_hash, head_count = head
     if head_hash == str(scope["last_event_hash"]) and head_count == int(scope["event_count"]):
         return ScopeCorroboration.MATCHES_PINNED_HEAD
+    # F4 — a whole-project head pin corroborates only a WHOLE-project (complete-store) claim.
+    # A bounded `contiguous-range` is a subset by construction, so a project head that does not
+    # equal the range's own last event is EXPECTED, not a contradiction: it simply does not
+    # corroborate the range (no range-specific pin/ancestry proof is defined). Reporting it as
+    # `contradicts_pinned_head` would falsely invalidate every valid range bundle.
+    if str(scope["kind"]) != "complete-store":
+        return ScopeCorroboration.NO_PIN_SUPPLIED
     findings.append(
         f"scope_corroboration: the pinned head ({head_hash}, {head_count} events) "
-        f"contradicts the signed scope (last_event_hash={scope['last_event_hash']}, "
-        f"event_count={scope['event_count']})"
+        f"contradicts the signed complete-store scope (last_event_hash="
+        f"{scope['last_event_hash']}, event_count={scope['event_count']})"
     )
     return ScopeCorroboration.CONTRADICTS_PINNED_HEAD
 
@@ -2372,9 +2522,20 @@ def _scope_corroboration_axis(
 def _registry_chain_consistency_axis(
     document: BundleV3Document,
     members: Sequence[OrderedMember],
+    scope_kind: str,
     findings: list[str],
+    notes: list[str],
 ) -> RegistryChainConsistency:
-    """A8 — bundled key evidence corroborated against the signed acceptances (§4.3)."""
+    """A8 — bundled key evidence corroborated against the signed acceptances (§4.3).
+
+    A **disagreement** — a bundled key whose fingerprint or public_key (or principal_id, G3)
+    contradicts the signed acceptance that names the same key_id — is ``inconsistent``. A
+    bundled key with NO in-scope acceptance is treated differently by scope (F4): for a
+    ``complete-store`` bundle, which must contain every dependency, a missing acceptance is
+    ``inconsistent``; for a bounded ``contiguous-range``, whose acceptance may legitimately lie
+    outside the window, it is reported as an outside-scope *note* — Phase B's "never silently
+    valid" third state — not a false ``inconsistent``.
+    """
 
     presented = document.sections["bundled_key_evidence"]
     if not presented:
@@ -2385,30 +2546,47 @@ def _registry_chain_consistency_axis(
         return RegistryChainConsistency.NOT_APPLICABLE
     recomputed = {rec["key_id"]: rec for rec in _key_evidence_section(members)}
     inconsistent = False
+    corroborated_any = False
     for record in presented:
         key_id = record.get("key_id")
         signed = recomputed.get(key_id)
         if signed is None:
-            findings.append(
-                f"registry_chain_consistency: bundled_key_evidence names key {key_id!r} with "
-                "no matching signed acceptance/enrolment event inside the bundle (§4.3)"
-            )
-            inconsistent = True
+            if scope_kind == "complete-store":
+                findings.append(
+                    f"registry_chain_consistency: bundled_key_evidence names key {key_id!r} "
+                    "with no matching signed acceptance/enrolment event inside a complete-store "
+                    "bundle, which must contain it (§4.3)"
+                )
+                inconsistent = True
+            else:
+                notes.append(
+                    f"registry_chain_consistency: bundled_key_evidence key {key_id!r} has no "
+                    "acceptance inside this contiguous-range scope, so it cannot be "
+                    "corroborated here — outside scope, not inconsistent (§4.3, Resolution 4)"
+                )
             continue
-        if signed.get("fingerprint") != record.get("fingerprint") or (
-            signed.get("public_key") != record.get("public_key")
+        corroborated_any = True
+        # G3 — principal_id is part of the binding: a relabelled evidence principal is a
+        # disagreement with the signed acceptance, not a silent pass.
+        if (
+            signed.get("fingerprint") != record.get("fingerprint")
+            or signed.get("public_key") != record.get("public_key")
+            or signed.get("principal_id") != record.get("principal_id")
         ):
             findings.append(
                 f"registry_chain_consistency: bundled_key_evidence for {key_id!r} disagrees "
-                "with the fingerprint/public_key its signed acceptance carries (§4.3: "
-                "disagreement is a finding)"
+                "with the principal_id/fingerprint/public_key its signed acceptance carries "
+                "(§4.3: disagreement is a finding)"
             )
             inconsistent = True
-    return (
-        RegistryChainConsistency.INCONSISTENT
-        if inconsistent
-        else RegistryChainConsistency.CONSISTENT
-    )
+    if inconsistent:
+        return RegistryChainConsistency.INCONSISTENT
+    if not corroborated_any:
+        # Nothing in the evidence had an in-scope acceptance to check against (a bounded range
+        # whose acceptances are all outside the window): not_applicable, never a bare
+        # "consistent" that would overclaim a corroboration that did not happen.
+        return RegistryChainConsistency.NOT_APPLICABLE
+    return RegistryChainConsistency.CONSISTENT
 
 
 def _governance_axis(
@@ -2450,7 +2628,6 @@ def _governance_axis(
 
 def _summarize(
     *,
-    structure: BundleStructure,
     membership_signature: MembershipSignature,
     membership_consistency: MembershipConsistency,
     event_authentication: EventAuthentication,
@@ -2460,50 +2637,80 @@ def _summarize(
     accept_bundled: bool,
     any_bundle_embedded_used: bool,
     scope_kind: str,
+    policy_conformant: bool,
+    trust_root_contradicts_genesis: bool,
 ) -> tuple[BundleApplicability, bool]:
-    """The §5.2 summary: the WEAKEST over the table, then Rule C and Rule H."""
+    """The §5.2 summary: a base verdict from A2 + A4, then the live Rule C ceiling and Rule H.
+
+    Structure is handled by the caller (a malformed bundle never reaches here). The base
+    deliberately does NOT gate on A5: the trust-root requirement of ``externally_authenticated``
+    is enforced by **Rule C**, so Rule C is the sole trust-source ceiling and is demonstrably
+    load-bearing (G2) — remove it and a root-signed statement over bundle-keyed events reads as
+    ``externally_authenticated``, the F1 false assurance.
+    """
 
     invalid = (
-        structure is BundleStructure.MALFORMED
-        or membership_signature is MembershipSignature.INVALID
+        membership_signature is MembershipSignature.INVALID
         or membership_consistency is MembershipConsistency.MISMATCH
         or event_authentication is EventAuthentication.INVALID
         or governance is Governance.CONTRADICTS_POLICY
         or scope_corroboration is ScopeCorroboration.CONTRADICTS_PINNED_HEAD
+        # F2: a full policy the bundle contradicts, or a trust_root that disagrees with the
+        # bundle's own signed genesis, is a rejection — not merely a finding.
+        or not policy_conformant
+        or trust_root_contradicts_genesis
     )
     if invalid:
-        return BundleApplicability.INVALID, False
+        return BundleApplicability.INVALID, _rule_h(scope_kind, scope_corroboration)
 
+    # Base — from A2 (statement authority) and A4 (event authentication). A5 is NOT gated here.
     if (
         membership_signature is MembershipSignature.VALID_EXTERNAL_ROOT
-        and event_trust_root is EventTrustRootAxis.EXTERNALLY_PINNED
         and event_authentication is EventAuthentication.FULL
     ):
         applicability = BundleApplicability.EXTERNALLY_AUTHENTICATED
-    elif accept_bundled and (
-        membership_signature is MembershipSignature.VALID_BUNDLED_KEY
-        or event_trust_root is EventTrustRootAxis.BUNDLED_ONLY
-    ):
+    elif accept_bundled and membership_signature is MembershipSignature.VALID_BUNDLED_KEY:
+        applicability = BundleApplicability.BUNDLE_ROOTED
+    elif event_trust_root is EventTrustRootAxis.BUNDLED_ONLY:
+        # G1 — §5.2: "…and/or A5 = bundled_only" → bundle_rooted, reachable under a TrustPolicy
+        # too, not only under an explicit AcceptBundledKeys.
         applicability = BundleApplicability.BUNDLE_ROOTED
     else:
-        # A2 absent, or a valid bundled key without an explicit AcceptBundledKeys, or an
-        # external signer whose events did not all reach externally-pinned full authentication.
         applicability = BundleApplicability.UNAUTHENTICATED
 
-    # Rule C (circularity ceiling): any BUNDLE_EMBEDDED key used clamps to bundle_rooted. It
-    # is a ceiling, never a floor — it can only lower a verdict, never raise unauthenticated.
-    if any_bundle_embedded_used and (
-        _APPLICABILITY_RANK[applicability] > _APPLICABILITY_RANK[BundleApplicability.BUNDLE_ROOTED]
+    # A cap for the honest "nothing external authenticated the statement" state (§5.2
+    # unauthenticated row): A2 absent, or a valid bundled key without explicit acceptance.
+    if membership_signature is MembershipSignature.ABSENT or (
+        membership_signature is MembershipSignature.VALID_BUNDLED_KEY and not accept_bundled
     ):
-        applicability = BundleApplicability.BUNDLE_ROOTED
+        applicability = _min_verdict(applicability, BundleApplicability.UNAUTHENTICATED)
 
-    # Rule H (head ceiling): complete-store with no pinned head does NOT clamp, but the report
-    # must carry tail_truncation_undetectable so the auditor's pin date bounds the claim.
-    tail_flag = (
+    # Rule C (circularity ceiling, §5.2) — THE trust-source ceiling, and load-bearing because
+    # the base above did not gate on A5. ``externally_authenticated`` is reachable ONLY when
+    # every event's key is externally pinned to the auditor's root (A5 externally_pinned) AND no
+    # bundle-embedded key was used. Either shortfall caps the verdict at ``bundle_rooted``.
+    # (The two conditions coincide by construction — a bundle-embedded key caps A5 below
+    # externally_pinned — but both are named so the ceiling is explicit.)
+    if any_bundle_embedded_used or event_trust_root is not EventTrustRootAxis.EXTERNALLY_PINNED:
+        applicability = _min_verdict(applicability, BundleApplicability.BUNDLE_ROOTED)
+
+    return applicability, _rule_h(scope_kind, scope_corroboration)
+
+
+def _min_verdict(a: BundleApplicability, b: BundleApplicability) -> BundleApplicability:
+    """The weaker (lower-rank) of two verdicts — a ceiling never raises a floor."""
+
+    return a if _APPLICABILITY_RANK[a] <= _APPLICABILITY_RANK[b] else b
+
+
+def _rule_h(scope_kind: str, scope_corroboration: ScopeCorroboration) -> bool:
+    """Rule H — complete-store with no pinned head sets ``tail_truncation_undetectable`` and
+    does NOT clamp, so the auditor's pin date bounds the claim (§5.2, residual 6)."""
+
+    return (
         scope_kind == "complete-store"
         and scope_corroboration is ScopeCorroboration.NO_PIN_SUPPLIED
     )
-    return applicability, tail_flag
 
 
 __all__ = [

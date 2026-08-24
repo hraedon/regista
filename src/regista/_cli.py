@@ -823,11 +823,14 @@ def _print_bundle_v3_report(result: Mapping[str, Any]) -> None:
         "governance",
     ):
         print(f"  {axis}: {result[axis]}")
-    print(
-        "  event_attribution_counts: "
-        f"{result['event_attribution_counts']}"
-    )
-    print(f"  key_binding_counts: {result['key_binding_counts']}")
+    # A10/A11/A12 are counts only when event verification ran; otherwise they are not_checkable
+    # (null in JSON), and must not be rendered as a factual zero/empty (F5).
+    if result.get("event_verification_ran"):
+        print(f"  event_attribution_counts: {result['event_attribution_counts']}")
+        print(f"  key_binding_counts: {result['key_binding_counts']}")
+    else:
+        print("  event_attribution_counts: not_checkable (event verification did not run)")
+        print("  key_binding_counts: not_checkable (event verification did not run)")
     if result.get("identity_conflict_count"):
         print(f"  identity_conflicts: {result['identity_conflict_count']}")
         for conflict in result.get("identity_conflicts", []):
