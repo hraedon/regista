@@ -736,6 +736,56 @@ def test_rotation_superseding_a_non_current_key_is_refused_on_replay(
     assert build_error.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
 
 
+def test_reenrol_same_material_under_a_different_key_id_is_refused_on_replay(
+    tmp_path: Any,
+) -> None:
+    """WI-348: a second ``principal_key_enrolled`` carrying an ALREADY-ACTIVE key's exact
+    material under a DIFFERENT key_id is refused by the REPLAY — closing the enrolment
+    twin of the WI-347 rotation gap.
+
+    Without the guard the replay treated same-bytes as an idempotent no-op regardless of
+    key_id and admitted the alias, leaving TWO active key_ids sharing one public key. The
+    projection applier (``_apply_enrollment_projection``) supersedes every active row
+    before inserting, so it holds only ONE active — replay and projection then DISAGREE.
+    Worse, a later §5.6 rotation names ONE key_id; the twin stays active, so the
+    rotated-out MATERIAL survives as current external authority via the alias and rotation
+    fails to remove authority. ``verify_trust_log_chain`` (which both the export builder
+    and ``verify_trust_log_export`` route through) must refuse. The admission half
+    (``append_trust_log_event``) is covered in ``tests/test_wi301_trust_log_writer.py`` —
+    both route through the same ``_check_enrollment_binds_fresh_key`` chokepoint.
+    """
+
+    from regista._trust_log_writer import verify_trust_log_chain
+
+    principal = "agent:w1"
+    k1 = TrustLogKey.mint("pk_w1")
+    # The ALIAS: identical seed/public bytes/fingerprint, a DIFFERENT key_id — the
+    # registrar-planted twin the claim requires.
+    k1_alias = TrustLogKey(
+        key_id="pk_w1_alias",
+        seed=k1.seed,
+        public_key=k1.public_key,
+        fingerprint=k1.fingerprint,
+    )
+    log = mint_trust_log()
+    log.register(principal)
+    log.enrol(principal, k1)
+    log.enrol(principal, k1_alias)  # ATTACK: same material, different key_id
+
+    error = _refuses(
+        verify_trust_log_chain,
+        conn=log.material(),
+        genesis_document=log.genesis.document,
+    )
+    assert error.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+    assert _reason(error) == "enrollment_alias_key_id_mismatch"
+
+    # And the honest export builder cannot even PRODUCE such a document — it replays first.
+    build_error = _refuses(lambda: log.export())
+    assert build_error.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+    assert _reason(build_error) == "enrollment_alias_key_id_mismatch"
+
+
 # ---------------------------------------------------------------------------
 # Bundle admission gate: a verified log must still be BOUND to this bundle/pin
 # ---------------------------------------------------------------------------

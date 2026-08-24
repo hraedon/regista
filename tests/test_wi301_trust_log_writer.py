@@ -21,6 +21,7 @@ from _trust_fixtures import mint_genesis
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
+from regista._principal_keys import list_principal_keys
 from regista._trust_log_writer import (
     append_trust_log_event,
     chain_order,
@@ -28,6 +29,7 @@ from regista._trust_log_writer import (
     replay_trust_state,
     write_trust_genesis,
 )
+from regista._trust_projection import rebuild_projection
 from regista.testing import drop_project_schema
 from tests._trust_log_fixtures import (
     TrustLogKey,
@@ -1712,6 +1714,131 @@ class TestEnrollmentBindsFreshKey:
             with handle._mgr.transaction() as conn:
                 state = replay_trust_state(conn, fixture.document)
             assert state.principal_key_status[(principal, key_a.key_id)] == "active"
+        finally:
+            _close(handle, project)
+
+    def test_reenroll_same_bytes_different_key_id_repro(self, tmp_path):
+        """WI-348 REPRO: same public bytes under a DIFFERENT key_id must NOT yield two
+        active key_ids in the offline replay (that diverges from the projection, which
+        supersedes-then-inserts, and lets a rotated-out material survive via the alias).
+
+        A registrar plants K1 (active), then an ALIAS with identical bytes but a fresh
+        key_id. The offline replay must not admit the alias as a second active key.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:alias-target"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_k1")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=k1,
+            )
+            # Alias: SAME seed/public bytes/fingerprint, DIFFERENT key_id.
+            k1_alias = _tlogkey("pk_k1_alias", k1.seed)
+            payload_alias, challenge_alias = _enrollment_material(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=k1_alias,
+            )
+            _persist_challenge(handle, challenge_alias, payload_alias)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(
+                    handle, fixture, principal=principal, payload=payload_alias
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "enrollment_alias_key_id_mismatch"
+
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            actives = [
+                k_id
+                for (p_id, k_id), st in state.principal_key_status.items()
+                if p_id == principal and st == "active"
+            ]
+            assert actives == [k1.key_id]
+            assert (principal, k1_alias.key_id) not in state.principal_public_keys
+        finally:
+            _close(handle, project)
+
+    def test_wi348_replay_and_projection_agree_on_active_set(self, tmp_path):
+        """WI-348 replay≡projection: for an enrol→rotate history the offline replay's
+        active set equals the projection table's active set (exactly one active key). The
+        alias the fix now refuses never enters the durable log, so the two views cannot
+        diverge — the divergence WI-348 would otherwise have created is unreachable.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:reconcile"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=6)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_rc1")
+            _enroll(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1,
+            )
+            # The alias the fix refuses — the poison never enters the durable log.
+            k1_alias = _tlogkey("pk_rc1_alias", k1.seed)
+            payload_alias, challenge_alias = _enrollment_material(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1_alias,
+            )
+            _persist_challenge(handle, challenge_alias, payload_alias)
+            with pytest.raises(RegistaError):
+                _append_enrollment(
+                    handle, fixture, principal=principal, payload=payload_alias
+                )
+            # A legitimate §5.6 rotation K1 -> K2.
+            k2 = TrustLogKey.mint("pk_rc2")
+            payload_rot, challenge_rot = _rotation_material(
+                handle, fixture, principal=principal, key=k2,
+                supersedes_key_id=k1.key_id, superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge_rot, payload_rot)
+            _append_rotation(
+                handle, fixture, principal=principal, payload=payload_rot,
+                authority="registrar", actor_id=REGISTRAR,
+            )
+            # Replay (offline) active set.
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            replay_active = {
+                k_id
+                for (p_id, k_id), st in state.principal_key_status.items()
+                if p_id == principal and st == "active"
+            }
+            # Projection (rebuilt from the SAME durable trust log) active set.
+            rebuild_projection(
+                handle._mgr,
+                project=handle._mgr.project,
+                genesis_document=fixture.document,
+            )
+            proj_active = {
+                entry.key_id
+                for entry in list_principal_keys(
+                    handle._mgr, principal_id=principal, status="active"
+                )
+            }
+            assert replay_active == proj_active == {k2.key_id}
         finally:
             _close(handle, project)
 

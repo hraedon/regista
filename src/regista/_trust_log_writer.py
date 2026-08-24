@@ -1231,6 +1231,30 @@ def _classify_rotation(
                 "status": superseded_status or "unknown",
             },
         )
+    # WI-348 belt-and-suspenders (Sol's suggestion): the rotation must supersede THE
+    # unique active key. The WI-348 enrolment fix already makes a second active key of
+    # identical material unreachable, so in every admissible history exactly one active
+    # key exists to supersede. This independent check means that even if some other path
+    # ever admitted a second active key_id, a rotation could not leave a stale active one
+    # behind — it names one key_id, and any un-named active twin would trip this guard.
+    active_for_principal = [
+        k_id
+        for (p_id, k_id), status in principal_key_status.items()
+        if p_id == parsed.principal_id and status == "active"
+    ]
+    if len(active_for_principal) > 1:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY,
+            "a rotation must supersede the principal's unique active key, but the "
+            f"principal holds {len(active_for_principal)} active keys "
+            f"({sorted(active_for_principal)!r}); the single-active-per-principal "
+            "invariant is violated, so this rotation cannot cleanly remove authority",
+            {
+                "reason": "principal_has_multiple_active_keys",
+                "principal_id": parsed.principal_id,
+                "active_key_ids": sorted(active_for_principal),
+            },
+        )
     superseded = None if parsed.is_recovery else principal_public_keys.get(superseded_key)
     return classify_rotation_authority(
         parsed,
@@ -1288,6 +1312,7 @@ def _check_enrollment_binds_fresh_key(
     principal_id = getattr(parsed, "principal_id", None)
     key = getattr(parsed, "key", None)
     new_public = getattr(key, "public_key", None) if key is not None else None
+    new_key_id = getattr(key, "key_id", None) if key is not None else None
     if not isinstance(principal_id, str):
         return
     for (p_id, k_id), pub in principal_public_keys.items():
@@ -1296,8 +1321,35 @@ def _check_enrollment_binds_fresh_key(
         if principal_key_status.get((p_id, k_id)) != "active":
             continue
         if new_public is not None and pub == new_public:
-            # Same key material already active — idempotent, not a change.
-            continue
+            # Same key material already active.
+            if new_key_id == k_id:
+                # Genuine idempotent re-enrol: SAME bytes under the SAME key_id — a no-op.
+                continue
+            # WI-348: same material under a DIFFERENT key_id is anomalous and must NOT be
+            # admitted as an idempotent no-op. The offline replay would then hold TWO
+            # active key_ids sharing one public key, which diverges from the projection
+            # applier (`_apply_enrollment_projection` supersedes every active row before
+            # inserting → exactly ONE active). Worse, a later §5.6 rotation names ONE
+            # key_id as `supersedes_key_id`; the twin key_id stays "active", so the
+            # rotated-out MATERIAL survives as current external authority via the alias
+            # and rotation fails to remove authority. A genuine idempotent re-enrol reuses
+            # the same key_id; a genuine key change is a rotation. Refuse it in this shared
+            # admission+replay chokepoint so neither a direct `append_trust_log_event`
+            # caller nor a published-log verifier can reach a double-active state.
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"principal {principal_id!r} already has an active key with identical "
+                f"material under key_id {k_id!r}; re-enrolling that material under a "
+                f"different key_id ({new_key_id!r}) is not an idempotent no-op — an "
+                "idempotent re-enrol must reuse the same key_id, and a key change is a "
+                "rotation (§5.6, principal_key_rotated with dual authorization)",
+                {
+                    "reason": "enrollment_alias_key_id_mismatch",
+                    "principal_id": principal_id,
+                    "active_key_id": k_id,
+                    "offered_key_id": new_key_id,
+                },
+            )
         raise RegistaError(
             ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
             f"principal {principal_id!r} already has an active key (key_id {k_id}); "

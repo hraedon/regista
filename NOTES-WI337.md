@@ -61,6 +61,7 @@ machine-readable `reason` (or a fail-closed ErrorCode), never message text.
 | Revoked-key laundering | `export_referents` withholds the enrolment/rotation that introduced a key the replay shows REVOKED; supersession is NOT withheld | (withheld set) | `test_revoked_key_introduction_is_withheld_from_referents` |
 | Rotated-out key as current authority (Sol #3/#4) | the replay now marks a rotated-out key `superseded`; offline classification keeps its introduction as a historical referent but excludes it from `active_principal_keys`, so the resolver never returns it as externally pinned | (excluded from active; named finding on use) | `test_rotation_supersedes_the_old_key_but_keeps_its_history` |
 | Active-set FORK via a rotation from a dead key (WI-347, Sol #3 / Opus #1) | admission AND replay require `supersedes_key_id` to be the principal's CURRENT active key (dual + recovery); superseding a `superseded`/`revoked`/unknown key is refused, so at most one active key per principal — matching the projection applier | `superseded_key_superseded` / `superseded_key_revoked` / `superseded_key_unknown` (`TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY`) | `test_rotation_superseding_a_non_current_key_is_refused_on_replay`, `test_rotation_chain_supersedes_each_current_key_leaving_exactly_one_active`, `TestRotationAdmission::test_dual_rotation_superseding_a_non_current_key_is_refused`, `::test_recovery_rotation_naming_an_already_superseded_key_is_refused` |
+| Active-set FORK via an ENROLMENT alias — same material, different key_id (WI-348, Sol round-2) | admission AND replay refuse a `principal_key_enrolled` whose bytes equal an ALREADY-ACTIVE key's under a DIFFERENT key_id (a genuine idempotent re-enrol reuses the same key_id; a key change is a rotation). Belt-and-suspenders: `_classify_rotation` also refuses when a principal holds >1 active key. So replay ≡ projection: exactly one active key per principal | `enrollment_alias_key_id_mismatch` (`TRUST_LOG_AUTHORITY_INVALID`); `principal_has_multiple_active_keys` (`TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY`) | `test_reenrol_same_material_under_a_different_key_id_is_refused_on_replay`, `TestEnrollmentBindsFreshKey::test_reenroll_same_bytes_different_key_id_repro`, `::test_wi348_replay_and_projection_agree_on_active_set` |
 | Non-canonical bytes | file bytes must equal `canonicalize(document)` | `not_canonical_publication_bytes` | `test_non_canonical_publication_bytes_are_refused` |
 | Substitution | `expect_digest` over the framed input | `export_digest_mismatch` | `test_substituted_artifact_is_caught_by_expect_digest` |
 | Tampered event | flipping a byte breaks the hash chain; the walk rejects it | fail-closed `TRUST_LOG*` code | `test_tampered_event_bytes_fail_closed` |
@@ -194,6 +195,57 @@ directly AND cannot be built by the honest exporter);
 `test_wi301_trust_log_writer.py::TestRotationAdmission::{test_dual_rotation_superseding_a_non_current_key_is_refused,
 test_recovery_rotation_naming_an_already_superseded_key_is_refused}` (admission half, both
 dual and recovery). The revoked-key coverage (`superseded_key_revoked`) is retained.
+
+## Round-2 remediation — WI-348 enrolment-alias active-set fork (Sol round-2, blocking)
+
+**Reachability settled: YES (durable).** Reproduced through the PUBLIC `append_trust_log_event`
+path and the offline replay, database-backed. A registrar enrols K1 (active), then enrols an
+ALIAS carrying K1's *exact* public bytes under a *different* key_id. `_check_enrollment_binds_fresh_key`
+compared the offered PUBLIC BYTES to active keys and `continue`d on a match (treated it as an
+idempotent no-op) regardless of key_id, so the alias was admitted and `_remember_principal_key`
+marked the new key_id `active` — **two active key_ids sharing one material**. The lifecycle path
+is also reachable: `_lifecycle_key_id(idempotency_key)` derives the key_id from the idempotency
+key (not the material), and `request.public_key` is caller-provided, so two enrolments of the same
+public key under different idempotency keys yield different key_ids feeding the same admission gate.
+
+**Security consequence (confirmed by repro).** enrol K1 → enrol K1-alias → rotate K1→K2: the
+WI-347 guard passes (it names K1, which is active), replay supersedes only the *named* K1, leaving
+`{K1-alias: active, K2: active}`. The rotated-out MATERIAL survives as CURRENT external authority
+via the alias — rotation fails to remove authority. Observed replay statuses after the rotation:
+`{pk_k1v: superseded, pk_k1v_alias: active, pk_k2v: active}`.
+
+**Divergence it reconciles.** The projection applier `_apply_enrollment_projection`
+(`_principal_keys.py:238`) supersedes EVERY active row for the principal before inserting the new
+one, so it holds exactly ONE active key. The offline replay did not, so replay and projection
+disagreed on the alias chain (replay: two active; projection: one).
+
+**The fix.** Two guards, both at the shared admission+replay chokepoints (the estate's recurring
+"guard in only one path is bypassable" failure class):
+
+1. **Root cause — `_trust_log_writer.py:_check_enrollment_binds_fresh_key` (~line 1298).** When the
+   offered bytes equal an already-active key's, admit as idempotent ONLY if the offered key_id
+   equals that key's key_id; same-bytes-under-a-different-key_id is refused with
+   `reason="enrollment_alias_key_id_mismatch"` (`TRUST_LOG_AUTHORITY_INVALID`, which already carries
+   a `_STATUS_MAP` 403 sidecar — no new code, mirroring the sibling `enrollment_key_already_present`).
+   This function is called at BOTH admission (`append_trust_log_event`, ~line 2155) and replay
+   (`_verify_lifecycle` inside `verify_trust_log_chain`, ~line 1444), so one change binds both paths.
+2. **Belt-and-suspenders — `_classify_rotation` (~line 1234, Sol's suggestion).** A rotation refuses
+   when the principal holds >1 active key (`reason="principal_has_multiple_active_keys"`,
+   `TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY`). Even if some other path ever admitted a second
+   active key, a rotation could not leave a stale active twin behind.
+
+**Replay ≡ projection, enforced.** With guard 1 the alias never enters the durable log, so for
+every admissible enrol+rotate history the offline replay's active set equals the `principal_keys`
+projection table's active set (exactly one active per principal). Asserted directly by
+`test_wi348_replay_and_projection_agree_on_active_set` (rebuilds the projection from the same
+durable log and compares).
+
+Tests: `test_wi337_trust_log_export.py::test_reenrol_same_material_under_a_different_key_id_is_refused_on_replay`
+(replay half — `verify_trust_log_chain` refuses, and the honest exporter cannot even build such a
+document); `test_wi301_trust_log_writer.py::TestEnrollmentBindsFreshKey::{test_reenroll_same_bytes_different_key_id_repro
+(admission half, was the STEP-1 repro), test_wi348_replay_and_projection_agree_on_active_set}`. The
+existing `test_reenroll_same_key_direct_append_is_admitted` (same bytes AND same key_id → genuine
+idempotent no-op) still passes, so the fix does not over-refuse.
 
 ### Documentation-accuracy fixes folded in (Sol, non-blocking)
 
