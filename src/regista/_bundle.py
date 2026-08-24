@@ -448,6 +448,70 @@ def _archive_relation_present(conn: DictConn) -> bool:
     return row is not None and row["relation"] is not None
 
 
+def _lock_export_snapshot_head(conn: DictConn) -> tuple[str | None, int]:
+    """§9 rule 1/2/3 consistency: pin the store head for the whole export read (WI-340 F1).
+
+    Export must sign one **stable store snapshot**, or a concurrent append turns a
+    ``complete-store`` into a signed false statement: ``events`` returns N rows, an (N+1)th
+    commits between the read and the signature, and the bundle attests "this is the whole
+    chain" over a stale prefix. The fix is the discipline the writer and ``archive_events``
+    already use — take the ``event_chain_head`` sentinel ``FOR UPDATE`` at the START of the
+    export transaction. Every appender serialises on that same row before it can advance the
+    head, so once export holds it no append can commit until export's read transaction ends:
+    the head this returns is the head the records read under the same lock will agree with.
+
+    Returns ``(head_event_hash_text | None, event_count)`` where the count consolidates
+    ``events`` with ``events_archive`` (rule 3) and the head is the sentinel's — the hash the
+    chain-ordered last event must equal for a ``complete-store``. ``None`` head means an empty
+    log (export refuses an empty bundle separately).
+    """
+
+    from ._events import _lock_global_chain_head
+
+    head = _lock_global_chain_head(conn)
+    head_text = None if head is None else "sha256:" + head.hex()
+
+    def _count(relation: str) -> int:
+        row = conn.execute(f"SELECT count(*) AS c FROM {relation}").fetchone()
+        return 0 if row is None else int(row["c"])
+
+    total = _count("events")
+    if _archive_relation_present(conn):
+        total += _count("events_archive")
+    return head_text, total
+
+
+def _publish_verified_partial(tmp_output: Path, output: Path, *, overwrite: bool) -> None:
+    """Publish the self-verified ``.partial`` to its destination (§9 rule 4/5, WI-340 F2).
+
+    The up-front ``output.exists()`` check is a courtesy, not the enforcement: a destination
+    created AFTER that check but before publication would be silently clobbered by a plain
+    ``os.replace``. So the no-clobber rule is enforced HERE, atomically:
+
+    * ``overwrite=True`` — ``os.replace`` (an intentional replacement is allowed).
+    * ``overwrite=False`` — ``os.link`` the ``.partial`` onto the destination, which the
+      kernel fails with ``FileExistsError`` if the destination exists (there is no
+      link-and-overwrite). A destination that appeared in the TOCTOU window is refused, not
+      clobbered; the ``.partial`` is then unlinked on success and left for inspection on
+      refusal.
+    """
+
+    if overwrite:
+        os.replace(tmp_output, output)
+        return
+    try:
+        os.link(tmp_output, output)
+    except FileExistsError as exc:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"refusing to overwrite existing destination {output} (BUNDLE-V3.md §9 rule 4, "
+            "WI-261): a destination appeared during the export and no-clobber publication "
+            "(os.link) refused it rather than replacing it. Pass overwrite=True to replace. "
+            f"The verified artifact is left at {tmp_output} for inspection.",
+        ) from exc
+    tmp_output.unlink()
+
+
 def _windowed_source_sql(
     columns: str, *, since_seq: int | None, until_seq: int | None, with_archive: bool
 ) -> tuple[str, list[int]]:
@@ -817,6 +881,12 @@ def export_audit_bundle(
         )
 
     with mgr.transaction() as conn:
+        # §9 rule 1/2/3 (WI-340 F1): lock the store head FIRST, so the read → strict-verify →
+        # scope → head-check below all see one stable snapshot. No appender can advance the
+        # head until this transaction ends, so a concurrent append cannot slip a stale prefix
+        # into a signed complete-store. `snapshot_head` is what the derived scope is checked
+        # against before signing.
+        snapshot_head, snapshot_count = _lock_export_snapshot_head(conn)
         records = _read_export_rows(conn, since_seq=since_seq, until_seq=until_seq)
         if not records:
             detail = (
@@ -936,6 +1006,32 @@ def export_audit_bundle(
     statement = document["statement"]
     scope = statement["scope"]
 
+    # §9 rule 1 (WI-340 F1): a complete-store MUST equal the store head captured under the
+    # lock. Under the lock this always holds for a healthy read; the assertion is the
+    # fail-closed backstop that makes a stale-prefix complete-store impossible even if the
+    # read and the head sentinel ever disagreed (a torn READ COMMITTED read is exactly what
+    # produced the reviewer's signed-false artifact). A `contiguous-range` is a prefix by
+    # construction, so its last event is not the store head and this does not apply.
+    if scope_kind == "complete-store" and (
+        scope["last_event_hash"] != snapshot_head
+        or scope["event_count"] != snapshot_count
+    ):
+        raise RegistaError(
+            ErrorCode.BUNDLE_STATEMENT_INVALID,
+            "refusing to sign a stale complete-store (BUNDLE-V3.md §9 rule 1): the "
+            f"chain-ordered scope (last={scope['last_event_hash']}, "
+            f"count={scope['event_count']}) does not equal the store head observed under "
+            f"the export lock (head={snapshot_head}, count={snapshot_count}). The head "
+            "advanced under the export or the read was torn; a complete-store must be one "
+            "stable snapshot. Nothing was written.",
+            detail={
+                "scope_last_event_hash": scope["last_event_hash"],
+                "scope_event_count": scope["event_count"],
+                "snapshot_head": snapshot_head,
+                "snapshot_count": snapshot_count,
+            },
+        )
+
     # §9 rule 2 (D1): compare against the operator's preflight. If a preflight result is
     # supplied, the head must not have moved under the export — a mismatch is an error, not
     # a silently narrower bundle. Checked BEFORE any write: the artifact whose scope
@@ -988,7 +1084,7 @@ def export_audit_bundle(
             f"left at {tmp_output} for inspection and the destination was NOT touched "
             f"(BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
         )
-    os.replace(tmp_output, output)
+    _publish_verified_partial(tmp_output, output, overwrite=overwrite)
     log.info(
         "bundle.exported",
         project=project_name,

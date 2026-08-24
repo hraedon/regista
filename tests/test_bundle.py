@@ -23,6 +23,8 @@ import base64
 import copy
 import json
 import os
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -32,6 +34,7 @@ import pytest
 from regista import Regista
 from regista._bundle import (
     AcceptBundledKeys,
+    TrustPolicy,
     _archive_relation_present,
     verify_audit_bundle_offline,
     verify_audit_bundle_v3,
@@ -43,7 +46,6 @@ from regista._bundle_v3 import (
     section_digest_text,
     sign_statement,
 )
-from regista._cli import _BUNDLE_VERDICT_EXIT
 from regista._errors import ErrorCode, RegistaError
 from regista._testing import drop_project_schema
 from regista._testing_v6 import (
@@ -1452,6 +1454,41 @@ def _v3(output: Path) -> Any:
     )
 
 
+def _membership_hashes(output: Path) -> set[str]:
+    """The event-hash SET of a bundle's membership — what the boundary tests assert on.
+
+    Counts alone cannot tell exclusive-lower from inclusive-upper (opposite boundary
+    semantics can produce the same count); membership + boundary inclusion can (F4).
+    """
+    from regista._bundle_v3 import parse_event_member
+
+    return {
+        parse_event_member(
+            base64.b64decode(r["canonical_envelope"]), base64.b64decode(r["signature"])
+        ).event_hash_text
+        for r in _read(output)["sections"]["events"]
+    }
+
+
+def _seq_hashes(store: Any) -> list[tuple[int, str]]:
+    """Ordered ``[(global_seq, event_hash_text)]`` over the live stream, for boundary tests."""
+    from regista._bundle_v3 import parse_event_member
+
+    with store._mgr.transaction() as conn:
+        rows = conn.execute(
+            "SELECT global_seq, canonical_envelope, signature FROM events ORDER BY global_seq"
+        ).fetchall()
+    return [
+        (
+            r["global_seq"],
+            parse_event_member(
+                bytes(r["canonical_envelope"]), bytes(r["signature"])
+            ).event_hash_text,
+        )
+        for r in rows
+    ]
+
+
 class TestPhaseDExportCeremony:
     """§9 rules 1-5, 7 on a real epoch. Each test pins one rule's fail-closed behavior."""
 
@@ -1668,6 +1705,130 @@ class TestPhaseDExportCeremonyOnAFreshEpoch:
 
 
 # ---------------------------------------------------------------------------
+# WI-289 Phase D fix round — F1 (concurrent append) and F2 (destination TOCTOU)
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseDConcurrencyAndTOCTOU:
+    """The two production blockers Sol's concurrent probes found (WI-340 F1/F2).
+
+    A single-threaded run cannot see either: F1 needs an append racing the export read, F2
+    needs a destination appearing in the window between the up-front ``exists()`` check and
+    the final publication. Both are pinned here with the race made deterministic.
+    """
+
+    def test_f1_a_scope_disagreeing_with_the_locked_head_aborts(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (F1): a complete-store whose scope does not equal the store head observed
+        under the export lock is refused, never signed. Simulates the torn/advanced-head read
+        by returning an advanced head from the locked snapshot; the assertion aborts before
+        any write. Red-on-pre-fix: before F1 there was no head captured and no assertion, so
+        the stale prefix was signed as a complete-store."""
+        import regista._bundle as bundle_mod
+
+        real = bundle_mod._lock_export_snapshot_head
+
+        def advanced(conn: Any) -> tuple[str | None, int]:
+            _, count = real(conn)
+            return "sha256:" + "ff" * 32, count + 1  # pretend an (N+1)th committed
+
+        monkeypatch.setattr(bundle_mod, "_lock_export_snapshot_head", advanced)
+        out = tmp_path / "stale.json"
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out)
+        assert exc.value.code == ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "stale complete-store" in str(exc.value)
+        assert not out.exists(), "a stale complete-store must never be written"
+
+    def test_f1_a_concurrent_append_is_serialised_behind_the_export_lock(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (F1): the export holds the event_chain_head lock across its read, so a
+        concurrent append CANNOT commit mid-export — it serialises behind the export. The
+        deterministic proof is inside the read hook: after the appender has had time to run,
+        it is still blocked (its event has not committed), because the export holds the head
+        lock. Red-on-pre-fix: without the lock the append commits during the sleep and the
+        blocked-assertion fails.
+        """
+        import regista._bundle as bundle_mod
+        from regista._v6_writer import append_v6_event
+
+        store = archive_store.store
+        with store._mgr.transaction() as conn:
+            n_before = int(conn.execute("SELECT count(*) AS c FROM events").fetchone()["c"])
+
+        committed = threading.Event()
+
+        def appender() -> None:
+            with store._mgr.transaction() as conn:
+                append_v6_event(
+                    conn, store._keys, entity_kind="work_item", entity_id=uuid.uuid4(),
+                    transition="created", actor_id=BUNDLE_SIGNER, actor_kind="agent",
+                    producer=v6_producer(), payload={"concurrent": True},
+                )
+            committed.set()
+
+        real_read = bundle_mod._read_export_rows
+        state: dict[str, Any] = {}
+
+        def read_hook(conn: Any, **kw: Any) -> Any:
+            if "t" not in state:
+                t = threading.Thread(target=appender)
+                t.start()
+                state["t"] = t
+                # Give the appender ample time to reach append_v6_event's FOR UPDATE on the
+                # head sentinel and block there. The export holds that lock, so it must NOT
+                # have committed.
+                time.sleep(1.5)
+                assert not committed.is_set(), (
+                    "the concurrent append committed during the export read — the head lock "
+                    "is not serialising appends (F1 regression)"
+                )
+            return real_read(conn, **kw)
+
+        monkeypatch.setattr(bundle_mod, "_read_export_rows", read_hook)
+        out = tmp_path / "snapshot.json"
+        result = archive_store.export(out)
+        state["t"].join(timeout=15)
+        assert committed.is_set(), "the append must complete once the export released the lock"
+
+        # Export signed the consistent snapshot as it stood under the lock; the append landed
+        # after. The complete-store is never a stale prefix.
+        assert result["scope_kind"] == "complete-store"
+        assert result["event_count"] == n_before
+        with store._mgr.transaction() as conn:
+            n_after = int(conn.execute("SELECT count(*) AS c FROM events").fetchone()["c"])
+        assert n_after == n_before + 1, "the serialised append is now in the store"
+
+    def test_f2_a_destination_created_after_the_check_is_not_clobbered(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 4 (F2): the no-clobber rule is enforced at PUBLICATION, not just by the
+        up-front exists() check. A destination created in the TOCTOU window (here, during the
+        self-verification, after the up-front check passed) is refused, not silently
+        replaced. Red-on-pre-fix: the old os.replace clobbered the racer's file."""
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "toctou.json"
+        sentinel = b'{"prior": "artifact that must survive"}'
+        real_verify = bundle_mod.verify_audit_bundle_v3
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            # A racer publishes to the destination AFTER export's up-front exists() check.
+            if not out.exists():
+                out.write_bytes(sentinel)
+            return real_verify(path, trust, **kw)
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out)  # overwrite=False
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "overwrite" in str(exc.value)
+        assert out.read_bytes() == sentinel, "the racer's destination must not be clobbered"
+
+
+# ---------------------------------------------------------------------------
 # WI-289 rule 6 — dependency closure beyond the signer's authority
 # ---------------------------------------------------------------------------
 
@@ -1786,80 +1947,76 @@ class TestWI289Cluster4Counterparts:
     def test_since_seq_is_an_exclusive_lower_bound(
         self, bundle_store: Any, tmp_path: Path
     ) -> None:
-        """``since_seq`` is an EXCLUSIVE lower bound on the exported global_seq window; the
-        result is a v3 contiguous-range scope. Retires
-        ``TestExportAuditBundle::test_export_with_since_seq``."""
-        with bundle_store.store._mgr.transaction() as conn:
-            seqs = [
-                r["global_seq"]
-                for r in conn.execute(
-                    "SELECT global_seq FROM events ORDER BY global_seq"
-                ).fetchall()
-            ]
-        cut = seqs[0]
+        """``since_seq`` is an EXCLUSIVE lower bound: the boundary event is NOT in the
+        membership, the next one IS, and the membership is exactly the tail set (F4:
+        membership + boundary, not a count that opposite semantics could also produce).
+        Retires ``TestExportAuditBundle::test_export_with_since_seq``."""
+        sh = _seq_hashes(bundle_store.store)
+        cut, boundary_hash = sh[0]
+        next_hash = sh[1][1]
         output = tmp_path / "since.json"
         result = bundle_store.export(output, since_seq=cut)
         assert result["scope_kind"] == "contiguous-range"
-        assert result["event_count"] == len(seqs) - 1, "the boundary row is EXCLUDED"
+        membership = _membership_hashes(output)
+        assert boundary_hash not in membership, "since_seq is EXCLUSIVE — boundary excluded"
+        assert next_hash in membership
+        assert membership == {h for s, h in sh if s > cut}
 
     # -- test_until_seq_is_an_inclusive_upper_bound --
     def test_until_seq_is_an_inclusive_upper_bound(
         self, bundle_store: Any, tmp_path: Path
     ) -> None:
-        """``until_seq`` is an INCLUSIVE upper bound. Retires
+        """``until_seq`` is an INCLUSIVE upper bound: the boundary event IS in the membership,
+        the one after is NOT, and the membership is exactly the prefix set (F4). Retires
         ``TestExportBounds::test_until_seq_is_an_inclusive_upper_bound``."""
-        with bundle_store.store._mgr.transaction() as conn:
-            seqs = [
-                r["global_seq"]
-                for r in conn.execute(
-                    "SELECT global_seq FROM events ORDER BY global_seq"
-                ).fetchall()
-            ]
-        cut = seqs[len(seqs) // 2]
+        sh = _seq_hashes(bundle_store.store)
+        mid = len(sh) // 2
+        cut, boundary_hash = sh[mid]
+        after_hash = sh[mid + 1][1]
         output = tmp_path / "until.json"
-        result = bundle_store.export(output, until_seq=cut)
-        assert result["event_count"] == sum(1 for s in seqs if s <= cut), (
-            "the boundary row is INCLUDED"
-        )
+        bundle_store.export(output, until_seq=cut)
+        membership = _membership_hashes(output)
+        assert boundary_hash in membership, "until_seq is INCLUSIVE — boundary included"
+        assert after_hash not in membership
+        assert membership == {h for s, h in sh if s <= cut}
 
     # -- test_since_and_until_form_a_window --
     def test_since_and_until_form_a_window(
         self, bundle_store: Any, tmp_path: Path
     ) -> None:
-        """``since``/``until`` together bound the window exactly (exclusive/inclusive).
-        Retires ``TestExportBounds::test_since_and_until_form_a_window``."""
-        with bundle_store.store._mgr.transaction() as conn:
-            seqs = [
-                r["global_seq"]
-                for r in conn.execute(
-                    "SELECT global_seq FROM events ORDER BY global_seq"
-                ).fetchall()
-            ]
-        lo, hi = seqs[0], seqs[-2]
+        """``since``/``until`` bound the window exactly — exclusive lower, inclusive upper —
+        asserted by MEMBERSHIP at both boundaries (F4). Retires
+        ``TestExportBounds::test_since_and_until_form_a_window``."""
+        sh = _seq_hashes(bundle_store.store)
+        lo, lo_hash = sh[0]
+        hi, hi_hash = sh[-2]
+        after_hi_hash = sh[-1][1]
         output = tmp_path / "window.json"
         result = bundle_store.export(output, since_seq=lo, until_seq=hi)
-        assert result["event_count"] == sum(1 for s in seqs if lo < s <= hi)
         assert result["scope_kind"] == "contiguous-range"
+        membership = _membership_hashes(output)
+        assert lo_hash not in membership, "lower bound is EXCLUSIVE"
+        assert hi_hash in membership, "upper bound is INCLUSIVE"
+        assert after_hi_hash not in membership
+        assert membership == {h for s, h in sh if lo < s <= hi}
 
     # -- test_chunked_exports_both_verify_offline --
     def test_chunked_exports_both_verify_and_a_preflight_matches(
         self, bundle_store: Any, tmp_path: Path
     ) -> None:
-        """A corpus split into chunks yields disjoint, jointly-complete, independently
-        verifiable bundles; a matching preflight is accepted on each chunk (§9.2). Retires
+        """A corpus split into chunks yields a DISJOINT UNION that partitions the whole stream
+        (no overlap, no gap — not merely a count that sums), each chunk independently
+        verifiable; a matching preflight is accepted on each chunk (§9.2). Retires
         ``TestExportBounds::test_chunked_exports_both_verify_offline``."""
-        with bundle_store.store._mgr.transaction() as conn:
-            seqs = [
-                r["global_seq"]
-                for r in conn.execute(
-                    "SELECT global_seq FROM events ORDER BY global_seq"
-                ).fetchall()
-            ]
-        cut = seqs[len(seqs) // 2]
+        sh = _seq_hashes(bundle_store.store)
+        whole = {h for _, h in sh}
+        cut = sh[len(sh) // 2][0]
         head, tail = tmp_path / "head.json", tmp_path / "tail.json"
-        h = bundle_store.export(head, until_seq=cut)
-        t = bundle_store.export(tail, since_seq=cut)
-        assert h["event_count"] + t["event_count"] == len(seqs), "disjoint and complete"
+        bundle_store.export(head, until_seq=cut)
+        bundle_store.export(tail, since_seq=cut)
+        head_m, tail_m = _membership_hashes(head), _membership_hashes(tail)
+        assert head_m.isdisjoint(tail_m), "chunks must not overlap"
+        assert head_m | tail_m == whole, "chunks must partition the whole stream (no gap)"
         for path in (head, tail):
             assert _v3(path).applicability != "invalid", path
         # The preflight for the head chunk matches its own derived scope.
@@ -1881,22 +2038,37 @@ class TestWI289Cluster4Counterparts:
         self, bundle_store: Any, tmp_path: Path
     ) -> None:
         """v6 principal↔key binding verification in bundle verification: relabelling which
-        principal a bundled key belongs to must not yield a clean external authentication —
-        it fails closed. Retires
+        principal a bundled key belongs to is a registry-chain inconsistency the verifier
+        surfaces (§4.3). Exercised under an EXTERNAL trust form (a pinned fingerprint) where a
+        clean bundle is ``consistent`` with no such finding — so the tamper produces a
+        DISTINGUISHING verdict, not one a clean bundle already satisfies (F3: the prior
+        ``!= externally_authenticated`` + ``event_trust_root in (bundled_only, absent)`` were
+        all true of a clean bundle too). Retires
         ``TestOfflineSignatureVerification::test_binding_mismatch_fails_closed``."""
         output = tmp_path / "binding.json"
         bundle_store.export(output)
         document = _read(output)
-        # Swap the principal_id on the signer's own key evidence to a foreign principal, then
-        # re-sign as the strongest adversary. The per-event binding check must not accept an
-        # event as authenticated under a key the evidence now attributes to someone else.
+        signer_fp = next(
+            r["fingerprint"]
+            for r in document["sections"]["bundled_key_evidence"]
+            if r["principal_id"] == BUNDLE_SIGNER
+        )
+        trust = TrustPolicy.from_fingerprints([signer_fp])
+        # Baseline under the SAME external trust form: registry is consistent, no finding.
+        clean = verify_audit_bundle_v3(str(output), trust).to_dict()
+        assert clean["registry_chain_consistency"] == "consistent", clean
+        assert not any("registry_chain_consistency" in f for f in clean["findings"]), clean
+
+        # Swap the principal_id on the signer's own key evidence and re-sign as the strongest
+        # adversary; the evidence now disagrees with the principal its SIGNED acceptance binds.
         for record in document["sections"]["bundled_key_evidence"]:
             if record["principal_id"] == BUNDLE_SIGNER:
                 record["principal_id"] = "agent:someone-else"
         _write(output, _resign(document, bundle_store.keyset))
-        report = _v3(output)
-        assert report.applicability != "externally_authenticated", report.to_dict()
-        assert report.event_trust_root in ("bundled_only", "absent"), report.to_dict()
+        tampered = verify_audit_bundle_v3(str(output), trust).to_dict()
+        assert tampered["registry_chain_consistency"] == "inconsistent", tampered
+        assert any("registry_chain_consistency" in f for f in tampered["findings"]), tampered
+        assert tampered["applicability"] != "externally_authenticated", tampered
 
     # -- test_clean_mixed_bundle_verifies_signatures --
     def test_offline_event_signature_verification_reports_via_the_axes(
@@ -1914,10 +2086,19 @@ class TestWI289Cluster4Counterparts:
         assert d["event_authentication"] == "legacy_partial", (
             "ordinary v6 events authenticate; the unpinned genesis keeps it below FULL"
         )
-        # The attribution counts are facts, not a boolean: at least one event is individually
-        # attributed, and the counts are present (not null) because verification ran.
-        assert d["event_attribution_counts"] is not None
-        assert d["event_attribution_counts"].get("individual", 0) >= 1
+        # F4: assert EVERY event is individually attributed (ed25519), not merely ≥1. A v6
+        # epoch has no shared-secret (HMAC) attribution, so the individual count is the WHOLE
+        # stream and shared_secret/none are zero. (Attribution — is the actor individually
+        # named — is distinct from whether the signature chained to a pinned key: the genesis
+        # bootstrap is individually attributed here even though its authority is unpinned,
+        # which is what keeps A4 at legacy_partial rather than FULL.)
+        ac = d["event_attribution_counts"]
+        assert ac is not None
+        assert ac.get("shared_secret", 0) == 0, "a v6 epoch has no HMAC attribution"
+        assert ac.get("none", 0) == 0
+        assert ac["individual"] == d["event_count"], (
+            "every event's ed25519 signature must be individually attributed"
+        )
 
     # -- test_registry_absent_is_recorded_and_fails_closed --
     def test_absent_key_evidence_is_recorded_and_fails_closed(
@@ -1944,8 +2125,9 @@ class TestWI289Cluster4Counterparts:
     ) -> None:
         """v6 signs ``scheme_id`` and requires equality with the trusted key's scheme (§3.1);
         relabelling it in a bundled key evidence record is a scheme mismatch, not a verifier
-        selector, and fails closed. Retires
-        ``TestOfflineSignatureVerification::test_unknown_scheme_fails_closed``."""
+        selector, and fails closed to ``invalid`` — not merely "not externally authenticated"
+        (which every project bundle is anyway; that was the vacuous assertion this replaces,
+        F3). Retires ``TestOfflineSignatureVerification::test_unknown_scheme_fails_closed``."""
         output = tmp_path / "scheme.json"
         bundle_store.export(output)
         document = _read(output)
@@ -1953,7 +2135,10 @@ class TestWI289Cluster4Counterparts:
             record["scheme_id"] = "ed448-not-a-real-selector"
         _write(output, _resign(document, bundle_store.keyset))
         report = _v3(output)
-        assert report.applicability != "externally_authenticated", report.to_dict()
+        assert report.applicability == "invalid", report.to_dict()
+        assert any("scheme_id must be 'ed25519'" in f for f in report.findings), (
+            report.findings
+        )
 
     # -- test_v1_bundle_signature_check_skipped --
     def test_a_format_version_downgrade_is_rejected_outright(
@@ -1978,13 +2163,40 @@ class TestWI289Cluster4Counterparts:
         """The v3 CLI export exit code is driven by the self-verification applicability
         (§9.7): exit 0 requires externally_authenticated, which a project bundle cannot reach
         offline (WI-337), so a healthy project export self-verifies at ``bundle_rooted`` and
-        the CLI maps that to a non-zero exit. Retires
+        the CLI exits 2. F4: this invokes the REAL ``regista`` process and asserts the PROCESS
+        exit code — a CLI regression that exited 0 would pass a mapping-constant check but is
+        caught here. Retires
         ``TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default``."""
-        output = tmp_path / "exit.json"
-        result = bundle_store.export(output)
-        applicability = result["self_verification"]["applicability"]
-        assert applicability == "bundle_rooted", result["self_verification"]
-        # The CLI maps the applicability through the SAME §10 table `bundle verify` uses.
-        assert _BUNDLE_VERDICT_EXIT[applicability] == 2
-        assert _BUNDLE_VERDICT_EXIT["externally_authenticated"] == 0
-        assert _BUNDLE_VERDICT_EXIT["invalid"] == 1
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "REGISTA_DSN"}
+        env["REGISTA_KEY_PATH"] = bundle_store.keyset.path
+        out = tmp_path / "cli_exit.json"
+        cli = [sys.executable, "-m", "regista._cli"]
+        export = subprocess.run(
+            [
+                *cli,
+                "--dsn", DSN, "--project", bundle_store.project,
+                "bundle", "export", "--output", str(out),
+                "--signing-principal-id", BUNDLE_SIGNER,
+                "--root-governance-mode", "solo",
+                "--root-governance-threshold", "1",
+                "--root-governance-signer-count", "1",
+            ],
+            env=env, capture_output=True, text=True,
+        )
+        # bundle_rooted is the honest offline ceiling for a project bundle → exit 2, NOT 0.
+        assert export.returncode == 2, (export.returncode, export.stderr[-800:])
+        assert out.is_file(), export.stderr[-800:]
+
+        verify = subprocess.run(
+            [*cli, "bundle", "verify", str(out), "--accept-bundled-keys"],
+            env=env, capture_output=True, text=True,
+        )
+        assert verify.returncode == 2, (verify.returncode, verify.stderr[-800:])
+
+        no_trust = subprocess.run(
+            [*cli, "bundle", "verify", str(out)], env=env, capture_output=True, text=True,
+        )
+        assert no_trust.returncode == 1, (no_trust.returncode, no_trust.stderr[-800:])

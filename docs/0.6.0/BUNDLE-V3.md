@@ -1187,9 +1187,22 @@ event's `signing.key_binding_event_hash` anchor), workflow registration
 (`reviewed_through_event_hash`). A `complete-store` missing a named dependency fails A3
 (`dependency_closure_ok=False` → `membership_consistency=mismatch` → `invalid`); a
 `contiguous-range` names each out-of-scope dependency as a report note (Resolution 4). In a
-linear project chain a complete-store's missing dependency also breaks chain ordering, so the
-observable rule-6 face is the contiguous-range naming; the invalid verdict is defence in
-depth.
+linear project chain a complete-store's missing dependency also breaks chain ordering
+(`chain_ordered=False` fires first), so chain-ordering is the primary enforcer and the
+`dependency_closure_ok=False` verdict is **defence in depth** — reachable on its own terms
+only by a forged-but-orderable bundle, where it fails closed
+(`tests/test_bundle_v3.py::TestDependencyClosureReachesInvalid`). The observable rule-6
+behaviour in normal operation is the contiguous-range naming.
+
+**Concurrency and publication (WI-340 fix round, F1/F2).** Export takes the
+`event_chain_head` sentinel `FOR UPDATE` at the start of its read transaction — the discipline
+the writer and `archive_events` already use — so no append can advance the head between the
+read and the signature; a `complete-store` is signed over one stable snapshot and its
+chain-ordered scope is asserted equal to the head captured under that lock, or export aborts
+(`_lock_export_snapshot_head`, F1). Publication of the self-verified `.partial` is atomic and
+no-clobber for `overwrite=False`: it is `os.link`ed onto the destination, which the kernel
+refuses if the destination appeared in the window after the up-front `exists()` check, rather
+than clobbering it with `os.replace` (`_publish_verified_partial`, F2).
 
 **Deliberately NOT landed, and where it goes.** None is an oversight:
 

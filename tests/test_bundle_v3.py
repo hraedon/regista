@@ -2512,3 +2512,44 @@ class TestReportHonesty:
             "recomputed_membership_root",
         ):
             assert emitted[key] is None, key
+
+
+class TestDependencyClosureReachesInvalid:
+    """§9 rule 6 (WI-340 N1) — the ``dependency_closure_ok=False`` branch, reached genuinely.
+
+    In a REAL single-chain store the branch is defense-in-depth: dropping a dependency also
+    breaks ``previous_project_event_hash`` and chain-ordering fails first (see the code
+    comment at the closure check and BUNDLE-V3.md's Phase D status note). Here it is reached
+    on its own terms with a forged-but-orderable bundle: an ordinary event whose signed
+    ``key_binding_event_hash`` names an anchor that is NOT in the bundle, while its chain link
+    still resolves — so the chain orders, yet the complete-store names a dependency it does
+    not contain. That is exactly what Resolution 4 makes ``invalid``.
+    """
+
+    def test_a_forged_but_orderable_missing_dependency_is_invalid(self, keyset: Any) -> None:
+        from regista._bundle import AcceptBundledKeys, verify_audit_bundle_v3
+
+        chain = _Chain(keyset)
+        # An ordinary event that links correctly (so the chain still orders) but whose signed
+        # key-binding anchor is a hash no event in the bundle carries.
+        forged = chain.work_item_envelope(transition="updated")
+        forged["signing"]["key_binding_event_hash"] = digest_text(b"\x99" * 32)
+        chain.append(forged, WORKER)
+        document = chain.build()  # complete-store
+
+        core = verify_bundle_v3_core(
+            _reparse(document), statement_public_key=chain.signer_public_key
+        )
+        assert core.chain_ordered is True, "the forged event must still order (the point of N1)"
+        assert core.dependency_closure_ok is False
+        assert any("dependency_closure_missing" in f for f in core.findings), core.findings
+        assert core.core_ok is False
+
+        # And the full verdict is invalid via A3 (membership_consistency mismatch).
+        tmp = Path(str(keyset.path)).parent / "forged_closure.json"
+        tmp.write_bytes(canonical_bundle_bytes(document))
+        report = verify_audit_bundle_v3(
+            str(tmp), AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.applicability is report.applicability.INVALID
+        assert report.membership_consistency.value == "mismatch"

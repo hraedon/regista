@@ -2437,6 +2437,16 @@ def verify_bundle_v3_core(
     # a dependency is a false completeness claim, so it fails A3 (membership_consistency)
     # exactly as a section-digest mismatch does; a contiguous-range names each out-of-window
     # dependency as a note and stays honest.
+    #
+    # DEFENSE-IN-DEPTH, stated so a reviewer does not read the False branch as dead (WI-340
+    # N1): on a REAL single project chain every dependency edge is a backward reference to an
+    # interior chain event, so dropping one also breaks `previous_project_event_hash` and
+    # `chain_ordered` is False FIRST — chain-ordering is the primary enforcer of complete-store
+    # completeness there. The `dependency_closure_ok=False` branch is reachable on its own
+    # terms only by a forged-but-orderable bundle (an event whose signed
+    # `key_binding_event_hash` names an absent anchor while its chain link still resolves —
+    # tests/test_bundle_v3.py::TestDependencyClosureReachesInvalid), and it fails closed there.
+    # The observable rule-6 behaviour in normal operation is the contiguous-range naming below.
     dependency_closure_ok: bool | None = None
     if chain_ordered:
         dependency_closure_ok = True
