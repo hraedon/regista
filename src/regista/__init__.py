@@ -732,3 +732,23 @@ class Regista(
         return verify_audit_bundle_offline(
             bundle_path, statement_public_key=statement_public_key
         ).to_dict()
+
+    @staticmethod
+    def verify_audit_bundle_v3(
+        bundle_path: str,
+        trust: Any,
+        *,
+        known_head: tuple[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Verify a **bundle v3** artifact against auditor-supplied trust material (§4.1).
+
+        ``trust`` is REQUIRED and must be a ``TrustPolicy`` (external trust) or an
+        ``AcceptBundledKeys`` (bundle-rooted, clamped) — §4.1 admits no default and no
+        ``None``. Returns the §5.1 axis report as a dict, whose ``applicability`` is the
+        §5.2 verdict. No store, no network, no fetch (§8.4).
+        """
+        from ._bundle import verify_audit_bundle_v3
+
+        return verify_audit_bundle_v3(
+            bundle_path, trust, known_head=known_head
+        ).to_dict()

@@ -711,66 +711,152 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
         sub.close()
 
 
+#: §10's verdict → exit-code table. 0 is reachable ONLY from externally_authenticated —
+#: stricter after decision E3 dropped legacy_checkpoint_bound, because no store contains
+#: HMAC-era events any more. bundle_rooted and unauthenticated both mean "nothing external
+#: authenticated this", so both exit 2; invalid exits 1.
+_BUNDLE_VERDICT_EXIT: dict[str, int] = {
+    "externally_authenticated": 0,
+    "bundle_rooted": 2,
+    "unauthenticated": 2,
+    "invalid": 1,
+}
+
+
+def _bundle_trust_from_args(args: argparse.Namespace) -> Any:
+    """Build the required §4.1 trust object from exactly one of the three CLI forms.
+
+    Refuses to run when none is supplied — §4.1's whole fix is that trust material is
+    un-forgettable because the command will not proceed without it.
+    """
+
+    from ._bundle import AcceptBundledKeys, TrustPolicy
+
+    forms = [
+        bool(getattr(args, "trust_policy", None)),
+        bool(getattr(args, "trusted_fingerprint", None)),
+        bool(getattr(args, "accept_bundled_keys", False)),
+    ]
+    if sum(forms) == 0:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "refusing to verify without trust material: supply exactly one of "
+            "--trust-policy <file>, one or more --trusted-fingerprint sha256:..., or "
+            "--accept-bundled-keys (BUNDLE-V3.md §4.1). There is no default: a verifier "
+            "with no pinned root authenticates a bundle to nothing.",
+        )
+    if sum(forms) > 1:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "supply exactly one trust form: --trust-policy, --trusted-fingerprint or "
+            "--accept-bundled-keys are mutually exclusive (BUNDLE-V3.md §10).",
+        )
+    if getattr(args, "trust_policy", None):
+        return TrustPolicy.from_file(args.trust_policy)
+    if getattr(args, "trusted_fingerprint", None):
+        return TrustPolicy.from_fingerprints(args.trusted_fingerprint)
+    return AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+
+
+def _parse_known_head(value: str | None) -> tuple[str, int] | None:
+    """``--known-head <head_hash>:<count>`` → ``(head_hash, count)`` (§10)."""
+
+    if not value:
+        return None
+    head_hash, sep, count = value.rpartition(":")
+    if not sep or not head_hash or not count.isdigit():
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"--known-head must be <head_hash>:<event_count>, e.g. sha256:abc...:352509; "
+            f"got {value!r}",
+        )
+    return head_hash, int(count)
+
+
 def cmd_bundle_verify(args: argparse.Namespace) -> None:
     try:
-        result = Regista.verify_audit_bundle_offline(args.bundle_path)
+        trust = _bundle_trust_from_args(args)
+        known_head = _parse_known_head(getattr(args, "known_head", None))
+        result = Regista.verify_audit_bundle_v3(
+            args.bundle_path, trust, known_head=known_head
+        )
+        applicability = str(result["applicability"])
         if getattr(args, "json", False):
             _dump_json(result)
         else:
-            if result["verified"]:
-                print(
-                    f"Bundle verified — {result['event_count']} event(s), "
-                    f"{result['signatures_verified']} signature(s) verified, "
-                    f"{result['signatures_unverifiable']} unverifiable "
-                    f"(symmetric scheme)."
-                )
-            else:
-                print("Bundle verification FAILED:")
-                if result["event_count"] > 0 and result["signatures_verified"] == 0:
-                    # WI-267: "nothing was checked" is a failure, not a pass.
-                    # Say which one it is so an operator is not left staring at
-                    # an empty findings list.
-                    print(
-                        "  signatures: 0 of "
-                        f"{result['event_count']} event signature(s) could be "
-                        f"verified ({result['signatures_unverifiable']} "
-                        "unverifiable). Verifying a symmetric (HMAC) signature "
-                        "requires the secret, which a bundle deliberately never "
-                        "carries — such a bundle proves internal consistency "
-                        "and nothing cryptographic."
-                    )
-                # Bundle v3's structural checks. `.get` because the CLI contract tests
-                # stub this report, and a stub that predates a field must not traceback.
-                if not result.get("statement_signature_checked", True):
-                    print(
-                        "  statement_signature: NOT CHECKED — no trust material was "
-                        "supplied, so nothing authenticated this bundle to anything "
-                        "(BUNDLE-V3.md §4.1)"
-                    )
-                elif not result.get("statement_signature_valid", True):
-                    print("  statement_signature: INVALID")
-                # `is False`, not falsy: these fields are None when the check did not run
-                # (the chain could not be ordered), and "did not run" must not print as
-                # "does not match".
-                if result.get("membership_root_ok") is False:
-                    print("  event_membership_root: recomputed root does not match")
-                if result.get("section_digests_ok") is False:
-                    print("  section_digests: a section does not match its signed digest")
-                if not result["global_chain_ok"]:
-                    print(f"  global_chain: {result['global_chain_error']}")
-                if not result["work_item_chain_ok"]:
-                    print(f"  work_item_chain: {result['work_item_chain_error']}")
-                for err in result.get("errors", []):
-                    print(f"  {err}")
-        # Contract §2: a bundle that does not verify is a failure whatever the
-        # output format. Only the human branch used to exit 1, so an auditor
-        # scripting `bundle verify --json` got exit 0 on a bundle whose body said
-        # every signature failed.
-        if not result["verified"]:
-            print("error: bundle verification failed", file=sys.stderr)
-            sys.exit(1)
+            _print_bundle_v3_report(result)
+        sys.exit(_BUNDLE_VERDICT_EXIT.get(applicability, 1))
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
+
+
+def _print_bundle_v3_report(result: Mapping[str, Any]) -> None:
+    """Human output carrying the per-axis facts and the §10 notes to read alongside them."""
+
+    applicability = str(result["applicability"])
+    headline = {
+        "externally_authenticated": (
+            "EXTERNALLY AUTHENTICATED — every in-scope event is signature-verifiable "
+            "against a key chaining to the pinned root, and the membership is signed by a "
+            "permitted authority."
+        ),
+        "bundle_rooted": (
+            "BUNDLE-ROOTED — signatures verify, but against keys carried inside the "
+            "artifact. This is self-consistency, not authentication."
+        ),
+        "unauthenticated": (
+            "UNAUTHENTICATED — well-formed and internally consistent, but nothing in it was "
+            "authenticated to anything you hold."
+        ),
+        "invalid": "INVALID — see the failing axis and finding below.",
+    }.get(applicability, applicability)
+    print(f"applicability: {applicability}")
+    print(f"  {headline}")
+    print(f"  events: {result['event_count']}")
+    for axis in (
+        "membership_signature",
+        "membership_consistency",
+        "event_authentication",
+        "event_trust_root",
+        "scope_corroboration",
+        "registry_chain_consistency",
+        "governance",
+    ):
+        print(f"  {axis}: {result[axis]}")
+    print(
+        "  event_attribution_counts: "
+        f"{result['event_attribution_counts']}"
+    )
+    print(f"  key_binding_counts: {result['key_binding_counts']}")
+    if result.get("identity_conflict_count"):
+        print(f"  identity_conflicts: {result['identity_conflict_count']}")
+        for conflict in result.get("identity_conflicts", []):
+            print(f"    - {conflict}")
+    if result.get("policy_satisfied") is not None:
+        print(f"  policy_satisfied: {result['policy_satisfied']}")
+    # The §10 notes an auditor MUST read alongside the summary, because they are not in it.
+    if result.get("tail_truncation_undetectable"):
+        print(
+            "  NOTE tail_truncation_undetectable: this is a complete-store bundle with no "
+            "pinned head, so events after the last head you pinned could have been withheld "
+            "and nothing here can reveal it. Your pin date bounds the claim (Rule H)."
+        )
+    if result.get("governance") == "unverified_restatement":
+        print(
+            "  NOTE governance unverified_restatement: the bundle's restated governance was "
+            "not checked against an authenticated trust-log replay. Check it, or downgrade "
+            "the claim (§10)."
+        )
+    if result.get("registry_chain_consistency") == "inconsistent":
+        print(
+            "  NOTE registry inconsistent: the operator's key evidence disagrees with their "
+            "own signed acceptances. This does not affect authentication, but is a finding "
+            "worth raising (§10)."
+        )
+    for finding in result.get("findings", []):
+        print(f"  finding: {finding}")
+    for note in result.get("notes", []):
+        print(f"  note: {note}")
 
 
 def cmd_workflow_compose(args: argparse.Namespace) -> None:
@@ -5691,8 +5777,40 @@ def main(argv: list[str] | None = None) -> None:
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)
 
-    bnd_verify = bnd_sub.add_parser("verify", help="Verify an audit bundle offline")
+    bnd_verify = bnd_sub.add_parser(
+        "verify",
+        help="Verify an audit bundle offline against auditor-supplied trust material",
+        description=(
+            "Verify a bundle v3 artifact (BUNDLE-V3.md §10). Supply exactly one trust form. "
+            "With none, the command refuses to run (§4.1). Exit codes: 0 externally "
+            "authenticated only; 2 bundle_rooted or unauthenticated; 1 invalid."
+        ),
+    )
     bnd_verify.add_argument("bundle_path", help="Path to bundle JSON file")
+    bnd_verify.add_argument(
+        "--trust-policy",
+        metavar="FILE",
+        help="Path to a TRUST-DOMAIN.md §4.6 trust policy file (external trust)",
+    )
+    bnd_verify.add_argument(
+        "--trusted-fingerprint",
+        action="append",
+        metavar="ed25519:sha256:...",
+        help="A pinned root fingerprint; repeatable. The minimal ad-hoc trust form.",
+    )
+    bnd_verify.add_argument(
+        "--accept-bundled-keys",
+        action="store_true",
+        help=(
+            "Authenticate against keys carried INSIDE the bundle. The verdict is clamped to "
+            "bundle_rooted (§4.1) — self-consistency, not external authentication."
+        ),
+    )
+    bnd_verify.add_argument(
+        "--known-head",
+        metavar="<head_hash>:<count>",
+        help="A head pinned out of band, e.g. sha256:...:352509 (drives A7 and Rule H)",
+    )
     bnd_verify.add_argument("--json", action="store_true", help="JSON output")
     bnd_verify.set_defaults(func=cmd_bundle_verify)
 

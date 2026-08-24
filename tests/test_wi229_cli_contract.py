@@ -232,28 +232,59 @@ class TestVerifyVerbsJsonExitCode:
     whole purpose is to say yes or no.
     """
 
+    def _stub_report(self, applicability: str) -> dict:
+        return {
+            "applicability": applicability,
+            "structure": "parsed",
+            "membership_signature": "invalid"
+            if applicability == "invalid"
+            else "valid_external_root",
+            "membership_consistency": "complete_for_claimed_scope",
+            "event_authentication": "full"
+            if applicability == "externally_authenticated"
+            else "legacy_partial",
+            "event_trust_root": "externally_pinned",
+            "scope_corroboration": "matches_pinned_head",
+            "registry_chain_consistency": "consistent",
+            "governance": "unverified_restatement",
+            "identity_conflict_count": 0,
+            "identity_conflicts": [],
+            "event_attribution_counts": {"individual": 5},
+            "key_binding_counts": {"accepted_in_project": 5},
+            "tail_truncation_undetectable": False,
+            "policy_satisfied": applicability == "externally_authenticated",
+            "event_count": 5,
+            "findings": [] if applicability != "invalid" else ["membership tampered"],
+            "notes": [],
+        }
+
     def test_bundle_verify_json_exits_nonzero_when_unverified(
         self, monkeypatch, capsys, tmp_path
     ):
         from regista import Regista
 
-        report = {
-            "verified": False,
-            "bundle_hash_ok": True,
-            "global_chain_ok": False,
-            "global_chain_error": "hash mismatch at seq 4",
-            "work_item_chain_ok": True,
-            "errors": ["No public key for key_id 'pk_deadbeef' in bundle registry"],
-        }
+        report = self._stub_report("invalid")
         monkeypatch.setattr(
-            Regista, "verify_audit_bundle_offline", staticmethod(lambda p: report)
+            Regista,
+            "verify_audit_bundle_v3",
+            staticmethod(lambda p, trust, **kw: report),
         )
-        bundle = tmp_path / "bundle.tar.gz"
+        bundle = tmp_path / "bundle.json"
+        bundle.write_bytes(b"")
+        code = _run_cli(
+            ["bundle", "verify", str(bundle), "--accept-bundled-keys", "--json"]
+        )
+        out = capsys.readouterr()
+        assert json.loads(out.out)["applicability"] == "invalid"
+        assert code == 1
+
+    def test_bundle_verify_refuses_without_trust_material(
+        self, capsys, tmp_path
+    ):
+        bundle = tmp_path / "bundle.json"
         bundle.write_bytes(b"")
         code = _run_cli(["bundle", "verify", str(bundle), "--json"])
-        out = capsys.readouterr()
-        assert json.loads(out.out)["verified"] is False
-        assert code == 1
+        assert code == 1  # §4.1: refuse to run
 
     def test_bundle_verify_json_still_zero_when_verified(
         self, monkeypatch, capsys, tmp_path
@@ -262,21 +293,47 @@ class TestVerifyVerbsJsonExitCode:
 
         monkeypatch.setattr(
             Regista,
-            "verify_audit_bundle_offline",
+            "verify_audit_bundle_v3",
             staticmethod(
-                lambda p: {
-                    "verified": True,
-                    "event_count": 5,
-                    "signatures_verified": 4,
-                    "signatures_unverifiable": 1,
-                    "signature_check": "enforced",
-                }
+                lambda p, trust, **kw: self._stub_report("externally_authenticated")
             ),
         )
-        bundle = tmp_path / "bundle.tar.gz"
+        bundle = tmp_path / "bundle.json"
         bundle.write_bytes(b"")
-        assert _run_cli(["bundle", "verify", str(bundle), "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["verified"] is True
+        assert (
+            _run_cli(
+                [
+                    "bundle",
+                    "verify",
+                    str(bundle),
+                    "--trusted-fingerprint",
+                    "ed25519:sha256:" + "a" * 64,
+                    "--json",
+                ]
+            )
+            == 0
+        )
+        assert (
+            json.loads(capsys.readouterr().out)["applicability"]
+            == "externally_authenticated"
+        )
+
+    def test_bundle_verify_bundle_rooted_exits_two(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        from regista import Regista
+
+        monkeypatch.setattr(
+            Regista,
+            "verify_audit_bundle_v3",
+            staticmethod(lambda p, trust, **kw: self._stub_report("bundle_rooted")),
+        )
+        bundle = tmp_path / "bundle.json"
+        bundle.write_bytes(b"")
+        assert (
+            _run_cli(["bundle", "verify", str(bundle), "--accept-bundled-keys", "--json"])
+            == 2
+        )
 
 
 # ---------------------------------------------------------------------------
