@@ -1055,31 +1055,31 @@ class TestExportBounds:
 
         The invariant is unchanged and is the boundary the export draws: a defect the STORE
         preserved is reported and still publishes; a defect **export introduced** fails the
-        export. What detects it is no longer an unkeyed hash but the statement signature —
-        and under §9 rule 5 / D11 the self-verification runs over the ``.partial`` BEFORE
-        ``os.replace``, so the corrupt artifact is left at the ``.partial`` for inspection
-        and the destination is never touched (stronger than v2, which left the bad bundle at
-        the destination). The corruption is injected into the bytes written to the
-        ``.partial`` so it is a real signature failure, not a stubbed report.
+        export. What detects it is the statement signature — and under §9 rule 5 the
+        self-verification runs over the held inode BEFORE publication, so the corrupt artifact
+        is materialised to a ``.partial`` inspection name and the destination is never touched.
+        The corruption is injected into the bytes written to the held descriptor
+        (FR2-2-FINAL: the write is by descriptor, not by pathname) so it is a real signature
+        failure, not a stubbed report.
         """
-        real_write_bytes = Path.write_bytes
+        import regista._bundle as bundle_mod
 
-        def corrupting_write(path: Path, data: bytes) -> int:
-            if path.name.endswith(".partial"):
-                doctored = json.loads(data)
-                doctored["statement"]["scope"]["event_count"] = 999
-                return real_write_bytes(path, canonical_bundle_bytes(doctored))
-            return real_write_bytes(path, data)
+        real_write = bundle_mod._write_bundle_bytes
 
-        monkeypatch.setattr(Path, "write_bytes", corrupting_write)
+        def corrupting_write(fd: int, data: bytes) -> None:
+            doctored = json.loads(data)
+            doctored["statement"]["scope"]["event_count"] = 999
+            real_write(fd, canonical_bundle_bytes(doctored))
+
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", corrupting_write)
         output = tmp_path / "corrupt.json"
         with pytest.raises(RegistaError) as exc_info:
             bundle_store.export(output)
 
         assert exc_info.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
         assert "does not self-verify" in str(exc_info.value)
-        # §9 rule 5: the rejected artifact is kept at the unique temp (FR2-2) for inspection,
-        # and the destination was NEVER touched — publication does not run on a failed check.
+        # §9 rule 5: the rejected artifact is materialised for inspection, and the destination
+        # was NEVER touched — publication does not run on a failed self-check.
         partials = list(tmp_path.glob("corrupt.json.*.partial"))
         assert len(partials) == 1, f"expected one temp left for inspection: {partials}"
         assert json.loads(partials[0].read_text())["statement"]["scope"]["event_count"] == 999
@@ -1099,33 +1099,34 @@ class TestExportBounds:
     def test_write_failure_removes_the_partial_and_spares_the_destination(
         self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the write dies mid-way, unlink the ``.partial`` — only the partial, never the
-        real destination (WI-249). Nothing reaches the destination that did not survive the
-        write.
+        """If the write dies mid-way, nothing reaches the destination and no partial is left
+        behind (WI-249). The artifact is an O_TMPFILE (nameless) inode, so a failed write
+        leaves NOTHING on disk — there is not even a name to unlink — and the destination it
+        was going to replace is spared because publication never runs.
 
         ``overwrite=True`` is passed so the pre-existing destination gets past §9 rule 4's
-        refusal — the point here is the WI-249 invariant, and it must hold even when the
-        operator explicitly allowed a replacement: a write that dies still spares the file
-        it was going to replace, because ``os.replace`` never runs.
+        refusal — the point is the WI-249 invariant, and it must hold even when the operator
+        explicitly allowed a replacement.
         """
+        import regista._bundle as bundle_mod
+
         output = tmp_path / "keepme.json"
         sentinel = b'{"previous": "bundle"}'
         output.write_bytes(sentinel)
 
-        real_write_bytes = Path.write_bytes
+        real_write = bundle_mod._write_bundle_bytes
 
-        def dies_mid_write(path: Path, data: bytes) -> None:
-            # A plausible-looking partial lands on disk, then the write fails.
-            real_write_bytes(path, data[: len(data) // 2])
+        def dies_mid_write(fd: int, data: bytes) -> None:
+            real_write(fd, data[: len(data) // 2])  # a partial write into the nameless inode
             raise OSError("injected: no space left on device")
 
-        monkeypatch.setattr(Path, "write_bytes", dies_mid_write)
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", dies_mid_write)
         with pytest.raises(OSError, match="injected"):
             bundle_store.export(output, overwrite=True)
 
         monkeypatch.undo()
-        assert not (tmp_path / "keepme.json.partial").exists(), (
-            "a failed write left a plausible-looking partial bundle behind"
+        assert not list(tmp_path.glob("keepme.json.*.partial")), (
+            "a failed write left a partial bundle behind"
         )
         assert output.read_bytes() == sentinel, (
             "a failed export clobbered the destination it never verified"
@@ -1542,10 +1543,13 @@ class TestPhaseDExportCeremony:
     def test_rule5_self_verifies_the_partial_before_replace(
         self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """§9 rule 5 / D11: the self-verification runs over the ``.partial`` BEFORE
-        ``os.replace``. If ``os.replace`` were reached on a corrupt artifact this test would
-        see the destination created; instead the corrupt bytes never leave the ``.partial``.
+        """§9 rule 5 / D11: the self-verification runs over the held inode BEFORE publication.
+        If publication were reached on a corrupt artifact this test would see the destination
+        created; instead the corrupt bytes never leave the O_TMPFILE inode (materialised only
+        to an inspection name), and neither ``linkat`` nor ``os.replace`` publishes them.
         """
+        import regista._bundle as bundle_mod
+
         real_replace = os.replace
         replaced: list[Any] = []
 
@@ -1553,22 +1557,20 @@ class TestPhaseDExportCeremony:
             replaced.append((src, dst))
             real_replace(src, dst, **kwargs)
 
-        real_write_bytes = Path.write_bytes
+        real_write = bundle_mod._write_bundle_bytes
 
-        def corrupting_write(path: Path, data: bytes) -> int:
-            if path.name.endswith(".partial"):
-                doctored = json.loads(data)
-                doctored["statement"]["scope"]["event_count"] = 4242
-                return real_write_bytes(path, canonical_bundle_bytes(doctored))
-            return real_write_bytes(path, data)
+        def corrupting_write(fd: int, data: bytes) -> None:
+            doctored = json.loads(data)
+            doctored["statement"]["scope"]["event_count"] = 4242
+            real_write(fd, canonical_bundle_bytes(doctored))
 
         monkeypatch.setattr(os, "replace", spy_replace)
-        monkeypatch.setattr(Path, "write_bytes", corrupting_write)
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", corrupting_write)
         output = tmp_path / "rule5.json"
         with pytest.raises(RegistaError) as exc:
             bundle_store.export(output)
         assert exc.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
-        assert replaced == [], "os.replace must NOT run when the temp fails self-verify"
+        assert replaced == [], "publication must NOT run when the held inode fails self-verify"
         assert not output.exists()
         assert len(list(tmp_path.glob("rule5.json.*.partial"))) == 1
 
@@ -1874,35 +1876,100 @@ class TestPhaseDConcurrencyAndTOCTOU:
         assert result["scope_kind"] == "complete-store"
         assert result["self_verification"]["applicability"] == "bundle_rooted"
 
-    def test_fr2_2_a_unique_temp_defeats_a_shared_path_substitution(
+    def test_fr2_2_repro_a_post_verify_substitution_of_the_actual_temp(
         self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """§9 rule 5 (WI-340 FR2-2): the export publishes bytes it verified, over a UNIQUE
-        exclusively-created temp inode — not a fixed shared ``<name>.partial`` path a second
-        exporter could rewrite between self-verify and publish. The racer here rewrites the
-        predictable shared path AFTER self-verification; because the real temp name is
-        unpredictable, the published artifact is still the verified bytes. Red-on-pre-fix: the
-        old fixed ``<name>.partial`` path is exactly what the racer overwrites, so the publish
-        used unverified bytes."""
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro A): a racer that DISCOVERS and rewrites
+        the actual temp path after self-verification cannot make the export publish its bytes.
+        The artifact is a nameless O_TMPFILE inode, so there is no ``<name>.*.partial`` to
+        find during a successful export; publication links the held (verified) inode. The
+        assertion that the racer found nothing to substitute AND that the published bytes are
+        the verified ones is the whole point. Red-on-pre-fix (74abc95): the mkstemp temp was
+        discoverable and publish re-resolved it by name, so the racer's bytes were published.
+        """
         import regista._bundle as bundle_mod
 
         out = tmp_path / "sub.json"
         corrupt = b'{"corrupt": "substituted-after-verification"}'
         real_verify = bundle_mod.verify_audit_bundle_v3
+        found: list[str] = []
 
         def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
             report = real_verify(path, trust, **kw)
-            # A racer overwrites the PREDICTABLE shared path a pre-FR2-2 exporter would use.
-            (tmp_path / "sub.json.partial").write_bytes(corrupt)
+            # The racer discovers the ACTUAL random temp and substitutes its bytes.
+            for p in tmp_path.glob("sub.json.*.partial"):
+                found.append(p.name)
+                p.unlink()
+                p.write_bytes(corrupt)
             return report
 
         monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
         result = archive_store.export(out)
-        assert out.is_file()
-        assert out.read_bytes() != corrupt, "publish used the racer's substituted bytes (FR2-2)"
-        # And what was published is the verified artifact (self-verifies clean).
+        assert found == [], "a named temp was discoverable mid-export — substitutable (FR2-2)"
+        assert out.read_bytes() != corrupt, "publish used the racer's substituted bytes"
         assert result["self_verification"]["applicability"] == "bundle_rooted"
         assert _v3(out).applicability != "invalid"
+
+    def test_fr2_2_repro_b_the_artifact_is_written_to_a_nameless_inode(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro B): the write goes to a NAMELESS inode
+        (O_TMPFILE, ``st_nlink == 0``), so there is no path at which a symlink could be planted
+        to redirect the write to an attacker-chosen target (CWE-59). Asserted at the write
+        seam. Red-on-pre-fix (74abc95): the write reopened a named mkstemp path by name."""
+        import regista._bundle as bundle_mod
+
+        real_write = bundle_mod._write_bundle_bytes
+        nlinks: list[int] = []
+
+        def probing_write(fd: int, data: bytes) -> None:
+            nlinks.append(os.fstat(fd).st_nlink)
+            real_write(fd, data)
+
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", probing_write)
+        out = tmp_path / "nameless.json"
+        archive_store.export(out)
+        assert nlinks == [0], (
+            f"the artifact was written to a NAMED inode (st_nlink={nlinks}) — a symlink could "
+            "be planted at its path (FR2-2 Repro B); it must be a nameless O_TMPFILE inode"
+        )
+        assert out.is_file()
+
+    def test_fr2_2_repro_c_a_parent_dir_symlink_swap_cannot_redirect_publish(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro C): publication is relative to a dir
+        descriptor opened ONCE, so swapping a parent-directory symlink component after
+        verification cannot redirect where the artifact lands. The output path goes through a
+        symlink ``link -> real_a``; a racer repoints ``link -> real_b`` during verification.
+        The bundle must land in real_a (the dir the descriptor was opened on), never real_b.
+        Red-on-pre-fix (74abc95): publish re-resolved the output pathname, so it landed in
+        real_b."""
+        import regista._bundle as bundle_mod
+
+        real_a = tmp_path / "real_a"
+        real_b = tmp_path / "real_b"
+        real_a.mkdir()
+        real_b.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real_a, target_is_directory=True)
+        out = link / "bundle.json"
+
+        real_verify = bundle_mod.verify_audit_bundle_v3
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            report = real_verify(path, trust, **kw)
+            link.unlink()
+            link.symlink_to(real_b, target_is_directory=True)  # swap the parent AFTER verify
+            return report
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        archive_store.export(out)
+        assert (real_a / "bundle.json").is_file(), "publish ignored the held dir descriptor"
+        assert not (real_b / "bundle.json").exists(), (
+            "a parent-dir symlink swap redirected the publish"
+        )
+        assert _v3(real_a / "bundle.json").applicability != "invalid"
 
 
 # ---------------------------------------------------------------------------

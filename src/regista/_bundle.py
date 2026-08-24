@@ -79,10 +79,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import json
 import os
-import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -482,84 +482,147 @@ def _lock_export_snapshot_head(conn: DictConn) -> tuple[str | None, int]:
     return head_text, total
 
 
-def _publish_verified_partial(tmp_output: Path, output: Path, *, overwrite: bool) -> None:
-    """Publish the self-verified ``.partial`` to its destination (§9 rule 4/5, WI-340 F2).
+#: ``AT_EMPTY_PATH`` (``linux/fcntl.h``) — lets ``linkat`` name the inode a descriptor holds,
+#: with an empty pathname, so an ``O_TMPFILE`` inode is materialised WITHOUT ever having had a
+#: path an attacker could reach. The linker (linkat AT_EMPTY_PATH from the creating process's
+#: own O_TMPFILE fd) needs no CAP_DAC_READ_SEARCH, unlike the ``/proc/self/fd`` + follow route.
+_AT_EMPTY_PATH: Final = 0x1000
 
-    The up-front ``output.exists()`` check is a courtesy, not the enforcement: a destination
-    created AFTER that check but before publication would be silently clobbered by a plain
-    ``os.replace``. So the no-clobber rule is enforced HERE, atomically:
 
-    * ``overwrite=True`` — ``os.replace`` (an intentional replacement is allowed).
-    * ``overwrite=False`` — ``os.link`` the ``.partial`` onto the destination, which the
-      kernel fails with ``FileExistsError`` if the destination exists (there is no
-      link-and-overwrite). A destination that appeared in the TOCTOU window is refused, not
-      clobbered; the ``.partial`` is then unlinked on success and left for inspection on
-      refusal.
+def _write_bundle_bytes(fd: int, data: bytes) -> None:
+    """Write ``data`` to descriptor ``fd`` in full (§9 rule 5).
+
+    A named function so the write-failure and corruption test seams patch THIS — the bytes
+    that reach the held inode — rather than a pathname reopen, which no longer happens
+    (WI-340 FR2-2-FINAL: the write is by descriptor, not by name).
     """
 
-    if overwrite:
-        os.replace(tmp_output, output)
-        return
-    try:
-        os.link(tmp_output, output)
-    except FileExistsError as exc:
-        raise RegistaError(
-            ErrorCode.INVALID_ARGUMENT,
-            f"refusing to overwrite existing destination {output} (BUNDLE-V3.md §9 rule 4, "
-            "WI-261): a destination appeared during the export and no-clobber publication "
-            "(os.link) refused it rather than replacing it. Pass overwrite=True to replace. "
-            f"The verified artifact is left at {tmp_output} for inspection.",
-        ) from exc
-    tmp_output.unlink()
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+def _linkat_held_inode(fd: int, dir_fd: int, name: str) -> None:
+    """Give the inode held by ``fd`` the directory entry ``name`` under ``dir_fd``.
+
+    ``linkat(fd, "", dir_fd, name, AT_EMPTY_PATH)`` — the capability that publishes THE VERIFIED
+    INODE, not a re-resolved pathname. It fails ``EEXIST`` if ``name`` already exists (the
+    no-clobber primitive), and because ``dir_fd`` is a descriptor opened once, a swap of a
+    parent-directory symlink component after verification cannot redirect it (FR2-2 Repro C).
+    """
+
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+    result = libc.linkat(
+        ctypes.c_int(fd), b"", ctypes.c_int(dir_fd), name.encode(), ctypes.c_int(_AT_EMPTY_PATH)
+    )
+    if result != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), name)
 
 
 def _write_selfverify_publish(
     output: Path, serialized: bytes, *, overwrite: bool
 ) -> BundleReport:
-    """Write → self-verify → publish, over a UNIQUE exclusively-created temp inode (§9 rule 5;
-    WI-340 F2/FR2-2).
+    """Write → self-verify → publish holding ONE inode capability throughout (§9 rule 5;
+    WI-340 FR2-2-FINAL).
 
-    The temp file is created with ``tempfile.mkstemp`` (``O_CREAT|O_EXCL``) in the destination
-    directory, so its name is unique and unknown to any other exporter: a second export cannot
-    truncate/rewrite the exact path between this export's self-verification and its publish and
-    thereby make it publish bytes it never verified (the FR2-2 defect of the old fixed
-    ``<name>.partial`` path). Self-verification reads THAT inode and publication links/replaces
-    THAT inode. The self-verify uses Phase C's one verdict verifier with ``AcceptBundledKeys``
-    (self-consistency, clamped to ``bundle_rooted``); an ``invalid`` verdict means the bytes on
-    disk are not the signed statement — a corrupt write — so ``BUNDLE_WRITE_CORRUPT`` fires and
-    the temp is LEFT for inspection, the destination never touched.
+    The earlier fix created a uniquely-named temp but then closed the descriptor and re-opened
+    it BY NAME for write, verify and publish — so those three steps were not guaranteed to be
+    the same inode, and Sol demonstrated three exploits: a post-verify substitution of the
+    random path (publish the attacker's bytes), a symlink planted at the path before the write
+    (arbitrary-file overwrite), and a parent-directory symlink swap. All are by-name
+    re-resolution. The fix is to never hold a name for the artifact at all:
+
+    * Create the artifact as an ``O_TMPFILE`` inode in the destination directory — a regular
+      file with NO directory entry, so there is no path to poll, substitute or symlink-plant.
+    * Write to it by descriptor (:func:`_write_bundle_bytes`), never by pathname.
+    * Self-verify the bytes THAT descriptor holds, via ``/proc/self/fd/<n>`` (which resolves to
+      the held inode, not a name another process controls).
+    * Publish by ``linkat(fd, "", dir_fd, ..., AT_EMPTY_PATH)`` — the published inode IS the
+      verified inode. ``dir_fd`` is opened once, so a parent-dir symlink swap cannot redirect
+      the link (Repro C). ``overwrite=False`` is no-clobber (linkat fails ``EEXIST`` if the
+      destination exists); ``overwrite=True`` links to a fresh dir-relative name and
+      ``os.replace``s it, still the held inode.
+
+    On a corrupt self-verification the held inode is materialised to a ``.partial`` inspection
+    name and ``BUNDLE_WRITE_CORRUPT`` fires; the destination is never touched. This is Linux
+    (``O_TMPFILE`` + ``AT_EMPTY_PATH``); a platform without them is a documented refusal rather
+    than a silently weaker by-name path.
     """
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # mkstemp creates the file O_CREAT|O_EXCL with an unpredictable random component, so no
-    # other exporter can know or collide with this path — that unpredictability, not holding
-    # the fd, is what makes the FR2-2 substitution impossible. We close the descriptor and
-    # write by the unique name (which keeps the existing write-failure/corruption test seams
-    # that patch Path.write_bytes); a racer still cannot target the name.
-    fd, tmp_name = tempfile.mkstemp(
-        dir=output.parent, prefix=output.name + ".", suffix=".partial"
-    )
-    os.close(fd)
-    tmp_output = Path(tmp_name)
-    try:
-        tmp_output.write_bytes(serialized)
-    except BaseException:
-        tmp_output.unlink(missing_ok=True)
-        raise
-
-    report = verify_audit_bundle_v3(
-        tmp_output, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
-    )
-    if report.applicability is BundleApplicability.INVALID:
+    o_tmpfile = getattr(os, "O_TMPFILE", None)
+    if o_tmpfile is None:  # pragma: no cover - platform guard (this estate is Linux)
         raise RegistaError(
             ErrorCode.BUNDLE_WRITE_CORRUPT,
-            "the exported artifact does not self-verify (its statement signature or a "
-            "recomputed commitment does not hold over the bytes written); the verified-"
-            f"candidate temp is left at {tmp_output} for inspection and the destination was "
-            f"NOT touched (BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
+            "bundle publication requires Linux O_TMPFILE + linkat(AT_EMPTY_PATH) for "
+            "inode-identity publication (BUNDLE-V3.md §9 rule 5, WI-340 FR2-2). This platform "
+            "provides neither, and a by-name fallback is exploitable, so export refuses rather "
+            "than publish over a re-resolvable pathname. Nothing was written.",
         )
-    _publish_verified_partial(tmp_output, output, overwrite=overwrite)
-    return report
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    parent = str(output.parent)
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    inspection_suffix = os.urandom(6).hex()
+
+    def _materialise_for_inspection(fd: int) -> Path:
+        name = f"{output.name}.{inspection_suffix}.partial"
+        _linkat_held_inode(fd, dir_fd, name)
+        return output.parent / name
+
+    fd = os.open(parent, o_tmpfile | os.O_RDWR, 0o600)
+    try:
+        try:
+            _write_bundle_bytes(fd, serialized)
+            os.fsync(fd)
+        except BaseException:
+            # The O_TMPFILE inode is nameless, so a failed write leaves nothing behind and the
+            # destination — never linked — is spared (WI-249). Closing the fd reclaims it.
+            raise
+
+        # Self-verify the HELD inode (Phase C's one verdict verifier, AcceptBundledKeys →
+        # self-consistency, clamped to bundle_rooted). `/proc/self/fd/<n>` is the held inode.
+        report = verify_audit_bundle_v3(
+            Path(f"/proc/self/fd/{fd}"),
+            AcceptBundledKeys(operator_acknowledges_no_external_trust=True),
+        )
+        if report.applicability is BundleApplicability.INVALID:
+            inspect = _materialise_for_inspection(fd)
+            raise RegistaError(
+                ErrorCode.BUNDLE_WRITE_CORRUPT,
+                "the exported artifact does not self-verify (its statement signature or a "
+                "recomputed commitment does not hold over the bytes written); the verified-"
+                f"candidate is materialised at {inspect} for inspection and the destination "
+                f"was NOT touched (BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
+            )
+
+        # Publish the held (verified) inode.
+        if overwrite:
+            staging = f"{output.name}.{os.urandom(6).hex()}.partial"
+            _linkat_held_inode(fd, dir_fd, staging)
+            os.replace(staging, output.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        else:
+            try:
+                _linkat_held_inode(fd, dir_fd, output.name)
+            except OSError as exc:
+                if exc.errno != errno.EEXIST:
+                    raise
+                inspect = _materialise_for_inspection(fd)
+                raise RegistaError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"refusing to overwrite existing destination {output} (BUNDLE-V3.md §9 "
+                    "rule 4, WI-261): a destination appeared during the export and no-clobber "
+                    "publication (linkat) refused it rather than replacing it. Pass "
+                    f"overwrite=True to replace. The verified artifact is at {inspect} for "
+                    "inspection.",
+                ) from exc
+        return report
+    finally:
+        os.close(fd)
+        os.close(dir_fd)
 
 
 def _windowed_source_sql(

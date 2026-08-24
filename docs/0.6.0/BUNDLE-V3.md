@@ -1203,12 +1203,21 @@ advance the head until the statement is signed; a `complete-store` is signed ove
 snapshot whose chain-ordered scope is asserted equal to the locked head or export aborts, and
 its signed `created_at` cannot post-date an omitted event (FR2-1 fixed F1's too-narrow window,
 which released the lock before scope/`created_at`/signing). Only publication runs after the
-lock — and it publishes over a **unique, exclusively-created** temp inode
-(`tempfile.mkstemp`, `_write_selfverify_publish`), never a fixed shared `<name>.partial` path
-a second exporter could rewrite between self-verify and publish (FR2-2). Publication is atomic
-no-clobber for `overwrite=False` (`os.link`, which the kernel refuses if the destination
-appeared after the up-front `exists()` check) and `os.replace` for `overwrite=True`
-(`_publish_verified_partial`, F2).
+lock. Publication holds ONE inode capability end to end (`_write_selfverify_publish`,
+FR2-2-FINAL): the artifact is created as a Linux `O_TMPFILE` — a regular file with **no
+directory entry** — written by descriptor (never by pathname), self-verified through
+`/proc/self/fd/<n>` (the held inode), and published by
+`linkat(fd, "", dir_fd, dest, AT_EMPTY_PATH)` so the published inode IS the verified inode.
+Because the artifact never has a name before publication there is nothing to poll, substitute,
+or symlink-plant (closing the post-verify substitution and the symlink-plant CWE-59 vectors),
+and `dir_fd` is opened once so a parent-directory symlink swap cannot redirect the link (the
+third vector). `overwrite=False` is no-clobber (`linkat` fails `EEXIST` if the destination
+exists); `overwrite=True` links the held inode to a fresh dir-relative name and `os.replace`s
+it, still the verified inode. A platform without `O_TMPFILE`/`AT_EMPTY_PATH` is a documented
+refusal, never a silently weaker by-name path. The earlier fix (a uniquely-named `mkstemp`
+temp re-opened by name) was insufficient: the unique name stopped accidental collisions but
+not a determined racer, because create/write/verify/publish were not guaranteed the same
+inode.
 
 **Deliberately NOT landed, and where it goes.** None is an oversight:
 
