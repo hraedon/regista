@@ -1070,8 +1070,9 @@ acknowledgement, so there is no implicit conversion); §4.2 `TrustPolicy` consum
 `TRUST-DOMAIN.md` §4.6 schema and refuses a policy missing a required field, plus the minimal
 ad-hoc `--trusted-fingerprint` form whose policy-dependent axes report their not-checkable
 value; §4.3 `BundleKeyResolver` renamed `BundledKeyEvidenceResolver`, the default path built
-from a separate `PolicyKeyResolver` (bytes from evidence, trust from the pin — §5.1 amendment
-4), and any `BUNDLE_EMBEDDED` use clamped by Rule C; §4.6 external evidence never raises an
+from a separate `PolicyKeyResolver` (bytes from evidence, trust from the pin — see the §5.1
+amendment-4 clarification below), and any `BUNDLE_EMBEDDED` use clamped by Rule C; §4.6
+external evidence never raises an
 axis (it is not read into any axis); §3.2 item 2 direct `root_signatures[]` now **verified**
 against the policy's pinned root signer set and `min_root_signatures` (Phase B refused the
 shape; Phase C accepts a well-formed one and checks it); §5.1 the axes A1–A5 and A7–A12, each
@@ -1095,11 +1096,55 @@ with the policy's pins threaded in (`pinned_trust_domain_id`, `pinned_project_in
 Phase B's `verify_bundle_v3_core`; the offline signing-authority resolver
 (`resolve_bundle_signing_authority`) is unchanged.
 
+### CLARIFIES §5.1 amendment 4 — `externally_pinned` means chain-to-root, not per-key pinning
+
+> This is a Phase-C implementation-review reconciliation, ratified two-lineage (Claude + the
+> two Phase-C reviewers, gpt-5.6-sol and a Claude probe-executor). It does not edit §5.1's
+> ratified amendment-4 text; it states the operative reading where that text, read literally,
+> underspecifies against §10 and §4.4 criterion 2 — the governing clauses.
+>
+> §5.1 amendment 4 reads: "A key whose bytes travelled inside the bundle is `externally_pinned`
+> if its recomputed fingerprint matches an auditor pin." Read as *per-key* pinning — a key is
+> external iff its own fingerprint is in the pin list — this is **wrong in the direction that
+> manufactures false external authentication**: it lets a verifier reach
+> `externally_authenticated` by pinning every project writer key's own fingerprint, when the
+> §10 workflow the auditor actually follows is to pin the **root** and let the acceptance chain
+> carry trust down to the writer keys ("pin the root fingerprint(s) and let the acceptance chain
+> do the rest"). §4.4 criterion 2 is explicit that authority flows along a chain with
+> **enrolment-before-use** and rotation/revocation windowing. The whole architecture —
+> trust-domain roots, `principal_key_enrolled`/`principal_key_accepted` events, the
+> `trust_event_hash` cross-link — is chain-to-root.
+>
+> **Operative semantics (what Phase C implements):** a key is `externally_pinned` iff it is
+> authenticated by a *signed chain to a policy-pinned ROOT fingerprint*. Amendment 4's
+> fingerprint-match is the **base case only** — a root signing directly (a chain of length
+> zero). A non-root project key (writer, bootstrap) is `externally_pinned` only through its
+> signed acceptance/enrolment chain to a pinned root; its own fingerprint being pinned is not
+> sufficient and is not the model. Key *material* (bytes) still travels in `bundled_key_evidence`
+> and trust still comes only from the auditor's pin (§4.2 unchanged) — what this fixes is *which*
+> pin, and *how* it reaches a non-root key.
+>
+> **Consequence, stated so it is not read as a gap (WI-337):** the chain-to-root walk for a
+> project key crosses from the project chain into the **trust log** (writer → project acceptance
+> → project genesis bootstrap → trust-log enrolment → pinned root). Every trust-log verifier in
+> the tree — `verify_trust_log_chain`, `resolve_enrolled_key`, `load_published_checkpoint` — is
+> **store-backed**, and §8.4 forbids the offline verifier from fetching. There is no offline,
+> signature-verified trust-log artifact yet; **producing one is WI-337.** So Phase C's offline
+> verifier authenticates the base case (a directly-pinned root) but **cannot** complete a
+> non-root key's chain offline. A self-contained project bundle therefore reports its event keys
+> as `bundled_only` and **cannot reach `externally_authenticated`** — the honest, fail-closed
+> boundary, not a silent pass. Reaching `externally_authenticated` for a project bundle is
+> WI-337-blocked. A verifier that faked it — by trusting caller-supplied trust-log referents
+> without verifying their signatures and ancestry — would be committing the exact
+> false-external-authentication class this document exists to remove (that was the Phase-C
+> round-1 defect, now removed).
+
 **Deliberately not landed, and where it goes.** None of these is an oversight:
 
 | Clause | Owner | Consequence at Phase C |
 |---|---|---|
-| §4.5 `root_governance` as a **replay-confirmed** `matches_policy` | future / Phase D-adjacent | A9 lands the axis and the policy comparison: a restated mode outside `required_root_governance` is `contradicts_policy` (a finding → `invalid`), and a consistent one is `unverified_restatement` — because the `bundle verify` path is handed the policy and the head pin (§10), **not** an authenticated trust log to replay. `matches_policy` is reachable only with a trust-log replay, which §10's CLI does not feed to bundle verify; A9 therefore never silently claims a match it did not confirm (§4.5: "a verifier that cannot replay reports `unverified_restatement`"). |
-| §4.4 criterion 2 event key material chaining to the pinned root via the presented trust log | future | `verify_audit_bundle_v3` accepts an optional `presented_trust_log` of enrolment referents (the material an auditor holds out of band, §8.4), which is what lets a `complete-store` bundle's genesis bootstrap reach `externally_pinned` full authentication. The **CLI does not yet have a flag to supply it**, so a `complete-store` bundle verified through the CLI tops out below `externally_authenticated` (its genesis bootstrap stays `bundled_only`). This is the honest boundary named at §9 residual 6, not a defect: the verdict reports exactly what the presented material established. |
+| §4.5 `root_governance` as a **replay-confirmed** `matches_policy` | WI-337-adjacent | A9 lands the axis and the policy comparison: a restated mode outside `required_root_governance` is `contradicts_policy` (a finding → `invalid`), and a consistent one is `unverified_restatement` — because the `bundle verify` path is handed the policy and the head pin (§10), **not** an authenticated trust log to replay. `matches_policy` is reachable only with a trust-log replay, which is store-backed (WI-337); A9 therefore never silently claims a match it did not confirm (§4.5: "a verifier that cannot replay reports `unverified_restatement`"). |
+| §4.4 criterion 2 chain-to-root for a **non-root** project key, and hence `externally_authenticated` for a project bundle | **WI-337-blocked** | See the amendment-4 clarification above. Completing a writer/bootstrap key's chain to a pinned root needs authenticated trust-log material, and the only trust-log verifiers are store-backed while §8.4 forbids fetching. There is no offline signature-verified trust-log artifact (WI-337), so a project bundle verified offline reports `bundled_only`/`bundle_rooted`/`unauthenticated` honestly and never reaches `externally_authenticated`. The base case (a directly root-signed statement or event) **is** authenticated. |
+| §10 CLI `--trust-log` flag to present authenticated trust-log material | **WI-337-blocked** | Deliberately NOT added. The only trust-log source today is the live store (a DSN); wiring a DSN fetch into the offline auditor tool contradicts §8.4 ("a verifier that silently fetches its own trust material has no trust root at all") and the §10 offline workflow, and inventing a published-artifact format is out of scope. So the CLI's exit-0 (`externally_authenticated`) verdict is **unreachable for a project bundle until WI-337 publishes an offline, signature-verifiable trust log**; it is reported here rather than shipped as a documented-but-unreachable top verdict. The CLI's other verdicts (bundle_rooted, unauthenticated, invalid) are fully reachable. |
 | §9 export ceremony, preflight, `.partial`-then-self-verify-then-`os.replace`, `--allow-unverified`'s deletion, export exit codes | Phase D | Unchanged from Phase B. `verify_audit_bundle_offline` survives as the export self-check vehicle only; its verdict boolean is gone, replaced by the honestly-named `self_verification_ok` property. |
 | §9 rule 6 credential transport | Phase E (deferred post-cutover by O1) | Unchanged: the section set is closed, so a bundle carrying one is refused. |
