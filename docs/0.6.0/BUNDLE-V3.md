@@ -1194,15 +1194,21 @@ only by a forged-but-orderable bundle, where it fails closed
 (`tests/test_bundle_v3.py::TestDependencyClosureReachesInvalid`). The observable rule-6
 behaviour in normal operation is the contiguous-range naming.
 
-**Concurrency and publication (WI-340 fix round, F1/F2).** Export takes the
-`event_chain_head` sentinel `FOR UPDATE` at the start of its read transaction — the discipline
-the writer and `archive_events` already use — so no append can advance the head between the
-read and the signature; a `complete-store` is signed over one stable snapshot and its
-chain-ordered scope is asserted equal to the head captured under that lock, or export aborts
-(`_lock_export_snapshot_head`, F1). Publication of the self-verified `.partial` is atomic and
-no-clobber for `overwrite=False`: it is `os.link`ed onto the destination, which the kernel
-refuses if the destination appeared in the window after the up-front `exists()` check, rather
-than clobbering it with `os.replace` (`_publish_verified_partial`, F2).
+**Concurrency and publication (WI-340 fix rounds, F1/F2 then FR2-1/FR2-2).** Export makes
+produce→sign a single isolated critical section: it takes the `event_chain_head` sentinel
+`FOR UPDATE` at the start of its transaction (`_lock_export_snapshot_head`) and holds that
+lock through the read, strict-verify, scope construction, `created_at` selection AND the
+statement signature — the discipline the writer and `archive_events` use. So no append can
+advance the head until the statement is signed; a `complete-store` is signed over one stable
+snapshot whose chain-ordered scope is asserted equal to the locked head or export aborts, and
+its signed `created_at` cannot post-date an omitted event (FR2-1 fixed F1's too-narrow window,
+which released the lock before scope/`created_at`/signing). Only publication runs after the
+lock — and it publishes over a **unique, exclusively-created** temp inode
+(`tempfile.mkstemp`, `_write_selfverify_publish`), never a fixed shared `<name>.partial` path
+a second exporter could rewrite between self-verify and publish (FR2-2). Publication is atomic
+no-clobber for `overwrite=False` (`os.link`, which the kernel refuses if the destination
+appeared after the up-front `exists()` check) and `os.replace` for `overwrite=True`
+(`_publish_verified_partial`, F2).
 
 **Deliberately NOT landed, and where it goes.** None is an oversight:
 

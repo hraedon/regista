@@ -1078,12 +1078,12 @@ class TestExportBounds:
 
         assert exc_info.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
         assert "does not self-verify" in str(exc_info.value)
-        # §9 rule 5: the rejected artifact is kept at the .partial for inspection, and the
-        # destination was NEVER touched — os.replace does not run on a failed self-check.
-        partial = tmp_path / "corrupt.json.partial"
-        assert partial.is_file(), "the rejected artifact is kept at the .partial"
-        assert json.loads(partial.read_text())["statement"]["scope"]["event_count"] == 999
-        assert not output.exists(), "os.replace must not run when self-verification fails"
+        # §9 rule 5: the rejected artifact is kept at the unique temp (FR2-2) for inspection,
+        # and the destination was NEVER touched — publication does not run on a failed check.
+        partials = list(tmp_path.glob("corrupt.json.*.partial"))
+        assert len(partials) == 1, f"expected one temp left for inspection: {partials}"
+        assert json.loads(partials[0].read_text())["statement"]["scope"]["event_count"] == 999
+        assert not output.exists(), "publication must not run when self-verification fails"
 
     def test_successful_export_leaves_no_partial_file(
         self, bundle_store: Any, tmp_path: Path
@@ -1568,9 +1568,9 @@ class TestPhaseDExportCeremony:
         with pytest.raises(RegistaError) as exc:
             bundle_store.export(output)
         assert exc.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
-        assert replaced == [], "os.replace must NOT run when the .partial fails self-verify"
+        assert replaced == [], "os.replace must NOT run when the temp fails self-verify"
         assert not output.exists()
-        assert (tmp_path / "rule5.json.partial").is_file()
+        assert len(list(tmp_path.glob("rule5.json.*.partial"))) == 1
 
 
 class _ArchiveStore:
@@ -1826,6 +1826,83 @@ class TestPhaseDConcurrencyAndTOCTOU:
         assert exc.value.code == ErrorCode.INVALID_ARGUMENT
         assert "overwrite" in str(exc.value)
         assert out.read_bytes() == sentinel, "the racer's destination must not be clobbered"
+
+    def test_fr2_1_the_head_lock_is_held_through_signing(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (WI-340 FR2-1): the head lock is held through SIGNING, not only the read.
+        The hook fires at the sign step (``build_bundle_v3_document``, now inside the lock); a
+        concurrent append is still blocked there, so no event can commit between the read and
+        the signed ``created_at`` and make a complete-store false. Red-on-pre-fix: with produce
+        /sign dedented outside the lock, the append commits at signing time and the
+        blocked-assertion fails."""
+        import regista._bundle as bundle_mod
+        from regista._v6_writer import append_v6_event
+
+        store = archive_store.store
+        committed = threading.Event()
+
+        def appender() -> None:
+            with store._mgr.transaction() as conn:
+                append_v6_event(
+                    conn, store._keys, entity_kind="work_item", entity_id=uuid.uuid4(),
+                    transition="created", actor_id=BUNDLE_SIGNER, actor_kind="agent",
+                    producer=v6_producer(), payload={"racing_the_signature": True},
+                )
+            committed.set()
+
+        real_build = bundle_mod.build_bundle_v3_document
+        state: dict[str, Any] = {}
+
+        def build_hook(**kw: Any) -> Any:
+            if "t" not in state:
+                t = threading.Thread(target=appender)
+                t.start()
+                state["t"] = t
+                time.sleep(1.5)
+                assert not committed.is_set(), (
+                    "an append committed at SIGNING time — the head lock is released before "
+                    "signing (FR2-1 regression: produce/sign is outside the critical section)"
+                )
+            return real_build(**kw)
+
+        monkeypatch.setattr(bundle_mod, "build_bundle_v3_document", build_hook)
+        out = tmp_path / "sign_locked.json"
+        result = archive_store.export(out)
+        state["t"].join(timeout=15)
+        assert committed.is_set(), "the append completes once the export released the lock"
+        assert result["scope_kind"] == "complete-store"
+        assert result["self_verification"]["applicability"] == "bundle_rooted"
+
+    def test_fr2_2_a_unique_temp_defeats_a_shared_path_substitution(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2): the export publishes bytes it verified, over a UNIQUE
+        exclusively-created temp inode — not a fixed shared ``<name>.partial`` path a second
+        exporter could rewrite between self-verify and publish. The racer here rewrites the
+        predictable shared path AFTER self-verification; because the real temp name is
+        unpredictable, the published artifact is still the verified bytes. Red-on-pre-fix: the
+        old fixed ``<name>.partial`` path is exactly what the racer overwrites, so the publish
+        used unverified bytes."""
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "sub.json"
+        corrupt = b'{"corrupt": "substituted-after-verification"}'
+        real_verify = bundle_mod.verify_audit_bundle_v3
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            report = real_verify(path, trust, **kw)
+            # A racer overwrites the PREDICTABLE shared path a pre-FR2-2 exporter would use.
+            (tmp_path / "sub.json.partial").write_bytes(corrupt)
+            return report
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        result = archive_store.export(out)
+        assert out.is_file()
+        assert out.read_bytes() != corrupt, "publish used the racer's substituted bytes (FR2-2)"
+        # And what was published is the verified artifact (self-verifies clean).
+        assert result["self_verification"]["applicability"] == "bundle_rooted"
+        assert _v3(out).applicability != "invalid"
 
 
 # ---------------------------------------------------------------------------

@@ -82,6 +82,7 @@ import binascii
 import hashlib
 import json
 import os
+import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -512,6 +513,55 @@ def _publish_verified_partial(tmp_output: Path, output: Path, *, overwrite: bool
     tmp_output.unlink()
 
 
+def _write_selfverify_publish(
+    output: Path, serialized: bytes, *, overwrite: bool
+) -> BundleReport:
+    """Write → self-verify → publish, over a UNIQUE exclusively-created temp inode (§9 rule 5;
+    WI-340 F2/FR2-2).
+
+    The temp file is created with ``tempfile.mkstemp`` (``O_CREAT|O_EXCL``) in the destination
+    directory, so its name is unique and unknown to any other exporter: a second export cannot
+    truncate/rewrite the exact path between this export's self-verification and its publish and
+    thereby make it publish bytes it never verified (the FR2-2 defect of the old fixed
+    ``<name>.partial`` path). Self-verification reads THAT inode and publication links/replaces
+    THAT inode. The self-verify uses Phase C's one verdict verifier with ``AcceptBundledKeys``
+    (self-consistency, clamped to ``bundle_rooted``); an ``invalid`` verdict means the bytes on
+    disk are not the signed statement — a corrupt write — so ``BUNDLE_WRITE_CORRUPT`` fires and
+    the temp is LEFT for inspection, the destination never touched.
+    """
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file O_CREAT|O_EXCL with an unpredictable random component, so no
+    # other exporter can know or collide with this path — that unpredictability, not holding
+    # the fd, is what makes the FR2-2 substitution impossible. We close the descriptor and
+    # write by the unique name (which keeps the existing write-failure/corruption test seams
+    # that patch Path.write_bytes); a racer still cannot target the name.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=output.parent, prefix=output.name + ".", suffix=".partial"
+    )
+    os.close(fd)
+    tmp_output = Path(tmp_name)
+    try:
+        tmp_output.write_bytes(serialized)
+    except BaseException:
+        tmp_output.unlink(missing_ok=True)
+        raise
+
+    report = verify_audit_bundle_v3(
+        tmp_output, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+    )
+    if report.applicability is BundleApplicability.INVALID:
+        raise RegistaError(
+            ErrorCode.BUNDLE_WRITE_CORRUPT,
+            "the exported artifact does not self-verify (its statement signature or a "
+            "recomputed commitment does not hold over the bytes written); the verified-"
+            f"candidate temp is left at {tmp_output} for inspection and the destination was "
+            f"NOT touched (BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
+        )
+    _publish_verified_partial(tmp_output, output, overwrite=overwrite)
+    return report
+
+
 def _windowed_source_sql(
     columns: str, *, since_seq: int | None, until_seq: int | None, with_archive: bool
 ) -> tuple[str, list[int]]:
@@ -880,12 +930,19 @@ def export_audit_bundle(
             "until it lands, supply the replayed state explicitly. Nothing was written.",
         )
 
+    from ._integrity import REGISTA_VERSION
+
+    # WI-340 FR2-1 — produce AND sign inside the head-lock transaction. F1 held the lock only
+    # across the read, then dedented scope construction, created_at selection and SIGNING
+    # outside it; a concurrent append committed after the lock released and BEFORE created_at
+    # was chosen, yielding a signed complete-store whose created_at post-dates an event it
+    # omits. So the whole produce→sign critical section runs under `_lock_export_snapshot_head`:
+    # no appender can advance the head until the statement (with its created_at) is signed.
+    # Only publication — writing the temp file, self-verifying it, and the atomic link/replace
+    # — happens after the lock, because the signed created_at then identifies the
+    # lock-protected snapshot and the bytes are already committed to by the signature.
     with mgr.transaction() as conn:
-        # §9 rule 1/2/3 (WI-340 F1): lock the store head FIRST, so the read → strict-verify →
-        # scope → head-check below all see one stable snapshot. No appender can advance the
-        # head until this transaction ends, so a concurrent append cannot slip a stale prefix
-        # into a signed complete-store. `snapshot_head` is what the derived scope is checked
-        # against before signing.
+        # §9 rule 1/2/3 (F1): lock the store head FIRST, held through signing (FR2-1).
         snapshot_head, snapshot_count = _lock_export_snapshot_head(conn)
         records = _read_export_rows(conn, since_seq=since_seq, until_seq=until_seq)
         if not records:
@@ -939,152 +996,116 @@ def export_audit_bundle(
             root_governance=root_governance,
         )
 
-    members = [parse_event_member(env, sig) for env, sig in records]
-    # A windowed export starts mid-chain, and its anchor is the event immediately before
-    # it — read off the chain, never off the window bounds. A window that happens to start
-    # at genesis is a complete prefix and declares `preceding_event_hash: null`.
-    #
-    # Owner ruling O4 is enforced twice on purpose, and the two refusals say different
-    # things. Here: the selected set has more than one way in, so it is not a *range* at
-    # all and the scope cannot be stated. In `derive_chain_order`: the set has one entry
-    # point but does not link all the way through. Both refuse; neither degrades.
-    entry_prevs = {m.previous_project_event_hash for m in members}
-    presented = {m.event_hash_text for m in members}
-    external_prevs = sorted(p for p in entry_prevs if p is not None and p not in presented)
-    entry_count = len(external_prevs) + (1 if None in entry_prevs else 0)
-    if entry_count != 1:
-        raise RegistaError(
-            ErrorCode.BUNDLE_CHAIN_UNORDERABLE,
-            f"the selected events have {entry_count} distinct entry point(s) into the "
-            "chain, so they are not one contiguous range and no scope describes them. "
-            "Owner ruling O4: export refuses rather than producing a partial or "
-            "diagnostic artifact. Nothing was written.",
-            detail={
-                "external_entry_points": external_prevs[:10],
-                "contains_chain_genesis": None in entry_prevs,
-            },
+        members = [parse_event_member(env, sig) for env, sig in records]
+        # A windowed export starts mid-chain, and its anchor is the event immediately before
+        # it — read off the chain, never off the window bounds. A window that happens to start
+        # at genesis is a complete prefix and declares `preceding_event_hash: null`.
+        #
+        # Owner ruling O4 is enforced twice on purpose, and the two refusals say different
+        # things. Here: the selected set has more than one way in, so it is not a *range* at
+        # all and the scope cannot be stated. In `derive_chain_order`: the set has one entry
+        # point but does not link all the way through. Both refuse; neither degrades.
+        entry_prevs = {m.previous_project_event_hash for m in members}
+        presented = {m.event_hash_text for m in members}
+        external_prevs = sorted(
+            p for p in entry_prevs if p is not None and p not in presented
         )
-    preceding_event_hash = None if None in entry_prevs else external_prevs[0]
-    # A *windowed* export is `contiguous-range` even when the window happens to select the
-    # whole chain, and this is the strict direction rather than a convenience. §3.5's
-    # `complete-store` claim is "the signer attested this is the whole chain as it stood at
-    # `created_at`"; an export that was given bounds cannot attest that, because the bounds
-    # are what it looked at. A prefix window anchored at genesis is a legitimate
-    # `contiguous-range` with `preceding_event_hash: null` — §3.5 says so in as many words
-    # ("or the range starts at genesis") — so nothing is lost by refusing to promote it.
-    scope_kind = (
-        "complete-store"
-        if preceding_event_hash is None and since_seq is None and until_seq is None
-        else "contiguous-range"
-    )
+        entry_count = len(external_prevs) + (1 if None in entry_prevs else 0)
+        if entry_count != 1:
+            raise RegistaError(
+                ErrorCode.BUNDLE_CHAIN_UNORDERABLE,
+                f"the selected events have {entry_count} distinct entry point(s) into the "
+                "chain, so they are not one contiguous range and no scope describes them. "
+                "Owner ruling O4: export refuses rather than producing a partial or "
+                "diagnostic artifact. Nothing was written.",
+                detail={
+                    "external_entry_points": external_prevs[:10],
+                    "contains_chain_genesis": None in entry_prevs,
+                },
+            )
+        preceding_event_hash = None if None in entry_prevs else external_prevs[0]
+        # A *windowed* export is `contiguous-range` even when the window happens to select the
+        # whole chain, and this is the strict direction rather than a convenience. §3.5's
+        # `complete-store` claim is "the signer attested this is the whole chain as it stood
+        # at `created_at`"; an export that was given bounds cannot attest that, because the
+        # bounds are what it looked at. A prefix window anchored at genesis is a legitimate
+        # `contiguous-range` with `preceding_event_hash: null` — §3.5 says so in as many words
+        # ("or the range starts at genesis") — so nothing is lost by refusing to promote it.
+        scope_kind = (
+            "complete-store"
+            if preceding_event_hash is None and since_seq is None and until_seq is None
+            else "contiguous-range"
+        )
 
-    from ._integrity import REGISTA_VERSION
-
-    # A windowed export legitimately excludes the signer's own acceptance event, so the
-    # builder resolves O3 over the WHOLE chain (what the exporter observes) and emits over
-    # the window. Reading the full chain a second time is the honest cost of that: the
-    # alternative is resolving authority from the window and refusing every chunk that
-    # happens not to contain the acceptance, which would break §9's chunking workflow.
-    authority_records = records
-    if since_seq is not None or until_seq is not None:
-        with mgr.transaction() as conn:
+        # A windowed export legitimately excludes the signer's own acceptance event, so the
+        # builder resolves O3 over the WHOLE chain (what the exporter observes) and emits over
+        # the window. The full-chain re-read stays on THIS connection, still under the head
+        # lock — F1 read it in a second transaction, which the FR2-1 fix folds in so the whole
+        # produce step is one snapshot.
+        authority_records = records
+        if since_seq is not None or until_seq is not None:
             authority_records = _read_export_rows(conn, since_seq=None, until_seq=None)
 
-    document = build_bundle_v3_document(
-        event_records=records,
-        authority_records=authority_records,
-        project_instance_id=str(identity.project_instance_id),
-        trust_root=trust_root,
-        signer=signer,
-        scope_kind=scope_kind,
-        preceding_event_hash=preceding_event_hash,
-        bundled_key_evidence=_key_evidence_section(members),
-        external_evidence=external_evidence,
-        regista_version=REGISTA_VERSION,
-    )
-
-    statement = document["statement"]
-    scope = statement["scope"]
-
-    # §9 rule 1 (WI-340 F1): a complete-store MUST equal the store head captured under the
-    # lock. Under the lock this always holds for a healthy read; the assertion is the
-    # fail-closed backstop that makes a stale-prefix complete-store impossible even if the
-    # read and the head sentinel ever disagreed (a torn READ COMMITTED read is exactly what
-    # produced the reviewer's signed-false artifact). A `contiguous-range` is a prefix by
-    # construction, so its last event is not the store head and this does not apply.
-    if scope_kind == "complete-store" and (
-        scope["last_event_hash"] != snapshot_head
-        or scope["event_count"] != snapshot_count
-    ):
-        raise RegistaError(
-            ErrorCode.BUNDLE_STATEMENT_INVALID,
-            "refusing to sign a stale complete-store (BUNDLE-V3.md §9 rule 1): the "
-            f"chain-ordered scope (last={scope['last_event_hash']}, "
-            f"count={scope['event_count']}) does not equal the store head observed under "
-            f"the export lock (head={snapshot_head}, count={snapshot_count}). The head "
-            "advanced under the export or the read was torn; a complete-store must be one "
-            "stable snapshot. Nothing was written.",
-            detail={
-                "scope_last_event_hash": scope["last_event_hash"],
-                "scope_event_count": scope["event_count"],
-                "snapshot_head": snapshot_head,
-                "snapshot_count": snapshot_count,
-            },
+        # SIGN — inside the lock (FR2-1). `build_bundle_v3_document` selects `created_at` and
+        # produces the signature here, so both are protected by the head lock.
+        document = build_bundle_v3_document(
+            event_records=records,
+            authority_records=authority_records,
+            project_instance_id=str(identity.project_instance_id),
+            trust_root=trust_root,
+            signer=signer,
+            scope_kind=scope_kind,
+            preceding_event_hash=preceding_event_hash,
+            bundled_key_evidence=_key_evidence_section(members),
+            external_evidence=external_evidence,
+            regista_version=REGISTA_VERSION,
         )
 
-    # §9 rule 2 (D1): compare against the operator's preflight. If a preflight result is
-    # supplied, the head must not have moved under the export — a mismatch is an error, not
-    # a silently narrower bundle. Checked BEFORE any write: the artifact whose scope
-    # disagrees with the pin is never placed on disk.
-    if preflight is not None:
-        _compare_preflight(scope, preflight)
+        statement = document["statement"]
+        scope = statement["scope"]
 
-    serialized = canonical_bundle_bytes(document)
-    if len(serialized) > MAX_BUNDLE_BYTES:
-        raise RegistaError(
-            ErrorCode.BUNDLE_UNVERIFIABLE,
-            f"Refusing to write an unverifiable bundle: {len(serialized)} bytes "
-            f"exceeds the offline verifier's {MAX_BUNDLE_BYTES}-byte cap "
-            f"({len(records)} events). Chunk the export with "
-            "--since-seq/--until-seq; nothing was written.",
-        )
+        # §9 rule 1 (F1): a complete-store MUST equal the store head captured under the lock.
+        # Under the lock (held through here, FR2-1) this always holds for a healthy read; the
+        # assertion is the fail-closed backstop against a torn read. A `contiguous-range` is a
+        # prefix by construction, so its last event is not the store head and this is skipped.
+        if scope_kind == "complete-store" and (
+            scope["last_event_hash"] != snapshot_head
+            or scope["event_count"] != snapshot_count
+        ):
+            raise RegistaError(
+                ErrorCode.BUNDLE_STATEMENT_INVALID,
+                "refusing to sign a stale complete-store (BUNDLE-V3.md §9 rule 1): the "
+                f"chain-ordered scope (last={scope['last_event_hash']}, "
+                f"count={scope['event_count']}) does not equal the store head observed under "
+                f"the export lock (head={snapshot_head}, count={snapshot_count}). The head "
+                "advanced under the export or the read was torn; a complete-store must be one "
+                "stable snapshot. Nothing was written.",
+                detail={
+                    "scope_last_event_hash": scope["last_event_hash"],
+                    "scope_event_count": scope["event_count"],
+                    "snapshot_head": snapshot_head,
+                    "snapshot_count": snapshot_count,
+                },
+            )
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # §9 rule 5 / D11 — the write order the architecture requires (`:314`) and the code
-    # long marked wrong: write to `.partial` → self-verify the `.partial` → `os.replace`
-    # ONLY on success. The v2 order (write → replace → verify) left a failed self-check's
-    # bad artifact AT the destination; under v3 a failed self-verification leaves only the
-    # `.partial`, for inspection, and the destination is never touched. If write_bytes
-    # itself dies mid-write, unlink the `.partial` — only the partial, never the
-    # destination (WI-249).
-    tmp_output = output.with_name(output.name + ".partial")
-    try:
-        tmp_output.write_bytes(serialized)
-    except BaseException:
-        if tmp_output.exists():
-            tmp_output.unlink()
-        raise
+        # §9 rule 2 (D1): compare against the operator's preflight — inside the lock, before
+        # any write. A mismatch is an error, not a silently narrower bundle.
+        if preflight is not None:
+            _compare_preflight(scope, preflight)
 
-    # Self-verify the `.partial` through Phase C's verdict verifier (§4.1, §5) — reused, not
-    # reimplemented (there is exactly one v3 verifier). The export signs with its own key,
-    # so the honest question is self-consistency: AcceptBundledKeys authenticates the
-    # statement against the key material the bundle already carries and is clamped to
-    # `bundle_rooted` (Rule C). An `invalid` verdict here means the bytes on disk are not the
-    # statement the exporter signed — a corrupt write — so `BUNDLE_WRITE_CORRUPT` fires
-    # (re-pointed at the statement signature, not v2's unkeyed hash) and the `.partial` is
-    # LEFT for inspection; `os.replace` never runs.
-    report = verify_audit_bundle_v3(
-        tmp_output, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
-    )
-    if report.applicability is BundleApplicability.INVALID:
-        raise RegistaError(
-            ErrorCode.BUNDLE_WRITE_CORRUPT,
-            "the exported artifact does not self-verify (its statement signature or a "
-            "recomputed commitment does not hold over the bytes written); the .partial is "
-            f"left at {tmp_output} for inspection and the destination was NOT touched "
-            f"(BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
-        )
-    _publish_verified_partial(tmp_output, output, overwrite=overwrite)
+        serialized = canonical_bundle_bytes(document)
+        if len(serialized) > MAX_BUNDLE_BYTES:
+            raise RegistaError(
+                ErrorCode.BUNDLE_UNVERIFIABLE,
+                f"Refusing to write an unverifiable bundle: {len(serialized)} bytes "
+                f"exceeds the offline verifier's {MAX_BUNDLE_BYTES}-byte cap "
+                f"({len(records)} events). Chunk the export with "
+                "--since-seq/--until-seq; nothing was written.",
+            )
+    # The lock is released here: the statement is SIGNED and its created_at identifies the
+    # lock-protected snapshot, so publication below is safe outside the critical section.
+
+    report = _write_selfverify_publish(output, serialized, overwrite=overwrite)
     log.info(
         "bundle.exported",
         project=project_name,
