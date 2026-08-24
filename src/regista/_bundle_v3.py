@@ -102,7 +102,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
@@ -363,6 +363,16 @@ SIGNER_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 AUTHORITY_KINDS: Final[frozenset[str]] = frozenset({"root", "registrar", "scoped"})
+
+#: §3.2 amendment item 2: a direct root-threshold statement omits ``signer`` and carries
+#: ``root_signatures[]`` — one detached signature per root signer over the same signing input
+#: (§3.4). Each entry is a CLOSED object; a bundled entry carries its own public-key bytes so
+#: the auditor's pinned fingerprint can be compared without routing through the registry (B2).
+#: Trust still comes only from the pin: Phase C verifies each entry against the policy's root
+#: signer set and ``min_root_signatures`` (§4.4 criterion 4, §3.2 item 2).
+ROOT_SIGNATURE_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
+    {"signer_id", "fingerprint", "public_key", "signature"}
+)
 
 STATEMENT_SIGNATURE_KEYS: Final[frozenset[str]] = frozenset({"scheme_id", "key_id", "signature"})
 
@@ -1277,6 +1287,59 @@ def _validate_signer(signer: object) -> Mapping[str, Any]:
     return block
 
 
+def _validate_root_signatures(root_signatures: object) -> list[Mapping[str, Any]]:
+    """Validate the SHAPE of ``statement.root_signatures`` (§3.2 item 2).
+
+    This is the structural half only — a closed entry set, well-formed fingerprints and
+    base64 material, at least one entry, no duplicate fingerprint. Whether *enough* of them
+    verify against the auditor's pinned root signer set and threshold is a trust decision
+    (§4.4 criterion 4) made in :mod:`regista._bundle` where the policy is in scope; a shape
+    that parses here is a signed object the caller is then obliged to verify, never one it may
+    tolerate. Phase B refused this member outright because it had no policy to check it
+    against; Phase C accepts the shape and moves the check to the place that holds the pin.
+    """
+
+    entries = _require_list(root_signatures, "statement.root_signatures")
+    _require_statement(
+        len(entries) >= 1,
+        "statement.root_signatures must carry at least one signature — an empty list is a "
+        "direct root-threshold statement that names no signer",
+    )
+    seen: set[str] = set()
+    validated: list[Mapping[str, Any]] = []
+    for index, entry in enumerate(entries):
+        block = _require_closed_mapping(
+            entry, ROOT_SIGNATURE_ENTRY_KEYS, f"statement.root_signatures[{index}]"
+        )
+        _require_nonempty_text(
+            block["signer_id"], f"statement.root_signatures[{index}].signer_id"
+        )
+        fingerprint = block["fingerprint"]
+        _require_statement(
+            isinstance(fingerprint, str)
+            and fingerprint.startswith("ed25519:sha256:")
+            and is_digest_text(fingerprint[len("ed25519:") :]),
+            f"statement.root_signatures[{index}].fingerprint must be "
+            "ed25519:sha256:<64 lowercase hex> (TRUST-DOMAIN.md §3.5)",
+            fingerprint=fingerprint,
+        )
+        _require_statement(
+            fingerprint not in seen,
+            f"statement.root_signatures[{index}] repeats fingerprint {fingerprint!r}; a "
+            "signer counted twice is a threshold defeated once",
+            fingerprint=fingerprint,
+        )
+        seen.add(fingerprint)
+        _decode_base64(
+            block["public_key"], f"statement.root_signatures[{index}].public_key"
+        )
+        _decode_base64(
+            block["signature"], f"statement.root_signatures[{index}].signature"
+        )
+        validated.append(block)
+    return validated
+
+
 def _validate_statement(statement: object) -> Mapping[str, Any]:
     _require_statement(isinstance(statement, Mapping), "statement must be an object")
     assert isinstance(statement, Mapping)
@@ -1298,19 +1361,6 @@ def _validate_statement(statement: object) -> Mapping[str, Any]:
         present=authority_present,
     )
     authority_key = authority_present[0]
-    if authority_key == "root_signatures":
-        # Recognised, and refused rather than tolerated. A direct root-threshold statement
-        # needs the root signer set and the current threshold, both of which come from
-        # trust-root resolution (§4) — Phase C's work. Accepting the shape and not checking
-        # the signatures would be a signed object with no verifier, which is the exact
-        # failure this document exists to remove.
-        raise _statement_refusal(
-            "a direct root-threshold statement (statement.root_signatures) is not accepted "
-            "by this verifier: checking it requires the current root signer set and "
-            "threshold from trust-root resolution (BUNDLE-V3.md §4), which is not "
-            "implemented here. Refused rather than accepted-and-unchecked",
-            authority="root_signatures",
-        )
 
     _require_closed_mapping(statement, STATEMENT_BASE_KEYS | {authority_key}, "statement")
 
@@ -1359,7 +1409,10 @@ def _validate_statement(statement: object) -> Mapping[str, Any]:
             section=name,
         )
     _validate_trust_root(statement["trust_root"], trust_domain_id=trust_domain_id)
-    _validate_signer(statement["signer"])
+    if authority_key == "signer":
+        _validate_signer(statement["signer"])
+    else:
+        _validate_root_signatures(statement["root_signatures"])
 
     exporter = _require_closed_mapping(statement["exporter"], EXPORTER_KEYS, "statement.exporter")
     _require_nonempty_text(exporter["regista_version"], "statement.exporter.regista_version")
@@ -1605,8 +1658,25 @@ class BundleV3CoreReport:
     #: acceptance object grants ``may_sign_bundles``.
     signer_may_sign_bundles: bool
     #: False when the authority event is outside the presented scope — a fact for §5's
-    #: ``not_checkable``, not a pass.
+    #: ``not_checkable``, not a pass. Retained for ``core_ok`` and the interim export
+    #: self-check, but a Phase C caller deciding A2 MUST read
+    #: :attr:`signer_authority_status` instead: the boolean conflates three outcomes that a
+    #: bounded range must tell apart (WI-289 Phase C review, FR3-FINAL).
     signer_authority_checked: bool
+    #: The tri-state a Phase C A2 decision needs, because ``signer_authority_checked=False``
+    #: covers three DIFFERENT outcomes and a ``contiguous-range`` bundle must not treat a
+    #: revoked or stale-anchor signer the way it treats one whose anchor is merely out of
+    #: window:
+    #:
+    #: * ``"invalid"`` — a HARD authority failure, whatever the scope kind: the resolution
+    #:   refused (a revocation, a self-authorised grant, an ``accepted_by`` that is not the
+    #:   signer), the statement named a stale/superseded anchor, the anchor in force does not
+    #:   grant ``may_sign_bundles``, or a ``complete-store`` bundle is missing the authority it
+    #:   must contain. A signature from such a signer is not a valid membership signature.
+    #: * ``"outside_scope"`` — genuinely not checkable: a bounded range with no in-window
+    #:   anchor and NO refusal. Resolution 4's honest third state — not a pass, not a failure.
+    #: * ``"established"`` — the named anchor is in force and grants ``may_sign_bundles``.
+    signer_authority_status: Literal["established", "outside_scope", "invalid"]
     #: ``None`` when the chain could not be ordered. See ``membership_root_ok``.
     recomputed_membership_root: str | None
     section_digest_mismatches: tuple[str, ...] = ()
@@ -1679,6 +1749,7 @@ class BundleV3CoreReport:
             "chain_ordered": self.chain_ordered,
             "signer_may_sign_bundles": self.signer_may_sign_bundles,
             "signer_authority_checked": self.signer_authority_checked,
+            "signer_authority_status": self.signer_authority_status,
             "recomputed_membership_root": self.recomputed_membership_root,
             "section_digest_mismatches": list(self.section_digest_mismatches),
             "findings": list(self.findings),
@@ -2288,27 +2359,61 @@ def verify_bundle_v3_core(
     # anchor grants it (`may_sign_bundles`). A statement naming a superseded or revoked
     # anchor fails the first even when some anchor in the bundle would have passed the
     # second — which is the whole of scenarios S2 and S3.
-    signer = statement["signer"]
-    assert isinstance(signer, Mapping)
-    authority_hash = str(signer["authority_event_hash"])
-    signer_key_id = str(signer["key_id"])
-    signer_principal_id = str(signer["principal_id"])
+    # A direct root-threshold statement (§3.2 item 2) omits `signer`: there is no principal
+    # id, no `may_sign_bundles` scope and no authority anchor to resolve, because the root
+    # signs directly rather than through an accepted key. The O3 anchor check below is
+    # therefore skipped and the root_signatures are verified in `regista._bundle` where the
+    # policy's root signer set and threshold are in scope (§4.4 criterion 4). The core still
+    # reports every structural check, so a root-signed bundle is not left unexamined.
+    signer = statement.get("signer")
+    has_named_signer = isinstance(signer, Mapping)
     signer_authority_checked = False
     signer_may_sign_bundles = False
-    if chain_ordered:
+    # The tri-state a Phase C A2 decision needs (FR3-FINAL). The default ``outside_scope`` is
+    # for the DIRECT-ROOT statement only — no named signer, so this field is irrelevant and A2
+    # comes from ``root_signatures`` verification in ``regista._bundle``. It must NOT silently
+    # cover a named signer whose authority was never checked: when the chain cannot be ordered,
+    # resolution is skipped, and leaving a named signer at ``outside_scope`` would map to a
+    # passing A2 (``valid_bundled_key``) for an unchecked authority — the not_checkable-vs-pass
+    # conflation this phase exists to remove. A2 has no not_checkable value, so a named signer
+    # whose authority could not be established because the chain won't order is ``invalid``
+    # (fail-closed). ``outside_scope`` is set below ONLY for an ordered bounded range where
+    # resolution specifically established the outside-window condition.
+    signer_authority_status: Literal["established", "outside_scope", "invalid"]
+    if has_named_signer and not chain_ordered:
+        signer_authority_status = "invalid"
+    else:
+        signer_authority_status = "outside_scope"
+    if has_named_signer and chain_ordered:
+        assert isinstance(signer, Mapping)
+        authority_hash = str(signer["authority_event_hash"])
+        signer_key_id = str(signer["key_id"])
+        signer_principal_id = str(signer["principal_id"])
         authority, authority_refusals = resolve_bundle_signing_authority(
             ordered, principal_id=signer_principal_id, key_id=signer_key_id
         )
         if authority is None:
-            if authority_refusals:
-                # Named reasons the material refuses — a revocation, a self-authorised
-                # grant, an accepted_by that is not the signer. These are defects of the
-                # artifact whatever its scope kind, so they are findings in both cases.
+            # Not every refusal is a hard failure. ``resolve_bundle_signing_authority`` emits
+            # ``anchor_grantor_outside_scope`` when a candidate acceptance is present in a
+            # bounded range but its GRANTOR lies outside the window — that is the legitimate
+            # outside-scope third state (Resolution 4), not a defect. Every other refusal
+            # (a revocation, a self-authorised grant, an accepted_by ≠ signer, an invalid or
+            # revoked or non-preceding grantor) is a HARD failure of the artifact whatever its
+            # scope kind, and makes a bounded range invalid exactly as it does a complete store.
+            hard_refusal = any(
+                not r.startswith("anchor_grantor_outside_scope") for r in authority_refusals
+            )
+            if hard_refusal:
                 acc.findings.extend(authority_refusals)
+                signer_authority_status = "invalid"
             elif scope["kind"] == "complete-store":
                 # RECONCILIATION.md Resolution 4: "Missing closure in `complete-store` is
                 # invalid." The signing-authority closure is the one dependency Phase B
-                # enforces; the rest of the closure walk is Phase D's.
+                # enforces; the rest of the closure walk is Phase D's. (Soft grantor-outside-
+                # scope refusals cannot legitimately arise in a whole-chain bundle, so they too
+                # land here as invalid rather than being excused.)
+                if authority_refusals:
+                    acc.findings.extend(authority_refusals)
                 acc.findings.append(
                     "signer_authority_absent_from_complete_store: no key-binding anchor in "
                     f"this bundle grants {signer_principal_id!r}/{signer_key_id!r} any "
@@ -2316,17 +2421,23 @@ def verify_bundle_v3_core(
                     "scope missing a dependency it must contain is invalid, not "
                     "unverifiable"
                 )
+                signer_authority_status = "invalid"
             else:
-                # A bounded range legitimately may not contain it, and Resolution 4 requires
-                # that be *named* rather than treated as satisfaction. Not a finding: the
-                # artifact is not defective. It is the third state.
-                acc.notes.append(
-                    "signer_authority_outside_scope: no key-binding anchor for "
-                    f"{signer_principal_id!r}/{signer_key_id!r} lies inside this "
-                    f"{scope['kind']} scope, so may_sign_bundles could not be re-derived "
-                    "from a signed acceptance (owner ruling O3). Not checkable here — not "
-                    "satisfied"
-                )
+                # A bounded range legitimately may not contain the authority (or its grantor),
+                # and Resolution 4 requires that be *named* rather than treated as satisfaction.
+                # Not a finding: the artifact is not defective. It is the third state — the ONLY
+                # one that maps to a non-invalid A2 for a range (FR3-FINAL).
+                if authority_refusals:
+                    acc.notes.extend(authority_refusals)
+                else:
+                    acc.notes.append(
+                        "signer_authority_outside_scope: no key-binding anchor for "
+                        f"{signer_principal_id!r}/{signer_key_id!r} lies inside this "
+                        f"{scope['kind']} scope, so may_sign_bundles could not be re-derived "
+                        "from a signed acceptance (owner ruling O3). Not checkable here — not "
+                        "satisfied"
+                    )
+                signer_authority_status = "outside_scope"
         else:
             # Refusals alongside a successful resolution still matter: they name candidate
             # anchors the material rejected, which is how an auditor sees that a forged
@@ -2334,7 +2445,10 @@ def verify_bundle_v3_core(
             acc.notes.extend(authority_refusals)
             signer_authority_checked = True
             if authority.event_hash != authority_hash:
+                # A stale/superseded anchor is a HARD failure whatever the scope kind: honouring
+                # an older grant reads the operator's superseded word as current.
                 signer_authority_checked = False
+                signer_authority_status = "invalid"
                 acc.findings.append(
                     "signer_authority_is_not_the_current_anchor: the statement names "
                     f"{authority_hash} as the authority for {signer_principal_id!r}/"
@@ -2346,6 +2460,7 @@ def verify_bundle_v3_core(
                 )
             elif not authority.may_sign_bundles:
                 signer_may_sign_bundles = False
+                signer_authority_status = "invalid"
                 acc.findings.append(
                     "signer_may_not_sign_bundles: the anchor in force at "
                     f"{authority.event_hash} does not grant may_sign_bundles to "
@@ -2355,10 +2470,12 @@ def verify_bundle_v3_core(
                 )
             else:
                 signer_may_sign_bundles = True
+                signer_authority_status = "established"
 
-    statement_signature_checked = statement_public_key is not None
+    statement_signature_checked = has_named_signer and statement_public_key is not None
     statement_signature_valid = False
-    if statement_public_key is not None:
+    if has_named_signer and statement_public_key is not None:
+        assert isinstance(signer, Mapping)
         # The key must BE the key the statement names, and this comparison is the entire
         # stated purpose of `signer.fingerprint`: §3.2 says it "is redundant with `key_id`
         # **on purpose**: the auditor pins fingerprints, not key ids, and a signed
@@ -2401,6 +2518,7 @@ def verify_bundle_v3_core(
         chain_ordered=chain_ordered,
         signer_may_sign_bundles=signer_may_sign_bundles,
         signer_authority_checked=signer_authority_checked,
+        signer_authority_status=signer_authority_status,
         recomputed_membership_root=recomputed_root,
         section_digest_mismatches=tuple(sorted(mismatches)),
         ordered_event_hashes=tuple(m.event_hash_text for m in ordered),

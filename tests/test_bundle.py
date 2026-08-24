@@ -390,7 +390,7 @@ class TestVerifyAuditBundleOffline:
         assert report.work_item_chain_ok is True
         assert report.signer_may_sign_bundles is True
         assert report.errors == [], report.errors
-        assert report.verified is True, (report.errors, report.unverifiable_details)
+        assert report.self_verification_ok is True, (report.errors, report.unverifiable_details)
         assert "bundle_hash_ok" not in report.to_dict()
         assert "signature_check" not in report.to_dict()
 
@@ -436,7 +436,7 @@ class TestVerifyAuditBundleOffline:
         assert any("trust_root_contradicts_genesis" in e for e in report.errors), (
             report.errors
         )
-        assert report.verified is False
+        assert report.self_verification_ok is False
 
     def test_a_caller_supplied_trust_pin_reaches_the_offline_verifier(
         self, bundle_store: Any, tmp_path: Path
@@ -480,7 +480,7 @@ class TestVerifyAuditBundleOffline:
         report = bundle_store.verify(
             output, policy=VerificationPolicy(pinned_trust_domain_id=str(uuid.uuid4()))
         )
-        assert report.verified is False
+        assert report.self_verification_ok is False
         assert any("trust_domain_mismatch" in e for e in report.errors), report.errors
 
     def test_verify_detects_a_signed_field_edit(
@@ -506,7 +506,7 @@ class TestVerifyAuditBundleOffline:
         report = bundle_store.verify(output)
         assert report.statement_signature_checked is True
         assert report.statement_signature_valid is False
-        assert report.verified is False
+        assert report.self_verification_ok is False
         assert any("BUNDLE_STATEMENT_SIGNATURE_INVALID" in e for e in report.errors), (
             report.errors
         )
@@ -538,7 +538,7 @@ class TestVerifyAuditBundleOffline:
 
         report = bundle_store.verify(output)
         assert report.statement_signature_valid is True, "the adversary re-signed"
-        assert report.verified is False
+        assert report.self_verification_ok is False
         assert report.membership_root_ok is False or report.global_chain_ok is False, (
             "a rewritten envelope must change the event hash and therefore the tree"
         )
@@ -700,7 +700,7 @@ class TestOfflineSignatureVerification:
 
         report = bundle_store.verify(output)
         assert report.statement_signature_valid is True, "the adversary re-signed"
-        assert report.verified is False
+        assert report.self_verification_ok is False
         assert report.membership_root_ok is False, (
             "the signature is inside the event hash, so a forgery moves the root"
         )
@@ -743,7 +743,7 @@ class TestOfflineSignatureVerification:
         )
 
         report = bundle_store.verify(output)
-        assert report.verified is False
+        assert report.self_verification_ok is False
         assert report.signatures_verified == 0
         assert any("No public key for key_id" in e for e in report.errors), report.errors
 
@@ -1161,9 +1161,9 @@ class TestExportBounds:
         head_report = bundle_store.verify(head)
         tail_report = bundle_store.verify(tail)
         assert head_report.signer_authority_checked is True
-        assert head_report.verified is True, head_report.errors
+        assert head_report.self_verification_ok is True, head_report.errors
         assert tail_report.signer_authority_checked is False
-        assert tail_report.verified is False
+        assert tail_report.self_verification_ok is False
         assert any(
             "signer_authority_outside_scope" in n for n in tail_report.notes
         ), tail_report.notes
@@ -1235,7 +1235,7 @@ class TestGenesisKeyEvidence:
         assert all(_V6_BOOTSTRAP_UNPINNED in d for d in sv["unverifiable_details"])
 
         report = bundle_store.verify(output)
-        assert report.verified is True, report.errors
+        assert report.self_verification_ok is True, report.errors
         assert report.global_chain_ok is True
         assert report.work_item_chain_ok is True
 
@@ -1376,7 +1376,7 @@ class TestVerificationSeam:
         report = verify_audit_bundle_offline(output)
         assert report.statement_signature_checked is False
         assert report.statement_signature_valid is False
-        assert report.verified is False
+        assert report.self_verification_ok is False
         # ...while every structural check still ran and passed, and the report says which.
         assert report.membership_root_ok is True
         assert report.section_digests_ok is True
