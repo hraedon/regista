@@ -555,12 +555,20 @@ def _write_selfverify_publish(
 
     **Trust boundary (WI-340 round 4, stated so it is not mistaken for a gap).** The integrity
     guarantee here — that what is published is exactly the self-verified inode — holds against a
-    concurrent OTHER-principal exporter and any process that can write a shared output
-    *directory*: the artifact is nameless until publication (no path to substitute or
-    symlink-plant), the destination link is anchored to a dir descriptor opened once (no
-    parent-symlink redirection), and the ``overwrite=True`` staging entry is re-checked by
-    inode identity immediately before ``os.replace`` (a substituted staging entry aborts rather
-    than publishes). It does NOT defend against a **same-UID hostile process**: such a process
+    concurrent OTHER-principal exporter and a process that can write a shared output
+    *directory* — with one irreducible exception noted below: the artifact is nameless until
+    publication (no path to substitute or symlink-plant), the destination link is anchored to a
+    dir descriptor opened once (no parent-symlink redirection), and the ``overwrite=True``
+    staging entry is re-checked by inode identity immediately before ``os.replace`` (a
+    substituted staging entry aborts rather than publishes). **The one residual on the
+    ``overwrite=True`` path** is the irreducible TOCTOU sub-window between that inode re-check
+    and ``os.replace``: Linux has no primitive to rename a held-fd inode over an existing
+    destination, so link-then-rename is the only path and the rename resolves the staging name.
+    The re-check shrinks the window to a few instructions; a cross-principal racer would still
+    have to discover the unpredictable staging name via ``readdir`` and win that sub-instruction
+    gap, and could overwrite the final artifact immediately after publication anyway — so it is
+    documented, not a durable gain, rather than eliminated. It does NOT defend against a
+    **same-UID hostile process**: such a process
     can open ``/proc/<pid>/fd/<n>`` and mutate the held inode, but it can equally ``ptrace``
     the exporter, rewrite its memory, or swap its binary — so no fd/inode discipline can defend
     it, and none is attempted. The boundary is the trusted process and its trusted output
