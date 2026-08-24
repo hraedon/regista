@@ -106,7 +106,7 @@ __all__ = [
     "Applicability",
     "Attribution",
     "Backend",
-    "BundleKeyResolver",
+    "BundledKeyEvidenceResolver",
     "CheckpointBinding",
     "DelegationVerificationStatus",
     "EnvelopeVersion",
@@ -2081,13 +2081,19 @@ def _trusted_key_from_entry(
 
 
 @dataclass(frozen=True)
-class BundleKeyResolver:
-    """Resolves against the public-key registry carried inside a bundle.
+class BundledKeyEvidenceResolver:
+    """Resolves against the public-key *evidence* carried inside a bundle.
 
     The registry is *inside the artifact under verification* — a circular trust
-    root (S5). That is out of scope for WI-267 and is why the source is reported
-    as ``BUNDLE_EMBEDDED`` rather than a trusted root: the verdict boundary work
-    reads this field.
+    root (S5). Every key it hands back is tagged ``BUNDLE_EMBEDDED``, which
+    ``BUNDLE-V3.md`` §4.3 makes load-bearing: any use of such a key clamps the
+    verdict to ``bundle_rooted`` (§5.2 rule C). The type is named
+    ``BundledKeyEvidenceResolver`` — not ``…KeyResolver`` — so that "the section is
+    ``bundled_key_evidence``, not ``public_keys``" (§4.3 mechanism 1) is visible at
+    every construction site, and so the default TrustPolicy path (which builds a
+    *different* resolver) can never reach for this one by autocomplete. It is
+    constructed only where an ``AcceptBundledKeys`` value is in scope (§4.3
+    mechanism 2).
     """
 
     keys_by_id: Mapping[str, Mapping[str, Any]]

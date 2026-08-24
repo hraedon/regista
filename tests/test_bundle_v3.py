@@ -819,18 +819,41 @@ class TestStatementSchema:
         assert exc.value.code is ErrorCode.BUNDLE_STATEMENT_INVALID
         assert "extra_claim" in str(exc.value)
 
-    def test_root_signatures_is_recognised_and_refused_rather_than_tolerated(
+    def test_a_well_formed_root_signatures_statement_parses(
         self, document: dict[str, Any]
     ) -> None:
-        """§3.2 amendment item 2 allows a direct root-threshold statement. Checking one
-        needs the current root signer set and threshold, which is §4 trust-root resolution
-        (Phase C). Accepting the shape and not checking the signatures would be a signed
-        object with no verifier — refuse instead."""
+        """§3.2 amendment item 2, Phase C: a direct root-threshold statement is now ACCEPTED
+        (the shape is validated here; the signatures are verified against the policy's root
+        signer set and threshold in ``verify_audit_bundle_v3``, §4.4). A well-formed entry
+        set therefore parses rather than being refused outright as it was in Phase B."""
         doctored = _mutated(document)
         del doctored["statement"]["signer"]
         doctored["statement"]["root_signatures"] = [
-            {"signer_id": "root-1", "fingerprint": "ed25519:sha256:" + "0" * 64,
-             "signature": "AA=="}
+            {
+                "signer_id": "root-1",
+                "fingerprint": "ed25519:sha256:" + "0" * 64,
+                "public_key": base64.b64encode(b"\x00" * 32).decode(),
+                "signature": base64.b64encode(b"\x01" * 64).decode(),
+            }
+        ]
+        parsed = parse_bundle_v3_document(canonical_bundle_bytes(doctored))
+        assert "root_signatures" in parsed.statement
+        assert "signer" not in parsed.statement
+
+    def test_a_malformed_root_signatures_entry_is_refused_by_name(
+        self, document: dict[str, Any]
+    ) -> None:
+        """The shape is closed: a missing member (here ``public_key``) is refused by name,
+        so a root-threshold statement a verifier could not compare against a pin never
+        reaches ``verify_audit_bundle_v3`` as a signed object with no checkable material."""
+        doctored = _mutated(document)
+        del doctored["statement"]["signer"]
+        doctored["statement"]["root_signatures"] = [
+            {
+                "signer_id": "root-1",
+                "fingerprint": "ed25519:sha256:" + "0" * 64,
+                "signature": "AA==",
+            }
         ]
         with pytest.raises(RegistaError) as exc:
             parse_bundle_v3_document(canonical_bundle_bytes(doctored))
