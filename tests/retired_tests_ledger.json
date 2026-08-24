@@ -2410,6 +2410,42 @@
       "invariant": "an azure custody name stays inside Key Vault's 127-character limit. WI-297 deleted the truncate-and-hash branch this test pinned — the derived name is bounded by construction, so there is no truncation left to disambiguate — and the length bound is now pinned directly, together with a collision pin for the long-shared-prefix case the old head-cut relied on its 16-hex suffix to separate.",
       "covered_by": "tests/test_custody.py::TestCustodyHelper::test_build_ref_azure_needs_no_truncation_branch",
       "work_item": "WI-297"
+    },
+    {
+      "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_bundle_hash_mismatch",
+      "disposition": "coverage_owed",
+      "work_item": "WI-289",
+      "covered_in": "P3.3 (WI-289 Phase B)",
+      "covered_by": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_a_signed_field_edit",
+      "invariant": "an edit inside the region the bundle commits to is detected",
+      "carry_forward": "the mechanism is gone, not the invariant: BUNDLE-V3.md §1/§8 delete the unkeyed bundle hash outright (\"anyone can recompute [it] after editing anything\"), so there is no hash to mismatch. The v3 counterpart edits the SAME field (scope.event_count) and is caught cryptographically, by the statement signature, with no field an editor can restore."
+    },
+    {
+      "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_export_includes_registered_public_key",
+      "disposition": "coverage_owed",
+      "work_item": "WI-289",
+      "covered_in": "P3.3 (WI-289 Phase B)",
+      "covered_by": "tests/test_bundle.py::TestOfflineSignatureVerification::test_export_carries_key_evidence_from_the_signed_acceptance",
+      "invariant": "an exported bundle carries the key material an offline verifier needs",
+      "carry_forward": "the SOURCE changed deliberately, which is why this is a retirement and not a rename. v2 exported the principal_keys projection as `public_keys`; BUNDLE-V3.md §4.3 renames the section `bundled_key_evidence` so \"no code path can read it as a root by habit or by autocomplete\", and §5.9 rule 1 forbids reading a projection row that exists because a verifier needs it. v3 takes the bytes from the bundle's own signed acceptance objects instead."
+    },
+    {
+      "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_forged_signature_caught_only_by_signature_check",
+      "disposition": "coverage_owed",
+      "work_item": "WI-289",
+      "covered_in": "P3.3 (WI-289 Phase B)",
+      "covered_by": "tests/test_bundle.py::TestOfflineSignatureVerification::test_a_forged_event_signature_is_caught_by_the_membership_root_too",
+      "invariant": "a forged event signature does not produce a clean report",
+      "carry_forward": "the name asserted something v3 makes false. Under v2 a forgery \"constrains no chain link the bundle can check\" and the unkeyed hash could be restored, so the signature check was the ONLY thing catching it. Under v3 the signature is an input to the event hash (V6-ENVELOPE.md §5.3), which is a membership leaf, whose root is signed — so it is caught twice, and the counterpart asserts both."
+    },
+    {
+      "node_id": "tests/test_bundle.py::TestExportBounds::test_hash_mismatch_on_written_artifact_raises_and_keeps_it",
+      "disposition": "coverage_owed",
+      "work_item": "WI-289",
+      "covered_in": "P3.3 (WI-289 Phase B)",
+      "covered_by": "tests/test_bundle.py::TestExportBounds::test_corruption_of_the_written_artifact_raises_and_keeps_it",
+      "invariant": "a defect EXPORT introduced fails the export, with the artifact left at the destination for inspection (distinct from a store defect, which is reported and still publishes)",
+      "carry_forward": "invariant unchanged; the detector is no longer the unkeyed bundle hash but the statement signature (BUNDLE-V3.md §9 rule 5's BUNDLE_WRITE_CORRUPT path, \"re-pointed at the statement signature instead of the unkeyed hash\"). Renamed because the old name stated the mechanism."
     }
   ]
 }

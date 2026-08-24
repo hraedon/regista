@@ -6,6 +6,83 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Changed
 
+- **Audit bundles are format v3 only; v1 and v2 are deleted, not deprecated (WI-289 Phase B,
+  `docs/0.6.0/BUNDLE-V3.md`).** A bundle is now a canonical-JSON document whose single
+  signed `statement` commits to the membership of every event in scope — an RFC 6962 Merkle
+  root over ordinals derived by walking `previous_project_event_hash`, never `global_seq` —
+  and to the digest of every section. What that replaces is a class of check rather than a
+  check: v2's `bundle_hash` was an **unkeyed** SHA-256 that anyone could recompute after
+  editing anything, so every claim it guarded (event count, key count, the export window)
+  had to be defended by a plausibility heuristic. Those are gone; a tamperer must now forge
+  a signature.
+
+  **Breaking, and deliberately so.** A v1 or v2 artifact is refused by name
+  (`BUNDLE_FORMAT_UNSUPPORTED`) before any other check, never verified with reduced
+  expectations — S3 was "signature enforcement is optional under format 1", and v3 removes
+  the configuration rather than hardening it. Bundles are regenerable artifacts, so a v1/v2
+  bundle an auditor already holds is re-exported; if the store is gone, the old bundle was
+  never authenticated to anything anyway. Also gone from the report: `bundle_hash_ok` (no
+  hash) and `signature_check` with its three magic strings (its information is the axis
+  model's). Event records are `{canonical_envelope, signature}` in base64 and nothing else —
+  the twenty row columns v2 exported beside the envelope were a second copy of signed data
+  for a consumer to read instead of the signed one, and the row projection is now recomputed
+  *from* the envelope.
+
+  `export_audit_bundle` gains two inputs with no fallback. Signing material, because there
+  is no unsigned v3 artifact to write. And the replayed `root_governance`
+  (`{mode, threshold, signer_count}`), because §3.2 requires the state obtained by replaying
+  the signed trust-domain governance log and forbids copying it from genesis, configuration
+  or a projection — a project store holds no governance state at all, so export refuses
+  rather than attesting a governance claim it invented. The statement signer must bear
+  `may_sign_bundles` in its signed project-local acceptance (owner ruling O3): holding the
+  writer key is not an implication of the authority, and the verifier re-derives the
+  authority *structure* from the events rather than believing the statement. A chain that
+  cannot be totally ordered means no bundle at all (owner ruling O4) — one named refusal,
+  no diagnostic flag, no partial artifact.
+
+  **O3 is re-derived offline by reusing the writer's own validator, not a paraphrase of
+  it.** The verify-side authority resolver mirrors `_v6_writer.resolve_key_binding_anchor`
+  and, for standalone acceptances, calls `_v6_writer.validate_key_acceptance_payload`
+  directly — so it cannot drift from the store. That reuse is what makes the rule airtight:
+  a standalone acceptance's `scopes` object has a closed key set that does not contain
+  `may_accept_keys`, and the writer returns it hardcoded `False`, so the *only* thing that
+  can grant key-acceptance authority is the project genesis. Anchor transitions only;
+  newest live anchor wins **and fails closed on a malformed competitor** (a newer
+  competing acceptance that does not validate refuses the resolution rather than falling
+  back to stale authority); any revocation for the key refuses the whole resolution; a
+  standalone must be signed by the principal its own `accepted_by` names; and its grantor
+  is itself validated — a valid, preceding, un-revoked project-genesis bootstrap that
+  accepted that signer. The verifying key is bound to the signed signer block
+  (`fingerprint(key) == signer.fingerprint`, `statement_signature.key_id ==
+  signer.key_id`). A `complete-store` scope must be headed by an actual `project_initialized`
+  genesis, not merely an event with a null project link (a `trust_domain_established` event
+  carries one too, and heads the trust-log chain, not a project's).
+
+  **What "re-derives authority" means, precisely, so it is not read as more than it is:**
+  Phase B re-derives the authority *structure* the store would have required at write time —
+  the anchor graph, its scopes, its revocations. It does **not** verify any event's own
+  Ed25519 signature, so `actor.principal_id` / `signing.key_id` are read as signed *fields*,
+  not authenticated identity. Event authentication — the trust that a named key is the key
+  that signed — is Phase C's axis (`BUNDLE-V3.md` §12 A4/A5), gated on the auditor's pinned
+  root. So a green O3 here means "the artifact's own records grant this key the scope", not
+  "a key the auditor trusts holds it"; the two compose, and the second is §4's.
+
+  Hostile input is refused by name rather than by traceback: non-finite and out-of-range
+  JSON numbers, unpaired surrogates and duplicate object keys are all rejected, and the
+  artifact's bytes must BE their RFC 8785 fixed point (§3.1 rule 4) — the same discipline
+  `parse_v6_envelope_strict` applies to an envelope.
+
+  **Still to come, and named so the boundary is visible:** the required trust-material
+  argument and the verdict-axis model (`BUNDLE-V3.md` §4/§5) are Phase C, and until they
+  land `bundle verify` reports `verified: false` whenever no key was supplied, which is the
+  honest state rather than a pass. The §9 export ceremony — self-verify the `.partial`
+  before the atomic replace, the preflight comparison, `--allow-unverified`'s deletion, the
+  CLI trust flags and the exit-code rework — is Phase D, so `regista bundle export` errors
+  by name until D wires the flags. Signed portable credential transport
+  (`sections.action_delegation_credentials`) remains deferred post-cutover by owner ruling
+  O1; the section set is closed, so a bundle carrying one is refused rather than accepted
+  with a section nothing reads.
+
 - **The trust-genesis actor is now VERIFY-ONLY, at the CLI and at the writer (WI-320,
   option a-prime).** `trust init-log`'s and `trust delegate-registrar`'s
   `--root-principal-id`, and `write_trust_genesis`'s `root_principal_id` argument, were
