@@ -1098,10 +1098,11 @@ Phase B's `verify_bundle_v3_core`; the offline signing-authority resolver
 
 ### CLARIFIES §5.1 amendment 4 — `externally_pinned` means chain-to-root, not per-key pinning
 
-> This is a Phase-C implementation-review reconciliation, ratified two-lineage (Claude + the
-> two Phase-C reviewers, gpt-5.6-sol and a Claude probe-executor). It does not edit §5.1's
-> ratified amendment-4 text; it states the operative reading where that text, read literally,
-> underspecifies against §10 and §4.4 criterion 2 — the governing clauses.
+> This is the **implementer's reconciliation, PENDING review** — it records the reading the
+> Phase-C implementation adopts, for the reviewers to ratify or correct; it is not itself a
+> record of a completed review. It does not edit §5.1's ratified amendment-4 text; it states
+> the operative reading where that text, read literally, underspecifies against §10 and §4.4
+> criterion 2 — the governing clauses.
 >
 > §5.1 amendment 4 reads: "A key whose bytes travelled inside the bundle is `externally_pinned`
 > if its recomputed fingerprint matches an auditor pin." Read as *per-key* pinning — a key is
