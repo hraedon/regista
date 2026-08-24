@@ -23,6 +23,8 @@ import base64
 import copy
 import json
 import os
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -30,10 +32,17 @@ from typing import Any, NamedTuple
 import pytest
 
 from regista import Regista
-from regista._bundle import verify_audit_bundle_offline
+from regista._bundle import (
+    AcceptBundledKeys,
+    TrustPolicy,
+    _archive_relation_present,
+    verify_audit_bundle_offline,
+    verify_audit_bundle_v3,
+)
 from regista._bundle_v3 import (
     SECTION_NAMES,
     canonical_bundle_bytes,
+    compute_dependency_closure,
     section_digest_text,
     sign_statement,
 )
@@ -993,21 +1002,22 @@ class TestExportBounds:
 
         sv = result["self_verification"]
         assert set(sv) == {
-            "verified",
-            "statement_signature_valid",
-            "signatures_verified",
-            "signatures_unverifiable",
-            "errors",
-            "unverifiable_details",
+            "applicability",
+            "membership_signature",
+            "event_authentication",
+            "event_trust_root",
+            "findings",
+            "notes",
         }
+        assert "verified" not in sv, "§5.2 deleted the boolean; the verdict is applicability"
         assert "signature_check" not in sv, "§6 deleted the field and its magic strings"
-        assert sv["statement_signature_valid"] is True
-        assert sv["verified"] is True, (sv["errors"], sv["unverifiable_details"])
-        assert sv["signatures_verified"] >= 1
-        assert sv["errors"] == []
-        # The genesis event, and only it: its authority is external by construction.
-        assert sv["signatures_unverifiable"] == 1
-        assert all(_V6_BOOTSTRAP_UNPINNED in d for d in sv["unverifiable_details"])
+        # §9 rule 7 / §5.2: the self-verification is a self-consistency verdict against the
+        # bundle's OWN keys (AcceptBundledKeys, clamped by Rule C), never external
+        # authentication. `bundle_rooted` is the honest ceiling for a project bundle offline
+        # (WI-337); it is not `invalid`, so the artifact was written.
+        assert sv["applicability"] == "bundle_rooted"
+        assert sv["membership_signature"] == "valid_bundled_key"
+        assert sv["findings"] == []
         assert result["bundle_bytes"] > 0
 
     def test_store_level_defects_are_reported_not_fatal(
@@ -1026,10 +1036,15 @@ class TestExportBounds:
 
         assert output.is_file(), "a reported (not fatal) finding must still publish"
         sv = result["self_verification"]
-        assert sv["unverifiable_details"], (
-            "a finding that does not reach the report is a silent finding"
+        # The honest defect every genesis-bearing bundle carries: the bootstrap event's
+        # authority is external and nothing pinned it, so event authentication is
+        # `legacy_partial`, not full. That is reported per axis and is NOT `invalid`, so the
+        # artifact still publishes — `bundle verify` against a pin is the enforcement point.
+        assert sv["applicability"] == "bundle_rooted"
+        assert sv["event_authentication"] == "legacy_partial"
+        assert sv["applicability"] != "invalid", (
+            "a faithfully-preserved store defect must not fail the only archival path"
         )
-        assert sv["signatures_unverifiable"] == 1
 
     def test_corruption_of_the_written_artifact_raises_and_keeps_it(
         self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1040,28 +1055,35 @@ class TestExportBounds:
 
         The invariant is unchanged and is the boundary the export draws: a defect the STORE
         preserved is reported and still publishes; a defect **export introduced** fails the
-        export, with the artifact left at the destination for inspection. What detects it is
-        no longer an unkeyed hash but the statement signature, so the artifact is corrupted
-        for real between the rename and the self-verification rather than by stubbing the
-        report.
+        export. What detects it is the statement signature — and under §9 rule 5 the
+        self-verification runs over the held inode BEFORE publication, so the corrupt artifact
+        is materialised to a ``.partial`` inspection name and the destination is never touched.
+        The corruption is injected into the bytes written to the held descriptor
+        (FR2-2-FINAL: the write is by descriptor, not by pathname) so it is a real signature
+        failure, not a stubbed report.
         """
-        real_replace = os.replace
+        import regista._bundle as bundle_mod
 
-        def corrupting_replace(src: Any, dst: Any, **kwargs: Any) -> None:
-            real_replace(src, dst, **kwargs)
-            doctored = json.loads(Path(dst).read_text())
+        real_write = bundle_mod._write_bundle_bytes
+
+        def corrupting_write(fd: int, data: bytes) -> None:
+            doctored = json.loads(data)
             doctored["statement"]["scope"]["event_count"] = 999
-            Path(dst).write_bytes(canonical_bundle_bytes(doctored))
+            real_write(fd, canonical_bundle_bytes(doctored))
 
-        monkeypatch.setattr(os, "replace", corrupting_replace)
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", corrupting_write)
         output = tmp_path / "corrupt.json"
         with pytest.raises(RegistaError) as exc_info:
             bundle_store.export(output)
 
         assert exc_info.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
-        assert "does not match what was serialized" in str(exc_info.value)
-        assert output.is_file(), "the rejected artifact is kept for inspection"
-        assert json.loads(output.read_text())["statement"]["scope"]["event_count"] == 999
+        assert "does not self-verify" in str(exc_info.value)
+        # §9 rule 5: the rejected artifact is materialised for inspection, and the destination
+        # was NEVER touched — publication does not run on a failed self-check.
+        partials = list(tmp_path.glob("corrupt.json.*.partial"))
+        assert len(partials) == 1, f"expected one temp left for inspection: {partials}"
+        assert json.loads(partials[0].read_text())["statement"]["scope"]["event_count"] == 999
+        assert not output.exists(), "publication must not run when self-verification fails"
 
     def test_successful_export_leaves_no_partial_file(
         self, bundle_store: Any, tmp_path: Path
@@ -1077,27 +1099,34 @@ class TestExportBounds:
     def test_write_failure_removes_the_partial_and_spares_the_destination(
         self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the write dies mid-way, unlink the ``.partial`` — only the partial, never the
-        real destination (WI-249). Nothing reaches the destination that did not survive the
-        write."""
+        """If the write dies mid-way, nothing reaches the destination and no partial is left
+        behind (WI-249). The artifact is an O_TMPFILE (nameless) inode, so a failed write
+        leaves NOTHING on disk — there is not even a name to unlink — and the destination it
+        was going to replace is spared because publication never runs.
+
+        ``overwrite=True`` is passed so the pre-existing destination gets past §9 rule 4's
+        refusal — the point is the WI-249 invariant, and it must hold even when the operator
+        explicitly allowed a replacement.
+        """
+        import regista._bundle as bundle_mod
+
         output = tmp_path / "keepme.json"
         sentinel = b'{"previous": "bundle"}'
         output.write_bytes(sentinel)
 
-        real_write_bytes = Path.write_bytes
+        real_write = bundle_mod._write_bundle_bytes
 
-        def dies_mid_write(path: Path, data: bytes) -> None:
-            # A plausible-looking partial lands on disk, then the write fails.
-            real_write_bytes(path, data[: len(data) // 2])
+        def dies_mid_write(fd: int, data: bytes) -> None:
+            real_write(fd, data[: len(data) // 2])  # a partial write into the nameless inode
             raise OSError("injected: no space left on device")
 
-        monkeypatch.setattr(Path, "write_bytes", dies_mid_write)
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", dies_mid_write)
         with pytest.raises(OSError, match="injected"):
-            bundle_store.export(output)
+            bundle_store.export(output, overwrite=True)
 
         monkeypatch.undo()
-        assert not (tmp_path / "keepme.json.partial").exists(), (
-            "a failed write left a plausible-looking partial bundle behind"
+        assert not list(tmp_path.glob("keepme.json.*.partial")), (
+            "a failed write left a partial bundle behind"
         )
         assert output.read_bytes() == sentinel, (
             "a failed export clobbered the destination it never verified"
@@ -1228,11 +1257,13 @@ class TestGenesisKeyEvidence:
         result = bundle_store.export(output)
 
         sv = result["self_verification"]
-        assert sv["verified"] is True, (sv["errors"], sv["unverifiable_details"])
-        assert sv["errors"] == []
-        assert sv["signatures_verified"] >= 1
-        assert sv["signatures_unverifiable"] == 1
-        assert all(_V6_BOOTSTRAP_UNPINNED in d for d in sv["unverifiable_details"])
+        # Self-verification reaches the honest ceiling (§9 rule 7): `bundle_rooted`, a
+        # self-consistency verdict, not `invalid`. The genesis event is unverifiable-pending
+        # a pin, which shows as `legacy_partial` event authentication rather than an error.
+        assert sv["applicability"] == "bundle_rooted", sv["findings"]
+        assert sv["findings"] == []
+        assert sv["membership_signature"] == "valid_bundled_key"
+        assert sv["event_authentication"] == "legacy_partial"
 
         report = bundle_store.verify(output)
         assert report.self_verification_ok is True, report.errors
@@ -1402,3 +1433,954 @@ class TestVerificationSeam:
             "the premise: the artifact does carry the bytes that would verify it"
         )
         assert verify_audit_bundle_offline(output).statement_signature_checked is False
+
+
+# ---------------------------------------------------------------------------
+# WI-289 Phase D — the §9 export ceremony, pinned rule by rule
+# ---------------------------------------------------------------------------
+
+
+def _v3(output: Path) -> Any:
+    """Verify an artifact through Phase C's verdict verifier, self-consistency form.
+
+    ``AcceptBundledKeys`` is the honest trust choice for a self-contained project bundle —
+    it authenticates against the keys the bundle carries and is clamped to ``bundle_rooted``
+    (Rule C). It is what the export self-check uses and what these Phase D pins assert
+    against, because the invariants here are about the export ceremony and the fail-closed
+    boundary, not about an auditor's external pin.
+    """
+
+    return verify_audit_bundle_v3(
+        str(output), AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+    )
+
+
+def _membership_hashes(output: Path) -> set[str]:
+    """The event-hash SET of a bundle's membership — what the boundary tests assert on.
+
+    Counts alone cannot tell exclusive-lower from inclusive-upper (opposite boundary
+    semantics can produce the same count); membership + boundary inclusion can (F4).
+    """
+    from regista._bundle_v3 import parse_event_member
+
+    return {
+        parse_event_member(
+            base64.b64decode(r["canonical_envelope"]), base64.b64decode(r["signature"])
+        ).event_hash_text
+        for r in _read(output)["sections"]["events"]
+    }
+
+
+def _seq_hashes(store: Any) -> list[tuple[int, str]]:
+    """Ordered ``[(global_seq, event_hash_text)]`` over the live stream, for boundary tests."""
+    from regista._bundle_v3 import parse_event_member
+
+    with store._mgr.transaction() as conn:
+        rows = conn.execute(
+            "SELECT global_seq, canonical_envelope, signature FROM events ORDER BY global_seq"
+        ).fetchall()
+    return [
+        (
+            r["global_seq"],
+            parse_event_member(
+                bytes(r["canonical_envelope"]), bytes(r["signature"])
+            ).event_hash_text,
+        )
+        for r in rows
+    ]
+
+
+class TestPhaseDExportCeremony:
+    """§9 rules 1-5, 7 on a real epoch. Each test pins one rule's fail-closed behavior."""
+
+    def test_rule4_refuses_an_existing_destination_unless_overwrite(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """§9 rule 4 (WI-261): an audit bundle is evidence, so export never replaces one
+        silently. The refusal is up front — nothing is read or signed — and ``overwrite``
+        is the only key that lets a replacement through."""
+        output = tmp_path / "rule4.json"
+        bundle_store.export(output)
+        original = output.read_bytes()
+
+        with pytest.raises(RegistaError) as exc:
+            bundle_store.export(output)
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "refusing to overwrite" in str(exc.value)
+        assert output.read_bytes() == original, "the existing artifact must be untouched"
+
+        # The only way through is the explicit opt-in.
+        bundle_store.export(output, overwrite=True)
+        assert output.is_file()
+
+    def test_rule2_preflight_mismatch_aborts_and_writes_nothing(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """§9 rule 2 / D1: a preflight whose event_count/head disagrees with the derived
+        scope aborts — a moved head is an error, not a silently narrower bundle. Nothing is
+        written, and a MATCHING preflight is accepted."""
+        output = tmp_path / "rule2.json"
+        # A matching preflight is accepted (the artifact is written).
+        clean = tmp_path / "rule2_ok.json"
+        good = bundle_store.export(clean)
+        matching = {
+            "event_count": good["event_count"],
+            "first_event_hash": bundle_store.genesis_event_hash,
+            "last_event_hash": _read(clean)["statement"]["scope"]["last_event_hash"],
+        }
+        bundle_store.export(output, preflight=matching)
+        assert output.is_file()
+
+        # A count that disagrees aborts, and the destination is never created.
+        aborted = tmp_path / "rule2_abort.json"
+        bad = dict(matching, event_count=matching["event_count"] + 1)
+        with pytest.raises(RegistaError) as exc:
+            bundle_store.export(aborted, preflight=bad)
+        assert exc.value.code == ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "preflight comparison failed" in str(exc.value)
+        assert not aborted.exists(), "a preflight mismatch must write nothing"
+
+    def test_rule5_self_verifies_the_partial_before_replace(
+        self, bundle_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 / D11: the self-verification runs over the held inode BEFORE publication.
+        If publication were reached on a corrupt artifact this test would see the destination
+        created; instead the corrupt bytes never leave the O_TMPFILE inode (materialised only
+        to an inspection name), and neither ``linkat`` nor ``os.replace`` publishes them.
+        """
+        import regista._bundle as bundle_mod
+
+        real_replace = os.replace
+        replaced: list[Any] = []
+
+        def spy_replace(src: Any, dst: Any, **kwargs: Any) -> None:
+            replaced.append((src, dst))
+            real_replace(src, dst, **kwargs)
+
+        real_write = bundle_mod._write_bundle_bytes
+
+        def corrupting_write(fd: int, data: bytes) -> None:
+            doctored = json.loads(data)
+            doctored["statement"]["scope"]["event_count"] = 4242
+            real_write(fd, canonical_bundle_bytes(doctored))
+
+        monkeypatch.setattr(os, "replace", spy_replace)
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", corrupting_write)
+        output = tmp_path / "rule5.json"
+        with pytest.raises(RegistaError) as exc:
+            bundle_store.export(output)
+        assert exc.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
+        assert replaced == [], "publication must NOT run when the held inode fails self-verify"
+        assert not output.exists()
+        assert len(list(tmp_path.glob("rule5.json.*.partial"))) == 1
+
+
+class _ArchiveStore:
+    """A fresh v6 epoch with events that can be archived — the harness rules 1 and 3 need.
+
+    ``bundle_store`` is module-scoped and read-only; rules 1 (an invalid event injected) and
+    3 (rows moved to ``events_archive``) mutate the store, so they get their own throwaway
+    project each.
+    """
+
+    def __init__(self, store: Any, keyset: Any, terminal_entity: uuid.UUID) -> None:
+        self.store = store
+        self.keyset = keyset
+        self.terminal_entity = terminal_entity
+
+    def export(self, output: Path, **kwargs: Any) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "root_governance": ROOT_GOVERNANCE,
+            "signing_principal_id": BUNDLE_SIGNER,
+        }
+        params.update(kwargs)
+        return self.store.export_audit_bundle(str(output), **params)
+
+
+@pytest.fixture
+def archive_store(tmp_path: Path) -> Any:
+    """A fresh epoch whose terminal work item can be archived into ``events_archive``."""
+    from regista._v6_writer import append_v6_event
+
+    keyset = make_v6_keyset(tmp_path)
+    name = f"bundle_arch_{uuid.uuid4().hex[:8]}"
+    store = Regista.create_project(DSN, name, keyset.path)
+    open_v6_epoch(store, keyset, may_sign_bundles=True)
+    entity_id = uuid.uuid4()
+    for transition in ("created", "completed"):
+        with store._mgr.transaction() as conn:
+            append_v6_event(
+                conn,
+                store._keys,
+                entity_kind="work_item",
+                entity_id=entity_id,
+                transition=transition,
+                actor_id=BUNDLE_SIGNER,
+                actor_kind="agent",
+                producer=v6_producer(),
+                payload={"state": transition},
+            )
+    try:
+        yield _ArchiveStore(store, keyset, entity_id)
+    finally:
+        store.close()
+        drop_project_schema(DSN, name)
+
+
+class TestPhaseDExportCeremonyOnAFreshEpoch:
+    """Rules 1 and 3, which mutate the store and so need their own epoch."""
+
+    def test_rule1_refuses_to_sign_over_an_invalid_event(
+        self, archive_store: Any, tmp_path: Path
+    ) -> None:
+        """§9 rule 1: strict-verify every event before signing; refuse a corpus containing
+        an ``Applicability.INVALID`` event. Signing a membership root over a known-bad event
+        would make regista attest to it. The invalid event is created by a direct row
+        rewrite — the attacker's UPDATE, never the API."""
+        # Rewrite a signed row column so its verdict is INVALID (the row no longer reconciles
+        # against its own signed envelope).
+        with archive_store.store._mgr.transaction() as conn:
+            conn.execute(
+                "UPDATE events SET actor_id = %s WHERE transition = %s",
+                ["agent:impostor", "completed"],
+            )
+        output = tmp_path / "rule1.json"
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(output)
+        assert exc.value.code == ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "invalid events" in str(exc.value)
+        assert not output.exists(), "nothing is written when the source has an invalid event"
+
+    def test_rule3_consolidates_events_archive_into_a_complete_store(
+        self, archive_store: Any, tmp_path: Path
+    ) -> None:
+        """§9 rule 3 (WI-259): a complete-store export reads ``events`` consolidated with
+        ``events_archive`` — the complete logical stream Stage 4 restores. A complete-store
+        that silently omitted archived rows would be a signed FALSE statement, strictly worse
+        than today's unsigned one.
+
+        The terminal event is moved into ``events_archive`` exactly as Stage-4 archival does
+        (``_archive.py``: INSERT … SELECT then DELETE, referrers first), without the
+        workflow terminal-state gating that a full ``archive_events`` run needs — the point
+        here is the export READ, not the archival policy."""
+        # Baseline: the whole chain before archiving.
+        before = tmp_path / "before.json"
+        base = archive_store.export(before)
+        full_count = base["event_count"]
+
+        # Simulate Stage-4 archival of the terminal ("completed") event.
+        store = archive_store.store
+        with store._mgr.transaction() as conn:
+            row = conn.execute(
+                "SELECT event_id FROM events WHERE transition = %s ORDER BY global_seq DESC "
+                "LIMIT 1",
+                ["completed"],
+            ).fetchone()
+            assert row is not None, "the terminal event must exist"
+            eid = row["event_id"]
+            assert _archive_relation_present(conn), "events_archive relation must exist"
+            conn.execute(
+                "INSERT INTO events_archive SELECT * FROM events WHERE event_id = %s", [eid]
+            )
+            conn.execute("DELETE FROM hook_queue WHERE event_id = %s", [eid])
+            conn.execute("DELETE FROM witness_receipts WHERE event_id = %s", [eid])
+            conn.execute("DELETE FROM events WHERE event_id = %s", [eid])
+            live = conn.execute("SELECT count(*) AS c FROM events").fetchone()["c"]
+            arch = conn.execute("SELECT count(*) AS c FROM events_archive").fetchone()["c"]
+        assert arch == 1 and live == full_count - 1, "the row moved to events_archive"
+
+        # A complete-store export must still cover the WHOLE logical stream.
+        after = tmp_path / "after.json"
+        result = archive_store.export(after)
+        assert result["scope_kind"] == "complete-store"
+        assert result["event_count"] == full_count, (
+            "a complete-store omitting archived rows is a signed false statement (§9 rule 3)"
+        )
+        after_hashes = {
+            r["canonical_envelope"] for r in _read(after)["sections"]["events"]
+        }
+        before_hashes = {
+            r["canonical_envelope"] for r in _read(before)["sections"]["events"]
+        }
+        assert after_hashes == before_hashes, "the archived event is back in the stream"
+        assert _v3(after).applicability != "invalid"
+
+
+# ---------------------------------------------------------------------------
+# WI-289 Phase D fix round — F1 (concurrent append) and F2 (destination TOCTOU)
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseDConcurrencyAndTOCTOU:
+    """The two production blockers Sol's concurrent probes found (WI-340 F1/F2).
+
+    A single-threaded run cannot see either: F1 needs an append racing the export read, F2
+    needs a destination appearing in the window between the up-front ``exists()`` check and
+    the final publication. Both are pinned here with the race made deterministic.
+    """
+
+    def test_f1_a_scope_disagreeing_with_the_locked_head_aborts(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (F1): a complete-store whose scope does not equal the store head observed
+        under the export lock is refused, never signed. Simulates the torn/advanced-head read
+        by returning an advanced head from the locked snapshot; the assertion aborts before
+        any write. Red-on-pre-fix: before F1 there was no head captured and no assertion, so
+        the stale prefix was signed as a complete-store."""
+        import regista._bundle as bundle_mod
+
+        real = bundle_mod._lock_export_snapshot_head
+
+        def advanced(conn: Any) -> tuple[str | None, int]:
+            _, count = real(conn)
+            return "sha256:" + "ff" * 32, count + 1  # pretend an (N+1)th committed
+
+        monkeypatch.setattr(bundle_mod, "_lock_export_snapshot_head", advanced)
+        out = tmp_path / "stale.json"
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out)
+        assert exc.value.code == ErrorCode.BUNDLE_STATEMENT_INVALID
+        assert "stale complete-store" in str(exc.value)
+        assert not out.exists(), "a stale complete-store must never be written"
+
+    def test_f1_a_concurrent_append_is_serialised_behind_the_export_lock(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (F1): the export holds the event_chain_head lock across its read, so a
+        concurrent append CANNOT commit mid-export — it serialises behind the export. The
+        deterministic proof is inside the read hook: after the appender has had time to run,
+        it is still blocked (its event has not committed), because the export holds the head
+        lock. Red-on-pre-fix: without the lock the append commits during the sleep and the
+        blocked-assertion fails.
+        """
+        import regista._bundle as bundle_mod
+        from regista._v6_writer import append_v6_event
+
+        store = archive_store.store
+        with store._mgr.transaction() as conn:
+            n_before = int(conn.execute("SELECT count(*) AS c FROM events").fetchone()["c"])
+
+        committed = threading.Event()
+
+        def appender() -> None:
+            with store._mgr.transaction() as conn:
+                append_v6_event(
+                    conn, store._keys, entity_kind="work_item", entity_id=uuid.uuid4(),
+                    transition="created", actor_id=BUNDLE_SIGNER, actor_kind="agent",
+                    producer=v6_producer(), payload={"concurrent": True},
+                )
+            committed.set()
+
+        real_read = bundle_mod._read_export_rows
+        state: dict[str, Any] = {}
+
+        def read_hook(conn: Any, **kw: Any) -> Any:
+            if "t" not in state:
+                t = threading.Thread(target=appender)
+                t.start()
+                state["t"] = t
+                # Give the appender ample time to reach append_v6_event's FOR UPDATE on the
+                # head sentinel and block there. The export holds that lock, so it must NOT
+                # have committed.
+                time.sleep(1.5)
+                assert not committed.is_set(), (
+                    "the concurrent append committed during the export read — the head lock "
+                    "is not serialising appends (F1 regression)"
+                )
+            return real_read(conn, **kw)
+
+        monkeypatch.setattr(bundle_mod, "_read_export_rows", read_hook)
+        out = tmp_path / "snapshot.json"
+        result = archive_store.export(out)
+        state["t"].join(timeout=15)
+        assert committed.is_set(), "the append must complete once the export released the lock"
+
+        # Export signed the consistent snapshot as it stood under the lock; the append landed
+        # after. The complete-store is never a stale prefix.
+        assert result["scope_kind"] == "complete-store"
+        assert result["event_count"] == n_before
+        with store._mgr.transaction() as conn:
+            n_after = int(conn.execute("SELECT count(*) AS c FROM events").fetchone()["c"])
+        assert n_after == n_before + 1, "the serialised append is now in the store"
+
+    def test_f2_a_destination_created_after_the_check_is_not_clobbered(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 4 (F2): the no-clobber rule is enforced at PUBLICATION, not just by the
+        up-front exists() check. A destination created in the TOCTOU window (here, during the
+        self-verification, after the up-front check passed) is refused, not silently
+        replaced. Red-on-pre-fix: the old os.replace clobbered the racer's file."""
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "toctou.json"
+        sentinel = b'{"prior": "artifact that must survive"}'
+        real_verify = bundle_mod.verify_audit_bundle_v3
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            # A racer publishes to the destination AFTER export's up-front exists() check.
+            if not out.exists():
+                out.write_bytes(sentinel)
+            return real_verify(path, trust, **kw)
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out)  # overwrite=False
+        assert exc.value.code == ErrorCode.INVALID_ARGUMENT
+        assert "overwrite" in str(exc.value)
+        assert out.read_bytes() == sentinel, "the racer's destination must not be clobbered"
+
+    def test_fr2_1_the_head_lock_is_held_through_signing(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 1 (WI-340 FR2-1): the head lock is held through SIGNING, not only the read.
+        The hook fires at the sign step (``build_bundle_v3_document``, now inside the lock); a
+        concurrent append is still blocked there, so no event can commit between the read and
+        the signed ``created_at`` and make a complete-store false. Red-on-pre-fix: with produce
+        /sign dedented outside the lock, the append commits at signing time and the
+        blocked-assertion fails."""
+        import regista._bundle as bundle_mod
+        from regista._v6_writer import append_v6_event
+
+        store = archive_store.store
+        committed = threading.Event()
+
+        def appender() -> None:
+            with store._mgr.transaction() as conn:
+                append_v6_event(
+                    conn, store._keys, entity_kind="work_item", entity_id=uuid.uuid4(),
+                    transition="created", actor_id=BUNDLE_SIGNER, actor_kind="agent",
+                    producer=v6_producer(), payload={"racing_the_signature": True},
+                )
+            committed.set()
+
+        real_build = bundle_mod.build_bundle_v3_document
+        state: dict[str, Any] = {}
+
+        def build_hook(**kw: Any) -> Any:
+            if "t" not in state:
+                t = threading.Thread(target=appender)
+                t.start()
+                state["t"] = t
+                time.sleep(1.5)
+                assert not committed.is_set(), (
+                    "an append committed at SIGNING time — the head lock is released before "
+                    "signing (FR2-1 regression: produce/sign is outside the critical section)"
+                )
+            return real_build(**kw)
+
+        monkeypatch.setattr(bundle_mod, "build_bundle_v3_document", build_hook)
+        out = tmp_path / "sign_locked.json"
+        result = archive_store.export(out)
+        state["t"].join(timeout=15)
+        assert committed.is_set(), "the append completes once the export released the lock"
+        assert result["scope_kind"] == "complete-store"
+        assert result["self_verification"]["applicability"] == "bundle_rooted"
+
+    def test_fr2_2_repro_a_post_verify_substitution_of_the_actual_temp(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro A): a racer that DISCOVERS and rewrites
+        the actual temp path after self-verification cannot make the export publish its bytes.
+        The artifact is a nameless O_TMPFILE inode, so there is no ``<name>.*.partial`` to
+        find during a successful export; publication links the held (verified) inode. The
+        assertion that the racer found nothing to substitute AND that the published bytes are
+        the verified ones is the whole point. Red-on-pre-fix (74abc95): the mkstemp temp was
+        discoverable and publish re-resolved it by name, so the racer's bytes were published.
+        """
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "sub.json"
+        corrupt = b'{"corrupt": "substituted-after-verification"}'
+        real_verify = bundle_mod.verify_audit_bundle_v3
+        found: list[str] = []
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            report = real_verify(path, trust, **kw)
+            # The racer discovers the ACTUAL random temp and substitutes its bytes.
+            for p in tmp_path.glob("sub.json.*.partial"):
+                found.append(p.name)
+                p.unlink()
+                p.write_bytes(corrupt)
+            return report
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        result = archive_store.export(out)
+        assert found == [], "a named temp was discoverable mid-export — substitutable (FR2-2)"
+        assert out.read_bytes() != corrupt, "publish used the racer's substituted bytes"
+        assert result["self_verification"]["applicability"] == "bundle_rooted"
+        assert _v3(out).applicability != "invalid"
+
+    def test_fr2_2_repro_b_the_artifact_is_written_to_a_nameless_inode(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro B): the write goes to a NAMELESS inode
+        (O_TMPFILE, ``st_nlink == 0``), so there is no path at which a symlink could be planted
+        to redirect the write to an attacker-chosen target (CWE-59). Asserted at the write
+        seam. Red-on-pre-fix (74abc95): the write reopened a named mkstemp path by name."""
+        import regista._bundle as bundle_mod
+
+        real_write = bundle_mod._write_bundle_bytes
+        nlinks: list[int] = []
+
+        def probing_write(fd: int, data: bytes) -> None:
+            nlinks.append(os.fstat(fd).st_nlink)
+            real_write(fd, data)
+
+        monkeypatch.setattr(bundle_mod, "_write_bundle_bytes", probing_write)
+        out = tmp_path / "nameless.json"
+        archive_store.export(out)
+        assert nlinks == [0], (
+            f"the artifact was written to a NAMED inode (st_nlink={nlinks}) — a symlink could "
+            "be planted at its path (FR2-2 Repro B); it must be a nameless O_TMPFILE inode"
+        )
+        assert out.is_file()
+
+    def test_fr2_2_repro_c_a_parent_dir_symlink_swap_cannot_redirect_publish(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 FR2-2-FINAL, Sol's Repro C): publication is relative to a dir
+        descriptor opened ONCE, so swapping a parent-directory symlink component after
+        verification cannot redirect where the artifact lands. The output path goes through a
+        symlink ``link -> real_a``; a racer repoints ``link -> real_b`` during verification.
+        The bundle must land in real_a (the dir the descriptor was opened on), never real_b.
+        Red-on-pre-fix (74abc95): publish re-resolved the output pathname, so it landed in
+        real_b."""
+        import regista._bundle as bundle_mod
+
+        real_a = tmp_path / "real_a"
+        real_b = tmp_path / "real_b"
+        real_a.mkdir()
+        real_b.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real_a, target_is_directory=True)
+        out = link / "bundle.json"
+
+        real_verify = bundle_mod.verify_audit_bundle_v3
+
+        def verify_hook(path: Any, trust: Any, **kw: Any) -> Any:
+            report = real_verify(path, trust, **kw)
+            link.unlink()
+            link.symlink_to(real_b, target_is_directory=True)  # swap the parent AFTER verify
+            return report
+
+        monkeypatch.setattr(bundle_mod, "verify_audit_bundle_v3", verify_hook)
+        archive_store.export(out)
+        assert (real_a / "bundle.json").is_file(), "publish ignored the held dir descriptor"
+        assert not (real_b / "bundle.json").exists(), (
+            "a parent-dir symlink swap redirected the publish"
+        )
+        assert _v3(real_a / "bundle.json").applicability != "invalid"
+
+    def test_fr2_2_repro_a_overwrite_staging_substitution_aborts(
+        self, archive_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§9 rule 5 (WI-340 round 4): the ``overwrite=True`` path links the held inode to a
+        staging name then ``os.replace``s it, and ``os.replace`` resolves the staging name BY
+        NAME — reopening a Repro-A substitution window. A racer that swaps the staging entry
+        between the linkat and the replace must make the export ABORT (BUNDLE_WRITE_CORRUPT)
+        with the destination untouched, NOT publish the racer's bytes and return success.
+        Red-on-pre-fix (8ebb6cd): the staging entry was os.replace'd by name with no inode
+        re-check, so the racer's inode was published."""
+        import regista._bundle as bundle_mod
+
+        out = tmp_path / "ow.json"
+        archive_store.export(out)  # a clean bundle exists, so overwrite=True is meaningful
+        before = out.read_bytes()
+
+        real_linkat = bundle_mod._linkat_held_inode
+        swapped: dict[str, bool] = {}
+
+        def linkat_hook(fd: int, dir_fd: int, name: str) -> None:
+            real_linkat(fd, dir_fd, name)  # stage-links OUR verified inode at `name`
+            if name.endswith(".partial") and not swapped:
+                swapped["done"] = True
+                # The racer swaps the staging entry for an inode of its own choosing.
+                os.unlink(name, dir_fd=dir_fd)
+                racer_fd = os.open(
+                    name, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600, dir_fd=dir_fd
+                )
+                os.write(racer_fd, b'{"racer": true}')
+                os.close(racer_fd)
+
+        monkeypatch.setattr(bundle_mod, "_linkat_held_inode", linkat_hook)
+        with pytest.raises(RegistaError) as exc:
+            archive_store.export(out, overwrite=True)
+        assert exc.value.code == ErrorCode.BUNDLE_WRITE_CORRUPT
+        assert "substituted" in str(exc.value)
+        assert out.read_bytes() == before, "the destination must be untouched on a substitution"
+        # Cleanup debt: no staging link left behind.
+        assert not list(tmp_path.glob("ow.json.*.partial")), "a staging link leaked"
+
+
+# ---------------------------------------------------------------------------
+# WI-289 rule 6 — dependency closure beyond the signer's authority
+# ---------------------------------------------------------------------------
+
+
+class TestRule6DependencyClosure:
+    """§9 rule 6 / RECONCILIATION.md Resolution 4, on a real artifact.
+
+    A complete-store missing a dependency it names is INVALID; a contiguous-range names each
+    out-of-scope dependency rather than treating its absence as satisfaction. The closure
+    walked here is the one BEYOND Phase B/C's signer authority — key lifecycle, project
+    acceptance, workflow registration, checkpoints, verdict subjects.
+    """
+
+    def _ordered(self, output: Path, *, preceding: str | None) -> Any:
+        from regista._bundle_v3 import derive_chain_order, parse_event_member
+
+        members = [
+            parse_event_member(
+                base64.b64decode(r["canonical_envelope"]), base64.b64decode(r["signature"])
+            )
+            for r in _read(output)["sections"]["events"]
+        ]
+        return derive_chain_order(members, preceding_event_hash=preceding)
+
+    def test_a_clean_complete_store_is_closure_complete(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        output = tmp_path / "closed.json"
+        bundle_store.export(output)
+        assert compute_dependency_closure(self._ordered(output, preceding=None)) == [], (
+            "a healthy whole-chain export names no dependency it does not contain"
+        )
+        assert _v3(output).applicability != "invalid"
+
+    def test_compute_dependency_closure_detects_a_missing_named_dependency(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """The walk itself, isolated. Dropping the acceptance every ordinary event's
+        ``key_binding_event_hash`` anchors to makes it a named-but-absent dependency; the
+        closure walk reports it with its kind. (In a linear complete-store this ALSO breaks
+        chain ordering, which is why the invalid-verdict face of rule 6 is exercised through a
+        contiguous-range below — but the walk that Resolution 4 rests on is asserted here
+        directly.)"""
+        output = tmp_path / "walk.json"
+        bundle_store.export(output)
+        ordered = list(self._ordered(output, preceding=None))
+        anchors = {
+            m.envelope["signing"]["key_binding_event_hash"]
+            for m in ordered
+            if m.transition not in ("project_initialized", "principal_key_accepted")
+            and m.envelope["signing"].get("key_binding_event_hash")
+        }
+        assert anchors, "an ordinary event must anchor to an acceptance"
+        kept = [m for m in ordered if m.event_hash_text not in anchors]
+        missing = compute_dependency_closure(kept)
+        assert any(kind == "key_binding" and ref in anchors for kind, ref, _ in missing), (
+            missing
+        )
+
+    def test_a_contiguous_range_names_its_out_of_scope_dependencies(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """RECONCILIATION.md Resolution 4's observable half: a bounded range legitimately
+        excludes an event's key-binding anchor (an earlier acceptance), and the verifier
+        NAMES it as outside scope in the report notes — never treats its absence as
+        satisfaction. This is the invalid-vs-outside-scope distinction that separates a
+        complete-store from a contiguous-range."""
+        with bundle_store.store._mgr.transaction() as conn:
+            seqs = [
+                r["global_seq"]
+                for r in conn.execute(
+                    "SELECT global_seq FROM events ORDER BY global_seq"
+                ).fetchall()
+            ]
+        # A tail window that starts AFTER the acceptances, so the ordinary events' key-binding
+        # anchors fall outside the window.
+        cut = seqs[-2]
+        output = tmp_path / "range.json"
+        result = bundle_store.export(output, since_seq=cut)
+        assert result["scope_kind"] == "contiguous-range"
+        report = _v3(output)
+        assert report.applicability != "invalid", report.to_dict()
+        assert any("dependency_outside_scope" in n for n in report.notes), report.notes
+
+
+# ---------------------------------------------------------------------------
+# WI-289 cluster-4 counterparts — the 11 retired bundle-v3 offline-verification
+# invariants, re-asserted against a real v6 epoch under the v3 verdict model.
+# ---------------------------------------------------------------------------
+
+
+class TestWI289Cluster4Counterparts:
+    """Each retired ``tests/test_bundle.py`` (bundle-v2) node's surviving invariant, carried
+    forward onto bundle v3. The retirement ledger's ``covered_by`` pointers name these tests;
+    ``TestWI289Cluster4LedgerMapping`` machine-checks that mapping.
+
+    The formula and the report shape changed — the unkeyed bundle hash is gone, replaced by
+    the statement signature and the §5 axis model — but each invariant survives the epoch
+    reset, which is the whole content of the ledger's carry-forward strings.
+    """
+
+    # -- test_verify_clean_bundle_passes --
+    def test_a_clean_v3_bundle_verifies_offline(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """A clean exported bundle verifies offline with no findings (statement-signature
+        model). Retires ``TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes``."""
+        output = tmp_path / "clean.json"
+        bundle_store.export(output)
+        report = _v3(output)
+        assert report.applicability == "bundle_rooted"
+        assert report.membership_signature == "valid_bundled_key"
+        assert list(report.findings) == [], report.findings
+
+    # -- test_export_with_since_seq --
+    def test_since_seq_is_an_exclusive_lower_bound(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """``since_seq`` is an EXCLUSIVE lower bound: the boundary event is NOT in the
+        membership, the next one IS, and the membership is exactly the tail set (F4:
+        membership + boundary, not a count that opposite semantics could also produce).
+        Retires ``TestExportAuditBundle::test_export_with_since_seq``."""
+        sh = _seq_hashes(bundle_store.store)
+        cut, boundary_hash = sh[0]
+        next_hash = sh[1][1]
+        output = tmp_path / "since.json"
+        result = bundle_store.export(output, since_seq=cut)
+        assert result["scope_kind"] == "contiguous-range"
+        membership = _membership_hashes(output)
+        assert boundary_hash not in membership, "since_seq is EXCLUSIVE — boundary excluded"
+        assert next_hash in membership
+        assert membership == {h for s, h in sh if s > cut}
+
+    # -- test_until_seq_is_an_inclusive_upper_bound --
+    def test_until_seq_is_an_inclusive_upper_bound(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """``until_seq`` is an INCLUSIVE upper bound: the boundary event IS in the membership,
+        the one after is NOT, and the membership is exactly the prefix set (F4). Retires
+        ``TestExportBounds::test_until_seq_is_an_inclusive_upper_bound``."""
+        sh = _seq_hashes(bundle_store.store)
+        mid = len(sh) // 2
+        cut, boundary_hash = sh[mid]
+        after_hash = sh[mid + 1][1]
+        output = tmp_path / "until.json"
+        bundle_store.export(output, until_seq=cut)
+        membership = _membership_hashes(output)
+        assert boundary_hash in membership, "until_seq is INCLUSIVE — boundary included"
+        assert after_hash not in membership
+        assert membership == {h for s, h in sh if s <= cut}
+
+    # -- test_since_and_until_form_a_window --
+    def test_since_and_until_form_a_window(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """``since``/``until`` bound the window exactly — exclusive lower, inclusive upper —
+        asserted by MEMBERSHIP at both boundaries (F4). Retires
+        ``TestExportBounds::test_since_and_until_form_a_window``."""
+        sh = _seq_hashes(bundle_store.store)
+        lo, lo_hash = sh[0]
+        hi, hi_hash = sh[-2]
+        after_hi_hash = sh[-1][1]
+        output = tmp_path / "window.json"
+        result = bundle_store.export(output, since_seq=lo, until_seq=hi)
+        assert result["scope_kind"] == "contiguous-range"
+        membership = _membership_hashes(output)
+        assert lo_hash not in membership, "lower bound is EXCLUSIVE"
+        assert hi_hash in membership, "upper bound is INCLUSIVE"
+        assert after_hi_hash not in membership
+        assert membership == {h for s, h in sh if lo < s <= hi}
+
+    # -- test_chunked_exports_both_verify_offline --
+    def test_chunked_exports_both_verify_and_a_preflight_matches(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """A corpus split into chunks yields a DISJOINT UNION that partitions the whole stream
+        (no overlap, no gap — not merely a count that sums), each chunk independently
+        verifiable; a matching preflight is accepted on each chunk (§9.2). Retires
+        ``TestExportBounds::test_chunked_exports_both_verify_offline``."""
+        sh = _seq_hashes(bundle_store.store)
+        whole = {h for _, h in sh}
+        cut = sh[len(sh) // 2][0]
+        head, tail = tmp_path / "head.json", tmp_path / "tail.json"
+        bundle_store.export(head, until_seq=cut)
+        bundle_store.export(tail, since_seq=cut)
+        head_m, tail_m = _membership_hashes(head), _membership_hashes(tail)
+        assert head_m.isdisjoint(tail_m), "chunks must not overlap"
+        assert head_m | tail_m == whole, "chunks must partition the whole stream (no gap)"
+        for path in (head, tail):
+            assert _v3(path).applicability != "invalid", path
+        # The preflight for the head chunk matches its own derived scope.
+        head_scope = _read(head)["statement"]["scope"]
+        rematch = tmp_path / "head2.json"
+        bundle_store.export(
+            rematch,
+            until_seq=cut,
+            preflight={
+                "event_count": head_scope["event_count"],
+                "first_event_hash": head_scope["first_event_hash"],
+                "last_event_hash": head_scope["last_event_hash"],
+            },
+        )
+        assert rematch.is_file(), "a matching preflight is accepted"
+
+    # -- test_binding_mismatch_fails_closed --
+    def test_a_principal_key_binding_mismatch_fails_closed(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """v6 principal↔key binding verification in bundle verification: relabelling which
+        principal a bundled key belongs to is a registry-chain inconsistency the verifier
+        surfaces (§4.3). Exercised under an EXTERNAL trust form (a pinned fingerprint) where a
+        clean bundle is ``consistent`` with no such finding — so the tamper produces a
+        DISTINGUISHING verdict, not one a clean bundle already satisfies (F3: the prior
+        ``!= externally_authenticated`` + ``event_trust_root in (bundled_only, absent)`` were
+        all true of a clean bundle too). Retires
+        ``TestOfflineSignatureVerification::test_binding_mismatch_fails_closed``."""
+        output = tmp_path / "binding.json"
+        bundle_store.export(output)
+        document = _read(output)
+        signer_fp = next(
+            r["fingerprint"]
+            for r in document["sections"]["bundled_key_evidence"]
+            if r["principal_id"] == BUNDLE_SIGNER
+        )
+        trust = TrustPolicy.from_fingerprints([signer_fp])
+        # Baseline under the SAME external trust form: registry is consistent, no finding.
+        clean = verify_audit_bundle_v3(str(output), trust).to_dict()
+        assert clean["registry_chain_consistency"] == "consistent", clean
+        assert not any("registry_chain_consistency" in f for f in clean["findings"]), clean
+
+        # Swap the principal_id on the signer's own key evidence and re-sign as the strongest
+        # adversary; the evidence now disagrees with the principal its SIGNED acceptance binds.
+        for record in document["sections"]["bundled_key_evidence"]:
+            if record["principal_id"] == BUNDLE_SIGNER:
+                record["principal_id"] = "agent:someone-else"
+        _write(output, _resign(document, bundle_store.keyset))
+        tampered = verify_audit_bundle_v3(str(output), trust).to_dict()
+        assert tampered["registry_chain_consistency"] == "inconsistent", tampered
+        assert any("registry_chain_consistency" in f for f in tampered["findings"]), tampered
+        assert tampered["applicability"] != "externally_authenticated", tampered
+
+    # -- test_clean_mixed_bundle_verifies_signatures --
+    def test_offline_event_signature_verification_reports_via_the_axes(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """Offline event-signature verification is reported through the A-axes (the mixed
+        HMAC population dies with the epoch, so only the v6 half of the retired invariant
+        survives): a clean bundle's ordinary events authenticate, the genesis bootstrap is
+        counted as not-yet-pinned rather than failed. Retires
+        ``TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures``."""
+        output = tmp_path / "axes.json"
+        bundle_store.export(output)
+        d = _v3(output).to_dict()
+        assert d["event_verification_ran"] is True
+        assert d["event_authentication"] == "legacy_partial", (
+            "ordinary v6 events authenticate; the unpinned genesis keeps it below FULL"
+        )
+        # F4: assert EVERY event is individually attributed (ed25519), not merely ≥1. A v6
+        # epoch has no shared-secret (HMAC) attribution, so the individual count is the WHOLE
+        # stream and shared_secret/none are zero. (Attribution — is the actor individually
+        # named — is distinct from whether the signature chained to a pinned key: the genesis
+        # bootstrap is individually attributed here even though its authority is unpinned,
+        # which is what keeps A4 at legacy_partial rather than FULL.)
+        ac = d["event_attribution_counts"]
+        assert ac is not None
+        assert ac.get("shared_secret", 0) == 0, "a v6 epoch has no HMAC attribution"
+        assert ac.get("none", 0) == 0
+        assert ac["individual"] == d["event_count"], (
+            "every event's ed25519 signature must be individually attributed"
+        )
+
+    # -- test_registry_absent_is_recorded_and_fails_closed --
+    def test_absent_key_evidence_is_recorded_and_fails_closed(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """With the key evidence stripped, offline verification of the asymmetric events
+        cannot authenticate them and never silently passes — the absence is recorded, not
+        promoted to a pass. Retires
+        ``TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed``.
+        """
+        output = tmp_path / "no_registry.json"
+        bundle_store.export(output)
+        document = _read(output)
+        document["sections"]["bundled_key_evidence"] = []
+        _write(output, _resign(document, bundle_store.keyset))
+        report = _v3(output)
+        assert report.applicability != "externally_authenticated"
+        # No key material means no event key resolves; the trust root is absent, never a pass.
+        assert report.event_trust_root == "absent", report.to_dict()
+
+    # -- test_unknown_scheme_fails_closed --
+    def test_relabelling_an_event_scheme_id_fails_closed(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """v6 signs ``scheme_id`` and requires equality with the trusted key's scheme (§3.1);
+        relabelling it in a bundled key evidence record is a scheme mismatch, not a verifier
+        selector, and fails closed to ``invalid`` — not merely "not externally authenticated"
+        (which every project bundle is anyway; that was the vacuous assertion this replaces,
+        F3). Retires ``TestOfflineSignatureVerification::test_unknown_scheme_fails_closed``."""
+        output = tmp_path / "scheme.json"
+        bundle_store.export(output)
+        document = _read(output)
+        for record in document["sections"]["bundled_key_evidence"]:
+            record["scheme_id"] = "ed448-not-a-real-selector"
+        _write(output, _resign(document, bundle_store.keyset))
+        report = _v3(output)
+        assert report.applicability == "invalid", report.to_dict()
+        assert any("scheme_id must be 'ed25519'" in f for f in report.findings), (
+            report.findings
+        )
+
+    # -- test_v1_bundle_signature_check_skipped --
+    def test_a_format_version_downgrade_is_rejected_outright(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """A format-version downgrade cannot silently pass: the v3 verifier rejects a
+        non-v3 ``format_version`` outright (downgrade fails closed; BUNDLE-V3.md §6). Retires
+        ``TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped``."""
+        output = tmp_path / "downgrade.json"
+        bundle_store.export(output)
+        document = _read(output)
+        document["statement"]["version"] = 1
+        _write(output, _resign(document, bundle_store.keyset))
+        report = _v3(output)
+        assert report.applicability == "invalid", report.to_dict()
+        assert report.structure == "malformed", report.to_dict()
+
+    # -- test_unverifiable_store_exits_3_by_default --
+    def test_cli_export_exit_code_is_the_self_verification_applicability(
+        self, bundle_store: Any, tmp_path: Path
+    ) -> None:
+        """The v3 CLI export exit code is driven by the self-verification applicability
+        (§9.7): exit 0 requires externally_authenticated, which a project bundle cannot reach
+        offline (WI-337), so a healthy project export self-verifies at ``bundle_rooted`` and
+        the CLI exits 2. F4: this invokes the REAL ``regista`` process and asserts the PROCESS
+        exit code — a CLI regression that exited 0 would pass a mapping-constant check but is
+        caught here. Retires
+        ``TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default``."""
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "REGISTA_DSN"}
+        env["REGISTA_KEY_PATH"] = bundle_store.keyset.path
+        out = tmp_path / "cli_exit.json"
+        cli = [sys.executable, "-m", "regista._cli"]
+        export = subprocess.run(
+            [
+                *cli,
+                "--dsn", DSN, "--project", bundle_store.project,
+                "bundle", "export", "--output", str(out),
+                "--signing-principal-id", BUNDLE_SIGNER,
+                "--root-governance-mode", "solo",
+                "--root-governance-threshold", "1",
+                "--root-governance-signer-count", "1",
+            ],
+            env=env, capture_output=True, text=True,
+        )
+        # bundle_rooted is the honest offline ceiling for a project bundle → exit 2, NOT 0.
+        assert export.returncode == 2, (export.returncode, export.stderr[-800:])
+        assert out.is_file(), export.stderr[-800:]
+
+        verify = subprocess.run(
+            [*cli, "bundle", "verify", str(out), "--accept-bundled-keys"],
+            env=env, capture_output=True, text=True,
+        )
+        assert verify.returncode == 2, (verify.returncode, verify.stderr[-800:])
+
+        no_trust = subprocess.run(
+            [*cli, "bundle", "verify", str(out)], env=env, capture_output=True, text=True,
+        )
+        assert no_trust.returncode == 1, (no_trust.returncode, no_trust.stderr[-800:])

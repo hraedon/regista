@@ -1147,5 +1147,100 @@ Phase B's `verify_bundle_v3_core`; the offline signing-authority resolver
 | §4.5 `root_governance` as a **replay-confirmed** `matches_policy` | WI-337-adjacent | A9 lands the axis and the policy comparison: a restated mode outside `required_root_governance` is `contradicts_policy` (a finding → `invalid`), and a consistent one is `unverified_restatement` — because the `bundle verify` path is handed the policy and the head pin (§10), **not** an authenticated trust log to replay. `matches_policy` is reachable only with a trust-log replay, which is store-backed (WI-337); A9 therefore never silently claims a match it did not confirm (§4.5: "a verifier that cannot replay reports `unverified_restatement`"). |
 | §4.4 criterion 2 chain-to-root for a **non-root** project key, and hence `externally_authenticated` for a project bundle | **WI-337-blocked** | See the amendment-4 clarification above. Completing a writer/bootstrap key's chain to a pinned root needs authenticated trust-log material, and the only trust-log verifiers are store-backed while §8.4 forbids fetching. There is no offline signature-verified trust-log artifact (WI-337), so a project bundle verified offline reports `bundled_only`/`bundle_rooted`/`unauthenticated` honestly and never reaches `externally_authenticated`. The base case (a directly root-signed statement or event) **is** authenticated. |
 | §10 CLI `--trust-log` flag to present authenticated trust-log material | **WI-337-blocked** | Deliberately NOT added. The only trust-log source today is the live store (a DSN); wiring a DSN fetch into the offline auditor tool contradicts §8.4 ("a verifier that silently fetches its own trust material has no trust root at all") and the §10 offline workflow, and inventing a published-artifact format is out of scope. So the CLI's exit-0 (`externally_authenticated`) verdict is **unreachable for a project bundle until WI-337 publishes an offline, signature-verifiable trust log**; it is reported here rather than shipped as a documented-but-unreachable top verdict. The CLI's other verdicts (bundle_rooted, unauthenticated, invalid) are fully reachable. |
-| §9 export ceremony, preflight, `.partial`-then-self-verify-then-`os.replace`, `--allow-unverified`'s deletion, export exit codes | Phase D | Unchanged from Phase B. `verify_audit_bundle_offline` survives as the export self-check vehicle only; its verdict boolean is gone, replaced by the honestly-named `self_verification_ok` property. |
+| §9 export ceremony, preflight, `.partial`-then-self-verify-then-`os.replace`, `--allow-unverified`'s deletion, export exit codes | Phase D — **landed** | See the Phase D status note below. `verify_audit_bundle_offline` survives only as an integrity-report vehicle for existing tests; the export self-check now runs through `verify_audit_bundle_v3` (there is one v3 verifier). |
 | §9 rule 6 credential transport | Phase E (deferred post-cutover by O1) | Unchanged: the section set is closed, so a bundle carrying one is refused. |
+
+---
+
+## Bundle v3 implementation status — WI-289 Phase D, 2026-08-23
+
+Phase D implements the **§9 export ceremony** and the **§9 rule 6 dependency closure beyond
+the signer's authority**, and closes the last bundle-v3 gap. This note mirrors Phase B's and
+Phase C's and is what a reviewer ratifies against the code.
+
+**Landed.** §9 rule 1 — `export_audit_bundle` strict-verifies every event over the
+archive-consolidated window before signing and refuses to sign a corpus containing any
+`Applicability.INVALID` (`_bundle._strict_verify_export_source`); an `UNVERIFIABLE` event
+(an unpinned genesis bootstrap) is not invalid and is exported honestly. §9 rule 2 (D1) — an
+optional `preflight` (`{event_count, first_event_hash, last_event_hash}`) is compared against
+the derived scope and any mismatch aborts before a byte is written (`_compare_preflight`; CLI
+`--preflight`). §9 rule 3 (WI-259) — the export read consolidates `events` with
+`events_archive` (`_windowed_source_sql`), so a `complete-store` claim covers the complete
+logical stream. §9 rule 4 (WI-261) — an existing destination is refused up front unless
+`overwrite=True` (CLI `--overwrite`). §9 rule 5 (D11) — the write order is now write to
+`.partial` → self-verify the `.partial` through `verify_audit_bundle_v3` → `os.replace` only
+on success; a failed self-verification leaves the `.partial` for inspection and never touches
+the destination, and `BUNDLE_WRITE_CORRUPT` is re-pointed at the statement signature. §9
+rule 7 — `--allow-unverified` is deleted; export returns the self-verified `applicability`
+and the CLI maps it through the same §10 exit table (`_BUNDLE_VERDICT_EXIT`), so exit 0
+requires `externally_authenticated`. Export is wired end to end: signing material is the
+store's own key set and the replayed `root_governance` is supplied via CLI flags
+(`--root-governance-mode/-threshold/-signer-count`), so `regista bundle export` produces a
+real signed v3 statement rather than erroring by name.
+
+§9 rule 6 — the dependency-closure walk beyond Phase B/C's signer authority
+(`_bundle_v3.compute_dependency_closure`) covers key lifecycle and project acceptance (each
+event's `signing.key_binding_event_hash` anchor), workflow registration
+(`workflow.registration_event_hash`) and its supersession
+(`supersedes_registration_event_hash`), acceptance revocation
+(`payload.acceptance_event_hash`) and the review-verdict subject
+(`reviewed_through_event_hash`). A `complete-store` missing a named dependency fails A3
+(`dependency_closure_ok=False` → `membership_consistency=mismatch` → `invalid`); a
+`contiguous-range` names each out-of-scope dependency as a report note (Resolution 4). In a
+linear project chain a complete-store's missing dependency also breaks chain ordering
+(`chain_ordered=False` fires first), so chain-ordering is the primary enforcer and the
+`dependency_closure_ok=False` verdict is **defence in depth** — reachable on its own terms
+only by a forged-but-orderable bundle, where it fails closed
+(`tests/test_bundle_v3.py::TestDependencyClosureReachesInvalid`). The observable rule-6
+behaviour in normal operation is the contiguous-range naming.
+
+**Concurrency and publication (WI-340 fix rounds, F1/F2 then FR2-1/FR2-2).** Export makes
+produce→sign a single isolated critical section: it takes the `event_chain_head` sentinel
+`FOR UPDATE` at the start of its transaction (`_lock_export_snapshot_head`) and holds that
+lock through the read, strict-verify, scope construction, `created_at` selection AND the
+statement signature — the discipline the writer and `archive_events` use. So no append can
+advance the head until the statement is signed; a `complete-store` is signed over one stable
+snapshot whose chain-ordered scope is asserted equal to the locked head or export aborts, and
+its signed `created_at` cannot post-date an omitted event (FR2-1 fixed F1's too-narrow window,
+which released the lock before scope/`created_at`/signing). Only publication runs after the
+lock. Publication holds ONE inode capability end to end (`_write_selfverify_publish`,
+FR2-2-FINAL): the artifact is created as a Linux `O_TMPFILE` — a regular file with **no
+directory entry** — written by descriptor (never by pathname), self-verified through
+`/proc/self/fd/<n>` (the held inode), and published by
+`linkat(fd, "", dir_fd, dest, AT_EMPTY_PATH)` so the published inode IS the verified inode.
+Because the artifact never has a name before publication there is nothing to poll, substitute,
+or symlink-plant (closing the post-verify substitution and the symlink-plant CWE-59 vectors),
+and `dir_fd` is opened once so a parent-directory symlink swap cannot redirect the link (the
+third vector). `overwrite=False` is no-clobber (`linkat` fails `EEXIST` if the destination
+exists); `overwrite=True` links the held inode to a fresh dir-relative name and `os.replace`s
+it, still the verified inode — and because `os.replace` resolves the staging name by name, the
+staging entry is re-checked by inode identity (`fstatat` under the held `dir_fd`, comparing
+`st_ino`/`st_dev` to the held fd) immediately before the replace, so a racer that swaps the
+staging entry makes the export **abort** rather than publish an unverified inode (round 4). A
+platform without `O_TMPFILE`/`AT_EMPTY_PATH` is a documented refusal, never a silently weaker
+by-name path.
+
+**Trust boundary.** This guarantee holds against a concurrent OTHER-principal exporter and any
+process that can write a shared output *directory*: nameless-until-publication, dir-fd
+anchoring, and the overwrite inode re-check make every by-name substitution fail closed. It
+does NOT defend against a **same-UID hostile process** — one that can open
+`/proc/<pid>/fd/<n>` to mutate the held inode can equally `ptrace` the exporter, rewrite its
+memory, or swap its binary, so no fd/inode discipline defends it and none is attempted. The
+boundary is the trusted process and its trusted output directory. (Note the severity ceiling:
+even before the round-4 fix a substituted bundle FAILS downstream signature verification — it
+was never a false-authentic-bundle hole; the bug was export falsely reporting success, now
+fail-closed.)
+
+The intermediate fixes were insufficient in ways worth recording: a uniquely-named `mkstemp`
+temp re-opened by name stopped accidental collisions but not a determined racer (create/write/
+verify/publish were not one inode); holding the inode by descriptor closed the write and the
+`overwrite=False` publish but left the `overwrite=True` staging `os.replace` re-resolving a
+name, which round 4 closes with the inode re-check.
+
+**Deliberately NOT landed, and where it goes.** None is an oversight:
+
+| Clause | Owner | Consequence at Phase D |
+|---|---|---|
+| `externally_authenticated` for a project bundle (export exit 0) | **WI-337-blocked** | The export self-check uses `AcceptBundledKeys` (self-consistency) and is clamped to `bundle_rooted` by Rule C, and a project bundle cannot reach `externally_authenticated` offline until WI-337 publishes a signature-verifiable trust log (Phase C's amendment-4 clarification). So a healthy project export self-verifies at `bundle_rooted` and the CLI exits 2 — the honest ceiling, not a write failure. The bundle IS written. |
+| §10 CLI `--trust-log` flag | **WI-337-blocked** | Still deliberately NOT added, for the reason Phase C recorded: the only trust-log source today is the live store, and wiring a DSN fetch into the offline auditor contradicts §8.4; inventing an offline trust-log artifact format is WI-337, not Phase D. |
+| §9 rule 6 credential transport (`sections.action_delegation_credentials`) | Phase E (deferred post-cutover by O1) | Unchanged: the section set stays closed, so the closure walk never reaches into a credential section and a bundle carrying one is refused rather than accepted with an unread section. |

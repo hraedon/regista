@@ -1623,6 +1623,77 @@ def recompute_reference_sections(ordered: Sequence[OrderedMember]) -> dict[str, 
     return {name: sorted(set(refs)) for name, refs in derived.items()}
 
 
+def _dependency_references(member: OrderedMember) -> list[tuple[str, str]]:
+    """The project-local dependency events ``member`` names by a SIGNED field (§9 rule 6).
+
+    Only fields that reliably reference an event **in this project chain** are walked, so a
+    healthy ``complete-store`` never reports a false miss:
+
+    * ``signing.key_binding_event_hash`` — the event's key-binding anchor (its acceptance or
+      the bootstrap). This is the key-lifecycle / project-acceptance / checkpoint dependency
+      in one: every ordinary event's anchor is its acceptance, every acceptance's anchor is
+      the bootstrap, and the clean-epoch checkpoint IS the genesis those chain to.
+    * ``workflow.registration_event_hash`` — the workflow registration a workflow-bearing
+      event was written under.
+    * ``payload.supersedes_registration_event_hash`` — the registration a later workflow
+      registration supersedes.
+    * ``payload.acceptance_event_hash`` — the acceptance an acceptance-revocation revokes.
+    * ``payload.reviewed_through_event_hash`` — the event a review verdict binds to (its
+      subject), which is how verdict supersession is anchored in the chain.
+
+    Deliberately NOT walked: ``payload.trust_event_hash`` and ``accepted_by`` grantor
+    anchors, which cross into the **trust log** (a project bundle cannot carry them; that is
+    WI-337, and the signer's own grantor is Phase B/C's `resolve_bundle_signing_authority`).
+    The credential-transport clause (`action_delegation_credentials`) is Phase E, so the
+    section set stays closed and nothing here reaches into it.
+    """
+
+    refs: list[tuple[str, str]] = []
+    env = member.envelope
+    signing = env.get("signing")
+    if isinstance(signing, Mapping) and isinstance(
+        signing.get("key_binding_event_hash"), str
+    ):
+        refs.append(("key_binding", str(signing["key_binding_event_hash"])))
+    workflow = env.get("workflow")
+    if isinstance(workflow, Mapping) and isinstance(
+        workflow.get("registration_event_hash"), str
+    ):
+        refs.append(("workflow_registration", str(workflow["registration_event_hash"])))
+    payload = member.payload
+    if isinstance(payload, Mapping):
+        if isinstance(payload.get("supersedes_registration_event_hash"), str):
+            refs.append(
+                ("workflow_supersession", str(payload["supersedes_registration_event_hash"]))
+            )
+        if isinstance(payload.get("acceptance_event_hash"), str):
+            refs.append(("revoked_acceptance", str(payload["acceptance_event_hash"])))
+        if isinstance(payload.get("reviewed_through_event_hash"), str):
+            refs.append(("verdict_subject", str(payload["reviewed_through_event_hash"])))
+    return refs
+
+
+def compute_dependency_closure(
+    ordered: Sequence[OrderedMember],
+) -> list[tuple[str, str, str]]:
+    """Return ``(kind, missing_hash, referencing_event)`` for every named dependency absent
+    from the presented set — the §9 rule 6 / Resolution 4 closure walk.
+
+    The caller decides the consequence by scope kind: a ``complete-store`` must contain every
+    dependency (a miss is ``invalid``), while a ``contiguous-range`` names each out-of-window
+    dependency rather than treating its absence as satisfaction. Deduped and sorted so the
+    finding order is deterministic.
+    """
+
+    present = {m.event_hash_text for m in ordered}
+    missing: set[tuple[str, str, str]] = set()
+    for member in ordered:
+        for kind, ref in _dependency_references(member):
+            if ref not in present:
+                missing.add((kind, ref, member.event_hash_text))
+    return sorted(missing)
+
+
 @dataclass(frozen=True)
 class BundleV3CoreReport:
     """What Phase B establishes about a v3 bundle, and nothing more.
@@ -1653,6 +1724,13 @@ class BundleV3CoreReport:
     section_digests_ok: bool
     reference_sections_ok: bool | None
     scope_consistent: bool | None
+    #: §9 rule 6 dependency closure (RECONCILIATION.md Resolution 4). ``None`` when the chain
+    #: could not be ordered (nothing to walk). ``True`` when every project-local dependency a
+    #: presented event names by a signed field is in scope — or when a ``contiguous-range``
+    #: legitimately leaves some outside scope, in which case each is a :attr:`notes` entry.
+    #: ``False`` ONLY for a ``complete-store`` missing a dependency it must contain — a false
+    #: completeness claim, which is an A3 (membership_consistency) failure.
+    dependency_closure_ok: bool | None
     chain_ordered: bool
     #: O3: True when the signer's authority event was found inside the bundle and its
     #: acceptance object grants ``may_sign_bundles``.
@@ -2352,6 +2430,44 @@ def verify_bundle_v3_core(
                 "heads the trust-log chain, not this project's",
             )
 
+    # §9 rule 6 — dependency closure BEYOND the signer's own authority (which O3, below, and
+    # Phase B/C's `resolve_bundle_signing_authority` already close). RECONCILIATION.md
+    # Resolution 4: "Missing closure in `complete-store` is invalid; a bounded range reports
+    # the named dependency as outside scope, never silently valid." A complete-store missing
+    # a dependency is a false completeness claim, so it fails A3 (membership_consistency)
+    # exactly as a section-digest mismatch does; a contiguous-range names each out-of-window
+    # dependency as a note and stays honest.
+    #
+    # DEFENSE-IN-DEPTH, stated so a reviewer does not read the False branch as dead (WI-340
+    # N1): on a REAL single project chain every dependency edge is a backward reference to an
+    # interior chain event, so dropping one also breaks `previous_project_event_hash` and
+    # `chain_ordered` is False FIRST — chain-ordering is the primary enforcer of complete-store
+    # completeness there. The `dependency_closure_ok=False` branch is reachable on its own
+    # terms only by a forged-but-orderable bundle (an event whose signed
+    # `key_binding_event_hash` names an absent anchor while its chain link still resolves —
+    # tests/test_bundle_v3.py::TestDependencyClosureReachesInvalid), and it fails closed there.
+    # The observable rule-6 behaviour in normal operation is the contiguous-range naming below.
+    dependency_closure_ok: bool | None = None
+    if chain_ordered:
+        dependency_closure_ok = True
+        missing_deps = compute_dependency_closure(ordered)
+        if missing_deps and scope["kind"] == "complete-store":
+            dependency_closure_ok = False
+            for kind, ref, src in missing_deps:
+                acc.findings.append(
+                    f"dependency_closure_missing: {kind} {ref} referenced by {src} is "
+                    "absent from a complete-store bundle, which must contain every "
+                    "dependency it names (BUNDLE-V3.md §9 rule 6, RECONCILIATION.md "
+                    "Resolution 4). Invalid, not a smaller bundle"
+                )
+        elif missing_deps:
+            for kind, ref, src in missing_deps:
+                acc.notes.append(
+                    f"{kind}_dependency_outside_scope: {ref} referenced by {src} lies "
+                    f"outside this {scope['kind']} scope. Named per Resolution 4 — reported "
+                    "as outside scope, never treated as satisfaction"
+                )
+
     # O3 — the signer's authority, RE-DERIVED with the store's own rules.
     #
     # Two independent things are checked and they are easy to conflate: that the statement
@@ -2515,6 +2631,7 @@ def verify_bundle_v3_core(
         section_digests_ok=section_digests_ok,
         reference_sections_ok=reference_sections_ok,
         scope_consistent=scope_consistent,
+        dependency_closure_ok=dependency_closure_ok,
         chain_ordered=chain_ordered,
         signer_may_sign_bundles=signer_may_sign_bundles,
         signer_authority_checked=signer_authority_checked,
@@ -2870,6 +2987,7 @@ __all__ = [
     "build_bundle_v3_document",
     "canonical_bundle_bytes",
     "canonical_bytes",
+    "compute_dependency_closure",
     "derive_chain_order",
     "digest_bytes",
     "digest_text",

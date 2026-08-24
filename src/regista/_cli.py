@@ -655,16 +655,52 @@ def cmd_events_archive(args: argparse.Namespace) -> None:
         sub.close()
 
 
+def _bundle_export_root_governance(args: argparse.Namespace) -> dict[str, Any]:
+    """The replayed ``{mode, threshold, signer_count}`` from the CLI flags (§3.2).
+
+    Export cannot derive this from a project store (``_bundle._trust_root_from_store``):
+    §3.2 requires the current governance state obtained by replaying the signed
+    trust-domain governance log through the authenticated checkpoint, and forbids copying
+    it from genesis or configuration. So the operator supplies the state they replayed —
+    the same three members ``regista trust catalog`` reads off the trust-log checkpoint —
+    and all three are required together (a partial governance restatement is not a state).
+    """
+
+    mode = getattr(args, "root_governance_mode", None)
+    threshold = getattr(args, "root_governance_threshold", None)
+    signer_count = getattr(args, "root_governance_signer_count", None)
+    if mode is None or threshold is None or signer_count is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "bundle export requires the replayed root governance state: pass "
+            "--root-governance-mode, --root-governance-threshold and "
+            "--root-governance-signer-count together (BUNDLE-V3.md §3.2). Obtain them by "
+            "replaying the signed trust-domain governance log through the authenticated "
+            "trust-log checkpoint — the same values `regista trust catalog` reports — never "
+            "from genesis or configuration.",
+        )
+    return {"mode": mode, "threshold": threshold, "signer_count": signer_count}
+
+
 def cmd_bundle_export(args: argparse.Namespace) -> None:
     dsn, project, hmac_key_path = _require_config(args)
     sub = Regista(dsn, project, hmac_key_path)
     try:
+        preflight = None
+        if getattr(args, "preflight", None):
+            preflight = json.loads(Path(args.preflight).read_text(encoding="utf-8"))
         result = sub.export_audit_bundle(
             args.output,
+            root_governance=_bundle_export_root_governance(args),
+            signing_principal_id=getattr(args, "signing_principal_id", None),
+            signing_key_id=getattr(args, "signing_key_id", None),
             since_seq=args.since_seq,
             until_seq=args.until_seq,
+            overwrite=getattr(args, "overwrite", False),
+            preflight=preflight,
         )
         sv = result["self_verification"]
+        applicability = str(sv["applicability"])
         if getattr(args, "json", False):
             _dump_json(result)
         else:
@@ -676,35 +712,26 @@ def cmd_bundle_export(args: argparse.Namespace) -> None:
             # (BUNDLE-V3.md §1, §8).
             print(f"  membership_root:  {result['event_membership_root']}")
             print(f"  bundle_bytes:     {result['bundle_bytes']}")
+            # §9 rule 7: the self-verification is a self-consistency verdict (bundled keys),
+            # never external authentication — the exit code says exactly which.
+            print(f"  self_verified:    {applicability}")
+        # §9 rule 7: the exit code is the self-verified applicability, exactly the §10 map.
+        # Exit 0 requires externally_authenticated, which a project bundle cannot reach
+        # offline until WI-337 — so a healthy project export lands at bundle_rooted and
+        # exits 2 (the honest ceiling), not 0. The artifact IS written; the non-zero exit
+        # reports the verdict, not a write failure.
+        if applicability != "externally_authenticated":
             print(
-                f"  self_verified:    {'yes' if sv['verified'] else 'NO'} "
-                f"(signatures {sv['signatures_verified']} verified, "
-                f"{sv['signatures_unverifiable']} unverifiable)"
-            )
-        if not sv["verified"]:
-            print(
-                "warning: the artifact was written but preserves evidence "
-                "the offline verifier rejects — run `bundle verify` for the "
-                "full report:",
+                f"note: self-verification reached {applicability!r}, not "
+                "externally_authenticated. This is a self-consistency verdict over the "
+                "bundle's own keys; external authentication needs an auditor's pinned root "
+                "(run `bundle verify --trust-policy ...`), and for a project bundle it is "
+                "WI-337-blocked offline. The bundle was written.",
                 file=sys.stderr,
             )
-            if result["event_count"] > 0 and sv["signatures_verified"] == 0:
-                print(
-                    "  - no event signature could be verified offline "
-                    f"({sv['signatures_unverifiable']} unverifiable). An HMAC "
-                    "store cannot produce an offline-authenticated bundle: the "
-                    "secret is deliberately never exported. Re-export from an "
-                    "asymmetric (ed25519) store, or pass --allow-unverified to "
-                    "accept an internally-consistent-only artifact.",
-                    file=sys.stderr,
-                )
-            for err in sv["errors"]:
-                print(f"  - {err}", file=sys.stderr)
-            # Exit codes are the API pipelines read (the WI-240 complaint):
-            # 0 must mean "exported AND verifiable". Archiving a degraded
-            # store is still possible, but only by explicit opt-in.
-            if not args.allow_unverified:
-                sys.exit(3)
+            for finding in sv.get("findings", []):
+                print(f"  - {finding}", file=sys.stderr)
+        sys.exit(_BUNDLE_VERDICT_EXIT.get(applicability, 1))
     except RegistaError as e:
         _handle_error(e, json_mode=getattr(args, "json", False))
     finally:
@@ -5773,12 +5800,41 @@ def main(argv: list[str] | None = None) -> None:
         "offline verifier's size cap into verifiable pieces",
     )
     bnd_export.add_argument(
-        "--allow-unverified", action="store_true",
-        help="Exit 0 even when the written artifact fails offline "
-        "verification for store-level reasons (e.g. a key registry predating "
-        "its migration). Default: the artifact is written but the command "
-        "exits 3, so pipelines cannot mistake an unverifiable export for a "
-        "verified one",
+        "--overwrite", action="store_true",
+        help="Replace an existing destination. Default: export refuses to overwrite an "
+        "existing bundle (BUNDLE-V3.md §9 rule 4, WI-261) — an audit artifact is evidence "
+        "and is never clobbered silently",
+    )
+    bnd_export.add_argument(
+        "--preflight", metavar="FILE",
+        help="A preflight result to compare the exported scope against (§9 rule 2 / D1): a "
+        "JSON object with event_count, first_event_hash and last_event_hash. A mismatch "
+        "aborts — this is how a head that moved mid-export becomes an error rather than a "
+        "silently narrower bundle",
+    )
+    bnd_export.add_argument(
+        "--root-governance-mode", metavar="MODE",
+        help="Replayed governance mode (co_signed | solo | solo_effective) for "
+        "statement.trust_root (§3.2). Required with the other two --root-governance-* "
+        "flags; obtain by replaying the signed trust-domain governance log, never from "
+        "genesis or configuration",
+    )
+    bnd_export.add_argument(
+        "--root-governance-threshold", type=int, metavar="N",
+        help="Replayed root signature threshold for statement.trust_root (§3.2)",
+    )
+    bnd_export.add_argument(
+        "--root-governance-signer-count", type=int, metavar="N",
+        help="Replayed root signer count for statement.trust_root (§3.2)",
+    )
+    bnd_export.add_argument(
+        "--signing-principal-id", metavar="PRINCIPAL",
+        help="The principal whose key signs the statement; defaults to the project's own "
+        "principal. The key must bear may_sign_bundles in its signed acceptance (O3)",
+    )
+    bnd_export.add_argument(
+        "--signing-key-id", metavar="KEY_ID",
+        help="A specific key id for the signing principal; defaults to its active key",
     )
     bnd_export.add_argument("--json", action="store_true", help="JSON output")
     bnd_export.set_defaults(func=cmd_bundle_export)

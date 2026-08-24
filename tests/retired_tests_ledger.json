@@ -540,9 +540,10 @@
       "node_id": "tests/test_bundle.py::TestCliExportExitCodes::test_unverifiable_store_exits_3_by_default",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "CLI export exit 0 means exported AND verifiable; an unverifiable store exits 3 (artifact still written)",
-      "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)"
+      "carry_forward": "v3 CLI exit code driven by the self-verification applicability (BUNDLE-V3 §9.7)",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_cli_export_exit_code_is_the_self_verification_applicability",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestDeclaredWindowIntegrity::test_impossible_window_does_not_disable_segment_checks[inverted]",
@@ -598,17 +599,19 @@
       "node_id": "tests/test_bundle.py::TestExportAuditBundle::test_export_with_since_seq",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "since_seq is an exclusive lower bound on the exported global_seq window",
-      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); window bounds re-covered at P3.3"
+      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); window bounds re-covered at P3.3",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_since_seq_is_an_exclusive_lower_bound",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestExportBounds::test_chunked_exports_both_verify_offline",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "a corpus split into chunks yields disjoint, jointly-complete, independently verifiable bundles",
-      "carry_forward": "v3 chunk plan + preflight comparison (BUNDLE-V3.md §9.2); re-covered at P3.3"
+      "carry_forward": "v3 chunk plan + preflight comparison (BUNDLE-V3.md §9.2); re-covered at P3.3",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_chunked_exports_both_verify_and_a_preflight_matches",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestExportBounds::test_mid_chain_chunk_excludes_receipts_and_verifies",
@@ -624,17 +627,19 @@
       "node_id": "tests/test_bundle.py::TestExportBounds::test_since_and_until_form_a_window",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "since/until together bound the exported window exactly",
-      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
+      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_since_and_until_form_a_window",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestExportBounds::test_until_seq_is_an_inclusive_upper_bound",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "until_seq is an inclusive upper bound on the exported window",
-      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3"
+      "carry_forward": "v3 contiguous-range scope (BUNDLE-V3.md §3.5); re-covered at P3.3",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_until_seq_is_an_inclusive_upper_bound",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestManifestCountAgreement::test_clean_bundle_has_no_count_errors",
@@ -685,17 +690,19 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_binding_mismatch_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "actor↔signer binding mismatch fails closed",
-      "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification"
+      "carry_forward": "v6 principal↔key binding verification (key_binding_event_hash / trust log) in bundle verification",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_a_principal_key_binding_mismatch_fails_closed",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_clean_mixed_bundle_verifies_signatures",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "offline verification verifies ed25519 signatures and counts HMAC events unverifiable in one bundle",
-      "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch"
+      "carry_forward": "v3 offline event-signature verification (A-axes); the mixed HMAC population dies with the epoch",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_offline_event_signature_verification_reports_via_the_axes",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_hmac_only_bundle_counts_all_unverifiable",
@@ -706,25 +713,28 @@
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_registry_absent_is_recorded_and_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "export records an absent key registry; offline verification of asymmetric events then fails closed",
-      "carry_forward": "v3: absent key evidence recorded, never a silent pass"
+      "carry_forward": "v3: absent key evidence recorded, never a silent pass",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_absent_key_evidence_is_recorded_and_fails_closed",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_unknown_scheme_fails_closed",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "relabelling an event's scheme_id is a scheme_mismatch against the trusted key, not a verifier selector",
-      "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)"
+      "carry_forward": "v6 signs scheme_id and requires equality with the trusted key's scheme (§3.1)",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_relabelling_an_event_scheme_id_fails_closed",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestOfflineSignatureVerification::test_v1_bundle_signature_check_skipped",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "a format-version downgrade to v1 cannot silently pass — skipped is reported and verified=False",
-      "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)"
+      "carry_forward": "v3 verifier rejects non-v3 format_version outright (downgrade fails closed; BUNDLE-V3 §6)",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_a_format_version_downgrade_is_rejected_outright",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestSegmentAndReceiptWindowing::test_receipt_listing_orders_oldest_target_first",
@@ -890,9 +900,10 @@
       "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_clean_bundle_passes",
       "disposition": "coverage_owed",
       "work_item": "WI-289",
-      "deferred_to": "WI-289/P3.3",
       "invariant": "a clean exported bundle verifies offline with no findings",
-      "carry_forward": "clean v3 bundle verifies offline (statement signature model)"
+      "carry_forward": "clean v3 bundle verifies offline (statement signature model)",
+      "covered_by": "tests/test_bundle.py::TestWI289Cluster4Counterparts::test_a_clean_v3_bundle_verifies_offline",
+      "covered_in": "P3.3 (WI-289 Phase D; §9 export ceremony + rule 6 dependency closure)"
     },
     {
       "node_id": "tests/test_bundle.py::TestVerifyAuditBundleOffline::test_verify_detects_anchor_mismatch",
