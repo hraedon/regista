@@ -3836,6 +3836,26 @@ def _resolve_root_authority(
                 getattr(args, "trust_log_export_expect_head", None)
             ),
         )
+        # WI-337 (Sol #1): the offline catalog path must refuse an UNPINNED export before it
+        # derives root authority — exactly the fail-closed the bundle path already has
+        # (`_bundle._trust_log_export_material`). Without this, an auditor omitting
+        # --trust-log-export-expect-head would let removed roots publish a PREFIX ending
+        # before a rotation, sign it while still "active" in the prefix, and forge a catalog
+        # that verify-catalog accepts as current authority — the very removed-root fallback
+        # this command's --trust-log-project design exists to close (see the docstring
+        # above). An exact head/count pin is required; a checkpoint-cover is not enough,
+        # for the reason the bundle path documents (a stale checkpoint hides a later cut).
+        if not verification.head_pin_checked:
+            raise RegistaError(
+                ErrorCode.ESTATE_CATALOG_UNVERIFIED,
+                "the trust-log export was presented without an exact head pin, so it "
+                "cannot establish the current root signer set: a published PREFIX of the "
+                "log replays cleanly and would hide every rotation after the cut, letting "
+                "roots removed by a rotation re-authorise a catalog under the old set. "
+                "Pass --trust-log-export-expect-head <head>:<count> obtained by direct "
+                "exchange (TRUST-DOMAIN.md §4.6).",
+                {"reason": "trust_log_export_unpinned"},
+            )
         from regista._trust_domain import parse_trust_genesis
 
         return verification_root_authority(verification, parse_trust_genesis(genesis_document))

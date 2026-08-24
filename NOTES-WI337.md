@@ -56,8 +56,10 @@ machine-readable `reason` (or a fail-closed ErrorCode), never message text.
 | Cross-domain laundering | `trust_domain_id` / `trust_domain_core_digest` / `genesis_document_digest` / `project_instance_id` must equal the pinned genesis, checked BEFORE crypto | `trust_domain_mismatch` (+ siblings) | `test_export_from_a_different_domain_is_refused`; bundle-level `test_bundle_refuses_a_log_bound_to_another_domain` |
 | Sub-threshold | verified count must reach the derived threshold | `root_threshold_not_met` | `test_sub_threshold_signatures_are_refused` |
 | Downgrade / claim disagreement | restated threshold/mode/actives/head/count each must EQUAL the replay | `governance_mode_mismatch` / `threshold_contradicts_replay` / `head_contradicts_replay` | `test_restated_threshold_below_the_replay_is_refused`, `test_declared_head_that_is_not_the_replay_head_is_refused` |
-| Truncation (a prefix replays cleanly) | require `expect_head` (exact head+count) and/or `must_cover`; report `tail_truncation_undetectable` when neither given; the bundle path makes a pin MANDATORY for authority | `head_pin_contradicted` / `pinned_checkpoint_not_covered` / `trust_log_export_unpinned` | `test_expect_head_detects_the_prefix`, `test_must_cover_detects_the_prefix`, `test_a_published_prefix_replays_cleanly_but_reports_truncation_undetectable`, `test_bundle_refuses_an_unpinned_export_for_authority` |
-| Revoked-key laundering | `export_referents` withholds the enrolment/rotation that introduced a key the replay shows REVOKED; supersession is NOT withheld | (withheld set) | `test_revoked_key_introduction_is_withheld_from_referents`, `test_supersession_is_not_withheld` |
+| Truncation (a prefix replays cleanly) | only an EXACT `expect_head` (head+count) is a complete truncation defence; `must_cover` proves reach-AT-LEAST a checkpoint, NOT freshness; report `tail_truncation_undetectable` when neither given; **both authority paths (bundle AND offline verify-catalog) require an exact head pin** (Sol #1/#2) | `head_pin_contradicted` / `pinned_checkpoint_not_covered` / `trust_log_export_unpinned` / `trust_log_export_head_pin_required` | `test_expect_head_detects_the_prefix`, `test_must_cover_detects_the_prefix`, `test_a_published_prefix_replays_cleanly_but_reports_truncation_undetectable`, `test_bundle_refuses_an_unpinned_export_for_authority`, `test_bundle_refuses_a_must_cover_only_export_for_authority`, `test_catalog_offline_path_refuses_an_unpinned_export` |
+| Unsigned/sub-threshold drawn for authority via `require_signatures=False` | the bundle consumption path re-asserts signature sufficiency (`verified_root_signatures >= root_threshold`), independent of how the verification object was produced (Opus footgun) | `trust_log_export_signatures_insufficient` (`TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT`) | `test_bundle_refuses_an_unsigned_or_subthreshold_export_for_authority` |
+| Revoked-key laundering | `export_referents` withholds the enrolment/rotation that introduced a key the replay shows REVOKED; supersession is NOT withheld | (withheld set) | `test_revoked_key_introduction_is_withheld_from_referents` |
+| Rotated-out key as current authority (Sol #3/#4) | the replay now marks a rotated-out key `superseded`; offline classification keeps its introduction as a historical referent but excludes it from `active_principal_keys`, so the resolver never returns it as externally pinned | (excluded from active; named finding on use) | `test_rotation_supersedes_the_old_key_but_keeps_its_history` |
 | Non-canonical bytes | file bytes must equal `canonicalize(document)` | `not_canonical_publication_bytes` | `test_non_canonical_publication_bytes_are_refused` |
 | Substitution | `expect_digest` over the framed input | `export_digest_mismatch` | `test_substituted_artifact_is_caught_by_expect_digest` |
 | Tampered event | flipping a byte breaks the hash chain; the walk rejects it | fail-closed `TRUST_LOG*` code | `test_tampered_event_bytes_fail_closed` |
@@ -79,6 +81,67 @@ Proving tests: `test_bundle_refuses_a_log_bound_to_another_domain`,
 (`test_project_bundle_reaches_externally_authenticated_offline`) reaches
 `externally_authenticated` with the export and drops to `unauthenticated` without it
 (`test_same_bundle_without_the_export_is_only_unauthenticated`).
+
+## Two-reviewer ceremony remediation (commit 5b5cd0e → this pass)
+
+The first adversarial ceremony (Sol cross-lineage REQUEST-CHANGES ×4; Opus probe-executor
+PASS + 1 footgun) found four issues. All four are fixed here, each with a fail-closed test.
+
+- **A — offline verify-catalog now refuses an unpinned export (Sol #1).**
+  `_cli._resolve_root_authority` verified the export then went straight to
+  `verification_root_authority()` without checking the truncation pin — the bundle path
+  refused, the catalog path did not, so removed roots could publish a prefix ending before
+  their rotation and forge a catalog `verify-catalog` accepted. Now the catalog path
+  requires `verification.head_pin_checked` (an exact `--trust-log-export-expect-head`) and
+  raises `ESTATE_CATALOG_UNVERIFIED` / `trust_log_export_unpinned` otherwise — the SAME
+  fail-closed the bundle path has. Test: `test_catalog_offline_path_refuses_an_unpinned_export`
+  (+ the honest counterpart `..._accepts_an_exact_head_pinned_export`).
+
+- **B — rotation now supersedes the old key in the replay (Sol #3/#4).**
+  *Scope determination:* the ONLINE / store-backed authority path is **NOT** affected —
+  `_genesis_open.resolve_enrolled_key` already excludes rotated-out keys by reading the
+  rotation events' `supersedes_key_id` directly (see its comment at ~line 1059). Only the
+  OFFLINE classification treated a rotated-out key as current authority. Per the task's own
+  conditional ("if the online path handles supersession elsewhere, fix the offline
+  classification to match") the fix is: add a `superseded` state to the replay
+  (`principal_key_status: Literal["active","revoked","superseded"]`), mark the outgoing key
+  in `_remember_principal_key` on any rotation, and have `_bundle._trust_log_export_material`
+  honour it — a superseded key stays a valid historical referent (its introduction is NOT
+  withheld) but is excluded from `active_principal_keys`, so `PolicyKeyResolver` never
+  returns it as externally pinned. The online path is unchanged and still correct; the
+  replay state is now honest for BOTH consumers. The vacuous `test_supersession_is_not_withheld`
+  (which never rotated) is REPLACED by `test_rotation_supersedes_the_old_key_but_keeps_its_history`,
+  proving both halves: K1's enrolment stays a referent; K1 is not current authority, K2 is.
+
+- **C — `require_signatures=False` authority-token footgun closed (Opus).**
+  `verify_trust_log_export(require_signatures=False)` (the builder's pre-sign self-check)
+  skips the root-threshold gate but still returns a verification object; the bundle path
+  granted authority off it with no re-assertion. Demonstrated: an UNSIGNED export drove a
+  bundle to `externally_authenticated`. Fix: `_bundle._trust_log_export_material` now
+  re-asserts `len(verified_root_signatures) >= root_threshold`, raising the new
+  `TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT` / `trust_log_export_signatures_insufficient`
+  (covers unsigned AND sub-threshold). New ErrorCode + `_STATUS_MAP` 400 sidecar entry.
+  Test: `test_bundle_refuses_an_unsigned_or_subthreshold_export_for_authority`.
+
+- **D — `must_cover` no longer overstates truncation defence (Sol #2). DESIGN DECISION.**
+  A stale `min_trust_log_checkpoint` (predating a rotation/revocation) lets a truncated
+  export cover it while hiding later events, yet still reach the top verdict. We took the
+  **strict** option Sol offered: the top `externally_authenticated` verdict requires the
+  ceremony's **exact** head/count pin. `_bundle._trust_log_export_material` now refuses a
+  must_cover-ONLY presentation (`tail_truncation_undetectable=False` but
+  `head_pin_checked=False`) with `trust_log_export_head_pin_required`, rather than granting
+  authority. `must_cover` keeps its honest lesser role at `verify_trust_log_export` — it
+  still refuses a prefix that does not even reach the checkpoint (`pinned_checkpoint_not_covered`)
+  — it is just not, on its own, a licence for CURRENT authority. *Feasibility check:* no
+  test relied on a must_cover-only export reaching the top verdict (the positive
+  `_offline_scenario` uses `expect_head`), and the spec (§4.6) treats the checkpoint as a
+  floor, not a sufficiency claim, so this is strictly-stricter without breaking the design.
+  Test: `test_bundle_refuses_a_must_cover_only_export_for_authority`.
+  *Residual after D:* an exact-head pin still cannot prove FRESHNESS on its own — it proves
+  the export is not truncated relative to a head the auditor obtained out of band. The
+  ceremony must obtain that head from the custodian channel (§4.6 publication), not from the
+  export. This is inherent to offline verification and is now labelled honestly rather than
+  papered over by must_cover.
 
 ## Named residuals (reviewers will probe these)
 
@@ -119,9 +182,15 @@ Proving tests: `test_bundle_refuses_a_log_bound_to_another_domain`,
   enrolled key contradicts `bundled_key_evidence`, must be a hard `invalid` and be
   *withdrawn* (so no downstream axis is lifted by material just declared inadmissible), not
   a fallback to `bundle_rooted`.
-- **`export_referents` withholding.** Confirm a `compromised`-revoked key's introduction is
-  withheld while a superseded (rotated) key's history is preserved — the direction that
-  fails OPEN would retroactively unauthenticate honest history or authenticate a forgery.
+- **`export_referents` withholding AND supersession (post-remediation).** Confirm a
+  `compromised`-revoked key's introduction is withheld while a superseded (rotated) key's
+  history is preserved — the direction that fails OPEN would retroactively unauthenticate
+  honest history or authenticate a forgery. NEW: also confirm the superseded key is NOT
+  returned as current authority — `principal_key_status[(p,k1)] == "superseded"` after a
+  K1→K2 rotation, `k1` excluded from `_TrustLogAuthority.active_principal_keys`, and
+  `PolicyKeyResolver.resolve(k1)` never `EXTERNALLY_PINNED`. Probe the double-rotation edge
+  (rotate K2→K3 after K1→K2) and the recovery-rotation edge (root-authorised recovery also
+  supersedes its `supersedes_key_id`).
 
 ## CLI surface added
 
@@ -152,5 +221,8 @@ representative signed core), the `trust-log-export` manifest entry, and
 ## New ErrorCodes
 
 `TRUST_LOG_EXPORT_SCHEMA_INVALID` (malformed artifact) and `TRUST_LOG_EXPORT_UNVERIFIED`
-(well-formed, claims did not hold). Both have matching `_STATUS_MAP` entries (400) in
+(well-formed, claims did not hold). The ceremony remediation adds a third,
+`TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT` (fix C — a well-formed, correctly-replayed export
+a library consumer tried to draw authority from without it reaching its own derived root
+signature threshold). All three have matching `_STATUS_MAP` entries (400) in
 `sidecar/errors.py`, enforced by the sidecar total-coverage meta-test.

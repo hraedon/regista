@@ -35,6 +35,7 @@ from _trust_log_fixtures import (
     make_possession_challenge,
     make_registrar_delegation_payload,
     make_root_rotation_payload,
+    make_rotation_payload,
     make_trust_domain_established_payload,
     principal_entity_uuid,
 )
@@ -193,6 +194,70 @@ class MemoryTrustLog:
         self.enrolled[key.key_id] = key
         return self.append(
             transition="principal_key_enrolled",
+            payload=payload,
+            signing_key=self.registrar_key,
+            actor_principal_id=REGISTRAR_PRINCIPAL,
+            entity_id=principal_entity_uuid(principal_id),
+            key_binding_event_hash=self.delegation_event_hash,
+        )
+
+    def rotate(
+        self,
+        principal_id: str,
+        *,
+        supersedes: TrustLogKey,
+        new_key: TrustLogKey,
+        kind: str = "agent",
+    ) -> str:
+        """Append a §5.6 ``principal_key_rotated`` (dual-authorised) event.
+
+        The outgoing key ``supersedes`` co-signs (dual authorization) and the registrar's
+        envelope carries it, exactly as a live rotation does. This is what a WI-337 test
+        needs to prove supersession: after K1→K2 the replay must mark K1 SUPERSEDED so the
+        offline classification does not return it as current authority (Sol #3/#4).
+        """
+
+        challenge = make_possession_challenge(
+            trust_domain_id=self.trust_domain_id,
+            principal_id=principal_id,
+            fingerprint=new_key.fingerprint,
+        )
+        payload = make_rotation_payload(
+            trust_domain_id=self.trust_domain_id,
+            principal_id=principal_id,
+            key=new_key,
+            supersedes_key_id=supersedes.key_id,
+            superseded_key=supersedes,
+            mode="dual",
+            principal_kind=kind,
+            challenge=challenge,
+            authorized_by={
+                "authority": "registrar",
+                "principal_id": REGISTRAR_PRINCIPAL,
+                "key_id": self.registrar_key.key_id,
+                "delegation_event_hash": self.delegation_event_hash,
+            },
+        )
+        self.challenges[challenge.challenge_id] = {
+            "challenge_id": challenge.challenge_id,
+            "operation_id": challenge.operation_id,
+            "operation_digest": challenge.operation_digest,
+            "project": challenge.project,
+            "principal_id": challenge.principal_id,
+            "fingerprint": challenge.fingerprint,
+            "scheme": challenge.scheme,
+            "verifier_nonce": challenge.verifier_nonce,
+            "enrollment_request_digest": challenge.enrollment_request_digest,
+            "issued_at": challenge.issued_at,
+            "expires_at": challenge.expires_at,
+            "used": True,
+            "kind": "possession",
+            "trust_domain_id": challenge.trust_domain_id,
+            "proof_signature": payload["possession_proof"]["signature"],
+        }
+        self.enrolled[new_key.key_id] = new_key
+        return self.append(
+            transition="principal_key_rotated",
             payload=payload,
             signing_key=self.registrar_key,
             actor_principal_id=REGISTRAR_PRINCIPAL,

@@ -128,6 +128,7 @@ _STATUS_MAP: dict[str, int] = {
     # artifact or its claims, hence 400.
     ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID: 400,
     ErrorCode.TRUST_LOG_EXPORT_UNVERIFIED: 400,
+    ErrorCode.TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT: 400,
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Every one of these is a
     # defect in the *submitted* identifier or payload, never a server fault, hence 400.
     ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL: 400,

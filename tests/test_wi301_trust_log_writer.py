@@ -1569,10 +1569,13 @@ class TestEnrollmentBindsFreshKey:
             )
             with handle._mgr.transaction() as conn:
                 state = replay_trust_state(conn, fixture.document)
-            # The rotation was admitted and the new key is live; both keys remain in the
-            # replayed state (the projection applier is what marks A superseded). The
-            # point here is that the enrol guard did NOT block a legitimate rotation.
+            # The rotation was admitted and the new key is live; both keys' bytes remain in
+            # the replayed state. WI-337 (Sol #3): the replay now marks the outgoing key
+            # SUPERSEDED (previously only the projection applier did), so a rotated-out key
+            # is not classified as current authority offline. The point here is that the
+            # enrol guard did NOT block a legitimate rotation.
             assert state.principal_key_status[(principal, new.key_id)] == "active"
+            assert state.principal_key_status[(principal, old.key_id)] == "superseded"
             assert state.principal_public_keys[(principal, new.key_id)] == new.public_key
             assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
         finally:

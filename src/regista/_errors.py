@@ -160,6 +160,13 @@ class ErrorCode(StrEnum):
     # that does not verify is not weaker evidence, it is no evidence.
     TRUST_LOG_EXPORT_SCHEMA_INVALID = "TRUST_LOG_EXPORT_SCHEMA_INVALID"
     TRUST_LOG_EXPORT_UNVERIFIED = "TRUST_LOG_EXPORT_UNVERIFIED"
+    # WI-337 (Opus footgun): a well-formed, correctly-replayed export that a library
+    # consumer tried to draw AUTHORITY from without it reaching its own derived root
+    # signature threshold — an unsigned or sub-threshold export verified with
+    # require_signatures=False. verify() with the default require_signatures=True already
+    # refuses this; the bundle consumption path re-asserts it so the invariant holds in
+    # both places (`_bundle._trust_log_export_material`).
+    TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT = "TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT"
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Each error carries a
     # machine-readable `reason` in detail naming the exact rule violated.
     # NOT_CANONICAL is kept distinct from UNGRAMMATICAL so a legacy bare name (§2.4

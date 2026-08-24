@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import types
 from typing import Any
 
 import pytest
@@ -37,7 +38,9 @@ from test_bundle_v3 import BOOTSTRAP, WORKER, _Chain
 from regista._bundle import (
     AcceptBundledKeys,
     BundleApplicability,
+    PolicyKeyResolver,
     TrustPolicy,
+    _trust_log_export_material,
     verify_audit_bundle_v3,
 )
 from regista._bundle_v3 import canonical_bundle_bytes
@@ -50,6 +53,7 @@ from regista._trust_log_export import (
     trust_log_export_digest,
     verify_trust_log_export,
 )
+from regista._verification import TrustedKeySource
 
 
 def _reason(error: RegistaError) -> str | None:
@@ -421,6 +425,71 @@ def test_bundle_refuses_an_unpinned_export_for_authority(tmp_path: Any) -> None:
     assert _reason(error) == "trust_log_export_unpinned"
 
 
+def test_bundle_refuses_a_must_cover_only_export_for_authority(tmp_path: Any) -> None:
+    """Sol #2: a must_cover (checkpoint) satisfaction alone is NOT the top verdict.
+
+    Covering a min_trust_log_checkpoint proves the export reaches AT LEAST that point, not
+    that it is the whole log — a STALE checkpoint predating a rotation would let a
+    truncated export hide the later events yet still cover the checkpoint. So the bundle
+    authority path requires an EXACT head pin; a must_cover-only presentation (which has
+    ``tail_truncation_undetectable=False`` but ``head_pin_checked=False``) is refused
+    rather than reaching ``externally_authenticated``, and must_cover keeps its honest
+    lesser role (it still refuses a prefix that does not even reach the checkpoint).
+    """
+
+    s = _offline_scenario(tmp_path)
+    log = s["log"]
+    must_cover_only = verify_trust_log_export(
+        s["export_doc"],
+        genesis_document=s["fixture"].document,
+        must_cover={"head_event_hash": log.hashes[-1]},
+    )
+    # It is pinned (not fully unpinned) but only by a checkpoint cover, not an exact head.
+    assert must_cover_only.tail_truncation_undetectable is False
+    assert must_cover_only.head_pin_checked is False
+    error = _refuses(
+        verify_audit_bundle_v3,
+        bundle_path=s["bundle_path"],
+        trust=s["policy"],
+        trust_log=must_cover_only,
+    )
+    assert _reason(error) == "trust_log_export_head_pin_required"
+
+
+def test_bundle_refuses_an_unsigned_or_subthreshold_export_for_authority(
+    tmp_path: Any,
+) -> None:
+    """Opus footgun: an export verified with ``require_signatures=False`` grants NOTHING.
+
+    ``verify_trust_log_export(require_signatures=False)`` is the builder's pre-sign
+    self-check; it skips the root-threshold gate yet still returns a verification object.
+    A consumer must not draw authority from that: the bundle path re-asserts signature
+    sufficiency, so an UNSIGNED export (pinned with a valid exact head) that would
+    otherwise drive the bundle to ``externally_authenticated`` is refused instead.
+    """
+
+    s = _offline_scenario(tmp_path)
+    log = s["log"]
+    unsigned = verify_trust_log_export(
+        log.export(sign=False),
+        genesis_document=s["fixture"].document,
+        expect_head=(log.hashes[-1], len(log.events)),
+        require_signatures=False,
+    )
+    # The self-check produced a pinned verification with NO verified root signatures.
+    assert unsigned.head_pin_checked is True
+    assert unsigned.verified_root_signatures == ()
+    assert unsigned.root_threshold >= 1
+    error = _refuses(
+        verify_audit_bundle_v3,
+        bundle_path=s["bundle_path"],
+        trust=s["policy"],
+        trust_log=unsigned,
+    )
+    assert error.code == ErrorCode.TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT
+    assert _reason(error) == "trust_log_export_signatures_insufficient"
+
+
 # ---------------------------------------------------------------------------
 # Attack class: tampered event / non-canonical bytes / substitution / ordering
 # ---------------------------------------------------------------------------
@@ -517,18 +586,66 @@ def test_revoked_key_introduction_is_withheld_from_referents(tmp_path: Any) -> N
     assert len(referent_hashes) == v.event_count - len(withheld)
 
 
-def test_supersession_is_not_withheld(tmp_path: Any) -> None:
-    """A rotation must NOT retroactively unauthenticate history: superseded != revoked.
+def test_rotation_supersedes_the_old_key_but_keeps_its_history(tmp_path: Any) -> None:
+    """K1→K2 rotation: K1 stays a historical referent but is NOT current authority.
 
-    Enrolling then rotating a principal's key leaves the log with no REVOKED status, so
-    nothing is withheld — otherwise every rotation would erase the events the old key
-    validly signed.
+    This is Sol #3/#4. The replay must record supersession so the OFFLINE classification
+    matches the online resolver (`_genesis_open.resolve_enrolled_key`), which already
+    excludes rotated-out keys. Two properties, both fail-closed:
+
+    1. **History is preserved.** Superseded is not revoked: K1's enrolment event stays in
+       ``export_referents`` (an event K1 validly signed before the rotation still roots),
+       so a rotation does not retroactively unauthenticate honest history.
+    2. **K1 is no longer current authority.** The replay marks K1 SUPERSEDED, so it is not
+       in ``active_principal_keys`` and ``PolicyKeyResolver`` never returns it as
+       ``EXTERNALLY_PINNED`` — an attacker retaining K1 cannot authenticate NEW material.
+       K2, the incoming key, IS current authority.
     """
 
-    log = mint_trust_log(principals={"agent:w1": "pk_w1"})
-    v = verify_trust_log_export(log.export(), genesis_document=log.genesis.document)
+    principal = "agent:w1"
+    k1 = TrustLogKey.mint("pk_w1")
+    k2 = TrustLogKey.mint("pk_w2")
+    log = mint_trust_log()
+    log.register(principal)
+    enrol_k1 = log.enrol(principal, k1)
+    log.rotate(principal, supersedes=k1, new_key=k2)
+
+    v = verify_trust_log_export(
+        log.export(),
+        genesis_document=log.genesis.document,
+        expect_head=(log.hashes[-1], len(log.events)),
+    )
+
+    # The replay records supersession as observable state, not silence.
+    status = v.chain.state.principal_key_status
+    assert status[(principal, "pk_w1")] == "superseded"
+    assert status[(principal, "pk_w2")] == "active"
+
+    # (1) A rotation is not a revocation — nothing is withheld from referents, and K1's
+    # own enrolment event is still offered as a historical referent.
     assert v.revoked_key_introductions == ()
-    assert len(export_referents(v)) == v.event_count
+    referents = export_referents(v)
+    assert len(referents) == v.event_count
+    assert enrol_k1 in referents
+
+    # (2) The offline authority classification: K1 is superseded (not current), K2 active.
+    authority = _trust_log_export_material(v, None)
+    assert "pk_w2" in authority.active_principal_keys
+    assert "pk_w1" not in authority.active_principal_keys
+    assert "pk_w1" in authority.superseded_principal_keys
+    assert "pk_w1" not in authority.revoked_principal_keys
+
+    # And the resolver never returns the superseded key as externally pinned. K2 does.
+    resolver = PolicyKeyResolver(
+        material_by_key_id={},
+        principal_by_key_id={},
+        pinned_fingerprints=frozenset(),
+        trust_log=authority,
+    )
+    assert resolver.resolve("pk_w1") is None
+    resolved_k2 = resolver.resolve("pk_w2")
+    assert resolved_k2 is not None
+    assert resolved_k2.source is TrustedKeySource.EXTERNALLY_PINNED
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +721,64 @@ def test_bundle_evidence_contradicting_the_enrolled_key_is_invalid(tmp_path: Any
     ).to_dict()
     assert report["applicability"] == BundleApplicability.INVALID.value
     assert any("key_id" in f and "trust_log" in f for f in report["findings"])
+
+
+# ---------------------------------------------------------------------------
+# Attack class: the OFFLINE verify-catalog path must refuse an unpinned export
+# (parity with the bundle path — Sol #1)
+# ---------------------------------------------------------------------------
+
+
+def _catalog_args(export_path: str, *, expect_head: str | None) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        trust_log_export=export_path,
+        trust_log_export_digest=None,
+        trust_log_export_expect_head=expect_head,
+        trust_log_project=None,
+    )
+
+
+def test_catalog_offline_path_refuses_an_unpinned_export(tmp_path: Any) -> None:
+    """Sol #1: ``verify-catalog --trust-log-export`` without an exact head pin is refused.
+
+    The bundle path already refuses ``tail_truncation_undetectable`` in
+    ``_trust_log_export_material``; the catalog authority path
+    (``_cli._resolve_root_authority``) must do the SAME, or removed roots could publish a
+    prefix ending before their rotation, sign it while still active in the prefix, and
+    forge a catalog that ``verify-catalog`` accepts as current authority. This proves the
+    parity: same class, same fail-closed answer, same ``trust_log_export_unpinned`` reason.
+    """
+
+    from regista._cli import _resolve_root_authority
+
+    log = mint_trust_log(principals={"agent:w1": "pk_w1"})
+    export_path = tmp_path / "export.json"
+    export_path.write_bytes(canonicalize(log.export()))
+    genesis = log.genesis.document
+
+    error = _refuses(
+        _resolve_root_authority,
+        args=_catalog_args(str(export_path), expect_head=None),
+        genesis_document=genesis,
+    )
+    assert error.code == ErrorCode.ESTATE_CATALOG_UNVERIFIED
+    assert _reason(error) == "trust_log_export_unpinned"
+
+
+def test_catalog_offline_path_accepts_an_exact_head_pinned_export(tmp_path: Any) -> None:
+    """The honest counterpart: with the exact head pin, the same call derives authority."""
+
+    from regista._cli import _resolve_root_authority
+
+    log = mint_trust_log(principals={"agent:w1": "pk_w1"})
+    export_path = tmp_path / "export.json"
+    export_path.write_bytes(canonicalize(log.export()))
+    genesis = log.genesis.document
+    expect_head = f"{log.hashes[-1]}:{len(log.events)}"
+
+    authority = _resolve_root_authority(
+        _catalog_args(str(export_path), expect_head=expect_head), genesis
+    )
+    assert authority.source == "published_trust_log_export"
+    assert authority.trust_log_event_count == len(log.events)
+    assert authority.threshold >= 1

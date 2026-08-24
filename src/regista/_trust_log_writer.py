@@ -133,9 +133,9 @@ class TrustState:
     registrars: Mapping[str, RegistrarState]
     genesis_event_hash: str
     principal_public_keys: Mapping[tuple[str, str], bytes] = field(default_factory=dict)
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]] = field(
-        default_factory=dict
-    )
+    principal_key_status: Mapping[
+        tuple[str, str], Literal["active", "revoked", "superseded"]
+    ] = field(default_factory=dict)
     # WI-292 §9(iv) / WI-314: the current replayed custody correction and its own
     # event digest, so a correction's effect on custody is observable state and the
     # writer can admit the next correction against the current head at write time.
@@ -639,7 +639,7 @@ def verify_trust_log_chain(
     reg_keys: dict[str, bytes] = {}
     reg_binding: dict[str, str] = {}
     principal_public_keys: dict[tuple[str, str], bytes] = {}
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]] = {}
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]] = {}
     custody_declarations: list[tuple[Any, str]] = []
     verified_lifecycle: list[VerifiedLifecycle] = []
     entity_seq_ptr: dict[tuple[str, str], int] = {
@@ -1194,7 +1194,7 @@ def _classify_rotation(
     governance: GovernanceState,
     root_keys: Mapping[str, bytes],
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> str:
     superseded = None
     if not parsed.is_recovery:
@@ -1224,19 +1224,35 @@ def _classify_rotation(
 def _remember_principal_key(
     parsed: Any,
     principal_public_keys: dict[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     key = getattr(parsed, "key", None)
     principal_id = getattr(parsed, "principal_id", None)
     if key is not None and isinstance(principal_id, str):
         principal_public_keys[(principal_id, key.key_id)] = key.public_key
         principal_key_status[(principal_id, key.key_id)] = "active"
+        # WI-337 (Sol #3/#4): a rotation SUPERSEDES the outgoing key, and the replay must
+        # record that. `_classify_rotation` only READS `supersedes_key_id`; without this
+        # mark the outgoing key stays "active" and every non-revoked historical key is
+        # classified as CURRENT authority — so an attacker retaining a rotated-out key
+        # could reach false offline external authentication. Supersession is NOT revocation:
+        # the key's INTRODUCTION stays a valid historical referent (it can still verify
+        # events it signed before the rotation — `export_referents` withholds only revoked
+        # introductions), but a superseded key is no longer CURRENT authority and must not
+        # be returned as externally-pinned/active. This mirrors what
+        # `_genesis_open.resolve_enrolled_key` already does online (it excludes superseded
+        # keys by reading the rotation events directly), so offline == online here too.
+        superseded_key_id = getattr(parsed, "supersedes_key_id", None)
+        if isinstance(superseded_key_id, str) and superseded_key_id:
+            superseded_key = (principal_id, superseded_key_id)
+            if principal_key_status.get(superseded_key) == "active":
+                principal_key_status[superseded_key] = "superseded"
 
 
 def _check_enrollment_binds_fresh_key(
     parsed: Any,
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     """Enrolment binds a principal's key where there is NONE (B1, PR #58).
 
@@ -1336,7 +1352,7 @@ def _check_registrar_delegation_no_live_fork(
 def _remember_principal_key_revocation(
     parsed: Any,
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     principal_id = getattr(parsed, "principal_id", None)
     key_id = getattr(parsed, "key_id", None)
@@ -1387,7 +1403,7 @@ def _verify_lifecycle(
     reg_binding: Mapping[str, str],
     registrars: Mapping[str, RegistrarState],
     principal_public_keys: dict[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
     ops: dict[str, int],
     genesis_hash: str,
 ) -> VerifiedLifecycle | None:

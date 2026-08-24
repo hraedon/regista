@@ -2143,6 +2143,12 @@ class _TrustLogAuthority:
     project_instance_id: str
     active_principal_keys: Mapping[str, bytes]
     revoked_principal_keys: Mapping[str, bytes]
+    #: Keys the log has ROTATED AWAY (WI-337 Sol #3). A superseded key is NOT current
+    #: authority — it never appears in ``active_principal_keys`` and the resolver never
+    #: returns it as externally pinned — but it is not revoked either: its introduction
+    #: stays a valid historical referent. Held separately so a bundle event signed by one
+    #: is named honestly (like a revoked key) rather than silently clamped.
+    superseded_principal_keys: Mapping[str, bytes]
     principal_by_key_id: Mapping[str, str]
     #: ``event_hash -> ReferentEvent`` for the walked events, minus the introductions of
     #: revoked keys (``_trust_log_export.export_referents``).
@@ -2171,10 +2177,17 @@ def _trust_log_export_material(
     evidence*, which weakens completeness; this is about *authority being falsified*, which
     is a different kind of claim and gets the fail-closed answer.
 
-    So the §4.6 policy's ``min_trust_log_checkpoint`` (or an explicit head pin at the call
-    site) is what makes an export usable for authority, and its absence is a **named
-    refusal** rather than a quiet demotion to ``bundle_rooted`` — a caller who asked for
-    trust-log authority must not be told "fine" and given something weaker.
+    **An EXACT head pin — not merely a checkpoint cover — is what makes an export usable
+    for authority (WI-337 ceremony fix D, Sol #2).** A ``min_trust_log_checkpoint`` cover
+    proves the export reaches AT LEAST that checkpoint; it does NOT prove the export is not
+    truncated AFTER it, so a stale checkpoint would let a truncation hide a later rotation
+    or revocation and still reach ``externally_authenticated``. So this function requires
+    ``head_pin_checked`` (an exact ``expect_head``); an unpinned export and a
+    checkpoint-cover-only export are BOTH named refusals here (``trust_log_export_unpinned``
+    / ``trust_log_export_head_pin_required``) rather than a quiet demotion to
+    ``bundle_rooted``. It also re-asserts root-signature sufficiency
+    (``trust_log_export_signatures_insufficient``), so an export verified with
+    ``require_signatures=False`` cannot smuggle authority past the threshold gate.
     """
 
     from ._trust_log_export import export_referents
@@ -2189,32 +2202,81 @@ def _trust_log_export_material(
             "min_trust_log_checkpoint the export must cover (TRUST-DOMAIN.md §4.6).",
             {"reason": "trust_log_export_unpinned"},
         )
+    # WI-337 (Sol #2): an EXACT head/count pin is required for authority — a must_cover
+    # (min_trust_log_checkpoint) satisfaction alone is NOT sufficient. Covering a checkpoint
+    # proves the export reaches AT LEAST that point; it cannot prove the export is not
+    # truncated AFTER it, so a STALE checkpoint (predating a rotation or revocation) would
+    # let a truncated export hide the later events and still reach externally_authenticated.
+    # Offline cannot prove freshness, so the top authority verdict requires the ceremony's
+    # exact cutover head/count (an `expect_head`); a checkpoint-cover-only presentation is
+    # refused here rather than overclaiming. `must_cover` remains a real defence at
+    # `verify_trust_log_export` (it refuses a prefix that does not even reach the
+    # checkpoint) — it is just not, on its own, a licence for CURRENT authority.
+    if not verification.head_pin_checked:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "the presented trust-log export was pinned only by a min_trust_log_checkpoint "
+            "cover, not by an exact head/count. Covering a checkpoint proves the export "
+            "reaches at least that point but not that it is the WHOLE log, so a stale "
+            "checkpoint would let a truncation after it hide a later rotation or "
+            "revocation. Supply the ceremony's exact head via an expect_head "
+            "(--trust-log-expect-head <head>:<count>) obtained by direct exchange before "
+            "the export may establish current key authority (TRUST-DOMAIN.md §4.6).",
+            {"reason": "trust_log_export_head_pin_required"},
+        )
+    # WI-337 (Opus footgun): re-assert signature sufficiency in the library consumption
+    # path. `verify_trust_log_export(require_signatures=False)` (the builder's pre-sign
+    # self-check) skips the root-threshold gate but still returns a
+    # `TrustLogExportVerification`; a caller who feeds that object here must not thereby
+    # grant authority off an unsigned or sub-threshold export. This closes the recurring
+    # "invariant enforced in verify() but not re-checked in the library path" class
+    # (prefer-strict-defaults), and covers unsigned (0 sigs) and sub-threshold alike.
+    if len(verification.verified_root_signatures) < verification.root_threshold:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT,
+            "the presented trust-log export did not reach its own derived root signature "
+            "threshold, so it cannot establish key authority: it carries "
+            f"{len(verification.verified_root_signatures)} verified root signature(s) but "
+            f"the replay derives a threshold of {verification.root_threshold}. An unsigned "
+            "or sub-threshold export authenticates nothing (verify it with "
+            "require_signatures=True, the default).",
+            {
+                "reason": "trust_log_export_signatures_insufficient",
+                "verified": len(verification.verified_root_signatures),
+                "threshold": verification.root_threshold,
+            },
+        )
     del policy  # the pin is carried by the verification; the policy fed it upstream
 
     state = verification.chain.state
     by_key_id: dict[str, bytes] = {}
     revoked: dict[str, bytes] = {}
+    superseded: dict[str, bytes] = {}
     principal_by_key_id: dict[str, str] = {}
     ambiguous: set[str] = set()
     for (principal_id, key_id), public_key in state.principal_public_keys.items():
         seen = principal_by_key_id.get(key_id)
-        if seen is not None and (
-            seen != principal_id
-            or by_key_id.get(key_id, revoked.get(key_id)) != public_key
-        ):
+        bound = by_key_id.get(key_id, revoked.get(key_id, superseded.get(key_id)))
+        if seen is not None and (seen != principal_id or bound != public_key):
             # One key_id, two bindings. A bundle event names only a key_id, so there is no
             # honest way to choose; excluding it means the events it signed stay
             # bundle-rooted rather than being authenticated against a guess.
             ambiguous.add(key_id)
             continue
         principal_by_key_id[key_id] = principal_id
-        if state.principal_key_status.get((principal_id, key_id)) == "revoked":
+        status = state.principal_key_status.get((principal_id, key_id))
+        if status == "revoked":
             revoked[key_id] = public_key
+        elif status == "superseded":
+            # WI-337 (Sol #3): rotated-away — a valid historical referent but NOT current
+            # authority, so it is kept out of `active_principal_keys`.
+            superseded[key_id] = public_key
         else:
             by_key_id[key_id] = public_key
     for key_id in ambiguous:
         by_key_id.pop(key_id, None)
         revoked.pop(key_id, None)
+        superseded.pop(key_id, None)
         principal_by_key_id.pop(key_id, None)
 
     return _TrustLogAuthority(
@@ -2224,6 +2286,7 @@ def _trust_log_export_material(
         project_instance_id=verification.project_instance_id,
         active_principal_keys=by_key_id,
         revoked_principal_keys=revoked,
+        superseded_principal_keys=superseded,
         principal_by_key_id=principal_by_key_id,
         referents=export_referents(verification),
         ambiguous_key_ids=tuple(sorted(ambiguous)),
@@ -2727,6 +2790,14 @@ def _trust_log_admissible(
                 "public key the verified trust log revoked for that key id"
             )
             ok = False
+    for key_id, superseded in trust_log.superseded_principal_keys.items():
+        bundled = evidence_material.get(key_id)
+        if bundled is not None and bundled != superseded:
+            findings.append(
+                f"trust_log: bundled_key_evidence for key_id {key_id!r} contradicts the "
+                "public key the verified trust log superseded (rotated away) for that key id"
+            )
+            ok = False
     return ok
 
 
@@ -2904,6 +2975,20 @@ def _assess_bundle_v3(
                     "Whether this event precedes the revocation is not decidable here "
                     "(authority is evaluated at the log's head, WI-330 FR3-2), so the "
                     "key is not treated as externally pinned"
+                )
+            if signing is not None and signing in trust_log.superseded_principal_keys:
+                # WI-337 (Sol #3): the key IS in the verified log but was ROTATED AWAY. As
+                # with a revoked key, whether this event predates the rotation is a
+                # point-in-time question the machinery cannot answer at the log's head, so
+                # the fail-closed answer is: not externally pinned, and said out loud. The
+                # resolver already declined it (superseded keys are not in
+                # `active_principal_keys`), which caps the verdict via Rule C.
+                findings.append(
+                    f"trust_log: {member.event_hash_text} is signed by key_id "
+                    f"{signing!r}, which the verified trust log SUPERSEDED (rotated away) "
+                    "by a later principal_key_rotated event. Whether this event precedes "
+                    "the rotation is not decidable here (authority is evaluated at the "
+                    "log's head), so the key is not treated as externally pinned"
                 )
 
     # --- A4 event_authentication ----------------------------------------------------------
