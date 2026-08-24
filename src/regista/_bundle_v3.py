@@ -102,7 +102,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from ._errors import ErrorCode, RegistaError
 from ._jcs import canonicalize
@@ -1658,8 +1658,25 @@ class BundleV3CoreReport:
     #: acceptance object grants ``may_sign_bundles``.
     signer_may_sign_bundles: bool
     #: False when the authority event is outside the presented scope — a fact for §5's
-    #: ``not_checkable``, not a pass.
+    #: ``not_checkable``, not a pass. Retained for ``core_ok`` and the interim export
+    #: self-check, but a Phase C caller deciding A2 MUST read
+    #: :attr:`signer_authority_status` instead: the boolean conflates three outcomes that a
+    #: bounded range must tell apart (WI-289 Phase C review, FR3-FINAL).
     signer_authority_checked: bool
+    #: The tri-state a Phase C A2 decision needs, because ``signer_authority_checked=False``
+    #: covers three DIFFERENT outcomes and a ``contiguous-range`` bundle must not treat a
+    #: revoked or stale-anchor signer the way it treats one whose anchor is merely out of
+    #: window:
+    #:
+    #: * ``"invalid"`` — a HARD authority failure, whatever the scope kind: the resolution
+    #:   refused (a revocation, a self-authorised grant, an ``accepted_by`` that is not the
+    #:   signer), the statement named a stale/superseded anchor, the anchor in force does not
+    #:   grant ``may_sign_bundles``, or a ``complete-store`` bundle is missing the authority it
+    #:   must contain. A signature from such a signer is not a valid membership signature.
+    #: * ``"outside_scope"`` — genuinely not checkable: a bounded range with no in-window
+    #:   anchor and NO refusal. Resolution 4's honest third state — not a pass, not a failure.
+    #: * ``"established"`` — the named anchor is in force and grants ``may_sign_bundles``.
+    signer_authority_status: Literal["established", "outside_scope", "invalid"]
     #: ``None`` when the chain could not be ordered. See ``membership_root_ok``.
     recomputed_membership_root: str | None
     section_digest_mismatches: tuple[str, ...] = ()
@@ -1732,6 +1749,7 @@ class BundleV3CoreReport:
             "chain_ordered": self.chain_ordered,
             "signer_may_sign_bundles": self.signer_may_sign_bundles,
             "signer_authority_checked": self.signer_authority_checked,
+            "signer_authority_status": self.signer_authority_status,
             "recomputed_membership_root": self.recomputed_membership_root,
             "section_digest_mismatches": list(self.section_digest_mismatches),
             "findings": list(self.findings),
@@ -2351,6 +2369,13 @@ def verify_bundle_v3_core(
     has_named_signer = isinstance(signer, Mapping)
     signer_authority_checked = False
     signer_may_sign_bundles = False
+    # The tri-state a Phase C A2 decision needs (FR3-FINAL). Default ``outside_scope`` covers
+    # the not-run cases (root-threshold statement, or a chain that could not be ordered); it is
+    # the neutral "not established, not a hard failure" state, and for an unorderable chain the
+    # membership-consistency mismatch already forces the verdict invalid.
+    signer_authority_status: Literal["established", "outside_scope", "invalid"] = (
+        "outside_scope"
+    )
     if has_named_signer and chain_ordered:
         assert isinstance(signer, Mapping)
         authority_hash = str(signer["authority_event_hash"])
@@ -2360,15 +2385,27 @@ def verify_bundle_v3_core(
             ordered, principal_id=signer_principal_id, key_id=signer_key_id
         )
         if authority is None:
-            if authority_refusals:
-                # Named reasons the material refuses — a revocation, a self-authorised
-                # grant, an accepted_by that is not the signer. These are defects of the
-                # artifact whatever its scope kind, so they are findings in both cases.
+            # Not every refusal is a hard failure. ``resolve_bundle_signing_authority`` emits
+            # ``anchor_grantor_outside_scope`` when a candidate acceptance is present in a
+            # bounded range but its GRANTOR lies outside the window — that is the legitimate
+            # outside-scope third state (Resolution 4), not a defect. Every other refusal
+            # (a revocation, a self-authorised grant, an accepted_by ≠ signer, an invalid or
+            # revoked or non-preceding grantor) is a HARD failure of the artifact whatever its
+            # scope kind, and makes a bounded range invalid exactly as it does a complete store.
+            hard_refusal = any(
+                not r.startswith("anchor_grantor_outside_scope") for r in authority_refusals
+            )
+            if hard_refusal:
                 acc.findings.extend(authority_refusals)
+                signer_authority_status = "invalid"
             elif scope["kind"] == "complete-store":
                 # RECONCILIATION.md Resolution 4: "Missing closure in `complete-store` is
                 # invalid." The signing-authority closure is the one dependency Phase B
-                # enforces; the rest of the closure walk is Phase D's.
+                # enforces; the rest of the closure walk is Phase D's. (Soft grantor-outside-
+                # scope refusals cannot legitimately arise in a whole-chain bundle, so they too
+                # land here as invalid rather than being excused.)
+                if authority_refusals:
+                    acc.findings.extend(authority_refusals)
                 acc.findings.append(
                     "signer_authority_absent_from_complete_store: no key-binding anchor in "
                     f"this bundle grants {signer_principal_id!r}/{signer_key_id!r} any "
@@ -2376,17 +2413,23 @@ def verify_bundle_v3_core(
                     "scope missing a dependency it must contain is invalid, not "
                     "unverifiable"
                 )
+                signer_authority_status = "invalid"
             else:
-                # A bounded range legitimately may not contain it, and Resolution 4 requires
-                # that be *named* rather than treated as satisfaction. Not a finding: the
-                # artifact is not defective. It is the third state.
-                acc.notes.append(
-                    "signer_authority_outside_scope: no key-binding anchor for "
-                    f"{signer_principal_id!r}/{signer_key_id!r} lies inside this "
-                    f"{scope['kind']} scope, so may_sign_bundles could not be re-derived "
-                    "from a signed acceptance (owner ruling O3). Not checkable here — not "
-                    "satisfied"
-                )
+                # A bounded range legitimately may not contain the authority (or its grantor),
+                # and Resolution 4 requires that be *named* rather than treated as satisfaction.
+                # Not a finding: the artifact is not defective. It is the third state — the ONLY
+                # one that maps to a non-invalid A2 for a range (FR3-FINAL).
+                if authority_refusals:
+                    acc.notes.extend(authority_refusals)
+                else:
+                    acc.notes.append(
+                        "signer_authority_outside_scope: no key-binding anchor for "
+                        f"{signer_principal_id!r}/{signer_key_id!r} lies inside this "
+                        f"{scope['kind']} scope, so may_sign_bundles could not be re-derived "
+                        "from a signed acceptance (owner ruling O3). Not checkable here — not "
+                        "satisfied"
+                    )
+                signer_authority_status = "outside_scope"
         else:
             # Refusals alongside a successful resolution still matter: they name candidate
             # anchors the material rejected, which is how an auditor sees that a forged
@@ -2394,7 +2437,10 @@ def verify_bundle_v3_core(
             acc.notes.extend(authority_refusals)
             signer_authority_checked = True
             if authority.event_hash != authority_hash:
+                # A stale/superseded anchor is a HARD failure whatever the scope kind: honouring
+                # an older grant reads the operator's superseded word as current.
                 signer_authority_checked = False
+                signer_authority_status = "invalid"
                 acc.findings.append(
                     "signer_authority_is_not_the_current_anchor: the statement names "
                     f"{authority_hash} as the authority for {signer_principal_id!r}/"
@@ -2406,6 +2452,7 @@ def verify_bundle_v3_core(
                 )
             elif not authority.may_sign_bundles:
                 signer_may_sign_bundles = False
+                signer_authority_status = "invalid"
                 acc.findings.append(
                     "signer_may_not_sign_bundles: the anchor in force at "
                     f"{authority.event_hash} does not grant may_sign_bundles to "
@@ -2415,6 +2462,7 @@ def verify_bundle_v3_core(
                 )
             else:
                 signer_may_sign_bundles = True
+                signer_authority_status = "established"
 
     statement_signature_checked = has_named_signer and statement_public_key is not None
     statement_signature_valid = False
@@ -2462,6 +2510,7 @@ def verify_bundle_v3_core(
         chain_ordered=chain_ordered,
         signer_may_sign_bundles=signer_may_sign_bundles,
         signer_authority_checked=signer_authority_checked,
+        signer_authority_status=signer_authority_status,
         recomputed_membership_root=recomputed_root,
         section_digest_mismatches=tuple(sorted(mismatches)),
         ordered_event_hashes=tuple(m.event_hash_text for m in ordered),

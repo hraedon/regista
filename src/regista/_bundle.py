@@ -2239,11 +2239,13 @@ def _assess_bundle_v3(
 
     policy_satisfied: bool | None = None
     if policy is not None and not policy.is_ad_hoc:
-        # True ONLY after every named requirement was actually checked and met (F2): the full
-        # policy conformance held, the verdict is externally authenticated, and no axis
-        # contradicts. Because externally_authenticated is WI-337-blocked for a project bundle,
-        # this is honestly False today for such a bundle — it never claims a satisfaction the
-        # checks did not establish.
+        # True ONLY after every requirement this verifier ACTUALLY checks was met (F2): the
+        # full-policy identity conformance held (trust domain, both digests, accepted-project
+        # set), the verdict is externally authenticated, and no axis contradicts.
+        # ``min_trust_log_checkpoint`` is not among them — it is WI-337-adjacent (see
+        # `_policy_conformance`) — so this does not promise a checkpoint check it did not do.
+        # Because externally_authenticated is itself WI-337-blocked for a project bundle, this
+        # is honestly False today for such a bundle.
         policy_satisfied = (
             policy_conformant
             and applicability is BundleApplicability.EXTERNALLY_AUTHENTICATED
@@ -2279,13 +2281,22 @@ def _policy_conformance(
     policy: TrustPolicy | None,
     findings: list[str],
 ) -> bool:
-    """F2 — evaluate every named full-policy requirement; any contradiction → not conformant.
+    """F2 — evaluate the full-policy IDENTITY requirements; a contradiction → not conformant.
+
+    Checks the four bundle-comparable §4.6 fields: ``trust_domain_id``,
+    ``trust_domain_core_digest``, ``genesis_document_digest`` and
+    ``accepted_project_instance_ids``. It does **not** yet evaluate ``min_trust_log_checkpoint``
+    — checking a checkpoint requires the authenticated trust log, which is store-backed and
+    WI-337-adjacent (see the amendment-4 clarification in BUNDLE-V3.md). That field is carried
+    on the policy but not compared, and this docstring says so rather than claiming a check it
+    does not perform (WI-272).
 
     Returns ``True`` when there is nothing to check (no policy, or the ad-hoc fingerprint form
-    which carries none of these fields) OR when every named requirement is present and matches.
-    A ``False`` here is fed to :func:`_summarize` as a hard ``invalid``: a bundle whose trust
-    domain, genesis digest, accepted-project set or signed genesis contradicts the auditor's
-    pinned policy is not "unauthenticated", it is a bundle the auditor's own policy rejects.
+    which carries none of these fields) OR when every field it DOES check is present and
+    matches. A ``False`` is fed to :func:`_summarize` as a hard ``invalid``: a bundle whose
+    trust domain, genesis digest, accepted-project set or signed genesis contradicts the
+    auditor's pinned policy is not "unauthenticated", it is a bundle the auditor's own policy
+    rejects.
     """
 
     if policy is None or policy.is_ad_hoc:
@@ -2454,27 +2465,27 @@ def _membership_signature_axis(
             )
             return MembershipSignature.INVALID
 
-    # F3 — O3 may_sign_bundles authority, re-derived by the core from the signed acceptance.
-    # An in-scope acceptance that does NOT grant may_sign_bundles (checked and false), or a
-    # complete-store bundle that must contain the authority but does not (a finding), is an
-    # authority FAILURE → invalid. A `contiguous-range` whose authority event lies legitimately
-    # OUTSIDE the window (a note, not a finding) is not a failure — it simply cannot be shown
-    # external, so it caps at `valid_bundled_key` (→ unauthenticated), never invalid (F4-safe).
-    authority_established = core.signer_authority_checked and core.signer_may_sign_bundles
-    if not authority_established:
-        if core.signer_authority_checked and not core.signer_may_sign_bundles:
-            return MembershipSignature.INVALID  # in-scope anchor exists but lacks the scope
-        if scope_kind == "complete-store":
-            # A complete-store bundle MUST contain the authority; its absence or a stale/
-            # wrong-anchor reference is a hard failure, not a mere scope limitation.
-            return MembershipSignature.INVALID
-        # contiguous-range, authority outside the window: cannot be shown external.
+    # F3 / FR3-FINAL — O3 may_sign_bundles authority, from the core's EXPLICIT tri-state. The
+    # boolean pair (`signer_authority_checked`, `signer_may_sign_bundles`) plus `scope_kind`
+    # cannot be inferred from safely: `signer_authority_checked=False` conflates a HARD failure
+    # (revocation, self-authorised grant, stale/superseded anchor) with a genuine
+    # outside-window state, and a `contiguous-range` bundle must treat those differently. The
+    # core knows which is which, so it reports it and this axis maps it 1:1.
+    #
+    #   invalid       → INVALID, regardless of scope kind (a revoked/stale/unscoped signer is
+    #                   not a valid membership signature)
+    #   outside_scope → VALID_BUNDLED_KEY (caps at unauthenticated; the honest F4-safe state for
+    #                   a bounded range whose authority event is legitimately out of window)
+    #   established   → external iff the signer's fingerprint is a pinned root (base case of
+    #                   chain-to-root; the chain extension for a non-root signer is WI-337-blocked)
+    if core.signer_authority_status == "invalid":
+        return MembershipSignature.INVALID
+    if core.signer_authority_status == "outside_scope":
         return MembershipSignature.VALID_BUNDLED_KEY
 
+    # established
     if accept_bundled:
         return MembershipSignature.VALID_BUNDLED_KEY
-    # Authority established. External iff the signer's fingerprint is a pinned root (base case
-    # of chain-to-root; the chain extension for a non-root signer is WI-337-blocked).
     if str(signer["fingerprint"]) in pinned_fingerprints:
         return MembershipSignature.VALID_EXTERNAL_ROOT
     return MembershipSignature.VALID_BUNDLED_KEY

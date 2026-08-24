@@ -465,6 +465,7 @@ class TestF3BundleSigningAuthority:
             statement_signature_valid=True,
             signer_authority_checked=True,
             signer_may_sign_bundles=False,  # in-scope anchor lacks the scope → failure
+            signer_authority_status="invalid",
         )
         statement = {
             "signer": {
@@ -537,6 +538,117 @@ class TestF4RangeAwareCorroboration:
         )
         # The key acceptances lie outside the window; A8 must not read that as inconsistent.
         assert report.registry_chain_consistency is not RegistryChainConsistency.INCONSISTENT
+
+
+class TestFR3FinalRangeAuthorityFailures:
+    """FR3-FINAL — a contiguous-range must distinguish a HARD authority failure (revoked /
+    stale-anchor) from a genuine outside-window state. The first two are A2 invalid → verdict
+    invalid (exit 1); only genuine outside-scope caps at valid_bundled_key → unauthenticated.
+
+    Before the tri-state fix, ``_membership_signature_axis`` inferred from
+    ``signer_authority_checked`` + ``scope_kind`` and returned VALID_BUNDLED_KEY for a range in
+    all three cases — a passing axis value and a "well-formed" verdict for a revoked or stale
+    signer.
+    """
+
+    def _forge_range(
+        self,
+        chain: _Chain,
+        tmp_path: Path,
+        *,
+        records: Any,
+        preceding: str | None,
+        authority_event_hash: str | None = None,
+        name: str = "forged.json",
+    ) -> Path:
+        from test_bundle_v3 import _forge_document
+
+        document = _forge_document(
+            chain,
+            records=records,
+            scope_kind="contiguous-range",
+            preceding_event_hash=preceding,
+            signer_principal=WORKER,
+            authority_event_hash=authority_event_hash,
+        )
+        path = tmp_path / name
+        path.write_bytes(canonical_bundle_bytes(document))
+        return path
+
+    def test_a_range_with_a_revoked_signer_authority_is_invalid(
+        self, keyset: Any, tmp_path: Path
+    ) -> None:
+        chain = _Chain(keyset)  # [genesis, acceptance, created, updated]
+        chain.append(
+            chain.revocation_envelope(
+                principal_id=WORKER, acceptance_event_hash=chain.acceptance_hash
+            ),
+            BOOTSTRAP_PRINCIPAL,
+        )
+        # contiguous-range from after genesis: [acceptance, created, updated, revocation].
+        path = self._forge_range(
+            chain, tmp_path, records=chain.records[1:], preceding=chain.genesis_hash
+        )
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.membership_signature is MembershipSignature.INVALID
+        assert report.applicability is BundleApplicability.INVALID
+
+    def test_a_range_naming_a_stale_superseded_anchor_is_invalid(
+        self, keyset: Any, tmp_path: Path
+    ) -> None:
+        chain = _Chain(keyset, ordinary_events=0)  # [genesis, acceptance1]
+        stale = chain.acceptance_hash
+        chain.append(chain.acceptance_envelope(WORKER, may_sign_bundles=True), BOOTSTRAP_PRINCIPAL)
+        # A range that includes the grantor so resolution SUCCEEDS and finds the newer anchor
+        # in force, but the statement names the superseded first acceptance.
+        path = self._forge_range(
+            chain, tmp_path, records=chain.records, preceding=None, authority_event_hash=stale
+        )
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.membership_signature is MembershipSignature.INVALID
+        assert report.applicability is BundleApplicability.INVALID
+
+    def test_a_range_whose_authority_is_genuinely_outside_scope_is_not_invalid(
+        self, keyset: Any, tmp_path: Path
+    ) -> None:
+        # The F4 counterweight: acceptance NOT in the window → outside_scope, which must stay
+        # valid_bundled_key → unauthenticated, never invalid.
+        chain = _Chain(keyset)
+        path = self._forge_range(
+            chain,
+            tmp_path,
+            records=chain.records[2:],  # created, updated — no acceptance in window
+            preceding=chain.acceptance_hash,
+        )
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        # outside_scope → valid_bundled_key (not invalid). Under AcceptBundledKeys the verdict
+        # settles at bundle_rooted (Rule C), the honest ceiling — the point is it is NOT invalid.
+        assert report.membership_signature is MembershipSignature.VALID_BUNDLED_KEY
+        assert report.applicability is BundleApplicability.BUNDLE_ROOTED
+
+    def test_a_range_with_only_a_grantor_outside_scope_refusal_is_not_invalid(
+        self, keyset: Any, tmp_path: Path
+    ) -> None:
+        # The acceptance IS in the window but its grantor (genesis) is not: a SOFT refusal
+        # (anchor_grantor_outside_scope), which is outside_scope, not a hard failure.
+        chain = _Chain(keyset)
+        path = self._forge_range(
+            chain,
+            tmp_path,
+            records=chain.records[1:],  # acceptance, created, updated — grantor genesis excluded
+            preceding=chain.genesis_hash,
+        )
+        report = verify_audit_bundle_v3(
+            path, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
+        )
+        assert report.membership_signature is not MembershipSignature.INVALID
+        assert report.applicability is not BundleApplicability.INVALID
 
 
 class TestF5NotCheckableOnMalformed:

@@ -828,13 +828,16 @@ def _print_bundle_v3_report(result: Mapping[str, Any]) -> None:
     if result.get("event_verification_ran"):
         print(f"  event_attribution_counts: {result['event_attribution_counts']}")
         print(f"  key_binding_counts: {result['key_binding_counts']}")
+        if result.get("identity_conflict_count"):
+            print(f"  identity_conflicts: {result['identity_conflict_count']}")
+            for conflict in result.get("identity_conflicts", []):
+                print(f"    - {conflict}")
     else:
+        # A10/A11/A12 are counts only when event verification ran; on malformed/unorderable
+        # input all three are not_checkable, never a factual zero/empty (F5).
+        print("  identity_conflicts: not_checkable (event verification did not run)")
         print("  event_attribution_counts: not_checkable (event verification did not run)")
         print("  key_binding_counts: not_checkable (event verification did not run)")
-    if result.get("identity_conflict_count"):
-        print(f"  identity_conflicts: {result['identity_conflict_count']}")
-        for conflict in result.get("identity_conflicts", []):
-            print(f"    - {conflict}")
     if result.get("policy_satisfied") is not None:
         print(f"  policy_satisfied: {result['policy_satisfied']}")
     # The §10 notes an auditor MUST read alongside the summary, because they are not in it.
