@@ -67,12 +67,15 @@ _DEFERRED_TO_RE = re.compile(rf"^({_WORK_ITEM_PAT})(?:/[A-Za-z0-9][A-Za-z0-9._-]
 #: deferral has to be written twice — once on the ledger entry, once here — and
 #: the second edit is the one a reviewer notices.
 #:
-#: - ``WI-289/P3.3`` — cluster 4, bundle v3 (all 11 in ``tests/test_bundle.py``),
-#:   owed to P3.3 and deliberately not implemented at Phase A.
+#: - ``WI-289/P3.3`` — cluster 4, bundle v3 (11 in ``tests/test_bundle.py``) —
+#:   **DISCHARGED in WI-289 Phase D** (2026-08-23): each entry now carries a
+#:   ``covered_by`` counterpart in
+#:   ``tests/test_bundle.py::TestWI289Cluster4Counterparts`` and its
+#:   ``deferred_to`` marker was removed, so the pin drops from 11 to 0 (the key
+#:   is gone). ``TestWI289Cluster4LedgerMapping`` machine-checks the mapping.
 #: - ``WI-293`` — the P2.2 trust-log / key-lifecycle tranche.
 #: - ``WI-305`` — the plan-023 review-validator and claim-lineage tranche.
 DEFERRED_COVERAGE_ALLOWLIST = {
-    "WI-289/P3.3": 11,
     "WI-293": 33,
     "WI-305": 21,
 }
