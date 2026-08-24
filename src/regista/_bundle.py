@@ -64,10 +64,15 @@ should not:
   object, and still emits a ``verified`` boolean §5.2 deletes. Both are documented at their
   definitions as the seam C replaces.
 * The §9 export ceremony — write to ``.partial``, self-verify the ``.partial``, ``os.replace``
-  only on success; the preflight comparison; the dependency-closure walk; the CLI flags and
-  exit codes — is **Phase D**. The write order here is still v2's (write, rename, verify),
-  which §9 rule 5 and D11 name as wrong; it is left wrong on purpose so the fix lands as
-  one reviewable change with the tests that pin it.
+  only on success; the preflight comparison; the CLI flags and exit codes — is **Phase D**,
+  and it has now LANDED (WI-289 Phase D): :func:`export_audit_bundle` refuses an existing
+  destination (rule 4), strict-verifies every event before signing (rule 1), reads the
+  archive-consolidated stream (rule 3), compares against a supplied preflight (rule 2),
+  writes to ``.partial`` and self-verifies it through :func:`verify_audit_bundle_v3`
+  *before* ``os.replace`` (rule 5 / D11), and returns the self-verified ``applicability``
+  that drives the CLI exit code (rule 7). §9 rule 6's dependency-closure walk beyond the
+  signer-authority dependency lives in ``_bundle_v3.py``; the credential-transport clause
+  (``sections.action_delegation_credentials``) is Phase E and the section set stays closed.
 """
 
 from __future__ import annotations
@@ -421,10 +426,42 @@ def _bundle_referents_v3(
 
 _EVENT_COLUMNS = "global_seq, canonical_envelope, signature"
 
+#: Every column ``EventRow.from_mapping`` reads, so the §9 rule 1 strict-verify pass
+#: reconciles the whole signed row rather than a subset a NULL could sneak through.
+_STRICT_VERIFY_COLUMNS = (
+    "event_id, work_item_id, entity_kind, entity_id, hash_alg, event_seq, "
+    "actor_id, actor_kind, actor_metadata, key_id, workflow_name, workflow_version, "
+    "timestamp, transition, payload, payload_canonical_hash, signature, "
+    "canonical_envelope, on_behalf_of, scheme_id, prev_event_hash, global_seq, "
+    "prev_global_event_hash"
+)
 
-def _read_export_rows(
-    conn: DictConn, *, since_seq: int | None, until_seq: int | None
-) -> list[tuple[bytes, bytes]]:
+
+def _archive_relation_present(conn: DictConn) -> bool:
+    """Whether this store carries an ``events_archive`` table (Stage 4, WI-259).
+
+    A project that never archived has no such relation, and probing it with
+    ``to_regclass`` is how the read path learns that without a second failure mode.
+    """
+
+    row = conn.execute("SELECT to_regclass(%s) AS relation", ["events_archive"]).fetchone()
+    return row is not None and row["relation"] is not None
+
+
+def _windowed_source_sql(
+    columns: str, *, since_seq: int | None, until_seq: int | None, with_archive: bool
+) -> tuple[str, list[int]]:
+    """Build the archive-consolidated (§9 rule 3 / WI-259) windowed read.
+
+    ``events`` is read UNION ALL with ``events_archive`` — the complete logical stream
+    Stage 4 restores (``ARCHITECTURE-0.6.0.md:681-683``). A ``complete-store`` export that
+    silently omitted archived rows would be a **signed false statement** (§9 rule 3, worse
+    than today's unsigned one), so the archive is consolidated in whenever the relation
+    exists rather than left for the operator to remember. ``ORDER BY global_seq`` is a
+    selection convenience only: the membership tree's order is re-derived by chain
+    traversal (§3.3) whatever order arrives.
+    """
+
     clauses: list[str] = []
     params: list[int] = []
     if since_seq is not None:
@@ -434,12 +471,24 @@ def _read_export_rows(
         clauses.append("global_seq <= %s")
         params.append(until_seq)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    # ORDER BY global_seq is a *selection* convenience, not the bundle's order: the
-    # membership tree's order is derived by walking `previous_project_event_hash`
-    # (§3.3), and `build_bundle_v3_document` re-derives it whatever order arrives.
-    rows = conn.execute(
-        f"SELECT {_EVENT_COLUMNS} FROM events{where} ORDER BY global_seq", params
-    ).fetchall()
+    live = f"SELECT {columns} FROM events{where}"
+    if not with_archive:
+        return live + " ORDER BY global_seq", params
+    archived = f"SELECT {columns} FROM events_archive{where}"
+    # The window predicate binds once per branch of the UNION, so its parameters repeat.
+    return f"{live} UNION ALL {archived} ORDER BY global_seq", params + list(params)
+
+
+def _read_export_rows(
+    conn: DictConn, *, since_seq: int | None, until_seq: int | None
+) -> list[tuple[bytes, bytes]]:
+    sql, params = _windowed_source_sql(
+        _EVENT_COLUMNS,
+        since_seq=since_seq,
+        until_seq=until_seq,
+        with_archive=_archive_relation_present(conn),
+    )
+    rows = conn.execute(sql, params).fetchall()
 
     records: list[tuple[bytes, bytes]] = []
     for row in rows:
@@ -457,6 +506,44 @@ def _read_export_rows(
             )
         records.append((bytes(envelope), bytes(signature)))
     return records
+
+
+def _strict_verify_export_source(
+    conn: DictConn, keys: KeySet, *, since_seq: int | None, until_seq: int | None
+) -> list[str]:
+    """§9 rule 1: strict-verify every event export intends to sign over.
+
+    Runs :func:`verify_event_strict` against the whole signed row — the same keystone the
+    live path uses — over the archive-consolidated window, and returns the descriptions of
+    every event whose verdict is :attr:`Applicability.INVALID`. Signing a membership root
+    over known-bad events would make regista attest to them (§9 rule 1); an
+    ``UNVERIFIABLE`` event (an unpinned genesis bootstrap, a windowed-out referent) is NOT
+    invalid and is left to export honestly — not_checkable ≠ false.
+    """
+
+    from ._v6_referents import store_referents
+    from ._verification import KeySetResolver
+
+    sql, params = _windowed_source_sql(
+        _STRICT_VERIFY_COLUMNS,
+        since_seq=since_seq,
+        until_seq=until_seq,
+        with_archive=_archive_relation_present(conn),
+    )
+    referents = store_referents(conn, label="bundle export strict-verify")
+    resolver = KeySetResolver(keys)
+    invalid: list[str] = []
+    for row in conn.execute(sql, params).fetchall():
+        result = verify_event_strict(
+            EventRow.from_mapping(row), keys=resolver, referents=referents
+        )
+        if result.applicability is Applicability.INVALID:
+            reasons = ", ".join(str(r) for r in result.reasons)
+            invalid.append(
+                f"event {row['event_id']} (global_seq={row['global_seq']}): "
+                f"{reasons or 'invalid'}"
+            )
+    return invalid
 
 
 def _resolve_bundle_signer(
@@ -591,6 +678,53 @@ def _trust_root_from_store(
     )
 
 
+#: The scope members a preflight result pins (§9 rule 2 / D1). Named here so the CLI and
+#: the comparison agree on the shape, and so an unknown key in a supplied preflight is a
+#: refusal rather than a silently-ignored typo an operator reads as "it matched".
+_PREFLIGHT_SCOPE_KEYS: Final = ("event_count", "first_event_hash", "last_event_hash")
+
+
+def _compare_preflight(scope: Mapping[str, Any], preflight: Mapping[str, Any]) -> None:
+    """§9 rule 2 (D1): the derived scope MUST match the operator's preflight, or abort.
+
+    This is how "the head moved under us mid-export" becomes an error rather than a
+    silently narrower bundle. Every pinned member must be present in the preflight and
+    equal to the derived scope; an unknown preflight key is refused rather than ignored,
+    because an operator who mistyped ``last_event`` for ``last_event_hash`` must not read
+    silence as agreement. ``event_count`` is compared as an integer so ``"3"`` and ``3``
+    reconcile; the hashes are compared verbatim.
+    """
+
+    unknown = sorted(set(preflight) - set(_PREFLIGHT_SCOPE_KEYS))
+    if unknown:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"preflight carries unknown key(s) {unknown}: a preflight result pins exactly "
+            f"{list(_PREFLIGHT_SCOPE_KEYS)} (BUNDLE-V3.md §9 rule 2). Nothing was written.",
+        )
+    mismatches: list[str] = []
+    for key in _PREFLIGHT_SCOPE_KEYS:
+        if key not in preflight:
+            mismatches.append(f"{key}: preflight did not pin it")
+            continue
+        expected = preflight[key]
+        actual = scope.get(key)
+        if key == "event_count":
+            if int(expected) != int(actual):  # type: ignore[arg-type]
+                mismatches.append(f"{key}: preflight {expected!r} != exported {actual!r}")
+        elif str(expected) != str(actual):
+            mismatches.append(f"{key}: preflight {expected!r} != exported {actual!r}")
+    if mismatches:
+        raise RegistaError(
+            ErrorCode.BUNDLE_STATEMENT_INVALID,
+            "preflight comparison failed (BUNDLE-V3.md §9 rule 2 / D1): the exported scope "
+            "does not match the approved preflight, so the head moved under the export or "
+            "the wrong window was selected. This is an error, not a silently narrower "
+            f"bundle: {mismatches}. Nothing was written.",
+            detail={"mismatches": mismatches},
+        )
+
+
 def export_audit_bundle(
     mgr: ConnectionManager,
     project_name: str,
@@ -603,8 +737,10 @@ def export_audit_bundle(
     external_evidence: Sequence[Mapping[str, Any]] = (),
     since_seq: int | None = None,
     until_seq: int | None = None,
+    overwrite: bool = False,
+    preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Export a signed bundle v3 artifact.
+    """Export a signed bundle v3 artifact — the §9 export ceremony (WI-289 Phase D).
 
     Two inputs have no default and no fallback, and both refusals are the point:
 
@@ -615,11 +751,27 @@ def export_audit_bundle(
     ``root_governance``
         The replayed current governance state (§3.2). See
         :func:`_trust_root_from_store` for why it cannot be derived from a project
-        store. Resolving it is trust-root resolution — ``BUNDLE-V3.md`` §4, WI-289 Phase C
-        — so until that lands a caller must pass the state it replayed, and the CLI cannot
-        yet do so. That is a scheduling consequence of the ratified phasing and it fails
-        closed: the command errors by name rather than exporting a bundle whose governance
-        restatement was made up.
+        store. The operator supplies it (CLI ``--root-governance-*``) as the state
+        obtained by replaying the signed trust-domain governance log; export refuses by
+        name rather than exporting a bundle whose governance restatement was made up.
+
+    The ceremony, in order (§9):
+
+    * **Rule 4 (WI-261)** — refuse an existing destination unless ``overwrite`` is set.
+    * **Rule 1** — strict-verify every event before signing; refuse to sign over any
+      ``Applicability.INVALID`` (:func:`_strict_verify_export_source`).
+    * **Rule 3 (WI-259)** — the read consolidates ``events`` with ``events_archive`` so a
+      ``complete-store`` claim is over the complete logical stream.
+    * **Rule 2 (D1)** — when a ``preflight`` result is supplied, ``scope.event_count`` /
+      ``first_event_hash`` / ``last_event_hash`` MUST match it or the export aborts.
+    * **Rule 5 (D11)** — write to ``.partial`` → self-verify the ``.partial`` (through
+      Phase C's :func:`verify_audit_bundle_v3`) → ``os.replace`` **only on success**. A
+      failed self-verification leaves the ``.partial`` for inspection, never the
+      destination.
+    * **Rule 7** — the returned ``self_verification.applicability`` is the verdict the
+      self-verification reached and it drives the CLI exit code (exit 0 requires
+      ``externally_authenticated``, which a project bundle cannot reach offline until
+      WI-337).
 
     ``since_seq``/``until_seq`` select rows; they do **not** order them. A windowed export
     is a ``contiguous-range`` scope (§3.5) and its ``preceding_event_hash`` is derived from
@@ -627,6 +779,18 @@ def export_audit_bundle(
     """
 
     _reject_archive_output_name(output_path)
+    # §9 rule 4 (WI-261): the destination is refused up front, before any read or signing
+    # work — an operator who forgot ``--overwrite`` learns it cheaply, and an existing audit
+    # artifact is never clobbered by an unconditional ``os.replace`` (the v2 defect at the
+    # old `:379`). Nothing is read or signed for a bundle that could not be written anyway.
+    output = Path(output_path)
+    if output.exists() and not overwrite:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"refusing to overwrite existing destination {output} (BUNDLE-V3.md §9 rule 4, "
+            "WI-261): an audit bundle is evidence, so export never replaces one silently. "
+            "Pass overwrite=True (CLI: --overwrite) to replace it. Nothing was written.",
+        )
     if until_seq is not None and since_seq is not None and until_seq <= since_seq:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
@@ -664,6 +828,22 @@ def export_audit_bundle(
             raise RegistaError(
                 ErrorCode.INVALID_ARGUMENT,
                 f"Refusing to export an empty bundle: {detail}. Nothing was written.",
+            )
+
+        # §9 rule 1: strict-verify the source before signing. Signing a membership root
+        # over an event the store's own keystone calls INVALID would make regista attest
+        # to it. Run over the same archive-consolidated window (rule 3) the bundle carries.
+        invalid = _strict_verify_export_source(
+            conn, keys, since_seq=since_seq, until_seq=until_seq
+        )
+        if invalid:
+            raise RegistaError(
+                ErrorCode.BUNDLE_STATEMENT_INVALID,
+                "refusing to sign a statement over a corpus containing invalid events "
+                f"(BUNDLE-V3.md §9 rule 1): {len(invalid)} event(s) fail strict "
+                "verification. Signing a membership root over known-bad events would make "
+                "regista attest to them. Nothing was written.",
+                detail={"invalid_events": invalid[:10]},
             )
 
         from ._v6_writer import read_project_identity
@@ -753,6 +933,16 @@ def export_audit_bundle(
         regista_version=REGISTA_VERSION,
     )
 
+    statement = document["statement"]
+    scope = statement["scope"]
+
+    # §9 rule 2 (D1): compare against the operator's preflight. If a preflight result is
+    # supplied, the head must not have moved under the export — a mismatch is an error, not
+    # a silently narrower bundle. Checked BEFORE any write: the artifact whose scope
+    # disagrees with the pin is never placed on disk.
+    if preflight is not None:
+        _compare_preflight(scope, preflight)
+
     serialized = canonical_bundle_bytes(document)
     if len(serialized) > MAX_BUNDLE_BYTES:
         raise RegistaError(
@@ -763,16 +953,14 @@ def export_audit_bundle(
             "--since-seq/--until-seq; nothing was written.",
         )
 
-    output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Write-then-rename so a killed process cannot leave a plausible-looking
-    # partial bundle at the destination (review F8). If write_bytes itself
-    # dies mid-write, unlink the .partial temp file — only the partial, never
-    # the real destination (WI-249).
-    #
-    # §9 rule 5 / D11 require self-verification of the `.partial` BEFORE the replace, so a
-    # failed self-verification never leaves the bad artifact at the destination. That
-    # reorder is WI-289 Phase D's, deliberately not smuggled in here.
+    # §9 rule 5 / D11 — the write order the architecture requires (`:314`) and the code
+    # long marked wrong: write to `.partial` → self-verify the `.partial` → `os.replace`
+    # ONLY on success. The v2 order (write → replace → verify) left a failed self-check's
+    # bad artifact AT the destination; under v3 a failed self-verification leaves only the
+    # `.partial`, for inspection, and the destination is never touched. If write_bytes
+    # itself dies mid-write, unlink the `.partial` — only the partial, never the
+    # destination (WI-249).
     tmp_output = output.with_name(output.name + ".partial")
     try:
         tmp_output.write_bytes(serialized)
@@ -780,36 +968,33 @@ def export_audit_bundle(
         if tmp_output.exists():
             tmp_output.unlink()
         raise
-    os.replace(tmp_output, output)
 
-    # An export is done when the artifact it wrote is verifiable, not when the write
-    # returns (WI-240). The public key is the one this export just signed with, so this
-    # self-verification proves the artifact verifies against ITS OWN signer — not that the
-    # signer is trusted, which is §4 and an auditor's pin.
-    report = verify_audit_bundle_offline(
-        output, statement_public_key=keys.get_key(signer.key_id).public_key
+    # Self-verify the `.partial` through Phase C's verdict verifier (§4.1, §5) — reused, not
+    # reimplemented (there is exactly one v3 verifier). The export signs with its own key,
+    # so the honest question is self-consistency: AcceptBundledKeys authenticates the
+    # statement against the key material the bundle already carries and is clamped to
+    # `bundle_rooted` (Rule C). An `invalid` verdict here means the bytes on disk are not the
+    # statement the exporter signed — a corrupt write — so `BUNDLE_WRITE_CORRUPT` fires
+    # (re-pointed at the statement signature, not v2's unkeyed hash) and the `.partial` is
+    # LEFT for inspection; `os.replace` never runs.
+    report = verify_audit_bundle_v3(
+        tmp_output, AcceptBundledKeys(operator_acknowledges_no_external_trust=True)
     )
-    if not report.statement_signature_valid:
+    if report.applicability is BundleApplicability.INVALID:
         raise RegistaError(
             ErrorCode.BUNDLE_WRITE_CORRUPT,
-            f"Exported artifact does not match what was serialized "
-            f"(the statement signature does not verify against the key that signed it); "
-            f"artifact left at {output} for inspection: {report.errors[:3]}",
+            "the exported artifact does not self-verify (its statement signature or a "
+            "recomputed commitment does not hold over the bytes written); the .partial is "
+            f"left at {tmp_output} for inspection and the destination was NOT touched "
+            f"(BUNDLE-V3.md §9 rule 5): {list(report.findings)[:3]}",
         )
-    if not report.self_verification_ok:
-        log.warning(
-            "bundle.exported_with_verification_errors",
-            output_path=str(output),
-            errors=report.errors[:5],
-        )
-
-    statement = document["statement"]
+    os.replace(tmp_output, output)
     log.info(
         "bundle.exported",
         project=project_name,
         event_count=len(records),
         bundle_bytes=len(serialized),
-        self_verified=report.self_verification_ok,
+        self_verification_applicability=report.applicability.value,
         output_path=str(output),
     )
 
@@ -825,13 +1010,18 @@ def export_audit_bundle(
         "bundle_bytes": len(serialized),
         "since_seq": since_seq,
         "until_seq": until_seq,
+        # §9 rule 7: the applicability the self-verification reached IS the exit-code input.
+        # It is a self-consistency verdict (AcceptBundledKeys, clamped to `bundle_rooted`),
+        # never an external authentication — a project bundle cannot reach
+        # `externally_authenticated` offline until WI-337, so an honest project export tops
+        # out here and the CLI exits non-zero accordingly.
         "self_verification": {
-            "verified": report.self_verification_ok,
-            "statement_signature_valid": report.statement_signature_valid,
-            "signatures_verified": report.signatures_verified,
-            "signatures_unverifiable": report.signatures_unverifiable,
-            "errors": report.errors[:5],
-            "unverifiable_details": report.unverifiable_details[:5],
+            "applicability": report.applicability.value,
+            "membership_signature": report.membership_signature.value,
+            "event_authentication": report.event_authentication.value,
+            "event_trust_root": report.event_trust_root.value,
+            "findings": list(report.findings)[:5],
+            "notes": list(report.notes)[:5],
         },
     }
 
@@ -2091,6 +2281,10 @@ def _assess_bundle_v3(
     structure = BundleStructure.PARSED
 
     # --- A3 membership_consistency --------------------------------------------------------
+    # A complete-store missing a §9-rule-6 dependency it must contain is a false completeness
+    # claim, so `dependency_closure_ok is False` fails A3 exactly as a section-digest or
+    # scope mismatch does (RECONCILIATION.md Resolution 4). A contiguous-range's out-of-scope
+    # dependencies are notes, not a closure failure, so `dependency_closure_ok` stays True.
     if not core.chain_ordered:
         membership_consistency = MembershipConsistency.MISMATCH
     elif (
@@ -2098,6 +2292,7 @@ def _assess_bundle_v3(
         and core.section_digests_ok is True
         and core.reference_sections_ok is True
         and core.scope_consistent is True
+        and core.dependency_closure_ok is not False
     ):
         membership_consistency = MembershipConsistency.COMPLETE_FOR_CLAIMED_SCOPE
     else:

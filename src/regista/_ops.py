@@ -937,6 +937,8 @@ class ArchiveOps:
         external_evidence: Sequence[Mapping[str, Any]] = (),
         since_seq: int | None = None,
         until_seq: int | None = None,
+        overwrite: bool = False,
+        preflight: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Export a bundle v3 artifact (``BUNDLE-V3.md``).
 
@@ -960,6 +962,8 @@ class ArchiveOps:
             external_evidence=external_evidence,
             since_seq=since_seq,
             until_seq=until_seq,
+            overwrite=overwrite,
+            preflight=preflight,
         )
 
     @staticmethod

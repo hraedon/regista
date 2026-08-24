@@ -685,6 +685,8 @@ class Regista(
         external_evidence: tuple[dict[str, Any], ...] = (),
         since_seq: int | None = None,
         until_seq: int | None = None,
+        overwrite: bool = False,
+        preflight: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Export a signed **bundle v3** audit artifact (``docs/0.6.0/BUNDLE-V3.md``).
 
@@ -713,6 +715,8 @@ class Regista(
             external_evidence=external_evidence,
             since_seq=since_seq,
             until_seq=until_seq,
+            overwrite=overwrite,
+            preflight=preflight,
         )
 
     @staticmethod

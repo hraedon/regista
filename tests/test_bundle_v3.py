@@ -1670,12 +1670,22 @@ class TestSignerAuthorityLaundering:
     def test_a_revocation_for_a_different_key_does_not_refuse(self, keyset: Any) -> None:
         """The necessary counterweight to the two rules above: a revocation naming ANOTHER
         principal's key must not disturb this signer's authority. A fix that refused on any
-        revocation anywhere would make a store unable to export after any key rotation."""
+        revocation anywhere would make a store unable to export after any key rotation.
+
+        The revoked acceptance is a REAL, in-scope event for the other principal, so the
+        complete-store stays closure-complete (§9 rule 6): the point is that revoking a
+        DIFFERENT key leaves this signer's authority intact, not that a dangling revocation
+        is tolerated (a complete-store missing the acceptance it revokes is invalid — see
+        the closure tests)."""
         chain = _Chain(keyset, may_sign_bundles=True)
+        operator_acceptance = chain.append(
+            chain.acceptance_envelope("human:operator", may_sign_bundles=False),
+            BOOTSTRAP,
+        )
         chain.append(
             chain.revocation_envelope(
                 principal_id="human:operator",
-                acceptance_event_hash=digest_text(b"\x7e" * 32),
+                acceptance_event_hash=operator_acceptance,
             ),
             BOOTSTRAP,
         )
