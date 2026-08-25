@@ -326,17 +326,30 @@ not redundant.
 
 **The convergence guarantee (the proof the class is closed).**
 `test_wi301_trust_log_writer.py::TestReplayProjectionConvergence` is a randomised,
-fixed-seed (`random.Random(1234)`; key material via seeded `randbytes`, never `os.urandom`
-or wall clock) property test. It drives enrol/rotate(dual)/revoke/recovery sequences for two
-principals through the real durable writer, emitting both valid ops AND every poison shape
-(write-once reuse, same-material alias, wrong-supersedes, enrol-over-active). After EVERY
-admitted event it rebuilds the projection from the same durable log and asserts (a) the
-rebuild never raises — every event replay admits, the projection admits — and (b) replay's
-active/superseded/revoked status map EQUALS the projection table's (and an independent
-in-test model's). It also asserts the rejection side by expectation: the ops the projection
-would refuse are exactly the ops the writer refuses, `principal_key_id_reused` among the
-reasons observed. Neutralising the guard makes this test fail (verified), so it genuinely
-pins the invariant.
+deterministic (a fixed seed LIST of 12 seeds, each seeding its own `random.Random`; key
+material via seeded `randbytes`, never `os.urandom` or wall clock) property test. It drives
+enrol/rotate(dual)/revoke/recovery sequences for three principals (40 ops per seed) through
+the real durable writer, emitting both valid ops AND every poison shape (write-once stale
+reuse via enrol AND rotate, same-material alias, wrong-supersedes, enrol-over-active, and
+same-active-key_id-different-bytes). After EVERY admitted event it rebuilds the projection
+from the same durable log and asserts (a) the rebuild never raises, and (b) the replay's
+`(status, public_key)` map EQUALS the projection table's and an independent in-test model's.
+The comparison carries the key MATERIAL, not status alone — a same-key_id/same-status but
+different-BYTES disagreement would otherwise slip past (it cannot occur while write-once
+holds, but the evidence asserts byte-equality defensively rather than assuming it).
+
+The honest guarantee it proves: **every writer-ADMITTED history, replayed and rebuilt into
+the projection, yields identical `(status, public_key)` state; and the writer admission is a
+strict SUBSET of what the raw projection appliers would accept (a safe tightening).** It is
+NOT a raw-applier BIDIRECTIONAL equivalence: the writer's admission is strictly STRONGER than
+the raw appliers, which would absorb some histories the writer rejects — enrol-over-active, an
+active key_id re-used with different bytes, a duplicate revocation. Because writer-admitted ⊆
+raw-applier-accepted, no admitted history can diverge on rebuild; the tightening only removes
+histories, it never adds a divergent one. The test also pins the rejection side with
+per-category COVERAGE COUNTERS: it asserts each valid op was actually ADMITTED and each poison
+op actually REFUSED at least once (so the property can't pass vacuously), with
+`principal_key_id_reused` among the reasons observed. Neutralising the guard makes this test
+fail (verified), so it genuinely pins the invariant.
 
 Tests: `TestEnrollmentBindsFreshKey::{test_reenroll_revoked_key_id_is_refused_at_admission,
 test_reenroll_superseded_key_id_is_refused_at_admission,

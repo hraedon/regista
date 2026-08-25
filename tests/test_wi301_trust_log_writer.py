@@ -2402,24 +2402,36 @@ class TestReplayProjectionConvergence:
     """The property that proves the WI-347/348/349 family is closed.
 
     A randomised, DETERMINISTICALLY SEEDED generator drives enrol / rotate(dual) /
-    revoke / recovery sequences for two principals through the real durable writer
+    revoke / recovery sequences for three principals through the real durable writer
     (append admission + verified replay), and after every ADMITTED event rebuilds the
     projection from the same durable log and asserts:
 
-    * the projection rebuild never raises — every event the replay admits, the projection
-      admits too (the exact guarantee WI-349 restores; before the fix a re-enrolment of a
-      revoked key_id was admitted by replay yet raised PRINCIPAL_KEY_ALREADY_EXISTS in the
-      rebuild), and
-    * the replay's active/superseded/revoked key-status map EQUALS the projection table's
-      after every step.
+    * the projection rebuild never raises — every event the WRITER ADMITS, replayed and
+      rebuilt into the projection, the projection admits too (the exact guarantee WI-349
+      restores; before the fix a re-enrolment of a revoked key_id was admitted by replay yet
+      raised PRINCIPAL_KEY_ALREADY_EXISTS in the rebuild), and
+    * the replay's ``(status, public_key)`` map EQUALS the projection table's and an
+      independent in-test model's after every step. The comparison carries the key MATERIAL,
+      not status alone: a same-key_id/same-status but different-BYTES disagreement would
+      otherwise slip past (it cannot occur while write-once holds, but the evidence asserts
+      byte-equality defensively rather than assuming it).
 
-    It also asserts the *rejection* side: the generator emits the poison shapes
-    (write-once reuse, same-material alias, wrong-supersedes, enrol-over-active) and each
-    is refused by the writer with its named reason — so a history rejected by the
-    projection's invariants is rejected by the replay, and vice versa, exactly the ops the
-    projection would accept are the ops the replay accepts. Determinism: a fixed-seed
-    ``random.Random`` selects ops and (via ``randbytes``) key material; no ``os.urandom``
-    or wall-clock feeds a decision, so a failure reproduces from the seed.
+    Scope of the guarantee (honest form): this proves that *every writer-ADMITTED history,
+    replayed and rebuilt into the projection, yields identical ``(status, public_key)``
+    state*. It does NOT claim raw-applier bidirectional equivalence: the writer's ADMISSION
+    is strictly STRONGER than the raw projection appliers, which would absorb some histories
+    the writer rejects (e.g. enrol-over-active, an active key_id re-used with different bytes,
+    a duplicate revocation). That is a safe TIGHTENING — writer-admitted ⊆ raw-applier-accepted
+    — not an equivalence, so no admitted history can diverge on rebuild.
+
+    It also asserts the *rejection* side with per-category coverage counters: the generator
+    emits the poison shapes (write-once stale reuse via enrol AND rotate, same-material alias,
+    wrong-supersedes, enrol-over-active, and same-active-key_id-different-bytes) and each is
+    refused by the writer with its named reason; the counters PROVE each valid op was admitted
+    and each poison op refused at least once, so the property cannot pass vacuously.
+    Determinism: a fixed seed LIST, each seeding its own ``random.Random`` that selects ops and
+    (via ``randbytes``) key material; no ``os.urandom`` or wall-clock feeds a decision, so a
+    failure reproduces from (seed, op index).
 
     Invariants exercised: I1 key_id write-once per principal (PK (principal_id, key_id)),
     I2 at most one active key per principal (partial unique index), I3 no reactivation of
@@ -2429,15 +2441,25 @@ class TestReplayProjectionConvergence:
     def test_replay_and_projection_converge_over_random_histories(self, tmp_path):
         import random
 
-        rng = random.Random(1234)
-        sequences = 5
-        ops_per_sequence = 16
-        principals = ["agent:conv-a", "agent:conv-b"]
+        # A FIXED seed list (finding 3): each seed drives one independent sequence with its
+        # own freshly-seeded ``random.Random``, so the whole run is deterministic and a
+        # failure reproduces from (seed, op index). 12 seeds x 40 ops x 3 principals meets or
+        # exceeds the Opus probe (12/40/3) while staying well inside a reasonable runtime.
+        seeds = [1234, 2718, 3141, 4669, 5772, 6022, 7071, 8090, 9109, 11235, 13195, 16180]
+        ops_per_sequence = 40
+        principals = ["agent:conv-a", "agent:conv-b", "agent:conv-c"]
 
         accepts = 0
         rejects = 0
         reject_reasons: set[str] = set()
+        # Per-category counters (finding 3): PROVE the run exercised each valid op AND each
+        # poison shape rather than possibly skipping the interesting ones. Asserted > 0 at the
+        # end, split by admitted/refused so a category cannot masquerade as covered by only
+        # ever hitting the branch that no-ops.
+        op_admitted: dict[str, int] = {}
+        op_refused: dict[str, int] = {}
         counter = [0]
+        rng = random.Random(seeds[0])
 
         def _fresh_key(principal, *, key_id=None, seed=None):
             counter[0] += 1
@@ -2445,17 +2467,28 @@ class TestReplayProjectionConvergence:
             return _tlogkey(kid, seed if seed is not None else rng.randbytes(32))
 
         def _replay_map(handle, fixture):
+            # (principal_id, key_id) -> (status, public_key). The public-key half is the
+            # defensive byte-equality check (finding 1): comparing status ALONE would let a
+            # same-key_id/same-status but different-MATERIAL disagreement slip past. It cannot
+            # occur while write-once holds, but the evidence asserts it rather than assuming it.
             with handle._mgr.transaction() as conn:
                 state = replay_trust_state(conn, fixture.document)
-            return dict(state.principal_key_status)
+            return {
+                k: (status, state.principal_public_keys[k])
+                for k, status in state.principal_key_status.items()
+            }
 
         def _projection_map(handle):
             return {
-                (e.principal_id, e.key_id): e.status
+                (e.principal_id, e.key_id): (e.status, e.public_key)
                 for e in list_principal_keys(handle._mgr)
             }
 
-        for seq in range(sequences):
+        for seq, seed in enumerate(seeds):
+            # Reseed per sequence so each is independently reproducible. ``_fresh_key`` and the
+            # op selection below read this method-local ``rng`` at call time, so the reassignment
+            # is visible to them.
+            rng = random.Random(seed)
             seq_dir = tmp_path / f"seq{seq}"
             seq_dir.mkdir()
             fixture, handle, _kf, project = _make_environment(seq_dir)
@@ -2489,6 +2522,7 @@ class TestReplayProjectionConvergence:
                         ops += [
                             "rotate_dual", "revoke_active", "recovery",
                             "reenroll_active_same", "enroll_over_active", "enroll_alias",
+                            "enroll_active_diffbytes",
                         ]
                     if stale:
                         ops.append("enroll_reuse_stale")
@@ -2560,6 +2594,17 @@ class TestReplayProjectionConvergence:
                         def action():
                             _run_enroll(key)
                         # apply_on_accept stays the no-op default: idempotent re-enrol.
+                    elif op == "enroll_active_diffbytes":
+                        # Poison (finding 3): re-enrol the CURRENTLY ACTIVE key_id with DIFFERENT
+                        # material. The write-once helper's single tolerated reuse requires the
+                        # bytes to match the stored active key, so fresh bytes under the same
+                        # key_id must be refused (`principal_key_id_reused`) — the case a
+                        # status-only comparison could never have caught.
+                        active_obj = m["keys"][active]["obj"]
+                        key = _fresh_key(p, key_id=active_obj.key_id)
+
+                        def action():
+                            _run_enroll(key)
                     elif op == "enroll_reuse_stale":
                         key = m["keys"][rng.choice(stale)]["obj"]
 
@@ -2621,6 +2666,7 @@ class TestReplayProjectionConvergence:
                     except RegistaError as exc:
                         admitted = False
                         rejects += 1
+                        op_refused[op] = op_refused.get(op, 0) + 1
                         reject_reasons.add(str(exc.detail.get("reason")))
                         assert not expect_accept, (
                             f"op {op!r} was expected to be admitted but raised "
@@ -2632,6 +2678,7 @@ class TestReplayProjectionConvergence:
 
                     assert expect_accept, f"op {op!r} was expected to be refused but was admitted"
                     accepts += 1
+                    op_admitted[op] = op_admitted.get(op, 0) + 1
                     apply_on_accept()
 
                     # Convergence: rebuild the projection from the SAME durable log — it
@@ -2640,15 +2687,18 @@ class TestReplayProjectionConvergence:
                         handle._mgr, project=handle._mgr.project,
                         genesis_document=fixture.document,
                     )
+                    # Each map is (principal_id, key_id) -> (status, public_key), so this asserts
+                    # STATUS *and* byte-identical key MATERIAL agree across all three sources.
                     replay_map = _replay_map(handle, fixture)
                     projection_map = _projection_map(handle)
                     assert replay_map == projection_map, (
                         f"replay/projection diverged after {op!r}: "
                         f"replay={replay_map} projection={projection_map}"
                     )
-                    # The replay map must also match the independent in-test model.
+                    # The replay map must also match the independent in-test model, material
+                    # included.
                     model_map = {
-                        (pr, kid): rec["status"]
+                        (pr, kid): (rec["status"], rec["obj"].public_key)
                         for pr, mm in model.items()
                         for kid, rec in mm["keys"].items()
                     }
@@ -2664,3 +2714,25 @@ class TestReplayProjectionConvergence:
         assert accepts > 0
         assert rejects > 0
         assert "principal_key_id_reused" in reject_reasons
+
+        # Coverage (finding 3): prove each VALID op was actually ADMITTED at least once and
+        # each POISON op was actually REFUSED at least once, so the property cannot pass
+        # vacuously by never generating the interesting shapes. A category present only in the
+        # wrong column would fail here, not slip by.
+        for valid_op in ("enroll_fresh", "rotate_dual", "recovery", "revoke_active"):
+            assert op_admitted.get(valid_op, 0) > 0, (
+                f"valid op {valid_op!r} was never admitted: "
+                f"admitted={op_admitted} refused={op_refused}"
+            )
+        for poison_op in (
+            "enroll_reuse_stale",          # write-once stale reuse via ENROL
+            "rotate_reuse_stale_new",      # write-once stale reuse via ROTATE (new key_id)
+            "enroll_alias",                # same-material alias under a different key_id
+            "rotate_wrong_supersede",      # rotation naming a non-current (stale) key
+            "enroll_over_active",          # a second enrol while a key is already active
+            "enroll_active_diffbytes",     # same active key_id, DIFFERENT bytes
+        ):
+            assert op_refused.get(poison_op, 0) > 0, (
+                f"poison op {poison_op!r} was never refused: "
+                f"admitted={op_admitted} refused={op_refused}"
+            )
