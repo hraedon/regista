@@ -144,6 +144,11 @@ _STATUS_MAP: dict[str, int] = {
     # failure — the requester has not proven authority over the CURRENT key — so it maps
     # alongside TRUST_LOG_AUTHORITY_INVALID.
     ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY: 403,
+    # 409: key_id is write-once per principal, so re-introducing one already present is a
+    # conflict with existing state (well-formed request, nothing broken) — the same
+    # mapping the projection's PRINCIPAL_KEY_ALREADY_EXISTS carries, which this replay
+    # guard mirrors.
+    ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED: 409,
     ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED: 400,
     # 503: the trust-log store is unreachable or the target schema is not a trust
     # log — an infrastructure/config condition the caller cannot fix by reformatting.

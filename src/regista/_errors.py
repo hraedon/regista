@@ -190,6 +190,20 @@ class ErrorCode(StrEnum):
     # detail distinguishes superseded_key_superseded / superseded_key_revoked /
     # superseded_key_unknown.
     TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY = "TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY"
+    # WI-349: key_id is WRITE-ONCE per principal. Every key-introducing transition
+    # (principal_key_enrolled, and principal_key_rotated dual OR recovery) carries a NEW
+    # key_id; reusing a (principal_id, key_id) already present in the replayed history — in
+    # ANY status (active / superseded / revoked) — is refused by name. This is the replay's
+    # mirror of the projection's structural guarantee: principal_keys has PRIMARY KEY
+    # (principal_id, key_id) (migration 038), so the enrolment applier raises
+    # PRINCIPAL_KEY_ALREADY_EXISTS on a non-active reuse and the rotation applier's INSERT
+    # trips the primary key. Without this, re-enrolling (or re-rotating to) a superseded or
+    # revoked key_id REACTIVATED a retired key in the offline replay while the projection
+    # rebuild raised — the divergence WI-349 closes. The one tolerated reuse is an
+    # idempotent enrolment re-stating the CURRENTLY ACTIVE key (same key_id, same bytes),
+    # which the projection also admits as a no-op. `detail["reason"]` is
+    # `principal_key_id_reused`, with the offending key_id and its existing status.
+    TRUST_LOG_PRINCIPAL_KEY_ID_REUSED = "TRUST_LOG_PRINCIPAL_KEY_ID_REUSED"
     TRUST_LOG_BOOTSTRAP_NOT_PERMITTED = "TRUST_LOG_BOOTSTRAP_NOT_PERMITTED"
     # The trust-log store could not be probed: the DSN is unreachable, or the target
     # namespace is occupied by something other than a trust-log project (no `events`

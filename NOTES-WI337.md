@@ -263,6 +263,88 @@ idempotent no-op) still passes, so the fix does not over-refuse.
   actually proven: retention of K1's introduction as a referent + K1's rotation
   co-signature.
 
+## Round-3 remediation — WI-349 key_id reuse / reactivation, and the unified invariant
+
+**The fourth member of the family, and the last.** WI-347 and WI-348 patched two *routes*
+into the same divergence class (replay's ad-hoc key-status derivation not matching the
+`principal_keys` projection). WI-349 is the third route: a `principal_key_enrolled` (or any
+key-introducing transition) could REUSE a `(principal_id, key_id)` already present in the
+replayed history. `_check_enrollment_binds_fresh_key` skipped every non-active key
+(`if status != "active": continue`) and `_remember_principal_key` set the introduced key
+`"active"` unconditionally, so **re-enrolling a REVOKED or SUPERSEDED key_id REACTIVATED it
+in the offline replay**, while the projection's enrolment applier raises
+`PRINCIPAL_KEY_ALREADY_EXISTS` on the same reuse. Rotation had the mirror hole: its new key
+went through `_remember_principal_key` too, so rotating *to* a stale key_id reactivated it,
+whereas `_apply_rotation_projection` INSERTs unconditionally and would trip
+`principal_keys`' primary key.
+
+**Reachability settled: YES (durable).** Reproduced through the PUBLIC
+`append_trust_log_event` path, DB-backed: enrol K1 → revoke K1 → re-enrol K1 was ADMITTED,
+replay showed K1 `active` again, and `rebuild_projection` of the very same log then raised
+`PRINCIPAL_KEY_ALREADY_EXISTS` — a rebuild that crashes on an honestly-admitted log is the
+divergence, not a hypothetical.
+
+**The root cause is one cause.** The replay re-derived principal-key status ad-hoc instead
+of enforcing the invariants the projection enforces *by construction* — its schema (migration
+038): PRIMARY KEY `(principal_id, key_id)` and a partial unique index `WHERE status='active'`.
+Those give three invariants:
+
+- **I1 — key_id is WRITE-ONCE per principal** (the PK). Any second introduction of a
+  key_id — enrol OR rotate — is refused.
+- **I2 — at most one active key per principal** (the partial unique index; the appliers
+  supersede-before-insert). WI-347/348 already push replay to this.
+- **I3 — no reactivation** of a superseded/revoked key. Falls out of I1: a retired key_id
+  can never be re-introduced, and no applier flips a non-active row back to active.
+
+**The comprehensive fix — `_trust_log_writer.py:_check_key_id_write_once` (new, ~line 1268).**
+A single helper enforcing I1 for EVERY key-introducing transition. It refuses any
+`(principal_id, new_key_id)` already present in `principal_key_status` in ANY status, with
+`reason="principal_key_id_reused"` / `TRUST_LOG_PRINCIPAL_KEY_ID_REUSED` (new ErrorCode,
+`_STATUS_MAP` 409 sidecar — mirroring the projection's `PRINCIPAL_KEY_ALREADY_EXISTS`, which
+is also 409). It is wired into the two per-transition chokepoints that BOTH admission
+(`_resolve_authority`) and replay (`_verify_lifecycle`) already route through — the first
+statement of `_check_enrollment_binds_fresh_key` (enrol) and of `_classify_rotation`
+(rotate, dual + recovery) — so one helper binds all four call sites across both paths. No
+public-API bypass: a direct `append_trust_log_event` and an offline `verify_trust_log_chain`
+refuse identically (proven by `test_replay_refuses_reactivation_planted_by_admission_bypass`,
+which plants the poison by disabling the guard for the append only, then replays with it
+restored).
+
+**Idempotent re-enrol, reconciled deliberately.** The projection does NOT reject *all*
+key_id reuse: `_apply_enrollment_projection` returns the existing row unchanged when it is
+ACTIVE (same key_id) — an idempotent no-op — and raises only for a non-active existing
+key_id. So the truth is: a genuinely byte-identical re-enrol never reaches the applier twice
+(same event hash → `read_trust_log_rows` de-dups it), and a DISTINCT event re-stating the
+CURRENTLY ACTIVE key (same key_id, same bytes) is the one tolerated reuse. The write-once
+helper carries exactly that single exception (`transition == principal_key_enrolled and
+existing_status == "active" and same material`), so `test_reenroll_same_key_direct_append_is_admitted`
+still passes and replay ≡ projection holds for it too. Any *other* reuse — non-active status,
+different material, or a rotation (which never re-states a key, hence no exception there) — is
+refused. WI-348's same-material-different-key_id refusal is retained alongside (it is a
+*fresh* key_id, so write-once does not fire; the alias guard does); the two are complementary,
+not redundant.
+
+**The convergence guarantee (the proof the class is closed).**
+`test_wi301_trust_log_writer.py::TestReplayProjectionConvergence` is a randomised,
+fixed-seed (`random.Random(1234)`; key material via seeded `randbytes`, never `os.urandom`
+or wall clock) property test. It drives enrol/rotate(dual)/revoke/recovery sequences for two
+principals through the real durable writer, emitting both valid ops AND every poison shape
+(write-once reuse, same-material alias, wrong-supersedes, enrol-over-active). After EVERY
+admitted event it rebuilds the projection from the same durable log and asserts (a) the
+rebuild never raises — every event replay admits, the projection admits — and (b) replay's
+active/superseded/revoked status map EQUALS the projection table's (and an independent
+in-test model's). It also asserts the rejection side by expectation: the ops the projection
+would refuse are exactly the ops the writer refuses, `principal_key_id_reused` among the
+reasons observed. Neutralising the guard makes this test fail (verified), so it genuinely
+pins the invariant.
+
+Tests: `TestEnrollmentBindsFreshKey::{test_reenroll_revoked_key_id_is_refused_at_admission,
+test_reenroll_superseded_key_id_is_refused_at_admission,
+test_rotation_reusing_an_existing_key_id_as_new_key_is_refused,
+test_replay_refuses_reactivation_planted_by_admission_bypass}` (admission + replay halves,
+enrol + rotate arms) and `TestReplayProjectionConvergence` (the equivalence property). The
+existing WI-347/348 tests and `test_reenroll_same_key_direct_append_is_admitted` stay green.
+
 ## Named residuals (reviewers will probe these)
 
 1. **Row/envelope reconciliation is vacuous offline, by construction.** `_reconcile_row`
@@ -311,6 +393,16 @@ idempotent no-op) still passes, so the fix does not over-refuse.
   `PolicyKeyResolver.resolve(k1)` never `EXTERNALLY_PINNED`. Probe the double-rotation edge
   (rotate K2→K3 after K1→K2) and the recovery-rotation edge (root-authorised recovery also
   supersedes its `supersedes_key_id`).
+- **Key_id write-once / no-reactivation (WI-349).** The subtle direction is the idempotent
+  exception in `_check_key_id_write_once`: confirm ONLY an ENROLMENT re-stating the
+  currently-active key (same key_id, same bytes) is admitted, and that enrol-of-active-key_id
+  with DIFFERENT bytes, enrol/rotate of a superseded/revoked key_id, and a rotation to ANY
+  existing key_id are all refused `principal_key_id_reused`. Probe the admission↔replay
+  parity by planting a reuse with the guard disabled and confirming the standalone replay
+  still refuses. Probe the equivalence property (`TestReplayProjectionConvergence`) by
+  widening its op alphabet or reseeding and confirming the rebuild never raises and the
+  status maps stay identical — a divergence here is a rebuild that crashes on an
+  honestly-admitted log.
 
 ## CLI surface added
 
@@ -346,3 +438,7 @@ representative signed core), the `trust-log-export` manifest entry, and
 a library consumer tried to draw authority from without it reaching its own derived root
 signature threshold). All three have matching `_STATUS_MAP` entries (400) in
 `sidecar/errors.py`, enforced by the sidecar total-coverage meta-test.
+
+WI-349 adds `TRUST_LOG_PRINCIPAL_KEY_ID_REUSED` (key_id is write-once per principal — a
+reused enrol/rotate key_id), with a `_STATUS_MAP` 409 entry (same mapping as the
+projection's `PRINCIPAL_KEY_ALREADY_EXISTS`, which it mirrors).

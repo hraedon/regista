@@ -1196,6 +1196,15 @@ def _classify_rotation(
     principal_public_keys: Mapping[tuple[str, str], bytes],
     principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> str:
+    # WI-349: the NEW key a rotation introduces is write-once — it may not reuse a key_id
+    # already present for the principal in ANY status (the projection's rotation applier
+    # INSERTs unconditionally, so a reused key_id trips principal_keys' primary key). This
+    # runs before the supersedes checks so a rotation naming a stale key_id as its NEW key
+    # cannot reactivate it in the offline replay. A rotation never re-states a key, so
+    # there is no idempotent exception here (unlike enrolment).
+    _check_key_id_write_once(
+        parsed, PRINCIPAL_KEY_ROTATED, principal_public_keys, principal_key_status
+    )
     # WI-347: a rotation — dual OR recovery — must name the principal's CURRENTLY ACTIVE
     # key as `supersedes_key_id`. This is the single chokepoint both admission
     # (`append_trust_log_event`) and replay (`_verify_lifecycle`) route through, so the
@@ -1265,6 +1274,77 @@ def _classify_rotation(
     )
 
 
+def _check_key_id_write_once(
+    parsed: Any,
+    transition: str,
+    principal_public_keys: Mapping[tuple[str, str], bytes],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
+) -> None:
+    """key_id is WRITE-ONCE per principal — the invariant the projection's schema enforces
+    by construction, made to hold identically in the replay (WI-349).
+
+    ``principal_keys`` has PRIMARY KEY ``(principal_id, key_id)`` (migration 038) plus a
+    partial unique index ``WHERE status = 'active'`` (at most one active key per
+    principal). Every key-INTRODUCING transition — ``principal_key_enrolled`` and
+    ``principal_key_rotated`` (dual OR recovery) — carries a NEW key_id, and the projection
+    appliers refuse any reuse of one: ``_apply_enrollment_projection`` returns the existing
+    row only when it is ACTIVE and otherwise raises ``PRINCIPAL_KEY_ALREADY_EXISTS``, and
+    ``_apply_rotation_projection`` INSERTs unconditionally so a reused key_id trips the
+    primary key. The replay used to derive key status ad-hoc — ``_remember_principal_key``
+    set the introduced key ``active`` regardless of history — so re-enrolling a
+    revoked/superseded key_id (WI-349), or rotating to a key_id already seen, REACTIVATED a
+    retired key offline while a projection rebuild of the same log raised. That is the
+    divergence this closes.
+
+    Enforced in the shared admission+replay chokepoint: both ``_resolve_authority``
+    (append-time admission) and ``_verify_lifecycle`` (verified replay) route enrolment
+    through ``_check_enrollment_binds_fresh_key`` and rotation through
+    ``_classify_rotation``, and this check is the first thing each does — so neither a
+    direct ``append_trust_log_event`` caller nor a published-log ``verify_trust_log_chain``
+    can revive or duplicate a key_id.
+
+    The ONE reuse the projection tolerates is an idempotent enrolment re-stating the
+    principal's CURRENTLY ACTIVE key: same key_id, same public bytes
+    (``_apply_enrollment_projection`` returns that active row unchanged). The replay admits
+    it as a no-op too. A byte-identical event never reaches here twice — it shares an event
+    hash and ``read_trust_log_rows`` de-duplicates it — so this is always a DISTINCT event
+    re-stating the active key; any other reuse (different material, a non-active status, or
+    a rotation, which never re-states a key) is refused.
+    """
+    principal_id = getattr(parsed, "principal_id", None)
+    key = getattr(parsed, "key", None)
+    new_key_id = getattr(key, "key_id", None) if key is not None else None
+    new_public = getattr(key, "public_key", None) if key is not None else None
+    if not isinstance(principal_id, str) or not isinstance(new_key_id, str):
+        return
+    existing_status = principal_key_status.get((principal_id, new_key_id))
+    if existing_status is None:
+        return
+    if (
+        transition == PRINCIPAL_KEY_ENROLLED
+        and existing_status == "active"
+        and new_public is not None
+        and principal_public_keys.get((principal_id, new_key_id)) == new_public
+    ):
+        return
+    raise RegistaError(
+        ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED,
+        f"principal {principal_id!r} already holds key_id {new_key_id!r} "
+        f"(status {existing_status!r}); key_id is write-once per principal, so a "
+        f"{transition!r} cannot reuse it. Re-introducing a superseded or revoked key_id "
+        "would reactivate a retired key in the offline replay, which the projection "
+        "refuses (principal_keys PRIMARY KEY (principal_id, key_id) / "
+        "PRINCIPAL_KEY_ALREADY_EXISTS).",
+        {
+            "reason": "principal_key_id_reused",
+            "principal_id": principal_id,
+            "key_id": new_key_id,
+            "existing_status": existing_status,
+            "transition": transition,
+        },
+    )
+
+
 def _remember_principal_key(
     parsed: Any,
     principal_public_keys: dict[tuple[str, str], bytes],
@@ -1308,7 +1388,15 @@ def _check_enrollment_binds_fresh_key(
     Re-enrolling the SAME bytes (same fingerprint) is left alone: it is an idempotent
     no-op, not a change. This guard is specific to the enrol transition; rotation
     (``principal_key_rotated``) legitimately supersedes and is untouched.
+
+    WI-349: before the incumbent-material checks below, the introduced key_id must be
+    write-once — re-enrolling a superseded/revoked key_id would reactivate a retired key,
+    so it is refused here (the idempotent re-statement of the CURRENTLY ACTIVE key is the
+    one tolerated reuse; see :func:`_check_key_id_write_once`).
     """
+    _check_key_id_write_once(
+        parsed, PRINCIPAL_KEY_ENROLLED, principal_public_keys, principal_key_status
+    )
     principal_id = getattr(parsed, "principal_id", None)
     key = getattr(parsed, "key", None)
     new_public = getattr(key, "public_key", None) if key is not None else None
