@@ -134,6 +134,7 @@ from ._verification import (
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only at type-check time
     from ._keys import KeySet
+    from ._trust_log_export import TrustLogExportVerification
 
 log = structlog.get_logger()
 
@@ -2121,6 +2122,185 @@ class AcceptBundledKeys:
 
 
 @dataclass(frozen=True)
+class _TrustLogAuthority:
+    """A VERIFIED published trust-log export, reduced to what a bundle verifier needs.
+
+    Produced only by :func:`_trust_log_export_material`, which takes a
+    :class:`~regista._trust_log_export.TrustLogExportVerification` — a value that exists
+    only after ``verify_trust_log_export`` replayed the artifact from the auditor's own
+    pinned genesis through the one verified walk. Every field here is therefore *derived*
+    from checked signatures and ancestry, which is precisely what the Phase-C F1 defect's
+    caller-supplied referents were not.
+
+    ``active_principal_keys`` is the chain-to-root result: a ``key_id`` appears here only
+    because the log carries an enrolment (or rotation) for it that root — or a registrar
+    root-delegated within its window — authorised, and no later ``principal_key_revoked``.
+    """
+
+    trust_domain_id: str
+    trust_domain_core_digest: str
+    genesis_document_digest: str
+    project_instance_id: str
+    active_principal_keys: Mapping[str, bytes]
+    revoked_principal_keys: Mapping[str, bytes]
+    #: Keys the log has ROTATED AWAY (WI-337 Sol #3). A superseded key is NOT current
+    #: authority — it never appears in ``active_principal_keys`` and the resolver never
+    #: returns it as externally pinned — but it is not revoked either: its introduction
+    #: stays a valid historical referent. Held separately so a bundle event signed by one
+    #: is named honestly (like a revoked key) rather than silently clamped.
+    superseded_principal_keys: Mapping[str, bytes]
+    principal_by_key_id: Mapping[str, str]
+    #: ``event_hash -> ReferentEvent`` for the walked events, minus the introductions of
+    #: revoked keys (``_trust_log_export.export_referents``).
+    referents: Mapping[str, ReferentEvent]
+    #: Key ids the log binds to MORE THAN ONE distinct public key across principals. Such a
+    #: key id cannot be resolved unambiguously, so it is excluded from
+    #: ``active_principal_keys`` and named as a finding instead of guessed at.
+    ambiguous_key_ids: tuple[str, ...]
+    verification: TrustLogExportVerification
+
+
+def _trust_log_export_material(
+    verification: TrustLogExportVerification,
+    policy: TrustPolicy | None,
+) -> _TrustLogAuthority:
+    """Reduce a verified export to bundle-verifier form, refusing an UNPINNED one.
+
+    **A truncation pin is mandatory here, and that is stricter than Rule H on purpose.**
+    A published export can be a PREFIX of the real log and still replay perfectly — a
+    prefix of a hash chain is a hash chain — so ``verify_trust_log_export`` reports
+    ``tail_truncation_undetectable`` when the caller supplied neither an exact head pin nor
+    a ``min_trust_log_checkpoint`` to cover. Granting ``externally_pinned`` off such an
+    export would let an operator conceal a ``principal_key_revoked`` simply by publishing
+    the log as it stood before it, and the bundle would read ``externally_authenticated``.
+    Rule H's un-clamped ``tail_truncation_undetectable`` is about *events missing from the
+    evidence*, which weakens completeness; this is about *authority being falsified*, which
+    is a different kind of claim and gets the fail-closed answer.
+
+    **An EXACT head pin — not merely a checkpoint cover — is what makes an export usable
+    for authority (WI-337 ceremony fix D, Sol #2).** A ``min_trust_log_checkpoint`` cover
+    proves the export reaches AT LEAST that checkpoint; it does NOT prove the export is not
+    truncated AFTER it, so a stale checkpoint would let a truncation hide a later rotation
+    or revocation and still reach ``externally_authenticated``. So this function requires
+    ``head_pin_checked`` (an exact ``expect_head``); an unpinned export and a
+    checkpoint-cover-only export are BOTH named refusals here (``trust_log_export_unpinned``
+    / ``trust_log_export_head_pin_required``) rather than a quiet demotion to
+    ``bundle_rooted``. It also re-asserts root-signature sufficiency
+    (``trust_log_export_signatures_insufficient``), so an export verified with
+    ``require_signatures=False`` cannot smuggle authority past the threshold gate.
+    """
+
+    from ._trust_log_export import export_referents
+
+    # WI-350: `tail_truncation_undetectable` is now set whenever no EXACT head pin was
+    # checked, which includes a must_cover-only export (its floor is raised but truncation
+    # above the checkpoint stays undetectable). This first refusal is for a TRULY unpinned
+    # export (no head pin AND no checkpoint cover) so its message — "carries no truncation
+    # pin" — stays accurate; a must_cover-only export has `covered_checkpoint_head` set and
+    # falls through to the more specific `head_pin_required` refusal below.
+    if verification.tail_truncation_undetectable and verification.covered_checkpoint_head is None:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "the presented trust-log export carries no truncation pin, so it cannot "
+            "establish key authority: a published PREFIX of the log replays cleanly and "
+            "would hide every revocation after the cut. Verify the export with an "
+            "expect_head obtained by direct exchange, or supply a trust policy whose "
+            "min_trust_log_checkpoint the export must cover (TRUST-DOMAIN.md §4.6).",
+            {"reason": "trust_log_export_unpinned"},
+        )
+    # WI-337 (Sol #2): an EXACT head/count pin is required for authority — a must_cover
+    # (min_trust_log_checkpoint) satisfaction alone is NOT sufficient. Covering a checkpoint
+    # proves the export reaches AT LEAST that point; it cannot prove the export is not
+    # truncated AFTER it, so a STALE checkpoint (predating a rotation or revocation) would
+    # let a truncated export hide the later events and still reach externally_authenticated.
+    # Offline cannot prove freshness, so the top authority verdict requires the ceremony's
+    # exact cutover head/count (an `expect_head`); a checkpoint-cover-only presentation is
+    # refused here rather than overclaiming. `must_cover` remains a real defence at
+    # `verify_trust_log_export` (it refuses a prefix that does not even reach the
+    # checkpoint) — it is just not, on its own, a licence for CURRENT authority.
+    if not verification.head_pin_checked:
+        raise RegistaError(
+            ErrorCode.INVALID_ARGUMENT,
+            "the presented trust-log export was pinned only by a min_trust_log_checkpoint "
+            "cover, not by an exact head/count. Covering a checkpoint proves the export "
+            "reaches at least that point but not that it is the WHOLE log, so a stale "
+            "checkpoint would let a truncation after it hide a later rotation or "
+            "revocation. Supply the ceremony's exact head via an expect_head "
+            "(--trust-log-expect-head <head>:<count>) obtained by direct exchange before "
+            "the export may establish current key authority (TRUST-DOMAIN.md §4.6).",
+            {"reason": "trust_log_export_head_pin_required"},
+        )
+    # WI-337 (Opus footgun): re-assert signature sufficiency in the library consumption
+    # path. `verify_trust_log_export(require_signatures=False)` (the builder's pre-sign
+    # self-check) skips the root-threshold gate but still returns a
+    # `TrustLogExportVerification`; a caller who feeds that object here must not thereby
+    # grant authority off an unsigned or sub-threshold export. This closes the recurring
+    # "invariant enforced in verify() but not re-checked in the library path" class
+    # (prefer-strict-defaults), and covers unsigned (0 sigs) and sub-threshold alike.
+    if len(verification.verified_root_signatures) < verification.root_threshold:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT,
+            "the presented trust-log export did not reach its own derived root signature "
+            "threshold, so it cannot establish key authority: it carries "
+            f"{len(verification.verified_root_signatures)} verified root signature(s) but "
+            f"the replay derives a threshold of {verification.root_threshold}. An unsigned "
+            "or sub-threshold export authenticates nothing (verify it with "
+            "require_signatures=True, the default).",
+            {
+                "reason": "trust_log_export_signatures_insufficient",
+                "verified": len(verification.verified_root_signatures),
+                "threshold": verification.root_threshold,
+            },
+        )
+    del policy  # the pin is carried by the verification; the policy fed it upstream
+
+    state = verification.chain.state
+    by_key_id: dict[str, bytes] = {}
+    revoked: dict[str, bytes] = {}
+    superseded: dict[str, bytes] = {}
+    principal_by_key_id: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for (principal_id, key_id), public_key in state.principal_public_keys.items():
+        seen = principal_by_key_id.get(key_id)
+        bound = by_key_id.get(key_id, revoked.get(key_id, superseded.get(key_id)))
+        if seen is not None and (seen != principal_id or bound != public_key):
+            # One key_id, two bindings. A bundle event names only a key_id, so there is no
+            # honest way to choose; excluding it means the events it signed stay
+            # bundle-rooted rather than being authenticated against a guess.
+            ambiguous.add(key_id)
+            continue
+        principal_by_key_id[key_id] = principal_id
+        status = state.principal_key_status.get((principal_id, key_id))
+        if status == "revoked":
+            revoked[key_id] = public_key
+        elif status == "superseded":
+            # WI-337 (Sol #3): rotated-away — a valid historical referent but NOT current
+            # authority, so it is kept out of `active_principal_keys`.
+            superseded[key_id] = public_key
+        else:
+            by_key_id[key_id] = public_key
+    for key_id in ambiguous:
+        by_key_id.pop(key_id, None)
+        revoked.pop(key_id, None)
+        superseded.pop(key_id, None)
+        principal_by_key_id.pop(key_id, None)
+
+    return _TrustLogAuthority(
+        trust_domain_id=verification.trust_domain_id,
+        trust_domain_core_digest=verification.trust_domain_core_digest,
+        genesis_document_digest=verification.genesis_document_digest,
+        project_instance_id=verification.project_instance_id,
+        active_principal_keys=by_key_id,
+        revoked_principal_keys=revoked,
+        superseded_principal_keys=superseded,
+        principal_by_key_id=principal_by_key_id,
+        referents=export_referents(verification),
+        ambiguous_key_ids=tuple(sorted(ambiguous)),
+        verification=verification,
+    )
+
+
+@dataclass(frozen=True)
 class PolicyKeyResolver:
     """The default-path resolver, built ONLY from a :class:`TrustPolicy` (§4.3 mechanism 2).
 
@@ -2136,24 +2316,52 @@ class PolicyKeyResolver:
     auditor workflow pins the ROOT and lets the acceptance/enrolment chain authenticate the
     keys beneath it (worker → project acceptance → project genesis bootstrap → trust-log
     enrolment → pinned root, with enrolment-before-use and rotation/revocation windowing).
-    That chain-to-root walk crosses into the trust log, and every trust-log verifier
-    (``verify_trust_log_chain``, ``resolve_enrolled_key``) is store-backed — there is no
-    offline, signature-verified trust-log artifact yet (WI-337). So a **non-root** project key
-    resolves to ``BUNDLE_EMBEDDED`` here: its authority to a pinned root is real but not
-    establishable offline, and reporting it as externally pinned would be the F1 false
-    assurance. A key with no matching pin is likewise ``BUNDLE_EMBEDDED``, which clamps the
-    verdict (Rule C). It is a different type from
-    :class:`~regista._verification.BundledKeyEvidenceResolver` on purpose, so the default path
-    can never resolve a bundled key as trusted by habit.
+
+    **WI-337 completes that chain offline.** When a :class:`
+    ~regista._bundle._TrustLogAuthority` is supplied — a published §4.2 artifact
+    that has been replayed from the auditor's own pinned genesis under full verification —
+    a key the log ENROLLED under verified root or root-delegated-registrar authority is
+    ``EXTERNALLY_PINNED``: that IS the signed chain to the pinned root, and its length is
+    greater than zero. Two rules keep it honest:
+
+    * The **bytes come from the log**, not from ``bundled_key_evidence``. The log's
+      material was authenticated; the bundle's was merely transported. (A disagreement
+      between the two for one ``key_id`` is caught before this resolver runs and is a hard
+      ``invalid`` — §4.4 criterion 4's fail-closed-on-disagreement.)
+    * A key the log has **revoked** at its head is NOT externally pinned. Establishing that
+      an event predates a revocation would need point-in-time authority, which has no
+      defined meaning in this machinery (WI-330 FR3-2), so the fail-closed answer is
+      ``BUNDLE_EMBEDDED`` plus a named finding — never a silent pass.
+
+    Without a trust log, or for a key the log does not know, the answer is unchanged from
+    Phase C: ``BUNDLE_EMBEDDED``, which clamps the verdict (Rule C). It is a different type
+    from :class:`~regista._verification.BundledKeyEvidenceResolver` on purpose, so the
+    default path can never resolve a bundled key as trusted by habit.
     """
 
     material_by_key_id: Mapping[str, bytes]
     principal_by_key_id: Mapping[str, str]
     pinned_fingerprints: frozenset[str]
+    #: A VERIFIED published trust log, or ``None``. The type is un-forgeable by
+    #: construction (only ``verify_published_trust_log`` produces one), so this field
+    #: cannot become the Phase-C F1 defect of trusting caller-supplied trust material.
+    trust_log: _TrustLogAuthority | None = None
 
     def resolve(self, key_id: str | None) -> TrustedKey | None:
         if key_id is None:
             return None
+        trust_log = self.trust_log
+        if trust_log is not None:
+            enrolled = trust_log.active_principal_keys.get(key_id)
+            if enrolled is not None:
+                return TrustedKey(
+                    key_id=key_id,
+                    material=enrolled,
+                    scheme_id="ed25519",
+                    source=TrustedKeySource.EXTERNALLY_PINNED,
+                    principal_id=trust_log.principal_by_key_id.get(key_id)
+                    or self.principal_by_key_id.get(key_id),
+                )
         material = self.material_by_key_id.get(key_id)
         if material is None:
             return None
@@ -2328,8 +2536,9 @@ def _verify_root_signatures(
 def _build_referents(
     events: Sequence[Event],
     scope_kind: str,
+    trust_log: _TrustLogAuthority | None = None,
 ) -> BundleReferents:
-    """The presented material: the bundle's own events, and nothing else.
+    """The presented material: the bundle's own events, plus a VERIFIED trust log if one is.
 
     A previous cut accepted a caller-supplied ``presented_trust_log`` of trust-domain
     lifecycle referents, indexed by the hash an acceptance names, and let
@@ -2338,15 +2547,22 @@ def _build_referents(
     chain-checked** — ``_resolve_v6_trust_root`` cross-checks their payload *fields*, not
     their signatures or ancestry — so ``event_authentication: full`` and
     ``event_trust_root: externally_pinned`` could rest on blindly-trusted caller material.
-    That is the exact false-external-authentication class this phase exists to remove, so the
-    parameter is gone.
 
-    Authenticating a project key's chain to a policy-pinned ROOT requires the trust log
-    (worker → project acceptance → project genesis bootstrap → trust-log enrolment → root),
-    and every trust-log verifier — ``verify_trust_log_chain``, ``resolve_enrolled_key`` — is
-    store-backed: there is no offline, signature-verified trust-log artifact yet (that is
-    WI-337). So a self-contained project bundle's events resolve to ``bundled_only`` here, the
-    honest weaker state, and ``externally_authenticated`` is WI-337-blocked for such a bundle.
+    WI-337 supplies what was missing, and the difference from that defect is the whole
+    point: ``trust_log`` here is a :class:`_TrustLogAuthority`, produced only from a
+    ``TrustLogExportVerification``, and holding one means the
+    published artifact was replayed from the AUDITOR's pinned genesis through
+    ``verify_trust_log_chain`` — every envelope signature, every root threshold, every
+    registrar window, every possession proof. Referents from it are therefore
+    signature-verified and ancestry-checked, which caller-supplied ones never were. Merging
+    them is what lets a non-root project key complete its chain to the pinned root offline
+    (worker → project acceptance → trust-log enrolment → root) and is what makes
+    ``externally_authenticated`` reachable for a project bundle at all.
+
+    Trust-log events live on a DIFFERENT project chain, so they are unreachable from any
+    project event by ``chain.previous_project_event_hash`` and cannot perturb the chain
+    walk, the completeness claim or the ordering rules. They are resolvable by hash, which
+    is exactly what §5.10 step 5's cross-chain import point asks for.
     """
 
     indexed: dict[str, ReferentEvent] = {}
@@ -2354,6 +2570,16 @@ def _build_referents(
         referent = referent_from_bytes(event.canonical_envelope, event.signature)
         if referent is not None:
             indexed[referent.event_hash] = referent
+    trust_log_referents = 0
+    if trust_log is not None:
+        for event_hash, referent in trust_log.referents.items():
+            if event_hash in indexed:
+                # A trust-log event that is ALSO a bundle member would mean the bundle's
+                # own chain contains the trust log. The bundle's copy stays authoritative;
+                # nothing is silently replaced.
+                continue
+            indexed[event_hash] = referent
+            trust_log_referents += 1
     return BundleReferents(
         events=indexed,
         material_completeness=(
@@ -2364,6 +2590,7 @@ def _build_referents(
         event_count=len(events),
         action_credentials={},
         credential_material_completeness=MaterialCompleteness.UNDECLARED,
+        trust_log_referent_count=trust_log_referents,
     )
 
 
@@ -2397,6 +2624,7 @@ def verify_audit_bundle_v3(
     trust: TrustPolicy | AcceptBundledKeys,
     *,
     known_head: tuple[str, int] | None = None,
+    trust_log: TrustLogExportVerification | None = None,
 ) -> BundleReport:
     """Verify a bundle v3 artifact against auditor-supplied trust material (§4.1, §5, §10).
 
@@ -2408,14 +2636,20 @@ def verify_audit_bundle_v3(
     ``known_head`` is the ``(head_event_hash, event_count)`` the auditor pinned from a channel
     the operator does not solely control (§10); it drives A7 and Rule H.
 
-    **externally_authenticated is WI-337-blocked for a project bundle.** Reaching it requires
-    every event key to be authenticated by a signature chain to a policy-pinned root, and that
-    chain crosses into the trust log, whose only verifiers are store-backed (§8.4 forbids the
-    offline verifier from fetching, and there is no offline signature-verified trust-log
-    artifact yet — WI-337). So a self-contained project bundle verified here reports
-    ``bundle_rooted``/``unauthenticated`` honestly; it does not, and must not, reach
-    ``externally_authenticated`` off bundle-only material. See the Phase-C status note in
-    BUNDLE-V3.md.
+    ``trust_log`` is a **verified** published trust-log export (WI-337) and is what makes
+    ``externally_authenticated`` reachable for a project bundle. Phase C recorded the
+    blocker exactly: reaching the top verdict requires every event key to be authenticated
+    by a signature chain to a policy-pinned root, that chain crosses into the trust log, and
+    every trust-log verifier was store-backed while §8.4 forbids the offline verifier from
+    fetching. A published, root-signed, replayed-from-your-own-pinned-genesis artifact is
+    neither a fetch nor caller-asserted material: it is evidence the auditor holds and this
+    process verified. Omit it and the behaviour is unchanged from Phase C — a self-contained
+    project bundle honestly reports ``bundle_rooted``/``unauthenticated``.
+
+    Nothing is loosened by the parameter's absence and nothing is assumed by its presence: a
+    trust log for a DIFFERENT domain, one that disagrees with the auditor's own genesis pin,
+    or one whose key material contradicts the bundle's own evidence is a hard ``invalid``,
+    not a downgrade (§4.4 criterion 4).
     """
 
     if not isinstance(trust, TrustPolicy | AcceptBundledKeys):
@@ -2425,6 +2659,39 @@ def verify_audit_bundle_v3(
             "second argument (BUNDLE-V3.md §4.1): there is no default and no None, because "
             "'every remember-to-pass-the-trust-file discipline fails eventually'",
         )
+    authority: _TrustLogAuthority | None = None
+    if trust_log is not None:
+        from ._trust_log_export import TrustLogExportVerification as _Verification
+
+        if not isinstance(trust_log, _Verification):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "trust_log must be a TrustLogExportVerification produced by "
+                "verify_trust_log_export. Accepting anything else here would restore the "
+                "Phase-C F1 defect: trust-log referents believed without their signatures "
+                "or ancestry ever being checked.",
+                {"reason": "trust_log_not_verified"},
+            )
+        if isinstance(trust, AcceptBundledKeys):
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "a trust log cannot be combined with AcceptBundledKeys: the log's "
+                "authority chains to a genesis the AUDITOR pinned, and AcceptBundledKeys "
+                "pins nothing, so there would be nothing for the chain to terminate at. "
+                "Supply a TrustPolicy.",
+                {"reason": "trust_log_requires_trust_policy"},
+            )
+        if trust.is_ad_hoc:
+            raise RegistaError(
+                ErrorCode.INVALID_ARGUMENT,
+                "a trust log needs a FULL trust policy (TRUST-DOMAIN.md §4.6): the "
+                "ad-hoc --trusted-fingerprint form carries no trust_domain_id, "
+                "trust_domain_core_digest or genesis_document_digest, so the log could "
+                "not be bound to the domain the auditor pinned. Refused rather than "
+                "used unbound.",
+                {"reason": "trust_log_requires_full_policy"},
+            )
+        authority = _trust_log_export_material(trust_log, trust)
 
     path = Path(bundle_path)
     if not path.is_file():
@@ -2443,7 +2710,101 @@ def verify_audit_bundle_v3(
         # axis is not_checkable, because nothing parsed to check.
         return _malformed_report(f"{exc.code.value}: {exc.message}")
 
-    return _assess_bundle_v3(document, trust, known_head=known_head)
+    return _assess_bundle_v3(document, trust, known_head=known_head, trust_log=authority)
+
+
+def _trust_log_admissible(
+    document: BundleV3Document,
+    policy: TrustPolicy | None,
+    trust_log: _TrustLogAuthority,
+    evidence_material: Mapping[str, bytes],
+    findings: list[str],
+) -> bool:
+    """Bind the verified trust log to THIS bundle and THIS auditor pin, or refuse it.
+
+    Verifying the artifact proves it is a coherent, root-signed log of *some* domain. It
+    says nothing about whether that domain is the one the auditor pinned or the one the
+    bundle claims — and a log from a different domain that authenticated a key with the
+    same ``key_id`` is precisely how an attacker would manufacture external authentication.
+    So four bindings are checked, and any failure is a hard ``invalid`` (never a quiet
+    fallback to bundled-only, which would let a mismatched log read as merely unhelpful):
+
+    1. The log's ``trust_domain_id`` equals the bundle statement's.
+    2. It equals the policy's pinned ``trust_domain_id``, and the log's
+       ``trust_domain_core_digest`` / ``genesis_document_digest`` equal the policy's pins.
+       This is what makes the log's genesis the AUDITOR's genesis rather than one the
+       operator chose.
+    3. The log's project is NOT the bundle's project: the trust log is a separate chain
+       (§5.10 step 5), and a "trust log" that is the project itself is a forged import
+       point.
+    4. No ``key_id`` the log enrolled has key material contradicting the bundle's own
+       ``bundled_key_evidence`` — §4.4 criterion 4's fail-closed-on-disagreement, applied
+       to the strongest pin available.
+    """
+
+    ok = True
+    statement = document.statement
+    bundle_domain = str(statement["trust_domain_id"])
+    if trust_log.trust_domain_id != bundle_domain:
+        findings.append(
+            f"trust_log: the presented trust-log export is for trust domain "
+            f"{trust_log.trust_domain_id!r} but this bundle is for {bundle_domain!r}; a "
+            "log from another domain is not evidence about this one, whoever signed it"
+        )
+        ok = False
+    if policy is not None:
+        for field_name, pinned, stated in (
+            ("trust_domain_id", policy.trust_domain_id, trust_log.trust_domain_id),
+            (
+                "trust_domain_core_digest",
+                policy.trust_domain_core_digest,
+                trust_log.trust_domain_core_digest,
+            ),
+            (
+                "genesis_document_digest",
+                policy.genesis_document_digest,
+                trust_log.genesis_document_digest,
+            ),
+        ):
+            if pinned is not None and pinned != stated:
+                findings.append(
+                    f"trust_log: the export's {field_name} is {stated!r} but the trust "
+                    f"policy pins {pinned!r}"
+                )
+                ok = False
+    if trust_log.project_instance_id == str(statement["project_instance_id"]):
+        findings.append(
+            "trust_log: the export's project_instance_id equals this bundle's; the trust "
+            "log is a SEPARATE chain (TRUST-DOMAIN.md §5.10 step 5) and a log that claims "
+            "to be the project it authorises is a forged cross-chain import point"
+        )
+        ok = False
+    for key_id, enrolled in trust_log.active_principal_keys.items():
+        bundled = evidence_material.get(key_id)
+        if bundled is not None and bundled != enrolled:
+            findings.append(
+                f"trust_log: bundled_key_evidence for key_id {key_id!r} contradicts the "
+                "verified trust log's enrolled public key. §4.4 criterion 4 makes a "
+                "bundled key that contradicts a pinned one invalid, not merely reported"
+            )
+            ok = False
+    for key_id, revoked in trust_log.revoked_principal_keys.items():
+        bundled = evidence_material.get(key_id)
+        if bundled is not None and bundled != revoked:
+            findings.append(
+                f"trust_log: bundled_key_evidence for key_id {key_id!r} contradicts the "
+                "public key the verified trust log revoked for that key id"
+            )
+            ok = False
+    for key_id, superseded in trust_log.superseded_principal_keys.items():
+        bundled = evidence_material.get(key_id)
+        if bundled is not None and bundled != superseded:
+            findings.append(
+                f"trust_log: bundled_key_evidence for key_id {key_id!r} contradicts the "
+                "public key the verified trust log superseded (rotated away) for that key id"
+            )
+            ok = False
+    return ok
 
 
 def _assess_bundle_v3(
@@ -2451,6 +2812,7 @@ def _assess_bundle_v3(
     trust: TrustPolicy | AcceptBundledKeys,
     *,
     known_head: tuple[str, int] | None,
+    trust_log: _TrustLogAuthority | None = None,
 ) -> BundleReport:
     statement = document.statement
     scope = document.scope
@@ -2464,6 +2826,29 @@ def _assess_bundle_v3(
     evidence_material, evidence_principals = _bundled_evidence_material(
         document.sections["bundled_key_evidence"]
     )
+
+    # --- WI-337 trust-log admission -------------------------------------------------------
+    # Bind the verified log to this bundle and this pin BEFORE anything reads it. A log that
+    # does not bind is refused outright (`invalid`) AND withdrawn, so no downstream axis can
+    # be lifted by material this verifier has just declared inadmissible.
+    trust_log_contradicts = False
+    if trust_log is not None:
+        if not _trust_log_admissible(
+            document, policy, trust_log, evidence_material, findings
+        ):
+            trust_log_contradicts = True
+            trust_log = None
+        elif trust_log.ambiguous_key_ids:
+            # Not a contradiction of the bundle — a property of the log — so it is reported
+            # rather than fatal. The keys are already withheld from the authority mapping,
+            # so any event signed by one stays bundle-rooted; naming them is what stops an
+            # auditor reading that clamp as an unexplained failure.
+            notes.append(
+                "trust_log: key id(s) "
+                f"{', '.join(trust_log.ambiguous_key_ids)} are bound to more than one "
+                "public key in the verified trust log, so they cannot be resolved from a "
+                "key_id alone and are not treated as externally pinned"
+            )
 
     # --- statement signature material -----------------------------------------------------
     # The signer's key BYTES come from the evidence (transport); the core checks them against
@@ -2533,6 +2918,7 @@ def _assess_bundle_v3(
             material_by_key_id=evidence_material,
             principal_by_key_id=evidence_principals,
             pinned_fingerprints=pinned_fingerprints,
+            trust_log=trust_log,
         )
     else:
         # AcceptBundledKeys: every key is BUNDLE_EMBEDDED, so Rule C clamps unconditionally.
@@ -2548,7 +2934,7 @@ def _assess_bundle_v3(
         )
 
     event_policy = _event_verification_policy(document, policy, members)
-    referents = _build_referents(events, str(scope["kind"]))
+    referents = _build_referents(events, str(scope["kind"]), trust_log)
 
     per_event_applicability: list[Applicability] = []
     per_event_trust_axis: list[EventTrustRootAxis] = []
@@ -2581,6 +2967,35 @@ def _assess_bundle_v3(
             identity_conflicts.append(
                 f"{member.event_hash_text}: {result.identity_consistency.value}"
             )
+        if trust_log is not None:
+            signing = member.signing_key_id
+            if signing is not None and signing in trust_log.revoked_principal_keys:
+                # The key IS in the verified log, so this is not "unknown key" — it is a
+                # key the log's root REVOKED. Whether this event predates the revocation
+                # is a point-in-time question the machinery cannot answer (WI-330 FR3-2),
+                # so the fail-closed answer is: not externally pinned, and said out loud.
+                # The resolver already declined it, which caps the verdict via Rule C.
+                findings.append(
+                    f"trust_log: {member.event_hash_text} is signed by key_id "
+                    f"{signing!r}, which the verified trust log has REVOKED at its head. "
+                    "Whether this event precedes the revocation is not decidable here "
+                    "(authority is evaluated at the log's head, WI-330 FR3-2), so the "
+                    "key is not treated as externally pinned"
+                )
+            if signing is not None and signing in trust_log.superseded_principal_keys:
+                # WI-337 (Sol #3): the key IS in the verified log but was ROTATED AWAY. As
+                # with a revoked key, whether this event predates the rotation is a
+                # point-in-time question the machinery cannot answer at the log's head, so
+                # the fail-closed answer is: not externally pinned, and said out loud. The
+                # resolver already declined it (superseded keys are not in
+                # `active_principal_keys`), which caps the verdict via Rule C.
+                findings.append(
+                    f"trust_log: {member.event_hash_text} is signed by key_id "
+                    f"{signing!r}, which the verified trust log SUPERSEDED (rotated away) "
+                    "by a later principal_key_rotated event. Whether this event precedes "
+                    "the rotation is not decidable here (authority is evaluated at the "
+                    "log's head), so the key is not treated as externally pinned"
+                )
 
     # --- A4 event_authentication ----------------------------------------------------------
     if not core.chain_ordered:
@@ -2618,6 +3033,7 @@ def _assess_bundle_v3(
         signer_public_key=signer_public_key,
         scope_kind=str(scope["kind"]),
         findings=findings,
+        trust_log=trust_log,
     )
 
     # --- A7 scope_corroboration -----------------------------------------------------------
@@ -2635,7 +3051,7 @@ def _assess_bundle_v3(
     )
 
     # --- A9 governance --------------------------------------------------------------------
-    governance = _governance_axis(statement, policy, findings)
+    governance = _governance_axis(statement, policy, findings, trust_log)
 
     # --- F2 policy conformance: every named full-policy requirement is EVALUATED, and a
     #     contradiction of any of them (or of the bundle's own signed genesis) is a hard
@@ -2657,6 +3073,7 @@ def _assess_bundle_v3(
         scope_kind=str(scope["kind"]),
         policy_conformant=policy_conformant,
         trust_root_contradicts_genesis=trust_root_contradicts_genesis,
+        trust_log_contradicts=trust_log_contradicts,
     )
 
     policy_satisfied: bool | None = None
@@ -2817,6 +3234,7 @@ def _membership_signature_axis(
     signer_public_key: bytes | None,
     scope_kind: str,
     findings: list[str],
+    trust_log: _TrustLogAuthority | None = None,
 ) -> MembershipSignature:
     """A2 — the statement signature, and against whose key (§5.1, §3.4, O3).
 
@@ -2898,8 +3316,10 @@ def _membership_signature_axis(
     #                   not a valid membership signature)
     #   outside_scope → VALID_BUNDLED_KEY (caps at unauthenticated; the honest F4-safe state for
     #                   a bounded range whose authority event is legitimately out of window)
-    #   established   → external iff the signer's fingerprint is a pinned root (base case of
-    #                   chain-to-root; the chain extension for a non-root signer is WI-337-blocked)
+    #   established   → external iff the signer's key chains to a pinned root: its own
+    #                   fingerprint is a pinned root (base case, chain of length zero), or a
+    #                   VERIFIED trust log enrolled it under authority rooted at the pinned
+    #                   genesis (WI-337 — the chain extension Phase C recorded as blocked)
     if core.signer_authority_status == "invalid":
         return MembershipSignature.INVALID
     if core.signer_authority_status == "outside_scope":
@@ -2910,6 +3330,15 @@ def _membership_signature_axis(
         return MembershipSignature.VALID_BUNDLED_KEY
     if str(signer["fingerprint"]) in pinned_fingerprints:
         return MembershipSignature.VALID_EXTERNAL_ROOT
+    if trust_log is not None:
+        enrolled = trust_log.active_principal_keys.get(str(signer["key_id"]))
+        # The fingerprint is recomputed from the LOG's bytes, never read from the
+        # statement: the statement's `signer.fingerprint` is the operator's claim, and the
+        # question here is whether the key that actually signed is one the log enrolled.
+        if enrolled is not None and ed25519_fingerprint(enrolled) == str(
+            signer["fingerprint"]
+        ):
+            return MembershipSignature.VALID_EXTERNAL_ROOT
     return MembershipSignature.VALID_BUNDLED_KEY
 
 
@@ -3026,15 +3455,24 @@ def _governance_axis(
     statement: Mapping[str, Any],
     policy: TrustPolicy | None,
     findings: list[str],
+    trust_log: _TrustLogAuthority | None = None,
 ) -> Governance:
     """A9 — the restated governance against the policy expectation (§4.5).
 
-    The verifier holds no authenticated trust log to replay here (§10 hands it the policy and
-    the head pin, not the log), so it can never confirm the restatement is TRUE — it reports
-    ``unverified_restatement`` (§4.5: "A verifier that cannot replay reports … never a
-    genesis-derived value"). What it CAN check without a replay is whether the operator's own
-    signed restatement contradicts what the auditor requires: a solo restatement under a
-    ``["co_signed"]`` policy is ``contradicts_policy``, a finding.
+    §4.5 is explicit about the three answers and what earns each: "A verifier holding the
+    authenticated trust log compares the statement to that replay… A verifier that cannot
+    replay the log reports ``root_governance: unknown`` or ``unverified_restatement``, never
+    a genesis-derived value."
+
+    Phase C could only ever reach the middle answer, because it held the policy and the head
+    pin but no log (the Phase-C table records ``matches_policy`` as WI-337-adjacent for
+    exactly this reason). With a **verified published trust-log export** the replay exists,
+    so the top answer becomes reachable and is earned rather than assumed: the statement's
+    restated mode/threshold/signer_count must EQUAL what replaying the log from the pinned
+    genesis derives, and the mode must satisfy the policy. A restatement that contradicts
+    the replay is a false claim inside signed bytes and is ``contradicts_policy`` — a
+    finding, and an ``invalid`` verdict — never a downgrade to "unverified", which would let
+    a caught lie read as an unanswered question.
     """
 
     trust_root = statement.get("trust_root")
@@ -3054,6 +3492,25 @@ def _governance_axis(
             f"{sorted(policy.required_root_governance)} (§4.5)"
         )
         return Governance.CONTRADICTS_POLICY
+    if trust_log is not None and isinstance(root_governance, Mapping):
+        replayed = trust_log.verification
+        expected = {
+            "mode": replayed.root_governance_mode,
+            "threshold": replayed.root_threshold,
+            "signer_count": len(replayed.root_signer_fingerprints),
+        }
+        stated = {key: root_governance.get(key) for key in expected}
+        if stated != expected:
+            findings.append(
+                "governance: the bundle's restated root_governance "
+                f"{stated} contradicts the governance replayed from the verified trust "
+                f"log {expected} (§4.5). The log is the authority; the restatement is a "
+                "claim"
+            )
+            return Governance.CONTRADICTS_POLICY
+        # Confirmed against a replay of the log, from the auditor's pinned genesis. This is
+        # the ONE path on which `matches_policy` is honest.
+        return Governance.MATCHES_POLICY
     # The restatement is consistent with the requirement, but was NOT confirmed against a
     # replayed, authenticated trust log — so it is a restatement, not a checked match.
     return Governance.UNVERIFIED_RESTATEMENT
@@ -3072,6 +3529,7 @@ def _summarize(
     scope_kind: str,
     policy_conformant: bool,
     trust_root_contradicts_genesis: bool,
+    trust_log_contradicts: bool = False,
 ) -> tuple[BundleApplicability, bool]:
     """The §5.2 summary: a base verdict from A2 + A4, then the live Rule C ceiling and Rule H.
 
@@ -3092,6 +3550,12 @@ def _summarize(
         # bundle's own signed genesis, is a rejection — not merely a finding.
         or not policy_conformant
         or trust_root_contradicts_genesis
+        # WI-337: a trust log that does not BIND to this bundle and this pin (wrong domain,
+        # policy disagreement, or key material contradicting the bundle's own evidence) is a
+        # rejection. Withdrawing it silently and reporting the weaker `bundle_rooted` would
+        # let a cross-domain or contradicting artifact read as merely unhelpful, when what
+        # it actually is, is evidence that something does not add up.
+        or trust_log_contradicts
     )
     if invalid:
         return BundleApplicability.INVALID, _rule_h(scope_kind, scope_corroboration)

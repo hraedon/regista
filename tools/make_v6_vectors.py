@@ -87,6 +87,7 @@ DOMAINS = {
     "checkpoint": b"regista.checkpoint.v1\x00",
     "producer_policy": b"regista.producer-policy.v1\x00",
     "estate_catalog": b"regista.estate-catalog.v1\x00",
+    "trust_log_export": b"regista.trust-log-export.v1\x00",
     "bundle_member": b"regista.bundle.member.v1\x00",
     "bundle_node": b"regista.bundle.node.v1\x00",
     "review_subject_state": b"regista.review-subject.state.v1\x00",
@@ -1131,6 +1132,78 @@ def case_estate_catalog() -> dict[str, Any]:
     }
 
 
+def case_trust_log_export() -> dict[str, Any]:
+    """The published trust-log export's signed core (WI-337, TRUST-DOMAIN §4.2/§4.3).
+
+    Like ``case_estate_catalog`` this pins the DOMAIN tag and the framing of a signed
+    document kind, not a fully replayable log: ``events`` / ``possession_challenges`` are
+    representative members so the canonical bytes and the ``DOMAIN || u64be(len) || core``
+    digest are frozen. The signed core is the document MINUS ``root_signatures`` /
+    ``countersignatures`` / ``anchors``, exactly what ``trust_log_export_signature_input``
+    covers, so ``regista._trust_log_export.trust_log_export_digest`` of this document
+    reproduces the digest below (the cross-check in ``test_trust_log_export``).
+    """
+    doc_no_sig = {
+        "type": "regista.trust-log-export",
+        "version": 1,
+        "trust_domain_id": TRUST_DOMAIN_ID,
+        "trust_domain_core_digest": "sha256:" + "0a" * 32,
+        "genesis_document_digest": "sha256:" + "0b" * 32,
+        "trust_log": {
+            "project_instance_id": PROJECT_INSTANCE_ID,
+            "event_count": 2,
+            "genesis_event_hash": "sha256:" + "c0" * 32,
+            "head_event_hash": "sha256:" + "c1" * 32,
+        },
+        "root_governance": {"mode": "solo_effective", "threshold": 1, "signer_count": 2},
+        "active_root_fingerprints": sorted([TEST_FINGERPRINT, TEST_FINGERPRINT_2]),
+        "events": [
+            {
+                "canonical_envelope": base64.b64encode(b"envelope-0").decode("ascii"),
+                "signature": base64.b64encode(bytes(range(64))).decode("ascii"),
+            },
+            {
+                "canonical_envelope": base64.b64encode(b"envelope-1").decode("ascii"),
+                "signature": base64.b64encode(bytes(range(64, 128))).decode("ascii"),
+            },
+        ],
+        "possession_challenges": [
+            {
+                "challenge_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                "operation_id": "op-1",
+                "operation_digest": "sha256:" + "d0" * 32,
+                "project": "regista_trust",
+                "principal_id": "agent:worker-1",
+                "fingerprint": TEST_FINGERPRINT,
+                "scheme": "ed25519",
+                "verifier_nonce": base64.b64encode(b"nonce-1").decode("ascii"),
+                "issued_at": "2026-08-20T11:59:00.000000Z",
+                "expires_at": "2026-08-20T12:59:00.000000Z",
+                "used": True,
+                "kind": "possession",
+                "trust_domain_id": TRUST_DOMAIN_ID,
+                "enrollment_request_digest": "sha256:" + "e0" * 32,
+                "proof_signature": base64.b64encode(bytes(range(64))).decode("ascii"),
+            }
+        ],
+        "prev_commit": None,
+        "created_at": "2026-08-20T12:00:00.000000Z",
+    }
+    b = canonicalize(doc_no_sig)
+    digest = domain_digest_framed(DOMAINS["trust_log_export"], b)
+    return {
+        "category": "trust-log-export",
+        "description": "Published trust-log export signed core: domain-separated + "
+        "length-framed digest (WI-337, TRUST-DOMAIN §4.2).",
+        "input": {"document": doc_no_sig},
+        "expected": {
+            "canonical_bytes": b.decode(),
+            "canonical_len": len(b),
+            "trust_log_export_digest": digest,
+        },
+    }
+
+
 def case_payload_numeric_bounds() -> dict[str, Any]:
     """The §2.5 magnitude rule, and the band P0.2 found the canonicalizer will not catch.
 
@@ -1340,6 +1413,7 @@ def _register_all() -> None:
         ("cutover-checkpoint", case_cutover_checkpoint()),
         ("producer-policy", case_producer_policy()),
         ("estate-catalog", case_estate_catalog()),
+        ("trust-log-export", case_trust_log_export()),
     ]
 
 

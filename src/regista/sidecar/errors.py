@@ -122,6 +122,13 @@ _STATUS_MAP: dict[str, int] = {
     # submitted document or its claims, hence 400.
     ErrorCode.ESTATE_CATALOG_SCHEMA_INVALID: 400,
     ErrorCode.ESTATE_CATALOG_UNVERIFIED: 400,
+    # WI-337 published trust-log export (§4.2). Offline-only for the same reason as
+    # the catalog above — the sidecar exposes no publication endpoint — so these
+    # mappings exist to satisfy total coverage. Both are defects in the submitted
+    # artifact or its claims, hence 400.
+    ErrorCode.TRUST_LOG_EXPORT_SCHEMA_INVALID: 400,
+    ErrorCode.TRUST_LOG_EXPORT_UNVERIFIED: 400,
+    ErrorCode.TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT: 400,
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Every one of these is a
     # defect in the *submitted* identifier or payload, never a server fault, hence 400.
     ErrorCode.PRINCIPAL_ID_UNGRAMMATICAL: 400,
@@ -133,6 +140,15 @@ _STATUS_MAP: dict[str, int] = {
     # submitted, hence 400.
     ErrorCode.TRUST_LOG_PAYLOAD_INVALID: 400,
     ErrorCode.TRUST_LOG_AUTHORITY_INVALID: 403,
+    # 403: naming a non-current key as the rotation's supersedes_key_id is an authority
+    # failure — the requester has not proven authority over the CURRENT key — so it maps
+    # alongside TRUST_LOG_AUTHORITY_INVALID.
+    ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY: 403,
+    # 409: key_id is write-once per principal, so re-introducing one already present is a
+    # conflict with existing state (well-formed request, nothing broken) — the same
+    # mapping the projection's PRINCIPAL_KEY_ALREADY_EXISTS carries, which this replay
+    # guard mirrors.
+    ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED: 409,
     ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED: 400,
     # 503: the trust-log store is unreachable or the target schema is not a trust
     # log — an infrastructure/config condition the caller cannot fix by reformatting.

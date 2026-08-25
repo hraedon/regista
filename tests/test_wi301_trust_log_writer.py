@@ -21,6 +21,7 @@ from _trust_fixtures import mint_genesis
 
 from regista import Regista
 from regista._errors import ErrorCode, RegistaError
+from regista._principal_keys import list_principal_keys
 from regista._trust_log_writer import (
     append_trust_log_event,
     chain_order,
@@ -28,6 +29,7 @@ from regista._trust_log_writer import (
     replay_trust_state,
     write_trust_genesis,
 )
+from regista._trust_projection import rebuild_projection
 from regista.testing import drop_project_schema
 from tests._trust_log_fixtures import (
     TrustLogKey,
@@ -299,6 +301,26 @@ def _append_rotation(handle, fixture, *, principal, payload, authority, actor_id
         entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal),
         principal_id=actor_id,
         authority=authority,
+    )
+
+
+def _append_revocation(handle, fixture, *, principal, key_id, delegation_hash):
+    payload = make_revocation_payload(
+        trust_domain_id=fixture.trust_domain_id,
+        principal_id=principal,
+        key_id=key_id,
+        authorized_by=_make_auth(REGISTRAR, delegation_hash),
+    )
+    return append_trust_log_event(
+        handle._mgr,
+        keys=handle._keys,
+        genesis_document=fixture.document,
+        transition="principal_key_revoked",
+        payload=payload,
+        entity_kind="principal",
+        entity_id=uuid.uuid5(uuid.NAMESPACE_OID, "regista.principal:" + principal),
+        principal_id=REGISTRAR,
+        authority="registrar",
     )
 
 
@@ -1008,6 +1030,147 @@ class TestRotationAdmission:
         finally:
             _close(handle, project)
 
+    def test_dual_rotation_superseding_a_non_current_key_is_refused(self, tmp_path):
+        """WI-347: admission refuses a dual rotation that names a SUPERSEDED key.
+
+        The pre-existing gap (Sol #3 / Opus finding #1): enrol K1 → rotate K1→K2 →
+        rotate K1→K3 all admitted, because the prior guard rejected only a REVOKED
+        superseded key. That left K2 AND K3 active — a rotated-out key forking the active
+        set. The writer's ``append_trust_log_event`` must refuse the third event; the
+        replay half is proven in ``tests/test_wi337_trust_log_export.py`` (same
+        ``_classify_rotation`` chokepoint).
+        """
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:dual-non-current"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_k1")
+            _enroll(
+                handle, fixture, principal=principal, delegation_hash=delegation_hash, key=k1
+            )
+            k2 = TrustLogKey.mint("pk_k2")
+            payload2, challenge2 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k2,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge2, payload2)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload2,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            # K1 is now SUPERSEDED. A second rotation naming K1 must be refused.
+            k3 = TrustLogKey.mint("pk_k3")
+            payload3, challenge3 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k3,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge3, payload3)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload3,
+                    authority="registrar",
+                    actor_id=REGISTRAR,
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
+            assert exc.value.detail["reason"] == "superseded_key_superseded"
+        finally:
+            _close(handle, project)
+
+    def test_recovery_rotation_naming_an_already_superseded_key_is_refused(self, tmp_path):
+        """WI-347: the same guard binds a root-authorised recovery.
+
+        A recovery that names an already-superseded key would fork the active set exactly
+        like the dual case, so it is refused BEFORE the root-threshold check — the supersedes
+        key must be the principal's current active key regardless of authority.
+        """
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:recovery-non-current"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_rk1")
+            _enroll(
+                handle, fixture, principal=principal, delegation_hash=delegation_hash, key=k1
+            )
+            k2 = TrustLogKey.mint("pk_rk2")
+            payload2, challenge2 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k2,
+                supersedes_key_id=k1.key_id,
+                superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge2, payload2)
+            _append_rotation(
+                handle,
+                fixture,
+                principal=principal,
+                payload=payload2,
+                authority="registrar",
+                actor_id=REGISTRAR,
+            )
+            # K1 superseded, K2 active. A recovery naming K1 (root authority) is refused.
+            k3 = TrustLogKey.mint("pk_rk3")
+            payload3, challenge3 = _rotation_material(
+                handle,
+                fixture,
+                principal=principal,
+                key=k3,
+                supersedes_key_id=k1.key_id,
+                mode="recovery",
+                recovery_reason="key-lost",
+                root_keys=_root_keys(fixture),
+                authorized_by=_make_root_auth(),
+            )
+            _persist_challenge(handle, challenge3, payload3)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(
+                    handle,
+                    fixture,
+                    principal=principal,
+                    payload=payload3,
+                    authority="root",
+                    actor_id=ROOT,
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY
+            assert exc.value.detail["reason"] == "superseded_key_superseded"
+        finally:
+            _close(handle, project)
+
     def test_bad_dual_signature_does_not_consume_last_registrar_operation(self, tmp_path):
         fixture, handle, _kf, project = _make_environment(tmp_path)
         principal = "agent:dual-bad-signature"
@@ -1113,7 +1276,14 @@ class TestRotationAdmission:
                     authority="registrar",
                     actor_id=REGISTRAR,
                 )
-            assert exc.value.detail["reason"] == "superseded_public_key_unavailable"
+            # WI-347: naming a key that is not the principal's CURRENT active key is now
+            # refused by the earlier supersedes-must-be-active guard. `pk_not_in_chain`
+            # was never enrolled, so its status is unknown — refused before the
+            # superseded-public-key lookup (which produced the older
+            # `superseded_public_key_unavailable` reason) is ever reached. The denial
+            # still precedes any registrar-operation increment, which is what this test
+            # exists to prove.
+            assert exc.value.detail["reason"] == "superseded_key_unknown"
         finally:
             _close(handle, project)
 
@@ -1127,13 +1297,27 @@ class TestRotationAdmission:
                 genesis_document=fixture.document,
                 root_principal_id=ROOT,
             )
+            # WI-347: a recovery must name the principal's CURRENTLY ACTIVE key, so the
+            # principal must first HAVE one. The realistic scenario is "holder lost the
+            # private key of a still-active key": enrol it (registrar), then recover it
+            # (root authority) because the lost key cannot co-sign a dual rotation.
+            _delegate(handle, fixture, max_operations=2)
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_recovered")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
                 root_keys=_root_keys(fixture),
@@ -1162,16 +1346,30 @@ class TestRotationAdmission:
                 payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
                 root_principal_id=ROOT,
             )
+            # WI-347: enrol the active key the recovery supersedes (2-root delegation, to
+            # match the threshold-2 genesis) so the request reaches the root-threshold
+            # check the truncated signature set is meant to fail — the supersedes-active
+            # guard would otherwise refuse an unknown key first.
+            _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a", "root-b")))
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_recovery_threshold")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
-                root_keys=_root_keys(fixture),
+                root_keys=_root_keys(fixture, ("root-a", "root-b")),
                 authorized_by=_make_root_auth(),
             )
             payload["root_signatures"] = payload["root_signatures"][:1]
@@ -1372,13 +1570,26 @@ class TestReplayVerifies:
                 payload=_signed_genesis_payload(fixture, ("root-a", "root-b")),
                 root_principal_id=ROOT,
             )
+            # WI-347: the recovery supersedes an ACTIVE key, so enrol one first (2-root
+            # delegation matching the threshold-2 genesis). The row-rewrite below then
+            # attacks the STORED recovery, and replay must still refuse it on threshold.
+            _delegate(handle, fixture, root_keys=_root_keys(fixture, ("root-a", "root-b")))
+            delegation_hash = _delegated_hash(handle)
+            lost = TrustLogKey.mint("pk_lost")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=lost,
+            )
             new = TrustLogKey.mint("pk_stored_recovery_threshold")
             payload, challenge = _rotation_material(
                 handle,
                 fixture,
                 principal=principal,
                 key=new,
-                supersedes_key_id="pk_lost",
+                supersedes_key_id=lost.key_id,
                 mode="recovery",
                 recovery_reason="key-lost",
                 root_keys=_root_keys(fixture, ("root-a", "root-b")),
@@ -1526,6 +1737,131 @@ class TestEnrollmentBindsFreshKey:
         finally:
             _close(handle, project)
 
+    def test_reenroll_same_bytes_different_key_id_repro(self, tmp_path):
+        """WI-348 REPRO: same public bytes under a DIFFERENT key_id must NOT yield two
+        active key_ids in the offline replay (that diverges from the projection, which
+        supersedes-then-inserts, and lets a rotated-out material survive via the alias).
+
+        A registrar plants K1 (active), then an ALIAS with identical bytes but a fresh
+        key_id. The offline replay must not admit the alias as a second active key.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:alias-target"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=4)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_k1")
+            _enroll(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=k1,
+            )
+            # Alias: SAME seed/public bytes/fingerprint, DIFFERENT key_id.
+            k1_alias = _tlogkey("pk_k1_alias", k1.seed)
+            payload_alias, challenge_alias = _enrollment_material(
+                handle,
+                fixture,
+                principal=principal,
+                delegation_hash=delegation_hash,
+                key=k1_alias,
+            )
+            _persist_challenge(handle, challenge_alias, payload_alias)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(
+                    handle, fixture, principal=principal, payload=payload_alias
+                )
+            assert exc.value.code is ErrorCode.TRUST_LOG_AUTHORITY_INVALID
+            assert exc.value.detail["reason"] == "enrollment_alias_key_id_mismatch"
+
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            actives = [
+                k_id
+                for (p_id, k_id), st in state.principal_key_status.items()
+                if p_id == principal and st == "active"
+            ]
+            assert actives == [k1.key_id]
+            assert (principal, k1_alias.key_id) not in state.principal_public_keys
+        finally:
+            _close(handle, project)
+
+    def test_wi348_replay_and_projection_agree_on_active_set(self, tmp_path):
+        """WI-348 replay≡projection: for an enrol→rotate history the offline replay's
+        active set equals the projection table's active set (exactly one active key). The
+        alias the fix now refuses never enters the durable log, so the two views cannot
+        diverge — the divergence WI-348 would otherwise have created is unreachable.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:reconcile"
+        try:
+            write_trust_genesis(
+                handle._mgr,
+                keys=handle._keys,
+                genesis_document=fixture.document,
+                root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=6)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_rc1")
+            _enroll(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1,
+            )
+            # The alias the fix refuses — the poison never enters the durable log.
+            k1_alias = _tlogkey("pk_rc1_alias", k1.seed)
+            payload_alias, challenge_alias = _enrollment_material(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1_alias,
+            )
+            _persist_challenge(handle, challenge_alias, payload_alias)
+            with pytest.raises(RegistaError):
+                _append_enrollment(
+                    handle, fixture, principal=principal, payload=payload_alias
+                )
+            # A legitimate §5.6 rotation K1 -> K2.
+            k2 = TrustLogKey.mint("pk_rc2")
+            payload_rot, challenge_rot = _rotation_material(
+                handle, fixture, principal=principal, key=k2,
+                supersedes_key_id=k1.key_id, superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, challenge_rot, payload_rot)
+            _append_rotation(
+                handle, fixture, principal=principal, payload=payload_rot,
+                authority="registrar", actor_id=REGISTRAR,
+            )
+            # Replay (offline) active set.
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            replay_active = {
+                k_id
+                for (p_id, k_id), st in state.principal_key_status.items()
+                if p_id == principal and st == "active"
+            }
+            # Projection (rebuilt from the SAME durable trust log) active set.
+            rebuild_projection(
+                handle._mgr,
+                project=handle._mgr.project,
+                genesis_document=fixture.document,
+            )
+            proj_active = {
+                entry.key_id
+                for entry in list_principal_keys(
+                    handle._mgr, principal_id=principal, status="active"
+                )
+            }
+            assert replay_active == proj_active == {k2.key_id}
+        finally:
+            _close(handle, project)
+
     def test_rotation_still_supersedes_after_enroll_guard(self, tmp_path):
         """A proper §5.6 dual rotation still supersedes A -> B — the enrol guard is
         specific to the enrol transition and leaves rotation intact."""
@@ -1569,12 +1905,194 @@ class TestEnrollmentBindsFreshKey:
             )
             with handle._mgr.transaction() as conn:
                 state = replay_trust_state(conn, fixture.document)
-            # The rotation was admitted and the new key is live; both keys remain in the
-            # replayed state (the projection applier is what marks A superseded). The
-            # point here is that the enrol guard did NOT block a legitimate rotation.
+            # The rotation was admitted and the new key is live; both keys' bytes remain in
+            # the replayed state. WI-337 (Sol #3): the replay now marks the outgoing key
+            # SUPERSEDED (previously only the projection applier did), so a rotated-out key
+            # is not classified as current authority offline. The point here is that the
+            # enrol guard did NOT block a legitimate rotation.
             assert state.principal_key_status[(principal, new.key_id)] == "active"
+            assert state.principal_key_status[(principal, old.key_id)] == "superseded"
             assert state.principal_public_keys[(principal, new.key_id)] == new.public_key
             assert state.principal_public_keys[(principal, old.key_id)] == old.public_key
+        finally:
+            _close(handle, project)
+
+    def test_reenroll_revoked_key_id_is_refused_at_admission(self, tmp_path):
+        """WI-349: enrol K1 -> revoke K1 -> re-enrol the SAME key_id K1.
+
+        The guard used to skip non-active keys and ``_remember_principal_key`` set the
+        reused key_id ``active`` unconditionally, so the revoked K1 was REACTIVATED in the
+        offline replay while a projection rebuild of the same log raised
+        ``PRINCIPAL_KEY_ALREADY_EXISTS`` — the divergence. Admission must now refuse the
+        reuse, and the poison never lands.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:wi349-revoked"
+        try:
+            write_trust_genesis(
+                handle._mgr, keys=handle._keys,
+                genesis_document=fixture.document, root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=8)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_wi349_k1")
+            _enroll(handle, fixture, principal=principal,
+                    delegation_hash=delegation_hash, key=k1)
+            _append_revocation(handle, fixture, principal=principal,
+                               key_id=k1.key_id, delegation_hash=delegation_hash)
+            payload2, ch2 = _enrollment_material(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1,
+            )
+            _persist_challenge(handle, ch2, payload2)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(handle, fixture, principal=principal, payload=payload2)
+            assert exc.value.code is ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED
+            assert exc.value.detail["reason"] == "principal_key_id_reused"
+            assert exc.value.detail["existing_status"] == "revoked"
+
+            # The poison never landed: replay still shows K1 revoked (not reactivated), and
+            # the projection rebuild of the same durable log succeeds and agrees.
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_key_status[(principal, k1.key_id)] == "revoked"
+            rebuild_projection(handle._mgr, project=handle._mgr.project,
+                               genesis_document=fixture.document)
+            assert list_principal_keys(
+                handle._mgr, principal_id=principal, status="active"
+            ) == []
+        finally:
+            _close(handle, project)
+
+    def test_reenroll_superseded_key_id_is_refused_at_admission(self, tmp_path):
+        """WI-349: enrol K1 -> rotate K1->K2 (K1 superseded) -> re-enrol key_id K1.
+
+        A superseded key_id is as write-once as a revoked one; re-enrolling it would revive
+        a rotated-out key offline. Admission refuses it.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:wi349-superseded"
+        try:
+            write_trust_genesis(
+                handle._mgr, keys=handle._keys,
+                genesis_document=fixture.document, root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=8)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_wi349s_k1")
+            _enroll(handle, fixture, principal=principal,
+                    delegation_hash=delegation_hash, key=k1)
+            k2 = TrustLogKey.mint("pk_wi349s_k2")
+            payload_rot, ch_rot = _rotation_material(
+                handle, fixture, principal=principal, key=k2,
+                supersedes_key_id=k1.key_id, superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, ch_rot, payload_rot)
+            _append_rotation(handle, fixture, principal=principal, payload=payload_rot,
+                             authority="registrar", actor_id=REGISTRAR)
+            # Re-enrol K1 (now superseded).
+            payload2, ch2 = _enrollment_material(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1,
+            )
+            _persist_challenge(handle, ch2, payload2)
+            with pytest.raises(RegistaError) as exc:
+                _append_enrollment(handle, fixture, principal=principal, payload=payload2)
+            assert exc.value.code is ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED
+            assert exc.value.detail["existing_status"] == "superseded"
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            assert state.principal_key_status[(principal, k1.key_id)] == "superseded"
+            assert state.principal_key_status[(principal, k2.key_id)] == "active"
+        finally:
+            _close(handle, project)
+
+    def test_rotation_reusing_an_existing_key_id_as_new_key_is_refused(self, tmp_path):
+        """WI-349 (rotation arm): a rotation may not introduce a key_id already present.
+
+        Enrol K1 -> rotate K1->K2 -> rotate K2->K1 (reusing K1 as the NEW key). The
+        projection's rotation applier INSERTs unconditionally, so reusing K1's key_id
+        would trip principal_keys' primary key; the replay must refuse it for the same
+        reason rather than reactivating the superseded K1.
+        """
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:wi349-rot-reuse"
+        try:
+            write_trust_genesis(
+                handle._mgr, keys=handle._keys,
+                genesis_document=fixture.document, root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=8)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_wi349r_k1")
+            _enroll(handle, fixture, principal=principal,
+                    delegation_hash=delegation_hash, key=k1)
+            k2 = TrustLogKey.mint("pk_wi349r_k2")
+            payload_r1, ch_r1 = _rotation_material(
+                handle, fixture, principal=principal, key=k2,
+                supersedes_key_id=k1.key_id, superseded_key=k1,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, ch_r1, payload_r1)
+            _append_rotation(handle, fixture, principal=principal, payload=payload_r1,
+                             authority="registrar", actor_id=REGISTRAR)
+            # Rotate K2 -> a key whose key_id is K1 again (fresh material, stale key_id).
+            k1_again = _tlogkey(k1.key_id, bytes([77]) * 32)
+            payload_r2, ch_r2 = _rotation_material(
+                handle, fixture, principal=principal, key=k1_again,
+                supersedes_key_id=k2.key_id, superseded_key=k2,
+                delegation_hash=delegation_hash,
+            )
+            _persist_challenge(handle, ch_r2, payload_r2)
+            with pytest.raises(RegistaError) as exc:
+                _append_rotation(handle, fixture, principal=principal, payload=payload_r2,
+                                 authority="registrar", actor_id=REGISTRAR)
+            assert exc.value.code is ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED
+            assert exc.value.detail["reason"] == "principal_key_id_reused"
+            assert exc.value.detail["transition"] == "principal_key_rotated"
+        finally:
+            _close(handle, project)
+
+    def test_replay_refuses_reactivation_planted_by_admission_bypass(self, tmp_path):
+        """Defence in depth: a re-enrolment of a revoked key_id planted by disabling the
+        writer-admission guard is DETECTED at replay with the named error — the guard binds
+        BOTH the append path and the standalone verified walk, not just admission.
+        """
+        import regista._trust_log_writer as _w
+
+        fixture, handle, _kf, project = _make_environment(tmp_path)
+        principal = "agent:wi349-replay"
+        try:
+            write_trust_genesis(
+                handle._mgr, keys=handle._keys,
+                genesis_document=fixture.document, root_principal_id=ROOT,
+            )
+            _delegate(handle, fixture, max_operations=8)
+            delegation_hash = _delegated_hash(handle)
+            k1 = TrustLogKey.mint("pk_wi349rp_k1")
+            _enroll(handle, fixture, principal=principal,
+                    delegation_hash=delegation_hash, key=k1)
+            _append_revocation(handle, fixture, principal=principal,
+                               key_id=k1.key_id, delegation_hash=delegation_hash)
+            payload2, ch2 = _enrollment_material(
+                handle, fixture, principal=principal,
+                delegation_hash=delegation_hash, key=k1,
+            )
+            _persist_challenge(handle, ch2, payload2)
+            # Plant the poison by turning the write-once guard into a no-op only for the
+            # append; the real guard is restored before the standalone replay.
+            original = _w._check_key_id_write_once
+            _w._check_key_id_write_once = lambda *a, **k: None
+            try:
+                _append_enrollment(handle, fixture, principal=principal, payload=payload2)
+            finally:
+                _w._check_key_id_write_once = original
+            with handle._mgr.transaction() as conn:
+                with pytest.raises(RegistaError) as exc:
+                    replay_trust_state(conn, fixture.document)
+            assert exc.value.code is ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED
+            assert exc.value.detail["reason"] == "principal_key_id_reused"
         finally:
             _close(handle, project)
 
@@ -1875,3 +2393,347 @@ class TestRegistrarDelegationNoLiveFork:
             second.close()
         finally:
             _close(handle, project)
+
+
+# --- WI-349 convergence guarantee: replay ≡ projection over random histories ----------
+
+
+class TestReplayProjectionConvergence:
+    """The property that proves the WI-347/348/349 family is closed.
+
+    A randomised, DETERMINISTICALLY SEEDED generator drives enrol / rotate(dual) /
+    revoke / recovery sequences for three principals through the real durable writer
+    (append admission + verified replay), and after every ADMITTED event rebuilds the
+    projection from the same durable log and asserts:
+
+    * the projection rebuild never raises — every event the WRITER ADMITS, replayed and
+      rebuilt into the projection, the projection admits too (the exact guarantee WI-349
+      restores; before the fix a re-enrolment of a revoked key_id was admitted by replay yet
+      raised PRINCIPAL_KEY_ALREADY_EXISTS in the rebuild), and
+    * the replay's ``(status, public_key)`` map EQUALS the projection table's and an
+      independent in-test model's after every step. The comparison carries the key MATERIAL,
+      not status alone: a same-key_id/same-status but different-BYTES disagreement would
+      otherwise slip past (it cannot occur while write-once holds, but the evidence asserts
+      byte-equality defensively rather than assuming it).
+
+    Scope of the guarantee (honest form): this proves that *every writer-ADMITTED history,
+    replayed and rebuilt into the projection, yields identical ``(status, public_key)``
+    state*. It does NOT claim raw-applier bidirectional equivalence: the writer's ADMISSION
+    is strictly STRONGER than the raw projection appliers, which would absorb some histories
+    the writer rejects (e.g. enrol-over-active, an active key_id re-used with different bytes,
+    a duplicate revocation). That is a safe TIGHTENING — writer-admitted ⊆ raw-applier-accepted
+    — not an equivalence, so no admitted history can diverge on rebuild.
+
+    It also asserts the *rejection* side with per-category coverage counters: the generator
+    emits the poison shapes (write-once stale reuse via enrol AND rotate, same-material alias,
+    wrong-supersedes, enrol-over-active, and same-active-key_id-different-bytes) and each is
+    refused by the writer; the counters PROVE each valid op was admitted, each poison op was
+    refused at least once, and ``principal_key_id_reused`` appears among the refusal reasons,
+    so the property cannot pass vacuously.
+    Determinism: a fixed seed LIST, each seeding its own ``random.Random`` that selects ops and
+    (via ``randbytes``) key material; no ``os.urandom`` or wall-clock feeds a decision, so a
+    failure reproduces from (seed, op index).
+
+    Invariants exercised: I1 key_id write-once per principal (PK (principal_id, key_id)),
+    I2 at most one active key per principal (partial unique index), I3 no reactivation of
+    a superseded/revoked key (falls out of I1).
+    """
+
+    def test_replay_and_projection_converge_over_random_histories(self, tmp_path):
+        import random
+
+        # A FIXED seed list (finding 3): each seed drives one independent sequence with its
+        # own freshly-seeded ``random.Random``, so the whole run is deterministic and a
+        # failure reproduces from (seed, op index). 12 seeds x 40 ops x 3 principals meets or
+        # exceeds the Opus probe (12/40/3) while staying well inside a reasonable runtime.
+        seeds = [1234, 2718, 3141, 4669, 5772, 6022, 7071, 8090, 9109, 11235, 13195, 16180]
+        ops_per_sequence = 40
+        principals = ["agent:conv-a", "agent:conv-b", "agent:conv-c"]
+
+        accepts = 0
+        rejects = 0
+        reject_reasons: set[str] = set()
+        # Per-category counters (finding 3): PROVE the run exercised each valid op AND each
+        # poison shape rather than possibly skipping the interesting ones. Asserted > 0 at the
+        # end, split by admitted/refused so a category cannot masquerade as covered by only
+        # ever hitting the branch that no-ops.
+        op_admitted: dict[str, int] = {}
+        op_refused: dict[str, int] = {}
+        counter = [0]
+        rng = random.Random(seeds[0])
+
+        def _fresh_key(principal, *, key_id=None, seed=None):
+            counter[0] += 1
+            kid = key_id or f"pk_conv_{counter[0]}"
+            return _tlogkey(kid, seed if seed is not None else rng.randbytes(32))
+
+        def _replay_map(handle, fixture):
+            # (principal_id, key_id) -> (status, public_key). The public-key half is the
+            # defensive byte-equality check (finding 1): comparing status ALONE would let a
+            # same-key_id/same-status but different-MATERIAL disagreement slip past. It cannot
+            # occur while write-once holds, but the evidence asserts it rather than assuming it.
+            with handle._mgr.transaction() as conn:
+                state = replay_trust_state(conn, fixture.document)
+            return {
+                k: (status, state.principal_public_keys[k])
+                for k, status in state.principal_key_status.items()
+            }
+
+        def _projection_map(handle):
+            return {
+                (e.principal_id, e.key_id): (e.status, e.public_key)
+                for e in list_principal_keys(handle._mgr)
+            }
+
+        for seq, seed in enumerate(seeds):
+            # Reseed per sequence so each is independently reproducible. ``_fresh_key`` and the
+            # op selection below read this method-local ``rng`` at call time, so the reassignment
+            # is visible to them.
+            rng = random.Random(seed)
+            seq_dir = tmp_path / f"seq{seq}"
+            seq_dir.mkdir()
+            fixture, handle, _kf, project = _make_environment(seq_dir)
+            model: dict[str, dict] = {
+                p: {"keys": {}, "active": None} for p in principals
+            }
+            try:
+                write_trust_genesis(
+                    handle._mgr, keys=handle._keys,
+                    genesis_document=fixture.document, root_principal_id=ROOT,
+                )
+                # Unlimited registrar operations so op selection is never constrained by a
+                # budget (rejected admissions never commit, so they never consume a slot
+                # anyway; None simply removes the ceiling for the accepted ones).
+                _delegate(handle, fixture, max_operations=None)
+                delegation_hash = _delegated_hash(handle)
+
+                for _ in range(ops_per_sequence):
+                    p = rng.choice(principals)
+                    m = model[p]
+                    active = m["active"]
+                    stale = [
+                        kid for kid, rec in m["keys"].items()
+                        if rec["status"] in ("superseded", "revoked")
+                    ]
+                    # Applicable ops as (name, expect_accept) given the model state.
+                    ops: list[str] = []
+                    if active is None:
+                        ops.append("enroll_fresh")
+                    else:
+                        ops += [
+                            "rotate_dual", "revoke_active", "recovery",
+                            "reenroll_active_same", "enroll_over_active", "enroll_alias",
+                            "enroll_active_diffbytes",
+                        ]
+                    if stale:
+                        ops.append("enroll_reuse_stale")
+                        if active is not None:
+                            ops += ["rotate_reuse_stale_new", "rotate_wrong_supersede"]
+                    op = rng.choice(ops)
+
+                    expect_accept = op in {
+                        "enroll_fresh", "rotate_dual", "revoke_active", "recovery",
+                        "reenroll_active_same",
+                    }
+
+                    def _run_enroll(key):
+                        payload, ch = _enrollment_material(
+                            handle, fixture, principal=p,
+                            delegation_hash=delegation_hash, key=key,
+                        )
+                        _persist_challenge(handle, ch, payload)
+                        _append_enrollment(handle, fixture, principal=p, payload=payload)
+
+                    def _run_rotation(key, supersedes_key_id, superseded_key,
+                                      *, mode="dual"):
+                        payload, ch = _rotation_material(
+                            handle, fixture, principal=p, key=key,
+                            supersedes_key_id=supersedes_key_id,
+                            superseded_key=superseded_key, mode=mode,
+                            recovery_reason="key-lost" if mode == "recovery" else None,
+                            root_keys=_root_keys(fixture) if mode == "recovery" else None,
+                            delegation_hash=delegation_hash,
+                            authorized_by=_make_root_auth() if mode == "recovery" else None,
+                        )
+                        _persist_challenge(handle, ch, payload)
+                        _append_rotation(
+                            handle, fixture, principal=p, payload=payload,
+                            authority="root" if mode == "recovery" else "registrar",
+                            actor_id=ROOT if mode == "recovery" else REGISTRAR,
+                        )
+
+                    # Prepare op-specific inputs and the mutation to apply on acceptance.
+                    # `action` runs the append; `apply_on_accept` mutates the in-test model
+                    # only if the append is admitted. Both are called within THIS iteration,
+                    # so they close over the current locals directly.
+                    def apply_on_accept():
+                        return None
+
+                    if op == "enroll_fresh":
+                        key = _fresh_key(p)
+
+                        def action():
+                            _run_enroll(key)
+
+                        def apply_on_accept():
+                            m["keys"][key.key_id] = {"obj": key, "status": "active"}
+                            m["active"] = key.key_id
+                    elif op == "enroll_over_active":
+                        key = _fresh_key(p)
+
+                        def action():
+                            _run_enroll(key)
+                    elif op == "enroll_alias":
+                        active_obj = m["keys"][active]["obj"]
+                        key = _fresh_key(p, seed=active_obj.seed)
+
+                        def action():
+                            _run_enroll(key)
+                    elif op == "reenroll_active_same":
+                        key = m["keys"][active]["obj"]
+
+                        def action():
+                            _run_enroll(key)
+                        # apply_on_accept stays the no-op default: idempotent re-enrol.
+                    elif op == "enroll_active_diffbytes":
+                        # Poison (finding 3): re-enrol the CURRENTLY ACTIVE key_id with DIFFERENT
+                        # material. The write-once helper's single tolerated reuse requires the
+                        # bytes to match the stored active key, so fresh bytes under the same
+                        # key_id must be refused (`principal_key_id_reused`) — the case a
+                        # status-only comparison could never have caught.
+                        active_obj = m["keys"][active]["obj"]
+                        key = _fresh_key(p, key_id=active_obj.key_id)
+
+                        def action():
+                            _run_enroll(key)
+                    elif op == "enroll_reuse_stale":
+                        key = m["keys"][rng.choice(stale)]["obj"]
+
+                        def action():
+                            _run_enroll(key)
+                    elif op == "rotate_dual":
+                        old_obj = m["keys"][active]["obj"]
+                        key = _fresh_key(p)
+
+                        def action():
+                            _run_rotation(key, old_obj.key_id, old_obj)
+
+                        def apply_on_accept():
+                            m["keys"][old_obj.key_id]["status"] = "superseded"
+                            m["keys"][key.key_id] = {"obj": key, "status": "active"}
+                            m["active"] = key.key_id
+                    elif op == "recovery":
+                        old_obj = m["keys"][active]["obj"]
+                        key = _fresh_key(p)
+
+                        def action():
+                            _run_rotation(key, old_obj.key_id, old_obj, mode="recovery")
+
+                        def apply_on_accept():
+                            m["keys"][old_obj.key_id]["status"] = "superseded"
+                            m["keys"][key.key_id] = {"obj": key, "status": "active"}
+                            m["active"] = key.key_id
+                    elif op == "revoke_active":
+                        revoked_kid = active
+
+                        def action():
+                            _append_revocation(
+                                handle, fixture, principal=p, key_id=revoked_kid,
+                                delegation_hash=delegation_hash,
+                            )
+
+                        def apply_on_accept():
+                            m["keys"][revoked_kid]["status"] = "revoked"
+                            m["active"] = None
+                    elif op == "rotate_reuse_stale_new":
+                        old_obj = m["keys"][active]["obj"]
+                        # stale key_id, fresh material — reuse a retired key_id as the NEW key.
+                        key = _fresh_key(p, key_id=rng.choice(stale))
+
+                        def action():
+                            _run_rotation(key, old_obj.key_id, old_obj)
+                    elif op == "rotate_wrong_supersede":
+                        stale_obj = m["keys"][rng.choice(stale)]["obj"]
+                        key = _fresh_key(p)
+
+                        def action():
+                            _run_rotation(key, stale_obj.key_id, stale_obj)
+                    else:  # pragma: no cover - guarded by the ops list
+                        raise AssertionError(op)
+
+                    try:
+                        action()
+                        admitted = True
+                    except RegistaError as exc:
+                        admitted = False
+                        rejects += 1
+                        op_refused[op] = op_refused.get(op, 0) + 1
+                        reject_reasons.add(str(exc.detail.get("reason")))
+                        assert not expect_accept, (
+                            f"op {op!r} was expected to be admitted but raised "
+                            f"{exc.code}/{exc.detail.get('reason')}"
+                        )
+
+                    if not admitted:
+                        continue
+
+                    assert expect_accept, f"op {op!r} was expected to be refused but was admitted"
+                    accepts += 1
+                    op_admitted[op] = op_admitted.get(op, 0) + 1
+                    apply_on_accept()
+
+                    # Convergence: rebuild the projection from the SAME durable log — it
+                    # must not raise — and its key-status map must equal the replay's.
+                    rebuild_projection(
+                        handle._mgr, project=handle._mgr.project,
+                        genesis_document=fixture.document,
+                    )
+                    # Each map is (principal_id, key_id) -> (status, public_key), so this asserts
+                    # STATUS *and* byte-identical key MATERIAL agree across all three sources.
+                    replay_map = _replay_map(handle, fixture)
+                    projection_map = _projection_map(handle)
+                    assert replay_map == projection_map, (
+                        f"replay/projection diverged after {op!r}: "
+                        f"replay={replay_map} projection={projection_map}"
+                    )
+                    # The replay map must also match the independent in-test model, material
+                    # included.
+                    model_map = {
+                        (pr, kid): (rec["status"], rec["obj"].public_key)
+                        for pr, mm in model.items()
+                        for kid, rec in mm["keys"].items()
+                    }
+                    assert replay_map == model_map, (
+                        f"replay diverged from the model after {op!r}: "
+                        f"replay={replay_map} model={model_map}"
+                    )
+            finally:
+                _close(handle, project)
+
+        # The run must have exercised BOTH sides, including the WI-349 write-once refusal,
+        # or it proves nothing.
+        assert accepts > 0
+        assert rejects > 0
+        assert "principal_key_id_reused" in reject_reasons
+
+        # Coverage (finding 3): prove each VALID op was actually ADMITTED at least once and
+        # each POISON op was actually REFUSED at least once, so the property cannot pass
+        # vacuously by never generating the interesting shapes. A category present only in the
+        # wrong column would fail here, not slip by.
+        for valid_op in ("enroll_fresh", "rotate_dual", "recovery", "revoke_active"):
+            assert op_admitted.get(valid_op, 0) > 0, (
+                f"valid op {valid_op!r} was never admitted: "
+                f"admitted={op_admitted} refused={op_refused}"
+            )
+        for poison_op in (
+            "enroll_reuse_stale",          # write-once stale reuse via ENROL
+            "rotate_reuse_stale_new",      # write-once stale reuse via ROTATE (new key_id)
+            "enroll_alias",                # same-material alias under a different key_id
+            "rotate_wrong_supersede",      # rotation naming a non-current (stale) key
+            "enroll_over_active",          # a second enrol while a key is already active
+            "enroll_active_diffbytes",     # same active key_id, DIFFERENT bytes
+        ):
+            assert op_refused.get(poison_op, 0) > 0, (
+                f"poison op {poison_op!r} was never refused: "
+                f"admitted={op_admitted} refused={op_refused}"
+            )

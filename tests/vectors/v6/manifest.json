@@ -311,6 +311,17 @@
       ],
       "file": "estate-catalog.json",
       "name": "estate-catalog"
+    },
+    {
+      "category": "trust-log-export",
+      "description": "Published trust-log export signed core: domain-separated + length-framed digest (WI-337, TRUST-DOMAIN \u00a74.2).",
+      "expected_keys": [
+        "canonical_bytes",
+        "canonical_len",
+        "trust_log_export_digest"
+      ],
+      "file": "trust-log-export.json",
+      "name": "trust-log-export"
     }
   ],
   "description": "Byte-level conformance vectors for regista 0.6.0 (Gate 0, P0.3).",
@@ -329,6 +340,7 @@
     "trust_checkpoint": "regista.trust-checkpoint.v1\u0000",
     "trust_genesis_core": "regista.trust-genesis.core.v1\u0000",
     "trust_genesis_signing": "regista.trust-genesis.v1\u0000",
+    "trust_log_export": "regista.trust-log-export.v1\u0000",
     "workflow_definition": "regista.workflow-definition.v1\u0000"
   },
   "test_fingerprint": "ed25519:sha256:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",

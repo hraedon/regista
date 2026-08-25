@@ -1338,20 +1338,24 @@ def test_an_active_rotation_sourced_key_is_a_valid_trust_referent():
 
 
 def test_rotation_selects_new_key_even_though_old_status_stays_active():
-    """The trap: a rotation does NOT mark the superseded key revoked.
+    """Defence in depth: ``resolve_enrolled_key`` reads supersession off the rotation
+    events, NOT off ``principal_key_status``.
 
-    ``_trust_log_writer._classify_rotation`` records only the INCOMING key as active
-    (``_remember_principal_key``); it never flips the outgoing key's entry in
-    ``principal_key_status``. So the superseded key remains ``"active"`` in the replayed
-    map, and an is-it-active test alone would resolve it and sign a project's genesis
-    with a key the trust log has already rotated away. Supersession must be read off the
-    rotation events themselves — this test fails if that reading is removed.
+    This test DELIBERATELY models an inconsistent status map — BOTH keys marked active —
+    to prove the resolver is independent of that bookkeeping. Since WI-337 fix B the real
+    replay no longer leaves this state (``_remember_principal_key`` flips the outgoing key
+    to ``"superseded"``, and WI-347 further forbids rotating a non-active key), so the
+    both-active map here is a synthetic legacy/regression scenario, not what the writer
+    produces. The point stands: even if the status map were wrong, the resolver must still
+    select the incoming key and never resolve the rotated-away one — this test fails if
+    the direct reading of rotation events is removed.
     """
     enrolment, public = _one_key(offset_seconds=-3600, key_id="pk_old")
     rotation, new_public = _rotation_record()
     chain = _synthetic_chain(
         [enrolment, rotation],
-        # Exactly the state the real replay leaves behind: BOTH keys active.
+        # A DELIBERATELY inconsistent map (both active) — no longer what the real replay
+        # leaves (WI-337 fix B marks pk_old superseded); used to test resolver independence.
         statuses={(HOST, "pk_old"): "active", (HOST, "pk_new"): "active"},
         public_keys={(HOST, "pk_old"): public, (HOST, "pk_new"): new_public},
     )

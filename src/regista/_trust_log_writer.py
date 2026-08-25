@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hmac
 import uuid as _uuid
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -132,9 +133,9 @@ class TrustState:
     registrars: Mapping[str, RegistrarState]
     genesis_event_hash: str
     principal_public_keys: Mapping[tuple[str, str], bytes] = field(default_factory=dict)
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]] = field(
-        default_factory=dict
-    )
+    principal_key_status: Mapping[
+        tuple[str, str], Literal["active", "revoked", "superseded"]
+    ] = field(default_factory=dict)
     # WI-292 §9(iv) / WI-314: the current replayed custody correction and its own
     # event digest, so a correction's effect on custody is observable state and the
     # writer can admit the next correction against the current head at write time.
@@ -330,6 +331,73 @@ def _actor_id(envelope: Mapping[str, Any]) -> str:
     return ""
 
 
+class TrustLogMaterial(ABC):
+    """The material a verified trust-log walk reads, decoupled from *where* it lives.
+
+    ``verify_trust_log_chain`` used to take a live ``DictConn`` and issue SQL inline, so
+    "replay the log under full verification" was reachable only with database
+    credentials. That is the whole of WI-337's blocker: `TRUST-DOMAIN.md` §8.4 forbids an
+    offline verifier from fetching its own trust material, and §4.2 published no
+    trust-log artifact, so an auditor holding only the publication repository could not
+    establish the current root set at all.
+
+    The fix is deliberately an **extraction, not a second implementation**. There is
+    exactly one verified walk (WI-303) and it stays that way: this class names the two
+    reads the walk performs, ``_StoreMaterial`` answers them from PostgreSQL exactly as
+    before, and :class:`~regista._trust_log_export.OfflineTrustLogMaterial` answers them
+    from a signed published artifact. A parallel offline replay would drift from the
+    store one, and the drift would be in authority semantics — the worst place for it.
+    """
+
+    @abstractmethod
+    def rows(self) -> list[dict[str, Any]]:
+        """Every stored trust-log event, in no particular order, row-shaped."""
+
+    @abstractmethod
+    def lifecycle_challenge(self, challenge_id: str) -> Mapping[str, Any] | None:
+        """The durable possession-challenge record, or ``None`` when it is absent."""
+
+    @abstractmethod
+    def describe(self) -> str:
+        """A short phrase naming this material, for refusal details."""
+
+
+@dataclass(frozen=True)
+class _StoreMaterial(TrustLogMaterial):
+    """The live-store answer to :class:`TrustLogMaterial` — the pre-WI-337 behaviour."""
+
+    conn: DictConn
+
+    def rows(self) -> list[dict[str, Any]]:
+        return read_trust_log_rows(self.conn)
+
+    def lifecycle_challenge(self, challenge_id: str) -> Mapping[str, Any] | None:
+        try:
+            return self.conn.execute(
+                "SELECT challenge_id, operation_id, operation_digest, project, "
+                "principal_id, fingerprint, scheme, verifier_nonce, issued_at, "
+                "expires_at, used, kind, trust_domain_id, enrollment_request_digest, "
+                "proof_signature "
+                "FROM lifecycle_challenges WHERE challenge_id = %s FOR SHARE",
+                [_uuid.UUID(challenge_id)],
+            ).fetchone()
+        except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                "the durable possession-challenge evidence store is unavailable",
+                {"reason": "possession_challenge_table_missing"},
+            ) from exc
+
+    def describe(self) -> str:
+        return "live trust-log store"
+
+
+def trust_log_material(source: DictConn | TrustLogMaterial) -> TrustLogMaterial:
+    """Accept either a live connection or already-extracted material."""
+
+    return source if isinstance(source, TrustLogMaterial) else _StoreMaterial(source)
+
+
 def read_trust_log_rows(conn: DictConn) -> list[dict[str, Any]]:
     selected_by_event_id: dict[str, dict[str, Any]] = {}
     for relation in ("events", "events_archive"):
@@ -508,14 +576,14 @@ def _treq(verified: Sequence[str], governance: GovernanceState) -> None:
 
 
 def replay_trust_state(
-    conn: DictConn,
+    conn: DictConn | TrustLogMaterial,
     genesis_document: Mapping[str, Any],
 ) -> TrustState:
     return verify_trust_log_chain(conn, genesis_document).state
 
 
 def verify_trust_log_chain(
-    conn: DictConn,
+    conn: DictConn | TrustLogMaterial,
     genesis_document: Mapping[str, Any],
 ) -> VerifiedChain:
     """The single verified trust-log walk (WI-303).
@@ -525,7 +593,12 @@ def verify_trust_log_chain(
     continuity or authority raises here — before any caller mutates state. Registrar
     liveness is evaluated at each event's own ``occurred_at``, never at wall-clock
     replay time.
+
+    ``conn`` may be a live connection (the store case, unchanged) or a
+    :class:`TrustLogMaterial` — the WI-337 extraction that lets a published, root-signed
+    trust-log artifact be replayed by **this** walk rather than by a second one.
     """
+    material = trust_log_material(conn)
     doc = parse_trust_genesis(genesis_document)
     report = verify_trust_genesis(genesis_document)
     if report.signatures_verified < report.root_governance.threshold:
@@ -538,12 +611,12 @@ def verify_trust_log_chain(
         project_instance_id=str(doc.trust_log.project_instance_id),
         trust_domain_id=str(doc.trust_domain_id),
     )
-    rows = read_trust_log_rows(conn)
+    rows = material.rows()
     if not rows:
         raise RegistaError(
             ErrorCode.TRUST_LOG_BOOTSTRAP_NOT_PERMITTED,
             "the trust-log store is empty: no trust_domain_established genesis exists",
-            {"reason": "empty_trust_log"},
+            {"reason": "empty_trust_log", "material": material.describe()},
         )
     order = chain_order(rows)
     genesis_row = order[0]
@@ -566,7 +639,7 @@ def verify_trust_log_chain(
     reg_keys: dict[str, bytes] = {}
     reg_binding: dict[str, str] = {}
     principal_public_keys: dict[tuple[str, str], bytes] = {}
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]] = {}
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]] = {}
     custody_declarations: list[tuple[Any, str]] = []
     verified_lifecycle: list[VerifiedLifecycle] = []
     entity_seq_ptr: dict[tuple[str, str], int] = {
@@ -697,7 +770,7 @@ def verify_trust_log_chain(
             key_id = _signer_key_id(envelope)
             binding = _binding_hash(envelope)
             record = _verify_lifecycle(
-                conn,
+                material,
                 row,
                 envelope,
                 identity,
@@ -907,7 +980,7 @@ def _possession_challenge_from_row(
 
 
 def _verify_possession_evidence(
-    conn: DictConn,
+    material: TrustLogMaterial,
     payload: Mapping[str, Any] | None,
     transition: str,
     *,
@@ -925,20 +998,7 @@ def _verify_possession_evidence(
         )
     parsed = _parse_lifecycle_payload(transition, payload)
     proof = parsed.possession_proof
-    try:
-        row = conn.execute(
-            "SELECT challenge_id, operation_id, operation_digest, project, "
-            "principal_id, fingerprint, scheme, verifier_nonce, issued_at, expires_at, "
-            "used, kind, trust_domain_id, enrollment_request_digest, proof_signature "
-            "FROM lifecycle_challenges WHERE challenge_id = %s FOR SHARE",
-            [_uuid.UUID(proof.challenge_id)],
-        ).fetchone()
-    except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
-        raise RegistaError(
-            ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
-            "the durable possession-challenge evidence store is unavailable",
-            {"reason": "possession_challenge_table_missing", "transition": transition},
-        ) from exc
+    row = material.lifecycle_challenge(proof.challenge_id)
     if row is None:
         raise RegistaError(
             ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
@@ -946,6 +1006,7 @@ def _verify_possession_evidence(
             {
                 "reason": "possession_challenge_not_found",
                 "challenge_id": proof.challenge_id,
+                "material": material.describe(),
             },
         )
     if row.get("kind") != "possession":
@@ -1133,24 +1194,77 @@ def _classify_rotation(
     governance: GovernanceState,
     root_keys: Mapping[str, bytes],
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> str:
-    superseded = None
-    if not parsed.is_recovery:
-        superseded_key = (parsed.principal_id, parsed.supersedes_key_id)
-        if principal_key_status.get(superseded_key) == "revoked":
-            raise RegistaError(
-                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
-                "a dual rotation cannot use a revoked superseded key",
-                {
-                    "reason": "superseded_key_revoked",
-                    "principal_id": parsed.principal_id,
-                    "key_id": parsed.supersedes_key_id,
-                },
-            )
-        superseded = principal_public_keys.get(
-            superseded_key
+    # WI-349: the NEW key a rotation introduces is write-once — it may not reuse a key_id
+    # already present for the principal in ANY status (the projection's rotation applier
+    # INSERTs unconditionally, so a reused key_id trips principal_keys' primary key). This
+    # runs before the supersedes checks so a rotation naming a stale key_id as its NEW key
+    # cannot reactivate it in the offline replay. A rotation never re-states a key, so
+    # there is no idempotent exception here (unlike enrolment).
+    _check_key_id_write_once(
+        parsed, PRINCIPAL_KEY_ROTATED, principal_public_keys, principal_key_status
+    )
+    # WI-347: a rotation — dual OR recovery — must name the principal's CURRENTLY ACTIVE
+    # key as `supersedes_key_id`. This is the single chokepoint both admission
+    # (`append_trust_log_event`) and replay (`_verify_lifecycle`) route through, so the
+    # guard binds every path; a direct `append_trust_log_event` cannot slip past it and a
+    # published log carrying such an event fails `verify_trust_log_chain` for the same
+    # reason. The prior check rejected only a REVOKED superseded key (and only for dual),
+    # leaving the fork open: enrol K1 → rotate K1→K2 → rotate K1→K3 all verified because
+    # the second rotation named K1 (now merely SUPERSEDED, not revoked), so K2 AND K3 were
+    # both left active — a rotated-out key minting a new current-authority key. Requiring
+    # the outgoing key to be ACTIVE makes each rotation supersede exactly the one live key,
+    # which is precisely the "at most one active key per principal" invariant the
+    # projection applier (`_principal_keys._apply_rotation_projection`) enforces by
+    # superseding every active key on each new key. Replay and projection therefore agree:
+    # for any admissible rotation there is exactly one active key to supersede, so both
+    # land on the same active set. Recovery is included — a root-authorised recovery could
+    # otherwise name an already-superseded key and fork the set the same way.
+    superseded_key = (parsed.principal_id, parsed.supersedes_key_id)
+    superseded_status = principal_key_status.get(superseded_key)
+    if superseded_status != "active":
+        reason = {
+            "revoked": "superseded_key_revoked",
+            "superseded": "superseded_key_superseded",
+        }.get(superseded_status or "", "superseded_key_unknown")
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY,
+            "a rotation must supersede the principal's currently active key; "
+            f"supersedes_key_id names a key whose status is "
+            f"{superseded_status or 'unknown'!r}, not 'active'",
+            {
+                "reason": reason,
+                "principal_id": parsed.principal_id,
+                "key_id": parsed.supersedes_key_id,
+                "status": superseded_status or "unknown",
+            },
         )
+    # WI-348 belt-and-suspenders (Sol's suggestion): the rotation must supersede THE
+    # unique active key. The WI-348 enrolment fix already makes a second active key of
+    # identical material unreachable, so in every admissible history exactly one active
+    # key exists to supersede. This independent check means that even if some other path
+    # ever admitted a second active key_id, a rotation could not leave a stale active one
+    # behind — it names one key_id, and any un-named active twin would trip this guard.
+    active_for_principal = [
+        k_id
+        for (p_id, k_id), status in principal_key_status.items()
+        if p_id == parsed.principal_id and status == "active"
+    ]
+    if len(active_for_principal) > 1:
+        raise RegistaError(
+            ErrorCode.TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY,
+            "a rotation must supersede the principal's unique active key, but the "
+            f"principal holds {len(active_for_principal)} active keys "
+            f"({sorted(active_for_principal)!r}); the single-active-per-principal "
+            "invariant is violated, so this rotation cannot cleanly remove authority",
+            {
+                "reason": "principal_has_multiple_active_keys",
+                "principal_id": parsed.principal_id,
+                "active_key_ids": sorted(active_for_principal),
+            },
+        )
+    superseded = None if parsed.is_recovery else principal_public_keys.get(superseded_key)
     return classify_rotation_authority(
         parsed,
         governance=governance,
@@ -1160,22 +1274,109 @@ def _classify_rotation(
     )
 
 
+def _check_key_id_write_once(
+    parsed: Any,
+    transition: str,
+    principal_public_keys: Mapping[tuple[str, str], bytes],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
+) -> None:
+    """key_id is WRITE-ONCE per principal — the invariant the projection's schema enforces
+    by construction, made to hold identically in the replay (WI-349).
+
+    ``principal_keys`` has PRIMARY KEY ``(principal_id, key_id)`` (migration 038) plus a
+    partial unique index ``WHERE status = 'active'`` (at most one active key per
+    principal). Every key-INTRODUCING transition — ``principal_key_enrolled`` and
+    ``principal_key_rotated`` (dual OR recovery) — carries a NEW key_id, and the projection
+    appliers refuse any reuse of one: ``_apply_enrollment_projection`` returns the existing
+    row only when it is ACTIVE and otherwise raises ``PRINCIPAL_KEY_ALREADY_EXISTS``, and
+    ``_apply_rotation_projection`` INSERTs unconditionally so a reused key_id trips the
+    primary key. The replay used to derive key status ad-hoc — ``_remember_principal_key``
+    set the introduced key ``active`` regardless of history — so re-enrolling a
+    revoked/superseded key_id (WI-349), or rotating to a key_id already seen, REACTIVATED a
+    retired key offline while a projection rebuild of the same log raised. That is the
+    divergence this closes.
+
+    Enforced in the shared admission+replay chokepoint: both ``_resolve_authority``
+    (append-time admission) and ``_verify_lifecycle`` (verified replay) route enrolment
+    through ``_check_enrollment_binds_fresh_key`` and rotation through
+    ``_classify_rotation``, and this check is the first thing each does — so neither a
+    direct ``append_trust_log_event`` caller nor a published-log ``verify_trust_log_chain``
+    can revive or duplicate a key_id.
+
+    The ONE reuse the projection tolerates is an idempotent enrolment re-stating the
+    principal's CURRENTLY ACTIVE key: same key_id, same public bytes
+    (``_apply_enrollment_projection`` returns that active row unchanged). The replay admits
+    it as a no-op too. A byte-identical event never reaches here twice — it shares an event
+    hash and ``read_trust_log_rows`` de-duplicates it — so this is always a DISTINCT event
+    re-stating the active key; any other reuse (different material, a non-active status, or
+    a rotation, which never re-states a key) is refused.
+    """
+    principal_id = getattr(parsed, "principal_id", None)
+    key = getattr(parsed, "key", None)
+    new_key_id = getattr(key, "key_id", None) if key is not None else None
+    new_public = getattr(key, "public_key", None) if key is not None else None
+    if not isinstance(principal_id, str) or not isinstance(new_key_id, str):
+        return
+    existing_status = principal_key_status.get((principal_id, new_key_id))
+    if existing_status is None:
+        return
+    if (
+        transition == PRINCIPAL_KEY_ENROLLED
+        and existing_status == "active"
+        and new_public is not None
+        and principal_public_keys.get((principal_id, new_key_id)) == new_public
+    ):
+        return
+    raise RegistaError(
+        ErrorCode.TRUST_LOG_PRINCIPAL_KEY_ID_REUSED,
+        f"principal {principal_id!r} already holds key_id {new_key_id!r} "
+        f"(status {existing_status!r}); key_id is write-once per principal, so a "
+        f"{transition!r} cannot reuse it. Re-introducing a superseded or revoked key_id "
+        "would reactivate a retired key in the offline replay, which the projection "
+        "refuses (principal_keys PRIMARY KEY (principal_id, key_id) / "
+        "PRINCIPAL_KEY_ALREADY_EXISTS).",
+        {
+            "reason": "principal_key_id_reused",
+            "principal_id": principal_id,
+            "key_id": new_key_id,
+            "existing_status": existing_status,
+            "transition": transition,
+        },
+    )
+
+
 def _remember_principal_key(
     parsed: Any,
     principal_public_keys: dict[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     key = getattr(parsed, "key", None)
     principal_id = getattr(parsed, "principal_id", None)
     if key is not None and isinstance(principal_id, str):
         principal_public_keys[(principal_id, key.key_id)] = key.public_key
         principal_key_status[(principal_id, key.key_id)] = "active"
+        # WI-337 (Sol #3/#4): a rotation SUPERSEDES the outgoing key, and the replay must
+        # record that. `_classify_rotation` only READS `supersedes_key_id`; without this
+        # mark the outgoing key stays "active" and every non-revoked historical key is
+        # classified as CURRENT authority — so an attacker retaining a rotated-out key
+        # could reach false offline external authentication. Supersession is NOT revocation:
+        # the key's INTRODUCTION stays a valid historical referent (it can still verify
+        # events it signed before the rotation — `export_referents` withholds only revoked
+        # introductions), but a superseded key is no longer CURRENT authority and must not
+        # be returned as externally-pinned/active. This mirrors what
+        # `_genesis_open.resolve_enrolled_key` already does online (it excludes superseded
+        # keys by reading the rotation events directly), so offline == online here too.
+        superseded_key_id = getattr(parsed, "supersedes_key_id", None)
+        if isinstance(superseded_key_id, str) and superseded_key_id:
+            superseded_key = (principal_id, superseded_key_id)
+            if principal_key_status.get(superseded_key) == "active":
+                principal_key_status[superseded_key] = "superseded"
 
 
 def _check_enrollment_binds_fresh_key(
     parsed: Any,
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: Mapping[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     """Enrolment binds a principal's key where there is NONE (B1, PR #58).
 
@@ -1187,10 +1388,19 @@ def _check_enrollment_binds_fresh_key(
     Re-enrolling the SAME bytes (same fingerprint) is left alone: it is an idempotent
     no-op, not a change. This guard is specific to the enrol transition; rotation
     (``principal_key_rotated``) legitimately supersedes and is untouched.
+
+    WI-349: before the incumbent-material checks below, the introduced key_id must be
+    write-once — re-enrolling a superseded/revoked key_id would reactivate a retired key,
+    so it is refused here (the idempotent re-statement of the CURRENTLY ACTIVE key is the
+    one tolerated reuse; see :func:`_check_key_id_write_once`).
     """
+    _check_key_id_write_once(
+        parsed, PRINCIPAL_KEY_ENROLLED, principal_public_keys, principal_key_status
+    )
     principal_id = getattr(parsed, "principal_id", None)
     key = getattr(parsed, "key", None)
     new_public = getattr(key, "public_key", None) if key is not None else None
+    new_key_id = getattr(key, "key_id", None) if key is not None else None
     if not isinstance(principal_id, str):
         return
     for (p_id, k_id), pub in principal_public_keys.items():
@@ -1199,8 +1409,35 @@ def _check_enrollment_binds_fresh_key(
         if principal_key_status.get((p_id, k_id)) != "active":
             continue
         if new_public is not None and pub == new_public:
-            # Same key material already active — idempotent, not a change.
-            continue
+            # Same key material already active.
+            if new_key_id == k_id:
+                # Genuine idempotent re-enrol: SAME bytes under the SAME key_id — a no-op.
+                continue
+            # WI-348: same material under a DIFFERENT key_id is anomalous and must NOT be
+            # admitted as an idempotent no-op. The offline replay would then hold TWO
+            # active key_ids sharing one public key, which diverges from the projection
+            # applier (`_apply_enrollment_projection` supersedes every active row before
+            # inserting → exactly ONE active). Worse, a later §5.6 rotation names ONE
+            # key_id as `supersedes_key_id`; the twin key_id stays "active", so the
+            # rotated-out MATERIAL survives as current external authority via the alias
+            # and rotation fails to remove authority. A genuine idempotent re-enrol reuses
+            # the same key_id; a genuine key change is a rotation. Refuse it in this shared
+            # admission+replay chokepoint so neither a direct `append_trust_log_event`
+            # caller nor a published-log verifier can reach a double-active state.
+            raise RegistaError(
+                ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
+                f"principal {principal_id!r} already has an active key with identical "
+                f"material under key_id {k_id!r}; re-enrolling that material under a "
+                f"different key_id ({new_key_id!r}) is not an idempotent no-op — an "
+                "idempotent re-enrol must reuse the same key_id, and a key change is a "
+                "rotation (§5.6, principal_key_rotated with dual authorization)",
+                {
+                    "reason": "enrollment_alias_key_id_mismatch",
+                    "principal_id": principal_id,
+                    "active_key_id": k_id,
+                    "offered_key_id": new_key_id,
+                },
+            )
         raise RegistaError(
             ErrorCode.TRUST_LOG_AUTHORITY_INVALID,
             f"principal {principal_id!r} already has an active key (key_id {k_id}); "
@@ -1275,7 +1512,7 @@ def _check_registrar_delegation_no_live_fork(
 def _remember_principal_key_revocation(
     parsed: Any,
     principal_public_keys: Mapping[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
 ) -> None:
     principal_id = getattr(parsed, "principal_id", None)
     key_id = getattr(parsed, "key_id", None)
@@ -1310,7 +1547,7 @@ def _remember_principal_key_revocation(
 
 
 def _verify_lifecycle(
-    conn: DictConn,
+    material: TrustLogMaterial,
     row: Mapping[str, Any],
     envelope: Mapping[str, Any],
     identity: TrustLogIdentity,
@@ -1326,14 +1563,14 @@ def _verify_lifecycle(
     reg_binding: Mapping[str, str],
     registrars: Mapping[str, RegistrarState],
     principal_public_keys: dict[tuple[str, str], bytes],
-    principal_key_status: dict[tuple[str, str], Literal["active", "revoked"]],
+    principal_key_status: dict[tuple[str, str], Literal["active", "revoked", "superseded"]],
     ops: dict[str, int],
     genesis_hash: str,
 ) -> VerifiedLifecycle | None:
     parsed = _parse_lifecycle_payload(transition, payload)
     _check_payload_trust_domain(parsed, identity.trust_domain_id)
     _verify_possession_evidence(
-        conn,
+        material,
         payload,
         transition,
         mode="replay",
@@ -1963,7 +2200,7 @@ def _append_trust_log_event_conn(
     ):
         admission_at = max(admission_at, occurred_at.astimezone(UTC))
     _verify_possession_evidence(
-        conn,
+        _StoreMaterial(conn),
         payload,
         transition,
         mode="admission",

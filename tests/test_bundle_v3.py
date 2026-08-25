@@ -95,6 +95,9 @@ class _Chain:
         head_transition: str | None = None,
         with_acceptance: bool = True,
         ordinary_events: int = 2,
+        trust_domain_id: str | None = None,
+        project_instance_id: str | None = None,
+        bootstrap_trust_event_hash: str | None = None,
     ) -> None:
         self.keyset = keyset
         self.records: list[tuple[bytes, bytes]] = []
@@ -107,7 +110,16 @@ class _Chain:
         # trust-domain identifiers and the two trust-root digests come from. `with_genesis`
         # only decides whether it is APPENDED — a chain headed by a non-genesis event is
         # exactly what F3 (complete-store head identity) has to be tested against.
-        genesis = genesis_envelope(keyset, principal_id=BOOTSTRAP)
+        # ``trust_domain_id`` / ``project_instance_id`` are overridable so a bundle can be
+        # built in an EXISTING trust domain (WI-337 needs a project bundle whose domain
+        # equals a published trust log's, its project deliberately different).
+        genesis = genesis_envelope(
+            keyset,
+            principal_id=BOOTSTRAP,
+            trust_domain_id=trust_domain_id,
+            project_instance_id=project_instance_id,
+            bootstrap_trust_event_hash=bootstrap_trust_event_hash,
+        )
         self.project_instance_id = str(genesis["project_instance_id"])
         self.trust_domain_id = str(genesis["trust_domain_id"])
         self.core_digest = str(genesis["payload"]["trust_domain_core_digest"])

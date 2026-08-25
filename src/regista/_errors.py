@@ -149,6 +149,24 @@ class ErrorCode(StrEnum):
     # ceremony finished (CUTOVER-CLASSIFICATION.md:588).
     ESTATE_CATALOG_SCHEMA_INVALID = "ESTATE_CATALOG_SCHEMA_INVALID"
     ESTATE_CATALOG_UNVERIFIED = "ESTATE_CATALOG_UNVERIFIED"
+    # WI-337: the published trust-log export (TRUST-DOMAIN.md §4.2/§4.3), the artifact
+    # that makes the verified trust-log walk reachable WITHOUT database credentials.
+    # Split for the same reason as the catalog's pair: SCHEMA_INVALID means the
+    # artifact is malformed (unknown key, non-canonical bytes, an event record that
+    # does not decode) and must be re-exported; UNVERIFIED means it is well-formed and
+    # its CLAIMS did not hold up (a root signature that does not verify, a declared
+    # head that is not the head the replay reached, a different trust domain, a log
+    # truncated before a pinned checkpoint). Never a warning: a trust-log artifact
+    # that does not verify is not weaker evidence, it is no evidence.
+    TRUST_LOG_EXPORT_SCHEMA_INVALID = "TRUST_LOG_EXPORT_SCHEMA_INVALID"
+    TRUST_LOG_EXPORT_UNVERIFIED = "TRUST_LOG_EXPORT_UNVERIFIED"
+    # WI-337 (Opus footgun): a well-formed, correctly-replayed export that a library
+    # consumer tried to draw AUTHORITY from without it reaching its own derived root
+    # signature threshold — an unsigned or sub-threshold export verified with
+    # require_signatures=False. verify() with the default require_signatures=True already
+    # refuses this; the bundle consumption path re-asserts it so the invariant holds in
+    # both places (`_bundle._trust_log_export_material`).
+    TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT = "TRUST_LOG_EXPORT_AUTHORITY_INSUFFICIENT"
     # Canonical principal identity (P2.3, TRUST-DOMAIN.md §2). Each error carries a
     # machine-readable `reason` in detail naming the exact rule violated.
     # NOT_CANONICAL is kept distinct from UNGRAMMATICAL so a legacy bare name (§2.4
@@ -162,6 +180,30 @@ class ErrorCode(StrEnum):
     # rule violated, so a caller asserts the named failure rather than a message.
     TRUST_LOG_PAYLOAD_INVALID = "TRUST_LOG_PAYLOAD_INVALID"
     TRUST_LOG_AUTHORITY_INVALID = "TRUST_LOG_AUTHORITY_INVALID"
+    # WI-347: a rotation (dual OR recovery) must name the principal's CURRENTLY ACTIVE
+    # key as `supersedes_key_id`. Naming a superseded / revoked / unknown key is refused
+    # by name so the "at most one active key per principal" invariant that the
+    # principal_keys projection enforces (it supersedes every active key on each new key)
+    # holds identically in the offline replay. Without it, an attacker holding a
+    # rotated-out (non-revoked) key plus registrar authority could mint a NEW
+    # current-authority key from a dead key, forking the active set. The `reason` in
+    # detail distinguishes superseded_key_superseded / superseded_key_revoked /
+    # superseded_key_unknown.
+    TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY = "TRUST_LOG_ROTATION_SUPERSEDES_INACTIVE_KEY"
+    # WI-349: key_id is WRITE-ONCE per principal. Every key-introducing transition
+    # (principal_key_enrolled, and principal_key_rotated dual OR recovery) carries a NEW
+    # key_id; reusing a (principal_id, key_id) already present in the replayed history — in
+    # ANY status (active / superseded / revoked) — is refused by name. This is the replay's
+    # mirror of the projection's structural guarantee: principal_keys has PRIMARY KEY
+    # (principal_id, key_id) (migration 038), so the enrolment applier raises
+    # PRINCIPAL_KEY_ALREADY_EXISTS on a non-active reuse and the rotation applier's INSERT
+    # trips the primary key. Without this, re-enrolling (or re-rotating to) a superseded or
+    # revoked key_id REACTIVATED a retired key in the offline replay while the projection
+    # rebuild raised — the divergence WI-349 closes. The one tolerated reuse is an
+    # idempotent enrolment re-stating the CURRENTLY ACTIVE key (same key_id, same bytes),
+    # which the projection also admits as a no-op. `detail["reason"]` is
+    # `principal_key_id_reused`, with the offending key_id and its existing status.
+    TRUST_LOG_PRINCIPAL_KEY_ID_REUSED = "TRUST_LOG_PRINCIPAL_KEY_ID_REUSED"
     TRUST_LOG_BOOTSTRAP_NOT_PERMITTED = "TRUST_LOG_BOOTSTRAP_NOT_PERMITTED"
     # The trust-log store could not be probed: the DSN is unreachable, or the target
     # namespace is occupied by something other than a trust-log project (no `events`

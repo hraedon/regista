@@ -707,6 +707,12 @@ class BundleReferents:
     event_count: int
     action_credentials: Mapping[str, Any] = field(default_factory=dict)
     credential_material_completeness: MaterialCompleteness = MaterialCompleteness.UNDECLARED
+    #: WI-337: how many of the indexed referents came from a VERIFIED published trust-log
+    #: export rather than from the bundle itself. Reported by :meth:`describe`, which is
+    #: what every "the presented material does not contain X" verdict detail names — an
+    #: auditor reading that sentence must be able to tell which material was meant.
+    #: Zero when no trust log was presented, which is the pre-WI-337 shape exactly.
+    trust_log_referent_count: int = 0
 
     @property
     def completeness(self) -> MaterialCompleteness:
@@ -723,10 +729,15 @@ class BundleReferents:
         return self.action_credentials.get(credential_hash)
 
     def describe(self) -> str:
+        trust_log = (
+            f", + {self.trust_log_referent_count} verified trust-log referents"
+            if self.trust_log_referent_count
+            else ""
+        )
         return (
             f"audit bundle ({self.event_count} events, "
             f"{len(self.events)} v6-addressable, {self.completeness.value}, "
-            f"credentials {self.credential_completeness.value})"
+            f"credentials {self.credential_completeness.value}{trust_log})"
         )
 
     @classmethod
