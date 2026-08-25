@@ -60,8 +60,11 @@ What the offline replay does NOT reproduce, stated so nobody infers it
    against something outside the artifact: :func:`verify_trust_log_export` takes an
    ``expect_head`` pin (exact head + count, from direct exchange) and a ``must_cover`` pin
    (a ``min_trust_log_checkpoint`` head the export must be able to reach), and the
-   verification report carries ``tail_truncation_undetectable`` whenever neither was
-   supplied. A consumer that wants a top verdict must supply one; see
+   verification report carries ``tail_truncation_undetectable`` whenever no exact head pin
+   was supplied — ``must_cover`` raises the floor (it refuses a prefix that does not even
+   reach the checkpoint) but does NOT make truncation ABOVE the checkpoint detectable, so a
+   ``must_cover``-only export still carries the flag. A consumer that wants a top verdict
+   must supply an exact ``expect_head``; see
    ``_bundle._trust_log_export_material``, which requires the §4.6 policy's
    ``min_trust_log_checkpoint`` before any project key is treated as externally pinned.
 3. **Authority is evaluated at the export's head**, exactly as `verify-catalog` evaluates it
@@ -892,8 +895,10 @@ def verify_trust_log_export(
        down); the count must reach the derived threshold.
     7. **Truncation pins.** ``expect_head`` (exact) and ``must_cover`` (a
        ``min_trust_log_checkpoint``-shaped head the export must reach) are the only
-       defences against a published PREFIX, because a prefix replays cleanly. Neither
-       supplied → ``tail_truncation_undetectable``.
+       defences against a published PREFIX, because a prefix replays cleanly. No exact head
+       pin supplied → ``tail_truncation_undetectable`` (``must_cover`` raises the floor but
+       does not make truncation above the checkpoint detectable, so a ``must_cover``-only
+       export still carries the flag; only an exact ``expect_head`` clears it).
     """
 
     # --- 1. the pin's own root ------------------------------------------------------
@@ -1149,7 +1154,13 @@ def verify_trust_log_export(
         root_governance_mode=chain.state.governance.mode,
         verified_root_signatures=tuple(verified),
         document_digest=digest,
-        tail_truncation_undetectable=(expect_head is None and must_cover is None),
+        # WI-350 (Daybreak Blue): truncation is undetectable UNLESS an exact head+count
+        # pin was checked. A `must_cover` checkpoint only RAISES THE FLOOR — it proves the
+        # export reaches AT LEAST that historical event (and its own check above refuses a
+        # prefix below the checkpoint) — but truncation ABOVE the checkpoint stays
+        # undetectable, so a STALE checkpoint cannot clear this flag. Only an exact
+        # `expect_head` (matched head AND count) defeats truncation; `must_cover` must NOT.
+        tail_truncation_undetectable=(not head_pin_checked),
         head_pin_checked=head_pin_checked,
         covered_checkpoint_head=covered,
         revoked_key_introductions=revoked_introductions,

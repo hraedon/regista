@@ -2192,7 +2192,13 @@ def _trust_log_export_material(
 
     from ._trust_log_export import export_referents
 
-    if verification.tail_truncation_undetectable:
+    # WI-350: `tail_truncation_undetectable` is now set whenever no EXACT head pin was
+    # checked, which includes a must_cover-only export (its floor is raised but truncation
+    # above the checkpoint stays undetectable). This first refusal is for a TRULY unpinned
+    # export (no head pin AND no checkpoint cover) so its message — "carries no truncation
+    # pin" — stays accurate; a must_cover-only export has `covered_checkpoint_head` set and
+    # falls through to the more specific `head_pin_required` refusal below.
+    if verification.tail_truncation_undetectable and verification.covered_checkpoint_head is None:
         raise RegistaError(
             ErrorCode.INVALID_ARGUMENT,
             "the presented trust-log export carries no truncation pin, so it cannot "

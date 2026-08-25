@@ -4314,11 +4314,14 @@ def cmd_trust_verify_log(args: argparse.Namespace) -> None:
                 print(f"  - {event_hash}")
         if report.tail_truncation_undetectable:
             print(
-                "NOTE tail_truncation_undetectable: no --expect-head and no "
-                "--must-cover-head was supplied. A published PREFIX of the log replays "
-                "cleanly, so this run cannot tell a complete export from a truncated one, "
-                "and `bundle verify --trust-log` will REFUSE to establish key authority "
-                "from it."
+                "NOTE tail_truncation_undetectable: no exact --expect-head was supplied, so "
+                "truncation cannot be ruled out. A published PREFIX of the log replays "
+                "cleanly, so this run cannot tell a complete export from a truncated one. A "
+                "--must-cover-head only RAISES THE FLOOR (it refuses a prefix that does not "
+                "even reach the checkpoint); truncation ABOVE the checkpoint stays hidden, "
+                "so a stale checkpoint does NOT defeat it. Only an exact --expect-head "
+                "<head>:<count> from direct exchange does. `bundle verify --trust-log` will "
+                "REFUSE to establish key authority from an export carrying this flag."
             )
         if args.expect_digest is None:
             print(

@@ -404,6 +404,89 @@ def test_must_cover_detects_the_prefix(tmp_path: Any) -> None:
     assert _reason(error) == "pinned_checkpoint_not_covered"
 
 
+def test_wi350_stale_must_cover_against_truncated_prefix_reports_undetectable(
+    tmp_path: Any, capsys: Any
+) -> None:
+    """WI-350 (Daybreak Blue): a STALE must_cover does NOT defeat truncation.
+
+    Exploit reproduced: an attacker publishes and root-signs a PREFIX ending AFTER a stale
+    checkpoint but BEFORE a later ``principal_key_revoked`` that retires an authority.
+    ``verify-log --must-cover-head <stale>`` covers the checkpoint (VALID) yet the export is
+    still truncated ABOVE it. Pre-fix, ``tail_truncation_undetectable`` was
+    ``expect_head is None and must_cover is None`` → ``False`` here (must_cover supplied), so
+    the flag WRONGLY claimed truncation was detectable and the CLI OMITTED the NOTE — a
+    caller would accept the retired key k1 as current authority. The fix keys the flag off an
+    exact head pin only (``not head_pin_checked``): the flag is now ``True`` and the CLI
+    surfaces the warning, while must_cover keeps its honest floor role.
+    """
+
+    from _wi337_fixtures import mint_key
+
+    from regista._cli import main
+    from regista._trust_log_export import OfflineTrustLogMaterial, build_trust_log_export
+
+    full = mint_trust_log()  # genesis (idx 0), registrar delegation (idx 1)
+    k1 = mint_key("pk_w1")
+    full.register("agent:w1")  # idx 2
+    stale = full.enrol("agent:w1", k1)  # idx 3 — the stale checkpoint an auditor pinned
+    full.register("agent:w2")  # idx 4
+    full.enrol("agent:w2", mint_key("pk_w2"))  # idx 5
+    full.revoke("agent:w1", k1.key_id)  # idx 6 — the retirement truncation would hide
+
+    # A prefix ending AFTER the stale checkpoint (idx 3) but BEFORE the revocation (idx 6):
+    # it covers the checkpoint yet omits k1's revocation, so a consumer of this export would
+    # still treat k1 as live. This replays cleanly and is root-signed (a prefix of a hash
+    # chain is a hash chain), which is exactly why only an out-of-band pin can catch it.
+    # Built via the production builder with the enrolments' possession challenges carried
+    # (the shared ``_prefix_export`` helper ships none, which only suits its genesis+
+    # registrar prefix), so the truncated prefix replays as a genuine, signable export.
+    material = OfflineTrustLogMaterial(
+        events=tuple(full.events[:6]), challenges=dict(full.challenges)
+    )
+    prefix = full.sign(
+        build_trust_log_export(
+            material,
+            genesis_document=full.genesis.document,
+            created_at="2026-08-20T12:00:00.000000Z",
+        )
+    )
+
+    report = verify_trust_log_export(
+        prefix,
+        genesis_document=full.genesis.document,
+        must_cover={"head_event_hash": stale},
+    )
+    # The checkpoint IS covered (so verification is VALID) and it is an INTERIOR event, not
+    # the head — this is a genuinely stale checkpoint, satisfied by a truncated prefix.
+    assert report.covered_checkpoint_head == stale
+    assert report.event_count == 6  # idx 6 (the revocation) is gone
+    assert report.head_pin_checked is False
+    # WI-350: True now. Pre-fix this asserted False — that False was the vulnerability, the
+    # flag falsely claiming truncation was detectable while k1's revocation sat truncated.
+    assert report.tail_truncation_undetectable is True
+
+    # And the `trust verify-log` CLI surfaces the NOTE for the SAME must_cover-only run
+    # (pre-fix it printed no warning because the flag was False).
+    export_file = tmp_path / "wi350_export.json"
+    export_file.write_bytes(canonicalize(prefix))  # §4.4: only canonical JCS bytes verify
+    genesis_file = tmp_path / "wi350_genesis.json"
+    genesis_file.write_bytes(canonicalize(full.genesis.document))
+    main(
+        [
+            "trust",
+            "verify-log",
+            str(export_file),
+            "--genesis",
+            str(genesis_file),
+            "--must-cover-head",
+            stale,
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "verdict: VALID" in out
+    assert "NOTE tail_truncation_undetectable" in out
+
+
 def test_bundle_refuses_an_unpinned_export_for_authority(tmp_path: Any) -> None:
     """A truncation pin is MANDATORY for authority — stricter than Rule H, on purpose.
 
@@ -426,15 +509,22 @@ def test_bundle_refuses_an_unpinned_export_for_authority(tmp_path: Any) -> None:
 
 
 def test_bundle_refuses_a_must_cover_only_export_for_authority(tmp_path: Any) -> None:
-    """Sol #2: a must_cover (checkpoint) satisfaction alone is NOT the top verdict.
+    """Sol #2 / WI-350: a must_cover (checkpoint) satisfaction alone is NOT the top verdict.
 
     Covering a min_trust_log_checkpoint proves the export reaches AT LEAST that point, not
     that it is the whole log — a STALE checkpoint predating a rotation would let a
     truncated export hide the later events yet still cover the checkpoint. So the bundle
-    authority path requires an EXACT head pin; a must_cover-only presentation (which has
-    ``tail_truncation_undetectable=False`` but ``head_pin_checked=False``) is refused
-    rather than reaching ``externally_authenticated``, and must_cover keeps its honest
-    lesser role (it still refuses a prefix that does not even reach the checkpoint).
+    authority path requires an EXACT head pin; a must_cover-only presentation is refused
+    with ``trust_log_export_head_pin_required`` rather than reaching
+    ``externally_authenticated``, and must_cover keeps its honest lesser role (it still
+    refuses a prefix that does not even reach the checkpoint).
+
+    WI-350 corrects the flag itself: a must_cover-only export now reports
+    ``tail_truncation_undetectable=True`` (it did NOT before — that was the Daybreak Blue
+    finding, a stale checkpoint falsely claiming truncation was detectable). The bundle
+    still refuses it, but now via the specific ``head_pin_required`` path (``covered_
+    checkpoint_head`` is set, so it is not the truly-unpinned ``trust_log_export_unpinned``
+    refusal), and the flag honestly reports that truncation above the checkpoint is hidden.
     """
 
     s = _offline_scenario(tmp_path)
@@ -444,9 +534,11 @@ def test_bundle_refuses_a_must_cover_only_export_for_authority(tmp_path: Any) ->
         genesis_document=s["fixture"].document,
         must_cover={"head_event_hash": log.hashes[-1]},
     )
-    # It is pinned (not fully unpinned) but only by a checkpoint cover, not an exact head.
-    assert must_cover_only.tail_truncation_undetectable is False
+    # It is pinned (not fully unpinned) but only by a checkpoint cover, not an exact head —
+    # so truncation above the checkpoint stays undetectable (WI-350) and the flag is True.
+    assert must_cover_only.tail_truncation_undetectable is True
     assert must_cover_only.head_pin_checked is False
+    assert must_cover_only.covered_checkpoint_head == log.hashes[-1]
     error = _refuses(
         verify_audit_bundle_v3,
         bundle_path=s["bundle_path"],

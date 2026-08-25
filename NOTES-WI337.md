@@ -455,3 +455,43 @@ signature threshold). All three have matching `_STATUS_MAP` entries (400) in
 WI-349 adds `TRUST_LOG_PRINCIPAL_KEY_ID_REUSED` (key_id is write-once per principal — a
 reused enrol/rotate key_id), with a `_STATUS_MAP` 409 entry (same mapping as the
 projection's `PRINCIPAL_KEY_ALREADY_EXISTS`, which it mirrors).
+
+## WI-350 — stale `must_cover` falsely cleared `tail_truncation_undetectable` (Daybreak Blue, Medium)
+
+`verify_trust_log_export` set `tail_truncation_undetectable=(expect_head is None and
+must_cover is None)`. A `must_cover` checkpoint is only a FLOOR — it proves the export
+reaches AT LEAST that historical event, not that it reaches the true head — so a STALE
+checkpoint (satisfied by a prefix ending after the checkpoint but before a later
+rotation/revocation) wrongly cleared the flag, falsely claiming truncation was detectable.
+
+Exploit: an attacker publishes and root-signs a PREFIX ending after a stale checkpoint but
+before a `principal_key_revoked` that retires a key. `trust verify-log --must-cover-head
+<stale>` returns VALID and, because the flag was `False`, the CLI OMITTED the
+`tail_truncation_undetectable` NOTE — so a caller accepts the retired authority.
+
+Fix (`_trust_log_export.py:1163`): `tail_truncation_undetectable=(not head_pin_checked)` —
+`head_pin_checked` is True only when an EXACT `expect_head` (head AND count) was supplied
+and matched. `must_cover` no longer clears the flag. Docstrings at `_trust_log_export.py:63`
+and `:896` corrected to the "no exact head pin" semantics.
+
+Consumer reconciliation:
+- **verify-log CLI** (`_cli.py:4315`): a must_cover-only run now surfaces the NOTE; verdict
+  stays VALID (the artifact IS internally valid — the point is the warning appears). NOTE
+  wording (`_cli.py:4317`) rewritten to say a `--must-cover-head` only raises the floor and
+  does not defeat truncation; only an exact `--expect-head` does.
+- **bundle path** (`_bundle.py:2195`): must_cover-only is STILL refused, but the first
+  refusal (`trust_log_export_unpinned`, "carries no truncation pin") is now narrowed with
+  `and verification.covered_checkpoint_head is None` so it fires only for a TRULY unpinned
+  export; a must_cover-only export (checkpoint covered) falls through to the specific
+  `trust_log_export_head_pin_required` refusal at `:2215`, preserving both distinct reasons.
+- **catalog path** (`_resolve_root_authority`, `_cli.py:3848`): gates on `head_pin_checked`
+  and passes no `must_cover` — unaffected.
+- **bundle Rule H flag** (`_bundle.py`, its own `tail_truncation_undetectable`) is computed
+  independently of the export flag — `test_wi289_phase_c.py:233/:251` and
+  `test_wi229_cli_contract.py:254` (a hand-built stub) are unaffected and still pass.
+
+Tests: `test_wi337_trust_log_export.py:448` flipped `False`→`True` (it had encoded the bug)
+with its narrative updated; new
+`test_wi350_stale_must_cover_against_truncated_prefix_reports_undetectable` reproduces the
+exploit end-to-end (stale interior checkpoint + truncated prefix → flag True and the CLI
+prints the NOTE). Targeted + related suites green; ruff + mypy clean.
