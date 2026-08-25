@@ -2427,8 +2427,9 @@ class TestReplayProjectionConvergence:
     It also asserts the *rejection* side with per-category coverage counters: the generator
     emits the poison shapes (write-once stale reuse via enrol AND rotate, same-material alias,
     wrong-supersedes, enrol-over-active, and same-active-key_id-different-bytes) and each is
-    refused by the writer with its named reason; the counters PROVE each valid op was admitted
-    and each poison op refused at least once, so the property cannot pass vacuously.
+    refused by the writer; the counters PROVE each valid op was admitted, each poison op was
+    refused at least once, and ``principal_key_id_reused`` appears among the refusal reasons,
+    so the property cannot pass vacuously.
     Determinism: a fixed seed LIST, each seeding its own ``random.Random`` that selects ops and
     (via ``randbytes``) key material; no ``os.urandom`` or wall-clock feeds a decision, so a
     failure reproduces from (seed, op index).
