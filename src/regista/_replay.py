@@ -99,9 +99,9 @@ def _parse_claim_expires(value: Any) -> datetime | None:
 
 
 def _replay_work_item(
-    conn: DictConn,
     wi_id: Any,
     events: list[dict[str, Any]],
+    wf_defs: dict[tuple[str, int], dict[str, Any]],
 ) -> tuple[dict[str, Any], int]:
     """Fold a work item's event prefix into projection state.
 
@@ -161,19 +161,11 @@ def _replay_work_item(
                 not_before = _parse_not_before(payload.get("not_before"))
             continue
 
-        wf_row = conn.execute(
-            SQL(
-                "SELECT definition FROM workflow_registry "
-                "WHERE workflow_name = %s AND version = %s"
-            ),
-            [evt["workflow_name"], evt["workflow_version"]],
-        ).fetchone()
-        if wf_row is None:
+        defn = wf_defs.get((evt["workflow_name"], evt["workflow_version"]))
+        if defn is None:
             raise _ReplayHaltError(
                 f"missing workflow {evt['workflow_name']!r} v{evt['workflow_version']}"
             )
-
-        defn = wf_row["definition"]
         found = False
         for t in defn.get("transitions", []):
             if t["name"] == transition and t["from_state"] == state:
@@ -268,85 +260,126 @@ def replay(
     work_item_id: Any | None = None,
     read_only: bool = False,
 ) -> ReplayReport:
-    """Rebuild the projection from events and compare with the live table."""
-    clauses = ["entity_kind = 'work_item'"]
+    """Rebuild the projection from events and compare with the live table.
+
+    Events are streamed in ``(work_item_id, event_seq)`` order through a
+    server-side cursor, so a large log is reduced one work item at a time rather
+    than materialised in full. Workflow definitions and the projection's id set
+    are read first, so no further query runs while the cursor is open.
+    """
+    wf_defs: dict[tuple[str, int], dict[str, Any]] = {
+        (row["workflow_name"], row["version"]): row["definition"]
+        for row in conn.execute(
+            "SELECT workflow_name, version, definition FROM workflow_registry"
+        ).fetchall()
+    }
+
+    where_proj = "" if work_item_id is None else " WHERE work_item_id = %s"
+    proj_params: list[Any] = [] if work_item_id is None else [work_item_id]
+    projection_ids = {
+        row["work_item_id"]
+        for row in conn.execute(
+            SQL("SELECT work_item_id FROM work_items_current" + where_proj),
+            proj_params,
+        ).fetchall()
+    }
+
+    where = "entity_kind = 'work_item'"
     params: list[Any] = []
     if work_item_id is not None:
-        clauses.append("work_item_id = %s")
+        where += " AND work_item_id = %s"
         params.append(work_item_id)
-    where = " AND ".join(clauses)
-
-    rows = conn.execute(
-        SQL(f"SELECT {_EVENT_FIELDS} FROM events WHERE {where} ORDER BY work_item_id, event_seq"),
-        params,
-    ).fetchall()
-
-    groups: dict[Any, list[dict[str, Any]]] = {}
-    order: list[Any] = []
-    for r in rows:
-        key = r["work_item_id"]
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(dict(r))
 
     ok = 0
     drift = 0
     halted = 0
     warnings = 0
     entries: list[ReplayReportEntry] = []
+    visited: set[Any] = set()
 
-    for wi_id in order:
-        evts = groups[wi_id]
+    def _finish_group(wi_id: Any, evts: list[dict[str, Any]]) -> None:
+        nonlocal ok, drift, halted, warnings
         try:
-            replayed, w = _replay_work_item(conn, wi_id, evts)
+            replayed, w = _replay_work_item(wi_id, evts, wf_defs)
             warnings += w
-            live_row = conn.execute(
-                SQL(
-                    "SELECT current_state, custom_fields, needs_review, not_before, "
-                    "last_event_seq, attempt_number, claimed_by, claim_expires_at "
-                    "FROM work_items_current WHERE work_item_id = %s"
-                ),
-                [wi_id],
-            ).fetchone()
-            if live_row is None:
-                drift += 1
-                entries.append(
-                    ReplayReportEntry(
-                        work_item_id=wi_id,
-                        category="drift",
-                        detail="event log has no matching work_items_current row",
-                        warnings=w,
-                    )
-                )
-                continue
-            if _states_match(replayed, dict(live_row)):
-                ok += 1
-                entries.append(
-                    ReplayReportEntry(
-                        work_item_id=wi_id, category="ok", detail=None, warnings=w,
-                    )
-                )
-            else:
-                drift += 1
-                diffs = _diff_fields(replayed, dict(live_row))
-                entries.append(
-                    ReplayReportEntry(
-                        work_item_id=wi_id,
-                        category="drift",
-                        detail="fields differ: " + ", ".join(diffs),
-                        warnings=w,
-                    )
-                )
         except _ReplayHaltError as exc:
             halted += 1
             entries.append(
+                ReplayReportEntry(work_item_id=wi_id, category="halted", detail=exc.detail)
+            )
+            return
+        live_row = projection_cache.get(wi_id)
+        if live_row is None:
+            drift += 1
+            entries.append(
                 ReplayReportEntry(
                     work_item_id=wi_id,
-                    category="halted",
-                    detail=exc.detail,
+                    category="drift",
+                    detail="event log has no matching work_items_current row",
+                    warnings=w,
                 )
             )
+        elif _states_match(replayed, live_row):
+            ok += 1
+            entries.append(
+                ReplayReportEntry(work_item_id=wi_id, category="ok", detail=None, warnings=w)
+            )
+        else:
+            drift += 1
+            diffs = _diff_fields(replayed, live_row)
+            entries.append(
+                ReplayReportEntry(
+                    work_item_id=wi_id,
+                    category="drift",
+                    detail="fields differ: " + ", ".join(diffs),
+                    warnings=w,
+                )
+            )
+
+    projection_cache: dict[Any, dict[str, Any]] = {}
+    for row in conn.execute(
+        SQL(
+            "SELECT work_item_id, current_state, custom_fields, needs_review, not_before, "
+            "last_event_seq, attempt_number, claimed_by, claim_expires_at "
+            "FROM work_items_current" + where_proj
+        ),
+        proj_params,
+    ).fetchall():
+        projection_cache[row["work_item_id"]] = dict(row)
+
+    cur = conn.cursor("regista_replay_events")
+    cur.execute(
+        SQL(f"SELECT {_EVENT_FIELDS} FROM events WHERE {where} ORDER BY work_item_id, event_seq"),
+        params,
+    )
+    current_id: Any = None
+    group: list[dict[str, Any]] = []
+
+    def _flush() -> None:
+        if current_id is not None and group:
+            _finish_group(current_id, group)
+
+    for r in cur:
+        row = dict(r)
+        key = row["work_item_id"]
+        if key != current_id:
+            _flush()
+            current_id = key
+            group = []
+            visited.add(key)
+        group.append(row)
+    _flush()
+    cur.close()
+
+    for missing in projection_ids - visited:
+        drift += 1
+        entries.append(
+            ReplayReportEntry(
+                work_item_id=missing,
+                category="drift",
+                detail="projection row has no events in the log",
+            )
+        )
 
     log.info(
         "replay.completed",

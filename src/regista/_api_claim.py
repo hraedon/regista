@@ -105,19 +105,13 @@ class ClaimApiMixin(_RegistaBase):
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
         actor_metadata: dict[str, Any] | None = None,
+        expected_attempt_number: int | None = None,
     ) -> None:
         """Release a claim held by the given actor.
 
-        Args:
-            work_item_id: Target work item.
-            actor_id: Must match the current claim holder.
-            event_id: UUIDv4 idempotency key.
-            actor_kind: Kind of actor (default "agent").
-            actor_metadata: Optional JSONB metadata recorded on the emitted
-                ``claim_released`` event (e.g. ``model_lineage``).
-
-        Raises:
-            RegistaError: ``CLAIM_LOST``, ``CLAIM_NOT_FOUND``.
+        Pass ``expected_attempt_number`` to fence against a stolen lease: if the
+        work item's attempt has advanced, the release is refused with
+        ``CLAIM_LOST``.
         """
         _validate_mutation_params(
             actor_id=actor_id,
@@ -128,6 +122,7 @@ class ClaimApiMixin(_RegistaBase):
             work_item_id, actor_id,
             event_id=event_id, actor_kind=actor_kind,
             actor_metadata=actor_metadata,
+            expected_attempt_number=expected_attempt_number,
         )
 
     def sweep_expired_claims(self) -> int:

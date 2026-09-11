@@ -357,7 +357,7 @@ def cmd_schema_status(args: argparse.Namespace) -> int:
     mgr = ConnectionManager(dsn, project)
     try:
         mgr.open()
-        check_migrations_current(mgr)
+        check_migrations_current(mgr, read_only=True)
     except RegistaError as e:
         return _handle_error(e, json_mode=getattr(args, "json", False))
     finally:

@@ -197,6 +197,7 @@ class WorkflowApiMixin(_RegistaBase):
         Rejects transitions that match a workflow-defined transition name — use
         ``transition()`` for state changes.
         """
+        self._require_open()
         _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
         return self.events.append(
             work_item_id, actor_id, actor_kind,

@@ -319,10 +319,7 @@ class TransitionDef:
     from_state: str
     to_state: str
     allowed_roles: list[str]
-    validator: str | None
-    hooks: list[str]
     privileged: bool = False
-    validator_params: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -330,13 +327,9 @@ class TransitionDef:
             "from_state": self.from_state,
             "to_state": self.to_state,
             "allowed_roles": self.allowed_roles,
-            "validator": self.validator,
-            "hooks": self.hooks,
         }
         if self.privileged:
             result["privileged"] = True
-        if self.validator_params is not None:
-            result["validator_params"] = self.validator_params
         return result
 
     @classmethod
@@ -346,10 +339,7 @@ class TransitionDef:
             from_state=data["from_state"],
             to_state=data["to_state"],
             allowed_roles=data["allowed_roles"],
-            validator=data.get("validator"),
-            hooks=data.get("hooks", []),
             privileged=data.get("privileged", False),
-            validator_params=data.get("validator_params"),
         )
 
 
@@ -388,7 +378,6 @@ class WorkflowDefinition:
     work_item_types: list[WorkItemTypeDef]
     link_types: list[LinkTypeDef]
     attempt_threshold: int | None
-    hook_defaults: dict[str, Any] | None = None
     raw_yaml: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -404,7 +393,6 @@ class WorkflowDefinition:
             "work_item_types": [w.to_dict() for w in self.work_item_types],
             "link_types": [lt.to_dict() for lt in self.link_types],
             "attempt_threshold": self.attempt_threshold,
-            "hook_defaults": self.hook_defaults,
             "raw_yaml": self.raw_yaml,
         }
 
@@ -422,7 +410,6 @@ class WorkflowDefinition:
             work_item_types=[WorkItemTypeDef.from_dict(w) for w in data["work_item_types"]],
             link_types=[LinkTypeDef.from_dict(lt) for lt in data["link_types"]],
             attempt_threshold=data.get("attempt_threshold"),
-            hook_defaults=data.get("hook_defaults"),
             raw_yaml=data["raw_yaml"],
         )
 

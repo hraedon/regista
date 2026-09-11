@@ -318,7 +318,7 @@ def append_transition_event(
         actor_id=actor_id,
         transition=transition_name,
         work_item_id=work_item_id,
-        payload=stored_payload if payload is not None else None,
+        payload=stored_payload if stored_payload else None,
         entity_kind="work_item",
     )
     if existing is not None:

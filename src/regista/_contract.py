@@ -17,21 +17,12 @@ VALIDATOR_HISTORY_LIMIT = 100_000
 
 _VALID_ACTOR_KINDS = frozenset({"agent", "human", "system"})
 
-# WI-262: on_behalf_of.principal_kind used to be accepted unvalidated, so
-# attacker-controlled metadata reached the cross-lineage gate. The gate has to
-# reason about whether a principal could be a model; a kind it does not
-# recognise ("ai-agent", "Agent ", 42) cannot answer that question, and the
-# author side used to fail OPEN on exactly those values.
-#
-# Keep this set identical to principal_lifecycle.PrincipalKind — that is the
-# estate's existing closed vocabulary for what a principal is, and
-# test_wi262_principal_kind_ingress pins the two together so they cannot drift.
-# Recognising a kind here is not the same as trusting it: the gate still lets
-# only "human" vouch that a principal is not a model (see
-# _review_validators.classify_principal_kind), because a self-asserted
-# "service" is exactly the lineage-hiding forgery WI-248 closed.
+# on_behalf_of.principal_kind is a self-attested attribution field on the
+# retained ``on_behalf_of`` metadata. It is validated against a closed
+# vocabulary at ingress so callers cannot smuggle arbitrary shapes; it is not
+# an authentication claim.
 _VALID_PRINCIPAL_KINDS = frozenset({"agent", "human", "service", "break_glass"})
-_ALLOWED_ENTITY_KINDS = frozenset({"work_item", "session", "spec", "segment", "principal", "note"})
+_ALLOWED_ENTITY_KINDS = frozenset({"work_item"})
 
 _RESERVED_TRANSITIONS = frozenset({
     "created",
@@ -44,8 +35,6 @@ _RESERVED_TRANSITIONS = frozenset({
     "link_removed",
     "escalated",
     "not_before_set",
-    "hook_dead_lettered",
-    "checkpoint",
 })
 
 
@@ -101,8 +90,6 @@ def validate_entity_kind(entity_kind: str) -> None:
 
 
 def validate_event_entity_kind(entity_kind: str, transition: str | None) -> None:
-    if entity_kind == "project" and transition == "action_delegation_revoked":
-        return
     validate_entity_kind(entity_kind)
 
 

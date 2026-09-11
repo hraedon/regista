@@ -195,6 +195,7 @@ class WorkItemOps:
                 existing = _check_idem(
                     conn, event_id, actor_id=actor_id, transition="not_before_set",
                     work_item_id=work_item_id,
+                    payload={"not_before": not_before.isoformat() if not_before else None},
                 )
                 if existing is not None:
                     return existing
@@ -368,6 +369,7 @@ class ClaimOps:
         event_id: uuid.UUID | None = None,
         actor_kind: str = "agent",
         actor_metadata: dict[str, Any] | None = None,
+        expected_attempt_number: int | None = None,
     ) -> None:
         _validate_mutation_params(
             actor_id=actor_id,
@@ -381,6 +383,7 @@ class ClaimOps:
             work_item_id, actor_id,
             event_id=event_id, actor_kind=actor_kind,
             actor_metadata=actor_metadata,
+            expected_attempt_number=expected_attempt_number,
         )
 
     def sweep_expired(self) -> int:

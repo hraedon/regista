@@ -167,7 +167,7 @@ def create_link(
             from_row["workflow_version"],
         )
 
-    append_event(
+    evt = append_event(
         conn=conn,
         work_item_id=from_work_item_id,
         actor_id=actor_id,
@@ -180,19 +180,19 @@ def create_link(
         event_id=event_id,
     )
 
+    # On an idempotent retry ``append_event`` returns the original event, whose
+    # payload carries the link_id that was actually stored. Return that, not the
+    # freshly-minted local id, so the caller and ``list_links`` agree.
+    stored = evt.payload or link_payload
     return Link(
-        link_id=link_id,
+        link_id=uuid.UUID(stored["link_id"]),
         from_work_item_id=from_work_item_id,
         to_work_item_id=to_work_item_id,
         link_type=link_type,
-        payload=payload.value if payload is not None else None,
-        target_project=target_project,
-        target_entity_kind=(
-            target_entity_kind
-            if target_project is None
-            else (target_entity_kind or "work_item")
-        ),
-        content_hash=content_hash,
+        payload=stored.get("link_payload"),
+        target_project=stored.get("target_project"),
+        target_entity_kind=stored.get("target_entity_kind"),
+        content_hash=stored.get("content_hash"),
     )
 
 

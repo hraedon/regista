@@ -31,30 +31,15 @@ _SCHEMA_PATH = Path(__file__).parent / "_workflow_schema.json"
 _CANONICAL_WORKFLOW_PATH = Path(__file__).parent / "workflows" / "canonical.workflow.yaml"
 
 
-def canonical_workflow_yaml(strict: bool = False) -> str:
-    """Return the canonical agentic-lifecycle workflow YAML.
+def canonical_workflow_yaml() -> str:
+    """Return the canonical example workflow YAML.
 
-    This is the single workflow definition both faces of the stack (dossier =
-    human/web, agent-notes = agent/CLI) register, so a work-item is governed by
-    one shared workflow instead of per-face copies. Register the exact bytes
-    with ``reg.register_workflow(canonical_workflow_yaml())``; registration is
-    idempotent. See dossier ``plans/010-unify-canonical-workflow.md``.
-
-    Args:
-        strict: If True, returns the strict gate-profile variant where
-            same-lineage adversarial review requires a human acceptor to
-            reach ``done`` (Plan 027). Cross-lineage review is unaffected.
-            The relaxed default (homelab) permits any actor to accept after
-            any adversarial pass.
+    A plain, generic role-gated lifecycle demonstrating states, transitions,
+    roles, and typed fields. Register the exact bytes with
+    ``reg.register_workflow(canonical_workflow_yaml())``; registration is
+    idempotent.
     """
-    raw = _CANONICAL_WORKFLOW_PATH.read_text(encoding="utf-8")
-    if not strict:
-        return raw
-    return raw.replace(
-        "    validator_params:\n      require_human: false\n",
-        "    validator_params:\n      require_human: false\n"
-        "      require_human_on_same_lineage: true\n",
-    )
+    return _CANONICAL_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
 def _require_unique(items: list[Any], label: str, key_fn: Callable[..., Any] | None = None) -> None:
@@ -244,10 +229,7 @@ def build_definition(data: dict[str, Any], raw_yaml: str) -> WorkflowDefinition:
             from_state=t["from"],
             to_state=t["to"],
             allowed_roles=t.get("allowed_roles", []),
-            validator=t.get("validator"),
-            hooks=t.get("hooks", []),
             privileged=t.get("privileged", False),
-            validator_params=t.get("validator_params"),
         )
         for t in data.get("transitions", [])
     ]
@@ -286,7 +268,6 @@ def build_definition(data: dict[str, Any], raw_yaml: str) -> WorkflowDefinition:
         work_item_types=wits,
         link_types=links,
         attempt_threshold=data.get("attempt_threshold"),
-        hook_defaults=data.get("hook_defaults"),
         raw_yaml=raw_yaml,
     )
 

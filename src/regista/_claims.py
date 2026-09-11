@@ -79,13 +79,39 @@ def acquire_claim(
     )
 
     if result.action == "extend":
+        # A same-actor re-acquire extends the lease. The projection update must
+        # be derivable from the event log, so it is paired with a
+        # ``claim_heartbeat`` event carrying the new expiry (replay folds it
+        # identically). Without the event, replay would report false drift.
         conn.execute(
-            SQL("UPDATE claims SET expires_at = %s WHERE work_item_id = %s"),
-            [result.expires_at, work_item_id],
+            SQL(
+                "UPDATE claims SET expires_at = %s, last_heartbeat_emitted_at = %s "
+                "WHERE work_item_id = %s"
+            ),
+            [result.expires_at, now, work_item_id],
         )
         conn.execute(
             SQL("UPDATE work_items_current SET claim_expires_at = %s WHERE work_item_id = %s"),
             [result.expires_at, work_item_id],
+        )
+        append_event(
+            conn=conn,
+            work_item_id=work_item_id,
+            actor_id=actor_id,
+            actor_kind=actor_kind,
+            actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
+            workflow_name=wi["workflow_name"],
+            workflow_version=wi["workflow_version"],
+            transition="claim_heartbeat",
+            payload=Jsonb(
+                {
+                    "actor_id": actor_id,
+                    "expires_at": result.expires_at.isoformat(),
+                    "coalesce_threshold": 0.0,
+                }
+            ),
+            event_id=event_id or uuid.uuid4(),
+            _prelocked_wi=wi,
         )
         return (
             Claim(
@@ -291,6 +317,7 @@ def release_claim(
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
     actor_metadata: dict[str, Any] | None = None,
+    expected_attempt_number: int | None = None,
 ) -> None:
     from ._events import append_event, lock_work_item
 
@@ -306,6 +333,17 @@ def release_claim(
         raise RegistaError(
             ErrorCode.WORK_ITEM_NOT_FOUND,
             f"Work item {work_item_id} not found",
+        )
+
+    if expected_attempt_number is not None and wi["attempt_number"] != expected_attempt_number:
+        raise RegistaError(
+            ErrorCode.CLAIM_LOST,
+            f"work item {work_item_id} is on attempt {wi['attempt_number']}, "
+            f"not {expected_attempt_number}; refusing a stale release",
+            detail={
+                "expected_attempt_number": expected_attempt_number,
+                "actual_attempt_number": wi["attempt_number"],
+            },
         )
 
     claim_row = conn.execute(
@@ -345,37 +383,27 @@ def release_claim(
 def sweep_expired_claims(conn: DictConn) -> int:
     """Expire every lapsed claim, one savepoint at a time.
 
-    Returns the number of claims actually swept. Two properties are load-bearing and
-    were both fixed by the phase-4 ceremony's NB5:
+    Returns the number of claims actually swept. Two properties are load-bearing:
 
-    **``claim_expired`` is a SYSTEM action.** The holder did not act — a lease lapsed —
-    so the event is attributed to ``"system"``, exactly like ``escalated``. Attributing
-    it to the *holder* made the sweep depend on the holder still being appendable.
-    The holder is not lost: the payload names it, which is where "whose claim expired"
-    belongs.
+    **``claim_expired`` is a SYSTEM action.** The holder did not act — a lease
+    lapsed — so the event is attributed to ``"system"``, exactly like
+    ``escalated``. The holder is named in the payload, which is where "whose
+    claim expired" belongs.
 
-    **One claim's REFUSAL must not abort the batch — and only a refusal is isolated.**
-    Each claim is processed inside its own savepoint (``conn.transaction()``), so a
-    ``RegistaError`` rolls that claim's ``DELETE`` and projection ``UPDATE`` back and
-    leaves the claim exactly as it was — fail-closed per claim rather than a committed
-    projection change with no event, which is the shape replay reports as drift. The
-    remaining claims are then swept. Refusals are reported as
-    ``claims.sweep_claim_refused`` log lines carrying the work item and the error, plus
-    one ``claims.sweep_incomplete`` summary; the return value counts successes only, so a
-    caller comparing it against the number of expired claims can see that something was
-    refused without parsing anything.
+    **One claim's REFUSAL must not abort the batch — and only a refusal is
+    isolated.** Each claim is processed inside its own savepoint
+    (``conn.transaction()``), so a ``RegistaError`` rolls that claim's ``DELETE``
+    and projection ``UPDATE`` back and leaves the claim exactly as it was —
+    fail-closed per claim rather than a committed projection change with no
+    event, which is the shape replay reports as drift. The remaining claims are
+    then swept. Refusals are reported as ``claims.sweep_claim_refused`` log lines
+    carrying the work item and the error, plus one ``claims.sweep_incomplete``
+    summary; the return value counts successes only.
 
-    The narrowness is deliberate (R2 NB2). ``RegistaError`` is this system *deciding*
-    something about one claim — a revoked acceptance, a scope it does not hold, a
-    workflow that no longer admits the transition — and a decision about one claim is
-    exactly what must not become a decision about the batch. Anything else is a defect or
-    an infrastructure failure: a ``TypeError`` in the append path, a serialization
-    failure, a dropped connection. Those are **not** caught, so they abort the sweep and
-    reach the caller. Swallowing them would convert "the code is broken" or "the database
-    went away" into "1 of 2 claims swept", which is a truthful-looking number produced by
-    a process that has no idea what happened — and an operator who reads a count instead
-    of a stack trace does not go looking for the bug. Pinned by
-    ``test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted``.
+    Anything other than a ``RegistaError`` is a defect or an infrastructure
+    failure (a serialization failure, a dropped connection). Those are **not**
+    caught: swallowing them would convert "the code is broken" into a
+    truthful-looking count produced by a process that has no idea what happened.
     """
 
     from ._events import append_event, lock_work_item
@@ -427,7 +455,7 @@ def sweep_expired_claims(conn: DictConn) -> int:
                     append_event(
                         conn=conn,
                         work_item_id=wi_id,
-                        actor_id=prior_actor_id or "system",
+                        actor_id="system",
                         actor_kind="system",
                         actor_metadata=None,
                         workflow_name=wi["workflow_name"],

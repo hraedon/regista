@@ -86,13 +86,17 @@ def release_claim(
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
     actor_metadata: dict[str, Any] | None = None,
+    expected_attempt_number: int | None = None,
 ) -> None:
     from ._claims import release_claim as _release
 
     timer = OpTimer(project, "release_claim")
     try:
         with mgr.transaction() as conn:
-            _release(conn, work_item_id, actor_id, event_id, actor_kind, actor_metadata)
+            _release(
+                conn, work_item_id, actor_id, event_id, actor_kind, actor_metadata,
+                expected_attempt_number=expected_attempt_number,
+            )
         metrics.inc("claims_released", project)
         timer.log("ok", work_item_id=str(work_item_id))
     except RegistaError:

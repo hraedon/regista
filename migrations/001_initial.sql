@@ -21,7 +21,7 @@ CREATE TABLE events (
     transition TEXT,
     payload JSONB,
     on_behalf_of JSONB,
-    UNIQUE (entity_kind, entity_id, event_seq)
+    CONSTRAINT events_entity_event_seq_key UNIQUE (entity_kind, entity_id, event_seq)
 );
 
 CREATE INDEX idx_events_actor_id ON events (actor_id);

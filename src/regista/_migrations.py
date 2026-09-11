@@ -56,47 +56,57 @@ def discover_migrations() -> list[tuple[int, Path]]:
 
 
 def applied_versions(mgr: ConnectionManager, *, read_only: bool = False) -> set[int]:
+    """Return the applied migration versions for ``mgr``'s schema.
+
+    Refuses (read-only, before any write) a pre-0.8.0 schema or an untracked
+    schema. 0.8.0 is a fresh single-baseline contract: there is no rename or
+    in-place upgrade path from ``_substrate_migrations`` or the 1..50 chain.
+    The only write this function may perform is creating the tracking table in
+    an otherwise-empty schema.
+    """
     with mgr.transaction() as conn:
-        if read_only:
-            # Read-only connect: never issue DDL. Detect the migrations table
-            # via a read-only catalog probe and fail closed if it is absent.
-            probe = conn.execute(
-                "SELECT "
-                "EXISTS(SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_name = '_regista_migrations') "
-                "AS has_regista, "
-                "EXISTS(SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_name = '_substrate_migrations') "
-                "AS has_substrate",
-                [mgr.schema, mgr.schema],
-            ).fetchone()
-            assert probe is not None
-            if not probe["has_regista"]:
-                # If the legacy-named table exists, say so: the schema IS
-                # migrated, just under the old name, and a read-only connection
-                # cannot perform the rename.
-                if probe["has_substrate"]:
-                    raise RegistaError(
-                        ErrorCode.MIGRATION_REQUIRED,
-                        f"Read-only connect: schema {mgr.schema!r} has a "
-                        "_substrate_migrations table (the pre-rename name) but "
-                        "no _regista_migrations table; a read-only connection "
-                        "cannot apply the rename migration.",
-                    )
+        probe = conn.execute(
+            "SELECT "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = %s AND table_name = '_regista_migrations') "
+            "AS has_regista, "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = %s AND table_name = '_substrate_migrations') "
+            "AS has_substrate, "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = %s AND table_name = 'events') "
+            "AS has_events",
+            [mgr.schema, mgr.schema, mgr.schema],
+        ).fetchone()
+        assert probe is not None
+        has_regista = bool(probe["has_regista"])
+        has_substrate = bool(probe["has_substrate"])
+        has_events = bool(probe["has_events"])
+
+        if has_substrate and not has_regista:
+            raise RegistaError(
+                ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+                f"schema {mgr.schema!r} has a pre-0.8.0 `_substrate_migrations` "
+                "table. In-place upgrade is unsupported; use a fresh schema or "
+                "restore a dump with a matching package version.",
+                detail={"reason": "pre_rename_schema"},
+            )
+        if not has_regista:
+            if has_events:
+                raise RegistaError(
+                    ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+                    f"schema {mgr.schema!r} contains regista tables but no "
+                    "migration-tracking table; refusing to read or write it. "
+                    "In-place upgrade from pre-0.8.0 schemas is unsupported.",
+                    detail={"reason": "untracked_schema"},
+                )
+            if read_only:
                 raise RegistaError(
                     ErrorCode.MIGRATION_REQUIRED,
                     f"Read-only connect: schema {mgr.schema!r} has no "
                     "_regista_migrations table; migrations were never applied "
                     "and a read-only connection cannot create it.",
                 )
-        else:
-            conn.execute(
-                "DO $$ BEGIN "
-                "IF EXISTS (SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = '_substrate_migrations') THEN "
-                "ALTER TABLE _substrate_migrations RENAME TO _regista_migrations; "
-                "END IF; END $$"
-            )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS _regista_migrations "
                 "(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
@@ -160,6 +170,14 @@ def _run_migrations_locked(mgr: ConnectionManager, lock_conn: Any) -> list[int]:
             ).fetchone()
             applied_max = int(r2["v"]) if r2 is not None else 0
 
+    if has_substrate and not has_regista:
+        raise RegistaError(
+            ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            "the target schema has a pre-0.8.0 `_substrate_migrations` table. "
+            "In-place upgrade is unsupported; use a fresh schema or restore a "
+            "dump with a matching package version.",
+            detail={"reason": "pre_rename_schema"},
+        )
     if has_events and not (has_regista or has_substrate):
         raise RegistaError(
             ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
@@ -177,16 +195,9 @@ def _run_migrations_locked(mgr: ConnectionManager, lock_conn: Any) -> list[int]:
             detail={"applied_max": applied_max, "supported_max": max_supported},
         )
 
-    # Ensure table exists and has the checksum column (idempotent bootstrap).
+    # Empty destination: create the tracking table. No rename/upgrade path —
+    # any pre-0.8.0 schema was refused above before this write.
     with mgr.transaction() as conn:
-        # Handle rename from pre-0.4.0: if old tracking table exists, rename it.
-        conn.execute(
-            "DO $$ BEGIN "
-            "IF EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = '_substrate_migrations') THEN "
-            "ALTER TABLE _substrate_migrations RENAME TO _regista_migrations; "
-            "END IF; END $$"
-        )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS _regista_migrations "
             "(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
@@ -356,7 +367,18 @@ def check_migrations_current(mgr: ConnectionManager, *, read_only: bool = False)
     if not all_migrations:
         return
     available = {v for v, _ in all_migrations}
+    max_supported = max(available)
     applied = applied_versions(mgr, read_only=read_only)
+    excess = {v for v in applied if v > max_supported}
+    if excess:
+        raise RegistaError(
+            ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            f"schema {mgr.schema!r} is at migration version {max(applied)}, but "
+            f"this library supports up to {max_supported}. In-place "
+            "upgrade/downgrade is unsupported; use a fresh schema or restore a "
+            "dump with a matching package version.",
+            detail={"applied_max": max(applied), "supported_max": max_supported},
+        )
     missing = available - applied
     if missing:
         raise RegistaError(

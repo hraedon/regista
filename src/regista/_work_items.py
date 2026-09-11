@@ -232,9 +232,6 @@ def _rebuild_wf(data: dict[str, Any]) -> WorkflowDefinition:
             from_state=t["from_state"],
             to_state=t["to_state"],
             allowed_roles=t.get("allowed_roles", []),
-            validator=t.get("validator"),
-            hooks=t.get("hooks", []),
-            validator_params=t.get("validator_params"),
         )
         for t in data.get("transitions", [])
     ]
