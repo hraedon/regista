@@ -126,6 +126,56 @@ def _run_migrations_locked(mgr: ConnectionManager, lock_conn: Any) -> list[int]:
     from ._errors import ErrorCode, RegistaError
 
     all_migrations = discover_migrations()
+    max_supported = max((v for v, _ in all_migrations), default=0)
+
+    # Refuse old or foreign schemas BEFORE any DDL. 0.8.0 is an explicitly
+    # breaking reset with a single baseline; there is no in-place upgrade path
+    # from the 0.5/0.6/0.7 migration chains. Detect them read-only and stop.
+    with mgr.transaction() as conn:
+        row = conn.execute(
+            "SELECT "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = current_schema() AND table_name = '_regista_migrations') "
+            "AS has_regista, "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = current_schema() AND table_name = '_substrate_migrations') "
+            "AS has_substrate, "
+            "EXISTS(SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = current_schema() AND table_name = 'events') "
+            "AS has_events"
+        ).fetchone()
+        assert row is not None
+        has_regista = bool(row["has_regista"])
+        has_substrate = bool(row["has_substrate"])
+        has_events = bool(row["has_events"])
+        applied_max = 0
+        if has_regista:
+            r1 = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS v FROM _regista_migrations"
+            ).fetchone()
+            applied_max = int(r1["v"]) if r1 is not None else 0
+        elif has_substrate:
+            r2 = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS v FROM _substrate_migrations"
+            ).fetchone()
+            applied_max = int(r2["v"]) if r2 is not None else 0
+
+    if has_events and not (has_regista or has_substrate):
+        raise RegistaError(
+            ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            "the target schema contains regista tables but no migration-tracking "
+            "table; refusing to write. In-place upgrade from pre-0.8.0 schemas is "
+            "unsupported — use a fresh schema or restore a dump.",
+            detail={"reason": "untracked_schema"},
+        )
+    if applied_max > max_supported:
+        raise RegistaError(
+            ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            f"the target schema is at migration version {applied_max}, but this "
+            f"library only supports up to {max_supported}. Refusing to write; "
+            "in-place upgrade/downgrade is unsupported.",
+            detail={"applied_max": applied_max, "supported_max": max_supported},
+        )
 
     # Ensure table exists and has the checksum column (idempotent bootstrap).
     with mgr.transaction() as conn:

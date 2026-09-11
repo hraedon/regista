@@ -18,7 +18,6 @@ from ._contract import (
     validate_release,
 )
 from ._errors import ErrorCode, RegistaError
-from ._keys import KeySet
 from ._types import Claim
 
 log = structlog.get_logger()
@@ -39,7 +38,6 @@ def acquire_claim(
     work_item_id: uuid.UUID,
     actor_id: str,
     ttl_seconds: int,
-    key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
     actor_metadata: dict[str, Any] | None = None,
@@ -129,7 +127,6 @@ def acquire_claim(
             actor_id=actor_id,
             actor_kind=actor_kind,
             actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
-            key_set=key_set,
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],
             transition=result.event_transition,
@@ -139,7 +136,7 @@ def acquire_claim(
         )
 
     stolen = result.action == "steal"
-    escalated = _check_escalation(conn, wi, result.attempt_number, key_set)
+    escalated = _check_escalation(conn, wi, result.attempt_number)
 
     claim = Claim(
         work_item_id=work_item_id,
@@ -155,9 +152,8 @@ def _check_escalation(
     conn: DictConn,
     wi: dict[str, Any],
     attempt_number: int,
-    key_set: KeySet,
 ) -> bool:
-    from ._events import append_event, resolve_system_actor_id
+    from ._events import append_event
 
     wf_row = conn.execute(
         SQL("SELECT definition FROM workflow_registry WHERE workflow_name = %s AND version = %s"),
@@ -183,10 +179,9 @@ def _check_escalation(
     append_event(
         conn=conn,
         work_item_id=wi["work_item_id"],
-        actor_id=resolve_system_actor_id(conn, legacy_actor_id="system"),
+        actor_id="system",
         actor_kind="system",
         actor_metadata=None,
-        key_set=key_set,
         workflow_name=wi["workflow_name"],
         workflow_version=wi["workflow_version"],
         transition="escalated",
@@ -203,7 +198,6 @@ def heartbeat_claim(
     actor_id: str,
     ttl_seconds: int,
     expected_attempt_number: int | None = None,
-    key_set: KeySet | None = None,
     coalesce_threshold: float | None = None,
     actor_kind: str = "agent",
     actor_metadata: dict[str, Any] | None = None,
@@ -243,14 +237,13 @@ def heartbeat_claim(
     last_emitted = claim_row["last_heartbeat_emitted_at"] if claim_row else None
     should_emit = last_emitted is None or (now - last_emitted).total_seconds() >= threshold
 
-    if should_emit and wi is not None and key_set is not None:
+    if should_emit and wi is not None:
         append_event(
             conn=conn,
             work_item_id=work_item_id,
             actor_id=actor_id,
             actor_kind=actor_kind,
             actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
-            key_set=key_set,
             workflow_name=wi["workflow_name"],
             workflow_version=wi["workflow_version"],
             transition="claim_heartbeat",
@@ -295,7 +288,6 @@ def release_claim(
     conn: DictConn,
     work_item_id: uuid.UUID,
     actor_id: str,
-    key_set: KeySet,
     event_id: uuid.UUID | None = None,
     actor_kind: str = "agent",
     actor_metadata: dict[str, Any] | None = None,
@@ -341,7 +333,6 @@ def release_claim(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=Jsonb(actor_metadata) if actor_metadata is not None else None,
-        key_set=key_set,
         workflow_name=wi["workflow_name"],
         workflow_version=wi["workflow_version"],
         transition="claim_released",
@@ -351,23 +342,17 @@ def release_claim(
     )
 
 
-def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
+def sweep_expired_claims(conn: DictConn) -> int:
     """Expire every lapsed claim, one savepoint at a time.
 
     Returns the number of claims actually swept. Two properties are load-bearing and
     were both fixed by the phase-4 ceremony's NB5:
 
     **``claim_expired`` is a SYSTEM action.** The holder did not act — a lease lapsed —
-    so in an open v6 epoch the event is attributed to the project's own bootstrap
-    principal through :func:`~regista._events.resolve_system_actor_id`, exactly like
-    ``escalated``, hook dead-lettering and recurrence firing. Attributing it to the
-    *holder* made the sweep depend on the holder still being appendable: a holder whose
-    key acceptance had been revoked, or whose acceptance scopes do not cover
-    ``claim_expired``, raised inside the sweep and the operator's expiry sweep stopped
-    working — while the projection change had already been made. The holder is not
-    lost: the payload names it, which is where "whose claim expired" belongs.
-    ``legacy_actor_id`` keeps the pre-genesis attribution byte for byte, so a legacy
-    project's events are unchanged.
+    so the event is attributed to ``"system"``, exactly like ``escalated``. Attributing
+    it to the *holder* made the sweep depend on the holder still being appendable.
+    The holder is not lost: the payload names it, which is where "whose claim expired"
+    belongs.
 
     **One claim's REFUSAL must not abort the batch — and only a refusal is isolated.**
     Each claim is processed inside its own savepoint (``conn.transaction()``), so a
@@ -384,7 +369,7 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
     something about one claim — a revoked acceptance, a scope it does not hold, a
     workflow that no longer admits the transition — and a decision about one claim is
     exactly what must not become a decision about the batch. Anything else is a defect or
-    an infrastructure failure: a ``TypeError`` in the signing path, a serialization
+    an infrastructure failure: a ``TypeError`` in the append path, a serialization
     failure, a dropped connection. Those are **not** caught, so they abort the sweep and
     reach the caller. Swallowing them would convert "the code is broken" or "the database
     went away" into "1 of 2 claims swept", which is a truthful-looking number produced by
@@ -393,7 +378,7 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
     ``test_an_unexpected_exception_aborts_the_sweep_rather_than_being_counted``.
     """
 
-    from ._events import append_event, lock_work_item, resolve_system_actor_id
+    from ._events import append_event, lock_work_item
 
     now = datetime.now(UTC)
     expired = conn.execute(
@@ -442,12 +427,9 @@ def sweep_expired_claims(conn: DictConn, key_set: KeySet) -> int:
                     append_event(
                         conn=conn,
                         work_item_id=wi_id,
-                        actor_id=resolve_system_actor_id(
-                            conn, legacy_actor_id=prior_actor_id or "system"
-                        ),
+                        actor_id=prior_actor_id or "system",
                         actor_kind="system",
                         actor_metadata=None,
-                        key_set=key_set,
                         workflow_name=wi["workflow_name"],
                         workflow_version=wi["workflow_version"],
                         transition="claim_expired",

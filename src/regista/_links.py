@@ -12,7 +12,6 @@ from ._contract import validate_cross_project_link_type as _validate_xproject_li
 from ._contract import validate_link_type as _validate_link_type_contract
 from ._errors import ErrorCode, RegistaError
 from ._events import append_event
-from ._keys import KeySet
 from ._types import Link
 
 
@@ -78,7 +77,6 @@ def create_link(
     actor_id: str,
     actor_kind: str,
     actor_metadata: Jsonb | None,
-    key_set: KeySet,
     event_id: uuid.UUID | None = None,
     payload: Jsonb | None = None,
     target_project: str | None = None,
@@ -175,7 +173,6 @@ def create_link(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=actor_metadata,
-        key_set=key_set,
         workflow_name=from_row["workflow_name"],
         workflow_version=from_row["workflow_version"],
         transition="link_created",
@@ -207,7 +204,6 @@ def remove_link(
     actor_id: str,
     actor_kind: str,
     actor_metadata: Jsonb | None,
-    key_set: KeySet,
     event_id: uuid.UUID | None = None,
     target_project: str | None = None,
 ) -> None:
@@ -293,7 +289,6 @@ def remove_link(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=actor_metadata,
-        key_set=key_set,
         workflow_name=from_row["workflow_name"],
         workflow_version=from_row["workflow_version"],
         transition="link_removed",

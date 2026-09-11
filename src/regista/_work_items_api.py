@@ -14,7 +14,6 @@ from ._types import Event, QueryPage, WorkItem
 
 def create_work_item(
     mgr: ConnectionManager,
-    keys: Any,
     metrics: Metrics,
     project: str,
     workflow_name: str,
@@ -26,8 +25,6 @@ def create_work_item(
     custom_fields: dict[str, Any] | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
-    key_id: str | None = None,
-    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> tuple[WorkItem, Event]:
     timer = OpTimer(project, "create_work_item")
     try:
@@ -48,12 +45,9 @@ def create_work_item(
                 actor_id=actor_id,
                 actor_kind=actor_kind,
                 actor_metadata=_Jsonb(actor_metadata) if actor_metadata is not None else None,
-                key_set=keys,
                 custom_fields=custom_fields,
                 not_before=not_before,
                 event_id=event_id,
-                key_id=key_id,
-                action_delegation_credentials=action_delegation_credentials,
             )
 
         metrics.inc("work_items_created", project)

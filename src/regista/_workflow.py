@@ -305,10 +305,8 @@ def validate_and_build(data: dict[str, Any], raw_yaml: str) -> WorkflowDefinitio
 
 
 def parse_file(path: str | Path) -> WorkflowDefinition:
-    from ._workflow_compose import compose_workflow
-
-    data, _ = compose_workflow(path)
-    return validate_and_build(data, "")
+    raw_yaml = Path(path).read_text(encoding="utf-8")
+    return parse_and_validate(raw_yaml)
 
 
 def validate_field_values(

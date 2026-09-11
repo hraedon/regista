@@ -6,14 +6,12 @@ from typing import Any
 from ._connection import ConnectionManager
 from ._contract import Jsonb as _Jsonb
 from ._errors import RegistaError
-from ._keys import KeySet
 from ._observability import Metrics, OpTimer
 from ._types import Link
 
 
 def create_link(
     mgr: ConnectionManager,
-    keys: KeySet,
     metrics: Metrics,
     project: str,
     from_work_item_id: uuid.UUID,
@@ -42,7 +40,6 @@ def create_link(
                 actor_id=actor_id,
                 actor_kind=actor_kind,
                 actor_metadata=_Jsonb(actor_metadata) if actor_metadata is not None else None,
-                key_set=keys,
                 event_id=event_id,
                 payload=_Jsonb(payload) if payload is not None else None,
                 target_project=target_project,
@@ -59,7 +56,6 @@ def create_link(
 
 def remove_link(
     mgr: ConnectionManager,
-    keys: KeySet,
     metrics: Metrics,
     project: str,
     from_work_item_id: uuid.UUID,
@@ -85,7 +81,6 @@ def remove_link(
                 actor_id=actor_id,
                 actor_kind=actor_kind,
                 actor_metadata=_Jsonb(actor_metadata) if actor_metadata is not None else None,
-                key_set=keys,
                 event_id=event_id,
                 target_project=target_project,
             )

@@ -5,14 +5,12 @@ from typing import Any
 
 from ._connection import ConnectionManager
 from ._errors import ErrorCode, RegistaError
-from ._keys import KeySet
 from ._observability import Metrics, OpTimer
 from ._types import Claim
 
 
 def acquire_claim(
     mgr: ConnectionManager,
-    keys: KeySet,
     metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
@@ -30,7 +28,7 @@ def acquire_claim(
         with mgr.transaction() as conn:
             claim, escalated, stolen = _acquire(
                 conn, work_item_id, actor_id, ttl_seconds,
-                keys, event_id, actor_kind, actor_metadata,
+                event_id, actor_kind, actor_metadata,
             )
         metrics.inc("claims_acquired", project)
         if stolen:
@@ -49,7 +47,6 @@ def acquire_claim(
 
 def heartbeat_claim(
     mgr: ConnectionManager,
-    keys: KeySet,
     project: str,
     work_item_id: uuid.UUID,
     actor_id: str,
@@ -68,7 +65,6 @@ def heartbeat_claim(
             claim = _heartbeat(
                 conn, work_item_id, actor_id, ttl_seconds,
                 expected_attempt_number=expected_attempt_number,
-                key_set=keys,
                 coalesce_threshold=coalesce_threshold,
                 actor_kind=actor_kind,
                 actor_metadata=actor_metadata,
@@ -82,7 +78,6 @@ def heartbeat_claim(
 
 def release_claim(
     mgr: ConnectionManager,
-    keys: KeySet,
     metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
@@ -97,7 +92,7 @@ def release_claim(
     timer = OpTimer(project, "release_claim")
     try:
         with mgr.transaction() as conn:
-            _release(conn, work_item_id, actor_id, keys, event_id, actor_kind, actor_metadata)
+            _release(conn, work_item_id, actor_id, event_id, actor_kind, actor_metadata)
         metrics.inc("claims_released", project)
         timer.log("ok", work_item_id=str(work_item_id))
     except RegistaError:
@@ -106,11 +101,11 @@ def release_claim(
 
 
 def sweep_expired_claims(
-    mgr: ConnectionManager, keys: KeySet, metrics: Metrics, project: str
+    mgr: ConnectionManager, metrics: Metrics, project: str
 ) -> int:
     from ._claims import sweep_expired_claims as _sweep
 
     with mgr.transaction() as conn:
-        count = _sweep(conn, keys)
+        count = _sweep(conn)
     metrics.inc("claims_expired", project, amount=count)
     return count

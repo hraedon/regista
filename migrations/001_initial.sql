@@ -1,39 +1,34 @@
+-- Regista 0.8.0 fresh baseline.
+--
+-- This is a deliberate scope break from 0.7.2: the trust-domain, signing,
+-- bundle, witness, hook, recurrence, principal-custody, and suite schemas are
+-- gone. There is no migration chain behind this file and no supported in-place
+-- upgrade from earlier versions. Initialization creates this schema on an empty
+-- destination and refuses old or unknown schemas before writing.
+
 CREATE TABLE events (
     event_id UUID PRIMARY KEY,
     work_item_id UUID NOT NULL,
+    entity_kind TEXT NOT NULL DEFAULT 'work_item',
+    entity_id UUID NOT NULL,
     event_seq INTEGER NOT NULL,
     actor_id TEXT NOT NULL,
     actor_kind TEXT NOT NULL CHECK (actor_kind IN ('agent', 'human', 'system')),
     actor_metadata JSONB,
-    key_id TEXT NOT NULL,
     workflow_name TEXT,
     workflow_version INTEGER,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
     transition TEXT,
     payload JSONB,
-    payload_canonical_hash BYTEA NOT NULL,
-    signature BYTEA NOT NULL,
-    UNIQUE (work_item_id, event_seq)
+    on_behalf_of JSONB,
+    UNIQUE (entity_kind, entity_id, event_seq)
 );
 
 CREATE INDEX idx_events_actor_id ON events (actor_id);
 CREATE INDEX idx_events_timestamp ON events (timestamp);
 CREATE INDEX idx_events_transition ON events (transition);
 CREATE INDEX idx_events_workflow ON events (workflow_name, workflow_version);
-
-CREATE TABLE project_identity (
-    id                  BOOLEAN PRIMARY KEY DEFAULT TRUE,
-    project_instance_id UUID NOT NULL UNIQUE,
-    trust_domain_id     UUID NOT NULL,
-    genesis_event_id    UUID NOT NULL UNIQUE,
-    genesis_event_hash  BYTEA NOT NULL,
-    principal_id        TEXT NOT NULL,
-    key_id              TEXT NOT NULL,
-    scheme_id           TEXT NOT NULL CHECK (scheme_id = 'ed25519'),
-    key_fingerprint     TEXT NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT project_identity_singleton CHECK (id)
-);
+CREATE INDEX idx_events_work_item ON events (work_item_id, event_seq);
 
 CREATE TABLE work_items_current (
     work_item_id UUID PRIMARY KEY,
@@ -48,13 +43,16 @@ CREATE TABLE work_items_current (
     last_event_at TIMESTAMPTZ NOT NULL,
     next_event_seq INTEGER NOT NULL,
     claimed_by TEXT,
-    claim_expires_at TIMESTAMPTZ
+    claim_expires_at TIMESTAMPTZ,
+    attempt_number INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_wic_workflow_state ON work_items_current (workflow_name, workflow_version, current_state);
 CREATE INDEX idx_wic_claimed_by ON work_items_current (claimed_by) WHERE claimed_by IS NOT NULL;
 CREATE INDEX idx_wic_needs_review ON work_items_current (needs_review) WHERE needs_review = true;
 CREATE INDEX idx_wic_not_before ON work_items_current (not_before) WHERE not_before IS NOT NULL;
+CREATE INDEX idx_work_items_custom_fields_gin
+    ON work_items_current USING GIN (custom_fields jsonb_path_ops);
 
 CREATE TABLE claims (
     work_item_id UUID PRIMARY KEY REFERENCES work_items_current (work_item_id),
@@ -64,37 +62,21 @@ CREATE TABLE claims (
     attempt_number INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE INDEX idx_claims_expires_at ON claims (expires_at);
+
 CREATE TABLE workflow_registry (
     workflow_name TEXT NOT NULL,
     version INTEGER NOT NULL,
-    substrate_version TEXT NOT NULL,
+    regista_version TEXT NOT NULL,
     definition JSONB NOT NULL,
+    content_hash BYTEA,
     registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workflow_name, version)
 );
 
-CREATE TABLE hook_queue (
-    id BIGSERIAL PRIMARY KEY,
-    event_id UUID NOT NULL REFERENCES events (event_id),
-    hook_name TEXT NOT NULL,
-    hook_type TEXT NOT NULL CHECK (hook_type IN ('sync', 'async')),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
-    payload JSONB,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    max_retries INTEGER NOT NULL DEFAULT 3,
-    next_retry_at TIMESTAMPTZ,
+CREATE TABLE actor_roles (
+    actor_id TEXT NOT NULL,
+    role TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE hook_dead_letter (
-    id BIGSERIAL PRIMARY KEY,
-    event_id UUID NOT NULL,
-    hook_name TEXT NOT NULL,
-    hook_type TEXT NOT NULL,
-    payload JSONB,
-    retry_count INTEGER NOT NULL,
-    error_message TEXT,
-    dead_lettered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    original_hook_queue_id BIGINT
+    PRIMARY KEY (actor_id, role)
 );

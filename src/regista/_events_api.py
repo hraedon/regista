@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from ._connection import ConnectionManager
@@ -15,9 +15,6 @@ from ._contract import (
     check_reserved_transition as _check_reserved_transition,
 )
 from ._contract import (
-    validate_delegation_chain as _validate_delegation_chain,
-)
-from ._contract import (
     validate_event_entity_kind,
 )
 from ._contract import (
@@ -27,15 +24,12 @@ from ._contract import (
     validate_read_events_filters as _validate_read_events_filters,
 )
 from ._errors import ErrorCode, RegistaError
-from ._event_store import PostgresEventStore as _PostgresEventStore
-from ._event_store import append_event as _store_append_event
 from ._observability import Metrics, OpTimer
 from ._types import Event
 
 
 def append_event(
     mgr: ConnectionManager,
-    keys: Any,
     metrics: Metrics,
     project: str,
     work_item_id: uuid.UUID,
@@ -48,11 +42,10 @@ def append_event(
     event_id: uuid.UUID | None = None,
     expected_event_seq: int | None = None,
     on_behalf_of: dict[str, Any] | None = None,
-    key_id: str | None = None,
     entity_kind: str = "work_item",
-    hash_alg: str = "sha-256",
-    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> Event:
+    from ._events import append_event as _append_event
+
     timer = OpTimer(project, "append_event")
     try:
         validate_event_entity_kind(entity_kind, transition)
@@ -64,19 +57,8 @@ def append_event(
             actor_metadata=actor_metadata,
             event_id=event_id,
         )
-        _validate_delegation_chain(on_behalf_of, event_timestamp=datetime.now(UTC).isoformat())
 
         with mgr.transaction() as conn:
-            from ._events import _v6_epoch_open
-            from ._genesis import check_legacy_append
-
-            # The pre-flight refusal, kept for the pre-genesis case so the recorded
-            # GENESIS_REQUIRED form still comes from the earliest possible point.
-            # Post-genesis the append is legitimate and the epoch fork inside
-            # `_event_store.append_event` routes it, so refusing here would shadow
-            # the writer entirely.
-            if not _v6_epoch_open(conn):
-                check_legacy_append(conn, writer="events.append_event")
             if entity_kind == "work_item":
                 wi_row = conn.execute(
                     "SELECT workflow_name, workflow_version FROM work_items_current "
@@ -109,9 +91,8 @@ def append_event(
                             wf_name,
                         )
 
-            store = _PostgresEventStore(conn, keys)
-            evt = _store_append_event(
-                store,
+            evt = _append_event(
+                conn,
                 work_item_id=work_item_id,
                 actor_id=actor_id,
                 actor_kind=actor_kind,
@@ -122,12 +103,8 @@ def append_event(
                 payload=_Jsonb(payload) if payload is not None else None,
                 event_id=event_id,
                 expected_event_seq=expected_event_seq,
-                key_set=keys,
                 on_behalf_of=on_behalf_of,
-                _key_id=key_id,
                 entity_kind=entity_kind,
-                hash_alg=hash_alg,
-                action_delegation_credentials=action_delegation_credentials,
             )
 
         metrics.inc("events_appended", project)

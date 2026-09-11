@@ -66,41 +66,6 @@ class ActorMetadata:
 
 
 @dataclass(frozen=True)
-class DelegationChain:
-    principal_id: str
-    session_id: str | None = None
-    authenticated_at: str | None = None
-    scope: list[str] | None = None
-    expires_at: str | None = None
-    session_grant_event_id: str | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        d: dict[str, object] = {"principal_id": self.principal_id}
-        if self.session_id is not None:
-            d["session_id"] = self.session_id
-        if self.authenticated_at is not None:
-            d["authenticated_at"] = self.authenticated_at
-        if self.scope is not None:
-            d["scope"] = self.scope
-        if self.expires_at is not None:
-            d["expires_at"] = self.expires_at
-        if self.session_grant_event_id is not None:
-            d["session_grant_event_id"] = self.session_grant_event_id
-        return d
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> DelegationChain:
-        return cls(
-            principal_id=data["principal_id"],
-            session_id=data.get("session_id"),
-            authenticated_at=data.get("authenticated_at"),
-            scope=data.get("scope"),
-            expires_at=data.get("expires_at"),
-            session_grant_event_id=data.get("session_grant_event_id"),
-        )
-
-
-@dataclass(frozen=True)
 class Event:
     event_id: uuid.UUID
     work_item_id: uuid.UUID
@@ -108,23 +73,14 @@ class Event:
     actor_id: str
     actor_kind: str
     actor_metadata: dict[str, Any] | None
-    key_id: str
     workflow_name: str | None
     workflow_version: int | None
     timestamp: datetime
     transition: str | None
     payload: dict[str, Any] | None
-    payload_canonical_hash: bytes
-    signature: bytes
-    canonical_envelope: bytes | None = None
     on_behalf_of: dict[str, Any] | None = None
-    scheme_id: str = "hmac-sha256"
-    prev_event_hash: bytes | None = None
-    global_seq: int | None = None
-    prev_global_event_hash: bytes | None = None
     entity_kind: str = "work_item"
     entity_id: uuid.UUID | None = None
-    hash_alg: str = "sha-256"
 
     def __post_init__(self) -> None:
         if self.entity_id is None:
@@ -142,29 +98,16 @@ class Event:
             "actor_id": self.actor_id,
             "actor_kind": self.actor_kind,
             "actor_metadata": self.actor_metadata,
-            "key_id": self.key_id,
             "workflow_name": self.workflow_name,
             "workflow_version": self.workflow_version,
             "timestamp": self.timestamp.isoformat(),
             "transition": self.transition,
             "payload": self.payload,
-            "payload_canonical_hash": self.payload_canonical_hash.hex(),
-            "signature": self.signature.hex(),
             "entity_kind": self.entity_kind,
             "entity_id": str(self.effective_entity_id),
-            "hash_alg": self.hash_alg,
         }
-        if self.canonical_envelope is not None:
-            d["canonical_envelope"] = self.canonical_envelope.hex()
         if self.on_behalf_of is not None:
             d["on_behalf_of"] = self.on_behalf_of
-        d["scheme_id"] = self.scheme_id
-        if self.prev_event_hash is not None:
-            d["prev_event_hash"] = self.prev_event_hash.hex()
-        if self.global_seq is not None:
-            d["global_seq"] = self.global_seq
-        if self.prev_global_event_hash is not None:
-            d["prev_global_event_hash"] = self.prev_global_event_hash.hex()
         return d
 
     @classmethod
@@ -176,39 +119,18 @@ class Event:
             actor_id=data["actor_id"],
             actor_kind=data["actor_kind"],
             actor_metadata=data.get("actor_metadata"),
-            key_id=data["key_id"],
             workflow_name=data.get("workflow_name"),
             workflow_version=data.get("workflow_version"),
             timestamp=datetime.fromisoformat(data["timestamp"]),
             transition=data.get("transition"),
             payload=data.get("payload"),
-            payload_canonical_hash=bytes.fromhex(data["payload_canonical_hash"]),
-            signature=bytes.fromhex(data["signature"]),
-            canonical_envelope=(
-                bytes.fromhex(data["canonical_envelope"])
-                if data.get("canonical_envelope")
-                else None
-            ),
             on_behalf_of=data.get("on_behalf_of"),
-            scheme_id=data.get("scheme_id", "hmac-sha256"),
-            prev_event_hash=(
-                bytes.fromhex(data["prev_event_hash"])
-                if data.get("prev_event_hash")
-                else None
-            ),
-            global_seq=data.get("global_seq"),
-            prev_global_event_hash=(
-                bytes.fromhex(data["prev_global_event_hash"])
-                if data.get("prev_global_event_hash")
-                else None
-            ),
             entity_kind=data.get("entity_kind", "work_item"),
             entity_id=(
                 uuid.UUID(data["entity_id"])
                 if data.get("entity_id")
                 else None
             ),
-            hash_alg=data.get("hash_alg", "sha-256"),
         )
 
 
@@ -609,54 +531,6 @@ class ReplayReport:
     replayed_drift: int
     halted: int
     warnings: int = 0
-    #: Structural hash-chain findings (broken per-work-item chain, global-chain
-    #: orphan, fork, multiple genesis, chain head mismatch). Distinct from
-    #: ``warnings`` because a chain break is a tampering verdict, not an
-    #: advisory: CI and scripted verification must exit non-zero on it.
-    chain_breaks: int = 0
-    #: Events that could not be verified at all — no stored envelope, no
-    #: resolvable trusted key, or (InMemory) never signed. WI-267: this is
-    #: deliberately NOT folded into ``warnings`` **or** ``chain_breaks``. The
-    #: three are different findings and call for different operator responses:
-    #: ``chain_breaks`` is "something that should have verified did not"
-    #: (a tampering verdict), ``unverifiable`` is "nothing was checked at all"
-    #: (an evidentiary gap). Collapsing them is how the audit's central defect
-    #: went unnoticed. A non-zero value here means part of the log was
-    #: replayed without any cryptographic check.
-    unverifiable: int = 0
-    principal_binding_failures: int = 0
-    #: Whether the principal-binding check actually ran. WI-223: a zero
-    #: ``principal_binding_failures`` is only an affirmative claim when this is
-    #: True. When the check did not run, ``0`` means "not checked" — surfaces
-    #: must not render it as a pass. On a v6 epoch this reports that the
-    #: acceptance-chain binding check executed against presented evidence
-    #: (``TRUST-DOMAIN.md`` §5.10); the legacy ``principal_keys``-row probe is a
-    #: v5-only concept and is controlled separately by the
-    #: ``verify_principal_binding`` flag. Trust-root quality is a separate
-    #: result-model axis.
-    principal_binding_verified: bool = False
-    #: Entity groups from the CLOSED v6 entity-kind registry other than
-    #: ``work_item`` — ``project``, ``principal``, ``trust_domain``,
-    #: ``project_instance``, ``workflow``, ``spec``, ``note`` (``V6-ENVELOPE.md``
-    #: §1.2). A v6 epoch's chain necessarily carries several of these, so a
-    #: healthy clean-epoch replay reports a NON-ZERO value here and it is not a
-    #: finding.
-    #:
-    #: What "verified" claims, exactly: every event in these groups was carried
-    #: into the global hash-chain verification (so any rewrite of their bytes is a
-    #: ``chain_breaks`` finding), and their entity kind was checked against the
-    #: closed registry. It does NOT claim a per-event ``verify_event_strict``
-    #: verdict: the project-genesis event in this population is legitimately
-    #: ``UNVERIFIABLE`` until a caller supplies an external trust pin
-    #: (NOTES-P17 Finding 11), so folding these groups into the signature-verdict
-    #: counters would make every healthy epoch report an evidentiary gap it does
-    #: not have.
-    #:
-    #: They are deliberately NOT ``warnings`` (a healthy chain must not warn) and
-    #: NOT ``halted`` (they are spec-legal chain members with no
-    #: ``work_items_current`` row to rebuild). An entity kind OUTSIDE the closed
-    #: registry is neither counted here nor tolerated — it halts.
-    non_work_item_groups_verified: int = 0
     #: Detailed per-work-item results, populated in BOTH modes. This is the
     #: portable access path for per-item replay outcomes; prefer it over
     #: querying ``table_name``.
@@ -671,17 +545,6 @@ class ReplayReport:
         }
         if self.warnings > 0:
             d["warnings"] = self.warnings
-        if self.chain_breaks > 0:
-            d["chain_breaks"] = self.chain_breaks
-        if self.unverifiable > 0:
-            d["unverifiable"] = self.unverifiable
-        d["principal_binding_verified"] = self.principal_binding_verified
-        if self.principal_binding_verified:
-            d["principal_binding_failures"] = self.principal_binding_failures
-        elif self.principal_binding_failures > 0:
-            d["principal_binding_failures"] = self.principal_binding_failures
-        if self.non_work_item_groups_verified > 0:
-            d["non_work_item_groups_verified"] = self.non_work_item_groups_verified
         if self.entries:
             d["entries"] = [e.to_dict() for e in self.entries]
         return d
@@ -694,11 +557,6 @@ class ReplayReport:
             replayed_drift=data["replayed_drift"],
             halted=data["halted"],
             warnings=data.get("warnings", 0),
-            chain_breaks=data.get("chain_breaks", 0),
-            unverifiable=data.get("unverifiable", 0),
-            principal_binding_failures=data.get("principal_binding_failures", 0),
-            principal_binding_verified=data.get("principal_binding_verified", False),
-            non_work_item_groups_verified=data.get("non_work_item_groups_verified", 0),
             entries=tuple(
                 ReplayReportEntry.from_dict(e) for e in data.get("entries", [])
             ),
@@ -710,12 +568,8 @@ class ReplayReportEntry:
     work_item_id: uuid.UUID
     category: str
     detail: str | None
-    #: Per-work-item warning count for this entry. Mirrors the ``warnings``
-    # column of the (now-temporary) report table so callers reading ``entries``
-    # see the same detail the table once held.
+    #: Per-work-item warning count for this entry.
     warnings: int = 0
-    #: Per-work-item structural chain-break count for this entry (WI-266).
-    chain_breaks: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -723,7 +577,6 @@ class ReplayReportEntry:
             "category": self.category,
             "detail": self.detail,
             "warnings": self.warnings,
-            "chain_breaks": self.chain_breaks,
         }
 
     @classmethod
@@ -733,173 +586,13 @@ class ReplayReportEntry:
             category=data["category"],
             detail=data.get("detail"),
             warnings=data.get("warnings", 0),
-            chain_breaks=data.get("chain_breaks", 0),
         )
 
 
-@dataclass(frozen=True)
-class AuthorizationEvidence:
-    mode: str
-    status: str
-    credential_hashes: tuple[str, ...] = ()
-    participating_principals: frozenset[str] = frozenset()
 
 
-@dataclass(frozen=True)
-class ValidatorContext:
-    """Context passed to a sync transition validator (runs in-transition).
-
-    ``actor_kind`` is the authoritative kind of the actor performing this
-    transition. ``prior_events`` is the work-item's pre-transition event
-    history in ascending ``event_seq``, capped to the most recent 100,000
-    events (see ``regista._contract.VALIDATOR_HISTORY_LIMIT``); for typical
-    review-gated work-items the full history is present.
-
-    ``on_behalf_of`` is the acting actor's delegation chain for this
-    transition (same shape as ``Event.on_behalf_of``, validated by
-    ``_validate_delegation_chain``), or ``None`` when the actor is acting on
-    their own behalf.
-    """
-
-    work_item_id: uuid.UUID
-    workflow_name: str
-    workflow_version: int
-    work_item_type: str
-    current_state: str
-    new_state: str
-    transition_name: str
-    payload: dict[str, Any] | None
-    custom_fields: dict[str, Any]
-    actor_id: str
-    actor_metadata: dict[str, Any] | None
-    actor_kind: str
-    prior_events: tuple[Event, ...]
-    producer: dict[str, Any] | None = None
-    on_behalf_of: dict[str, Any] | None = None
-    validator_params: dict[str, Any] | None = None
-    authorization_evidence: AuthorizationEvidence = AuthorizationEvidence(
-        mode="direct", status="not_applicable"
-    )
-    prior_authorization_principals: frozenset[str] = frozenset()
-    # Verified principals from earlier delegated ``adversarial_pass`` events.
-    # This is separate from prior_authorization_principals: review participants
-    # are not work-item authors, but still participate in final-acceptance
-    # independence.
-    prior_adversarial_pass_authorization_principals: frozenset[str] = frozenset()
-
-    def to_dict(self) -> dict[str, Any]:
-        d = {
-            "work_item_id": str(self.work_item_id),
-            "workflow_name": self.workflow_name,
-            "workflow_version": self.workflow_version,
-            "work_item_type": self.work_item_type,
-            "current_state": self.current_state,
-            "new_state": self.new_state,
-            "transition_name": self.transition_name,
-            "payload": self.payload,
-            "custom_fields": self.custom_fields,
-            "actor_id": self.actor_id,
-            "actor_metadata": self.actor_metadata,
-            "actor_kind": self.actor_kind,
-            "prior_events": [e.to_dict() for e in self.prior_events],
-        }
-        if self.producer is not None:
-            d["producer"] = self.producer
-        if self.on_behalf_of is not None:
-            d["on_behalf_of"] = self.on_behalf_of
-        if self.validator_params is not None:
-            d["validator_params"] = self.validator_params
-        d["authorization_evidence"] = {
-            "mode": self.authorization_evidence.mode,
-            "status": self.authorization_evidence.status,
-            "credential_hashes": list(self.authorization_evidence.credential_hashes),
-            "participating_principals": sorted(
-                self.authorization_evidence.participating_principals
-            ),
-        }
-        d["prior_authorization_principals"] = sorted(
-            self.prior_authorization_principals
-        )
-        d["prior_adversarial_pass_authorization_principals"] = sorted(
-            self.prior_adversarial_pass_authorization_principals
-        )
-        return d
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ValidatorContext:
-        return cls(
-            work_item_id=uuid.UUID(data["work_item_id"]),
-            workflow_name=data["workflow_name"],
-            workflow_version=data["workflow_version"],
-            work_item_type=data["work_item_type"],
-            current_state=data["current_state"],
-            new_state=data["new_state"],
-            transition_name=data["transition_name"],
-            payload=data.get("payload"),
-            custom_fields=data["custom_fields"],
-            actor_id=data["actor_id"],
-            actor_metadata=data.get("actor_metadata"),
-            actor_kind=data.get("actor_kind", "agent"),
-            prior_events=tuple(
-                Event.from_dict(e) for e in data.get("prior_events", [])
-            ),
-            producer=data.get("producer"),
-            on_behalf_of=data.get("on_behalf_of"),
-            validator_params=data.get("validator_params"),
-            authorization_evidence=AuthorizationEvidence(
-                mode=data.get("authorization_evidence", {}).get("mode", "direct"),
-                status=data.get("authorization_evidence", {}).get(
-                    "status", "not_applicable"
-                ),
-                credential_hashes=tuple(
-                    data.get("authorization_evidence", {}).get(
-                        "credential_hashes", []
-                    )
-                ),
-                participating_principals=frozenset(
-                    data.get("authorization_evidence", {}).get(
-                        "participating_principals", []
-                    )
-                ),
-            ),
-            prior_authorization_principals=frozenset(
-                data.get("prior_authorization_principals", [])
-            ),
-            prior_adversarial_pass_authorization_principals=frozenset(
-                data.get("prior_adversarial_pass_authorization_principals", [])
-            ),
-        )
 
 
-@dataclass(frozen=True)
-class HookContext:
-    hook_queue_id: int
-    event_id: uuid.UUID
-    work_item_id: uuid.UUID
-    hook_name: str
-    transition: str | None
-    payload: dict[str, Any] | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "hook_queue_id": self.hook_queue_id,
-            "event_id": str(self.event_id),
-            "work_item_id": str(self.work_item_id),
-            "hook_name": self.hook_name,
-            "transition": self.transition,
-            "payload": self.payload,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> HookContext:
-        return cls(
-            hook_queue_id=data["hook_queue_id"],
-            event_id=uuid.UUID(data["event_id"]),
-            work_item_id=uuid.UUID(data["work_item_id"]),
-            hook_name=data["hook_name"],
-            transition=data.get("transition"),
-            payload=data.get("payload"),
-        )
 
 
 @dataclass(frozen=True)
@@ -966,118 +659,8 @@ class ValidationResult:
         )
 
 
-@dataclass(frozen=True)
-class DeadLetterEntry:
-    id: int
-    event_id: uuid.UUID
-    hook_name: str
-    hook_type: str
-    payload: dict[str, Any] | None
-    retry_count: int
-    max_retries: int
-    error_message: str | None
-    dead_lettered_at: datetime
-    original_hook_queue_id: int | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "event_id": str(self.event_id),
-            "hook_name": self.hook_name,
-            "hook_type": self.hook_type,
-            "payload": self.payload,
-            "retry_count": self.retry_count,
-            "max_retries": self.max_retries,
-            "error_message": self.error_message,
-            "dead_lettered_at": self.dead_lettered_at.isoformat(),
-            "original_hook_queue_id": self.original_hook_queue_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> DeadLetterEntry:
-        return cls(
-            id=data["id"],
-            event_id=uuid.UUID(data["event_id"]),
-            hook_name=data["hook_name"],
-            hook_type=data["hook_type"],
-            payload=data.get("payload"),
-            retry_count=data["retry_count"],
-            max_retries=data.get("max_retries", 3),
-            error_message=data.get("error_message"),
-            dead_lettered_at=datetime.fromisoformat(data["dead_lettered_at"]),
-            original_hook_queue_id=data.get("original_hook_queue_id"),
-        )
 
 
-@dataclass(frozen=True)
-class RecurrenceRule:
-    rule_id: uuid.UUID
-    workflow_name: str
-    workflow_version: int
-    work_item_type: str
-    template: dict[str, Any]
-    schedule_kind: str
-    schedule_expr: str
-    timezone: str
-    start_at: datetime
-    end_at: datetime | None
-    count_remaining: int | None
-    status: str
-    catchup_policy: str
-    last_fired_at: datetime | None
-    next_fire_at: datetime
-    created_by: str
-    created_at: datetime
-    updated_at: datetime
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "rule_id": str(self.rule_id),
-            "workflow_name": self.workflow_name,
-            "workflow_version": self.workflow_version,
-            "work_item_type": self.work_item_type,
-            "template": self.template,
-            "schedule_kind": self.schedule_kind,
-            "schedule_expr": self.schedule_expr,
-            "timezone": self.timezone,
-            "start_at": self.start_at.isoformat(),
-            "end_at": self.end_at.isoformat() if self.end_at else None,
-            "count_remaining": self.count_remaining,
-            "status": self.status,
-            "catchup_policy": self.catchup_policy,
-            "last_fired_at": self.last_fired_at.isoformat() if self.last_fired_at else None,
-            "next_fire_at": self.next_fire_at.isoformat(),
-            "created_by": self.created_by,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> RecurrenceRule:
-        return cls(
-            rule_id=uuid.UUID(data["rule_id"]),
-            workflow_name=data["workflow_name"],
-            workflow_version=data["workflow_version"],
-            work_item_type=data["work_item_type"],
-            template=data["template"],
-            schedule_kind=data["schedule_kind"],
-            schedule_expr=data["schedule_expr"],
-            timezone=data["timezone"],
-            start_at=datetime.fromisoformat(data["start_at"]),
-            end_at=datetime.fromisoformat(data["end_at"]) if data.get("end_at") else None,
-            count_remaining=data.get("count_remaining"),
-            status=data["status"],
-            catchup_policy=data["catchup_policy"],
-            last_fired_at=(
-                datetime.fromisoformat(data["last_fired_at"])
-                if data.get("last_fired_at")
-                else None
-            ),
-            next_fire_at=datetime.fromisoformat(data["next_fire_at"]),
-            created_by=data["created_by"],
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]),
-        )
 
 
 @dataclass(frozen=True)

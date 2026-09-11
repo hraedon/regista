@@ -13,7 +13,6 @@ from ._contract import Jsonb
 from ._errors import ErrorCode, RegistaError
 from ._event_store import _check_create_idempotency
 from ._events import append_event, check_idempotency
-from ._keys import KeySet
 from ._types import Event, QueryPage, WorkflowDefinition, WorkItem
 from ._workflow import validate_field_values, validate_work_item_refs
 
@@ -81,12 +80,9 @@ def create_work_item(
     actor_id: str,
     actor_kind: str,
     actor_metadata: Jsonb | None,
-    key_set: KeySet,
     custom_fields: dict[str, Any] | None = None,
     not_before: datetime | None = None,
     event_id: uuid.UUID | None = None,
-    key_id: str | None = None,
-    action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
 ) -> tuple[WorkItem, Event]:
     if event_id is None:
         event_id = uuid.uuid4()
@@ -134,8 +130,6 @@ def create_work_item(
             actor_id=actor_id,
             actor_kind=actor_kind,
             actor_metadata=actor_metadata.value if actor_metadata is not None else None,
-            key_id=key_id,
-            action_delegation_credentials=action_delegation_credentials,
             source=conn,
         )
         assert existing is not None
@@ -186,8 +180,6 @@ def create_work_item(
                 actor_id=actor_id,
                 actor_kind=actor_kind,
                 actor_metadata=actor_metadata.value if actor_metadata is not None else None,
-                key_id=key_id,
-                action_delegation_credentials=action_delegation_credentials,
                 source=conn,
             )
             assert existing is not None
@@ -205,7 +197,6 @@ def create_work_item(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_metadata=actor_metadata,
-        key_set=key_set,
         workflow_name=workflow_name,
         workflow_version=version,
         transition="created",
@@ -216,8 +207,6 @@ def create_work_item(
             "not_before": not_before.isoformat() if not_before else None,
         }),
         event_id=event_id,
-        _key_id=key_id,
-        action_delegation_credentials=action_delegation_credentials,
     )
 
     wi_row = conn.execute(

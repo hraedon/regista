@@ -4,24 +4,15 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable
     from datetime import datetime
     from typing import Any
 
     from ._connection import ConnectionManager
-    from ._hooks import HookConsumer
-    from ._keys import KeySet
     from ._observability import Metrics
     from ._ops import (
-        ArchiveOps,
-        AssuranceOps,
         ClaimOps,
         EventOps,
-        HookOps,
         LinkOps,
-        RecurrenceOps,
-        WebhookOps,
-        WitnessOps,
         WorkflowOps,
         WorkItemOps,
     )
@@ -32,29 +23,18 @@ class _RegistaBase:
     """Type-stub mixin providing shared attributes for API mixins.
 
     ``Regista`` sets all of these in ``__init__``; the annotations here exist
-    solely so that mixin methods can be type-checked.  At runtime this class
-    adds no behaviour.
+    solely so that mixin methods can be type-checked. At runtime this class adds
+    no behaviour.
     """
 
     if TYPE_CHECKING:
         _mgr: ConnectionManager
-        _keys: KeySet
         _metrics: Metrics
         _project: str
-        _validators: dict[str, Callable[..., Any]]
-        _hook_handlers: dict[str, Callable[..., Any]]
-        _hook_channel: str
-        _hook_consumer: HookConsumer | None
-        _maintenance_thread: Any
         _strict_roles: bool
-        _hmac_key_path: str
         _read_only: bool
 
         def _require_open(self) -> None: ...
-
-        def _try_create_witness_receipts(self, event: Event) -> None: ...
-
-        def start_hook_consumer(self) -> None: ...
 
         def append_event(
             self,
@@ -63,15 +43,12 @@ class _RegistaBase:
             actor_kind: str = "agent",
             actor_metadata: dict[str, Any] | None = None,
             *,
-            key_id: str | None = None,
             transition: str | None = None,
             payload: dict[str, Any] | None = None,
             event_id: uuid.UUID | None = None,
             expected_event_seq: int | None = None,
             on_behalf_of: dict[str, Any] | None = None,
             entity_kind: str = "work_item",
-            hash_alg: str = "sha-256",
-            action_delegation_credentials: tuple[dict[str, Any] | bytes, ...] = (),
         ) -> Event: ...
 
         def read_events(
@@ -93,9 +70,6 @@ class _RegistaBase:
         def workflows(self) -> WorkflowOps: ...
 
         @property
-        def assurance(self) -> AssuranceOps: ...
-
-        @property
         def work_items(self) -> WorkItemOps: ...
 
         @property
@@ -106,18 +80,3 @@ class _RegistaBase:
 
         @property
         def links(self) -> LinkOps: ...
-
-        @property
-        def hooks(self) -> HookOps: ...
-
-        @property
-        def recurrence(self) -> RecurrenceOps: ...
-
-        @property
-        def witnesses(self) -> WitnessOps: ...
-
-        @property
-        def archive(self) -> ArchiveOps: ...
-
-        @property
-        def webhooks(self) -> WebhookOps: ...
