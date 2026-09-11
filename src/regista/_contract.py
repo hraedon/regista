@@ -596,22 +596,9 @@ def _actor_id_or_role_invalid(name: str, label: str, max_len: int) -> bool:
 def validate_actor_id(actor_id: str, *, require_canonical: bool = False) -> None:
     """Validate an ``actor_id`` at a write boundary.
 
-    ``require_canonical`` is the §2.7 append-path gate: "``append_event`` actor_id —
-    **Yes**, per project, from its cutover event onward". It defaults to ``False`` because
-    the gate is *per project* and this function has no project context; the caller that
-    knows whether the project's cutover event has been written passes ``True``.
-
-    Under the epoch reset every new store is v6-from-genesis, so for a v6 store the gate is
-    on from the first event and P1.7's ordinary writer must pass
-    ``require_canonical=True``. Two other enforcement points already exist and are
-    unconditional by construction:
-    ``_verification._v6_require_principal_id`` (every v6 envelope carries a canonical
-    ``actor.principal_id``, and a v6 envelope is post-cutover by definition) and
-    ``_provision._validate_principal_id`` (§2.7 always-strict enrolment).
-
-    The default must stay ``False``: §2.7's last row forbids verification, replay and
-    bundle import from validating at all, and a default-on gate here would leak the
-    grammar into every legacy read path that happens to reuse the boundary validators.
+    ``require_canonical`` is accepted for backward compatibility; the canonical
+    principal-id grammar belonged to the removed trust subsystem, so actor ids
+    are now only checked for the general printable/length contract.
     """
     if _actor_id_or_role_invalid(actor_id, "actor_id", MAX_ACTOR_ID_LENGTH):
         msg = (
@@ -623,10 +610,6 @@ def validate_actor_id(actor_id: str, *, require_canonical: bool = False) -> None
             msg,
             detail={"actor_id_length": len(actor_id), "max_length": MAX_ACTOR_ID_LENGTH},
         )
-    if require_canonical:
-        from ._principals import validate_principal_id
-
-        validate_principal_id(actor_id, path="actor_id")
 
 
 def validate_role(role: str) -> None:

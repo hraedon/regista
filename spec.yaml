@@ -1,448 +1,174 @@
-# spec.yaml — regista
+# spec.yaml — regista 0.8.0 reduced kernel
 # Machine-readable sidecar to spec.md. Source of truth is spec.md.
-# Regenerated against spec.md v8 (2026-05-26).
+# The pre-0.8.0 sidecar is preserved at docs/history/spec-0.7.2.yaml.
 
 meta:
   name: "regista"
   spec_level: 3
   desired_level: 3
-  date: "2026-05-26"
+  date: "2026-09-11"
+  version: "0.8.0"
   extensions: []
-  spec_md_version: 8
-  yaml_regenerated_against: 8
+  spec_md_source: "spec.md"
+  historical_spec: "docs/history/spec-0.7.2.md"
 
-# ---------------------------------------------------------------------------
-# Glossary
-# ---------------------------------------------------------------------------
+product:
+  proposition: >-
+    An embeddable work-coordination ledger over PostgreSQL: durable ownership,
+    validated handoffs, and replayable history across independent workers and
+    people.
+  distribution: "regista-hraedon"
+  import_name: "regista"
+  console_script: "regista"
+  not_a: ["job executor", "durable-execution engine", "scheduler", "hosted tracker", "human UI"]
+
+trust_boundary:
+  trusted: ["host application", "database administrators"]
+  actor_id: "caller-supplied attribution, not authentication"
+  role_checks: "application policy, not proof of identity"
+  replay: "consistency/rebuildability check; no tamper-evidence or non-repudiation"
+  lease: "one owner per attempt and stale-attempt refusal; not exactly-once external effects"
 
 glossary:
-  - term: "Regista"
-    definition: "Library + Postgres schema + protocol providing coordination and durable state for agent pipelines. Library deployment; one regista instance per project."
   - term: "Project"
-    definition: "Logical unit of related work; corresponds 1:1 to one Postgres schema within a shared database. Hosts one or more workflow definitions."
+    definition: "Logical namespace mapping 1:1 to a PostgreSQL schema; hosts workflows."
   - term: "Workflow"
-    definition: "Named, versioned declarative state machine describing how a particular kind of work proceeds. A project may register many workflows."
-  - term: "Workflow definition"
-    definition: "YAML file (validated against regista's JSON Schema) declaring states, transitions, role-gating, custom fields per work-item-type, link types, attempt threshold, and per-hook retry overrides."
+    definition: "Named, versioned declarative state machine."
   - term: "Work-item"
-    definition: "Discrete unit of trackable work. Has workflow, work-item-type, current state, custom fields, links, needs_review flag, not_before timestamp."
-  - term: "Work-item-type"
-    definition: "Category within a workflow declaring its own custom fields and allowed link types."
+    definition: "Discrete unit of work with workflow version, type, state, custom fields, links, claim facts."
   - term: "Event"
-    definition: "Immutable record appended to the per-project event log describing what happened to a work-item. Authoritative history."
+    definition: "Immutable append-only record; authoritative history."
   - term: "Actor"
-    definition: "Identified entity that performs operations. Has actor_id, actor_kind (agent/human/system), and optional actor_metadata jsonb."
+    definition: "Attributed entity with actor_id, actor_kind (agent/human/system), optional actor_metadata."
   - term: "Claim"
-    definition: "Durable lease an actor holds on a work-item. Has TTL, attempt number, explicit release."
-  - term: "Hook"
-    definition: "Side effect dispatched on transitions. Sync hooks gate transaction; async hooks queued and dispatched at-least-once."
+    definition: "Durable lease with TTL, attempt number, and explicit release."
   - term: "Link"
-    definition: "Typed directed reference between work-items in the same project. Created and removed via events."
-  - term: "Workflow version"
-    definition: "Registered, immutable instance of a workflow definition. Work-items pin the version they were created against."
-  - term: "Reasoning log"
-    definition: "Existing flat-file convention in the Software Factory. Continues to operate alongside the regista."
-
-# ---------------------------------------------------------------------------
-# Scope
-# ---------------------------------------------------------------------------
+    definition: "Typed directed reference between work items or a cross-project value reference."
+  - term: "Projection"
+    definition: "work_items_current; denormalized state transactionally consistent with the event log."
 
 scope:
   in_scope:
-    - "Core schema: work-items, events, claims, actors, links"
-    - "Per-project Postgres schema isolation (one schema per project within a shared database)"
-    - "Workflow definition format (YAML + JSON Schema), parsing, semantic validation, versioned registry"
-    - "Claim lifecycle: acquire, heartbeat/renew, release, expire, auto-steal with attempt tracking"
-    - "Transactional event append + denormalized current-state update"
-    - "Event log read with structured query shapes"
-    - "Structured work-item query against work_items_current (FR-05b): filterable, paginated, indexed"
-    - "Replay: rebuild current-state projection from event log into a fresh table"
-    - "Sync and async hook dispatch (transition validators: in-transaction, gate commit, no I/O; async hooks via durable queue + LISTEN/NOTIFY + always-on polling)"
-    - "Pluggable actor identity verifier (HMAC-SHA256 default; RFC 8785 canonical signing envelope; OIDC-ready)"
-    - "Key rotation via key-set-with-status (active/deprecated/revoked); hot-reload via mtime polling"
-    - "Startup integrity check (migrations applied; workflow-regista version compatibility)"
-    - "Structured logging + Prometheus metrics (library-mode CollectorRegistry, not HTTP server)"
-    - "Concurrency contract: canonical lock target, gap-free event_seq allocator, cross-work-item deadlock prevention"
-    - "Projection invariants: work_items_current fully derived from events, drift detection via replay report"
-    - "API-layer idempotency: client-supplied UUIDv4 on every mutation; event_id doubles as key for event append"
-    - "Public API surface (section 19): protocol, not Postgres connection; library is sole signer; service-wrapping is mechanical"
-    - "Consumer expectation boundary (section 20): explicit enumeration of what regista does NOT do"
+    - "Schema-per-project isolation over one shared PostgreSQL database"
+    - "Versioned workflow registry with work-item version pinning"
+    - "Work-item creation, structured discovery queries, and transitions"
+    - "Durable claims with attempt-number fencing"
+    - "Atomic event append + projection update; ordered history"
+    - "Replay with honest drift/halt/warning reporting"
+    - "Idempotent retries by event_id"
+    - "Validated custom fields with bounded equality filtering"
+    - "Typed directed links including cross-project value references"
+    - "Small administration CLI"
   out_of_scope:
-    - "Cross-project state, queries, or links"
-    - "DB provisioning (operator creates DB; regista runs migrations)"
-    - "Disk-level durability and backups"
-    - "Scheduling beyond not_before timestamp"
-    - "Retry / SLA / automation engines layered above coordination"
-    - "Workflow file composition across files (implemented as FR-29)"
-    - "Transparency-log anchoring of the event log (implemented as FR-30)"
-    - "Notification / paging / email"
-    - "Human-facing UI"
-    - "Removal of registered workflow versions (registry is append-only)"
+    - "Job execution, durable code execution, scheduling"
+    - "Automatic retries / exactly-once external effects"
+    - "Hosted tracker or human UI"
+    - "Authentication, signing, non-repudiation, tamper-evidence"
 
-# ---------------------------------------------------------------------------
-# MVP Definition
-# ---------------------------------------------------------------------------
+requirements:
+  workflows:
+    - "Parse and JSON-Schema validate YAML declarations of states, transitions, roles, work-item types, custom fields, and link types."
+    - "Enforce exactly one initial state, reachability, and declared terminal states."
+    - "Register immutable, versioned definitions; identical re-registration is idempotent, different content conflicts."
+  work_items:
+    - "Create against the pinned workflow version; validate custom fields and work_item_ref targets."
+    - "Support a not_before scheduling gate bounded to 365 days in the future."
+  claims:
+    - "Acquire, heartbeat, release, sweep, and auto-steal expired claims with attempt tracking."
+    - "Refuse stale attempts via expected_attempt_number (CLAIM_LOST)."
+    - "Escalate to needs_review once when attempt_number reaches attempt_threshold."
+  events_and_projection:
+    - "Append gap-free, per-entity event_seq under a canonical lock."
+    - "Update work_items_current in the same transaction as the event."
+    - "Refuse manual append of reserved intrinsic transitions."
+  replay:
+    - "Fold events in order and diff against the live projection; report ok/drift/halted/warnings."
+    - "Never silently correct drift."
+  idempotency:
+    - "Same event_id retry returns the original event; conflicting reuse refuses."
+  custom_fields:
+    - "Closed type vocabulary: string, integer, boolean, timestamp, json, enum, work_item_ref."
+    - "Bounded equality filtering via JSONB containment."
+  links:
+    - "Validate declared link types and source/target work-item types."
+    - "Derive live links from link_created/link_removed events."
+  queries:
+    - "Filter by workflow, version, types, states, claimant, claimability, review, link type, custom fields."
+    - "Order by work_item_id with cursor pagination and bounded page_size."
+  cli:
+    - "workflow validate, work-item show/list/create/transition, events show/tail, replay, schema init/status, actor-roles list, version, doctor."
+  isolation:
+    - "Validate project name; scope each transaction with SET LOCAL search_path."
+    - "Refuse old or unknown schemas before writes; never auto-drop or reset."
 
-mvp:
-  description: "Regista library replaces reasoning.log for one Software Factory workflow: agents create work-items in a declared workflow, claim them durably, transition them through validated states with role-gating, with full event history and replay. Structured work-item query (FR-05b) enables claim-discovery and future UI list views without reaching into work_items_current directly."
-      fr_ids:
-        - "FR-01"
-        - "FR-02"
-        - "FR-03"
-        - "FR-04"
-        - "FR-05"
-        - "FR-05b"
-        - "FR-06"
-        - "FR-07"
-        - "FR-08"
-        - "FR-09a"
-        - "FR-09b"
-        - "FR-11"
-        - "FR-12"
-        - "FR-15"
-        - "FR-16"
-        - "FR-17"
-        - "FR-19"
-        - "FR-20"
-        - "FR-21"
-        - "FR-22"
-        - "FR-23"
-      rationale: "Regista replaces reasoning.log for one Software Factory workflow with durable claims, role enforcement, structured work-item discovery, replay, observability."
-    - phase: 2
-      label: "Fast-follow"
-      fr_ids:
-        - "FR-10"
-        - "FR-13"
-        - "FR-14"
-        - "FR-18"
-      rationale: "Adds reactivity and tooling once consumers exist."
-    - phase: 3
-      label: "Authorization + replay resilience"
-      fr_ids:
-        - "FR-24"
-        - "FR-25"
-        - "FR-26"
-        - "FR-27"
-      rationale: "Actor → allowed_roles enforcement (closes BR-09), continue-on-revoked replay flag, update_not_before API, custom field validation at transitions."
-    - phase: 4
-      label: "Operational features"
-      fr_ids:
-        - "FR-28"
-        - "FR-29"
-        - "FR-30"
-      rationale: "Recurring work-item generation, workflow file composition, transparency-log anchoring."
-    - phase: 5
-      label: "Future"
-      fr_ids: []
-      rationale: "Federated UI, OIDC verifier, month-partitioning."
+invariants:
+  - "Events are authoritative; work_items_current is a projection."
+  - "Every mutation holds SELECT FOR UPDATE on the work-item row."
+  - "Event append and projection update commit atomically."
+  - "event_seq is gap-free and strictly ordered per entity."
+  - "At most one live claim exists per work item."
+  - "A refused stale attempt writes nothing."
+  - "Identical event_id retries are no-ops; conflicting reuse refuses."
+  - "Replay reconstructs supported state or reports drift/halt."
+  - "Operations stay within the project schema."
+  - "Old or unknown schemas are refused before any write."
 
-  dependency_hints:
-    - fr_id: "FR-02"
-      requires: ["FR-17", "FR-15"]
-      parallel_with: []
-    - fr_id: "FR-03"
-      requires: ["FR-15"]
-      parallel_with: []
-    - fr_id: "FR-04"
-      requires: ["FR-03"]
-      parallel_with: []
-    - fr_id: "FR-05"
-      requires: ["FR-03"]
-      parallel_with: []
-    - fr_id: "FR-05b"
-      requires: ["FR-04"]
-      parallel_with: ["FR-05"]
-    - fr_id: "FR-06"
-      requires: ["FR-15", "FR-17", "FR-05b"]
-      parallel_with: []
-    - fr_id: "FR-07"
-      requires: ["FR-06"]
-      parallel_with: []
-    - fr_id: "FR-08"
-      requires: ["FR-06"]
-      parallel_with: []
-    - fr_id: "FR-09a"
-      requires: ["FR-06"]
-      parallel_with: []
-    - fr_id: "FR-09b"
-      requires: ["FR-06", "FR-09a"]
-      parallel_with: []
-    - fr_id: "FR-11"
-      requires: ["FR-17"]
-      parallel_with: []
-    - fr_id: "FR-12"
-      requires: ["FR-17", "FR-11"]
-      parallel_with: []
-    - fr_id: "FR-16"
-      requires: ["FR-03", "FR-04", "FR-17"]
-      parallel_with: []
-    - fr_id: "FR-20"
-      requires: ["FR-17"]
-      parallel_with: []
-    - fr_id: "FR-22"
-      requires: ["FR-17", "FR-03"]
-      parallel_with: []
-    - fr_id: "FR-23"
-      requires: ["FR-22"]
-      parallel_with: []
+error_codes:
+  - WORK_ITEM_NOT_FOUND
+  - WORKFLOW_NOT_REGISTERED
+  - WORKFLOW_VERSION_CONFLICT
+  - WORKFLOW_VALIDATION_FAILED
+  - WORKFLOW_SEMANTIC_ERROR
+  - WORK_ITEM_TYPE_NOT_DECLARED
+  - CUSTOM_FIELD_VIOLATION
+  - INVALID_TRANSITION
+  - RESERVED_TRANSITION_NAME
+  - TRANSITION_VIA_APPEND_BLOCKED
+  - PRIVILEGED_TRANSITION_REQUIRED
+  - ROLE_NOT_PERMITTED
+  - ACTOR_ROLE_NOT_AUTHORIZED
+  - ACTOR_ROLE_NOT_REGISTERED
+  - CLAIM_CONTESTED
+  - CLAIM_LOST
+  - CLAIM_NOT_FOUND
+  - NOT_BEFORE_FUTURE
+  - CONCURRENT_MODIFICATION
+  - IDEMPOTENCY_COLLISION_WITH_DIFFERENT_PAYLOAD
+  - EVENT_ID_GLOBAL_COLLISION
+  - LINK_TYPE_NOT_ALLOWED
+  - LINK_TARGET_NOT_FOUND
+  - LINK_CROSS_PROJECT
+  - LINK_NOT_FOUND
+  - INVALID_FILTER
+  - INVALID_ACTOR_KIND
+  - INVALID_ARGUMENT
+  - DB_NOT_FOUND
+  - MIGRATION_REQUIRED
+  - MIGRATION_DRIFT
+  - UNSUPPORTED_SCHEMA_VERSION
+  - WORKFLOW_VERSION_INCOMPATIBLE
 
-# ---------------------------------------------------------------------------
-# Open Questions
-# ---------------------------------------------------------------------------
+removed_in_0_8_0:
+  - "Signing, keys, HMAC/Ed25519 schemes, cryptographic verification"
+  - "Trust domains, genesis, root governance, estate catalogs"
+  - "Principals, custody, secrets, provisioning, delegation credentials"
+  - "Audit bundles and verifiers, witnesses, transparency anchoring"
+  - "Async hooks/webhooks and the hook queue"
+  - "Recurrence scheduling and the maintenance thread"
+  - "Lineage, assurance, review policy, lint"
+  - "Suite configuration and cross-component provisioning"
+  - "Payload encryption-at-rest"
+  - "Workflow composition (extends:) and archive"
+  - "HTTP sidecar"
+  - "In-memory backend"
 
-open_questions:
-  - question: "Workflow file composition (!include / cross-file merge)"
-    category: "resolved"
-    owner: "Implemented as FR-29 (Plan 004). extends: field with deep-merge, keyed list merge, __append/__remove modifiers."
-  - question: "Transparency-log anchoring (operator-forgery defense)"
-    category: "resolved"
-    owner: "Implemented as FR-30 (Plan 019). Content-committing anchor (sha256 of chain head hash + binding fields) to OpenTimestamps (Bitcoin), RFC 3161 TSA, or operator-controlled file. Receipt state machine with advisory-lock concurrency safety. See spec §17.9.2 for the trust-model implications and residual risks (BC-300 OTS verify semantics)."
-  - question: "Regista library version → Postgres major version compatibility matrix"
-    category: "needs_research"
-    owner: "Implementing agent (resolved during build)"
-  - question: "Per-hook retry override defaults — what's the right per-hook tuning?"
-    category: "cheap_to_change"
-    owner: "Project authors at use time"
-  - question: "Actor → allowed_roles enforcement"
-    category: "resolved"
-    owner: "Implemented as FR-24 (Phase 3). Opt-in enforcement via actor_roles table."
-  - question: "Disk-level durability / backup policy"
-    category: "out_of_scope"
-    owner: "Operator"
-  - question: "Real scheduler beyond not_before timestamp"
-    category: "cheap_to_change"
-    owner: "Future scope"
-  - question: "--continue-on-revoked replay flag"
-    category: "resolved"
-    owner: "Implemented as FR-25 (Phase 3)."
-  - question: "Domain-expert review for distributed-systems correctness (event-sourcing, durability, concurrency)"
-    category: "resolved"
-    owner: "Resolved 2026-05-05 — two-reviewer correctness pass completed. Findings integrated into spec v2."
+compatibility:
+  in_place_upgrade: false
+  fresh_schema_required: true
+  old_schema_policy: "refuse before writes; never auto-drop or reset"
+  preservation: "keep old dump + matching package/deps/keys; verify a scratch restore before touching the original"
 
-# ---------------------------------------------------------------------------
-# Assumptions
-# ---------------------------------------------------------------------------
-
-assumptions:
-  - assumption: "Postgres is available on homelab K3s and provides standard ACID semantics"
-    rationale: "Stated explicitly in vibe spec"
-  - assumption: "Operator runs all agents and trusts them not to misdeclare role by default (actor-claimed trust tier). FR-24 provides opt-in enforcement when threat model warrants."
-    rationale: "Homelab single-operator context; enforcement is available but not required."
-  - assumption: "Workflow files authored by operator (not untrusted parties)"
-    rationale: "Homelab single-operator context; YAML parsing safety follows"
-  - assumption: "License-cost-bound but token-spend unconstrained — regista may be liberal with logging detail and event payload size"
-    rationale: "Stated explicitly in vibe spec"
-  - assumption: "Federated UI is downstream and adapts to regista's contract, not vice versa"
-    rationale: "Vibe spec frames UI as future; regista is authoritative source"
-  - assumption: "Python is acceptable as regista's implementation language for MVP"
-    rationale: "Existing factory is Python; Q1 answer 'library; if non-Python needed, trivial to migrate' implies acceptance"
-
-# ---------------------------------------------------------------------------
-# Implementation Notes (factory-populated post-hoc; empty at synthesis)
-# ---------------------------------------------------------------------------
-
-implementation_notes: []
-
-# ---------------------------------------------------------------------------
-# Security Configuration
-# ---------------------------------------------------------------------------
-
-security:
-  gate_enabled: true
-  block_severities:
-    - "critical"
-    - "high"
-  ignore_patterns: []
-  max_file_size_mb: 10
-
-# ---------------------------------------------------------------------------
-# Agent Configuration
-# ---------------------------------------------------------------------------
-
-agents:
-  default_role: implementer
-  roles:
-    implementer: {}
-    reviewer: {}
-    architect: {}
-
-# ---------------------------------------------------------------------------
-# Telemetry
-# ---------------------------------------------------------------------------
-
-telemetry:
-  enabled: true
-  metrics:
-    - "duration"
-    - "cost"
-    - "memory_usage"
-    - "test_results"
-    - "retry_count"
-  dashboard:
-    auto_generate: true
-    output_format: "html"
-    retention_days: 30
-
-# ---------------------------------------------------------------------------
-# Budget
-# ---------------------------------------------------------------------------
-
-budget:
-  total_max_usd: 100.0
-  phase_limits: {}
-  alert_threshold: 0.8
-  circuit_breaker: true
-
-# ---------------------------------------------------------------------------
-# Deployment
-# ---------------------------------------------------------------------------
-
-deployment:
-  defaults:
-    docker: true
-    kubernetes: "auto"
-    readme_style: "github"
-    auto_enable_conditions:
-      - when: "web_service"
-        enable: ["docker", "kubernetes"]
-      - when: "cli_tool"
-        enable: ["docker"]
-      - when: "library"
-        enable: []
-  constraints:
-    - type: "stateful_service"
-      service: "postgres"
-      image: "postgres:15"
-      ports:
-        "5432": "5432"
-      env:
-        POSTGRES_USER: "regista_test"
-        POSTGRES_PASSWORD: "regista_test"
-        POSTGRES_DB: "regista_test"
-  smoke_tests:
-    http_endpoints: []
-    file_checks: []
-    command_checks: []
-
-# ---------------------------------------------------------------------------
-# Handoff State
-# ---------------------------------------------------------------------------
-
-handoff:
-  decisions_made:
-    - decision: "Library deployment, in-process Postgres calls"
-      rationale: "Simplest, matches per-project isolation. Sidecar migration is additive if non-Python actors arrive."
-    - decision: "Hybrid persistence: events authoritative, work_items_current transactionally projected"
-      rationale: "Single Postgres transaction per state change. Fast reads + intact history + rebuildable projection. Avoids pure event-sourcing's per-read replay cost."
-    - decision: "Postgres-only coordination; regista is not a durable execution engine"
-      rationale: "Keeps regista small. Temporal-style orchestration is project-layered concern using regista as durable state record."
-    - decision: "Per-project schema isolation; one schema per project within a shared database; multiple workflows per schema"
-      rationale: "Hardest wall, cleanest backup/restore, no cross-project query accidents. Operator provisions DB; regista runs migrations."
-    - decision: "Workflow files versioned in per-project registry; immutable once referenced; work-items pin version; replay validates against historical versions"
-      rationale: "Allows non-additive workflow changes (rename state, remove transition) safely. In-flight work continues on its pinned version."
-    - decision: "Custom fields per-workflow-per-work-item-type with declared types and ui_visible flag (default false)"
-      rationale: "Avoids Jira-style global custom-field bloat. Project designer opts in to UI visibility."
-    - decision: "Side effects via hooks: sync (5s default timeout, gates transaction) or async (queue + LISTEN/NOTIFY + always-on polling)"
-      rationale: "Sync for must-gate-transition cases; async-default for everything else; polling is correctness mechanism, NOTIFY is latency optimization."
-    - decision: "Identity via pluggable verifier; HMAC default with key-set-with-status; events carry key_id; OIDC-ready"
-      rationale: "Minimal infra today (HMAC + K3s Secret), maximum flexibility tomorrow (any IdP maps to same actor_id)."
-    - decision: "Postgres now() time authority; per-work-item event_seq for total ordering"
-      rationale: "Same-transaction events share timestamp (correct); event_seq disambiguates within work-item for replay determinism."
-    - decision: "Links are events (link_created / link_removed); current links derived; cross-project links unsupported"
-      rationale: "Composes with replay correctness; link history preserved in audit trail."
-    - decision: "Regista does not retry on connection failure; surfaces error to caller"
-      rationale: "Regista doesn't know if a write is safe to retry; that decision belongs to caller with idempotency context."
-    - decision: "Workflow registry append-only; no removal primitive"
-      rationale: "Operator-level removal is operator's responsibility; orphaned references caught at next replay."
-    - decision: "Dead-letter is quarantine, not graveyard; requeue_dead_lettered_hook(id) primitive"
-      rationale: "Failed hooks should be replayable when underlying issue is fixed."
-    - decision: "Replay outputs fresh projection table; operator decides swap vs. diff"
-      rationale: "Composes with 'verify event log is source of truth' use case; replay is verification/recovery, not hot-path."
-    - decision: "Concurrency contract: canonical lock target = work_items_current row; READ COMMITTED + row lock for mutations; REPEATABLE READ for replay (read-only); gap-free per-work-item event_seq allocator"
-      rationale: "Single canonical serialization mechanism for per-work-item state; replay uses REPEATABLE READ for snapshot consistency under concurrent writes."
-    - decision: "Projection invariant: work_items_current fully derived from events; no out-of-band updates; drift detected via FR-16 replay report"
-      rationale: "Events are authoritative; projection is a transactionally-consistent denormalization. Direct mutation outside regista API is a contract violation detectable by replay."
-    - decision: "API-layer idempotency: client-supplied UUIDv4 on every mutation; event_id doubles as event-append idempotency key; optional expected_event_seq for optimistic locking"
-      rationale: "Makes caller-side retry across transient failures safe without regista needing to understand caller idempotency semantics."
-    - decision: "Signing: HMAC-SHA256 over RFC 8785 canonical JSON envelope; canonical hash stored alongside signature for jsonb-independent re-verification"
-      rationale: "Signature stability must survive Postgres version upgrades that change jsonb canonicalization. Storing canonical hash decouples verification from jsonb round-trip behavior."
-    - decision: "Renaming: in-transaction side effects are transition validators (no I/O, gate commit); async side effects are hooks (durable queue, retryable)"
-      rationale: "Naming forces correct mental model. Consumers reach for hooks by default; validators are a narrow exception path for work necessarily atomic with the transition."
-    - decision: "Closed custom field type vocabulary: string, integer, boolean, timestamp, json, enum, work_item_ref. Expansion requires regista minor version bump"
-      rationale: "Prevents uncontrolled type proliferation; version-gated expansion keeps workflow definitions portable across regista versions."
-    - decision: "Trust tiers on event fields: authenticated (actor_id, key_id) / server-stamped (timestamp, event_seq) / actor-claimed (actor_metadata, incl. role, model, provider, role_source, context_hash, prompt_template_hash)"
-      rationale: "Consumers (UI, audit tooling, replay validators) must distinguish field trustworthiness. Surfaces role as 'claimed' until enforcement lands. Content-hash fields (context_hash, prompt_template_hash) are actor-claimed like the rest of actor_metadata but serve a different purpose: per-attempt and per-template correlation in telemetry."
-    - decision: "Structured work-item query (FR-05b) as MVP"
-      rationale: "Closes the API gap where agents would otherwise reach into work_items_current directly to discover claimable work. Foundation for federated UI list views."
-    - decision: "Public API surface formalized (section 19): protocol, not Postgres connection; library is sole signer; service-wrapping is mechanical"
-      rationale: "If the API leaks Postgres internals, every service wrapper becomes architectural. Clean boundary means sidecar/federated-UI service layer is a thin HTTP translation, not a redesign."
-    - decision: "Consumer expectation boundary (section 20): explicit enumeration of what regista does NOT do"
-      rationale: "The 'coordination, not orchestration' label is too easily misread. Enumerating non-goals prevents the most common adoption failure: 'I thought regista would handle X.'"
-    - decision: "Per-project schema isolation (BR-13) acknowledged as load-bearing with documented migration path to tenant_id-in-shared-schema"
-      rationale: "DB-per-project is correct at homelab scale. Migration path to tenant_id-in-shared-DB documented so the boundary can shift without API changes when operational pain warrants."
-    - decision: "Actor → allowed_roles enforcement (FR-24): opt-in via actor_roles table"
-      rationale: "Actors with no registered roles are trusted; actors with registered roles must claim a role in their set. Closes BR-09."
-    - decision: "Continue-on-revoked replay flag (FR-25): skips revoked-key events with warnings"
-      rationale: "Makes replay practical after key rotation without halting on historical revoked-key events."
-    - decision: "update_not_before API (FR-26): emits not_before_set event, updates projection"
-      rationale: "Closes spec gap where not_before_set events existed in replay but no API could produce them."
-    - decision: "Custom field validation at transitions (FR-27): extends creation-time validation to update path"
-      rationale: "Rejects unknown fields and type mismatches in custom_fields_update during transitions."
-    - decision: "Postgres version pinned to 15+"
-      rationale: "Used in test infrastructure; features used: JSONB, LISTEN/NOTIFY, FOR UPDATE row locks, declarative partitioning available."
-    - decision: "Event log retention: always-grow at homelab scale; month-partition at 1M events"
-      rationale: "Correct for ≤10k work-items, ≤100k events per project. Month-partition via declarative partitioning is a one-time migration per project."
-    - decision: "Event archival API: move old events to events_archive table"
-      rationale: "Operators need a way to manage table growth. archive_events(before_timestamp) moves rows to a same-schema archive table. Replay of recent events unaffected."
-    - decision: "Batch work-item creation: create_work_items_batch() in single transaction"
-      rationale: "Agent pipelines fan out dozens of work-items; N round-trips add latency. Single-transaction batch is atomic and faster."
-    - decision: "Webhook push-model delivery for events"
-      rationale: "Lower integration friction for simple consumers. register_webhook(url, transitions=[...]) fires HTTP POST on matching events. Reuses existing retry/dead-letter infrastructure."
-    - decision: "CLI write commands gated by --confirm flag"
-      rationale: "Operators debugging workflows need create/transition without Python. --confirm flag prevents accidental mutations; without it, prints what would happen."
-    - decision: "Workflow composition endpoint and CLI command"
-      rationale: "Tools and CI pipelines can inspect composed YAML before registration without writing Python."
-
-  pending:
-    - item: "Workflow file composition (!include / merge)"
-      why_deferred: "Premature in v1; loader extension is additive"
-      impact_if_wrong: "None until needed; can grow later without breaking single-file workflows"
-    - item: "Schema partitioning for events table"
-      why_deferred: "Cheap to add when volume warrants; unnecessary at homelab scale"
-      impact_if_wrong: "Slow queries when one project becomes high-volume; addressable with month-partition migration"
-    - item: "OIDC verifier implementation"
-      why_deferred: "No human users in MVP"
-      impact_if_wrong: "Adding OIDC requires implementing verifier plug; no schema migration to actor model"
-    - item: "Sidecar / non-Python integration"
-      why_deferred: "All MVP agents are Python"
-      impact_if_wrong: "Migration to sidecar is additive (regista exposes RPC over local socket); no core schema change"
-
-  intent_signals:
-    - signal: "Generalize it and have it work for all projects more generally"
-      relevance: "Regista must be project-agnostic; resist factory-specific concepts leaking into core schema. Workflow definitions are the project-specific layer."
-    - signal: "One source of truth for all projects ... one pane of glass we can feed projects into when we eventually make a human readable UI"
-      relevance: "Shape the contract so federated UI is additive, not redesign trigger. ui_visible flag, declarative workflow def, event log read shapes all serve this."
-    - signal: "Non-revenue homelab project; license costs are the binding constraint, token spend is not"
-      relevance: "Prefer richly-logged, verbose, debug-friendly implementations over throughput-optimized. Avoid per-seat-licensed tools (Linear / Jira-cloud)."
-    - signal: "Compose with, not replace, the existing reasoning.log convention"
-      relevance: "Regista must not assume sole ownership of agent state; reasoning.log continues to coexist."
-    - signal: "Currently zero humans-in-the-loop, but the design should not foreclose that"
-      relevance: "Actor model + identity verifier shaped to accept humans without schema migration; ui_visible flag and pluggable verifier honor this."
-    - signal: "Idempotency and exactly-once semantics per task type, not globally"
-      relevance: "Regista does not enforce exactly-once globally; per-hook retry policy and dead-letter behavior are project-tunable; sync-hook-rollback gives exactly-once-per-transition where needed."
-    - signal: "What's regista concern vs. agent concern"
-      relevance: "Regista is coordination + state; agents own work, hooks, scheduling, retries beyond the dispatch primitive. Resist scope creep."
-    - signal: "Minimum API surface needs to be to keep a future UI cheap"
-      relevance: "Read-event-log primitives (FR-05) and current-state queries are the UI's primary surface; design indexes and query shapes for the UI's future use, not just hot-path agent operations."
-
-# ---------------------------------------------------------------------------
-# Delta to Next Level
-# ---------------------------------------------------------------------------
-
-delta_to_next_level:
-  - gap: "OIDC verifier implementation"
-    what_would_close_it: "Implement verifier plug; no schema migration to actor model"
-  - gap: "Federated UI prototype"
-    what_would_close_it: "Downstream artifact; not a regista concern, but blocks human-facing view"
-  - gap: "Per-hook rate limiting in sidecar"
-    what_would_close_it: "Token-bucket per-token rate limiting; currently deferred (WS-4)"
+maintenance:
+  scope: "release regressions and serious security/data-loss defects only"
+  feature_roadmap: false
+  sla: false

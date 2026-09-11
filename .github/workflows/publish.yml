@@ -2,7 +2,7 @@ name: Publish
 
 # Build and publish regista-hraedon to PyPI when a version tag (v*) is pushed.
 #
-# Flow: a tag such as `v0.6.0` triggers a `verify` job (lint + type-check + the
+# Flow: a tag such as `v0.8.0` triggers a `verify` job (lint + type-check + the
 # Postgres-backed test suite, mirroring ci.yml against the TAGGED tree, plus a
 # tag==package-version guard), then a `build` job (`uv build` → sdist + wheel),
 # then a `publish` job that uploads to PyPI. Each job `needs:` the previous one,
@@ -52,16 +52,14 @@ jobs:
           --health-retries 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.13"
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,vendor-check,sidecar,ed25519,encryption,vault]"
+          pip install -e ".[dev]"
       - name: Tag matches package version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -69,7 +67,7 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg"
       - name: Lint
-        run: ruff check src/ tests/ tools/
+        run: ruff check src/ tests/ examples/
       - name: Type-check
         run: mypy
       - name: Test

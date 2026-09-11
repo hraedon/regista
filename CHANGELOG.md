@@ -2,6 +2,85 @@
 
 All notable changes to regista are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-09-11
+
+### Changed
+
+**This is a deliberate, breaking scope reset, not an incremental release.** The
+project was reduced to its general work-coordination kernel — an embeddable
+ledger for durable ownership, validated handoffs, and replayable history over
+PostgreSQL. Everything that served the removed trust/evidence system was deleted
+outright. There is **no supported in-place upgrade** from 0.7.2 or earlier; a
+fresh schema is required, and an old or untracked schema is refused before any
+write. The distribution stays `regista-hraedon`; the import name and console
+script stay `regista`. See `plans/032-final-public-release.md` and
+`plans/032-f0-contract-reduction.md` for the decision record and `README.md` for
+the current proposition.
+
+### Retained (the kernel)
+
+- Schema-per-project isolation over one shared PostgreSQL pool (`SET LOCAL
+  search_path` per transaction).
+- Immutable, append-only event log with gap-free per-work-item `event_seq`,
+  atomic projection update, and `UNIQUE(event_id)` identity.
+- Versioned, immutable workflow registry with work-item version pinning; YAML +
+  JSON Schema validation of states, transitions, roles, custom fields, and link
+  types.
+- Public create/query/transition/append paths with stable IDs and typed
+  errors.
+- Durable claims: acquire, heartbeat, release, expiry sweep, auto-steal, and
+  public attempt-number fencing (`expected_attempt_number`).
+- Custom fields (including `work_item_ref`) and bounded equality filtering.
+- Typed directed links, including cross-project value-references.
+- Replay that rebuilds the projection from the event log and reports drift,
+  halts, and warnings honestly.
+- Idempotent retries by `event_id`, with conflicting reuse refused.
+- Structured work-item discovery queries with cursor pagination and predictable
+  ordering.
+- Small admin CLI: workflow validate, work-item show/list/create/transition,
+  events show/tail, replay, schema init/status, actor-roles list, version, doctor.
+- Prometheus metrics and structured logging.
+
+### Removed
+
+- Signing and cryptography: `_signing`, `_signing_scheme`, `_keys`, the signed
+  envelope, event signatures, hash chains, `prev_event_hash`, `global_seq`, and
+  all key-file plumbing. Canonical JSON and content hashing remain for
+  idempotency and projection consistency only.
+- Trust domain and governance: trust log, genesis, root/registrar authority,
+  estate catalogs, v6 admission, and action-delegation credentials.
+- Principals, custody, and secrets: principal keys/aliases, lifecycle,
+  `_custody`, `_secrets`, provisioning, and per-principal enrollment.
+- Audit bundles and verification (v1–v3) and transparency-log anchoring.
+- Witnesses and their receipts/delivery; async hooks/webhooks, hook leases, and
+  the dead-letter queue.
+- Recurrence scheduling and the maintenance timer thread.
+- Model lineage, assurance/gate classification, review policy, and the lint
+  helper.
+- Suite configuration discovery, lock/health dependencies, and cross-component
+  provisioning.
+- Payload encryption-at-rest and its scheme registry.
+- Workflow composition (`extends:`) and the archive subsystem.
+- The HTTP sidecar package and its deployment/authentication surface.
+- The in-memory backend; kernel tests now run against disposable PostgreSQL.
+
+### Added
+
+- A fresh single-baseline schema, `migrations/001_initial.sql` (schema version
+  1), replacing the 0.5–0.7 migration chain. Initialization distinguishes a
+  supported fresh schema, an empty destination, and an old/unknown schema; the
+  latter is refused without mutation and never auto-dropped or reset.
+- Two runnable examples, `examples/worker_reviewer.py` and
+  `examples/document_processing.py`, that exercise the public API against
+  disposable PostgreSQL with no keys or suite configuration.
+
+### Notes
+
+The `[Unreleased]` section below records pre-0.8.0 work (bundle v3 and related
+trust machinery) that was never released and is **removed** by 0.8.0. It is kept
+as historical record. The `[0.7.2]` and earlier sections describe the superseded
+product.
+
 ## [Unreleased]
 
 ### Changed

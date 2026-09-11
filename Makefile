@@ -11,7 +11,7 @@ all: check
 check: lint typecheck test
 
 lint:
-	$(RUFF) check src/ tests/
+	$(RUFF) check src/ tests/ examples/
 
 typecheck:
 	$(MYPY)

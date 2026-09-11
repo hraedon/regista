@@ -250,3 +250,28 @@ class ClaimApiMixin(_RegistaBase):
         """
         self._require_open()
         return self.links.list(work_item_id)
+
+    def register_actor_role(self, actor_id: str, role: str) -> None:
+        """Register ``role`` as allowed for ``actor_id``.
+
+        Once an actor has any registered roles, transitions claiming a role
+        must claim one of them (FR-24). Idempotent.
+        """
+        from ._actor_roles import register_actor_role as _impl
+
+        with self._mgr.transaction() as conn:
+            _impl(conn, actor_id, role)
+
+    def unregister_actor_role(self, actor_id: str, role: str) -> None:
+        """Remove a role mapping. Raises if the mapping does not exist."""
+        from ._actor_roles import unregister_actor_role as _impl
+
+        with self._mgr.transaction() as conn:
+            _impl(conn, actor_id, role)
+
+    def list_actor_roles(self, actor_id: str | None = None) -> list[dict[str, Any]]:
+        """List actor → role mappings, optionally scoped to one actor."""
+        from ._actor_roles import list_actor_roles as _impl
+
+        with self._mgr.transaction() as conn:
+            return _impl(conn, actor_id)
