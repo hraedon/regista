@@ -1,0 +1,73 @@
+name: document_processing
+version: 1
+regista_version: "0.4.0"
+
+states:
+  - name: ingested
+    initial: true
+  - name: extracted
+  - name: needs_review
+  - name: committed
+    terminal: true
+
+roles:
+  - name: ingester
+  - name: processor
+  - name: reviewer
+
+transitions:
+  - name: extract
+    from: ingested
+    to: extracted
+    allowed_roles: [processor]
+  - name: submit_for_review
+    from: extracted
+    to: needs_review
+    allowed_roles: [processor]
+  - name: correct
+    from: needs_review
+    to: needs_review
+    allowed_roles: [reviewer]
+  - name: commit
+    from: needs_review
+    to: committed
+    allowed_roles: [reviewer]
+
+work_item_types:
+  - name: document
+    custom_fields:
+      - name: source_ref
+        type: string
+        required: true
+        ui_visible: true
+      - name: document_type
+        type: enum
+        enum_values: [invoice, receipt, contract]
+        default: invoice
+        ui_visible: true
+      - name: extracted
+        type: json
+        ui_visible: true
+      - name: confidence
+        type: integer
+        ui_visible: true
+      - name: review_note
+        type: string
+        ui_visible: true
+  - name: follow_up
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+        ui_visible: true
+      - name: detail
+        type: string
+        ui_visible: true
+
+link_types:
+  - name: follows
+    source_type: document
+    target_type: follow_up
+  - name: blocks
+    source_type: follow_up
+    target_type: document

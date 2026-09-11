@@ -59,7 +59,8 @@ CREATE TABLE claims (
     actor_id TEXT NOT NULL,
     acquired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
-    attempt_number INTEGER NOT NULL DEFAULT 1
+    attempt_number INTEGER NOT NULL DEFAULT 1,
+    last_heartbeat_emitted_at TIMESTAMPTZ
 );
 
 CREATE INDEX idx_claims_expires_at ON claims (expires_at);

@@ -1,0 +1,61 @@
+name: remediation
+version: 1
+regista_version: "0.4.0"
+
+states:
+  - name: ready
+    initial: true
+  - name: in_progress
+  - name: in_review
+  - name: done
+    terminal: true
+
+roles:
+  - name: worker
+  - name: reviewer
+
+transitions:
+  - name: start
+    from: ready
+    to: in_progress
+    allowed_roles: [worker]
+  - name: submit_for_review
+    from: in_progress
+    to: in_review
+    allowed_roles: [worker]
+  - name: request_changes
+    from: in_review
+    to: in_progress
+    allowed_roles: [reviewer]
+  - name: approve
+    from: in_review
+    to: done
+    allowed_roles: [reviewer]
+
+work_item_types:
+  - name: remediation
+    custom_fields:
+      - name: title
+        type: string
+        required: true
+        ui_visible: true
+      - name: source_ref
+        type: string
+        required: true
+        ui_visible: true
+      - name: severity
+        type: enum
+        enum_values: [low, medium, high, critical]
+        default: medium
+        ui_visible: true
+      - name: result
+        type: string
+        ui_visible: true
+
+link_types:
+  - name: follows
+    source_type: remediation
+    target_type: remediation
+  - name: blocks
+    source_type: remediation
+    target_type: remediation

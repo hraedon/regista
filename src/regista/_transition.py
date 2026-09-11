@@ -27,6 +27,7 @@ from ._contract import (
 )
 from ._errors import ErrorCode, RegistaError
 from ._events import append_transition_event as _append_transition_event
+from ._events import check_idempotency as _check_idempotency
 from ._observability import Metrics, OpTimer
 from ._types import Event
 
@@ -90,6 +91,22 @@ def transition(
                         "actual_attempt_number": wi_row["attempt_number"],
                     },
                 )
+
+            stored_payload: dict[str, Any] = dict(payload) if payload is not None else {}
+            if custom_fields:
+                stored_payload["custom_fields_update"] = custom_fields
+            existing = _check_idempotency(
+                conn,
+                event_id,
+                actor_id=actor_id,
+                transition=transition_name,
+                work_item_id=work_item_id,
+                payload=stored_payload if payload is not None else None,
+                entity_kind="work_item",
+            )
+            if existing is not None:
+                timer.log("ok", work_item_id=str(work_item_id), detail="idempotent")
+                return existing
 
             wf_data = conn.execute(
                 "SELECT definition FROM workflow_registry "

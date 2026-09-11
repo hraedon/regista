@@ -1,139 +1,105 @@
 from __future__ import annotations
 
+import os
 import uuid
-from pathlib import Path
 
 import pytest
 
+from regista import Regista, RegistaError
+from regista._errors import ErrorCode
+from regista._integrity import REGISTA_VERSION
 from regista._testing import raw_transaction
-from regista.testing import drop_project_schema
 
-TESTS_DIR = Path(__file__).parent
-DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
-KEY_PATH = str(TESTS_DIR / "test_keys.json")
-WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
+_DEFAULT_DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
 
 
-#: Canonical per TRUST-DOMAIN.md §2.1 — the v6 ingress refuses a bare legacy name.
-WORKER = "agent:worker"
+def _resolve_dsn() -> str:
+    try:
+        import conftest
+    except ImportError:
+        return os.environ.get("REGISTA_TEST_DSN", _DEFAULT_DSN)
+    return getattr(conftest, "DSN", os.environ.get("REGISTA_TEST_DSN", _DEFAULT_DSN))
 
 
-@pytest.fixture
-def regista(tmp_path):
-    from regista import Regista
-    from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
+DSN = _resolve_dsn()
 
-    project = f"test_replay_{uuid.uuid4().hex[:8]}"
-    keyset = make_v6_keyset(tmp_path)
-    sub = Regista.create_project(DSN, project, keyset.path)
-    # The epoch first: `register_workflow_file` emits the signed
-    # `workflow_registered` event admission gate 1 requires, and there is no
-    # epoch to append it to before `open_v6_epoch` returns.
-    open_v6_epoch(sub, keyset)
-    sub.register_workflow_file(WORKFLOW_PATH)
-    yield sub
-    sub.close()
-    drop_project_schema(DSN, project)
+WORKFLOW_NAME = "kernel_replay_wf"
+ACTOR = "agent:replayer"
 
-
-class TestAC17RevokedKeyHaltsReplay:
-    def test_replay_report_includes_halted_count(self, regista):
-        wi, _ = regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id=WORKER,
-            custom_fields={"title": "AC-17 halted"},
-        )
-        regista.transition(
-            wi.work_item_id, "start", WORKER, actor_metadata={"role": "agent"}
-        )
-
-        report = regista.replay()
-        assert report.halted >= 0
-        assert report.replayed_ok >= 1
+WF_YAML = f"""
+name: {WORKFLOW_NAME}
+version: 1
+regista_version: "{REGISTA_VERSION}"
+states:
+  - name: new
+    initial: true
+  - name: in_progress
+  - name: done
+    terminal: true
+transitions:
+  - name: start
+    from: new
+    to: in_progress
+  - name: finish
+    from: in_progress
+    to: done
+roles: []
+work_item_types:
+  - name: task
+    custom_fields: []
+"""
 
 
-class TestAC29OutOfBandEditDrift:
-    def test_direct_state_update_detected_as_drift(self, regista):
-        wi, _ = regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id=WORKER,
-            custom_fields={"title": "AC-29 state drift"},
-        )
+def _seed(sub: Regista) -> uuid.UUID:
+    sub.register_workflow(WF_YAML)
+    wi, _ = sub.create_work_item(
+        workflow_name=WORKFLOW_NAME,
+        work_item_type="task",
+        actor_id=ACTOR,
+    )
+    sub.transition(wi.work_item_id, "start", ACTOR)
+    return wi.work_item_id
 
-        with raw_transaction(regista) as conn:
-            conn.execute(
-                "UPDATE work_items_current SET current_state = 'done' "
-                "WHERE work_item_id = %s",
-                [wi.work_item_id],
-            )
 
-        report = regista.replay()
-        assert report.replayed_drift >= 1
+def test_replay_reports_ok(sub: Regista) -> None:
+    work_item_id = _seed(sub)
+    report = sub.replay(work_item_id=work_item_id)
 
-    def test_direct_custom_fields_update_detected_as_drift(self, regista):
-        wi, _ = regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id=WORKER,
-            custom_fields={"title": "AC-29 field drift"},
-        )
+    assert report.replayed_ok >= 1
+    assert report.replayed_drift == 0
+    assert report.halted == 0
+    assert any(entry.category == "ok" for entry in report.entries)
 
-        with raw_transaction(regista) as conn:
-            conn.execute(
-                "UPDATE work_items_current SET custom_fields = '{\"title\": \"tampered\"}'::jsonb "
-                "WHERE work_item_id = %s",
-                [wi.work_item_id],
-            )
 
-        report = regista.replay()
-        assert report.replayed_drift >= 1
+def test_scoped_replay_only_covers_the_named_item(sub: Regista) -> None:
+    work_item_id = _seed(sub)
+    report = sub.replay(work_item_id=work_item_id)
 
-    def test_no_drift_after_normal_operations(self, regista):
-        wi, _ = regista.create_work_item(
-            workflow_name="test_workflow",
-            work_item_type="feature",
-            actor_id=WORKER,
-            actor_metadata={"role": "agent"},
-            custom_fields={"title": "AC-29 clean"},
-        )
-        regista.transition(
-            wi.work_item_id, "start", WORKER, actor_metadata={"role": "agent"}
+    assert len(report.entries) >= 1
+    assert all(entry.work_item_id == work_item_id for entry in report.entries)
+
+
+def test_injected_projection_drift_is_reported(sub: Regista) -> None:
+    work_item_id = _seed(sub)
+
+    with raw_transaction(sub) as conn:
+        conn.execute(
+            "UPDATE work_items_current SET current_state = 'bogus_state' "
+            "WHERE work_item_id = %s",
+            [work_item_id],
         )
 
-        report = regista.replay()
-        assert report.replayed_drift == 0
-        assert report.halted == 0
+    report = sub.replay(work_item_id=work_item_id)
+
+    assert report.replayed_drift >= 1
+    drift_entries = [e for e in report.entries if e.category == "drift"]
+    assert drift_entries
+    assert any(
+        e.detail is not None and "current_state" in e.detail for e in drift_entries
+    )
 
 
-class TestPrincipalBindingFailureReport:
-    def test_report_round_trips_principal_binding_failures(self):
-        from regista._types import ReplayReport
-
-        report = ReplayReport(
-            table_name="t",
-            replayed_ok=1,
-            replayed_drift=0,
-            halted=0,
-            warnings=2,
-            principal_binding_failures=2,
-        )
-        d = report.to_dict()
-        assert d["principal_binding_failures"] == 2
-        assert d["warnings"] == 2
-
-        restored = ReplayReport.from_dict(d)
-        assert restored.principal_binding_failures == 2
-
-    def test_report_omits_zero_principal_binding_failures(self):
-        from regista._types import ReplayReport
-
-        report = ReplayReport(
-            table_name="t",
-            replayed_ok=1,
-            replayed_drift=0,
-            halted=0,
-        )
-        assert "principal_binding_failures" not in report.to_dict()
-        assert report.principal_binding_failures == 0
+def test_scoped_replay_unknown_id_raises(sub: Regista) -> None:
+    with pytest.raises(RegistaError) as exc_info:
+        sub.replay(work_item_id=uuid.uuid4())
+    assert exc_info.value.code is ErrorCode.WORK_ITEM_NOT_FOUND

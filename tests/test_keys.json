@@ -1,9 +1,0 @@
-{
-  "keys": [
-    {
-      "key_id": "test-key-001",
-      "secret": "dGhpcyBpcyBhIHRlc3Qgc2VjcmV0IGtleSBmb3Igc3Vic3RyYXRl",
-      "status": "active"
-    }
-  ]
-}
