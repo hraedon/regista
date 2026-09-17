@@ -13,6 +13,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import sys
+import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,7 +61,7 @@ def _contender(dsn: str, item_id: str, actor: str, q) -> None:
     """A separate OS process racing for the same lease."""
     k = Kernel.connect(dsn)
     try:
-        c = k.claim(uuid.UUID(item_id), actor_id=actor, ttl_seconds=60)
+        c = k.claim(uuid.UUID(item_id), actor_id=actor, ttl_seconds=2)
         q.put((actor, "won", c.attempt))
     except ClaimContestedError as e:
         q.put((actor, "lost", str(e)))
@@ -134,10 +135,10 @@ def main(dsn: str) -> int:
     step("5.", "The worker dies mid-attempt. Its lease expires and another worker takes over.")
     k.transition(finding.id, transition="start", actor_id=owner, attempt=attempt1)
     ok(f"{owner} took another attempt (state=in_progress), then the process died")
-    with k._conn.cursor() as cur:  # simulate the clock advancing past the TTL
-        cur.execute("UPDATE claims SET expires_at = now() - interval '1 second' "
-                    "WHERE work_item_id = %s", (finding.id,))
-    k._conn.commit()
+    # A real wait on a real short lease. Reaching into the table to backdate
+    # expires_at would have been faster, but it would also have meant this
+    # scenario no longer ran entirely through the public API.
+    time.sleep(2.2)
     swept = k.expire_leases()
     ok(f"lease expired and was swept ({swept} removed)")
     takeover = k.claim(finding.id, actor_id="worker-3", ttl_seconds=300)

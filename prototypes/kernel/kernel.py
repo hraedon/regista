@@ -290,6 +290,36 @@ class Kernel:
             raise InvalidWorkflowError(f"no such workflow: {name} v{version}")
         return Workflow.from_json(row["definition"], int(row["version"]))
 
+    def list_workflows(self) -> list[tuple[str, int, datetime]]:
+        """Every registered workflow version, oldest first."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT workflow_name, version, registered_at FROM workflow_registry "
+                "ORDER BY workflow_name, version"
+            )
+            rows = cur.fetchall()
+        self._conn.commit()
+        return [(r["workflow_name"], int(r["version"]), r["registered_at"]) for r in rows]
+
+    def health(self) -> dict[str, Any]:
+        """Schema version and bounded counts. Cheap enough to poll."""
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT kernel_schema_version FROM kernel_meta")
+            row = cur.fetchone()
+            version = int(row["kernel_schema_version"]) if row else None
+            counts = {}
+            for label, sql in (
+                ("work_items", "SELECT count(*) AS n FROM work_items_current"),
+                ("live_leases", "SELECT count(*) AS n FROM claims WHERE expires_at > now()"),
+                ("events", "SELECT count(*) AS n FROM events"),
+                ("workflows", "SELECT count(*) AS n FROM workflow_registry"),
+            ):
+                cur.execute(sql)
+                r = cur.fetchone()
+                counts[label] = int(r["n"]) if r else 0
+        self._conn.commit()
+        return {"schema_version": version, **counts}
+
     # ---- work items ------------------------------------------------------
 
     def create_work_item(
@@ -416,12 +446,14 @@ class Kernel:
         self._conn.commit()
         return Claim(claim.work_item_id, claim.actor_id, claim.attempt, expires)
 
-    def release(self, claim: Claim) -> None:
+    def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
+        """Release a lease. Takes the primitive rather than a Claim, so a CLI
+        holding only (id, actor, attempt) can call it without fabricating one."""
         with self._conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s "
                 "AND attempt_number = %s",
-                (claim.work_item_id, claim.actor_id, claim.attempt),
+                (work_item_id, actor_id, attempt),
             )
         self._conn.commit()
 
