@@ -290,11 +290,8 @@ question for the estate, not a reason to keep it in a published MVP.
 
 ## 8. What F0 still owes
 
-- **A prototype `events` row and project-open path without required signing.**
-  This is the largest remaining debt: §5 shows the current schema makes Plan
-  032's "no cryptographic ceremony" requirement structurally unreachable, and
-  Plan 032 §5's extract-versus-sever decision should not be taken before the new
-  row and open path exist even in sketch.
+- ~~A prototype `events` row and project-open path without required signing.~~
+  **Discharged** — see `prototypes/kernel/`, and §9 below for what it settles.
 - **Per-file test dispositions.** §4 gives a ceiling (68%), not a decision.
 - **The maintainer's ruling on §7.** The evidence is assembled; the calls are
   not mine to make. Note that the in-memory recommendation is the one place this
@@ -304,3 +301,51 @@ question for the estate, not a reason to keep it in a published MVP.
   define.
 - **The Python support range (F0 item 5).** The `fromisoformat` divergence
   recorded in §2 is a direct input.
+
+## 9. The prototype, and the §5 verdict
+
+`prototypes/kernel/` is a working `create → claim → transition → query → replay`
+path against real PostgreSQL with **no keys, no trust log, no genesis ceremony
+and no suite configuration**. 736 lines of implementation over a 111-line schema,
+plus 468 lines of scenario and mutation checks. It is `ruff` clean and passes
+`mypy --strict`, which the repository requires of every new module.
+
+It runs Plan 032 F0a scenario 1 end to end: work filed with domain fields and a
+typed link, **two real OS processes** contending for one lease, a worker/reviewer
+handoff with a change request, worker death, lease expiry, takeover, and a
+refused stale write from the revived worker — then replay from events alone with
+no drift.
+
+13 mutation checks establish that those refusals are not vacuous. Each breaks one
+guarantee and asserts the kernel notices, **and** that the legitimate form of the
+same call still succeeds: edited event payloads, deleted middle events,
+idempotency keys reused for a different request, wrong and absent roles, missing
+required fields, transitions out of a terminal state, reissued fencing tokens,
+and `initialize()` pointed at a 0.7-era schema (refused **without mutating it**).
+
+One defect was found by building it, and is worth carrying into whichever
+implementation ships: lease *decisions* were being taken on the writing process's
+clock while lease *queries* used the database clock. On hosts whose clocks
+disagree, `available()` and `transition()` would disagree about whether a lease
+is live. Expiry now has one authority — the database — because a coordination
+store has many clients and one serialization point.
+
+**Verdict on Plan 032 §5: extract.** §3 showed the severing work concentrating in
+six modules, which read as tractable. §5 showed why that reading is incomplete:
+the retained event record itself must change, so those six modules must be re-cut
+against a new row regardless. Building the new row directly cost 715 lines and
+produced a path that already satisfies the contract F2 must qualify. Severing
+means reaching the same row through 22,610 lines carrying the history of every
+design it used to serve.
+
+The prototype is **not** a complete MVP — no CLI, pagination, pool health,
+YAML/JSON Schema workflow loading, bounded field filtering, archive,
+observability, async surface, or cross-project links. Completing those plausibly
+lands in the low thousands of lines; that is an estimate, not a measurement, and
+it does not change the order of magnitude.
+
+Per Plan 032 F0a, the minimal implementation "must become the retained
+implementation, not a throwaway second engine" — so the recommendation is to
+promote this rather than sever. **The maintainer decides.** If the decision goes
+the other way, the scenario and mutation checks apply unchanged to a severed
+kernel: they test the contract, not this implementation.

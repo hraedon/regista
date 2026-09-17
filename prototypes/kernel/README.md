@@ -1,0 +1,144 @@
+# Regista kernel prototype
+
+This is the F0a instrument for [Plan 032](../../plans/032-final-public-release.md):
+a complete, running `create → claim → transition → query → replay` path with **no
+keys, no trust log, no genesis ceremony and no suite configuration**, built to
+settle the extract-versus-sever question in Plan 032 §5 with code rather than
+argument.
+
+It is not yet the shipped package. See [the verdict](#what-this-settles).
+
+## Try it in two minutes
+
+You need PostgreSQL and `psycopg`. A disposable instance:
+
+```bash
+docker compose -f ../../docker-compose.test.yml up -d
+export DSN="postgresql://regista_test:regista_test@localhost:5432/regista_test"
+```
+
+Run the scenario:
+
+```bash
+python example_handoff.py "$DSN"
+```
+
+It files remediation work, races **two real OS processes** for the lease, walks a
+worker/reviewer handoff with a change request, kills the worker, expires its
+lease, lets another worker take over, and then tries to commit the dead worker's
+write — which is refused. Finally it replays the item from events alone and
+prints the history.
+
+Prove the checks can actually fail:
+
+```bash
+python test_mutations.py "$DSN"
+```
+
+13 checks, each with a control. They edit event payloads, delete middle events,
+reuse idempotency keys for different requests, present the wrong role, and point
+`initialize()` at a 0.7-era schema. Every one asserts something was refused
+**and** that the legitimate version of the same call still succeeds.
+
+## The model
+
+Register a workflow, create work, claim it, make validated transitions, query,
+replay. Regista owns coordination state; you own execution and your interfaces.
+
+```python
+from kernel import Kernel, Workflow
+
+k = Kernel.connect(DSN)
+k.initialize("schema.sql")
+
+k.register_workflow(Workflow(
+    name="remediation", version=0,
+    states=("open", "in_progress", "in_review", "done"),
+    initial="open",
+    transitions={
+        "start":  (("open",), "in_progress"),
+        "submit": (("in_progress",), "in_review"),
+        "accept": (("in_review",), "done"),
+    },
+    roles={"accept": ("reviewer",)},
+    required_fields={"submit": ("remediation_note",)},
+    terminal=("done",),
+))
+
+item = k.create_work_item(workflow="remediation", type="finding",
+                          actor_id="scanner", fields={"host": "web-01"})
+
+claim = k.claim(item.id, actor_id="worker-1", ttl_seconds=300)
+k.transition(item.id, transition="start", actor_id="worker-1", attempt=claim.attempt)
+```
+
+`claim.attempt` is a **fencing token**. While an item is under a live lease, a
+write must carry the current attempt or be refused. That is what makes a worker
+that hung, got paused, or lost its network harmless to this store when it wakes
+up and tries to finish.
+
+## What it does not do, stated plainly
+
+- **It does not authenticate anyone.** `actor_id` is caller-supplied attribution.
+  Workflow role checks enforce *your* application's policy; the kernel does not
+  verify that a caller holds the role it presents.
+- **`prev_event_hash` is a consistency chain, not authenticity evidence.** It
+  catches accidental gaps, reordering and truncation on replay. Anyone who can
+  write the table can rewrite the chain. The trusted host and database
+  administrator are part of the contract.
+- **A lease does not make an external effect exactly-once.** It stops a stale
+  worker committing *here*. It cannot stop that process issuing an HTTP request.
+  If the effect must be fenced, pass `attempt` to the target system as well and
+  let the target enforce it.
+- **There is no in-place upgrade from 0.7.2 or earlier.** `initialize()` refuses
+  an old or unknown schema without mutating it. Point it at a fresh database.
+- **It is not a job executor, scheduler, or durable-execution engine.** If you
+  need those, [Temporal](https://docs.temporal.io/),
+  [DBOS](https://docs.dbos.dev/architecture) and
+  [Procrastinate](https://procrastinate.readthedocs.io/en/stable/) address them
+  directly and better.
+
+## What this settles
+
+Plan 032 §5 asks for dependency evidence before choosing between severing the
+trust stack out of the current kernel and extracting a corrected kernel into a
+fresh tree. The [dependency map](../../plans/032-f0-dependency-map.md) supplies
+the static half; this supplies the running half.
+
+| | Lines |
+| --- | ---: |
+| This prototype (implementation) | 736 |
+| This prototype (schema) | 111 |
+| …its scenario + mutation checks | 468 |
+| Kernel-classified code to sever and re-cut | 22,610 |
+| …of which six modules couple hardest to the trust stack | 6,046 |
+
+The prototype is **not** a complete MVP. Missing against Plan 032's keep table:
+the CLI, bounded/ordered pagination, connection-pool behaviour and health,
+workflow definitions loaded from YAML/JSON Schema, bounded custom-field
+filtering, archive, observability, the async surface, and cross-project links.
+Completing those plausibly lands in the low thousands of lines — an estimate, not
+a measurement.
+
+The prototype is `ruff` clean under the repository's own configuration and passes
+`mypy --strict`, which `[tool.mypy]` requires of every new module. Note that CI
+lints `src/ tests/ tools/` and type-checks `src/regista` only, so `prototypes/`
+is outside both gates — these were run explicitly, and a promotion would bring
+the code inside them.
+
+Even allowing generously for that, the comparison is an order of magnitude, and
+the decisive factor is not size. §5 of the dependency map shows the retained
+event record itself has to change: `events.key_id` and `events.signature` have
+been `NOT NULL` since `001_initial.sql`, and `project_identity` could not be
+populated without a trust domain and a genesis event. Severing in place means
+re-cutting the six hot modules against a changed row anyway, while carrying the
+history of every design that row used to serve.
+
+**Recommendation: extract.** Promote this to the retained implementation rather
+than severing the existing kernel, per Plan 032 F0a's requirement that the
+minimal implementation "must become the retained implementation, not a throwaway
+second engine."
+
+The maintainer decides. If the decision goes the other way, the scenario and the
+mutation checks still apply unchanged to a severed kernel — they test the
+contract, not this implementation.
