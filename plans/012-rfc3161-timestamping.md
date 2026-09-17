@@ -1,5 +1,10 @@
 # Plan 012 — RFC 3161 Timestamping on Event Batches
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: RFC 3161 timestamping on event batches (Merkle-tree batching, TSA submission).
+> Why: REMOVE-scope with the rest of the timestamping/anchoring stack. Already recorded as deleted outright in the 0.6.0 line — `AGENTS.md:295` — "were deleted outright" — though this plan file itself never says so; this marker closes that gap for the plan file.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** regista
 **Spec touched:** §17 (signing and integrity), §19 (public API surface)

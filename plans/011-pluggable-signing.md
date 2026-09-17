@@ -1,5 +1,10 @@
 # Plan 011 — Pluggable Signing (Ed25519 + HMAC-SHA256)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: pluggable signing (Ed25519 + HMAC-SHA256 via a `SigningScheme` protocol).
+> Why: signing is removed as a prerequisite and cryptographic verification is omitted from the supported 0.8.0 contract (Plan 032 §3, D5).
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Resolves:** BC-196

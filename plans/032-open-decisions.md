@@ -4,6 +4,108 @@ Every item below is a decision, not a task. Each states the evidence, the
 options, a recommendation, and what it blocks. Nothing here is waiting on more
 analysis; it is waiting on a ruling.
 
+Review: [GPT-6's recommendations and measured caveats](032-open-decisions-review.md)
+(2026-09-17). These are review opinions, not accepted decisions.
+
+---
+
+## Rulings — 2026-09-17
+
+The maintainer ruled the four decisions below directly. Everything else is
+recorded as **adopted** (the decision list and the review concur, and the item
+is reversible) or **still open**. An adopted default is a working assumption
+that unblocked implementation, not a maintainer ruling; any of them can be
+reopened, and the two genuinely open items must not be defaulted.
+
+| # | Ruling | Effect |
+| --- | --- | --- |
+| **D1** | **EXTRACT.** Promote `prototypes/kernel/` into the retained implementation. | F1 is now completion-and-qualification of the kernel, not a sever of the old tree. The regression-preservation obligation from the review is attached: a mapping from retained behaviours and PORT/SPLIT assertions to their replacements exists **before** the protection they replace is deleted. |
+| **D6** | **YES**, one bounded single-hop read-only link-aware query. | Caller supplies link type, direction, and which states count as satisfied. Stable ordering and pagination. No recursion, no automatic transitions, no claim gating. Documented as a snapshot, not a guarantee that a dependency is still satisfied when someone later claims the work. |
+| **D9** | **CAP NOW.** Executed 2026-09-17; the premise was two-thirds stale and the real exposure is elsewhere — see the correction below. | See "D9 as executed". |
+| **D13** | **KEEP `>=3.11`**, test 3.11–3.14. No speculative `<3.15` cap. | Plan 032 prefers retaining the advertised minimum; PyPA advises against speculative upper bounds, and a mismatched `Requires-Python` can make an installer resolve to an *older* regista release, which is the worst outcome across a scope break. The `fromisoformat` divergence is **not** addressed by narrowing — it was measured to sit inside the proposed 3.13/3.14 range too. The extracted kernel avoids it by parsing no timestamp strings at all. |
+
+**Adopted** (concurring recommendation, no dissent): D2 retire the in-memory
+backend *and* retarget its 35 conformance tests to PostgreSQL — the retargeting
+is part of the yes, not a follow-up; D3 remove the sidecar and its extra, by
+file deletion, since `packages = ["src/regista"]` has no exclude and
+`sidecar/__main__.py` is a live entry point; D4 remove recurrence, queued hooks
+and webhooks, while keeping trusted **synchronous** transition validation, which
+is a different responsibility from background delivery; D5 delete signing
+entirely; D7 keep shallow-merge field semantics but add one explicit atomic way
+to clear them — documentation alone leaves a caller able to learn that rejected
+data persists with no supported way to remove it; D10 `0.8.0`; D14 gates now;
+D15 rewrite the spec to the reduced scope, retire the `spec.yaml` sidecar absent
+an identified consumer, keep the workflow JSON Schema; D16 the five ambiguous
+plans per the review's table; D18 delete both; D19 leave the estate on preserved
+working versions for this release; D20 the five test files per the review's
+table; D21 remove workflow composition — the exception was considered and
+declined.
+
+### D9 as executed — the hazard was not where the decision said it was
+
+Checking `origin/main` rather than the working-tree checkouts (each of which sat
+on an unrelated feature branch, behind its remote) changed the picture:
+
+| Repo | Decision list said | `origin/main` actually had |
+| --- | --- | --- |
+| `agent-notes` | `>=0.5.1`, unbounded | **`>=0.7.0,<0.8`** — already capped, via WI-072 |
+| `dossier` | `>=0.5.4`, unbounded | **`>=0.7.1,<0.8`** — already capped, via WI-040 |
+| `ad-steward` | `>=0.5.1`, unbounded | `>=0.5.1` — genuinely unbounded |
+
+Both earlier caps were stopgaps written during the 0.6.0 break and then raised
+when each repo ported to v6. `ad-steward` never got the treatment: its
+2026-08-31 v6-epoch migration changed provenance code and left the bound alone.
+Its floor is now arguably too *low* rather than too high — the code needs a
+v6-epoch regista while the metadata still claims 0.5.1 works. Flagged, not
+changed; that is a separate judgement from closing this hazard.
+
+Only `ad-steward` needed an edit. It is committed
+(`f7077016bce75a0bc9f8685706b030546afcb723`, branch `fix/wi-366-regista-lt-0.8`
+off `origin/main`) and **unpushed**: the repo's own pre-push publication guard
+refuses it, because the repository was transferred to the `hraedon-labs` org
+while `publication.toml` on main still declares `remote_owner = "hraedon"`. That
+correction already exists in open PR #3 and was deliberately not merged here.
+See [[reference-publication-plumbing-guard]].
+
+**The version cap is not the real exposure.** Three findings outrank it:
+
+1. **`ad-steward`'s CI checks out `hraedon/regista` at default-branch HEAD with
+   no ref or tag pin**, then `pip install -e ./regista-src`. The moment regista's
+   main is reduced, that CI builds against 0.8.0 regardless of any specifier in
+   `pyproject.toml`, because the checkout step never consults it. Pinning that
+   checkout to a tag or SHA is the actual mitigation, and it is a prerequisite
+   for reducing main — not a follow-up.
+2. **The installed tool is further behind than recorded.** The live `uv tool`
+   venv holds `agent-notes-hraedon` **1.0.0** pinned to `regista-hraedon`
+   **0.5.4** — not 1.1.0/0.5.5. PyPI already carries `agent-notes-hraedon` 1.1.0
+   with `>=0.7.0,<0.8` baked in, so the fix exists upstream and simply has not
+   reached this box. This is precisely the review's point that source edits do
+   not reach installed metadata. Upgrading also adopts the v6 envelope epoch
+   against the **production** store, so it is a judgement call, not a mechanic.
+3. `agent-notes` and `ad-steward` both carry
+   `[tool.uv.sources] regista-hraedon = { path = "../regista", editable = true }`.
+   That is dev-only and absent from published metadata, so it does not reach PyPI
+   consumers — and when main is reduced their `uv lock`/`uv sync` will fail
+   loudly on the constraint rather than silently resolving. That is a safety
+   property, but it means those two repos stop building locally the day main is
+   reduced, which should be expected rather than debugged.
+
+`dossier` resolves regista purely from PyPI with no source override, so its cap
+is fully load-bearing. None of the three repos' CI consumes `uv.lock` for the
+regista dependency; `ad-steward`'s lock is gitignored entirely.
+
+**Still open, and deliberately not defaulted:**
+
+- **D8** — the unfamiliar-reviewer walkthrough. Being measured now by two cold
+  agents given the quickstart and a database and nothing else. This is the one
+  F0a exit criterion that cannot be self-reported.
+- **D11** — the maintenance number. The review proposes 90 days from
+  publication, with the end date published and the route stated. Needs the
+  maintainer's figure before F4 documentation can be written.
+- **D12** — whether older releases are yanked. Unchanged: assess per published
+  version against reachable defects. Note that "nobody is using them" is now
+  weaker than it was, because D9 identified an internal installed consumer.
+
 ---
 
 ## Blocking F1 (the removal work itself)

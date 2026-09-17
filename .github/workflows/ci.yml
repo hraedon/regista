@@ -60,8 +60,11 @@ jobs:
           REGISTA_FORBIDDEN_IDENTIFIERS: ${{ secrets.REGISTA_FORBIDDEN_IDENTIFIERS }}
         run: python3 scripts/check_committed_identifiers.py
 
+      # prototypes/ included: D14 (Plan 032 open-decisions, ruled 2026-09-17)
+      # — the kernel prototype is the retained implementation (D1 = EXTRACT),
+      # so it gets the same lint gate as src/ and tests/ now.
       - name: Lint
-        run: ruff check src/ tests/ tools/
+        run: ruff check src/ tests/ tools/ prototypes/
 
       # Gate 0, P0.1: the 0.6.0 specification set is frozen, and "frozen" is only
       # true if something checks it. These two scripts are the machine-checkable
@@ -74,6 +77,9 @@ jobs:
           python3 docs/0.6.0/check-crossrefs.py
           python3 docs/0.6.0/check-conflicts.py
 
+      # `files` in pyproject.toml [tool.mypy] now includes prototypes/ (D14,
+      # Plan 032 open-decisions, ruled 2026-09-17) alongside src/regista —
+      # same strict gate, no burndown-list quarantine for the prototype.
       - name: Type-check (strict; burndown list in pyproject [tool.mypy])
         run: mypy
 
@@ -119,6 +125,65 @@ jobs:
           rc=$?
           set -e
           if [ "$rc" != "0" ] && [ "$rc" != "5" ]; then exit "$rc"; fi
+  # D14 (Plan 032 open-decisions, ruled 2026-09-17): prototypes/kernel is the
+  # retained implementation (D1 = EXTRACT), not a throwaway — its
+  # PostgreSQL-backed checks (example_handoff.py, example_documents.py,
+  # test_mutations.py) get continuous CI coverage NOW, via the pytest
+  # wrapper in prototypes/kernel/test_scenarios.py, so a later promotion
+  # MOVES this coverage instead of creating it for the first time.
+  #
+  # D13 (same ruling): this is also the forward-looking Python matrix. The
+  # advertised floor is requires-python >= 3.11 with no upper cap, and this
+  # job is where that whole range (3.11-3.14) is actually exercised against
+  # the code being advertised. The `check` job above deliberately stays on
+  # 3.13/3.14 only — most of tests/ is scheduled for retirement (Plan 032)
+  # and is not being back-ported to 3.11/3.12; do not extend its matrix on
+  # this reasoning.
+  prototype-kernel:
+    name: Prototype kernel (forward-looking Python matrix)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: regista_test
+          POSTGRES_PASSWORD: regista_test
+          POSTGRES_DB: regista_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U regista_test"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # example_handoff.py, example_documents.py and test_mutations.py are
+      # deliberately plain `python foo.py "$DSN"` scripts (see
+      # prototypes/kernel/README.md) — this wrapper runs each one exactly as
+      # documented, against the service container above, and fails loudly
+      # (with full stdout/stderr) on a non-zero exit. It does not change or
+      # re-import the scripts' own logic.
+      - name: Prototype kernel scenarios + mutation checks (PostgreSQL)
+        run: pytest prototypes/kernel/test_scenarios.py -v
+
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean

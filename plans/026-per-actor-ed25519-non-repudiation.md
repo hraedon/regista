@@ -1,5 +1,10 @@
 # Plan 026 — Per-actor Ed25519 signing (non-repudiation for the multi-user suite)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: per-actor Ed25519 signing for cryptographic non-repudiation across the multi-user suite.
+> Why: this is precisely the claim Plan 032 §1 disclaims for 0.8.0: replay "does not establish hostile-administrator tamper evidence, non-repudiation, model identity, or external freshness" (`plans/032-final-public-release.md:24`). Per-actor keys are key-custody machinery, REMOVE-scope.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Implemented 2026-07-06. WI-1.1–3.3 landed (Sessions 80–86); principal binding and enrollment lifecycle complete.
 **Author:** Claude (Fable 5), from the 2026-07-02 agent-suite deployment review
 **Strategic role:** Promote per-actor cryptographic non-repudiation to **v1** of

@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel import (
     ClaimContestedError,
+    InvalidFieldError,
     Kernel,
+    LeaseExpiredError,
+    LeaseNotHeldError,
     StaleAttemptError,
     TransitionRefusedError,
     Workflow,
@@ -57,11 +60,13 @@ def refused(msg: str) -> None:
     print(f"   \033[33m⊘ refused:\033[0m {msg}")
 
 
-def _contender(dsn: str, item_id: str, actor: str, q) -> None:
+def _contender(
+    dsn: str, item_id: str, actor: str, q: mp.Queue[tuple[str, str, object]]
+) -> None:
     """A separate OS process racing for the same lease."""
     k = Kernel.connect(dsn)
     try:
-        c = k.claim(uuid.UUID(item_id), actor_id=actor, ttl_seconds=2)
+        c = k.claim(uuid.UUID(item_id), actor_id=actor, ttl_seconds=300)
         q.put((actor, "won", c.attempt))
     except ClaimContestedError as e:
         q.put((actor, "lost", str(e)))
@@ -89,7 +94,7 @@ def main(dsn: str) -> int:
     ok(f"linked -> {followup.id} as 'blocks'")
 
     step("2.", "Two independently running worker processes contend. Only one may own it.")
-    q = mp.Queue()
+    q: mp.Queue[tuple[str, str, object]] = mp.Queue()
     procs = [
         mp.Process(target=_contender, args=(dsn, str(finding.id), f"worker-{i}", q))
         for i in (1, 2)
@@ -105,40 +110,62 @@ def main(dsn: str) -> int:
             f"{actor}: {'holds attempt ' + str(detail) if outcome == 'won' else detail}"
         )
     assert len(winners) == 1, f"expected exactly one winner, got {results}"
-    owner, _, attempt1 = winners[0]
+    owner, _, attempt_obj = winners[0]
+    attempt1 = int(attempt_obj)  # type: ignore[call-overload]
     ok(f"exactly one owner: {owner}, attempt {attempt1}")
 
-    step("3.", "The owner works, then hands off to a reviewer.")
+    step("3.", "The owner works. A lease means the HOLDER writes — nobody else.")
     k.transition(finding.id, transition="start", actor_id=owner, attempt=attempt1)
     ok("start -> in_progress")
     try:
         k.transition(finding.id, transition="submit", actor_id=owner, attempt=attempt1)
-    except Exception as e:
+    except InvalidFieldError as e:
         refused(f"submit without the required field: {e}")
+    # Knowing the fencing token is not enough: the write must also be attributed
+    # to the holder. Without this, any actor that saw an attempt number in a log
+    # could write as though it owned the item.
+    try:
+        k.transition(finding.id, transition="submit", actor_id="worker-9", attempt=attempt1,
+                     fields={"remediation_note": "written by someone who is not the holder"})
+    except LeaseNotHeldError as e:
+        refused(str(e))
     item = k.transition(
         finding.id, transition="submit", actor_id=owner, attempt=attempt1,
         fields={"remediation_note": "patched openssl to 3.0.14, rebooted"},
     )
     ok(f"submit -> {item.state} (note recorded)")
+    k.release(finding.id, actor_id=owner, attempt=attempt1)
+    ok("the owner released the lease — handing off means giving up ownership")
 
-    step("4.", "The reviewer requests changes. Role policy is enforced.")
+    step("4.", "The reviewer requests changes, with no lease of her own. Role policy holds.")
     try:
         k.transition(finding.id, transition="request_changes", actor_id="worker-9",
-                     role="worker", attempt=attempt1)
+                     role="worker")
     except TransitionRefusedError as e:
         refused(str(e))
+    # No attempt=: the item is unclaimed, and Plan 032 requires a person to be
+    # able to act without first taking a lease.
     item = k.transition(finding.id, transition="request_changes", actor_id="alice",
-                        actor_kind="human", role="reviewer", attempt=attempt1,
+                        actor_kind="human", role="reviewer",
                         payload={"comment": "confirm the service actually restarted"})
-    ok(f"request_changes -> {item.state}")
+    ok(f"request_changes -> {item.state} (no claim needed)")
 
     step("5.", "The worker dies mid-attempt. Its lease expires and another worker takes over.")
-    k.transition(finding.id, transition="start", actor_id=owner, attempt=attempt1)
-    ok(f"{owner} took another attempt (state=in_progress), then the process died")
+    retry = k.claim(finding.id, actor_id=owner, ttl_seconds=2)
+    k.transition(finding.id, transition="start", actor_id=owner, attempt=retry.attempt)
+    ok(f"{owner} took another attempt {retry.attempt} (state=in_progress), then it died")
     # A real wait on a real short lease. Reaching into the table to backdate
     # expires_at would have been faster, but it would also have meant this
     # scenario no longer ran entirely through the public API.
     time.sleep(2.2)
+    # Before anyone has swept or taken over, the dead worker's OWN lease is
+    # already refused. An expired lease authorises nothing; that is what stops a
+    # worker that merely slept past its TTL from committing.
+    try:
+        k.transition(finding.id, transition="submit", actor_id=owner, attempt=retry.attempt,
+                     fields={"remediation_note": "woke up after the lease died"})
+    except LeaseExpiredError as e:
+        refused(str(e))
     swept = k.expire_leases()
     ok(f"lease expired and was swept ({swept} removed)")
     takeover = k.claim(finding.id, actor_id="worker-3", ttl_seconds=300)
@@ -146,7 +173,7 @@ def main(dsn: str) -> int:
 
     step("6.", "The dead worker wakes up and tries to commit. This is the fencing test.")
     try:
-        k.transition(finding.id, transition="submit", actor_id=owner, attempt=attempt1,
+        k.transition(finding.id, transition="submit", actor_id=owner, attempt=retry.attempt,
                      fields={"remediation_note": "stale write from a zombie worker"})
         print("   \033[31m✗ THE STALE WRITE SUCCEEDED — fencing is broken\033[0m")
         return 1
@@ -161,12 +188,12 @@ def main(dsn: str) -> int:
     k.transition(finding.id, transition="submit", actor_id="worker-3",
                  attempt=takeover.attempt,
                  fields={"remediation_note": "verified openssl 3.0.14; nginx restarted"})
+    k.release(finding.id, actor_id="worker-3", attempt=takeover.attempt)
     item = k.transition(finding.id, transition="accept", actor_id="alice",
-                        actor_kind="human", role="reviewer", attempt=takeover.attempt)
+                        actor_kind="human", role="reviewer")
     ok(f"accept -> {item.state}")
     try:
-        k.transition(finding.id, transition="start", actor_id="worker-3",
-                     attempt=takeover.attempt)
+        k.transition(finding.id, transition="start", actor_id="worker-3")
     except TransitionRefusedError as e:
         refused(str(e))
 
@@ -187,10 +214,10 @@ def main(dsn: str) -> int:
     ok("no drift between replay and projection; chain intact")
 
     step("10.", "The history a person actually reads.")
-    for e in k.history(finding.id):
-        t = e.transition or "created"
-        print(f"   {e.seq:>2}. {e.occurred_at:%H:%M:%S}  {t:<16} "
-              f"by {e.actor_id:<10} ({e.actor_kind})")
+    for ev in k.history(finding.id):
+        t = ev.transition or "created"
+        print(f"   {ev.seq:>2}. {ev.occurred_at:%H:%M:%S}  {t:<16} "
+              f"by {ev.actor_id:<10} ({ev.actor_kind})")
 
     k.close()
     print("\n\033[1;32mScenario passed.\033[0m")

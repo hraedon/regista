@@ -1,5 +1,10 @@
 # Plan 022 — Entity generalization + crypto-agility: the one envelope cycle (v4)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: envelope v4: entity generalization (work-item as one entity kind among many), crypto-agility/PQC-readiness, and cross-project references, bundled into one signed-envelope schema bump.
+> Why: the criterion for inclusion in this plan was explicitly "does it change the signed envelope or core event schema" — every decision in it is envelope/signing work, and signing is REMOVE-scope in full. Entity generalization specifically enables dossier's knowledge entity (a suite convergence concern, D19 in `plans/032-open-decisions.md` — "an estate decision, not a deletion") independent of whether 0.8.0 itself needs multi-entity events, which it does not.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Proposed 2026-06-22. Foundational. Companion to dossier Plan 006
 (convergence-on-regista); referenced by agent-provenance and the dossier knowledge
 seam. Not started.

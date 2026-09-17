@@ -1,5 +1,10 @@
 # Plan 019 — Transparency-Log Anchoring (operator-forgery defense)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: transparency-log anchoring for operator-forgery defense (Bitcoin/OpenTimestamps, RFC 3161, file-based anchors).
+> Why: anchoring is explicit REMOVE-scope (`plans/032-final-public-release.md:61`). Already self-marked "implemented 2026-07-11" and subsequently marked `REMOVED by P1.4 (0.6.0)` in spec.md (`spec.md:229`) before Plan 032 existed — this marker extends that removal to the plan file itself.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** implemented 2026-07-11 (F-1/F-3 remediation per holistic suite review)
 **Author:** Opus 4.8 (portfolio review)
 **Closes:** BC-196 remedy #4 (the residual gap AC 1–3 explicitly do *not* solve)

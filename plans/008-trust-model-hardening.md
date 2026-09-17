@@ -1,5 +1,10 @@
 # Plan 008 — Trust Model Hardening for Multi-Tenant Deployment
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: trust-model hardening for multi-tenant deployment: trust tiers, HMAC-in-plaintext-memory mitigation, rate limiting, RFC 8785 vendoring.
+> Why: trust hardening as a labeled security capability is REMOVE-scope — it is built on the signing/key-custody stack Plan 032 §3 removes. Note: `strict_roles` (WS-1), one specific mechanism this plan introduced, survives as ordinary application-policy role enforcement — see the `020-validator-context-enrichment.md` marker and `plans/032-f0-inventory/normative-conflicts-spec-agents.md` §4 for what of this plan's surface area is retained despite the plan itself going historical.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Prereq for:** production multi-tenant use beyond single-operator homelab

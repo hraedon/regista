@@ -1,5 +1,10 @@
 # Plan 016 — Privileged Transitions
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: privileged transitions distinguished from ordinary tool events via scope attestation, originating from agent-provenance's delegation-chain concerns.
+> Why: builds directly on the delegation chain (Plan 010) and pluggable signing (Plan 011), both REMOVE-scope.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Origin:** BC-005 (agent-provenance) — scope attestation structurally indistinct from tool events

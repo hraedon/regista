@@ -16,13 +16,76 @@ Honest boundary, restated from Plan 032 §1 so no caller has to infer it:
   * prev_event_hash is a consistency chain, not authenticity evidence. It
     detects accidental gaps, reordering and truncation. Anyone who can write the
     table can rewrite it.
-  * Lease expiry is decided by the DATABASE clock, never the caller's. A
-    coordination store has many clients and one serialization point; if the
-    writer's clock decided liveness while queries used now(), available() and
-    transition() could disagree about whether a lease is still held.
   * A lease stops a stale worker committing to THIS store. It does not stop that
     process making external requests. Fencing external effects is the caller's
     job -- pass `attempt` to the target system too.
+
+Three contracts this module settles explicitly, because leaving them implicit is
+what produced the defects in WI-367 and WI-368. Each is stated once here and
+enforced in exactly one place.
+
+ONE CLOCK.
+    The database decides what time it is, for every stamp and every expiry
+    predicate. No timestamp is ever taken from the writing process: a
+    coordination store has many clients and one serialization point, and if a
+    client's clock decided liveness then available() and transition() could
+    disagree about whether the same lease is held.
+
+    The predicate is clock_timestamp(), NOT now(). now() is transaction_
+    timestamp(): it is frozen when the transaction begins, so a liveness
+    decision taken after a long wait inside an open transaction -- most
+    obviously after blocking on SELECT ... FOR UPDATE -- would be evaluated
+    against the clock as it was before the wait. Liveness must be decided at the
+    moment the write serializes, which is after the row lock is held.
+    `test_mutations.py` has a regression check that blocks a transition on a
+    held row lock until the lease expires underneath it.
+
+    Cost, stated rather than hidden: clock_timestamp() is VOLATILE, so the
+    planner will not use idx_claims_expiry as a range bound the way it can with
+    a stable now(). At kernel scale that is the right trade; a store large
+    enough to care should revisit it with a measurement.
+
+LEASE OWNERSHIP.
+    A work item is in exactly one of three lease conditions, and every
+    lease-sensitive write says which one it found:
+
+      unclaimed   -- no row in `claims`. Writes are allowed WITHOUT an attempt.
+                     Plan 032 requires a person to be able to act without first
+                     taking a lease, and scenario 2 depends on it. Passing an
+                     attempt here is refused (LeaseNotHeldError): the caller
+                     believes it is fenced and it is not, and attempt numbers
+                     are never reissued, so the number cannot be validated.
+      expired     -- a row exists but clock_timestamp() is past expires_at.
+                     EVERY write is refused (LeaseExpiredError), with or without
+                     an attempt. Expiry is terminal: it is not a state a holder
+                     can write through or heartbeat out of. The previous
+                     holder's fate is unresolved until someone resolves it, and
+                     doing so is one call -- expire_leases() to sweep, or
+                     claim() to take over, which records the takeover as a fact.
+      live        -- the write must carry the current attempt AND be attributed
+                     to the holder. A wrong or absent attempt is
+                     StaleAttemptError; a correct attempt presented by anyone
+                     other than the holder is LeaseNotHeldError.
+
+    The actor check is ownership, not authentication -- actor_id remains
+    caller-supplied attribution and the kernel still verifies nobody's identity.
+    It refuses a write ATTRIBUTED to someone who does not hold the lease,
+    because recording such a write would make the history say something the
+    coordination state contradicts.
+
+FIELD TYPES.
+    A custom field value, and a caller-supplied event payload value, may hold
+    only: str, int, float (finite), bool, None, list, and dict with str keys,
+    nested. Anything else is refused with InvalidFieldError naming the path and
+    the type.
+
+    The kernel does NOT coerce. A datetime used to raise a raw TypeError out of
+    psycopg on the write path while _canonical() quietly stringified the same
+    value on the hash path -- two policies on one piece of data. Coercion is the
+    wrong resolution of that: the store is the source of truth for replay, and a
+    silent str() means replay hands back a different type from the one the
+    caller wrote, with nothing recording that it happened. Convert at the call
+    site, where the intended representation is known.
 """
 
 from __future__ import annotations
@@ -31,7 +94,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -42,6 +105,45 @@ DictConn = psycopg.Connection[DictRow]
 DictCursor = psycopg.Cursor[DictRow]
 
 KERNEL_SCHEMA_VERSION = 1
+
+#: Event payload keys the reducer owns. replay() reads them to rebuild state, so
+#: a caller payload may not contain them -- see RESERVED_PAYLOAD_KEYS below.
+RESERVED_PAYLOAD_KEYS = frozenset({"from", "to", "fields", "created"})
+
+#: Guard against unbounded or self-referential field structures. json.dumps
+#: would hit the interpreter's recursion limit and raise something unhelpful.
+MAX_FIELD_DEPTH = 32
+
+#: Exactly what replay() reconciles against the event history. Published as part
+#: of the API because an empty drift list is meaningless without it: a reader
+#: who takes "no drift" to mean "the whole projection matches history" would be
+#: wrong, and silently so.
+REPLAY_COVERS = (
+    "current_state",
+    "custom_fields",
+    "last_event_seq",
+    "event payload hashes",
+    "event chain links",
+    "event sequence density",
+)
+
+#: Parts of the store replay() CANNOT reconcile, because nothing appends an
+#: event for them: claim(), heartbeat(), release(), expire_leases() and link()
+#: all write their tables directly. Lease state, the fencing counter and typed
+#: links are therefore projection-only. An empty drift list says nothing about
+#: any of them.
+#:
+#: This is a gap against the pre-0.8 tree, which reconstructed claim state,
+#: links and the attempt counter from events (src/regista/_reducer.py,
+#: _links.py, tests/test_replay_coverage.py). Whether 0.8 restores that is a
+#: scope decision for Plan 032, not something to paper over here. Until it is
+#: ruled on, the honest position is to name it.
+REPLAY_DOES_NOT_COVER = (
+    "leases (claims)",
+    "the attempt/fencing counter (claim_attempts)",
+    "typed links (links)",
+    "idempotency keys",
+)
 
 
 class KernelError(Exception):
@@ -57,13 +159,91 @@ class InvalidFieldError(KernelError): ...
 class IdempotencyConflictError(KernelError): ...
 
 
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+class LeaseExpiredError(StaleAttemptError):
+    """The lease that would authorise this write is no longer live.
+
+    Distinct from a takeover: nobody has replaced the holder yet, the lease has
+    simply died. Subclasses StaleAttemptError so a caller that only wants to
+    know "my fencing token is no good" keeps working.
+    """
+
+
+class LeaseNotHeldError(StaleAttemptError):
+    """The caller presented a lease it does not hold, or none exists to hold.
+
+    Raised when a correct attempt is attributed to someone other than the
+    holder, and when an attempt is supplied for an item that has no lease at all.
+    """
+
+
+class ReservedPayloadKeyError(InvalidFieldError):
+    """A caller payload tried to set a key the event reducer owns."""
+
+
+def _check_json(value: Any, path: str, depth: int = 0) -> None:
+    """Enforce the FIELD TYPES contract in the module docstring. One gate, used
+    by every write path, so the stored bytes and the hashed bytes cannot
+    disagree about what a value is."""
+    if depth > MAX_FIELD_DEPTH:
+        raise InvalidFieldError(
+            f"{path}: nested deeper than {MAX_FIELD_DEPTH} levels (or self-referential)"
+        )
+    if value is None or isinstance(value, (str, bool, int)):
+        return  # bool before int is unnecessary here: both are accepted.
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise InvalidFieldError(
+                f"{path}: {value!r} has no JSON representation and PostgreSQL jsonb "
+                "rejects it. Store a string or null if you need to record it."
+            )
+        return
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            _check_json(v, f"{path}[{i}]", depth + 1)
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise InvalidFieldError(
+                    f"{path}: object keys must be strings, found "
+                    f"{type(k).__name__} {k!r} (json.dumps would silently rename it)"
+                )
+            _check_json(v, f"{path}.{k}", depth + 1)
+        return
+    raise InvalidFieldError(
+        f"{path}: {type(value).__name__} is not a supported field type. A field may "
+        "hold only JSON types: string, number, boolean, null, list, or object with "
+        "string keys. The kernel refuses rather than coercing, because a silent "
+        "conversion makes replay return a different type from the one you wrote. "
+        "Convert at the call site: datetime -> .isoformat(), UUID/Decimal -> str(), "
+        "tuple/set -> list()."
+    )
+
+
+def _check_mapping(obj: dict[str, Any] | None, label: str) -> None:
+    for k, v in (obj or {}).items():
+        if not isinstance(k, str):
+            raise InvalidFieldError(
+                f"{label}: names must be strings, found {type(k).__name__} {k!r}"
+            )
+        _check_json(v, f"{label}.{k}")
 
 
 def _canonical(obj: object) -> bytes:
-    """Deterministic JSON bytes. Sorted keys, no incidental whitespace."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()
+    """Deterministic JSON bytes. Sorted keys, no incidental whitespace.
+
+    No `default=`: everything reaching here has passed _check_json, so a
+    TypeError from this function means a write path skipped the gate, which is a
+    bug worth seeing rather than stringifying away.
+    """
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+
+
+def _jsonb(obj: dict[str, Any]) -> Jsonb:
+    """Store with the same policy _canonical() hashes with."""
+    return Jsonb(obj, dumps=lambda o: json.dumps(o, allow_nan=False))
 
 
 def _hash(*parts: bytes) -> bytes:
@@ -189,10 +369,33 @@ class Kernel:
         conn: DictConn = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
         with conn.cursor() as cur:
             cur.execute(f'SET search_path TO "{schema}"')
+        # SET is undone by a rollback, so this must commit rather than leave the
+        # transaction open: initialize() rolls back when it refuses a schema, and
+        # that would otherwise silently drop the connection back to the default
+        # search_path for the rest of the session.
+        conn.commit()
         return cls(conn, schema)
 
     def close(self) -> None:
         self._conn.close()
+
+    def _end_read(self) -> None:
+        """Close a read-only transaction.
+
+        Rollback rather than commit, because nothing was written and saying so
+        is more honest. Leaving it open pins the transaction snapshot and, on
+        the old now()-based predicates, pinned the clock too.
+        """
+        self._conn.rollback()
+
+    def _db_now(self, cur: DictCursor) -> datetime:
+        """The one clock. See ONE CLOCK in the module docstring."""
+        cur.execute("SELECT clock_timestamp() AS ts")
+        row = cur.fetchone()
+        if row is None:  # pragma: no cover - a scalar SELECT always returns a row
+            raise KernelError("the database did not return a timestamp")
+        ts: datetime = row["ts"]
+        return ts
 
     def initialize(self, schema_sql_path: str) -> None:
         """Create the kernel schema in an empty destination.
@@ -266,29 +469,49 @@ class Kernel:
             cur.execute(
                 "INSERT INTO workflow_registry (workflow_name, version, definition, content_hash) "
                 "VALUES (%s, %s, %s, %s)",
-                (wf.name, version, Jsonb(body), content_hash),
+                (wf.name, version, _jsonb(body), content_hash),
             )
         self._conn.commit()
         return version
 
+    def _read_workflow(self, cur: DictCursor, name: str, version: int | None) -> Workflow:
+        """Workflow lookup INSIDE a caller's transaction.
+
+        Separate from get_workflow() because that one ends its transaction, and
+        transition() calls this while holding SELECT ... FOR UPDATE on the work
+        item. Ending the transaction there would drop the row lock mid-write.
+        """
+        if version is None:
+            cur.execute(
+                "SELECT version, definition FROM workflow_registry "
+                "WHERE workflow_name = %s ORDER BY version DESC LIMIT 1",
+                (name,),
+            )
+        else:
+            cur.execute(
+                "SELECT version, definition FROM workflow_registry "
+                "WHERE workflow_name = %s AND version = %s",
+                (name, version),
+            )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                "SELECT DISTINCT workflow_name FROM workflow_registry ORDER BY workflow_name"
+            )
+            known = [r["workflow_name"] for r in cur.fetchall()]
+            raise InvalidWorkflowError(
+                f"no such workflow: {name!r} v{version}. Registered: {known or 'none'} "
+                "(see list_workflows(); register one with register_workflow(Workflow(...)))"
+            )
+        return Workflow.from_json(row["definition"], int(row["version"]))
+
     def get_workflow(self, name: str, version: int | None = None) -> Workflow:
         with self._conn.cursor() as cur:
-            if version is None:
-                cur.execute(
-                    "SELECT version, definition FROM workflow_registry "
-                    "WHERE workflow_name = %s ORDER BY version DESC LIMIT 1",
-                    (name,),
-                )
-            else:
-                cur.execute(
-                    "SELECT version, definition FROM workflow_registry "
-                    "WHERE workflow_name = %s AND version = %s",
-                    (name, version),
-                )
-            row = cur.fetchone()
-        if not row:
-            raise InvalidWorkflowError(f"no such workflow: {name} v{version}")
-        return Workflow.from_json(row["definition"], int(row["version"]))
+            try:
+                wf = self._read_workflow(cur, name, version)
+            finally:
+                self._end_read()
+        return wf
 
     def list_workflows(self) -> list[tuple[str, int, datetime]]:
         """Every registered workflow version, oldest first."""
@@ -298,7 +521,7 @@ class Kernel:
                 "ORDER BY workflow_name, version"
             )
             rows = cur.fetchall()
-        self._conn.commit()
+        self._end_read()
         return [(r["workflow_name"], int(r["version"]), r["registered_at"]) for r in rows]
 
     def health(self) -> dict[str, Any]:
@@ -310,14 +533,15 @@ class Kernel:
             counts = {}
             for label, sql in (
                 ("work_items", "SELECT count(*) AS n FROM work_items_current"),
-                ("live_leases", "SELECT count(*) AS n FROM claims WHERE expires_at > now()"),
+                ("live_leases",
+                 "SELECT count(*) AS n FROM claims WHERE expires_at > clock_timestamp()"),
                 ("events", "SELECT count(*) AS n FROM events"),
                 ("workflows", "SELECT count(*) AS n FROM workflow_registry"),
             ):
                 cur.execute(sql)
                 r = cur.fetchone()
                 counts[label] = int(r["n"]) if r else 0
-        self._conn.commit()
+        self._end_read()
         return {"schema_version": version, **counts}
 
     # ---- work items ------------------------------------------------------
@@ -332,16 +556,21 @@ class Kernel:
         fields: dict[str, Any] | None = None,
         workflow_version: int | None = None,
     ) -> WorkItem:
-        wf = self.get_workflow(workflow, workflow_version)
         fields = dict(fields or {})
-        item_id = uuid.uuid4()
-        now = _utcnow()
+        _check_mapping(fields, "fields")
         with self._conn.cursor() as cur:
+            wf = self._read_workflow(cur, workflow, workflow_version)
+            item_id = uuid.uuid4()
+            now = self._db_now(cur)
             cur.execute(
+                # created_at is given explicitly rather than left to its DEFAULT so
+                # that the row, its last_event_at and its creation event all carry
+                # ONE database instant instead of three clock_timestamp() reads
+                # microseconds apart.
                 "INSERT INTO work_items_current (work_item_id, workflow_name, workflow_version, "
                 "work_item_type, current_state, custom_fields, last_event_seq, next_event_seq, "
-                "last_event_at) VALUES (%s, %s, %s, %s, %s, %s, 0, 1, %s)",
-                (item_id, wf.name, wf.version, type, wf.initial, Jsonb(fields), now),
+                "last_event_at, created_at) VALUES (%s, %s, %s, %s, %s, %s, 0, 1, %s, %s)",
+                (item_id, wf.name, wf.version, type, wf.initial, _jsonb(fields), now, now),
             )
             cur.execute(
                 "INSERT INTO claim_attempts (work_item_id, last_attempt) VALUES (%s, 0)",
@@ -363,6 +592,7 @@ class Kernel:
                 "SELECT * FROM work_items_current WHERE work_item_id = %s", (work_item_id,)
             )
             row = cur.fetchone()
+        self._end_read()
         if not row:
             raise KernelError(f"no such work item: {work_item_id}")
         return WorkItem(
@@ -373,7 +603,9 @@ class Kernel:
 
     # ---- claims ----------------------------------------------------------
 
-    def claim(self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: int = 300) -> Claim:
+    def claim(
+        self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: float = 300
+    ) -> Claim:
         """Acquire a lease, taking over an expired one. Refuses a live foreign lease."""
         with self._conn.cursor() as cur:
             cur.execute(
@@ -383,8 +615,10 @@ class Kernel:
             if not cur.fetchone():
                 self._conn.rollback()
                 raise KernelError(f"no such work item: {work_item_id}")
+            # clock_timestamp(), evaluated after the row lock is held: see ONE
+            # CLOCK. now() here would be the clock as of before any lock wait.
             cur.execute(
-                "SELECT actor_id, expires_at, expires_at > now() AS live "
+                "SELECT actor_id, expires_at, expires_at > clock_timestamp() AS live "
                 "FROM claims WHERE work_item_id = %s",
                 (work_item_id,),
             )
@@ -412,12 +646,13 @@ class Kernel:
             cur.execute(
                 "INSERT INTO claims (work_item_id, actor_id, attempt_number, "
                 "acquired_at, expires_at) "
-                "VALUES (%s, %s, %s, now(), now() + make_interval(secs => %s)) "
+                "VALUES (%s, %s, %s, clock_timestamp(), "
+                "clock_timestamp() + make_interval(secs => %s)) "
                 "ON CONFLICT (work_item_id) DO UPDATE SET actor_id = EXCLUDED.actor_id, "
                 "attempt_number = EXCLUDED.attempt_number, acquired_at = EXCLUDED.acquired_at, "
                 "expires_at = EXCLUDED.expires_at "
                 "RETURNING expires_at",
-                (work_item_id, actor_id, attempt, ttl_seconds),
+                (work_item_id, actor_id, attempt, float(ttl_seconds)),
             )
             claim_row = cur.fetchone()
             if claim_row is None:  # pragma: no cover - RETURNING always yields a row here
@@ -427,28 +662,111 @@ class Kernel:
         self._conn.commit()
         return Claim(work_item_id, actor_id, attempt, expires)
 
-    def heartbeat(self, claim: Claim, *, ttl_seconds: int = 300) -> Claim:
+    def heartbeat(
+        self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int,
+        ttl_seconds: float = 300,
+    ) -> Claim:
+        """Extend a LIVE lease. Expiry is terminal -- a dead lease is never revived.
+
+        Renewing an expired lease would let a worker that slept past its TTL
+        silently race a legitimate takeover: available() would already have
+        offered the item to someone else.
+
+        Takes the same primitives as release(), for the same reason F0a §4(b)
+        reshaped release(): a process that did not itself call claim() holds
+        only (id, actor, attempt), and making it fabricate a Claim with an
+        invented expires_at is a lie the type system has to be silenced about.
+        A library caller holding a Claim unpacks it:
+
+            k.heartbeat(c.work_item_id, actor_id=c.actor_id, attempt=c.attempt)
+        """
         with self._conn.cursor() as cur:
+            # Serialize on the same row claim() and transition() lock, in the same
+            # order, so the whole lease state machine has ONE serialization point.
+            # Without it, a heartbeat and a takeover can both believe they won: the
+            # takeover reads an expired lease, the heartbeat extends it just before
+            # expiry, and the takeover's upsert then overwrites a lease the holder
+            # was told it still had. The fencing token still protects the store, but
+            # heartbeat would have returned success to a superseded holder.
             cur.execute(
-                "UPDATE claims SET expires_at = now() + make_interval(secs => %s) "
+                "SELECT work_item_id FROM work_items_current WHERE work_item_id = %s "
+                "FOR UPDATE",
+                (work_item_id,),
+            )
+            if not cur.fetchone():
+                self._conn.rollback()
+                raise KernelError(f"no such work item: {work_item_id}")
+            cur.execute(
+                "UPDATE claims SET expires_at = clock_timestamp() + make_interval(secs => %s) "
                 "WHERE work_item_id = %s AND actor_id = %s AND attempt_number = %s "
+                "AND expires_at > clock_timestamp() "
                 "RETURNING expires_at",
-                (ttl_seconds, claim.work_item_id, claim.actor_id, claim.attempt),
+                (float(ttl_seconds), work_item_id, actor_id, attempt),
             )
             row = cur.fetchone()
             if not row:
-                self._conn.rollback()
-                raise StaleAttemptError(
-                    f"attempt {claim.attempt} for {claim.work_item_id} is no longer the "
-                    "current lease; it expired and was taken over"
+                cur.execute(
+                    "SELECT actor_id, attempt_number, expires_at, "
+                    "expires_at > clock_timestamp() AS live "
+                    "FROM claims WHERE work_item_id = %s",
+                    (work_item_id,),
                 )
+                current = cur.fetchone()
+                self._conn.rollback()
+                raise self._lease_refusal(work_item_id, current, actor_id,
+                                          attempt, verb="heartbeat")
             expires = row["expires_at"]
         self._conn.commit()
-        return Claim(claim.work_item_id, claim.actor_id, claim.attempt, expires)
+        return Claim(work_item_id, actor_id, attempt, expires)
+
+    @staticmethod
+    def _lease_refusal(
+        work_item_id: uuid.UUID, current: DictRow | None, actor_id: str,
+        attempt: int | None, *, verb: str,
+    ) -> StaleAttemptError:
+        """Name which of the three lease conditions the caller actually hit.
+
+        A single "your lease is no good" message cannot tell a worker that slept
+        past its TTL from one that was replaced, and those need different
+        responses: the first may take the item over, the second must not.
+        """
+        if current is None:
+            return LeaseNotHeldError(
+                f"{verb} refused: there is no lease on {work_item_id}, so attempt "
+                f"{attempt} cannot be honoured. It was released or swept, and attempt "
+                "numbers are never reissued. Call claim() to take a fresh lease; an "
+                "unclaimed item also accepts writes with no attempt at all."
+            )
+        if not current["live"]:
+            return LeaseExpiredError(
+                f"{verb} refused: the lease on {work_item_id} (attempt "
+                f"{current['attempt_number']}, held by {current['actor_id']!r}) expired at "
+                f"{current['expires_at'].isoformat()}. Expiry is terminal -- it cannot be "
+                "renewed or written through. Call expire_leases() to sweep it, or claim() "
+                "to take it over and record the takeover."
+            )
+        if int(current["attempt_number"]) != (attempt if attempt is not None else -1):
+            return StaleAttemptError(
+                f"{verb} refused: attempt {attempt} is stale. The current lease on "
+                f"{work_item_id} is attempt {current['attempt_number']}, held by "
+                f"{current['actor_id']!r} until {current['expires_at'].isoformat()}. "
+                "Someone else took over."
+            )
+        return LeaseNotHeldError(
+            f"{verb} refused: attempt {attempt} on {work_item_id} is held by "
+            f"{current['actor_id']!r}, not {actor_id!r}. A write must be attributed to "
+            "the lease holder. (This is ownership, not authentication: actor_id is "
+            "caller-supplied attribution either way.)"
+        )
 
     def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
-        holding only (id, actor, attempt) can call it without fabricating one."""
+        holding only (id, actor, attempt) can call it without fabricating one.
+
+        Releasing an already-dead or already-replaced lease is a no-op, not a
+        refusal: release is cleanup, and cleanup that raises makes callers wrap
+        it in a bare except.
+        """
         with self._conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM claims WHERE work_item_id = %s AND actor_id = %s "
@@ -460,7 +778,7 @@ class Kernel:
     def expire_leases(self) -> int:
         """Sweep expired leases. Returns how many were removed."""
         with self._conn.cursor() as cur:
-            cur.execute("DELETE FROM claims WHERE expires_at <= now()")
+            cur.execute("DELETE FROM claims WHERE expires_at <= clock_timestamp()")
             n = cur.rowcount
         self._conn.commit()
         return n
@@ -482,13 +800,36 @@ class Kernel:
     ) -> WorkItem:
         """Make a validated transition.
 
-        `attempt` is the fencing token from claim(). If the item is under a live
-        lease, a caller must supply the CURRENT attempt or be refused -- that is
-        what makes a stale worker harmless to this store.
+        `attempt` is the fencing token from claim(). See LEASE OWNERSHIP in the
+        module docstring for the full rule; in short, a live lease requires the
+        current attempt AND the holder's actor_id, an expired lease refuses
+        everything until it is swept or taken over, and an unclaimed item
+        accepts a write with no attempt.
+
+        `fields` are the caller's domain data, merged into the item. `payload`
+        is free-form annotation recorded on the event. Both obey the FIELD TYPES
+        contract, and `payload` may not contain a reserved key.
         """
+        fields = dict(fields or {})
+        payload = dict(payload or {})
+        _check_mapping(fields, "fields")
+        _check_mapping(payload, "payload")
+        reserved = sorted(RESERVED_PAYLOAD_KEYS & set(payload))
+        if reserved:
+            # Refuse rather than namespace. Namespacing (payload -> {"caller": ...})
+            # would silently relocate the caller's data and change the on-disk
+            # event shape that history() readers and replay() both depend on.
+            # A refusal is a stable contract, visible at the call site, and it
+            # keeps the event payload flat enough for a person to read.
+            raise ReservedPayloadKeyError(
+                f"payload may not set {reserved}: {sorted(RESERVED_PAYLOAD_KEYS)} are "
+                "written by the event reducer and read back by replay(). Overwriting "
+                "one makes the history disagree with the projection. Use a different "
+                "key, or pass domain data as fields=."
+            )
         request_hash = _hash(_canonical({
             "w": str(work_item_id), "t": transition, "a": actor_id,
-            "f": fields or {}, "p": payload or {},
+            "f": fields, "p": payload,
         }))
         with self._conn.cursor() as cur:
             if idempotency_key is not None:
@@ -517,29 +858,45 @@ class Kernel:
                 self._conn.rollback()
                 raise KernelError(f"no such work item: {work_item_id}")
 
-            wf = self.get_workflow(item["workflow_name"], item["workflow_version"])
+            wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
 
             # Lease fencing, before any validation that could leak state.
+            # clock_timestamp(), not now(): the row lock above may have blocked
+            # for longer than the lease had left, and the write serializes HERE,
+            # not when this transaction began.
             cur.execute(
-                "SELECT actor_id, attempt_number, expires_at > now() AS live "
+                "SELECT actor_id, attempt_number, expires_at, "
+                "expires_at > clock_timestamp() AS live "
                 "FROM claims WHERE work_item_id = %s",
                 (work_item_id,),
             )
             lease = cur.fetchone()
-            if lease and lease["live"]:
+            if lease is None:
+                # Unclaimed. Writes without an attempt are deliberate and allowed.
+                if attempt is not None:
+                    self._conn.rollback()
+                    raise self._lease_refusal(work_item_id, None, actor_id, attempt,
+                                              verb="transition")
+            elif not lease["live"]:
+                self._conn.rollback()
+                raise self._lease_refusal(work_item_id, lease, actor_id, attempt,
+                                          verb="transition")
+            else:
                 if attempt is None:
                     self._conn.rollback()
                     raise StaleAttemptError(
-                        f"work item {work_item_id} is under a live lease (attempt "
-                        f"{lease['attempt_number']}); lease-protected writes must pass attempt="
+                        f"transition refused: work item {work_item_id} is under a live lease "
+                        f"(attempt {lease['attempt_number']}, held by {lease['actor_id']!r}). "
+                        "A lease-protected write must carry the fencing token as the attempt= "
+                        f"argument: transition(..., actor_id={lease['actor_id']!r}, "
+                        f"attempt={lease['attempt_number']}). claim() returns it as "
+                        "Claim.attempt."
                     )
-                if int(attempt) != int(lease["attempt_number"]):
+                if (int(attempt) != int(lease["attempt_number"])
+                        or actor_id != lease["actor_id"]):
                     self._conn.rollback()
-                    raise StaleAttemptError(
-                        f"attempt {attempt} is stale: the current lease on {work_item_id} is "
-                        f"attempt {lease['attempt_number']}, held by {lease['actor_id']!r}. "
-                        "Refusing the write."
-                    )
+                    raise self._lease_refusal(work_item_id, lease, actor_id, attempt,
+                                              verb="transition")
 
             state = item["current_state"]
             if state in wf.terminal:
@@ -553,40 +910,50 @@ class Kernel:
                 )
             froms, to = wf.transitions[transition]
             if state not in froms:
+                from_here = sorted(n for n, (f, _) in wf.transitions.items() if state in f)
                 self._conn.rollback()
                 raise TransitionRefusedError(
-                    f"{transition!r} leaves {sorted(froms)}, but the item is in {state!r}"
+                    f"{transition!r} leaves {sorted(froms)}, but the item is in {state!r}. "
+                    f"From {state!r} you can: {from_here or 'nothing'}"
                 )
             allowed = wf.roles.get(transition)
             if allowed and (role is None or role not in allowed):
                 self._conn.rollback()
                 raise TransitionRefusedError(
-                    f"{transition!r} is restricted to roles {sorted(allowed)}; "
-                    f"caller presented {role!r}"
+                    f"{transition!r} is restricted to roles {sorted(allowed)}; the caller "
+                    f"presented role={role!r}. Pass one as the role= argument, e.g. "
+                    f"transition(..., role={sorted(allowed)[0]!r}). The kernel checks the "
+                    "role you present against the workflow; it does not verify you hold it."
                 )
 
             merged = dict(item["custom_fields"])
-            merged.update(fields or {})
+            merged.update(fields)
             missing = [f for f in wf.required_fields.get(transition, ()) if f not in merged]
             if missing:
                 self._conn.rollback()
+                example = ", ".join(f"{m!r}: ..." for m in missing)
                 raise InvalidFieldError(
-                    f"{transition!r} requires field(s) {missing} to be set on the item"
+                    f"{transition!r} requires field(s) {missing} to be set on the item, "
+                    f"and they are not. Supply them with this transition using the "
+                    f"fields= argument: transition(..., fields={{{example}}})"
                 )
 
             seq = int(item["next_event_seq"])
-            now = _utcnow()
+            now = self._db_now(cur)
+            # The reducer's keys go LAST so a caller payload cannot displace
+            # them. The refusal above means this can no longer collide, and the
+            # ordering is the belt to that braces.
             event_id = self._append_event(
                 cur, work_item_id, seq=seq, actor_id=actor_id, actor_kind=actor_kind,
                 transition=transition,
-                payload={"from": state, "to": to, "fields": fields or {}, **(payload or {})},
+                payload={**payload, "from": state, "to": to, "fields": fields},
                 occurred_at=now,
             )
             cur.execute(
                 "UPDATE work_items_current SET current_state = %s, custom_fields = %s, "
                 "last_event_seq = %s, next_event_seq = %s, last_event_at = %s "
                 "WHERE work_item_id = %s",
-                (to, Jsonb(merged), seq, seq + 1, now, work_item_id),
+                (to, _jsonb(merged), seq, seq + 1, now, work_item_id),
             )
             if idempotency_key is not None:
                 cur.execute(
@@ -595,14 +962,22 @@ class Kernel:
                     (idempotency_key, work_item_id, event_id, request_hash),
                 )
         self._conn.commit()
-        return self.get(work_item_id)
+        # Return what THIS call committed, not a re-read: a re-read would report
+        # a concurrent writer's later state as if it were this transition's result.
+        return WorkItem(work_item_id, wf.name, wf.version, item["work_item_type"],
+                        to, merged, seq)
 
     def _append_event(
         self, cur: DictCursor, work_item_id: uuid.UUID, *, seq: int, actor_id: str,
         actor_kind: str, transition: str | None, payload: dict[str, Any],
         occurred_at: datetime,
     ) -> uuid.UUID:
-        """Append one event, chained to its predecessor for CONSISTENCY only."""
+        """Append one event, chained to its predecessor for CONSISTENCY only.
+
+        `occurred_at` must be a database-generated timestamp (see _db_now); it
+        is passed in rather than taken here so the event and the projection row
+        it updates carry exactly the same instant.
+        """
         cur.execute(
             "SELECT payload_hash, prev_event_hash FROM events WHERE work_item_id = %s "
             "ORDER BY event_seq DESC LIMIT 1",
@@ -620,7 +995,7 @@ class Kernel:
             "transition, payload, payload_hash, prev_event_hash, occurred_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (event_id, work_item_id, seq, actor_id, actor_kind, transition,
-             Jsonb(payload), payload_hash, prev_hash, occurred_at),
+             _jsonb(payload), payload_hash, prev_hash, occurred_at),
         )
         return event_id
 
@@ -644,7 +1019,9 @@ class Kernel:
                 "ORDER BY link_type, target_id",
                 (source,),
             )
-            return [(r["target_id"], r["link_type"]) for r in cur.fetchall()]
+            rows = cur.fetchall()
+        self._end_read()
+        return [(r["target_id"], r["link_type"]) for r in rows]
 
     # ---- discovery queries ----------------------------------------------
 
@@ -653,7 +1030,8 @@ class Kernel:
         """Items in the given states with no live lease. Ordered oldest-first."""
         sql = [
             "SELECT w.* FROM work_items_current w",
-            "LEFT JOIN claims c ON c.work_item_id = w.work_item_id AND c.expires_at > now()",
+            "LEFT JOIN claims c ON c.work_item_id = w.work_item_id "
+            "AND c.expires_at > clock_timestamp()",
             "WHERE c.work_item_id IS NULL",
         ]
         args: list[Any] = []
@@ -670,7 +1048,7 @@ class Kernel:
     def owned(self, actor_id: str, *, limit: int = 50) -> list[WorkItem]:
         return self._query(
             "SELECT w.* FROM work_items_current w JOIN claims c USING (work_item_id) "
-            "WHERE c.actor_id = %s AND c.expires_at > now() "
+            "WHERE c.actor_id = %s AND c.expires_at > clock_timestamp() "
             "ORDER BY w.created_at, w.work_item_id LIMIT %s",
             [actor_id, limit],
         )
@@ -691,7 +1069,7 @@ class Kernel:
         with self._conn.cursor() as cur:
             cur.execute(sql, args)
             rows = cur.fetchall()
-        self._conn.commit()
+        self._end_read()
         return [
             WorkItem(r["work_item_id"], r["workflow_name"], r["workflow_version"],
                      r["work_item_type"], r["current_state"], r["custom_fields"],
@@ -708,7 +1086,7 @@ class Kernel:
                 (work_item_id,),
             )
             rows = cur.fetchall()
-        self._conn.commit()
+        self._end_read()
         return [
             Event(r["event_seq"], r["actor_id"], r["actor_kind"], r["transition"],
                   r["payload"], r["occurred_at"])
@@ -716,53 +1094,110 @@ class Kernel:
         ]
 
     def replay(self, work_item_id: uuid.UUID) -> tuple[str, dict[str, Any], list[str]]:
-        """Rebuild state from events alone. Returns (state, fields, drift).
+        """Rebuild state from events alone and reconcile it with the projection.
 
-        Drift is reported honestly rather than raised: replay's job is to say
-        what the history supports and where it disagrees with the projection.
+        Returns (state, fields, drift). Drift is reported honestly rather than
+        raised: replay's job is to say what the history supports and where it
+        disagrees with the projection.
+
+        What is checked, exactly -- the whole of the supported projection, not
+        just the state:
+          * every event's payload against its recorded payload_hash;
+          * every chain link against its predecessor;
+          * sequence numbers dense from 0;
+          * replayed state vs current_state;
+          * replayed custom fields vs custom_fields;
+          * the final event's seq vs last_event_seq, which is what catches a
+            truncated tail -- deleting the last event of a transition that
+            changed only fields moves neither the state nor the chain.
+
+        What is NOT checked, and why an empty drift list is a NARROW statement:
+
+          * Anything in REPLAY_DOES_NOT_COVER -- leases, the fencing counter,
+            typed links, idempotency keys. Nothing appends an event for those,
+            so there is no history to reconcile them against. "No drift" means
+            "the reconstructible projection matches"; it does not mean "the
+            store matches its history".
+          * A rewrite that changes the events AND the projection consistently.
+            The chain is unkeyed, so anyone who can write these tables can write
+            a history that reconciles. See the module docstring.
+
+        The whole reconciliation runs against ONE repeatable-read snapshot.
+        Reading events and the projection in separate transactions would let a
+        concurrent transition land between them and be reported as drift.
         """
-        events = self.history(work_item_id)
+        self._conn.rollback()  # guarantee the isolation level applies to a fresh transaction
+        with self._conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cur.execute(
+                "SELECT event_seq, transition, payload, payload_hash, prev_event_hash "
+                "FROM events WHERE work_item_id = %s ORDER BY event_seq",
+                (work_item_id,),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT current_state, custom_fields, last_event_seq "
+                "FROM work_items_current WHERE work_item_id = %s",
+                (work_item_id,),
+            )
+            projection = cur.fetchone()
+        self._end_read()
+
         drift: list[str] = []
-        if not events:
+        if not rows:
             return ("", {}, ["no events"])
 
         state: str = ""
         fields: dict[str, Any] = {}
-        for i, e in enumerate(events):
-            if e.seq != i:
-                drift.append(f"sequence gap: expected {i}, found {e.seq}")
-            if e.transition is None:
-                created = e.payload.get("created", {})
+        running: bytes | None = None
+        for i, r in enumerate(rows):
+            seq = int(r["event_seq"])
+            payload = r["payload"]
+            if seq != i:
+                drift.append(f"sequence gap: expected {i}, found {seq}")
+            if r["transition"] is None:
+                created = payload.get("created", {})
                 state = created.get("state", "")
                 fields = dict(created.get("fields", {}))
             else:
-                if e.payload.get("from") != state:
+                if payload.get("from") != state:
                     drift.append(
-                        f"event {e.seq} leaves {e.payload.get('from')!r} "
+                        f"event {seq} leaves {payload.get('from')!r} "
                         f"but replay is in {state!r}"
                     )
-                state = e.payload.get("to", state)
-                fields.update(e.payload.get("fields", {}))
+                state = payload.get("to", state)
+                fields.update(payload.get("fields", {}))
 
-        # Chain check. Consistency only -- see the module docstring.
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT event_seq, payload, payload_hash, prev_event_hash FROM events "
-                "WHERE work_item_id = %s ORDER BY event_seq",
-                (work_item_id,),
-            )
-            rows = cur.fetchall()
-        self._conn.commit()
-        running = None
-        for r in rows:
-            if bytes(r["payload_hash"]) != _hash(_canonical(r["payload"])):
-                drift.append(f"event {r['event_seq']}: payload does not match its hash")
+            # Chain check. Consistency only -- see the module docstring.
+            if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
+                drift.append(f"event {seq}: payload does not match its hash")
             stored = bytes(r["prev_event_hash"]) if r["prev_event_hash"] is not None else None
             if stored != running:
-                drift.append(f"event {r['event_seq']}: chain link does not match predecessor")
+                drift.append(f"event {seq}: chain link does not match predecessor")
             running = _hash(bytes(r["payload_hash"]), bytes(stored or b""))
 
-        current = self.get(work_item_id)
-        if current.state != state:
-            drift.append(f"projection says {current.state!r}, replay says {state!r}")
+        if projection is None:
+            drift.append("the projection row is missing, but events exist for this item")
+            return (state, fields, drift)
+
+        if projection["current_state"] != state:
+            drift.append(
+                f"projection says {projection['current_state']!r}, replay says {state!r}"
+            )
+        if projection["custom_fields"] != fields:
+            only_proj = {k: v for k, v in projection["custom_fields"].items()
+                         if k not in fields or fields[k] != v}
+            only_replay = {k: v for k, v in fields.items()
+                           if k not in projection["custom_fields"]
+                           or projection["custom_fields"][k] != v}
+            drift.append(
+                f"fields disagree: projection has {only_proj!r}, replay has {only_replay!r}"
+            )
+        last_seq = int(rows[-1]["event_seq"])
+        if int(projection["last_event_seq"]) != last_seq:
+            drift.append(
+                f"projection's last_event_seq is {projection['last_event_seq']}, but the "
+                f"final event in the history is {last_seq} (the history is truncated, "
+                "or an event was written without updating the projection)"
+            )
         return (state, fields, drift)

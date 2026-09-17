@@ -13,14 +13,24 @@
 --
 -- What remains is a hash chain, kept for CONSISTENCY only. Per Plan 032 §3:
 -- "Unkeyed hashes must never be presented as authenticity evidence." prev_event_hash
--- detects accidental gaps, reordering and truncation on replay. It does not
--- establish who wrote a row, and a party who can write the table can rewrite the
--- chain. The trusted-host/database-administrator boundary is the contract.
+-- detects accidental gaps, reordering and edited payloads on replay. It does NOT
+-- by itself detect a truncated tail -- removing the last event leaves a chain
+-- that still verifies -- so replay() reconciles the history against the
+-- projection row (current_state, custom_fields, last_event_seq) as well. It does
+-- not establish who wrote a row, and a party who can write the table can rewrite
+-- the chain AND the projection together. The trusted-host/database-administrator
+-- boundary is the contract.
+--
+-- Every timestamp default is clock_timestamp(), not now(). now() is
+-- transaction_timestamp(): frozen when the transaction begins, so a row written
+-- after a long lock wait would be stamped with a time before that wait, and a
+-- lease-liveness predicate would be evaluated against a stale clock. The
+-- database is the only clock authority here; see the kernel.py module docstring.
 
 CREATE TABLE kernel_meta (
     id                    BOOLEAN PRIMARY KEY DEFAULT TRUE,
     kernel_schema_version INTEGER NOT NULL,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT kernel_meta_singleton CHECK (id)
 );
 
@@ -29,7 +39,7 @@ CREATE TABLE workflow_registry (
     version       INTEGER NOT NULL,
     definition    JSONB   NOT NULL,
     content_hash  BYTEA   NOT NULL,
-    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (workflow_name, version)
 );
 
@@ -43,7 +53,7 @@ CREATE TABLE work_items_current (
     last_event_seq   INTEGER NOT NULL,
     next_event_seq   INTEGER NOT NULL,
     last_event_at    TIMESTAMPTZ NOT NULL,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (workflow_name, workflow_version)
         REFERENCES workflow_registry (workflow_name, version)
 );
@@ -64,7 +74,7 @@ CREATE TABLE events (
     payload         JSONB   NOT NULL DEFAULT '{}',
     payload_hash    BYTEA   NOT NULL,
     prev_event_hash BYTEA,
-    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (work_item_id, event_seq)
 );
 
@@ -78,7 +88,7 @@ CREATE TABLE claims (
     work_item_id   UUID PRIMARY KEY REFERENCES work_items_current (work_item_id),
     actor_id       TEXT    NOT NULL,
     attempt_number INTEGER NOT NULL,
-    acquired_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    acquired_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     expires_at     TIMESTAMPTZ NOT NULL
 );
 
@@ -95,7 +105,7 @@ CREATE TABLE links (
     source_id UUID NOT NULL REFERENCES work_items_current (work_item_id),
     target_id UUID NOT NULL REFERENCES work_items_current (work_item_id),
     link_type TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (source_id, target_id, link_type),
     CONSTRAINT links_no_self CHECK (source_id <> target_id)
 );
@@ -107,5 +117,5 @@ CREATE TABLE idempotency_keys (
     work_item_id    UUID    NOT NULL,
     event_id        UUID    NOT NULL,
     request_hash    BYTEA   NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );

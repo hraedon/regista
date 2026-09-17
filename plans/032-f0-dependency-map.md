@@ -1,5 +1,10 @@
 # Plan 032 · F0 — Dependency map and deletion boundary
 
+> **0.8.0 disposition: CURRENT.**
+> Release line this plan describes: the F0 dependency map for the 0.8.0 reduction itself — the module-by-module trace of which current code the removal touches.
+> Why: this plan governs the current effort; it is not historical. It is the primary source for most of the HISTORICAL dispositions recorded across this pass.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Evidence. Produced for Plan 032 §4 F0 items 2 and 3 (trace the public
 path; map deletions). No source, schema, tests, or published artifacts were
 changed while producing it.
