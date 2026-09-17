@@ -292,7 +292,15 @@ question for the estate, not a reason to keep it in a published MVP.
 
 - ~~A prototype `events` row and project-open path without required signing.~~
   **Discharged** — see `prototypes/kernel/`, and §9 below for what it settles.
+- ~~F0a scenario validation.~~ **Both scenarios run**; see
+  `prototypes/kernel/F0a-report.md`.
 - **Per-file test dispositions.** §4 gives a ceiling (68%), not a decision.
+- **A quickstart walkthrough by someone who has not seen the code.** F0a asks for
+  it explicitly and it cannot be self-reported; see `prototypes/kernel/F0a-report.md` §6.
+- **A ruling on link-aware "blocked".** The link graph is stored but the discovery
+  surface cannot ask whether a blocking item is still unfinished. Plan 032 both
+  permits state-based blocked queries and forbids a dependency scheduler, so this
+  is a decision, not a defect.
 - **The maintainer's ruling on §7.** The evidence is assembled; the calls are
   not mine to make. Note that the in-memory recommendation is the one place this
   map argues against retaining something that partly meets Plan 032's stated

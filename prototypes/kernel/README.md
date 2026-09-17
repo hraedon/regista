@@ -17,10 +17,11 @@ docker compose -f ../../docker-compose.test.yml up -d
 export DSN="postgresql://regista_test:regista_test@localhost:5432/regista_test"
 ```
 
-Run the scenario:
+Run the scenarios:
 
 ```bash
-python example_handoff.py "$DSN"
+python example_handoff.py   "$DSN"   # agents: contention, takeover, fencing
+python example_documents.py "$DSN"   # people: document review, driven via the CLI
 ```
 
 It files remediation work, races **two real OS processes** for the lease, walks a
@@ -39,6 +40,20 @@ python test_mutations.py "$DSN"
 reuse idempotency keys for different requests, present the wrong role, and point
 `initialize()` at a 0.7-era schema. Every one asserts something was refused
 **and** that the legitimate version of the same call still succeeds.
+
+And the CLI a person participates through:
+
+```bash
+export REGISTA_DSN="$DSN"
+python cli.py health
+python cli.py list --state needs_review
+python cli.py transition <id> --transition correct --actor erin \
+    --actor-kind human --role editor --field invoice_total=1420.55
+```
+
+The [F0a product-fit report](F0a-report.md) records what both scenarios measured
+— including the three places the API had to be **changed** because a scenario
+could not be written without reaching past it.
 
 ## The model
 
