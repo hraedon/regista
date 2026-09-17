@@ -137,18 +137,70 @@ section alone — see §5 below, which pulls the other way.
 
 ## 4. Tests
 
-185 files, 89,770 LOC — more test code than source code. 125 files (68%) name
-trust-stack concepts (`trust_log`, `bundle`, `principal_`, `witness`, `genesis`,
-`action_delegation`, `signing`, `estate_catalog`, `assurance`, `custody`,
-`lineage`).
+185 files, 89,770 LOC — more test code than source code. Every file now carries a
+disposition; the per-file reports are in `plans/032-f0-inventory/`.
 
-That 68% is a naming measure and deliberately over-broad: a claims or idempotency
-test that merely constructs a signed event to reach the behaviour under test
-names `signing` but protects a retained regression. Per Plan 032 F0 item 4, each
-file needs an explicit disposition — retire, or port to the unsigned path. The
-useful reading is the ceiling: **at most 68% of the test tree retires, and the
-floor is well above zero.** Historical coverage totals are not release
-requirements.
+| Disposition | Files | Share |
+| --- | ---: | ---: |
+| RETIRE — only tests removed features | 112 | 60.5% |
+| PORT — asserts behaviour the kernel keeps | 42 | 22.7% |
+| SPLIT — contains both | 26 | 14.1% |
+| UNCLEAR — needs a ruling | 5 | 2.7% |
+
+**The naming measure was over-broad, as predicted, by about seven points.** An
+earlier draft of this section reported that 125 of 185 files (68%) name
+trust-stack concepts and called that a ceiling rather than an answer. The
+measured retirement is 112 files (60.5%), so the ceiling held. Roughly 68 files
+survive in whole or in part, and that is the number F1 has to budget for.
+
+Classification was by what each file **asserts**, not what it names. That caught
+traps in both directions: `test_hook_miss_recovery.py` exercises a generic
+`read_events_since` cursor with no hook-queue involvement at all (PORT), and
+`test_production_readiness.py` is entirely kernel — actor-kind validation,
+idempotency, the claim-stolen fencing metric — despite sounding like trust
+hardening (PORT). A grep-and-delete pass would have destroyed both.
+
+### Three findings that change F1's shape
+
+**(a) Porting is harness work, not assertion-trimming.** **81 of 183 top-level
+test files bootstrap through `tests/_v6_fixtures.py`**, which re-exports the
+entire v6 genesis/keyset/principal harness — `write_test_genesis`,
+`make_v6_keyset`, `open_v6_epoch`, `V6TestKeyset`, `TEST_MODEL_LINEAGE`. Every
+ported test needs a new harness before its assertions matter. Budget for
+replacing the fixture module first; porting individual files before that exists
+will not work.
+
+**(b) Retiring the in-memory backend has a coverage cost that must be paid
+deliberately.** `test_in_memory_conformance.py` is 654 lines and **35 tests**
+covering almost exactly the keep table — register idempotency, version conflict,
+create, required fields, unknown type, valid and invalid transitions, role
+gating, blocked appends, custom fields on transition, event reads by work item
+and by actor. It runs against the backend §7 recommends retiring. **Retiring the
+backend without retargeting these 35 tests to PostgreSQL fixtures is a silent,
+large loss of exactly the regression coverage the kernel most needs.** This does
+not change the §7 recommendation; it adds a task to it.
+
+**(c) The canonical workflow is estate-coupled.** `test_canonical_workflow.py`
+covers `canonical_workflow_yaml()` — "regista ships ONE canonical lifecycle
+workflow that both faces (dossier, agent-notes) register." The test is
+kernel-shaped (parse and validate a workflow), but its subject is an
+agent-suite artifact that Plan 032 removes. Deleting it is an estate decision,
+not a cleanup.
+
+### Environment-pinned tests
+
+The sweep found no surviving hardcoded-date time bombs in the kept portions. The
+one environment hazard that matters is the `datetime.fromisoformat`
+cross-interpreter divergence recorded in §2 — and see §2 for why it reaches
+further than the module that documents it.
+
+### Coverage note
+
+The two halves were split on `ls tests/*.py` (183 files), which silently excluded
+`tests/sidecar/conftest.py` and `tests/sidecar/test_sidecar.py` (1,239 lines) in
+a subdirectory. A count cross-check caught the gap; both retire with the sidecar.
+Recorded because the split looked complete and was not — the failure mode of a
+coverage check is silence.
 
 ## 5. Schema — where the import graph is misleading
 
@@ -263,6 +315,14 @@ which is much of what F2 must qualify. **Recommendation: retire it and use
 disposable PostgreSQL fixtures**, per Plan 032's own fallback, because the part
 that would justify keeping it is the part that is forked.
 
+**With one cost that must be paid deliberately, measured after this section was
+first written.** `test_in_memory_conformance.py` is 654 lines and 35 tests
+covering almost exactly the keep table, and it runs against this backend.
+Retiring it without retargeting those tests to PostgreSQL fixtures loses
+precisely the regression coverage the retained kernel most needs, silently. See
+§4(b). The recommendation stands; the retargeting is part of it, not an
+afterthought.
+
 ### HTTP sidecar — remove
 
 1,708 LOC across 10 modules, pulling `fastapi`, `uvicorn[standard]`, `pydantic`
@@ -294,7 +354,14 @@ question for the estate, not a reason to keep it in a published MVP.
   **Discharged** — see `prototypes/kernel/`, and §9 below for what it settles.
 - ~~F0a scenario validation.~~ **Both scenarios run**; see
   `prototypes/kernel/F0a-report.md`.
-- **Per-file test dispositions.** §4 gives a ceiling (68%), not a decision.
+- ~~Per-file test dispositions.~~ **Discharged** — all 185 files carry one; see
+  §4 and `plans/032-f0-inventory/`. Five remain UNCLEAR and need a ruling.
+- ~~Packaging, dependency and documentation deletion maps.~~ **Discharged** — see
+  `plans/032-f0-inventory/packaging-and-dependencies.md` and
+  `docs-and-public-claims.md`.
+- **The 15 public claims that become false**, catalogued in the docs map. The
+  `README.md` subset is urgent because README is the PyPI long description and
+  therefore the only published one.
 - **A quickstart walkthrough by someone who has not seen the code.** F0a asks for
   it explicitly and it cannot be self-reported; see `prototypes/kernel/F0a-report.md` §6.
 - **A ruling on link-aware "blocked".** The link graph is stored but the discovery
@@ -307,8 +374,11 @@ question for the estate, not a reason to keep it in a published MVP.
   condition.
 - **The proposed public API needed by F0a**, which this map informs but does not
   define.
-- **The Python support range (F0 item 5).** The `fromisoformat` divergence
-  recorded in §2 is a direct input.
+- **The Python support range (F0 item 5).** Measured: `requires-python` says
+  `>=3.11` while CI tests only 3.13/3.14. The `fromisoformat` divergence in §2 is
+  a direct input, and it reaches retained modules. On the table: `>=3.13,<3.15`.
+- **Decisions, not analysis.** 21 are collected in `plans/032-open-decisions.md`,
+  each with evidence, options, and a recommendation where I have one.
 
 ## 9. The prototype, and the §5 verdict
 
