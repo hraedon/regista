@@ -32,12 +32,12 @@ default, and F0 has not yet ruled" — it is not a recommendation.
 
 | Category | Modules | LOC | Share |
 | --- | ---: | ---: | ---: |
-| KERNEL — Plan 032 §3 "Keep and qualify" | 41 | 23,127 | 29.8% |
-| TRUST — §3 "Remove by default" + Signing | 40 | 46,323 | 59.8% |
+| KERNEL — Plan 032 §3 "Keep and qualify" | 40 | 22,610 | 29.2% |
+| TRUST — §3 "Remove by default" + Signing | 41 | 46,840 | 60.4% |
 | OPTIONAL — recurrence, hooks, webhooks, sidecar, in-memory engine | 31 | 8,056 | 10.4% |
 | **Total** | **112** | **77,506** | |
 
-Two corrections to the obvious reading, both material:
+Three corrections to the obvious reading, all material:
 
 - **`_contract` (898 LOC) is kernel, not trust.** It is the kernel's own
   validation layer: transition resolution, role gating, idempotency, claim
@@ -48,6 +48,22 @@ Two corrections to the obvious reading, both material:
   `validate_principal_id` reach out of it.
 - **`_jcs` / `_vendor.rfc8785` are kernel.** Plan 032 §3 permits canonical
   serialization to remain. `_jcs` is a nine-line wrapper over RFC 8785.
+- **`_reducer` (517 LOC) is trust, not kernel** — the one that goes the other
+  way. Its name and its position in the event pipeline suggest the projection
+  reducer. It is not. It is "Reducer v1 — the deterministic reduction of a signed
+  event prefix," the function `content_state_digest` is computed over, and a
+  signed review verdict binds itself to that digest. It is review-verdict
+  machinery, which Plan 032 removes. It is also **imported by no production
+  module at all** — only `tests/test_reducer_v1_determinism.py`,
+  `tests/test_v6_vectors.py`, `tools/make_v6_vectors.py` and
+  `tools/reducer_v1_sweep.py`. It is off the runtime path entirely.
+
+  Worth preserving from it before deletion, because it is a measured finding and
+  not an assumption: `datetime.fromisoformat` **accepts a different language on
+  different interpreters** — CPython 3.14 parses `"2026-08-09T24:00:00Z"` as the
+  following midnight, while CPython 3.12, 3.13 and PyPy 3.11 raise. Any retained
+  kernel code that parses timestamps across the declared support matrix inherits
+  that hazard. F0 item 5 chooses the Python range; this is an input to it.
 
 **How much trust the kernel actually drags in.** The transitive closure of the
 kernel seeds is 61 modules / 47,658 LOC, of which **24 modules and 32,705 LOC
@@ -209,12 +225,82 @@ The editable `[tool.uv.sources]` mappings in `agent-notes` and `agent-provenance
 point at `../regista` and affect `uv run` inside those checkouts. Reducing
 `main` will break those dev paths; it does not touch the installed tools.
 
-## 7. What F0 still owes
+## 7. The OPTIONAL set — evidence for the rulings
 
-- Per-file test dispositions (§4 is a ceiling, not a decision).
-- A prototype `events` row and project-open path without required signing, to
-  settle the extract-versus-sever question in Plan 032 §5.
-- The OPTIONAL ruling: recurrence, hooks, webhooks, the HTTP sidecar, and the
-  in-memory engine (8,056 LOC across 31 modules).
-- The proposed public API needed by F0a, which this map informs but does not
+Plan 032 §3 removes these by default "unless F0 identifies a small independent
+subset worth retaining," and warns against keeping machinery because it has
+tests. 31 modules, 8,056 LOC. This section supplies the evidence; the maintainer
+rules.
+
+### In-memory backend — the only close call
+
+Plan 032's condition is explicit: keep it "only if it shares actual
+transition/reduction rules and accurately states its missing
+durability/concurrency guarantees." The first half is testable now, and it
+largely passes:
+
+- Most in-memory modules import the **shared** `_contract` validation layer
+  rather than restating it: `_in_mem_base`, `_in_mem_claim`, `_in_mem_ops`,
+  `_in_memory_claims`, `_in_memory_events`, `_in_memory_links`,
+  `_in_memory_transition`, `_in_memory_work_items`, `_in_mem_workflow`.
+- `_in_memory_transition` (313 LOC) imports the real `_transition` and
+  `_workflow`. Transition rules are genuinely shared, not forked.
+
+Two exceptions that are not shared, and they are the large ones:
+
+- **`_in_memory_replay` (794 LOC)** shares only `_errors`/`_types`. It carries
+  its own `_verify_hash_chain_in_memory` and `_verify_global_hash_chain_in_memory`.
+  This is a second replay implementation.
+- **`_in_memory_v6` (722 LOC)** likewise, and `_in_mem_witness` (601 LOC) is
+  trust-only and leaves with the trust stack regardless.
+
+So the honest reading is **split**: the claim/work-item/transition/link surface
+meets Plan 032's condition and is cheap to keep; replay does not. Retaining the
+backend wholesale keeps a second replay implementation, which contradicts
+"preserve one implementation of transition and reduction rules." Retaining it
+without replay means the in-memory backend cannot exercise the replay contract —
+which is much of what F2 must qualify. **Recommendation: retire it and use
+disposable PostgreSQL fixtures**, per Plan 032's own fallback, because the part
+that would justify keeping it is the part that is forked.
+
+### HTTP sidecar — remove
+
+1,708 LOC across 10 modules, pulling `fastapi`, `uvicorn[standard]`, `pydantic`
+and `httpx` via the `sidecar` extra. It is not a thin pass-through: it ships its
+own `TokenRegistry`, `AuthenticatedActor`, `require_admin` and `rate_limit`. That
+is a second authentication and deployment product, which Plan 032 names as the
+thing to avoid retaining by inertia. No qualification-cost case for keeping it
+was found. **Remove, with its extra.**
+
+### Recurrence, hooks, webhooks — remove
+
+`_recurrence` (458) + `_recurrence_api` (109) + `_in_memory_recurrence` (256);
+`_hooks` (662) + `_hooks_api` (70) + `_in_memory_hooks` (186) + `_in_mem_hook`
+(223); `_webhooks` (85). Four of the 21 top-level CLI groups and four schema
+tables (`hook_queue`, `hook_dead_letter`, `recurrence_rules`,
+`webhook_registrations`) go with them.
+
+Plan 032's product statement is that Regista owns coordination state while
+callers own execution, and that it is "not a job executor, durable-code-execution
+engine, scheduler." Recurrence scheduling and async delivery are execution
+concerns by that definition. No independent subset worth retaining was
+identified. **Remove.** The one thing to check before deleting the hook queue is
+`agent-wake`'s use of it as a durable-ingest path — but that is a consumer
+question for the estate, not a reason to keep it in a published MVP.
+
+## 8. What F0 still owes
+
+- **A prototype `events` row and project-open path without required signing.**
+  This is the largest remaining debt: §5 shows the current schema makes Plan
+  032's "no cryptographic ceremony" requirement structurally unreachable, and
+  Plan 032 §5's extract-versus-sever decision should not be taken before the new
+  row and open path exist even in sketch.
+- **Per-file test dispositions.** §4 gives a ceiling (68%), not a decision.
+- **The maintainer's ruling on §7.** The evidence is assembled; the calls are
+  not mine to make. Note that the in-memory recommendation is the one place this
+  map argues against retaining something that partly meets Plan 032's stated
+  condition.
+- **The proposed public API needed by F0a**, which this map informs but does not
   define.
+- **The Python support range (F0 item 5).** The `fromisoformat` divergence
+  recorded in §2 is a direct input.
