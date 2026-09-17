@@ -1,5 +1,10 @@
 # Plan 017 — Webhook/Witness Unification
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: unifying the webhook and witness delivery code paths (near-duplicate patterns).
+> Why: both webhooks and witness delivery are REMOVE-scope (`plans/032-final-public-release.md:61,65`); unifying two removed subsystems does not survive their removal.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Implementation in progress
 **Origin:** BC-269 (witness and webhook are near-duplicate patterns)
 **Spec touched:** §19 (public API), migration 026

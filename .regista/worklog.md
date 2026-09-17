@@ -4,6 +4,32 @@ Structured log of development sessions and milestones.
 
 ---
 
+## 2026-09-17 — Plan 032 open-decisions review
+
+**Focus:** Review the 21 decisions and leave recommendations in the repository.
+
+**Delivered:** Added [the review](../plans/032-open-decisions-review.md), linked
+from the original decision list. Recommended extraction with regression
+preservation, removal of surrounding services/signing, retention of synchronous
+validation, and explicit dispositions for the five ambiguous plans and test
+files. Identified incomplete consumer-upgrade protection and challenged the
+proposed Python range. Recommendations remain unaccepted; no implementation or
+publication was undertaken.
+
+**Evidence:** On the unchanged prototype at `a9f6913`, disposable PostgreSQL
+15.17 / CPython 3.14.4 probes confirmed expired/differently attributed claim
+writes and replay reporting no drift for inconsistent custom fields or a
+same-state tail deletion. Filed WI-367 and WI-368 after duplicate searches.
+Confirmed datetime-field serialization refusal and the parser difference
+across installed CPython 3.11–3.14. The disposable container was removed.
+
+**Validation:** All 21 review entries, local links, and whitespace checked. No
+full suite or unfamiliar-reviewer walkthrough. Existing test-ledger edits were
+untouched. Session-start reconcile suggestions were not applied: references to
+WI-364's ongoing work do not establish its completion.
+
+---
+
 ## 2026-08-11 - Session 92: Canonical lineage, observed models, and genesis probes
 
 **Focus:** Close WI-285 and WI-045 through implementation and cross-lineage review, then add an executable genesis preflight whose measurements run now while the first-write verdict remains honestly blocked.

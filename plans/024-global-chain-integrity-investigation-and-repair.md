@@ -1,5 +1,10 @@
 # Plan 024 — Global-chain integrity: investigate, fix, repair
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a verifier-bug investigation and fix in the global hash chain's replay walk (already completed 2026-06-30).
+> Why: the specific bug fix already shipped and is doubly moot for 0.8.0: it repairs a verifier for the global hash chain / tamper-evidence structure, which is itself REMOVE-scope alongside anchoring and signing. Kept as the historical record that the repair was correct at the time.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Complete 2026-06-30. **Phase 0 finding: VERIFIER BUG (not data
 corruption).** The chain links are correct in every schema; the replay verifier
 sorted by `global_seq` (which diverges from append order under CACHE 100)

@@ -1,5 +1,10 @@
 # Plan 007 — Public API Facade Decomposition
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: decomposing the pre-0.8.0 25+-method `Regista` god-class into per-domain facade sub-objects (`sub.work_items`, `sub.claims`, `sub.hooks`, `sub.recurrence`, etc.) — landed and live in the current `src/regista/__init__.py`.
+> Why: the facades this plan organizes include hooks and recurrence ops, both REMOVE-scope, and the 0.8.0 kernel is an F1 extraction (`prototypes/kernel/`, confirmed by reading `kernel.py`) with a single flat `Kernel` class, not a promotion of this facade architecture. The decomposition problem this plan solves does not recur in a ~736-line kernel with a handful of methods.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Prereq for:** multi-tenant deployment (Plan 008)

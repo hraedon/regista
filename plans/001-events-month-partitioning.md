@@ -1,5 +1,10 @@
 # Plan 001 — Month-Partitioning the `events` Table
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a proposed month-partitioning scheme for the `events` table.
+> Why: already reverted independent of Plan 032 — spec.md's own revision history records RFC-001 (`spec.md:19`, v5) reverting migration 010 partitioning; `ensure_event_partitions` is a no-op today. Harmless as a record of a reverted decision; not affected by the trust-stack removal either way.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 Status: Proposed
 Scope: Regista core schema. Per-project, applied to each project schema (BR-13).
 Spec anchors: §16 "Schema partitioning policy — Deferred with flexibility" (`spec.md:338`); deferred-items list (`spec.md:494`); §16 trigger threshold note (`spec.md:517`); §10 retention statement (`spec.md:238`).

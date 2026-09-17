@@ -1,5 +1,10 @@
 # Plan 013 — Witness/Co-signature Post-Append Hooks
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: witness/co-signature post-append hooks (external witness registration, receipt creation, HTTP delivery).
+> Why: witness/anchoring machinery is explicit REMOVE-scope (`plans/032-final-public-release.md:61`).
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** regista
 **Spec touched:** §19 (public API surface), §17 (integrity and signing)

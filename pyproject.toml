@@ -8,6 +8,21 @@ version = "0.7.2"
 description = "Coordination + state plane for agent pipelines over Postgres"
 readme = "README.md"
 requires-python = ">=3.11"
+# D13 (Plan 032 open-decisions, ruled 2026-09-17): requires-python states the
+# advertised floor only — no speculative upper cap (PyPA guidance: a
+# mismatched Requires-Python can make an installer silently resolve to an
+# OLDER release, which would be an especially bad outcome across a
+# deliberate scope break). classifiers below states which versions are
+# actually exercised in CI (.github/workflows/ci.yml, prototype-kernel job);
+# it is a narrower, testable claim than the >=3.11 floor and must be kept in
+# sync with that job's matrix, not with this dependency floor.
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "psycopg[binary]>=3.2,<4",
     "psycopg-pool>=3.2,<4",
@@ -79,6 +94,11 @@ markers = [
 ]
 
 [tool.ruff]
+# D14 (Plan 032 open-decisions, ruled 2026-09-17): prototypes/ is the
+# retained implementation (D1 = EXTRACT), not a throwaway — it gets the same
+# lint gate as src/ and tests/ now, not only after promotion. See
+# [tool.mypy] below and .github/workflows/ci.yml for the matching type-check
+# and PostgreSQL-backed test coverage.
 target-version = "py311"
 line-length = 100
 
@@ -101,7 +121,13 @@ select = ["E", "F", "I", "N", "W", "UP", "RUF"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src/regista"]
+# D14 (Plan 032 open-decisions, ruled 2026-09-17): prototypes/ (the retained
+# kernel prototype, D1 = EXTRACT) is a first-class strict target now, not
+# only after promotion — "verified clean by hand" establishes neither
+# continued coverage nor that it stays clean. It has no burndown-list
+# quarantine: unlike src/regista's pre-existing debt, new modules here are
+# expected to be strict-clean from the start.
+files = ["src/regista", "prototypes"]
 
 # Untyped third-party libs (installed in CI via extras, but ship no stubs).
 [[tool.mypy.overrides]]

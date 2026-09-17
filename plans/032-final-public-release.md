@@ -1,5 +1,10 @@
 # Plan 032 — A focused work-coordination MVP for Regista
 
+> **0.8.0 disposition: CURRENT.**
+> Release line this plan describes: the governing plan for the 0.8.0 release — the work-coordination MVP scope reset this entire disposition pass implements.
+> Why: this is the plan being executed, not a historical artifact; every other marker in `plans/` cites it as the authority for its disposition.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft. The owner has authorized planning around substantial simplification and breaking changes; the current request is for a plan, not implementation or publication.  
 **Date:** 2026-09-04.  
 **Baseline:** main `7707c81`, package version `0.7.2`.  

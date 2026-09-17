@@ -1,4 +1,27 @@
 # spec.yaml — regista
+#
+# 0.8.0 DISPOSITION: RETIRED. Plan 032 D15 (plans/032-open-decisions.md,
+# reviewer notes in plans/032-open-decisions-review.md) rules this sidecar
+# retired from the current contract unless a real consumer needs it.
+# Searched: no code, test, or CI in this repo reads this file by path; the
+# `regista spec sign`/`sign_spec()` API is a generic "sign a caller-supplied
+# spec.yaml as a project's founding artifact" feature (Plan 025 WI-4.3, itself
+# signing-dependent and REMOVE-scope) — it does not read *this* file. Also
+# checked /projects/dossier and /projects/agent-notes (estate consumers named
+# in Plan 032): no reference to this file or to sign_spec/read_spec_events in
+# either. No consumer found; retirement stands. Not deleted — see
+# plans/032-plan-dispositions.md for the full disposition and rationale.
+#
+# Independently of the reduction: this file was already stale against its own
+# declared source before any of this — it says "regenerated against spec.md
+# v8" below, while spec.md's own revision history (spec.md:9) has been at v9
+# since Plan 022 (2026-06-23). That drift is further evidence for retiring a
+# hand-maintained sidecar rather than a defect to fix by regenerating it.
+#
+# The workflow JSON Schema (src/regista/_workflow_schema.json) is NOT this
+# file and is NOT retired — it validates a supported input format (workflow
+# YAML) and serves a different purpose than this spec sidecar.
+#
 # Machine-readable sidecar to spec.md. Source of truth is spec.md.
 # Regenerated against spec.md v8 (2026-05-26).
 

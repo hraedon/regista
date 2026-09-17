@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,7 +60,7 @@ def refused(msg: str) -> None:
     print(f"   \033[33m⊘ refused:\033[0m {msg}")
 
 
-def person(dsn: str, *argv: str) -> dict:
+def person(dsn: str, *argv: str) -> dict[str, Any]:
     """Run the CLI exactly as a person at a terminal would."""
     cmd = [sys.executable, os.path.join(HERE, "cli.py"), "--dsn", dsn, "--json", *argv]
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -70,7 +71,8 @@ def person(dsn: str, *argv: str) -> dict:
     if p.returncode != 0:
         raise SystemExit(f"CLI failed: {p.stderr.strip()}")
     ok(f"$ regista-kernel {shown}")
-    return json.loads(p.stdout) if p.stdout.strip() else {}
+    body: dict[str, Any] = json.loads(p.stdout) if p.stdout.strip() else {}
+    return body
 
 
 def counts(k: Kernel, actor: str) -> str:
@@ -192,9 +194,9 @@ def main(dsn: str) -> int:
         return 1
     ok("no drift; chain intact")
     person(dsn, "history", str(doc.id))
-    for e in k.history(doc.id):
-        who = f"{e.actor_id} ({e.actor_kind})"
-        print(f"   {e.seq:>2}. {e.transition or 'created':<10} {who}")
+    for ev in k.history(doc.id):
+        who = f"{ev.actor_id} ({ev.actor_kind})"
+        print(f"   {ev.seq:>2}. {ev.transition or 'created':<10} {who}")
 
     elapsed = time.monotonic() - t0
     print(f"\n\033[1;32mScenario passed\033[0m in {elapsed:.1f}s from an empty database.")

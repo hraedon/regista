@@ -1,5 +1,10 @@
 # Plan 018 — Rename regista → regista
 
+> **0.8.0 disposition: HISTORICAL — COMPLETE.**
+> Release line this plan describes: the one-time mechanical rename regista → regista (PyPI/GitHub/module/console-script), executed at v0.4.0.
+> Why: this is a completed, permanent action, not a removable feature or a design under reconsideration — the `regista` name persists unchanged into 0.8.0 (distribution/import naming preserved per Plan 032 F4). Nothing here bears on the trust-stack removal in either direction; kept as the historical record of the rename, per `AGENTS.md:3`.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Ready to execute. Foundation phase of the cross-project rename (see `/projects/RENAME-regista-to-regista.md` for orchestration).
 **Type:** Mechanical refactor with one schema-level decision.
 **Pre-rename tag:** `v0.4.0-pre-rename` — the rollback target if anything goes sideways.

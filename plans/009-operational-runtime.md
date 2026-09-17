@@ -1,5 +1,10 @@
 # Plan 009 — Operational Runtime (Regista Daemon)
 
+> **0.8.0 disposition: MOSTLY HISTORICAL.**
+> Release line this plan describes: a background daemon (`MaintenanceThread`) justified primarily by recurrence firing and async hook dispatch, both requiring a timer loop.
+> Why: recurrence and hooks are REMOVE-scope, which removes most of this plan's stated justification (§1's operation table is 3/5 recurrence/hook rows). The one operational need that survives — periodic sweep of expired claims — is not itself this plan's contribution (it predates it, FR-09a) and remains ordinary caller responsibility in the 0.8.0 kernel, not a daemon requirement. `ensure_event_partitions` (the other row) is additionally moot per Plan 001's reversion.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Spec touched:** §3 (out of scope), §20 (consumer expectation boundary), AGENTS.md §Key Design Decisions (point 2)

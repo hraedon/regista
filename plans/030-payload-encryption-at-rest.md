@@ -1,5 +1,10 @@
 # Plan 030 — Encryption-at-rest primitive for event payloads
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a field-level AES-256-GCM encryption-at-rest primitive for event payloads.
+> Why: "field encryption/custody integrations serving the removed evidence system" are explicit REMOVE-scope (`plans/032-final-public-release.md:64`); storage/database encryption becomes an explicit operator responsibility instead of a regista-provided primitive.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Proposed 2026-07-08.
 **Author:** GLM-5.2, cross-filed from agent-provenance Plan 010 (session-content
 capture and the authorized-viewer portal).

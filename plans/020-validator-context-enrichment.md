@@ -1,5 +1,10 @@
 # Plan 020 — Validator context enrichment (acting actor_kind + prior events)
 
+> **0.8.0 disposition: PARTIALLY RETAINED.**
+> Release line this plan describes: enriching `ValidatorContext` with acting actor_kind and prior-events access for the sync `adversarial_review` validator.
+> Why: D16 ruling (`plans/032-open-decisions-review.md`): a small trusted SYNCHRONOUS validation extension survives — transition state, fields, workflow version, and asserted actor context. Delegation context, lineage context, and automatic unbounded history loading are removed along with delegation (Plan 010/021) and the suite review policy (Plan 023). Trusted callbacks must fail the transaction on refusal or exception; they are not a sandbox, and database statement timeouts do not terminate arbitrary Python computation (spec.md:138 already states this correctly for the validator primitive in general — carry it forward).
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC. Proposed 2026-06-22. Not started.
 **Owner:** dossier player-coach
 **Origin:** dossier `plans/005-adversarial-review.md` — the `adversarial_review`

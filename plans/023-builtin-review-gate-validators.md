@@ -1,5 +1,10 @@
 # Plan 023 — Built-in review-gate validators + dual-mode accept policy
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: moving the canonical review-gate validators (`adversarial_review`, `human_gate`) into regista as registerable built-ins with model-family assurance parameterization.
+> Why: D16 ruling: historical; the suite review policy goes. Generic review states and caller-written validation remain possible without built-in model-family rules — a caller can still register a synchronous validator (Plan 020's retained subset) that implements review-gating; regista just does not ship the model-lineage-aware built-in version.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Proposed 2026-06-28. Foundational unblocker for the convergence.
 Companion to dossier Plan 007 / agent-notes Plan 010. Not started.
 **Author:** Opus 4.8
