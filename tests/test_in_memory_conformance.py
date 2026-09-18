@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from regista._errors import ErrorCode, RegistaError
-from regista.testing import InMemoryRegista, drop_project_schema
+from regista.testing import drop_project_schema
 
 TESTS_DIR = Path(__file__).parent
 DSN = "postgresql://regista_test:regista_test@localhost:5432/regista_test"
@@ -16,30 +15,32 @@ WORKFLOW_PATH = str(TESTS_DIR / "test_workflow.yaml")
 WORKFLOW_YAML = Path(WORKFLOW_PATH).read_text()
 
 
-@pytest.fixture(params=["real", "in_memory"])
-def sub(request, tmp_path):
+@pytest.fixture
+def sub(tmp_path):
+    """Real PostgreSQL backend.
+
+    D2 (Plan 032): the in-memory backend is retired -- its replay/chain
+    verification forked from the shared `_contract`/`_transition`/`_workflow`
+    modules this fixture's "real" branch already exercised, rather than
+    reusing them. These conformance tests were already running the identical
+    test bodies against real PostgreSQL through this fixture's former
+    `params=["real", "in_memory"]` "real" branch, so retargeting them is this
+    deletion of the `"in_memory"` branch -- no assertion below changed.
+    """
+    from regista import Regista
     from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
 
     keyset = make_v6_keyset(tmp_path)
-    if request.param == "real":
-        from regista import Regista
-
-        project = f"test_conf_{uuid.uuid4().hex[:8]}"
-        s = Regista.create_project(DSN, project, keyset.path)
-        # The clean v6 epoch first: `register_workflow_file` emits the signed
-        # `workflow_registered` event admission gate 1 requires, and there is no
-        # epoch to append it to until `open_v6_epoch` returns.
-        open_v6_epoch(s, keyset)
-        s.register_workflow_file(WORKFLOW_PATH)
-        yield s
-        s.close()
-        drop_project_schema(DSN, project)
-    else:
-        s = InMemoryRegista(project="test", hmac_key_path=keyset.path)
-        open_v6_epoch(s, keyset)
-        s.register_workflow_file(WORKFLOW_PATH)
-        yield s
-        s.close()
+    project = f"test_conf_{uuid.uuid4().hex[:8]}"
+    s = Regista.create_project(DSN, project, keyset.path)
+    # The clean v6 epoch first: `register_workflow_file` emits the signed
+    # `workflow_registered` event admission gate 1 requires, and there is no
+    # epoch to append it to until `open_v6_epoch` returns.
+    open_v6_epoch(s, keyset)
+    s.register_workflow_file(WORKFLOW_PATH)
+    yield s
+    s.close()
+    drop_project_schema(DSN, project)
 
 
 class TestConformanceWorkflow:
@@ -529,83 +530,28 @@ class TestConformanceCustomFieldFilter:
 
 
 # ---------------------------------------------------------------------------
-# BC-189: in-memory-only tests for claim_expires_at drift and orphan events
+# BC-189: orphan-event detection — RETIRED (redundant), not ported.
+#
+# `TestBC189OrphanEventDetection` used to inject a raw, v6-shaped
+# `regista._types.Event` directly into `InMemoryRegista._store.events` (an
+# internal, backend-specific mechanism the real PostgreSQL backend has no
+# equivalent for) to prove two things: an orphan work item whose only event
+# is "created" is halted, not warned; and an orphan work item whose events
+# do NOT start with "created" is also halted.
+#
+# Both assertions already exist against the real PostgreSQL backend, proved
+# via the same raw-injection idea but through `raw_transaction` and a real
+# `INSERT INTO events`/`DELETE FROM work_items_current`, in
+# `tests/test_replay_coverage.py::TestReplayOrphanEvents`:
+#   - test_orphan_with_created_event_halts
+#   - test_orphan_without_created_event_halts
+# Both assert the identical `report.halted >= 1` (the first also
+# `report.warnings == 0`) contract. Nothing here needed adapting for
+# PostgreSQL because PostgreSQL coverage of this exact behaviour already
+# existed independently of the in-memory backend; porting it a second time
+# into this file would only duplicate `test_replay_coverage.py`, not add
+# coverage.
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def mem_sub():
-    """Standalone InMemoryRegista fixture (not parameterized, no Postgres needed)."""
-    s = InMemoryRegista(project="bc189")
-    s.register_workflow_file(WORKFLOW_PATH)
-    yield s
-    s.close()
-
-
-class TestBC189OrphanEventDetection:
-    """Verify that orphan-event detection in in-memory replay mirrors Postgres behaviour."""
-
-    def test_orphan_with_created_event_counts_as_halted(self, mem_sub):
-        """An orphan work-item whose first event is 'created' is halted (WI-266),
-        matching the Postgres backend's whole-store verdict."""
-        from regista._types import Event
-
-        orphan_id = uuid.uuid4()
-        # Inject a synthetic 'created' event directly into the event store
-        # without adding a work-item entry — simulates a deleted work-item row.
-        evt = Event(
-            event_id=uuid.uuid4(),
-            work_item_id=orphan_id,
-            event_seq=1,
-            actor_id="agent-orphan",
-            actor_kind="agent",
-            actor_metadata=None,
-            key_id="in-memory",
-            workflow_name="test_workflow",
-            workflow_version=1,
-            timestamp=datetime.now(UTC),
-            transition="created",
-            payload={"initial_state": "new", "custom_fields": {"title": "orphan"}},
-            payload_canonical_hash=b"\x00" * 32,
-            signature=b"\x00" * 32,
-            canonical_envelope=None,
-        )
-        mem_sub._store.events.setdefault(orphan_id, []).append(evt)
-        # Explicitly ensure no work-item row exists
-        mem_sub._work_items.pop(orphan_id, None)
-
-        report = mem_sub.replay()
-        # WI-266: an orphan with a 'created' event is a halt, not a warning.
-        assert report.halted >= 1
-        assert report.warnings == 0
-
-    def test_orphan_without_created_event_counts_as_halted(self, mem_sub):
-        """An orphan work-item whose events do NOT start with 'created' is halted."""
-        from regista._types import Event
-
-        orphan_id = uuid.uuid4()
-        # Inject only a non-created event — no 'created' event at seq 1
-        evt = Event(
-            event_id=uuid.uuid4(),
-            work_item_id=orphan_id,
-            event_seq=2,
-            actor_id="agent-orphan",
-            actor_kind="agent",
-            actor_metadata=None,
-            key_id="in-memory",
-            workflow_name="test_workflow",
-            workflow_version=1,
-            timestamp=datetime.now(UTC),
-            transition="start",
-            payload={},
-            payload_canonical_hash=b"\x00" * 32,
-            signature=b"\x00" * 32,
-            canonical_envelope=None,
-        )
-        mem_sub._store.events.setdefault(orphan_id, []).append(evt)
-        mem_sub._work_items.pop(orphan_id, None)
-
-        report = mem_sub.replay()
-        assert report.halted >= 1
 
 
 class TestHeartbeatActorKindConformance:
@@ -626,29 +572,14 @@ class TestHeartbeatActorKindConformance:
         assert len(heartbeat_events) == 1
         assert heartbeat_events[0].actor_kind == "human"
 
-    def test_heartbeat_actor_kind_emitted_in_memory_with_keys(self, tmp_path):
-        from tests._v6_fixtures import make_v6_keyset, open_v6_epoch
-
-        keyset = make_v6_keyset(tmp_path)
-        s = InMemoryRegista(project="test_im_keys", hmac_key_path=keyset.path)
-        open_v6_epoch(s, keyset)
-        s.register_workflow_file(WORKFLOW_PATH)
-        try:
-            wi, _ = s.create_work_item(
-                workflow_name="test_workflow",
-                work_item_type="feature",
-                actor_id="human:operator",
-                custom_fields={"title": "actor_kind im conformance"},
-            )
-            s.acquire_claim(
-                wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human"
-            )
-            s.heartbeat_claim(
-                wi.work_item_id, "human:operator", ttl_seconds=300, actor_kind="human"
-            )
-            events = s.read_events(work_item_id=wi.work_item_id)
-            heartbeat_events = [e for e in events if e.transition == "claim_heartbeat"]
-            assert len(heartbeat_events) == 1
-            assert heartbeat_events[0].actor_kind == "human"
-        finally:
-            s.close()
+    # `test_heartbeat_actor_kind_emitted_in_memory_with_keys` retired, not
+    # ported: it existed only as the in-memory half of a real/in-memory
+    # parity pair, constructing its own `InMemoryRegista(hmac_key_path=...)`
+    # directly (not via the `sub` fixture) to prove the same
+    # actor_kind-on-claim_heartbeat assertion as
+    # `test_heartbeat_actor_kind_emitted_real` above. With the in-memory
+    # backend gone there is no second side left to compare against parity
+    # with, and `test_heartbeat_actor_kind_emitted_real` already asserts the
+    # identical behaviour (one claim_heartbeat event, actor_kind == "human")
+    # against the real backend. Named replacement: the `test_heartbeat_
+    # actor_kind_emitted_real` test immediately above, in this same class.
