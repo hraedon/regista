@@ -26,18 +26,23 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import psycopg
 from kernel import (
+    REPLAY_COVERS,
     REPLAY_DOES_NOT_COVER,
     ClaimContestedError,
     IdempotencyConflictError,
     InvalidFieldError,
+    InvalidQueryError,
+    InvalidWorkflowError,
     Kernel,
+    KernelError,
     LeaseExpiredError,
     LeaseNotHeldError,
     ReservedPayloadKeyError,
@@ -58,7 +63,9 @@ LOOP_TTL = 0.6
 LOOP_WAIT = 0.9
 
 WF = Workflow(
-    name="t", version=0,
+    # No version=: the registry assigns it. Asserting one here would be a claim
+    # about the registry's state that this definition has no way to know.
+    name="t",
     states=("open", "doing", "review", "done"), initial="open",
     transitions={"start": (("open",), "doing"), "submit": (("doing",), "review"),
                  # A self-loop: a transition that changes fields but not state.
@@ -70,6 +77,30 @@ WF = Workflow(
     required_fields={"submit": ("note",)},
     terminal=("done",),
 )
+
+#: A second workflow for the link-aware query, because the point that has to be
+#: provable is that a TERMINAL state is not satisfaction -- and "t" has only one
+#: terminal state, which happens to be the successful one.
+WF_DEP = Workflow(
+    name="dep",
+    states=("open", "doing", "done", "rejected"), initial="open",
+    transitions={"start": (("open",), "doing"), "finish": (("doing",), "done"),
+                 "reject": (("doing",), "rejected")},
+    terminal=("done", "rejected"),
+)
+
+#: Every public name on Kernel, so that ADDING one fails the bounded-query check
+#: until someone classifies it. A coverage list that is never itself checked is
+#: how a query ships unbounded while a green check says every query is bounded.
+KERNEL_PUBLIC_SURFACE = frozenset({
+    "connect", "close", "initialize",
+    "register_workflow", "get_workflow", "list_workflows", "health",
+    "create_work_item", "get",
+    "claim", "heartbeat", "lease", "release", "expire_leases",
+    "transition", "link", "links_from",
+    "list_items", "available", "owned", "in_states", "blocked",
+    "history", "replay",
+})
 
 PASS: list[str] = []
 FAIL: list[str] = []
@@ -535,6 +566,10 @@ def main(dsn: str) -> int:
             ("available", lambda: k.available()),
             ("owned", lambda: k.owned("w1")),
             ("in_states", lambda: k.in_states(("open",))),
+            ("list_items", lambda: k.list_items()),
+            ("blocked", lambda: k.blocked(link_type="blocks", direction="incoming",
+                                          satisfied_states=("done",))),
+            ("lease", lambda: k.lease(a.id)),
             ("list_workflows", k.list_workflows),
             ("health", k.health),
             ("replay", lambda: k.replay(a.id)),
@@ -543,6 +578,29 @@ def main(dsn: str) -> int:
             call()
             assert open_transactions(dsn, app) == 0, (
                 f"{label}() left its transaction open"
+            )
+        # A REFUSED read has to close it too, and several of these refuse only
+        # after they have already executed a statement -- resolving a cursor,
+        # checking a state name. A refusal that leaks the transaction pins the
+        # snapshot exactly as a successful one would.
+        refusals: list[tuple[str, Callable[[], object]]] = [
+            ("list_items(limit=0)", lambda: k.list_items(limit=0)),
+            ("list_items(after=<missing>)", lambda: k.list_items(after=uuid.uuid4())),
+            ("in_states(())", lambda: k.in_states(())),
+            ("blocked(<misspelled state>)",
+             lambda: k.blocked(link_type="blocks", direction="incoming",
+                               satisfied_states=("nope",))),
+            ("lease(<missing>)", lambda: k.lease(uuid.uuid4())),
+        ]
+        for label, call in refusals:
+            try:
+                call()
+            except KernelError:
+                pass
+            else:
+                raise AssertionError(f"{label} did not refuse — this case is vacuous")
+            assert open_transactions(dsn, app) == 0, (
+                f"{label} left its transaction open after refusing"
             )
         k.close()
     check("every read path closes its transaction", reads_close_their_transaction)
@@ -667,7 +725,7 @@ def main(dsn: str) -> int:
         k = fresh(dsn, "m26")
         it = k.create_work_item(workflow="t", type="x", actor_id="a")
         k.transition(it.id, transition="start", actor_id="a")
-        for key in ("from", "to", "fields", "created"):
+        for key in ("from", "to", "fields", "unset", "created"):
             err = expect_exactly(
                 ReservedPayloadKeyError,
                 lambda key=key: k.transition(  # type: ignore[misc]
@@ -812,6 +870,11 @@ def main(dsn: str) -> int:
         assert set(REPLAY_DOES_NOT_COVER) >= {"leases (claims)", "typed links (links)"}, (
             "the published boundary no longer names what this check just demonstrated"
         )
+        assert any("unset" in entry for entry in REPLAY_COVERS), (
+            "REPLAY_COVERS no longer names field clears, but replay does reproduce them "
+            "(see the shallow-merge check) -- the published boundary now UNDERSTATES "
+            "coverage, which is the same defect in the other direction"
+        )
         k.close()
     check("replay's documented coverage boundary matches what it actually checks",
           replay_coverage_boundary_is_accurate)
@@ -899,6 +962,494 @@ def main(dsn: str) -> int:
         k.initialize(os.path.join(HERE, "schema.sql"))  # second call is a no-op
         k.close()
     check("initialising an already-current schema is a no-op", idempotent_init)
+
+    print("\n\033[1mLease inspection\033[0m")
+
+    def lease_is_visible() -> None:
+        """There was no public way to ask who holds an item. Refusals named a
+        holder, owned() needed you to already know the actor, and the one
+        condition that refuses EVERY write -- an expired, unswept lease -- was
+        invisible from outside entirely."""
+        k = fresh(dsn, "m31")
+        it = k.create_work_item(workflow="t", type="x", actor_id="a")
+        assert k.lease(it.id) is None, "an unclaimed item reports a lease"
+        c = k.claim(it.id, actor_id="w1", ttl_seconds=SHORT_TTL)
+        held = k.lease(it.id)
+        assert held is not None, "a live lease is invisible through lease()"
+        assert (held.actor_id, held.attempt, held.live) == ("w1", c.attempt, True), (
+            f"lease() disagrees with claim(): {held}"
+        )
+        assert held.expires_at == c.expires_at, "lease() and claim() report different expiries"
+
+        time.sleep(EXPIRY_WAIT)
+        dead = k.lease(it.id)
+        assert dead is not None, (
+            "an unswept DEAD lease reports as unclaimed — the one lease condition that "
+            "refuses every write is the one a caller cannot see"
+        )
+        assert dead.live is False, "lease() called an expired lease live"
+        assert dead.actor_id == "w1", "the dead lease lost its holder"
+        # The liveness it reports is the database's, so it cannot disagree with
+        # what a write sees. Both ask clock_timestamp(), not the caller's clock.
+        expect_exactly(
+            LeaseExpiredError,
+            lambda: k.transition(it.id, transition="start", actor_id="w1", attempt=c.attempt),
+            "a write against the lease lease() just called dead",
+        )
+        assert k.expire_leases(it.id) == 1, "the per-item sweep did not remove it"
+        assert k.lease(it.id) is None, "a swept lease is still reported"
+        # control: a fresh lease is visible again, and an unknown item refuses
+        c2 = k.claim(it.id, actor_id="w2", ttl_seconds=300)
+        again = k.lease(it.id)
+        assert again is not None and again.actor_id == "w2" and again.live, (
+            f"the replacement lease is not visible: {again}"
+        )
+        assert again.attempt == c2.attempt, "lease() reported a stale attempt number"
+        expect(KernelError, lambda: k.lease(uuid.uuid4()), "lease() of a nonexistent item")
+        k.close()
+    check("lease() shows unclaimed, live and expired, and the dead one is not hidden",
+          lease_is_visible)
+
+    def per_item_sweep_is_surgical() -> None:
+        """Refusals point the caller at expire_leases(), and the only form that
+        existed swept the whole store. That is a bigger hammer than the refusal
+        asks for, on a store other people are using."""
+        k = fresh(dsn, "m32")
+        a = k.create_work_item(workflow="t", type="x", actor_id="a")
+        b = k.create_work_item(workflow="t", type="x", actor_id="a")
+        c = k.create_work_item(workflow="t", type="x", actor_id="a")
+        k.claim(a.id, actor_id="w1", ttl_seconds=SHORT_TTL)
+        k.claim(b.id, actor_id="w1", ttl_seconds=SHORT_TTL)
+        k.claim(c.id, actor_id="w2", ttl_seconds=300)
+        time.sleep(EXPIRY_WAIT)
+
+        assert k.expire_leases(a.id) == 1, "the per-item sweep removed nothing"
+        assert k.lease(a.id) is None, "the named item's dead lease survived"
+        assert k.lease(b.id) is not None, "the per-item sweep took ANOTHER item's lease"
+        live = k.lease(c.id)
+        assert live is not None and live.live, "the per-item sweep touched a live lease"
+        # a live lease is never swept, whichever form is used
+        assert k.expire_leases(c.id) == 0, "expire_leases(id) revoked a LIVE lease"
+        # control: the store-wide form still works and still spares the live one
+        assert k.expire_leases() == 1, "the store-wide sweep missed the remaining dead lease"
+        assert k.lease(b.id) is None, "b's dead lease survived the store-wide sweep"
+        live = k.lease(c.id)
+        assert live is not None and live.live, "the store-wide sweep revoked a live lease"
+        k.close()
+    check("expire_leases(id) sweeps one dead lease and spares live and foreign ones",
+          per_item_sweep_is_surgical)
+
+    print("\n\033[1mWorkflow versions\033[0m")
+
+    def workflow_version_is_honoured_or_absent() -> None:
+        """version= was mandatory and then discarded: the README passed 0 and
+        the registry ignored it. Now it is optional, and a value that IS passed
+        is an assertion the registry checks."""
+        k = fresh(dsn, "m33")  # fresh() registers WF, which asserts no version
+        assert k.get_workflow("t").version == 1, "the registry did not assign version 1"
+        # the round trip that a discarded parameter made impossible to reason about
+        assert k.register_workflow(k.get_workflow("t")) == 1, (
+            "a workflow read back from the registry cannot be re-registered"
+        )
+        wrong = replace(WF, version=7)
+        err = expect(InvalidWorkflowError, lambda: k.register_workflow(wrong),
+                     "asserting the wrong version for already-registered content")
+        assert "7" in str(err) and "1" in str(err), f"the refusal names neither version: {err}"
+        changed = replace(WF, states=(*WF.states, "parked"), version=1)
+        expect(InvalidWorkflowError, lambda: k.register_workflow(changed),
+               "asserting an existing version for NEW content")
+        expect(InvalidWorkflowError, lambda: k.register_workflow(replace(WF, version=-1)),
+               "a negative version")
+        assert [v for _, v, _ in k.list_workflows()] == [1], (
+            "a refused registration still wrote a version"
+        )
+        # control: the same new content, asserting nothing, registers as v2
+        assert k.register_workflow(replace(WF, states=(*WF.states, "parked"))) == 2, (
+            "new content did not get the next version"
+        )
+        # ...and asserting the version it actually got is accepted
+        assert k.register_workflow(
+            replace(WF, states=(*WF.states, "parked"), version=2)) == 2, (
+            "a CORRECT assertion was refused"
+        )
+        assert [v for _, v, _ in k.list_workflows()] == [1, 2], "versions are not immutable"
+        k.close()
+    check("a workflow version is assigned, and an asserted one is checked not discarded",
+          workflow_version_is_honoured_or_absent)
+
+    print("\n\033[1mField merge and clearing (D7)\033[0m")
+
+    def merge_is_shallow_and_clears_are_explicit() -> None:
+        """Fields merge across transitions, so a rejected attempt's data
+        survives into the next one. That is correct and stays; what was missing
+        was any supported way to remove it."""
+        k = fresh(dsn, "m34")
+        it = k.create_work_item(
+            workflow="t", type="x", actor_id="a",
+            fields={"keep": 1, "addr": {"city": "Y", "zip": "Z"}, "stale": "from a reject"},
+        )
+        item = k.transition(it.id, transition="start", actor_id="a",
+                            fields={"addr": {"city": "X"}}, unset_fields=("stale",))
+        assert item.fields["addr"] == {"city": "X"}, (
+            f"a supplied object was DEEP-merged instead of replacing: {item.fields['addr']}"
+        )
+        assert item.fields["keep"] == 1, "an unmentioned field was lost"
+        assert "stale" not in item.fields, "unset_fields did not clear the key"
+        assert k.get(it.id).fields == item.fields, "the returned item disagrees with the store"
+        # clearing a key that is not there is a no-op: a clear has to be safe to retry
+        k.transition(it.id, transition="annotate", actor_id="a", unset_fields=("never_set",))
+        assert k.get(it.id).fields == item.fields, "clearing an absent key changed something"
+
+        # the clear is recorded ON THE EVENT, which is the only reason replay
+        # can reproduce it rather than resurrecting the field
+        ev = next(e for e in k.history(it.id) if e.transition == "start")
+        assert ev.payload.get("unset") == ["stale"], (
+            f"the event did not record the clear: {ev.payload}"
+        )
+        _, fields, drift = k.replay(it.id)
+        assert not drift, f"a clear produced drift: {drift}"
+        assert "stale" not in fields, (
+            "the cleared field came back on replay — the reducer is ignoring the clear, "
+            "so the history and the projection now disagree"
+        )
+        assert fields == k.get(it.id).fields, "replay and the projection disagree after a clear"
+        k.close()
+    check("a clear removes the field, survives replay, and the merge stays shallow",
+          merge_is_shallow_and_clears_are_explicit)
+
+    def set_and_clear_together_is_refused() -> None:
+        k = fresh(dsn, "m35")
+        it = k.create_work_item(workflow="t", type="x", actor_id="a", fields={"n": 1})
+        err = expect(InvalidFieldError,
+                     lambda: k.transition(it.id, transition="start", actor_id="a",
+                                          fields={"n": 2}, unset_fields=("n",)),
+                     "setting and clearing the same key in one call")
+        assert "'n'" in str(err), f"the refusal does not name the key: {err}"
+        assert k.get(it.id).state == "open", "the refused call left an effect"
+        assert k.get(it.id).fields["n"] == 1, "the refused call changed the field"
+        # controls: either half alone is fine
+        k.transition(it.id, transition="start", actor_id="a", fields={"n": 2})
+        assert k.get(it.id).fields["n"] == 2, "the legitimate set did not land"
+        k.transition(it.id, transition="annotate", actor_id="a", unset_fields=("n",))
+        assert "n" not in k.get(it.id).fields, "the legitimate clear did not land"
+        k.close()
+    check("naming one key in both fields and unset_fields refuses; either alone works",
+          set_and_clear_together_is_refused)
+
+    def a_clear_cannot_dodge_a_required_field() -> None:
+        """The requirement is validated AFTER the clear is applied. Validating
+        before would let a transition clear the very field it requires."""
+        k = fresh(dsn, "m36")
+        it = k.create_work_item(workflow="t", type="x", actor_id="a",
+                                fields={"note": "carried forward", "spare": 1})
+        k.transition(it.id, transition="start", actor_id="a")
+        err = expect(InvalidFieldError,
+                     lambda: k.transition(it.id, transition="submit", actor_id="a",
+                                          unset_fields=("note",)),
+                     "clearing the field this very transition requires")
+        assert "note" in str(err), f"the refusal does not name the field: {err}"
+        assert k.get(it.id).state == "doing", "the refused write moved the item"
+        assert k.get(it.id).fields["note"] == "carried forward", "the refused write cleared it"
+        # control: clearing something the transition does NOT require is allowed
+        item = k.transition(it.id, transition="submit", actor_id="a", unset_fields=("spare",))
+        assert item.state == "review", "the legitimate transition was blocked"
+        assert "spare" not in item.fields and item.fields["note"] == "carried forward", (
+            f"the wrong field was cleared: {item.fields}"
+        )
+        k.close()
+    check("clearing a required field refuses; clearing another field does not",
+          a_clear_cannot_dodge_a_required_field)
+
+    def null_is_a_value_but_not_an_answer() -> None:
+        """The decided interaction: null is stored, round-trips and is
+        distinguishable from absence -- and does NOT satisfy a required field,
+        because otherwise a workflow's own gate passes on nothing."""
+        k = fresh(dsn, "m37")
+        it = k.create_work_item(workflow="t", type="x", actor_id="a", fields={"note": None})
+        k.transition(it.id, transition="start", actor_id="a")
+        err = expect(InvalidFieldError,
+                     lambda: k.transition(it.id, transition="submit", actor_id="a"),
+                     "a required field that is present but null")
+        assert "null" in str(err), (
+            f"the refusal does not distinguish null from absent, and they need different "
+            f"fixes: {err}"
+        )
+        # ...and null is a real value everywhere else
+        stored = k.get(it.id).fields
+        assert "note" in stored and stored["note"] is None, "null was not stored as a value"
+        assert [i.id for i in k.list_items(where_fields={"note": None})] == [it.id], (
+            "a null-valued field cannot be found by filtering for null"
+        )
+        _, replayed, drift = k.replay(it.id)
+        assert not drift and replayed["note"] is None, f"null did not survive replay: {drift}"
+        # absence is NOT null: clearing it makes the null filter stop matching
+        k.transition(it.id, transition="annotate", actor_id="a", unset_fields=("note",))
+        assert k.list_items(where_fields={"note": None}) == [], (
+            "an ABSENT field matched a filter for null — the two are being conflated"
+        )
+        # control: a real value satisfies the requirement
+        k.transition(it.id, transition="submit", actor_id="a", fields={"note": "an answer"})
+        assert k.get(it.id).state == "review", "a genuine value did not satisfy the field"
+        k.close()
+    check("null is stored and findable but does not satisfy a required field",
+          null_is_a_value_but_not_an_answer)
+
+    def a_clear_is_part_of_the_request() -> None:
+        """If the request hash ignored unset_fields, two DIFFERENT calls would
+        share one idempotency key and the second would silently return the
+        first's result without clearing anything."""
+        k = fresh(dsn, "m38")
+        it = k.create_work_item(workflow="t", type="x", actor_id="a", fields={"n": 1})
+        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K")
+        expect(IdempotencyConflictError,
+               lambda: k.transition(it.id, transition="start", actor_id="a",
+                                    unset_fields=("n",), idempotency_key="K"),
+               "reusing a key for a call that also clears a field")
+        assert k.get(it.id).fields["n"] == 1, "the refused conflict cleared the field anyway"
+        # control: the genuinely identical call is still a replay, not a duplicate
+        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K")
+        assert k.get(it.id).last_event_seq == 1, "the identical retry duplicated an effect"
+        k.close()
+    check("a clear is part of what an idempotency key identifies", a_clear_is_part_of_the_request)
+
+    print("\n\033[1mLink-aware blocked query (D6)\033[0m")
+
+    def blocked(k: Kernel, sat: tuple[str, ...],
+                direction: Literal["incoming", "outgoing"] = "incoming",
+                ) -> list[uuid.UUID]:
+        return [i.id for i in k.blocked(link_type="blocks", direction=direction,
+                                        satisfied_states=sat)]
+
+    def terminal_is_not_satisfaction() -> None:
+        """The edge intuition gets wrong. A rejected blocker is TERMINAL and is
+        emphatically not satisfaction; only the caller's own list decides."""
+        k = fresh(dsn, "m39")
+        k.register_workflow(WF_DEP)
+        blocker = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        dependent = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        k.link(blocker.id, dependent.id, "blocks")
+        assert blocked(k, ("done",)) == [dependent.id], "an open blocker does not block"
+
+        k.transition(blocker.id, transition="start", actor_id="a")
+        k.transition(blocker.id, transition="reject", actor_id="a")
+        assert k.get(blocker.id).state == "rejected", "the blocker is not in the terminal state"
+        assert blocked(k, ("done",)) == [dependent.id], (
+            "a REJECTED blocker stopped blocking — terminality is being treated as "
+            "satisfaction, and a rejected dependency is precisely not satisfied"
+        )
+        # the caller may decide otherwise; that is a policy it STATES
+        assert blocked(k, ("done", "rejected")) == [], (
+            "the caller's own satisfaction list was ignored"
+        )
+        # control: genuine completion releases the dependent too
+        b2 = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        d2 = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        k.link(b2.id, d2.id, "blocks")
+        assert d2.id in blocked(k, ("done",)), "a new unfinished blocker does not block"
+        k.transition(b2.id, transition="start", actor_id="a")
+        k.transition(b2.id, transition="finish", actor_id="a")
+        assert d2.id not in blocked(k, ("done",)), "a genuinely finished blocker still blocks"
+        k.close()
+    check("a rejected blocker still blocks; only the caller's satisfied states release it",
+          terminal_is_not_satisfaction)
+
+    def direction_and_type_are_the_callers() -> None:
+        k = fresh(dsn, "m40")
+        k.register_workflow(WF_DEP)
+        a = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        b = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        k.link(a.id, b.id, "blocks")
+        assert blocked(k, ("done",), "incoming") == [b.id], (
+            "'incoming' named the wrong end: the counterpart is the link's SOURCE"
+        )
+        assert blocked(k, ("done",), "outgoing") == [a.id], (
+            "'outgoing' named the wrong end: the counterpart is the link's TARGET"
+        )
+        assert k.blocked(link_type="follows", direction="incoming",
+                         satisfied_states=("done",)) == [], (
+            "a link type nobody used matched something"
+        )
+        expect(InvalidQueryError,
+               # deliberately outside the Literal: the runtime guard is what
+               # protects the CLI and every untyped caller
+               lambda: k.blocked(link_type="blocks", direction="sideways",  # type: ignore[arg-type]
+                                 satisfied_states=("done",)),
+               "an unknown direction")
+        err = expect(InvalidQueryError,
+                     lambda: k.blocked(link_type="blocks", direction="incoming",
+                                       satisfied_states=("dnoe",)),
+                     "a MISSPELLED satisfied state")
+        assert "dnoe" in str(err), f"the refusal does not name the bad state: {err}"
+        # control: the corrected call answers
+        assert blocked(k, ("done",)) == [b.id], "the corrected query stopped working"
+        k.close()
+    check("direction and link type are the caller's, and a misspelled satisfied state refuses",
+          direction_and_type_are_the_callers)
+
+    def blocked_is_single_hop() -> None:
+        """Deliberately NOT transitive. a blocks b blocks c: once b finishes, c
+        is free even though a has not. Anyone 'fixing' this into a graph walk is
+        building the dependency scheduler Plan 032 forbids."""
+        k = fresh(dsn, "m41")
+        k.register_workflow(WF_DEP)
+        a = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        b = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        c = k.create_work_item(workflow="dep", type="x", actor_id="a")
+        k.link(a.id, b.id, "blocks")
+        k.link(b.id, c.id, "blocks")
+        assert set(blocked(k, ("done",))) == {b.id, c.id}, "the one-hop baseline is wrong"
+        k.transition(b.id, transition="start", actor_id="a")
+        k.transition(b.id, transition="finish", actor_id="a")
+        assert blocked(k, ("done",)) == [b.id], (
+            "c is still reported as blocked after its DIRECT blocker finished — the query "
+            "walked the chain to a, which is the transitive scheduler this must not become"
+        )
+        k.close()
+    check("the link query is single-hop and does not walk the chain", blocked_is_single_hop)
+
+    print("\n\033[1mEnumeration and paging\033[0m")
+
+    def enumeration_hides_nothing() -> None:
+        """Measured, not reported: the default listing used to drop an item the
+        moment somebody leased it, and said nothing about having done so."""
+        k = fresh(dsn, "m42")
+        ids = [k.create_work_item(workflow="t", type="x", actor_id="a").id for _ in range(4)]
+        assert [i.id for i in k.list_items()] == ids, "the full listing is not the full set"
+        k.claim(ids[0], actor_id="w1", ttl_seconds=300)
+        assert [i.id for i in k.list_items()] == ids, (
+            "a leased item VANISHED from the full listing — the answer looks complete "
+            "and is not"
+        )
+        shown = [i.id for i in k.available()]
+        assert ids[0] not in shown and len(shown) == 3, (
+            "available() is not filtering by lease, which is the one thing it means"
+        )
+        err = expect(InvalidQueryError, lambda: k.in_states(()), "in_states with no states")
+        assert "list_items()" in str(err), (
+            f"the refusal does not point at the query that DOES enumerate: {err}"
+        )
+        # control: the narrowed queries still answer
+        assert len(k.in_states(("open",))) == 4, "in_states stopped working"
+        assert len(k.owned("w1")) == 1, "owned stopped working"
+        k.close()
+    check("the full listing withholds nothing, and the empty-state query refuses",
+          enumeration_hides_nothing)
+
+    def pages_do_not_overlap_or_skip() -> None:
+        k = fresh(dsn, "m43")
+        ids = [k.create_work_item(workflow="t", type="x", actor_id="a").id for _ in range(7)]
+        seen: list[uuid.UUID] = []
+        cursor: uuid.UUID | None = None
+        for _ in range(10):  # bounded, so a non-advancing cursor fails loudly
+            page = k.list_items(limit=3, after=cursor)
+            if not page:
+                break
+            seen += [i.id for i in page]
+            cursor = page[-1].id
+        assert seen == ids, f"paging lost, repeated or reordered rows:\n{seen}\n{ids}"
+        assert len(set(seen)) == len(seen), "a row appeared on two pages"
+        err = expect(InvalidQueryError, lambda: k.list_items(after=uuid.uuid4()),
+                     "a cursor naming no work item")
+        assert "after=" in str(err), f"the refusal does not name the argument: {err}"
+        expect(InvalidQueryError, lambda: k.list_items(limit=0), "limit=0")
+        expect(InvalidQueryError, lambda: k.list_items(limit=10_000), "an unbounded limit")
+        # control
+        assert len(k.list_items(limit=1)) == 1, "a legitimate page was refused"
+        k.close()
+    check("keyset paging covers every row exactly once, and a dead cursor refuses",
+          pages_do_not_overlap_or_skip)
+
+    def field_filtering_is_bounded_and_exact() -> None:
+        k = fresh(dsn, "m44")
+        hit = k.create_work_item(workflow="t", type="x", actor_id="a",
+                                 fields={"host": "web-01", "tier": 1, "tags": ["a"]})
+        k.create_work_item(workflow="t", type="y", actor_id="a", fields={"host": "web-02"})
+        assert [i.id for i in k.list_items(where_fields={"host": "web-01"})] == [hit.id]
+        assert [i.id for i in k.list_items(where_fields={"host": "web-01", "tier": 1})] == [hit.id]
+        assert k.list_items(where_fields={"host": "web-01", "tier": 2}) == [], (
+            "the filters are ORed, not ANDed"
+        )
+        assert k.list_items(where_fields={"host": "web-0"}) == [], (
+            "a PREFIX matched — this filter promises equality"
+        )
+        assert [i.id for i in k.available(where_fields={"host": "web-01"})] == [hit.id], (
+            "the filter is not available on every item query"
+        )
+        err = expect(InvalidQueryError,
+                     lambda: k.list_items(where_fields={"tags": ["a"]}),
+                     "filtering on a list value")
+        assert "scalar" in str(err), f"the refusal does not say why: {err}"
+        expect(InvalidQueryError,
+               lambda: k.list_items(where_fields={f"k{i}": i for i in range(9)}),
+               "more filter keys than the bound allows")
+        err = expect(InvalidQueryError,
+                     lambda: k.list_items(where_fields={"when": datetime(2026, 1, 1)}),
+                     "a datetime as a filter value")
+        assert "datetime" in str(err), f"the refusal does not name the type: {err}"
+        # a float is scalar, so it reaches the FIELD TYPES gate rather than the
+        # scalar gate -- and NaN has no jsonb representation to compare against
+        expect(InvalidFieldError, lambda: k.list_items(where_fields={"n": float("nan")}),
+               "NaN as a filter value")
+        # control
+        assert len(k.list_items(where_fields={f"k{i}": i for i in range(8)})) == 0, (
+            "the largest allowed filter was refused"
+        )
+        assert len(k.list_items()) == 2, "filtering leaked into the unfiltered listing"
+        k.close()
+    check("custom-field filtering is exact, ANDed, scalar-only and bounded",
+          field_filtering_is_bounded_and_exact)
+
+    def every_collection_query_is_bounded() -> None:
+        """And the coverage list is itself checked: a NEW public query that
+        forgot its limit would otherwise pass here by not being listed."""
+        k = fresh(dsn, "m45")
+        k.register_workflow(WF_DEP)
+        a = k.create_work_item(workflow="t", type="x", actor_id="a")
+        b = k.create_work_item(workflow="t", type="x", actor_id="a")
+        c = k.create_work_item(workflow="t", type="x", actor_id="a")
+        k.link(a.id, b.id, "blocks")
+        k.link(a.id, c.id, "follows")
+        k.claim(c.id, actor_id="w1", ttl_seconds=300)
+        k.transition(a.id, transition="start", actor_id="a")
+        k.transition(a.id, transition="annotate", actor_id="a", fields={"n": 1})
+
+        pages: dict[str, Callable[[int], list[Any]]] = {
+            "list_items": lambda n: k.list_items(limit=n),
+            "available": lambda n: k.available(limit=n),
+            "owned": lambda n: k.owned("w1", limit=n),
+            "in_states": lambda n: k.in_states(("open",), limit=n),
+            "blocked": lambda n: k.blocked(link_type="blocks", direction="incoming",
+                                           satisfied_states=("done",), limit=n),
+            "links_from": lambda n: k.links_from(a.id, limit=n),
+            "history": lambda n: k.history(a.id, limit=n),
+            "list_workflows": lambda n: k.list_workflows(limit=n),
+        }
+        for name, call in pages.items():
+            assert len(call(1)) == 1, f"{name}() returned {len(call(1))} rows for limit=1"
+            expect(InvalidQueryError, lambda call=call: call(0),  # type: ignore[misc]
+                   f"{name}() with limit=0")
+            expect(InvalidQueryError, lambda call=call: call(10_000),  # type: ignore[misc]
+                   f"{name}() with an unbounded limit")
+        # resumable, not merely truncated
+        assert k.history(a.id, limit=1, after=0)[0].seq == 1, "history's cursor does not resume"
+        assert k.links_from(a.id, limit=1, after=("blocks", b.id))[0][1] == "follows", (
+            "links_from's cursor does not resume"
+        )
+        assert k.list_workflows(limit=1, after=("dep", 1))[0][0] == "t", (
+            "list_workflows' cursor does not resume"
+        )
+
+        public = {n for n in dir(Kernel) if not n.startswith("_")}
+        assert public == KERNEL_PUBLIC_SURFACE, (
+            "Kernel's public surface changed — added "
+            f"{sorted(public - KERNEL_PUBLIC_SURFACE)}, removed "
+            f"{sorted(KERNEL_PUBLIC_SURFACE - public)}. Classify the new name: if it "
+            "returns a collection it needs limit= and after= and a row in this check, "
+            "and this check cannot tell you that by itself."
+        )
+        k.close()
+    check("every collection query is bounded and resumable, and the coverage list is checked",
+          every_collection_query_is_bounded)
 
     print(f"\n\033[1m{len(PASS)} passed, {len(FAIL)} failed\033[0m")
     return 1 if FAIL else 0

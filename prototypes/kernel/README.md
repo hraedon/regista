@@ -8,35 +8,60 @@ argument.
 
 It is not yet the shipped package. See [the verdict](#what-this-settles).
 
-## Try it in two minutes
+## Getting it running
 
-You need PostgreSQL and `psycopg`. A disposable instance:
+Everything below runs from **this directory** — the scripts find each other and
+`schema.sql` by relative path. There is nothing to install: the kernel is a
+single module.
+
+You need **Python 3.11 or newer** (tested on 3.11–3.14), **`psycopg` v3**
+(`pip install "psycopg[binary]"`), and a **PostgreSQL you can point at**. The
+commands below say `python3`; use whatever name your Python 3 has.
+
+**A database.** Any reachable, *empty* PostgreSQL database works —
+`initialize()` refuses a database that already holds an older regista schema,
+without touching it. Set `DSN` to yours:
+
+```bash
+export DSN="postgresql://USER:PASSWORD@HOST:5432/YOUR_EMPTY_DATABASE"
+```
+
+If you have Docker and you are inside a clone of this repository, there is a
+disposable one two levels up (this path only works from the repo; it is not
+shipped with the package):
 
 ```bash
 docker compose -f ../../docker-compose.test.yml up -d
 export DSN="postgresql://regista_test:regista_test@localhost:5432/regista_test"
 ```
 
-Run the scenarios:
+### 1. Watch it work
 
 ```bash
-python example_handoff.py   "$DSN"   # agents: contention, takeover, fencing
-python example_documents.py "$DSN"   # people: document review, driven via the CLI
+python3 example_handoff.py   "$DSN"   # agents: contention, takeover, fencing
+python3 example_documents.py "$DSN"   # people: document review, driven via the CLI
 ```
 
-It files remediation work, races **two real OS processes** for the lease, walks a
-worker/reviewer handoff with a change request, kills the worker, expires its
-lease, lets another worker take over, and then tries to commit the dead worker's
-write — which is refused. Finally it replays the item from events alone and
-prints the history.
+The first files remediation work, races **two real OS processes** for the lease,
+walks a worker/reviewer handoff with a change request, kills the worker, expires
+its lease, lets another worker take over, and then tries to commit the dead
+worker's write — which is refused. Finally it replays the item from events alone
+and prints the history.
 
-Prove the checks can actually fail:
+The second drives the same kernel through a document-review workflow, with a
+person acting through the CLI. It adds **no** document-specific code: a
+different workflow document and different field names, nothing else.
+
+Its output shows commands as `regista-kernel …`. That is what the command would
+be called if this were installed; here you run it as `python3 cli.py …`.
+
+### 2. Check the checks can fail
 
 ```bash
-python test_mutations.py "$DSN"
+python3 test_mutations.py "$DSN"
 ```
 
-30 checks, each with a control. They let real leases expire and write with them,
+45 checks, each with a control. They let real leases expire and write with them,
 heartbeat a dead lease, present a live holder's fencing token as someone else,
 hold a row lock until a lease dies underneath a waiting writer, edit event
 payloads, delete middle *and* final events, rewrite a projection's fields, pass
@@ -49,19 +74,86 @@ Expiry is exercised with genuinely short leases and real waits, never by
 backdating `expires_at` in SQL — a backdated row cannot tell a correct expiry
 predicate from one evaluated against the wrong clock.
 
-And the CLI a person participates through:
+### 3. Drive it yourself, from the CLI
+
+The CLI reads its connection from `REGISTA_DSN`:
 
 ```bash
 export REGISTA_DSN="$DSN"
-python cli.py health
-python cli.py list --state needs_review
-python cli.py transition <id> --transition correct --actor erin \
-    --actor-kind human --role editor --field invoice_total=1420.55
+python3 cli.py health
+python3 cli.py list
 ```
 
+`list` with no filter lists **everything**, leased items included: a leased row
+is marked `[leased by NAME]`, or `[lease EXPIRED, held by NAME]` for one that is
+dead but not yet swept. Nothing is ever silently withheld — `--available`
+applies the lease filter when you want it, and a page that fills says so and
+tells you how to resume rather than truncating quietly.
+
+`--state needs_review` narrows further. Note that after the two scenarios above
+have run, **nothing is left in `needs_review`**: they finish their items. To get
+something you can act on:
+
+```bash
+python3 cli.py list --state received      # the documents scenario leaves one here
+```
+
+Take an id from the first column of `list` and use it. The id is a UUID, so
+substitute the real value — a literal `<id>` is read by your shell as an input
+redirection, not a placeholder:
+
+```bash
+ID=$(python3 cli.py list --state received | head -1 | awk '{print $1}')
+python3 cli.py show "$ID"
+```
+
+`show` prints a `lease` line covering all three conditions — unclaimed, held, or
+expired-and-unswept.
+
+The rest of the CLI, for reference:
+
+| | |
+| --- | --- |
+| `health` | counts, including `expired_leases` |
+| `list` | `--state --workflow --type --field k=v --available --owned ACTOR --limit --after` |
+| `list --blocked-by TYPE` | with `--direction {incoming,outgoing}` and `--satisfied STATE…` |
+| `show` / `lease` | one item; who holds its lease |
+| `history` | `--limit --after` |
+| `create` / `link` | file work; relate two items |
+| `claim` / `heartbeat` / `release` | hold a lease across steps |
+| `transition` | `--field` to set, `--unset-field` to clear |
+| `expire-leases [<id>]` | sweep dead leases, all or one |
+| `workflow list` / `workflow show` | what states and transitions exist |
+| `replay` | rebuild from events; exits 1 on drift |
+
+`--satisfied` is required on the CLI even though the library allows an empty
+set: at a terminal, an omission is far likelier than the intent.
+
+### 4. Or from Python
+
+```bash
+python3 my_first_item.py
+```
+
+...where `my_first_item.py` is the snippet in [The model](#the-model) below. Two
+things that snippet assumes and does not say: `DSN` must be defined **in
+Python** (the shell `export` above does not reach it — use
+`DSN = os.environ["DSN"]`), and it prints nothing, so add a `print()` if you
+want to see that it worked.
+
+### Where things are
+
+| | |
+| --- | --- |
+| The library | `kernel.py` — one module, no install step |
+| The schema | `schema.sql`, applied by `Kernel.initialize()` |
+| The CLI | `cli.py`, reads `REGISTA_DSN` |
+| Worked examples | `example_handoff.py`, `example_documents.py` |
+| Proof the checks bite | `test_mutations.py` |
+
 The [F0a product-fit report](F0a-report.md) records what both scenarios measured
-— including the three places the API had to be **changed** because a scenario
-could not be written without reaching past it.
+— including the places the API had to be **changed** because a scenario could
+not be written without reaching past it.
 
 ## The model
 
@@ -75,7 +167,7 @@ k = Kernel.connect(DSN)
 k.initialize("schema.sql")
 
 k.register_workflow(Workflow(
-    name="remediation", version=0,
+    name="remediation",
     states=("open", "in_progress", "in_review", "done"),
     initial="open",
     transitions={
@@ -131,8 +223,51 @@ The kernel does not coerce, because a silent `str()` means replay hands back a
 different type from the one you wrote and nothing records that it happened.
 
 `payload` may not contain the keys the event reducer owns — `from`, `to`,
-`fields`, `created` — and says so (`ReservedPayloadKeyError`) rather than
+`fields`, `unset`, `created` — and says so (`ReservedPayloadKeyError`) rather than
 letting a caller displace the record replay reads back.
+
+### How fields change across a transition
+
+Fields **merge**: keys you do not mention survive. A rejected proposal's
+`invoice_date` is still there after a rework, which is usually what a caller
+wants and is occasionally a surprise, so it is stated here rather than
+discovered.
+
+The merge is **shallow**. A supplied object replaces the previous one wholesale;
+there is no deep merge and no way to ask for one.
+
+To remove a field, pass `unset_fields=("invoice_date",)`. That is the only way —
+setting it to `null` does not remove it, because **`null` is a value**: stored,
+replayed, and findable with `where_fields={"k": None}`, distinct from absence. A
+**required** field must be present *and* non-null, so a workflow's own gate
+cannot be satisfied by nothing; the refusal distinguishes "not set" from
+"present but null" because the two need different fixes.
+
+Clears are recorded on the event and reproduced by replay, so a cleared field
+stays cleared through a rebuild. Setting and clearing the same key in one call
+refuses rather than applying an ordering rule you would have to memorise.
+Clearing a key that is not there is a **no-op, not a refusal**, so a retry is
+safe and two callers clearing the same stale value do not race — the cost being
+that a misspelled name in `unset_fields` does nothing quietly.
+
+### Asking what is blocked
+
+`blocked()` is the one link-aware query, and the line it stays on is deliberate.
+
+You supply the link type, the direction, and — the part that matters — **which
+states count as satisfied**. The kernel does not assume a terminal state means
+success, because a *rejected* blocker is terminal and has not satisfied
+anything. Getting that wrong silently inverts the answer, so an unrecognised
+state name is refused rather than quietly matching nothing.
+
+It is **single-hop**. Given `a → b → c`, finishing `b` frees `c` even while `a`
+is still open. There is no transitive closure and there will not be one: links
+describe relationships, and a dependency scheduler is explicitly not what this
+is. A check in the suite fails if anyone turns the query into a recursive walk.
+
+The result is a **snapshot**. Nothing stops a blocker being reopened a moment
+after you read it, and `blocked()` gates nothing — it will not refuse a claim or
+a transition on your behalf. A caller who treats it as a guarantee has a race.
 
 ## What it does not do, stated plainly
 
@@ -176,18 +311,23 @@ the static half; this supplies the running half.
 
 | | Lines |
 | --- | ---: |
-| This prototype (implementation) | 1,188 (769 code, 237 docstring) |
-| This prototype (schema) | 121 |
-| …its scenario + mutation checks | 1,375 |
+| This prototype (implementation) | 1,746 |
+| This prototype (schema) | 128 |
+| …its CLI | 474 |
+| …its scenario + mutation checks | 1,897 |
 | Kernel-classified code to sever and re-cut | 22,610 |
 | …of which six modules couple hardest to the trust stack | 6,046 |
 
-The prototype is **not** a complete MVP. Missing against Plan 032's keep table:
-the CLI, bounded/ordered pagination, connection-pool behaviour and health,
-workflow definitions loaded from YAML/JSON Schema, bounded custom-field
-filtering, archive, observability, the async surface, and cross-project links.
-Completing those plausibly lands in the low thousands of lines — an estimate, not
-a measurement.
+The prototype is **not yet** a complete MVP, but the gap has narrowed. Against
+Plan 032's keep table, still missing: **workflow definitions loaded from
+YAML/JSON Schema**, and **connection-pool behaviour**. Done since the first
+draft: the CLI, bounded and ordered pagination across every collection query,
+bounded custom-field filtering, work-discovery queries including the link-aware
+one, and health.
+
+Archive, observability, the async surface and cross-project links are **out of
+scope for 0.8.0** rather than missing — none of them appears in the keep table,
+and the review was explicit that they should not be priced back in silently.
 
 The prototype is `ruff` clean under the repository's own configuration and passes
 `mypy --strict`, which `[tool.mypy]` requires of every new module. Following the

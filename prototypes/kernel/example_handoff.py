@@ -92,6 +92,15 @@ def main(dsn: str) -> int:
     k.link(finding.id, followup.id, "blocks")
     ok(f"filed {finding.id} (state={finding.state}, cve={finding.fields['cve']})")
     ok(f"linked -> {followup.id} as 'blocks'")
+    # The link is directional and the kernel does not know what 'blocks' means:
+    # the CALLER says which end matters and which states end the wait. 'done' is
+    # this workflow's success state. A terminal state is not automatically
+    # satisfaction -- a workflow with 'rejected' or 'cancelled' would have to
+    # leave those OUT of this list, and nothing infers that for you.
+    waiting = k.blocked(link_type="blocks", direction="incoming",
+                        satisfied_states=("done",))
+    ok(f"blocked by an unfinished 'blocks' source: {[str(i.id) for i in waiting]}")
+    assert [i.id for i in waiting] == [followup.id], "the follow-up is not reported as waiting"
 
     step("2.", "Two independently running worker processes contend. Only one may own it.")
     q: mp.Queue[tuple[str, str, object]] = mp.Queue()
@@ -198,11 +207,43 @@ def main(dsn: str) -> int:
         refused(str(e))
 
     step("8.", "Discovery queries, over the caller's own workflow.")
+    watcher = k.claim(followup.id, actor_id="worker-4", ttl_seconds=60)
+    ok(f"list_items():         {len(k.list_items())} item(s) — EVERYTHING, "
+       "including the one now under a live lease")
+    ok(f"available():          {len(k.available())} item(s) — the leased one is "
+       "filtered out, which is what 'available' means")
+    assert len(k.list_items()) == len(k.available()) + 1, (
+        "the leased item is either missing from the full listing or still in available()"
+    )
+    lease = k.lease(followup.id)
+    assert lease is not None
+    ok(f"lease(followup):      held by {lease.actor_id}, attempt {lease.attempt}, "
+       f"live={lease.live} — asked without knowing who held it")
+    ok(f"lease(finding):       {k.lease(finding.id)} — no lease row at all")
+    k.release(followup.id, actor_id=watcher.actor_id, attempt=watcher.attempt)
+
     ok(f"available(open):      {len(k.available(states=('open',)))} item(s)")
     ok(f"owned(worker-3):      {len(k.owned('worker-3'))} item(s)")
     ok(f"in_states(in_review): {len(k.in_states(('in_review',)))} item(s)")
     ok(f"in_states(done):      {len(k.in_states(('done',)))} item(s)")
+    ok(f"by custom field:      {len(k.list_items(where_fields={'host': 'web-01'}))} "
+       "item(s) with host=web-01, "
+       f"{len(k.list_items(where_fields={'host': 'nope'}))} with host=nope")
     ok(f"links_from(finding):  {k.links_from(finding.id)}")
+    still_waiting = k.blocked(link_type="blocks", direction="incoming",
+                              satisfied_states=("done",))
+    ok(f"blocked (after done): {[str(i.id) for i in still_waiting]} — the source "
+       "reached a state the CALLER nominated as satisfaction")
+    assert not still_waiting, "the follow-up is still waiting on a finished finding"
+    print("   \033[2m(a snapshot, not a promise: nothing gates a claim on the"
+          " follow-up, and\033[0m")
+    print("   \033[2m the finding could be reopened before anyone picks it up)\033[0m")
+
+    # Bounded, totally ordered, resumable — the same contract every listing has.
+    page1 = k.list_items(limit=1)
+    page2 = k.list_items(limit=1, after=page1[0].id)
+    ok(f"paged 1 at a time:    {page1[0].id} then {page2[0].id}")
+    assert page1[0].id != page2[0].id, "the second page repeated the first"
 
     step("9.", "Replay rebuilds state from events alone.")
     state, fields, drift = k.replay(finding.id)

@@ -58,6 +58,13 @@ CREATE TABLE work_items_current (
         REFERENCES workflow_registry (workflow_name, version)
 );
 
+-- Bounded custom-field filtering (Plan 032 keep table) is expressed as jsonb
+-- containment, `custom_fields @> '{"k": v}'`, and jsonb_path_ops indexes
+-- exactly that operator and nothing else. The kernel refuses a non-scalar
+-- filter value, which is what makes containment equivalent to equality here:
+-- for a scalar there is nothing to be partially contained.
+CREATE INDEX idx_wic_fields   ON work_items_current USING GIN (custom_fields jsonb_path_ops);
+
 CREATE INDEX idx_wic_state    ON work_items_current (current_state);
 CREATE INDEX idx_wic_workflow ON work_items_current (workflow_name, workflow_version);
 CREATE INDEX idx_wic_type     ON work_items_current (work_item_type);
