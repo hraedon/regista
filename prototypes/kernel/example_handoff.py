@@ -26,26 +26,16 @@ from kernel import (
     LeaseNotHeldError,
     StaleAttemptError,
     TransitionRefusedError,
-    Workflow,
+    load_workflow,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-REMEDIATION = Workflow(
-    name="remediation",
-    version=0,
-    states=("open", "in_progress", "in_review", "changes_requested", "done"),
-    initial="open",
-    transitions={
-        "start":           (("open", "changes_requested"), "in_progress"),
-        "submit":          (("in_progress",), "in_review"),
-        "request_changes": (("in_review",), "changes_requested"),
-        "accept":          (("in_review",), "done"),
-    },
-    roles={"request_changes": ("reviewer",), "accept": ("reviewer",)},
-    required_fields={"submit": ("remediation_note",)},
-    terminal=("done",),
-)
+# Loaded from the document, not written as a literal here: the point of
+# scenario 1 is that the shipped surface carries it, and a Python literal would
+# quietly exempt the YAML front door from the scenario that is meant to exercise
+# it. load_workflow() returns version=0 -- the registry assigns the version.
+REMEDIATION = load_workflow(os.path.join(HERE, "remediation.workflow.yaml"))
 
 
 def step(n: str, msg: str) -> None:

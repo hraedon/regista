@@ -207,6 +207,31 @@ that front door exists, not cheap before it does.
 workflow composition — the exception was considered and declined"). No other
 part of this behaviour is intentionally dropped.
 
+> **DISCHARGED 2026-09-19.** Both replacement obligations now exist in
+> `prototypes/kernel/`. (1) The YAML/JSON front door is
+> `workflow.schema.json` + `load_workflow()` /
+> `validate_workflow_document()` / `Workflow.from_document()` /
+> `as_document()`, wired into the CLI as `workflow register --file` and
+> `workflow validate --file`; both shipped scenarios now register from a
+> checked-in document rather than a Python literal, so the front door is on
+> the scenario path and not merely present. Its semantic matrix
+> (`the document validation matrix refuses each rule and passes the clean
+> file`) covers every rule `test_validate_yaml.py` asserted **plus** four the
+> 0.7 loader did not have: duplicate state names, duplicate transition names,
+> a declared-but-unused role, and a duplicated YAML mapping key.
+> (2) Version pinning is `a work item keeps its workflow version's rules
+> after a v2 is registered` — the direct port of
+> `TestAC12PinnedVersionIsolation`, with the explicit-`workflow_version=1`
+> leg added. Each was proven non-vacuous by reintroducing the defect into a
+> scratch copy: 16 mutants, 16 killed.
+>
+> **One 0.7 check has no counterpart and is deliberately dropped:**
+> `test_undeclared_role_in_transition` validated a transition's roles against
+> a top-level role catalogue. The kernel keeps the catalogue (`roles:` in the
+> document, `Workflow.role_names`) and cross-checks it in **both**
+> directions, so the assertion survives in stronger form — but the 0.7 notion
+> of a role *object* with its own properties does not.
+
 ---
 
 ## Behaviour 3 — Work items
@@ -239,6 +264,26 @@ tests for `available`/`owned`/`in_states` ordering and pagination, which
 have no precedent test to port from since the prototype's query shape
 (`limit`, no cursor) differs from the old API's cursor-based
 `test_query_with_cursor`. This is a genuine gap, not a port.
+
+> **CORRECTION 2026-09-19 — "just untested" was wrong for half of it.**
+> `get_workflow` refuses an unregistered *workflow*. Nothing refused an
+> undeclared work-item **type**: `create_work_item` took `type` as a free
+> string and inserted it, and `Workflow` had no notion of a declared type set
+> at all. Deleting `test_remaining_errors.py::TestWorkItemTypeNotDeclared` on
+> the strength of this paragraph would have dropped the protection with
+> nothing behind it — the exact failure mode this map exists to prevent, and
+> a reminder that "already refuses, just untested" is a claim to *run*, not
+> to read. Implemented 2026-09-19: `Workflow.types` is a closed set,
+> `validate()` refuses a workflow declaring none, `create_work_item` refuses
+> a type outside it without partial effect, and the document's
+> `work_item_types:` is where it is declared. Covered by `an undeclared
+> work-item type is refused and a declared one is created`.
+>
+> The discovery-query half of this obligation (`available`/`owned`/
+> `in_states` ordering and pagination) was **already closed** by the paging
+> work that landed after this map was written — see `keyset paging covers
+> every row exactly once, and a dead cursor refuses` and `every collection
+> query is bounded and resumable`.
 
 **Deliberately changed?** No.
 
@@ -630,6 +675,10 @@ needs to give each of the 45 files, at minimum:
    `test_canonical_workflow.py`); the replacement needs to support loading
    a YAML file, not just a `Workflow(...)` literal, since several of these
    tests parametrize over YAML fixture files on disk.
+   **(2026-09-19: this prerequisite is met — `load_workflow(path)` reads a
+   YAML or JSON document. The fixture files themselves still need porting to
+   the 0.8 dialect, which is a mechanical edit per file, not a missing
+   capability.)**
 3. Whatever the `sub` fixture's `params=["real", "in_memory"]` parametrization
    becomes once the in-memory backend retires (§B) — most of the 45 files
    use exactly this fixture, so its replacement decision is shared across

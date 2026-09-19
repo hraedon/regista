@@ -142,14 +142,18 @@ QUERIES ARE BOUNDED AND TOTALLY ORDERED.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+import jsonschema
 import psycopg
+import yaml
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 
@@ -157,6 +161,15 @@ DictConn = psycopg.Connection[DictRow]
 DictCursor = psycopg.Cursor[DictRow]
 
 KERNEL_SCHEMA_VERSION = 1
+
+#: Version of the workflow DOCUMENT format (workflow.schema.json), which is not
+#: the library version and not a workflow's registry version. A document must
+#: carry it, so that a later dialect is a detectable difference rather than a
+#: guess made from which keys happen to be present.
+WORKFLOW_DOCUMENT_VERSION = 1
+
+WORKFLOW_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "workflow.schema.json")
 
 #: Event payload keys the reducer owns. replay() reads them to rebuild state, so
 #: a caller payload may not contain them -- see RESERVED_PAYLOAD_KEYS below.
@@ -380,6 +393,71 @@ def _hash(*parts: bytes) -> bytes:
     return h.digest()
 
 
+#: Keys the 0.7 workflow schema accepted that this dialect does not, each with
+#: the reason. These are checked BEFORE the JSON Schema so that a document
+#: carrying one gets told what happened to the feature, rather than
+#: "Additional properties are not allowed ('validator' was unexpected)".
+#:
+#: Naming them is not politeness. Several of these keys RESTRICT something:
+#: dropping `allowed_roles` silently would drop a role restriction, and
+#: dropping `validator` or `privileged` silently would drop a gate. A document
+#: that used to refuse something must not quietly start permitting it -- Plan
+#: 032 F1: "Old methods/commands must fail clearly rather than silently acquire
+#: a different meaning."
+WORKFLOW_DOCUMENT_REMOVED_KEYS: dict[str, dict[str, str]] = {
+    "document": {
+        "version": (
+            "the registry assigns workflow versions; a document cannot choose its own. "
+            "Pass the expected version to register_workflow() via Workflow.version if "
+            "you want to assert one."
+        ),
+        "regista_version": (
+            "a document pinned the LIBRARY version, which nothing enforced and nothing "
+            "read. The document format has its own version: kernel_workflow: "
+            f"{WORKFLOW_DOCUMENT_VERSION}."
+        ),
+        "extends": (
+            "workflow composition/inheritance is removed in 0.8 (Plan 032 decision D21). "
+            "Write the full workflow out; a composed definition that only exists after a "
+            "merge cannot be content-hashed as what the author wrote."
+        ),
+        "link_types": (
+            "the kernel validates no link-type declaration. link(source, target, "
+            "link_type) accepts any type string and blocked() filters on it, so "
+            "accepting a declaration here would accept a rule that is never applied."
+        ),
+        "attempt_threshold": (
+            "escalation by attempt count is not in the 0.8 keep table. The fencing "
+            "counter is exposed (Claim.attempt) -- escalate in your application."
+        ),
+        "hook_defaults": (
+            "queued hooks and webhook delivery are removed in 0.8 (Plan 032 decision "
+            "D4). Synchronous transition validation is a different responsibility and "
+            "is kept."
+        ),
+    },
+    "transition": {
+        "allowed_roles": (
+            "renamed to 'roles'. This is a RESTRICTION: ignoring the old spelling would "
+            "silently open the transition to everyone."
+        ),
+        "validator": (
+            "named trusted validators are removed in 0.8. Validate in the caller before "
+            "transitioning; the kernel enforces states, roles and required fields."
+        ),
+        "validator_params": "removed with 'validator'.",
+        "hooks": (
+            "queued hooks are removed in 0.8 (Plan 032 decision D4). The kernel appends "
+            "the event; deliver from your application."
+        ),
+        "privileged": (
+            "privileged transitions belonged to the trust model, which 0.8 removes. This "
+            "is a RESTRICTION: ignoring it would silently open the transition."
+        ),
+    },
+}
+
+
 @dataclass(frozen=True)
 class Workflow:
     """An immutable registered workflow version.
@@ -399,6 +477,20 @@ class Workflow:
     required_fields: transition name -> field names that must be present on the
                  item (already set, or supplied with this transition).
     terminal:    states from which nothing may follow.
+    role_names:  the closed set of role names the transitions may restrict to.
+                 Cross-checked against `roles` in both directions, which is the
+                 only thing that catches a role typo: misspell it on the
+                 transition and nothing can ever present it, and the workflow
+                 looks fine until the transition is attempted. Empty is allowed
+                 only when no transition restricts to a role.
+    types:       the closed set of work-item type names this workflow admits.
+                 create_work_item() refuses any other. It defaults to empty only
+                 because the dataclass field order requires a default --
+                 validate() refuses an empty set, so a workflow cannot reach the
+                 registry without declaring its types. An UNVALIDATED required
+                 string is a typo sink: create(type="findings") against a corpus
+                 of "finding" silently creates a second population that every
+                 type filter then misses.
     """
 
     name: str
@@ -409,6 +501,8 @@ class Workflow:
     roles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     required_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
     terminal: tuple[str, ...] = ()
+    types: tuple[str, ...] = ()
+    role_names: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if self.version < 0:
@@ -419,6 +513,16 @@ class Workflow:
             )
         if not self.states:
             raise InvalidWorkflowError("a workflow needs at least one state")
+        if not self.types:
+            raise InvalidWorkflowError(
+                "a workflow needs at least one work-item type: types=('finding',). "
+                "create_work_item(type=...) is checked against this set, and an "
+                "unchecked type string is how two spellings of one type become two "
+                "populations that no query reunites."
+            )
+        if len(set(self.types)) != len(self.types):
+            dupes = sorted({t for t in self.types if self.types.count(t) > 1})
+            raise InvalidWorkflowError(f"work-item type(s) declared more than once: {dupes}")
         if self.initial not in self.states:
             raise InvalidWorkflowError(f"initial state {self.initial!r} is not in states")
         for t, (froms, to) in self.transitions.items():
@@ -434,6 +538,47 @@ class Workflow:
             if t not in self.transitions:
                 raise InvalidWorkflowError(f"policy names unknown transition {t!r}")
 
+        # Role catalogue, cross-checked BOTH ways. One direction alone catches
+        # nothing useful: a role misspelled on a transition is only visible
+        # because the catalogue does not contain it AND the catalogue entry it
+        # was meant to be is then used by nothing.
+        restricted = {r for names in self.roles.values() for r in names}
+        if restricted and not self.role_names:
+            raise InvalidWorkflowError(
+                f"transitions restrict to roles {sorted(restricted)} but the workflow "
+                "declares no role_names. Declare the closed set -- without it a "
+                "misspelled role makes a transition permanently un-performable and "
+                "nothing says so until someone tries it."
+            )
+        if len(set(self.role_names)) != len(self.role_names):
+            dupes = sorted({r for r in self.role_names if self.role_names.count(r) > 1})
+            raise InvalidWorkflowError(f"role(s) declared more than once: {dupes}")
+        undeclared = sorted(restricted - set(self.role_names))
+        if undeclared:
+            raise InvalidWorkflowError(
+                f"transition(s) restrict to undeclared role(s) {undeclared}; "
+                f"declared roles are {sorted(self.role_names)}"
+            )
+        unused = sorted(set(self.role_names) - restricted)
+        if unused:
+            raise InvalidWorkflowError(
+                f"role(s) {unused} are declared but restrict no transition. Either a "
+                "transition meant to name one and misspelled it, or the declaration "
+                "outlived its use; both are worth a look, and neither is visible at "
+                "runtime."
+            )
+
+        # Unreachable states. A state nothing enters and that is not the initial
+        # state can never hold an item, so every query and report that mentions
+        # it is answering about a state the workflow cannot reach.
+        entered = {to for _, to in self.transitions.values()} | {self.initial}
+        unreachable = sorted(set(self.states) - entered)
+        if unreachable:
+            raise InvalidWorkflowError(
+                f"state(s) {unreachable} are unreachable: no transition enters them and "
+                f"the initial state is {self.initial!r}"
+            )
+
     def as_json(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -443,6 +588,8 @@ class Workflow:
             "roles": {k: list(v) for k, v in self.roles.items()},
             "required_fields": {k: list(v) for k, v in self.required_fields.items()},
             "terminal": list(self.terminal),
+            "types": list(self.types),
+            "role_names": list(self.role_names),
         }
 
     @staticmethod
@@ -462,7 +609,284 @@ class Workflow:
             roles={k: tuple(v) for k, v in d.get("roles", {}).items()},
             required_fields={k: tuple(v) for k, v in d.get("required_fields", {}).items()},
             terminal=tuple(d.get("terminal", [])),
+            types=tuple(d.get("types", [])),
+            role_names=tuple(d.get("role_names", [])),
         )
+
+    def as_document(self) -> dict[str, Any]:
+        """Render this workflow in the AUTHORING format (workflow.schema.json).
+
+        Distinct from as_json(), which is the registry's storage form and what
+        the content hash is taken over. Two forms, on purpose: the storage form
+        is flat and cheap to compare, the document form is what a person writes
+        and reviews. `version` appears in neither -- the registry owns it.
+
+        from_document(wf.as_document()) == replace(wf, version=0) for every
+        workflow that validate() accepts; test_mutations.py pins that.
+        """
+        by_transition: dict[str, dict[str, Any]] = {}
+        for name, (froms, to) in self.transitions.items():
+            entry: dict[str, Any] = {"name": name, "from": list(froms), "to": to}
+            if self.roles.get(name):
+                entry["roles"] = list(self.roles[name])
+            if self.required_fields.get(name):
+                entry["required_fields"] = list(self.required_fields[name])
+            by_transition[name] = entry
+        states: list[dict[str, Any]] = []
+        for s in self.states:
+            st: dict[str, Any] = {"name": s}
+            if s == self.initial:
+                st["initial"] = True
+            if s in self.terminal:
+                st["terminal"] = True
+            states.append(st)
+        doc: dict[str, Any] = {
+            "kernel_workflow": WORKFLOW_DOCUMENT_VERSION,
+            "name": self.name,
+            "states": states,
+        }
+        if self.role_names:
+            doc["roles"] = list(self.role_names)
+        doc["work_item_types"] = list(self.types)
+        doc["transitions"] = list(by_transition.values())
+        return doc
+
+    @staticmethod
+    def from_document(doc: object) -> Workflow:
+        """Build a Workflow from a parsed authoring document.
+
+        Raises InvalidWorkflowError on the first problem, with the document's
+        own vocabulary in the message. Use validate_workflow_document() instead
+        when you want EVERY problem at once -- a person fixing a file wants the
+        whole list, a program loading one wants to stop.
+        """
+        errors = validate_workflow_document(doc)
+        if errors:
+            raise InvalidWorkflowError(
+                errors[0] if len(errors) == 1 else
+                f"{errors[0]} (and {len(errors) - 1} further problem(s); "
+                "validate_workflow_document() returns them all)"
+            )
+        return _build_workflow(doc)
+
+
+def _build_workflow(doc: object) -> Workflow:
+    """Construct the Workflow a VALIDATED document describes.
+
+    Separate from Workflow.from_document so that validate_workflow_document can
+    reach the semantic checks (which live on Workflow.validate) without either
+    function calling the other in a circle.
+    """
+    if not isinstance(doc, dict):  # pragma: no cover -- callers validate first
+        raise InvalidWorkflowError("a workflow document must be a mapping")
+    initial = ""
+    states: list[str] = []
+    terminal: list[str] = []
+    for st in doc["states"]:
+        states.append(st["name"])
+        if st.get("initial"):
+            initial = st["name"]
+        if st.get("terminal"):
+            terminal.append(st["name"])
+    transitions: dict[str, tuple[tuple[str, ...], str]] = {}
+    roles: dict[str, tuple[str, ...]] = {}
+    required: dict[str, tuple[str, ...]] = {}
+    for t in doc["transitions"]:
+        froms = t["from"]
+        transitions[t["name"]] = (
+            (froms,) if isinstance(froms, str) else tuple(froms), t["to"]
+        )
+        if t.get("roles"):
+            roles[t["name"]] = tuple(t["roles"])
+        if t.get("required_fields"):
+            required[t["name"]] = tuple(t["required_fields"])
+    return Workflow(
+        name=doc["name"],
+        states=tuple(states),
+        initial=initial,
+        transitions=transitions,
+        roles=roles,
+        required_fields=required,
+        terminal=tuple(terminal),
+        types=tuple(doc["work_item_types"]),
+        role_names=tuple(doc.get("roles", [])),
+    )
+
+
+class _NoDuplicateKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load takes the LAST of two identical mapping keys, silently.
+
+    In a hand-written workflow that is a whole block disappearing: paste a
+    second `transitions:` under the first and the first one is gone, with no
+    error, no warning, and a workflow that validates. Refuse instead.
+    """
+
+
+def _no_duplicate_keys(
+    loader: _NoDuplicateKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    # Keyed by repr, not by the object: a YAML mapping key may be a list or a
+    # mapping, which is unhashable, and a TypeError out of the parser would
+    # replace a readable refusal with a traceback.
+    seen: set[str] = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        marker = repr(key)
+        if marker in seen:
+            raise InvalidWorkflowError(
+                f"duplicate key {key!r} at line {key_node.start_mark.line + 1}. YAML "
+                "keeps the last one and discards the first without saying so, which "
+                "would silently drop whatever the first one held."
+            )
+        seen.add(marker)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_NoDuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
+
+_WORKFLOW_SCHEMA: dict[str, Any] | None = None
+
+
+def workflow_schema() -> dict[str, Any]:
+    """The JSON Schema for the workflow document format, read once from disk.
+
+    Public because a caller generating or editing documents should be able to
+    validate against the same artefact the kernel uses, rather than a copy that
+    drifts. A COPY is returned: the cached original is shared by every
+    validation, and one caller editing it in place would change what every
+    later document is checked against.
+    """
+    global _WORKFLOW_SCHEMA
+    if _WORKFLOW_SCHEMA is None:
+        with open(WORKFLOW_SCHEMA_PATH, encoding="utf-8") as fh:
+            loaded: dict[str, Any] = json.load(fh)
+        _WORKFLOW_SCHEMA = loaded
+    return copy.deepcopy(_WORKFLOW_SCHEMA)
+
+
+def _removed_key_errors(doc: dict[str, Any]) -> list[str]:
+    """Name the 0.7 keys, before the schema reports them as merely unexpected."""
+    errors = []
+    for key, why in WORKFLOW_DOCUMENT_REMOVED_KEYS["document"].items():
+        if key in doc:
+            errors.append(f"{key!r} is not part of the 0.8 workflow document: {why}")
+    transitions = doc.get("transitions")
+    if isinstance(transitions, list):
+        for i, t in enumerate(transitions):
+            if not isinstance(t, dict):
+                continue
+            for key, why in WORKFLOW_DOCUMENT_REMOVED_KEYS["transition"].items():
+                if key in t:
+                    errors.append(
+                        f"transitions[{i}] ({t.get('name', '?')!r}): {key!r} is not part "
+                        f"of the 0.8 workflow document: {why}"
+                    )
+    # The 0.7 object forms. The schema would report these as a type error
+    # against a string, which tells an author with a 0.7 file nothing about
+    # what happened to the fields they are carrying.
+    for key, gone in (("work_item_types", "per-type custom-field declarations"),
+                      ("roles", "per-role objects")):
+        value = doc.get(key)
+        if isinstance(value, list) and any(isinstance(entry, dict) for entry in value):
+            errors.append(
+                f"{key!r} is a list of NAMES in the 0.8 document, not of objects: "
+                f"{key}: [a, b]. {gone.capitalize()} are not carried -- the kernel "
+                "enforces no such declaration, and a declaration it does not enforce "
+                "would be worse than none."
+            )
+    return errors
+
+
+def validate_workflow_document(doc: object) -> tuple[str, ...]:
+    """Every problem with a workflow document, as messages. Empty means valid.
+
+    Returns rather than raises because the two callers want opposite things: a
+    person fixing a file wants the whole list in one pass, and Workflow.
+    from_document wants to stop at the first. Pure -- no database, no registry,
+    no I/O beyond the schema file.
+    """
+    if not isinstance(doc, dict):
+        return (
+            f"a workflow document must be a mapping, found {type(doc).__name__}. "
+            "An empty file parses to None, which is the usual cause."
+            if doc is None else
+            f"a workflow document must be a mapping, found {type(doc).__name__}",
+        )
+
+    named = _removed_key_errors(doc)
+    if named:
+        # Stop here: the schema's additionalProperties error for the same key
+        # would repeat each of these in less useful words.
+        return tuple(named)
+
+    errors = [
+        f"{'.'.join(str(p) for p in e.absolute_path) or '(document)'}: {e.message}"
+        for e in sorted(jsonschema.Draft202012Validator(workflow_schema()).iter_errors(doc),
+                        key=lambda e: (list(map(str, e.absolute_path)), e.message))
+    ]
+    if errors:
+        return tuple(errors)
+
+    # Schema-clean. Two things JSON Schema cannot say, then the semantic checks,
+    # which live on Workflow.validate() so that a Workflow built in Python and
+    # one loaded from a document are held to exactly one set of rules.
+    initials = [st["name"] for st in doc["states"] if st.get("initial")]
+    if len(initials) != 1:
+        return (
+            "exactly one state must carry 'initial: true'; "
+            + (f"{sorted(initials)} do" if initials else "none does"),
+        )
+    names = [t["name"] for t in doc["transitions"]]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        return (
+            f"transition name(s) {repeated} appear more than once. One entry per "
+            "transition; list several sources under from: [a, b]. Two entries sharing "
+            "a name would have to be merged by a rule, and a merge of differing 'to' "
+            "values has no right answer.",
+        )
+    state_names = [st["name"] for st in doc["states"]]
+    repeated_states = sorted({n for n in state_names if state_names.count(n) > 1})
+    if repeated_states:
+        return (f"state name(s) {repeated_states} appear more than once",)
+    try:
+        _build_workflow(doc).validate()
+    except InvalidWorkflowError as e:
+        return (str(e),)
+    return ()
+
+
+def load_workflow_document(path: str) -> Any:
+    """Parse a workflow document from .yaml, .yml or .json. No validation."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".yaml", ".yml", ".json"):
+        raise InvalidWorkflowError(
+            f"{path}: a workflow document must be .yaml, .yml or .json, not {ext!r}. "
+            "The extension picks the parser; guessing from the content would make the "
+            "same bytes mean different things on different days."
+        )
+    with open(path, encoding="utf-8") as fh:
+        if ext == ".json":
+            return json.load(fh)
+        return yaml.load(fh, Loader=_NoDuplicateKeyLoader)
+
+
+def load_workflow(path: str) -> Workflow:
+    """Read, validate and build a Workflow from a document file.
+
+    The registry still assigns the version: the returned Workflow has
+    version=0, so register_workflow() asserts nothing about registry state that
+    a file on disk has no way to know.
+    """
+    doc = load_workflow_document(path)
+    errors = validate_workflow_document(doc)
+    if errors:
+        raise InvalidWorkflowError(
+            f"{path} is not a valid workflow document:\n  - " + "\n  - ".join(errors)
+        )
+    return _build_workflow(doc)
 
 
 @dataclass(frozen=True)
@@ -762,6 +1186,14 @@ class Kernel:
         _check_mapping(fields, "fields")
         with self._conn.cursor() as cur:
             wf = self._read_workflow(cur, workflow, workflow_version)
+            if type not in wf.types:
+                self._conn.rollback()
+                raise InvalidWorkflowError(
+                    f"{type!r} is not a work-item type of {wf.name} v{wf.version} "
+                    f"(declared: {sorted(wf.types)}). The type is checked because an "
+                    "unchecked one is silent: a misspelling creates a second population "
+                    "that every type filter then misses."
+                )
             item_id = uuid.uuid4()
             now = self._db_now(cur)
             cur.execute(

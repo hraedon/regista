@@ -19,7 +19,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from typing import Any
 
@@ -29,23 +28,7 @@ from kernel import InvalidFieldError, Kernel, TransitionRefusedError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-INGEST = {
-    "name": "ingest",
-    "states": ["received", "extracting", "needs_review", "rejected", "approved", "archived"],
-    "initial": "received",
-    "transitions": {
-        "extract":  [["received"], "extracting"],
-        "propose":  [["extracting"], "needs_review"],
-        "correct":  [["needs_review"], "approved"],
-        "reject":   [["needs_review"], "rejected"],
-        "rework":   [["rejected"], "extracting"],
-        "archive":  [["approved"], "archived"],
-    },
-    # Only a person may accept or reject an extraction. Application policy.
-    "roles": {"correct": ["editor"], "reject": ["editor"]},
-    "required_fields": {"propose": ["invoice_total", "invoice_date"]},
-    "terminal": ["archived"],
-}
+INGEST_DOC = os.path.join(HERE, "ingest.workflow.yaml")
 
 
 def step(n: str, msg: str) -> None:
@@ -104,11 +87,10 @@ def main(dsn: str) -> int:
     k = Kernel.connect(dsn)
     k.initialize(os.path.join(HERE, "schema.sql"))
 
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump(INGEST, fh)
-        wf_path = fh.name
-    person(dsn, "workflow", "register", "--file", wf_path)
-    os.unlink(wf_path)
+    # Registered by shelling out to the CLI, from the YAML document on disk:
+    # the path a person actually has, not a dict this script built.
+    person(dsn, "workflow", "validate", "--file", INGEST_DOC)
+    person(dsn, "workflow", "register", "--file", INGEST_DOC)
     ok("same kernel, same schema — only a different workflow document")
 
     step("1.", "An ingestion script files a document with a source reference and a follow-up.")
