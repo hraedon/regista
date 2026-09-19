@@ -20,12 +20,15 @@ Run:  python test_mutations.py "postgresql://..."
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Literal
@@ -33,9 +36,12 @@ from typing import Any, Literal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import psycopg
+import yaml
 from kernel import (
     REPLAY_COVERS,
     REPLAY_DOES_NOT_COVER,
+    WORKFLOW_DOCUMENT_REMOVED_KEYS,
+    WORKFLOW_DOCUMENT_VERSION,
     ClaimContestedError,
     IdempotencyConflictError,
     InvalidFieldError,
@@ -50,6 +56,10 @@ from kernel import (
     TransitionRefusedError,
     UnsupportedSchemaError,
     Workflow,
+    load_workflow,
+    load_workflow_document,
+    validate_workflow_document,
+    workflow_schema,
 )
 from psycopg.types.json import Jsonb
 
@@ -74,8 +84,10 @@ WF = Workflow(
                  "annotate": (("doing",), "doing"),
                  "accept": (("review",), "done")},
     roles={"accept": ("reviewer",)},
+    role_names=("reviewer",),
     required_fields={"submit": ("note",)},
     terminal=("done",),
+    types=("x", "y"),
 )
 
 #: A second workflow for the link-aware query, because the point that has to be
@@ -87,6 +99,17 @@ WF_DEP = Workflow(
     transitions={"start": (("open",), "doing"), "finish": (("doing",), "done"),
                  "reject": (("doing",), "rejected")},
     terminal=("done", "rejected"),
+    types=("x", "y"),
+)
+
+#: A second version of WF: one more state, and a transition that reaches it.
+#: The added transition is not decoration -- validate() refuses a state nothing
+#: enters, because a state an item can never hold is a state every report about
+#: it is answering about nothing.
+WF_V2 = replace(
+    WF,
+    states=(*WF.states, "parked"),
+    transitions={**WF.transitions, "park": (("doing",), "parked")},
 )
 
 #: Every public name on Kernel, so that ADDING one fails the bounded-query check
@@ -100,6 +123,16 @@ KERNEL_PUBLIC_SURFACE = frozenset({
     "transition", "link", "links_from",
     "list_items", "available", "owned", "in_states", "blocked",
     "history", "replay",
+})
+
+#: Workflow's fields and methods. Pinned for the same reason as the Kernel
+#: surface: a new field is a decision (is it hashed? is it in the document? does
+#: validate() check it?) and this check is what forces the decision to be made
+#: rather than defaulted.
+WORKFLOW_PUBLIC_SURFACE = frozenset({
+    "name", "states", "initial", "transitions", "version", "roles",
+    "required_fields", "terminal", "types", "role_names",
+    "validate", "as_json", "from_json", "as_document", "from_document",
 })
 
 PASS: list[str] = []
@@ -1055,7 +1088,7 @@ def main(dsn: str) -> int:
         err = expect(InvalidWorkflowError, lambda: k.register_workflow(wrong),
                      "asserting the wrong version for already-registered content")
         assert "7" in str(err) and "1" in str(err), f"the refusal names neither version: {err}"
-        changed = replace(WF, states=(*WF.states, "parked"), version=1)
+        changed = replace(WF_V2, version=1)
         expect(InvalidWorkflowError, lambda: k.register_workflow(changed),
                "asserting an existing version for NEW content")
         expect(InvalidWorkflowError, lambda: k.register_workflow(replace(WF, version=-1)),
@@ -1064,12 +1097,11 @@ def main(dsn: str) -> int:
             "a refused registration still wrote a version"
         )
         # control: the same new content, asserting nothing, registers as v2
-        assert k.register_workflow(replace(WF, states=(*WF.states, "parked"))) == 2, (
+        assert k.register_workflow(WF_V2) == 2, (
             "new content did not get the next version"
         )
         # ...and asserting the version it actually got is accepted
-        assert k.register_workflow(
-            replace(WF, states=(*WF.states, "parked"), version=2)) == 2, (
+        assert k.register_workflow(replace(WF_V2, version=2)) == 2, (
             "a CORRECT assertion was refused"
         )
         assert [v for _, v, _ in k.list_workflows()] == [1, 2], "versions are not immutable"
@@ -1450,6 +1482,316 @@ def main(dsn: str) -> int:
         k.close()
     check("every collection query is bounded and resumable, and the coverage list is checked",
           every_collection_query_is_bounded)
+
+    print("\n\033[1mWorkflow documents\033[0m")
+
+    def the_document_round_trips() -> None:
+        """as_document() and from_document() must be inverses, or a workflow
+        cannot be read out, edited and put back -- which is the whole point of
+        having an authoring format."""
+        for wf in (WF, WF_V2, WF_DEP):
+            back = Workflow.from_document(wf.as_document())
+            assert back == replace(wf, version=0), (
+                f"{wf.name} did not survive as_document -> from_document: "
+                f"{back} != {replace(wf, version=0)}"
+            )
+        # The two shipped documents are the ones the scenarios register, so a
+        # round trip through them is a round trip through real content.
+        for name in ("remediation.workflow.yaml", "ingest.workflow.yaml"):
+            wf = load_workflow(os.path.join(HERE, name))
+            assert Workflow.from_document(wf.as_document()) == wf, (
+                f"{name} did not survive the round trip"
+            )
+        # Control: the round trip is not vacuously true because both sides are
+        # empty -- the documents carry roles and required fields.
+        rem = load_workflow(os.path.join(HERE, "remediation.workflow.yaml"))
+        assert rem.roles and rem.required_fields and rem.terminal and rem.role_names, (
+            "the round-trip check is running on a document with no policy in it"
+        )
+    check("a workflow survives as_document() -> from_document() unchanged",
+          the_document_round_trips)
+
+    def every_07_key_is_carried_or_explained() -> None:
+        """A 0.7 key that is neither accepted nor named is a SILENT drop, and
+        several of them (allowed_roles, validator, privileged) are restrictions:
+        dropping one silently turns a closed transition into an open one."""
+        old_path = os.path.join(HERE, "..", "..", "src", "regista", "_workflow_schema.json")
+        # This pin reads the 0.7 tree, which F1 deletes. When that happens the
+        # check should be RETIRED by hand, in the same commit — not left to
+        # fail with a FileNotFoundError that check() does not catch and that
+        # aborts every check after it.
+        assert os.path.exists(old_path), (
+            f"{old_path} is gone, so this pin has outlived the tree it compares "
+            "against. Delete this check in the commit that deleted 0.7's schema; "
+            "WORKFLOW_DOCUMENT_REMOVED_KEYS stays, because an author's own file "
+            "may still carry those keys."
+        )
+        with open(old_path, encoding="utf-8") as fh:
+            old = json.load(fh)
+        new = workflow_schema()
+        pairs = [
+            ("document", old["properties"], new["properties"]),
+            ("transition",
+             old["properties"]["transitions"]["items"]["properties"],
+             new["properties"]["transitions"]["items"]["properties"]),
+        ]
+        for scope, old_props, new_props in pairs:
+            explained = set(WORKFLOW_DOCUMENT_REMOVED_KEYS[scope])
+            unaccounted = sorted(set(old_props) - set(new_props) - explained)
+            assert not unaccounted, (
+                f"0.7 {scope} key(s) {unaccounted} are neither accepted by the 0.8 "
+                f"schema nor listed in WORKFLOW_DOCUMENT_REMOVED_KEYS[{scope!r}]. A "
+                "document carrying one would be refused with 'additional properties "
+                "are not allowed', which does not say what happened to the feature."
+            )
+            # ...and nothing is listed as removed that the schema still accepts,
+            # which would be an explanation for a key that works fine.
+            contradictory = sorted(explained & set(new_props))
+            assert not contradictory, (
+                f"{scope} key(s) {contradictory} are listed as removed AND accepted"
+            )
+        # Control: the pin can fail. A key the 0.7 schema really has must be in
+        # one of the two sets, so removing a known entry must break it.
+        assert "validator" in WORKFLOW_DOCUMENT_REMOVED_KEYS["transition"], (
+            "the check's premise is gone: 'validator' is no longer the example"
+        )
+    check("every 0.7 workflow key is either accepted or refused by name",
+          every_07_key_is_carried_or_explained)
+
+    def removed_keys_are_refused_by_name() -> None:
+        explained = "is not part of the 0.8 workflow document"
+        base = load_workflow(os.path.join(HERE, "remediation.workflow.yaml")).as_document()
+        assert not validate_workflow_document(base), "the clean document does not validate"
+        for key in WORKFLOW_DOCUMENT_REMOVED_KEYS["document"]:
+            doc = json.loads(json.dumps(base))
+            doc[key] = "anything"
+            problems = validate_workflow_document(doc)
+            assert problems and key in problems[0], (
+                f"a document carrying {key!r} was not refused by name: {problems}"
+            )
+            # The schema's own "Additional properties are not allowed
+            # ('extends' was unexpected)" also contains the key, so naming the
+            # key is not enough to tell the two apart. The EXPLANATION is.
+            assert explained in problems[0], (
+                f"{key!r} was refused by the schema, not explained: {problems[0]}"
+            )
+        for key in WORKFLOW_DOCUMENT_REMOVED_KEYS["transition"]:
+            doc = json.loads(json.dumps(base))
+            doc["transitions"][0][key] = "anything"
+            problems = validate_workflow_document(doc)
+            assert problems and key in problems[0], (
+                f"a transition carrying {key!r} was not refused by name: {problems}"
+            )
+            assert doc["transitions"][0]["name"] in problems[0], (
+                f"the refusal for {key!r} does not say WHICH transition: {problems}"
+            )
+            assert explained in problems[0], (
+                f"{key!r} was refused by the schema, not explained: {problems[0]}"
+            )
+        # The 0.7 object forms, which the schema alone would report as a type error.
+        for key in ("work_item_types", "roles"):
+            doc = json.loads(json.dumps(base))
+            doc[key] = [{"name": "whatever"}]
+            problems = validate_workflow_document(doc)
+            assert problems and "list of NAMES" in problems[0], (
+                f"the 0.7 object form of {key!r} was not explained: {problems}"
+            )
+    check("every removed 0.7 key is refused BY NAME, and the clean document passes",
+          removed_keys_are_refused_by_name)
+
+    def the_validation_matrix_holds() -> None:
+        """One entry per rule, each PAIRED with the clean document that must
+        still validate -- otherwise 'it refused' is indistinguishable from 'it
+        refuses everything'."""
+        base = load_workflow(os.path.join(HERE, "remediation.workflow.yaml")).as_document()
+
+        def mutate(fn: Callable[[dict[str, Any]], None]) -> tuple[str, ...]:
+            doc = json.loads(json.dumps(base))
+            fn(doc)
+            return validate_workflow_document(doc)
+
+        cases: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
+            ("no document version", lambda d: d.pop("kernel_workflow"), "kernel_workflow"),
+            ("a future document version",
+             lambda d: d.update(kernel_workflow=WORKFLOW_DOCUMENT_VERSION + 1),
+             "kernel_workflow"),
+            ("no name", lambda d: d.pop("name"), "name"),
+            ("an empty name", lambda d: d.update(name=""), "non-empty"),
+            ("no initial state",
+             lambda d: d["states"][0].pop("initial"), "exactly one state"),
+            ("two initial states",
+             lambda d: d["states"][1].update(initial=True), "exactly one state"),
+            ("a repeated state name",
+             lambda d: d["states"].append({"name": "open"}), "more than once"),
+            ("a repeated transition name",
+             lambda d: d["transitions"].append({"name": "start", "from": "open",
+                                                "to": "done"}), "more than once"),
+            ("a transition into an unknown state",
+             lambda d: d["transitions"][0].update(to="nowhere"), "unknown state"),
+            ("a transition out of an unknown state",
+             lambda d: d["transitions"][0].update(**{"from": "nowhere"}), "unknown state"),
+            ("an unreachable state",
+             lambda d: d["states"].append({"name": "orphan"}), "unreachable"),
+            ("a role named on a transition but not declared",
+             lambda d: d["transitions"][3].update(roles=["reviwer"]), "undeclared role"),
+            ("a declared role no transition uses",
+             lambda d: d["roles"].append("auditor"), "restrict no transition"),
+            # This one asserts the MESSAGE, not just a refusal. Dropping the
+            # catalogue entirely is already caught by the undeclared-role rule,
+            # so the "declares no role_names" branch is a message refinement
+            # rather than an independent gate -- and a mutation run proved it:
+            # removing that branch changed nothing until this case existed.
+            ("a role restriction with no catalogue at all",
+             lambda d: d.pop("roles"), "declares no role_names"),
+            ("no work-item types", lambda d: d.update(work_item_types=[]), "non-empty"),
+            ("a repeated work-item type",
+             lambda d: d["work_item_types"].append("finding"), "unique"),
+            ("a key the format does not have",
+             lambda d: d.update(colour="blue"), "colour"),
+            ("a key a transition does not have",
+             lambda d: d["transitions"][0].update(colour="blue"), "colour"),
+        ]
+        for label, mutation, expected in cases:
+            problems = mutate(mutation)
+            assert problems, f"{label} was ACCEPTED — this rule does not exist"
+            assert any(expected in p for p in problems), (
+                f"{label} was refused, but no message mentions {expected!r}: {problems}"
+            )
+        assert not validate_workflow_document(base), (
+            "the unmutated document no longer validates — every case above proves nothing"
+        )
+    check("the document validation matrix refuses each rule and passes the clean file",
+          the_validation_matrix_holds)
+
+    def yaml_duplicate_keys_are_refused() -> None:
+        """yaml.safe_load keeps the LAST of two identical keys and discards the
+        first in silence. In a workflow that is a whole block vanishing."""
+        good = """
+kernel_workflow: 1
+name: dup
+states:
+  - {name: open, initial: true}
+  - {name: done, terminal: true}
+work_item_types: [x]
+transitions:
+  - {name: finish, from: open, to: done}
+"""
+        bad = good + """
+transitions:
+  - {name: finish, from: open, to: done}
+"""
+        with tempfile.TemporaryDirectory() as d:
+            ok_path = os.path.join(d, "ok.yaml")
+            bad_path = os.path.join(d, "dup.yaml")
+            txt_path = os.path.join(d, "wf.txt")
+            json_path = os.path.join(d, "ok.json")
+            for path, body in ((ok_path, good), (bad_path, bad), (txt_path, good)):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            with open(json_path, "w", encoding="utf-8") as fh:
+                json.dump(yaml.safe_load(good), fh)
+
+            loaded = load_workflow(ok_path)
+            assert loaded.name == "dup", "the control document did not load"
+            err = expect(InvalidWorkflowError, lambda: load_workflow_document(bad_path),
+                         "a document with a duplicated mapping key")
+            assert "duplicate key" in str(err) and "transitions" in str(err), (
+                f"the refusal does not name the duplicated key: {err}"
+            )
+            # Same content, two extensions: the parser follows the extension.
+            assert load_workflow(json_path) == loaded, (
+                "the same workflow loaded from .json and .yaml differ"
+            )
+            err = expect(InvalidWorkflowError, lambda: load_workflow_document(txt_path),
+                         "a document with an extension the loader does not parse")
+            assert ".txt" in str(err), f"the refusal does not name the extension: {err}"
+    check("a duplicated YAML key is refused, not silently last-one-wins",
+          yaml_duplicate_keys_are_refused)
+
+    print("\n\033[1mWork-item types and version pinning\033[0m")
+
+    def undeclared_types_are_refused() -> None:
+        k = fresh(dsn, "m40")  # WF declares types ("x", "y")
+        item = k.create_work_item(workflow="t", type="x", actor_id="a")
+        assert item.state == "open", "the declared type did not create an item"
+        err = expect(InvalidWorkflowError,
+                     lambda: k.create_work_item(workflow="t", type="xs", actor_id="a"),
+                     "an undeclared work-item type")
+        assert "'x'" in str(err) and "'y'" in str(err), (
+            f"the refusal does not list the declared types: {err}"
+        )
+        # The refusal leaves nothing behind: a partially-created item would be
+        # invisible to every type filter and present in every count.
+        assert len(k.list_items()) == 1, "a refused create still wrote a row"
+        assert k._conn.info.transaction_status.name == "IDLE", (
+            "the refusal left the connection in a transaction"
+        )
+        # ...and a workflow that declares no type cannot reach the registry at all.
+        expect(InvalidWorkflowError,
+               lambda: k.register_workflow(replace(WF, name="untyped", types=())),
+               "a workflow declaring no work-item types")
+        assert k.register_workflow(replace(WF, name="typed", types=("z",))) == 1, (
+            "declaring a type was not enough to register"
+        )
+        k.close()
+    check("an undeclared work-item type is refused and a declared one is created",
+          undeclared_types_are_refused)
+
+    def a_work_item_is_pinned_to_its_workflow_version() -> None:
+        """The keep table names this by name: 'immutable registered versions,
+        work-item version pinning'. An item created under v1 must keep v1's
+        rules after v2 exists, or a registry that assigns versions is
+        decoration."""
+        k = fresh(dsn, "m41")  # WF registered as v1
+        old = k.create_work_item(workflow="t", type="x", actor_id="a")
+        assert old.workflow_version == 1, "the first item was not pinned to v1"
+        k.transition(old.id, transition="start", actor_id="a")
+
+        assert k.register_workflow(WF_V2) == 2, "WF_V2 did not register as v2"
+        err = expect(TransitionRefusedError,
+                     lambda: k.transition(old.id, transition="park", actor_id="a"),
+                     "a v2-only transition on a v1-pinned item")
+        assert "v1" in str(err), f"the refusal does not name the pinned version: {err}"
+
+        # Control: the SAME transition on an item created after v2 succeeds, so
+        # the refusal above is about the pin and not about 'park' being broken.
+        new = k.create_work_item(workflow="t", type="x", actor_id="a")
+        assert new.workflow_version == 2, "a new item did not pick up the latest version"
+        k.transition(new.id, transition="start", actor_id="a")
+        assert k.transition(new.id, transition="park", actor_id="a").state == "parked", (
+            "the v2 transition does not work on a v2 item either"
+        )
+
+        # ...and a caller may pin deliberately, which must pin to the OLD rules.
+        pinned = k.create_work_item(workflow="t", type="x", actor_id="a",
+                                    workflow_version=1)
+        assert pinned.workflow_version == 1, "an explicit workflow_version was ignored"
+        k.transition(pinned.id, transition="start", actor_id="a")
+        expect(TransitionRefusedError,
+               lambda: k.transition(pinned.id, transition="park", actor_id="a"),
+               "a v2-only transition on an explicitly v1-pinned item")
+
+        # The v1 definition itself is unchanged by v2 existing.
+        assert "park" not in k.get_workflow("t", 1).transitions, "v1 gained v2's transition"
+        assert "park" in k.get_workflow("t", 2).transitions, "v2 lost its own transition"
+        k.close()
+    check("a work item keeps its workflow version's rules after a v2 is registered",
+          a_work_item_is_pinned_to_its_workflow_version)
+
+    def the_workflow_surface_is_pinned() -> None:
+        # dataclass fields WITHOUT a default are not class attributes, so dir()
+        # alone silently omits half of them — and a pin that cannot see a name
+        # cannot notice it appearing.
+        public = ({f.name for f in dataclass_fields(Workflow)}
+                  | {n for n in vars(Workflow) if not n.startswith("_")})
+        assert public == WORKFLOW_PUBLIC_SURFACE, (
+            "Workflow's public surface changed — added "
+            f"{sorted(public - WORKFLOW_PUBLIC_SURFACE)}, removed "
+            f"{sorted(WORKFLOW_PUBLIC_SURFACE - public)}. A new field has to be "
+            "classified: does as_json() carry it (and change every content hash), "
+            "does as_document() carry it, and does validate() check it?"
+        )
+    check("Workflow's public surface is pinned", the_workflow_surface_is_pinned)
 
     print(f"\n\033[1m{len(PASS)} passed, {len(FAIL)} failed\033[0m")
     return 1 if FAIL else 0

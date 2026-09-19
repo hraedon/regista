@@ -8,7 +8,8 @@ adds no domain-specific behaviour of its own.
 
     export REGISTA_DSN="postgresql://..."
     python3 cli.py init
-    python3 cli.py workflow register --file workflow.json
+    python3 cli.py workflow validate --file workflow.yaml   # without a database
+    python3 cli.py workflow register --file workflow.yaml
     python3 cli.py workflow show review
     python3 cli.py create --workflow review --type document --actor ingest --field src=s3://x
     python3 cli.py list                       # everything, leased items included
@@ -37,7 +38,17 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kernel import DEFAULT_PAGE_LIMIT, Claim, Kernel, KernelError, Workflow
+from kernel import (
+    DEFAULT_PAGE_LIMIT,
+    Claim,
+    InvalidWorkflowError,
+    Kernel,
+    KernelError,
+    Workflow,
+    load_workflow,
+    load_workflow_document,
+    validate_workflow_document,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -96,11 +107,9 @@ def cmd_health(k: Kernel, args: argparse.Namespace) -> int:
 
 
 def cmd_workflow_register(k: Kernel, args: argparse.Namespace) -> int:
-    with open(args.file) as fh:
-        body = json.load(fh)
     # No version= : the registry assigns it. Asserting one here would make every
     # registration from a file claim to be version 0.
-    wf = Workflow.from_json(body)
+    wf = load_workflow(args.file)
     version = k.register_workflow(wf)
     if not args.json:
         print(f"{wf.name} registered at version {version}")
@@ -317,6 +326,41 @@ def cmd_expire(k: Kernel, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workflow_validate(args: argparse.Namespace) -> int:
+    """Check a document without a database, and report EVERY problem at once.
+
+    Deliberately outside the Kernel-taking dispatch table: validation touches no
+    store, and requiring a DSN to spell-check a file would make the check
+    unavailable exactly where it is most useful -- in an editor, in CI, before
+    anything is provisioned.
+    """
+    try:
+        doc = load_workflow_document(args.file)
+        errors = list(validate_workflow_document(doc))
+    except InvalidWorkflowError as e:
+        # A parse failure (bad YAML, duplicate key, wrong extension) is a
+        # problem with the document like any other, and belongs in the same
+        # list rather than in a different exit path a caller has to know about.
+        errors = [str(e)]
+    if errors:
+        if not args.json:
+            print(f"\033[31m✗\033[0m {args.file}: {len(errors)} problem(s)")
+            for message in errors:
+                print(f"    - {message}")
+        _emit({"file": args.file, "valid": False, "problems": errors}, args.json)
+        return 1
+    # from_document(), not the module-private builder: the F0a report records
+    # that this CLI reaches for no private attribute, and that stays true.
+    wf = Workflow.from_document(doc)
+    if not args.json:
+        print(f"\033[32m✓\033[0m {args.file}: {wf.name} — {len(wf.states)} states, "
+              f"{len(wf.transitions)} transitions, types {sorted(wf.types)}")
+    _emit({"file": args.file, "valid": True, "workflow": wf.name,
+           "states": list(wf.states), "work_item_types": list(wf.types),
+           "transitions": sorted(wf.transitions)}, args.json)
+    return 0
+
+
 def cmd_workflow_show(k: Kernel, args: argparse.Namespace) -> int:
     wf = k.get_workflow(args.name, args.version)
     body = {"name": wf.name, "version": wf.version, **wf.as_json()}
@@ -325,6 +369,11 @@ def cmd_workflow_show(k: Kernel, args: argparse.Namespace) -> int:
         print(f"  initial  {wf.initial}")
         print(f"  states   {', '.join(wf.states)}")
         print(f"  terminal {', '.join(wf.terminal) or '(none)'}")
+        # The declared sets, because both are CLOSED and create/transition
+        # refuse anything outside them: a person told only the states would
+        # have to discover the type list by being refused.
+        print(f"  types    {', '.join(wf.types)}")
+        print(f"  roles    {', '.join(wf.role_names) or '(none)'}")
         for name, (froms, to) in sorted(wf.transitions.items()):
             roles = wf.roles.get(name, ())
             need = wf.required_fields.get(name, ())
@@ -351,8 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     wf = sub.add_parser("workflow", help="workflow registry").add_subparsers(
         dest="subcommand", required=True)
-    wfr = wf.add_parser("register", help="register a workflow from JSON")
+    wfr = wf.add_parser("register", help="register a workflow from a YAML or JSON document")
     wfr.add_argument("--file", required=True)
+    wfv = wf.add_parser("validate", help="check a workflow document; no database needed")
+    wfv.add_argument("--file", required=True)
     wf.add_parser("list", help="list registered workflows")
     wfs = wf.add_parser("show", help="states, transitions, roles and required fields")
     wfs.add_argument("name")
@@ -448,6 +499,7 @@ DISPATCH = {
     "release": cmd_release, "transition": cmd_transition, "link": cmd_link,
     "history": cmd_history, "replay": cmd_replay,
     ("workflow", "register"): cmd_workflow_register,
+    # ("workflow", "validate") is NOT here: it runs without a Kernel.
     ("workflow", "list"): cmd_workflow_list,
     ("workflow", "show"): cmd_workflow_show,
 }
@@ -458,6 +510,10 @@ def main(argv: list[str] | None = None) -> int:
     key: Any = args.command
     if args.command == "workflow":
         key = (args.command, args.subcommand)
+        if args.subcommand == "validate":
+            # Before _kernel(): no DSN, no connection, no schema. A document is
+            # checkable on a laptop with nothing provisioned.
+            return cmd_workflow_validate(args)
     handler = DISPATCH[key]
     k = _kernel(args)
     try:

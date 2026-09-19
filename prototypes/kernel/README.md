@@ -61,14 +61,17 @@ be called if this were installed; here you run it as `python3 cli.py …`.
 python3 test_mutations.py "$DSN"
 ```
 
-45 checks, each with a control. They let real leases expire and write with them,
+53 checks, each with a control. They let real leases expire and write with them,
 heartbeat a dead lease, present a live holder's fencing token as someone else,
 hold a row lock until a lease dies underneath a waiting writer, edit event
 payloads, delete middle *and* final events, rewrite a projection's fields, pass
 a `datetime` as a custom field, overwrite a reducer-owned payload key, reuse
-idempotency keys for different requests, present the wrong role, and point
-`initialize()` at a 0.7-era schema. Every one asserts something was refused
-**and** that the legitimate version of the same call still succeeds.
+idempotency keys for different requests, present the wrong role, point
+`initialize()` at a 0.7-era schema, create an undeclared work-item type, make a
+v2-only transition on a v1-pinned item, and load a workflow document carrying a
+duplicated YAML key or any 0.7 key this format dropped. Every one asserts
+something was refused **and** that the legitimate version of the same call still
+succeeds.
 
 Expiry is exercised with genuinely short leases and real waits, never by
 backdating `expires_at` in SQL — a backdated row cannot tell a correct expiry
@@ -123,6 +126,8 @@ The rest of the CLI, for reference:
 | `claim` / `heartbeat` / `release` | hold a lease across steps |
 | `transition` | `--field` to set, `--unset-field` to clear |
 | `expire-leases [<id>]` | sweep dead leases, all or one |
+| `workflow validate --file` | check a document; **needs no database** |
+| `workflow register --file` | register one from YAML or JSON |
 | `workflow list` / `workflow show` | what states and transitions exist |
 | `replay` | rebuild from events; exits 1 on drift |
 
@@ -148,6 +153,7 @@ want to see that it worked.
 | The library | `kernel.py` — one module, no install step |
 | The schema | `schema.sql`, applied by `Kernel.initialize()` |
 | The CLI | `cli.py`, reads `REGISTA_DSN` |
+| The workflow format | `workflow.schema.json`, with `remediation.workflow.yaml` and `ingest.workflow.yaml` as worked examples |
 | Worked examples | `example_handoff.py`, `example_documents.py` |
 | Proof the checks bite | `test_mutations.py` |
 
@@ -176,8 +182,10 @@ k.register_workflow(Workflow(
         "accept": (("in_review",), "done"),
     },
     roles={"accept": ("reviewer",)},
+    role_names=("reviewer",),
     required_fields={"submit": ("remediation_note",)},
     terminal=("done",),
+    types=("finding",),
 ))
 
 item = k.create_work_item(workflow="remediation", type="finding",
@@ -212,6 +220,85 @@ the write serializes, not when its transaction began. Every stored timestamp
 comes from the same clock. A coordination store has many clients and one
 serialization point; if a client's clock decided liveness, `available()` and
 `transition()` could disagree about whether the same lease is held.
+
+### Writing a workflow as a document
+
+The Python literal above is one way in. The other is a document — YAML or JSON,
+validated against `workflow.schema.json`:
+
+```yaml
+kernel_workflow: 1
+name: remediation
+
+states:
+  - name: open
+    initial: true
+  - name: in_progress
+  - name: in_review
+  - name: done
+    terminal: true
+
+roles: [reviewer]
+work_item_types: [finding]
+
+transitions:
+  - name: start
+    from: [open]          # one source, or several, under ONE entry
+    to: in_progress
+  - name: submit
+    from: in_progress
+    to: in_review
+    required_fields: [remediation_note]
+  - name: accept
+    from: in_review
+    to: done
+    roles: [reviewer]
+```
+
+```bash
+python3 cli.py workflow validate --file remediation.workflow.yaml   # no database
+python3 cli.py workflow register --file remediation.workflow.yaml
+```
+
+`validate` runs before anything is provisioned — no DSN, no connection, no
+schema — and reports **every** problem in one pass, because a person fixing a
+file wants the list and not the first line of it. `register` stops at the first,
+because a program loading a file has nothing to do with the rest.
+
+`kernel_workflow: 1` is the version of the *document format*. It is not the
+library version and not the workflow's version: the registry assigns workflow
+versions, and a file on disk cannot know what the registry already holds.
+
+Four rules exist because their absence is silent rather than loud:
+
+- **Exactly one state carries `initial: true`.** Zero or two is a document that
+  would otherwise start items somewhere arbitrary.
+- **Every state is reachable.** A state no transition enters can never hold an
+  item, so every report that mentions it is answering about nothing.
+- **`roles:` is a closed set, cross-checked both ways.** Misspell a role on a
+  transition and nothing can ever present it — the workflow looks fine until
+  someone tries the transition and is told they need a role nobody has. The
+  catalogue catches that, and the "declared but unused" half catches the same
+  typo from the other side.
+- **`work_item_types:` is a closed set.** `create_work_item(type=…)` is checked
+  against it. An unchecked type string is how `finding` and `findings` become
+  two populations that no type filter reunites.
+
+`workflow.schema.json` is read from disk at validation time, so on promotion it
+has to be packaged as package data — a wheel that ships `kernel.py` without it
+would fail on the first `validate`, and not until then.
+
+A duplicated YAML key is refused rather than resolved: `yaml.safe_load` keeps
+the last and discards the first in silence, which in a workflow means a whole
+block disappearing from a file that still validates.
+
+**Keys from the 0.7 format are refused by name, with what happened to the
+feature** — `allowed_roles` (renamed to `roles`), `validator`, `validator_params`,
+`privileged`, `hooks`, `hook_defaults`, `extends`, `link_types`,
+`attempt_threshold`, `version`, `regista_version`. Several of those *restricted*
+something, so accepting-and-ignoring one would silently open a transition that
+used to be closed. `work_item_types` and `roles` are lists of names here, not of
+objects; the 0.7 object form is refused with the same explanation.
 
 ### What a custom field may hold
 
@@ -319,11 +406,21 @@ the static half; this supplies the running half.
 | …of which six modules couple hardest to the trust stack | 6,046 |
 
 The prototype is **not yet** a complete MVP, but the gap has narrowed. Against
-Plan 032's keep table, still missing: **workflow definitions loaded from
-YAML/JSON Schema**, and **connection-pool behaviour**. Done since the first
-draft: the CLI, bounded and ordered pagination across every collection query,
-bounded custom-field filtering, work-discovery queries including the link-aware
-one, and health.
+Plan 032's keep table, still missing: **connection-pool behaviour**. Done since
+the first draft: the CLI, bounded and ordered pagination across every collection
+query, bounded custom-field filtering, work-discovery queries including the
+link-aware one, health, and workflow documents loaded from YAML/JSON against a
+JSON Schema.
+
+The keep table's custom-field row can be read two ways, and the maintainer
+should rule rather than inherit the reading below. "Basic validated domain
+data" is satisfied today by the JSON type and depth checks every field value
+passes, plus per-transition required fields. It is **not** satisfied in the 0.7
+sense of per-type field declarations — `type: enum`, `enum_values`, `required` —
+which this document format deliberately does not carry, because the kernel
+enforces no such declaration and a declaration nothing enforces is worse than
+none. Adding them is a real feature with its own validation surface, not a
+loader change.
 
 Archive, observability, the async surface and cross-project links are **out of
 scope for 0.8.0** rather than missing — none of them appears in the keep table,
