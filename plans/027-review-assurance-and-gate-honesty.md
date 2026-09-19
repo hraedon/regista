@@ -1,5 +1,10 @@
 # Plan 027 — Review assurance: gate honesty under a single model
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: an `AssuranceLevel` model computed as a pure view over the signed event history, for cross-lineage review gate honesty under single-model deployment.
+> Why: built-in assurance classification and model-lineage registries are explicit REMOVE-scope (`plans/032-final-public-release.md:62`); the assurance computation is additionally over signed history, which no longer exists as an authenticity claim once signing is removed.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** In progress 2026-07-05. Implementation started Session 86.
 **Author:** Claude (Fable 5), from the 2026-07-02 single-model deployment review
 **Strategic role:** The suite deploys **Claude-only at first**, which quietly

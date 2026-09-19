@@ -1,5 +1,10 @@
 # Plan 014 — Global event sequence for coherent batch timestamping
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a global `event_seq` (`BIGSERIAL`) for coherent cross-work-item batch timestamping, feeding the now-removed RFC 3161 timestamping subsystem.
+> Why: historical as a timestamping design (D16, `plans/032-open-decisions-review.md`). Per-item ordering survives untouched. If any project-wide event cursor is retained in 0.8.0 it must be defined explicitly and must NOT inherit this plan's gap-free guarantee: PostgreSQL sequences can gap, and a transaction can allocate an earlier sequence number while committing after another writer already committed a later one — a consumer that advances past the later visible number can silently miss the late commit. A `BIGSERIAL` is not, by itself, a gap-free commit-ordered feed. This caveat is the reason the plan is historical rather than carried forward as-is.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** regista
 **Spec touched:** §17 (signing/integrity), Plan 012 §3.1 / §4 / §5.4

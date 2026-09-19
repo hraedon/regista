@@ -1,5 +1,10 @@
 # Plan 002 — Minimal Admin CLI for Regista
 
+> **0.8.0 disposition: PARTIALLY RETAINED.**
+> Release line this plan describes: the original small operator CLI: workflow validate, work-item show/list, events show/tail, replay, schema init/status, hooks dead-letter, actor-roles list.
+> Why: Plan 032 §3 keeps "a small initialization/workflow/inspection/replay/health CLI" — that shape survives. What does not: the constructor is mandated to require `hmac_key_path` and treat the library as "the sole sanctioned signer" (this plan §3, non-negotiable per spec.md §19.2/FR-15) — signing is removed, so that requirement goes; and `hooks dead-letter list/requeue` (§4) goes with async hooks. The read-heavy, argparse-based, no-CLI-framework shape is otherwise still the right design.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft
 **Owner:** operator
 **Prereq for:** archival CLI (separate plan)

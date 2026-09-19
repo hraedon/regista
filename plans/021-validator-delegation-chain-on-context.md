@@ -1,5 +1,10 @@
 # Plan 021 — Validator delegation chain on context (acting `on_behalf_of`)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: exposing the acting validator's own `on_behalf_of` delegation chain on `ValidatorContext`.
+> Why: the delegation chain itself (Plan 010) is REMOVE-scope, so context enrichment for it goes too. The unrelated, non-delegation part of validator context enrichment survives via Plan 020's marker.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC. Proposed 2026-06-22. Not started.
 **Owner:** regista session 67
 **Origin:** dossier `WI-004 / validator delegation gap` (`src/dossier/validators.py`).

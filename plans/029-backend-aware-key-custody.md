@@ -1,5 +1,10 @@
 # Plan 029 — Backend-aware principal key custody
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: backend-aware principal private-key custody (file/Vault/Azure/Windows-DPAPI, self-custody write protocol).
+> Why: principal custody / key lifecycle ceremonies are explicit REMOVE-scope (`plans/032-final-public-release.md:60`). Storage/database encryption and secret handling become an explicit operator responsibility instead.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Implemented 2026-07-07 (Phases 1–3; Phase 4 WI-4.1 is hand-back to dossier).
 **Proposed:** 2026-07-06, from a post-1.0 cross-repo review (Claude, Opus 4.8).
 **Author:** Claude (Opus 4.8)

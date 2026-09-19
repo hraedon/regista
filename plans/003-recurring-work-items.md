@@ -1,5 +1,10 @@
 # Plan 003 — Recurring Work-Item Generation
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: recurring work-item generation (interval/RRULE schedules, `recurrence_rules` table).
+> Why: recurrence scheduling is explicit REMOVE-scope (`plans/032-final-public-release.md:65`) under Plan 032's "not a job executor or scheduler" boundary (§1).
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft
 **Author:** planning agent
 **Date:** 2026-05-15

@@ -1,5 +1,10 @@
 # Plan 004 — YAML Workflow Composition (`!include` / inheritance)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: YAML workflow composition via `extends:` — path resolution, inheritance, cycle detection, depth limits, keyed list merges, append/remove modifiers, error source maps.
+> Why: workflow inheritance is removed (see D21 in `plans/032-open-decisions-review.md`) — the "small independent subset" exception Plan 032 §3 allows for was considered and declined: the feature carries enough machinery (path resolution, cycles, depth limits, keyed list merges, modifiers, error source maps) that its small module size understates the language it asks users to learn. Callers can materialize one complete validated workflow file themselves.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 Status: Proposed — proceed conditionally (see Motivation).
 Spec anchor: spec.md L67, L337, L437, L493, L518 ("Loader can grow `!include` / merge conventions later without breaking existing files").
 Loader code: `/projects/regista/src/regista/_workflow.py` (parse and validate); schema `/projects/regista/src/regista/_workflow_schema.json`.

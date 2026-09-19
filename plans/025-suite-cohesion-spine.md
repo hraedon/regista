@@ -1,5 +1,10 @@
 # Plan 025 — Suite cohesion: the spine's contracts
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: the suite's shared contracts regista provides as "the spine": config vocabulary, secret backends, store-bootstrap, health/version surface, provisioning, the signed spec entity.
+> Why: suite configuration discovery, lock/health dependencies, cross-component provisioning, and sibling private-API imports are all explicit REMOVE-scope (`plans/032-final-public-release.md:63`). The signed spec entity (WI-4.3) additionally goes with signing (D5) — see D20's ruling in `plans/032-open-decisions-review.md` ("retire with the signed spec entity") and the D15 spec.yaml disposition in `plans/032-plan-dispositions.md`.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Implemented 2026-07-05. WI-1.1 through WI-4.3 landed (Sessions 80–83). Windows DPAPI provider added Session 86.
 **Author:** Claude (Fable 5), from the 2026-07-02 agent-suite deployment review
 **Strategic role:** regista is the spine every other suite member is a client of,

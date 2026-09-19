@@ -1,5 +1,10 @@
 # Plan 015 — Wake/Provenance v1 Trust-Envelope Completion
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: completing the trust-envelope surface agent-wake's v1 implementation spec needs.
+> Why: the trust envelope (signing, trust tiers, asymmetric signing readiness) is REMOVE-scope in full.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** regista
 **Resolves:** BC-214, BC-215, BC-218, BC-219, BC-220, BC-221 (six of the eight items in `agent-wake/design/v1-implementation-spec.md` §2)

@@ -1,0 +1,45 @@
+# The workflow driven by example_handoff.py — a finding, a worker, a reviewer.
+#
+# This is the authoring format (workflow.schema.json). The registry assigns the
+# version, so no version appears here: a file on disk cannot know what the
+# registry already holds.
+kernel_workflow: 1
+name: remediation
+
+states:
+  - name: open
+    initial: true
+  - name: in_progress
+  - name: in_review
+  - name: changes_requested
+  - name: done
+    terminal: true
+
+roles:
+  - reviewer
+
+work_item_types:
+  - finding
+  - followup
+
+transitions:
+  - name: start
+    # Two sources under ONE entry. A rework after a review re-enters the same
+    # state as a first attempt, and the history says which it was.
+    from: [open, changes_requested]
+    to: in_progress
+
+  - name: submit
+    from: in_progress
+    to: in_review
+    required_fields: [remediation_note]
+
+  - name: request_changes
+    from: in_review
+    to: changes_requested
+    roles: [reviewer]
+
+  - name: accept
+    from: in_review
+    to: done
+    roles: [reviewer]
