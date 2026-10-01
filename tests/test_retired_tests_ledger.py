@@ -23,8 +23,17 @@ WI-289 Phase A hardening — the coverage pointer is strict by default:
   *every* null pointer except WI-008's, so a new tranche could be retired with
   no replacement and no deferral and nothing would go red.
 - The set of deferrals is pinned by exact node identity per work item in
-  ``DEFERRED_COVERAGE_NODE_IDS``, so growing or swapping the allowlist is a
-  visible diff in two places: the ledger entry and the pin.
+  ``DEFERRED_COVERAGE_NODE_IDS``, so growing the allowlist, shrinking it, or
+  swapping one owed node for another is a visible diff in two places: the
+  ledger entry and the pin.
+- Every ``coverage_owed`` entry, deferred or discharged, is also pinned by
+  content digest (``COVERAGE_OWED_DIGEST``). Re-pointing a discharged entry's
+  ``covered_by``, or permuting node IDs among entries so an invariant is
+  credited to the wrong test, leaves the identity sets unchanged. It cannot
+  leave the digest unchanged. The digest proves the record did not change
+  silently. It does not prove that a ``covered_by`` target asserts the
+  invariant: that is still review, and collection is not execution (WI-336
+  N2).
 """
 
 from __future__ import annotations
@@ -35,6 +44,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -250,7 +260,55 @@ def test_coverage_owed_entries_point_to_collected_coverage(
         )
 
 
-def _assert_deferred_coverage_node_ids(ledger: dict[str, object]) -> None:
+#: sha256 of the canonical JSON (sorted keys, compact, UTF-8) of every
+#: ``coverage_owed`` entry, sorted by node_id. Update it in the same diff as any
+#: deliberate change to such an entry, and say why in the commit message.
+COVERAGE_OWED_DIGEST = "8b09c8e7f193bd25ad985246257c759691c18bc34faa165945fd827087c264f6"
+
+
+def _coverage_owed_digest(ledger: dict[str, Any]) -> str:
+    owed = sorted(
+        (e for e in ledger["entries"] if e.get("disposition") == "coverage_owed"),
+        key=lambda e: str(e["node_id"]),
+    )
+    canonical = json.dumps(owed, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def test_coverage_owed_entries_cannot_change_silently() -> None:
+    ledger = json.loads(LEDGER_PATH.read_text())
+    observed = _coverage_owed_digest(ledger)
+    assert observed == COVERAGE_OWED_DIGEST, (
+        "a coverage_owed ledger entry changed (node_id, invariant, covered_by, "
+        "deferred_to or any other field). If the change is deliberate, set "
+        f"COVERAGE_OWED_DIGEST = {observed!r} in this file and say which entry "
+        "changed and why in the commit message."
+    )
+
+
+def test_coverage_owed_digest_sees_a_permutation_and_a_repoint() -> None:
+    ledger = json.loads(LEDGER_PATH.read_text())
+    deferred = [e for e in ledger["entries"] if e.get("deferred_to") == "WI-293"]
+    discharged = [
+        e for e in ledger["entries"]
+        if e.get("disposition") == "coverage_owed" and e.get("covered_by")
+    ]
+    assert len(deferred) >= 2 and len(discharged) >= 2, "fixture premise: retire with the ledger"
+    permuted = json.loads(json.dumps(ledger))
+    a, b = [e for e in permuted["entries"] if e.get("deferred_to") == "WI-293"][:2]
+    a["node_id"], b["node_id"] = b["node_id"], a["node_id"]
+    _assert_deferred_coverage_node_ids(permuted)  # the identity pin cannot see this...
+    assert _coverage_owed_digest(permuted) != COVERAGE_OWED_DIGEST  # ...the digest does
+    repointed = json.loads(json.dumps(ledger))
+    x, y = [
+        e for e in repointed["entries"]
+        if e.get("disposition") == "coverage_owed" and e.get("covered_by")
+    ][:2]
+    x["covered_by"] = y["covered_by"]
+    assert _coverage_owed_digest(repointed) != COVERAGE_OWED_DIGEST
+
+
+def _assert_deferred_coverage_node_ids(ledger: dict[str, Any]) -> None:
     """Require every deferred coverage debt to retain its exact identity."""
     observed: dict[str, set[str]] = {}
     for entry in ledger["entries"]:
@@ -287,11 +345,20 @@ def test_deferred_coverage_allowlist_cannot_change_silently() -> None:
 
 def test_deferred_coverage_allowlist_rejects_same_work_item_identity_swap() -> None:
     ledger = json.loads(LEDGER_PATH.read_text())
-    deferred = next(entry for entry in ledger["entries"] if entry.get("deferred_to") == "WI-293")
+    deferred = next(
+        (entry for entry in ledger["entries"] if entry.get("deferred_to") == "WI-293"), None
+    )
     replacement = next(
-        entry["node_id"]
-        for entry in ledger["entries"]
-        if entry.get("disposition") == "deleted_by: P1.4"
+        (
+            entry["node_id"]
+            for entry in ledger["entries"]
+            if entry.get("disposition") == "deleted_by: P1.4"
+        ),
+        None,
+    )
+    assert deferred is not None and replacement is not None, (
+        "fixture premise gone (no WI-293 deferral or no deleted_by: P1.4 entry); "
+        "retire this test together with that ledger tranche"
     )
     deferred["node_id"] = replacement
 
