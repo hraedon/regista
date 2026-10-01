@@ -802,3 +802,94 @@ def test_ledger_history_sees_a_dropped_state_behind_a_merge_and_a_child(tmp_path
         base, has_guard = guard._ledger_at(ref, repo)
         problems += guard.check_monotonic(base, reduced_ledger, base_has_guard=has_guard)
     assert any("dropped release 0.1.0" in p for p in problems)  # ...the history does
+
+
+# --------------------------------------------------------------------------
+# Round 6 review (gpt-5.6-sol R6-B1..B3, DeepSeek NB1/NB2). Candidate fixes
+# for a round 7 that only the owner can authorise (round 6 was the hard stop).
+
+
+def test_an_explicit_wheel_directory_named_like_a_migration_is_refused(tmp_path: Path) -> None:
+    import zipfile
+
+    d = _dist(tmp_path, WHEEL_OK, SDIST_OK)
+    whl = next(d.glob("*.whl"))
+    with zipfile.ZipFile(whl, "a") as zf:
+        info = zipfile.ZipInfo("regista/migrations/000_probe.sql/")
+        info.external_attr = 0o40755 << 16 | 0x10
+        zf.writestr(info, b"")
+    with pytest.raises(guard.GuardError, match="directory member"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_an_explicit_sdist_directory_in_the_runner_dir_is_refused(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    d = _dist(tmp_path, WHEEL_OK, SDIST_OK)
+    sdist = next(d.glob("*.tar.gz"))
+    buf = io.BytesIO()
+    with tarfile.open(sdist, "r:gz") as src, tarfile.open(fileobj=buf, mode="w:gz") as dst:
+        for m in src.getmembers():
+            dst.addfile(m, src.extractfile(m))
+        dirent = tarfile.TarInfo("r-0.0.0/migrations/000_x.sql")
+        dirent.type = tarfile.DIRTYPE
+        dst.addfile(dirent)
+    sdist.write_bytes(buf.getvalue())
+    with pytest.raises(guard.GuardError, match="directory member"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_a_case_folded_alias_of_the_runner_dir_is_judged(tmp_path: Path) -> None:
+    d = _dist(tmp_path, {**WHEEL_OK, "REGISTA/MIGRATIONS/000_unexpected.sql/note.txt": C}, SDIST_OK)
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert any("REGISTA/MIGRATIONS/000_unexpected.sql/note.txt" in p for p in problems)
+
+
+def test_fold_colliding_members_are_refused(tmp_path: Path) -> None:
+    d = _dist(
+        tmp_path,
+        {**WHEEL_OK, "regista/migrations/003_c.sql": C, "regista/migrations/003_C.sql": C},
+    )
+    with pytest.raises(guard.GuardError, match="one path on a folding filesystem"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def _history_problems(repo: Path, rev: str, head: dict[str, Any]) -> list[str]:
+    problems: list[str] = []
+    for ref in guard._ledger_history(rev, repo):
+        base, has_guard = guard._ledger_at(ref, repo)
+        problems += guard.check_monotonic(base, head, base_has_guard=has_guard)
+    return problems
+
+
+def test_a_merge_resolved_to_its_first_parent_cannot_hide_a_side_ledger(tmp_path: Path) -> None:
+    """`git log -- <path>` simplification prunes the side branch here; --full-history
+    must not (DeepSeek round-6 NB2)."""
+    repo = _git_repo(tmp_path)
+    marker = f"# {guard.GUARD_MARKER}\n"
+    base_ledger = _ledger({"0.1.0": BASE_RELEASES["0.1.0"]})
+    side_ledger = _ledger(BASE_RELEASES)
+    ledger_path = "release/published-migrations.json"
+    _commit(repo, {"g.py": marker, ledger_path: json.dumps(base_ledger)}, "b")
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, {ledger_path: json.dumps(side_ledger)}, "side records 0.2.0")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"m": "1\n"}, "main moves")
+    _git(repo, "merge", "-q", "-s", "ours", "-m", "merge resolved to main", "side")
+    child = _commit(repo, {"prep": "1\n"}, "child")
+    assert any("dropped release 0.2.0" in p for p in _history_problems(repo, child, base_ledger))
+
+
+def test_renaming_the_ledger_path_is_refused(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    marker = f"# {guard.GUARD_MARKER}\n"
+    full = json.dumps(_ledger(BASE_RELEASES))
+    _commit(repo, {"g.py": marker, "old/ledger.json": full}, "guard at an old ledger path")
+    reduced = _ledger({"0.2.0": BASE_RELEASES["0.2.0"]})
+    (repo / "old" / "ledger.json").unlink()
+    child = _commit(
+        repo, {"release/published-migrations.json": json.dumps(reduced)}, "rename + drop"
+    )
+    child = _commit(repo, {"prep": "1\n"}, "child")
+    assert any("ledger was deleted" in p for p in _history_problems(repo, child, reduced))

@@ -59,6 +59,7 @@ Subcommands:
     unchanged. Published history only grows. A release PyPI no longer serves
     (an owner can delete one) stays in the ledger under
     ``withdrawn_from_pypi``, because stores may already have applied its bytes.
+    The ledger path is pinned: renaming it reads as deleting it.
     A withdrawal is accepted only for a release ``REF`` already recorded, so the
     ledger cannot invent WITHDRAWN history. A newly added release that PyPI
     serves is authenticated only by ``verify-ledger``; this check cannot judge
@@ -251,12 +252,36 @@ def _is_sql(name: str) -> bool:
     return unicodedata.normalize("NFKC", name).casefold().endswith(".sql")
 
 
+def _fold(path: str) -> str:
+    """Filesystem identity on a case-insensitive / Unicode-folding install."""
+    return unicodedata.normalize("NFKC", path).casefold()
+
+
 def _judged(wheel_path: str) -> bool:
     """Members the shape rules must see: every SQL-like file anywhere, and EVERY
     member under the runner directory, so a non-migration file or a directory
     (explicit, or implied by a descendant like ``000_x.sql/note.txt``) there is
     refused rather than ignored."""
-    return _is_sql(wheel_path) or wheel_path.startswith(RUNNER_WHEEL_DIR)
+    return _is_sql(wheel_path) or _fold(wheel_path).startswith(_fold(RUNNER_WHEEL_DIR))
+
+
+def _check_directory_member(name: str, where: str) -> None:
+    """A directory the runner's *.sql glob would select, or any directory inside its
+    folded runner path, makes discover_migrations() return a non-file."""
+    stripped = name.rstrip("/")
+    if _is_sql(stripped) or _fold(stripped + "/").startswith(_fold(RUNNER_WHEEL_DIR)):
+        raise GuardError(f"{where}: directory member {name!r} in or named like a migration")
+
+
+def _check_fold_collisions(names: list[str], where: str) -> None:
+    seen: dict[str, str] = {}
+    for n in names:
+        key = _fold(n)
+        if key in seen and seen[key] != n:
+            raise GuardError(
+                f"{where}: {seen[key]!r} and {n!r} are one path on a folding filesystem"
+            )
+        seen[key] = n
 
 
 def _sql_members_wheel(blob: bytes) -> dict[str, str]:
@@ -268,8 +293,10 @@ def _sql_members_wheel(blob: bytes) -> dict[str, str]:
     out: dict[str, str] = {}
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         seen: set[str] = set()
+        _check_fold_collisions([i.filename for i in zf.infolist()], "wheel")
         for info in zf.infolist():
             if info.is_dir():
+                _check_directory_member(info.filename, "wheel")
                 continue
             _check_member_name(info.filename, "wheel")
             if info.filename in seen:
@@ -321,9 +348,17 @@ def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str,
     pairs = list(mapping) + [(RUNNER_WHEEL_DIR, d) for d in _RUNNER_SOURCE_DIRS]
     reverse = sorted(((r, w) for w, r in pairs), key=lambda p: len(p[0]), reverse=True)
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        _check_fold_collisions([m.name for m in tf.getmembers()], "sdist")
         for member in tf.getmembers():
             _check_member_name(member.name, "sdist")
             if member.isdir():
+                rel_dir = member.name.split("/", 1)[1] if "/" in member.name else ""
+                for src in _RUNNER_SOURCE_DIRS:
+                    if _is_sql(rel_dir) or _fold(rel_dir + "/").startswith(_fold(src)):
+                        raise GuardError(
+                            f"sdist: directory member {member.name!r} in or named like "
+                            "a migration"
+                        )
                 continue
             if not member.isfile():
                 # pip and uv materialise symlink and hard-link members as regular
@@ -334,7 +369,8 @@ def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str,
                 )
             # "<name>-<version>/migrations/001.sql" -> "migrations/001.sql"
             rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
-            if not (_is_sql(rel) or rel.startswith(_RUNNER_SOURCE_DIRS)):
+            runner_srcs = tuple(_fold(d) for d in _RUNNER_SOURCE_DIRS)
+            if not (_is_sql(rel) or _fold(rel).startswith(runner_srcs)):
                 continue
             for repo_prefix, wheel_prefix in reverse:
                 if rel.startswith(repo_prefix):
@@ -771,14 +807,23 @@ def _ledger_history(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
     dropped history (round-5 review). Since the ledger only grows, the head must
     be a superset of every ledger state on every path through its ancestry.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "log", "--format=%H", f"{rev}^@", "--",
-         LEDGER_PATH.relative_to(REPO_ROOT).as_posix()],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise GuardError(f"git log over the ledger's history failed for {rev!r}")
-    touched = [c for c in proc.stdout.split() if c]
+    def log(*selector: str) -> list[str]:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "log", "--full-history", "--format=%H",
+             f"{rev}^@", *selector],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise GuardError(f"git log over the ledger's history failed for {rev!r}")
+        return [c for c in proc.stdout.split() if c]
+
+    # --full-history: default history simplification prunes a side branch when a
+    # merge resolves the ledger to its first parent (round-6 review).
+    touched = log("--", LEDGER_PATH.relative_to(REPO_ROOT).as_posix())
+    # The ledger path is PINNED. Commits that introduced or removed the guard
+    # marker are bases too: if one carries the guard but has no ledger at the
+    # pinned path (a rename), check_monotonic refuses it as a deleted ledger.
+    touched += log("-S", GUARD_MARKER)
     seen: list[str] = []
     for c in _parents(rev, repo_root) + touched:
         if c not in seen:
