@@ -184,6 +184,25 @@ jobs:
       - name: Prototype kernel scenarios + mutation checks (PostgreSQL)
         run: pytest prototypes/kernel/test_scenarios.py -v
 
+  # GitHub issue #65: published migrations are immutable. The offline half
+  # (the tree honours release/published-migrations.json) runs in the `check`
+  # job's pytest. This job is the half that stops the ledger itself being
+  # edited to bless a mutation: it re-downloads every regista-hraedon release
+  # from PyPI, verifies each file against PyPI's sha256, recomputes the ledger
+  # and requires it to equal the committed one. A newly published release
+  # turns this red until `python scripts/check_published_migrations.py build`
+  # records it - from then on its migrations are frozen too.
+  published-migrations:
+    name: Published migrations are immutable (verified against PyPI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Ledger equals PyPI, and the tree honours it
+        run: python3 scripts/check_published_migrations.py verify-ledger
+
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI
   # installs unlocked, so nothing noticed until `uv run` failed on a clean

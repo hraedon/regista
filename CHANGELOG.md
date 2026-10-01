@@ -4,6 +4,26 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Published migrations are immutable, and CI enforces it against PyPI's own bytes (#65).**
+  `release/published-migrations.json` records the sha256 of every `*.sql` that each
+  `regista-hraedon` release on PyPI ships. The wheel and sdist of all nine releases,
+  0.5.1-0.7.2, were downloaded and checked against PyPI's digests, and they agree.
+  `scripts/check_published_migrations.py` refuses a tree that edits, renames or deletes a
+  published migration. It also refuses an unpublished migration numbered at or below the
+  published head, a duplicate version number, and a `.sql` name with no numeric prefix.
+  The runner silently skips that last kind, so it would ship and never apply. The offline
+  check runs in the test suite. A separate CI job and the publish workflow re-derive the
+  ledger from PyPI and require it to match exactly, so the ledger cannot be edited to bless
+  a change. A newly published release turns CI red until it is recorded.
+
+  **Two violations predate the guard and cannot be undone.** `001_initial.sql` and
+  `035_event_chain_head_genesis_sentinel.sql` were rewritten in place in 0.6.0. 0.5.x
+  ships one set of bytes and 0.6.0-0.7.2 another, which is why 0.5.x stores report
+  `MIGRATION_DRIFT` against 0.6.0+. Both are pinned by exact digest set as the only
+  permitted multiplicity, the tree must carry their latest bytes, and the set cannot grow.
+
 ### Changed
 
 - **Audit bundles are format v3 only; v1 and v2 are deleted, not deprecated (WI-289 Phase B,
