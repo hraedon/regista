@@ -11,15 +11,24 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `regista-hraedon` release: per release, the sha256 of each file and of each migration. It
   was measured from the wheels and sdists of all nine releases, 0.5.1-0.7.2.
   `scripts/check_published_migrations.py check-dist` runs in CI and in the publish build job
-  on the exact bytes uploaded. It fails closed:
+  on the exact bytes uploaded. Its artifact claim is deliberately precise: artifacts contain
+  only reviewed bytes from tracked files in the checkout (apart from constrained generated
+  package metadata), and their migration subset equals the ledger. Reviewed package code may
+  perform effects when it runs; what that code does is the code-review boundary, outside this
+  artifact guard. It fails closed:
   - Every member of every wheel and sdist must be a regular file with a strict ASCII, NFC,
     traversal-free name.
   - No two names may collide after NFKC + casefold.
   - A wheel may contain files only under `regista/` and the single
     `<dist>-<version>.dist-info/` directory named by its wheel filename. That metadata
     directory is limited to `METADATA`, `WHEEL`, `RECORD`, `entry_points.txt`, and
-    `licenses/`; `WHEEL` must declare version 1.0 and `Root-Is-Purelib: true`. Wheel
-    `.data/` relocation trees and all other top-level members are refused.
+    `licenses/`. Every `regista/` member must be byte-identical to its tracked
+    `src/regista/` source, except `regista/migrations/`, which must match tracked
+    `migrations/`; licenses must match their tracked root file. `METADATA`, `WHEEL`, and
+    `RECORD` are mandatory; distribution/version must agree with the literal project metadata
+    and filename; the only accepted filename and `WHEEL` tag is `py3-none-any`; and `RECORD`
+    must authenticate every member except its own empty self-row. Wheel `.data/` relocation
+    trees and all other top-level members are refused.
   - Python site-startup executables (`*.pth`, `sitecustomize.py`, and
     `usercustomize.py`, case-folded) are refused anywhere in a wheel or sdist.
   - Migrations are found only by exact parent path and the name pattern
@@ -29,10 +38,13 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     declared `unreleased` entries: no extras, no missing files.
   - The same must hold for a wheel built from each sdist by both uv and pip in isolation.
     That half rests on a build contract: `build-system.requires` must equal the guard's
-    named, exact six-package `TRUSTED_BUILD_REQUIREMENTS` set, no build hooks or hatch
-    config files are allowed, and the sdist's `pyproject.toml` must be byte-identical to
-    the reviewed one. Build requirements execute code; this frozen closure is trusted,
-    not inert. `--no-build-isolation` builds and other frontends are outside the claim.
+    named, exact six-package `TRUSTED_BUILD_REQUIREMENTS` set; `[tool.hatch]` must equal the
+    one reviewed static package/force-include table; `[project]` must use a literal version
+    and have no `dynamic` key; no separate Hatch config files are allowed; and the sdist's
+    `pyproject.toml` must be byte-identical to the reviewed one. Every other sdist member
+    must match a tracked file at the same relative path, except the one generated root
+    `PKG-INFO`. Build requirements and reviewed project code execute; they are trusted, not
+    inert. `--no-build-isolation` builds and other frontends are outside the claim.
   - Wheels must be one canonical ZIP container: contiguous records from offset 0, local and
     central headers that agree, one EOCD record at the very end, and no comments, data
     descriptors or extra fields. Sdists may carry no PAX headers. A regular file where a
@@ -40,10 +52,11 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     Unreadable ZIP members and non-file entries in the distribution directory fail as
     guard errors rather than escaping as tracebacks.
 
-  `verify-ledger` proves the ledger equals PyPI. The guard deliberately makes no claim about
-  git history or about releases deleted from PyPI; such a deletion fails `verify-ledger`
-  loudly for a human to resolve. Detection blocks a merge only if the job is a required
-  check, and `main` has no branch protection today.
+  `verify-ledger` proves the ledger equals PyPI. Published releases predate this checkout, so
+  its artifact reader intentionally does not apply `check-dist`'s reviewed-tree byte rule.
+  The guard deliberately makes no claim about git history or about releases deleted from
+  PyPI; such a deletion fails `verify-ledger` loudly for a human to resolve. Detection blocks
+  a merge only if the job is a required check, and `main` has no branch protection today.
 
   **Two violations predate the guard and cannot be undone.** `001_initial.sql` and
   `035_event_chain_head_genesis_sentinel.sql` were rewritten in place in 0.6.0. 0.5.x

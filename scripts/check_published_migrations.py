@@ -12,11 +12,11 @@ migration's checksum, so rewriting a published file makes those stores report
    release, exactly what PyPI serves for ``regista-hraedon`` *now*: per release,
    the sha256 of every file and of every migration it ships (``verify-ledger``;
    network).
-2. The artifacts about to be published (``check-dist``) are well formed, and they
-   ship EXACTLY the expected migration set, byte for byte. Anything not on the
-   allowlist fails, including anything the guard does not recognise. The expected
-   set is every migration of the latest released ledger entry, plus the
-   ``unreleased`` entries declared in the ledger.
+2. The artifacts about to be published (``check-dist``) contain ONLY REVIEWED
+   BYTES from tracked files in the checked-out tree (apart from tightly checked,
+   generated package metadata), and their migration subset equals the ledger.
+   Package code may do anything its reviewed source says when it is run; that is
+   the code-review boundary and is deliberately outside this artifact guard.
 
 It deliberately makes **no claim about git history**, and none about releases
 that have been deleted from PyPI. ``verify-ledger`` fails loudly if a recorded
@@ -25,17 +25,19 @@ judged ledger history (withdrawals, merge parents, renames). Six review rounds
 found a new gap in that judgement every time, so it was dropped rather than
 patched further.
 
-**Scope of the sdist half.** A PEP 517 build runs backend code, so what an
-installer gets from the sdist cannot be proven for every frontend and every
-environment. The claim covers ISOLATED builds by pip and uv, the two frontends
-actually run here. It rests on a build contract:
+**Scope of the sdist half.** A PEP 517 build executes the reviewed project code
+and backend code. That execution is not claimed to be inert. The artifact claim
+covers ISOLATED builds by pip and uv, the two frontends actually run here, and
+rests on a build contract:
 
 * ``build-system.requires`` equals the named, exact
   ``TRUSTED_BUILD_REQUIREMENTS`` closure, and the backend is
   ``hatchling.build`` with no ``backend-path``. Build requirements execute code:
   this frozen closure is TRUSTED, not inert.
-* No hatch build hook or plugin is configured, and there is no ``hatch.toml``
-  or ``hatch_build.py``.
+* ``[tool.hatch]`` equals the single reviewed wheel-package/force-include table;
+  no version source, metadata hook, build hook, environment, or other extension
+  point is accepted. There is no ``hatch.toml`` or ``hatch_build.py``.
+* ``[project]`` has a literal name and version and no ``dynamic`` key.
 * The sdist's ``pyproject.toml`` is byte-identical to the reviewed one.
 
 Builds with ``--no-build-isolation``, other frontends, and other backends are
@@ -51,11 +53,20 @@ sdist in ``DIST_DIR``:
 * A member is a regular file. Every symlink, hard link, directory entry, device
   or FIFO is refused.
 * No two members collide after NFKC + casefold, and no name repeats.
+* Every sdist member is byte-identical to a tracked checkout file with the same
+  relative path, except its single generated ``PKG-INFO``. Every wheel package
+  member is byte-identical to its tracked source (``src/regista/`` or, for the
+  force-included migration files, ``migrations/``). ``check-dist`` therefore
+  requires ``repo_root`` to be the root of a Git checkout. This reviewed-bytes
+  rule is intentionally NOT applied by ``verify-ledger`` to published artifacts
+  that predate the current tree.
 * A wheel contains files only under ``regista/`` and one
   ``<dist>-<version>.dist-info/`` directory matching its filename. The latter
-  contains only the named metadata files and ``licenses/`` subtree; ``WHEEL``
-  declares version 1.0 and a purelib root. In particular, no ``.data/`` install
-  relocation is allowed.
+  contains only the named metadata files and ``licenses/`` subtree. ``METADATA``,
+  ``WHEEL``, and ``RECORD`` are mandatory; names/versions/tags agree with the
+  filename and literal project metadata; only ``py3-none-any`` is accepted;
+  licenses match tracked root files; and ``RECORD`` authenticates every member.
+  In particular, no ``.data/`` install relocation is allowed.
 * Site-startup executable names (``*.pth``, ``sitecustomize.py`` and
   ``usercustomize.py``) are refused anywhere in a wheel or sdist.
 * A migration is a member whose parent is EXACTLY the migrations directory
@@ -96,9 +107,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import email.parser
+import email.policy
 import hashlib
 import io
 import json
+import os
 import re
 import stat
 import struct
@@ -136,6 +150,17 @@ TRUSTED_BUILD_REQUIREMENTS = (
     "trove-classifiers==2026.9.21.13",
 )
 DIST_INFO_FILES = frozenset({"METADATA", "WHEEL", "RECORD", "entry_points.txt"})
+UNIVERSAL_WHEEL_TAG = "py3-none-any"
+REVIEWED_HATCH_CONFIG: Mapping[str, Any] = {
+    "build": {
+        "targets": {
+            "wheel": {
+                "packages": ["src/regista"],
+                "force-include": {"migrations": "regista/migrations"},
+            }
+        }
+    }
+}
 
 FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {
     "001_initial.sql": frozenset(
@@ -222,8 +247,12 @@ def _check_startup_executable(name: str, where: str) -> None:
         raise GuardError(f"{where}: startup-executable member {name!r} is not allowed")
 
 
-def _wheel_dist_info_dir(filename: str, where: str) -> str:
-    """Return the wheel-filename-derived, normalized dist-info directory."""
+def _normalize_distribution(value: str) -> str:
+    return re.sub(r"[-_.]+", "_", value).lower()
+
+
+def _wheel_filename(filename: str, where: str) -> tuple[str, str, str, str]:
+    """Return normalized distribution, version, tag and dist-info directory."""
     name = Path(filename).name
     if not name.endswith(".whl"):
         raise GuardError(f"{where}: wheel filename {name!r} is not canonical")
@@ -247,7 +276,10 @@ def _wheel_dist_info_dir(filename: str, where: str) -> str:
         or any(not tag or re.fullmatch(r"[A-Za-z0-9_.]+", tag) is None for tag in tags)
     ):
         raise GuardError(f"{where}: wheel filename {name!r} is not canonical")
-    return f"{distribution}-{version}.dist-info"
+    tag = "-".join(tags)
+    if tag != UNIVERSAL_WHEEL_TAG:
+        raise GuardError(f"{where}: wheel filename tag must be exactly {UNIVERSAL_WHEEL_TAG}")
+    return distribution, version, tag, f"{distribution}-{version}.dist-info"
 
 
 def _check_wheel_layout(names: list[str], dist_info: str, where: str) -> None:
@@ -264,7 +296,7 @@ def _check_wheel_layout(names: list[str], dist_info: str, where: str) -> None:
 
 
 def _check_wheel_metadata(data: bytes, where: str) -> None:
-    """Require the two install-critical WHEEL headers with exact values."""
+    """Require install-critical WHEEL headers and the one supported tag."""
     try:
         lines = data.decode("ascii").splitlines()
     except UnicodeDecodeError as exc:
@@ -285,6 +317,32 @@ def _check_wheel_metadata(data: bytes, where: str) -> None:
         raise GuardError(f"{where}: WHEEL must contain exactly Wheel-Version: 1.0")
     if headers.get("root-is-purelib") != ["true"]:
         raise GuardError(f"{where}: WHEEL must contain exactly Root-Is-Purelib: true")
+    if headers.get("tag") != [UNIVERSAL_WHEEL_TAG]:
+        raise GuardError(f"{where}: WHEEL Tag lines must be exactly {UNIVERSAL_WHEEL_TAG}")
+
+
+def _metadata_identity(data: bytes, where: str) -> tuple[str, str]:
+    try:
+        metadata = email.parser.BytesParser(policy=email.policy.compat32).parsebytes(data)
+    except Exception as exc:
+        raise GuardError(f"{where}: malformed METADATA ({exc.__class__.__name__})") from exc
+    names = metadata.get_all("Name", [])
+    versions = metadata.get_all("Version", [])
+    if len(names) != 1 or len(versions) != 1 or not names[0] or not versions[0]:
+        raise GuardError(f"{where}: METADATA must contain exactly one Name and Version")
+    return str(names[0]), str(versions[0])
+
+
+def _project_identity(data: Mapping[str, Any], where: str) -> tuple[str, str]:
+    project = data.get("project")
+    if not isinstance(project, dict):
+        raise GuardError(f"{where}: [project] must be a table")
+    if "dynamic" in project:
+        raise GuardError(f"{where}: [project] must not contain dynamic")
+    name, version = project.get("name"), project.get("version")
+    if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+        raise GuardError(f"{where}: [project] name and version must be literal strings")
+    return name, version
 
 
 def _classify(rel: str, migrations_dir: str, where: str, *, sql_elsewhere: bool) -> str | None:
@@ -347,12 +405,73 @@ def _check_zip_container(blob: bytes, infos: list[zipfile.ZipInfo], where: str) 
         raise GuardError(f"{where}: bytes between the last record and the central directory")
 
 
+def _git_tracked_files(repo_root: Path) -> frozenset[str]:
+    """Return tracked paths, refusing anything other than the checkout root."""
+    root = repo_root.resolve()
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root:
+            raise GuardError(f"{repo_root}: repo_root must be the root of a Git checkout")
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise GuardError(
+            f"{repo_root}: cannot inspect Git checkout ({exc.__class__.__name__})"
+        ) from exc
+    if listed.returncode != 0:
+        raise GuardError(f"{repo_root}: git ls-files failed")
+    try:
+        paths = frozenset(p.decode("utf-8") for p in listed.stdout.split(b"\0") if p)
+    except UnicodeDecodeError as exc:
+        raise GuardError(f"{repo_root}: a tracked path is not UTF-8") from exc
+    if not paths:
+        raise GuardError(f"{repo_root}: Git checkout has no tracked files")
+    return paths
+
+
+def _reviewed_bytes(repo_root: Path, tracked: frozenset[str], rel: str, where: str) -> bytes:
+    if rel not in tracked:
+        raise GuardError(f"{where}: source {rel!r} is not tracked by Git")
+    source = repo_root / rel
+    try:
+        source.resolve().relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise GuardError(f"{where}: tracked source {rel!r} escapes the checkout") from exc
+    if source.is_symlink() or not source.is_file():
+        raise GuardError(f"{where}: tracked source {rel!r} is not a regular file")
+    try:
+        return source.read_bytes()
+    except OSError as exc:
+        raise GuardError(f"{where}: cannot read tracked source {rel!r}") from exc
+
+
 def read_wheel(
-    blob: bytes, where: str, *, wheel_filename: str | None = None
+    blob: bytes,
+    where: str,
+    *,
+    wheel_filename: str | None = None,
+    repo_root: Path | None = None,
+    tracked: frozenset[str] | None = None,
+    project_identity: tuple[str, str] | None = None,
 ) -> dict[str, str]:
     """Allowlisted wheel -> {migration filename: sha256}."""
     try:
-        return _read_wheel(blob, where, wheel_filename or where)
+        return _read_wheel(
+            blob,
+            where,
+            wheel_filename or where,
+            repo_root=repo_root,
+            tracked=tracked,
+            project_identity=project_identity,
+        )
     except GuardError:
         raise
     # zipfile exposes several implementation-specific read failures (including
@@ -362,9 +481,21 @@ def read_wheel(
         raise GuardError(f"{where}: unreadable wheel ({exc.__class__.__name__}: {exc})") from exc
 
 
-def _read_wheel(blob: bytes, where: str, wheel_filename: str) -> dict[str, str]:
+def _read_wheel(
+    blob: bytes,
+    where: str,
+    wheel_filename: str,
+    *,
+    repo_root: Path | None,
+    tracked: frozenset[str] | None,
+    project_identity: tuple[str, str] | None,
+) -> dict[str, str]:
     out: dict[str, str] = {}
-    dist_info = _wheel_dist_info_dir(wheel_filename, where)
+    filename_dist, filename_version, _filename_tag, dist_info = _wheel_filename(
+        wheel_filename, where
+    )
+    if (repo_root is None) != (tracked is None):
+        raise GuardError(f"{where}: reviewed-tree arguments are incomplete")
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         infos = zf.infolist()
         _check_zip_container(blob, infos, where)
@@ -388,33 +519,85 @@ def _read_wheel(blob: bytes, where: str, wheel_filename: str) -> dict[str, str]:
             if info.is_dir() or stat.S_IFMT(mode) not in (0, stat.S_IFREG):
                 raise GuardError(f"{where}: {info.filename!r} is not a regular file")
             files[info.filename] = zf.read(info)
-        wheel_metadata = f"{dist_info}/WHEEL"
-        if wheel_metadata not in files:
-            raise GuardError(f"{where}: required WHEEL metadata is missing")
-        _check_wheel_metadata(files[wheel_metadata], where)
+        required_metadata = {
+            name: f"{dist_info}/{name}" for name in ("METADATA", "WHEEL", "RECORD")
+        }
+        missing_metadata = [name for name, path in required_metadata.items() if path not in files]
+        if missing_metadata:
+            raise GuardError(f"{where}: required metadata is missing: {missing_metadata}")
+        _check_wheel_metadata(files[required_metadata["WHEEL"]], where)
+        metadata_name, metadata_version = _metadata_identity(
+            files[required_metadata["METADATA"]], where
+        )
+        if (
+            _normalize_distribution(metadata_name) != _normalize_distribution(filename_dist)
+            or metadata_version != filename_version
+        ):
+            raise GuardError(f"{where}: wheel filename and METADATA Name/Version differ")
+        if project_identity is not None:
+            project_name, project_version = project_identity
+            if (
+                _normalize_distribution(filename_dist) != _normalize_distribution(project_name)
+                or filename_version != project_version
+            ):
+                raise GuardError(f"{where}: wheel filename differs from [project] name/version")
         for name, data in files.items():
             mig = _classify(name, WHEEL_MIGRATIONS, where, sql_elsewhere=False)
             if mig is not None:
                 out[mig] = _sha(data)
-        records = [n for n in files if n == f"{dist_info}/RECORD"]
-        if len(records) != 1:
-            raise GuardError(f"{where}: expected exactly one matching RECORD, found {records}")
-        listed: dict[str, str] = {}
-        for line in files[records[0]].decode().splitlines():
+            if repo_root is not None and tracked is not None and name.startswith("regista/"):
+                package_rel = name[len("regista/") :]
+                source_rel = (
+                    f"migrations/{package_rel[len('migrations/') :]}"
+                    if package_rel.startswith("migrations/")
+                    else f"src/regista/{package_rel}"
+                )
+                if data != _reviewed_bytes(repo_root, tracked, source_rel, where):
+                    raise GuardError(f"{where}: {name!r} differs from tracked {source_rel!r}")
+            license_prefix = f"{dist_info}/licenses/"
+            if repo_root is not None and tracked is not None and name.startswith(license_prefix):
+                license_name = name[len(license_prefix) :]
+                if "/" in license_name or not license_name:
+                    raise GuardError(f"{where}: license path {name!r} is not a root filename")
+                if data != _reviewed_bytes(repo_root, tracked, license_name, where):
+                    raise GuardError(
+                        f"{where}: {name!r} differs from tracked {license_name!r}"
+                    )
+        record_path = required_metadata["RECORD"]
+        listed: dict[str, tuple[str, str]] = {}
+        try:
+            record_lines = files[record_path].decode("ascii").splitlines()
+        except UnicodeDecodeError as exc:
+            raise GuardError(f"{where}: RECORD is not ASCII") from exc
+        for line in record_lines:
             parts = line.rsplit(",", 2)
-            if len(parts) == 3 and parts[1].startswith("sha256="):
-                listed[parts[0]] = parts[1][len("sha256=") :]
-        for mig, digest in out.items():
-            expected = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
-            if listed.get(WHEEL_MIGRATIONS + mig) != expected:
-                raise GuardError(f"{where}: RECORD does not vouch for {mig} with its bytes")
+            if len(parts) != 3 or not parts[0] or parts[0] in listed:
+                raise GuardError(f"{where}: RECORD contains a malformed or duplicate row")
+            listed[parts[0]] = (parts[1], parts[2])
+        if set(listed) != set(files):
+            raise GuardError(f"{where}: RECORD must list every wheel member exactly once")
+        for name, data in files.items():
+            digest, size = listed[name]
+            if name == record_path:
+                if digest or size:
+                    raise GuardError(f"{where}: RECORD's self-row must have empty hash and size")
+                continue
+            expected = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            if digest != f"sha256={expected}" or size != str(len(data)):
+                raise GuardError(f"{where}: RECORD does not vouch for {name!r} with its bytes")
     return out
 
 
-def read_sdist(blob: bytes, where: str) -> dict[str, str]:
+def read_sdist(
+    blob: bytes,
+    where: str,
+    *,
+    repo_root: Path | None = None,
+    tracked: frozenset[str] | None = None,
+) -> dict[str, str]:
     """Allowlisted sdist -> {migration filename: sha256}."""
     try:
-        return _read_sdist(blob, where)
+        return _read_sdist(blob, where, repo_root=repo_root, tracked=tracked)
     except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
         raise GuardError(f"{where}: unreadable sdist ({exc.__class__.__name__}: {exc})") from exc
 
@@ -429,8 +612,16 @@ def sdist_file(blob: bytes, rel: str) -> bytes | None:
     return None
 
 
-def _read_sdist(blob: bytes, where: str) -> dict[str, str]:
+def _read_sdist(
+    blob: bytes,
+    where: str,
+    *,
+    repo_root: Path | None,
+    tracked: frozenset[str] | None,
+) -> dict[str, str]:
     out: dict[str, str] = {}
+    if (repo_root is None) != (tracked is None):
+        raise GuardError(f"{where}: reviewed-tree arguments are incomplete")
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
         members = tf.getmembers()
         if tf.pax_headers or any(m.pax_headers for m in members):
@@ -439,6 +630,10 @@ def _read_sdist(blob: bytes, where: str) -> dict[str, str]:
         if len(roots) != 1 or any("/" not in m.name for m in members):
             raise GuardError(f"{where}: expected one top-level directory, found {sorted(roots)}")
         root = next(iter(roots))
+        if repo_root is not None:
+            pkg_info = [m.name for m in members if m.name == f"{root}/PKG-INFO"]
+            if len(pkg_info) != 1:
+                raise GuardError(f"{where}: PKG-INFO must exist exactly once")
         _check_names(
             [m.name for m in members],
             where,
@@ -449,11 +644,15 @@ def _read_sdist(blob: bytes, where: str) -> dict[str, str]:
                 raise GuardError(f"{where}: {m.name!r} is not a regular file (type {m.type!r})")
             rel = m.name.split("/", 1)[1]
             _check_startup_executable(rel, where)
+            fh = tf.extractfile(m)
+            assert fh is not None
+            data = fh.read()
+            if repo_root is not None and tracked is not None and rel != "PKG-INFO":
+                if data != _reviewed_bytes(repo_root, tracked, rel, where):
+                    raise GuardError(f"{where}: {rel!r} differs from its tracked source")
             mig = _classify(rel, SDIST_MIGRATIONS, where, sql_elsewhere=True)
             if mig is not None:
-                fh = tf.extractfile(m)
-                assert fh is not None
-                out[mig] = _sha(fh.read())
+                out[mig] = _sha(data)
     return out
 
 
@@ -586,7 +785,12 @@ REBUILDERS: list[tuple[str, list[str]]] = [
 
 def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
     cmd = [a.format(out=out, sdist=sdist) for a in argv]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Keep uv's cache out of the reviewed checkout and artifact directory. A
+    # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate
+    # the very input this guard is authenticating.
+    env = dict(os.environ)
+    env["UV_CACHE_DIR"] = str(out / ".uv-cache")
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         raise GuardError(f"{sdist.name}: {label} could not build a wheel from it")
     wheels = sorted(out.glob("*.whl"))
@@ -595,20 +799,17 @@ def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
     return wheels[0]
 
 
-def _keys(node: Any, prefix: str = "") -> list[str]:
-    if isinstance(node, dict):
-        return [k for key, v in node.items() for k in [prefix + key, *_keys(v, prefix + key + ".")]]
-    return []
-
-
-def check_build_contract(pyproject: bytes, where: str) -> None:
+def check_build_contract(pyproject: bytes, where: str) -> tuple[str, str]:
     """The build uses one named, frozen, trusted executable closure.
 
     Build requirements are not inert. Their exact string set must equal
     ``TRUSTED_BUILD_REQUIREMENTS``; the backend is hatchling with no
-    ``backend-path``, and no hatch build hook or plugin is configured.
+    ``backend-path``; and Hatch has exactly the reviewed static build table.
     """
-    data = tomllib.loads(pyproject.decode())
+    try:
+        data = tomllib.loads(pyproject.decode())
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise GuardError(f"{where}: pyproject.toml is not valid UTF-8 TOML") from exc
     bs = data.get("build-system", {})
     if bs.get("build-backend") != "hatchling.build" or "backend-path" in bs:
         raise GuardError(f"{where}: build backend must be hatchling.build, no backend-path")
@@ -622,9 +823,11 @@ def check_build_contract(pyproject: bytes, where: str) -> None:
         raise GuardError(
             f"{where}: build-system.requires must equal the trusted frozen requirement set"
         )
-    hooks = [k for k in _keys(data.get("tool", {}).get("hatch", {})) if "hook" in k.lower()]
-    if hooks:
-        raise GuardError(f"{where}: hatch build hooks/plugins are not allowed: {hooks}")
+    tool = data.get("tool", {})
+    hatch = tool.get("hatch") if isinstance(tool, dict) else None
+    if hatch != REVIEWED_HATCH_CONFIG:
+        raise GuardError(f"{where}: [tool.hatch] must equal the reviewed static build table")
+    return _project_identity(data, where)
 
 
 def check_dist(
@@ -636,8 +839,9 @@ def check_dist(
     rebuild_sdists: bool = True,
 ) -> list[str]:
     problems = check_ledger(ledger, frozen)
-    pyproject = (repo_root / "pyproject.toml").read_bytes()
-    check_build_contract(pyproject, "pyproject.toml")
+    tracked = _git_tracked_files(repo_root)
+    pyproject = _reviewed_bytes(repo_root, tracked, "pyproject.toml", "pyproject.toml")
+    project_identity = check_build_contract(pyproject, "pyproject.toml")
     for config in ("hatch.toml", "hatch_build.py"):
         if (repo_root / config).exists():
             raise GuardError(f"{config} must not exist: it can change what hatch builds")
@@ -670,10 +874,24 @@ def check_dist(
             f"wheels={len(wheels)} sdists={len(sdists)} other={others}"
         )
     for whl in wheels:
-        problems += _compare(read_wheel(whl.read_bytes(), whl.name), expected, whl.name)
+        problems += _compare(
+            read_wheel(
+                whl.read_bytes(),
+                whl.name,
+                repo_root=repo_root,
+                tracked=tracked,
+                project_identity=project_identity,
+            ),
+            expected,
+            whl.name,
+        )
     for sdist in sdists:
         blob = sdist.read_bytes()
-        problems += _compare(read_sdist(blob, sdist.name), expected, sdist.name)
+        problems += _compare(
+            read_sdist(blob, sdist.name, repo_root=repo_root, tracked=tracked),
+            expected,
+            sdist.name,
+        )
         # The installer's build of this sdist runs ITS pyproject.toml. Require it
         # to be the reviewed one, byte for byte, with no extra hatch config file.
         if sdist_file(blob, "pyproject.toml") != pyproject:
@@ -687,7 +905,16 @@ def check_dist(
                     rebuilt = _rebuild(label, argv, sdist, Path(tmp))
                     where = f"wheel {label} built from {sdist.name}"
                     problems += _compare(
-                        read_wheel(rebuilt.read_bytes(), where, wheel_filename=rebuilt.name),
+                        # The rebuilt wheel is held to the same checkout bytes and
+                        # identity as the direct wheel; its filename is evidence.
+                        read_wheel(
+                            rebuilt.read_bytes(),
+                            where,
+                            wheel_filename=rebuilt.name,
+                            repo_root=repo_root,
+                            tracked=tracked,
+                            project_identity=project_identity,
+                        ),
                         expected,
                         where,
                     )

@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import posixpath
 import re
 import shutil
@@ -91,17 +92,43 @@ def test_frozen_violations_are_exactly_the_two_measured_in_0_6_0() -> None:
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build real artifacts")
 def test_a_real_build_passes_check_dist_including_the_sdist_rebuild(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    cache = tmp_path / "uv-cache"
     subprocess.run(
-        ["uv", "build", "-q", "--out-dir", str(tmp_path), str(REPO_ROOT)], check=True
+        ["uv", "build", "-q", "--out-dir", str(dist), str(REPO_ROOT)],
+        check=True,
+        env={**os.environ, "UV_CACHE_DIR": str(cache)},
     )
-    assert guard.check_dist(guard.load_ledger(), tmp_path) == []
+    assert guard.check_dist(guard.load_ledger(), dist) == []
 
 
 # --------------------------------------------------------------------------
 # Fixtures
 
 BASE = {"001_a.sql": A, "002_b.sql": B}
-PYPROJECT = (REPO_ROOT / "pyproject.toml").read_bytes()
+REPO_PYPROJECT = (REPO_ROOT / "pyproject.toml").read_bytes()
+PYPROJECT = b"""[build-system]
+requires = [
+    "hatchling==1.32.4",
+    "packaging==26.3",
+    "pathspec==1.1.1",
+    "pluggy==1.6.0",
+    "tomlkit==0.15.1",
+    "trove-classifiers==2026.9.21.13",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "r"
+version = "0.0.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/regista"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "regista/migrations"
+"""
+METADATA = b"Metadata-Version: 2.4\nName: r\nVersion: 0.0.0\n"
 RELEASES = {"0.1.0": {"001_a.sql": A}, "0.2.0": BASE}
 
 
@@ -125,8 +152,31 @@ def _record_digest(data: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
 
 
+def _finish_wheel(
+    zf: zipfile.ZipFile,
+    files: dict[str, bytes],
+    *,
+    record: bool = True,
+    wheel_metadata: bytes | None = WHEEL_METADATA,
+    metadata: bytes | None = METADATA,
+) -> None:
+    generated: dict[str, bytes] = {}
+    if metadata is not None:
+        generated["r-0.0.0.dist-info/METADATA"] = metadata
+    if wheel_metadata is not None:
+        generated["r-0.0.0.dist-info/WHEEL"] = wheel_metadata
+    for name, data in generated.items():
+        zf.writestr(name, data)
+    if record:
+        all_hashed = {**files, **generated}
+        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in all_hashed.items()]
+        lines.append("r-0.0.0.dist-info/RECORD,,")
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+
+
 def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
                  wheel_metadata: bytes | None = WHEEL_METADATA,
+                 metadata: bytes | None = METADATA,
                  extra: list[tuple[zipfile.ZipInfo, bytes]] = ()) -> bytes:  # type: ignore[assignment]
     buf = io.BytesIO()
     with warnings.catch_warnings():
@@ -141,19 +191,23 @@ def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
                 zf.writestr(info, data)
             for info, data in extra:
                 zf.writestr(info, data)
-            zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
-            if wheel_metadata is not None:
-                zf.writestr("r-0.0.0.dist-info/WHEEL", wheel_metadata)
-            if record:
-                lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
-                zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+            _finish_wheel(
+                zf, files, record=record, wheel_metadata=wheel_metadata, metadata=metadata
+            )
     return buf.getvalue()
 
 
-def _sdist_bytes(files: dict[str, bytes], extra: list[tarfile.TarInfo] = ()) -> bytes:  # type: ignore[assignment]
+def _sdist_bytes(
+    files: dict[str, bytes],
+    extra: list[tarfile.TarInfo] = (),  # type: ignore[assignment]
+    *,
+    pkg_info: bytes | None = b"Name: r\n",
+) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        base = {"PKG-INFO": b"Name: r\n", "pyproject.toml": PYPROJECT}
+        base = {"pyproject.toml": PYPROJECT}
+        if pkg_info is not None:
+            base["PKG-INFO"] = pkg_info
         for name, data in {**base, **files}.items():
             info = tarfile.TarInfo(f"r-0.0.0/{name}")
             info.size = len(data)
@@ -172,6 +226,7 @@ def _sdist_files(migs: dict[str, bytes]) -> dict[str, bytes]:
 
 
 def _dist(tmp_path: Path, wheel: bytes | None = None, sdist: bytes | None = None) -> Path:
+    _test_repo(tmp_path)
     d = tmp_path / "dist"
     d.mkdir(parents=True, exist_ok=True)
     (d / "r-0.0.0-py3-none-any.whl").write_bytes(
@@ -183,10 +238,28 @@ def _dist(tmp_path: Path, wheel: bytes | None = None, sdist: bytes | None = None
     return d
 
 
+def _test_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    if (repo / ".git").exists():
+        return repo
+    (repo / "migrations").mkdir(parents=True)
+    (repo / "src" / "regista").mkdir(parents=True)
+    (repo / "pyproject.toml").write_bytes(PYPROJECT)
+    (repo / "src" / "regista" / "__init__.py").write_bytes(b"")
+    for name, data in {**BASE, "003_c.sql": C}.items():
+        (repo / "migrations" / name).write_bytes(data)
+    (repo / "LICENSE").write_bytes(b"license\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    return repo
+
+
 def _verdict(d: Path, ledger: dict[str, Any] | None = None) -> str:
     """'pass', or the first problem / error text."""
     try:
-        problems = guard.check_dist(ledger or _ledger(), d, {}, rebuild_sdists=False)
+        problems = guard.check_dist(
+            ledger or _ledger(), d, {}, repo_root=d.parent / "repo", rebuild_sdists=False
+        )
     except guard.GuardError as exc:
         return f"error: {exc}"
     return problems[0] if problems else "pass"
@@ -327,12 +400,23 @@ def test_a_duplicate_zip_member_fails(tmp_path: Path) -> None:
 def test_a_record_naming_other_bytes_fails(tmp_path: Path) -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        for n, d in _wheel_files(BASE).items():
+        files = _wheel_files(BASE)
+        for n, d in files.items():
             zf.writestr(n, d)
-        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
-        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
-        zf.writestr("r-0.0.0.dist-info/RECORD",
-                    "".join(f"{n},sha256={_record_digest(C)},1\n" for n in _wheel_files(BASE)))
+        generated = {
+            "r-0.0.0.dist-info/METADATA": METADATA,
+            "r-0.0.0.dist-info/WHEEL": WHEEL_METADATA,
+        }
+        for name, data in generated.items():
+            zf.writestr(name, data)
+        all_hashed = {**files, **generated}
+        lines = [
+            f"{name},sha256={_record_digest(C if name == 'regista/__init__.py' else data)},"
+            f"{len(data)}"
+            for name, data in all_hashed.items()
+        ]
+        lines.append("r-0.0.0.dist-info/RECORD,,")
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
     assert "RECORD does not vouch" in _verdict(_dist(tmp_path, buf.getvalue()))
 
 
@@ -524,23 +608,19 @@ RELOCATED_FUZZ_MEMBER = st.builds(
     st.sampled_from(["purelib", "platlib"]),
     st.sampled_from(["000_x.sql", "000_x.sql/note.txt", "probe.pth"]),
 )
-FUZZ_CASE = st.one_of(
-    st.lists(NASTY, min_size=1, max_size=8).map(lambda parts: ("".join(parts), False)),
-    ACCEPTED_FUZZ_MEMBER.map(lambda name: (name, True)),
-    CANONICAL_FUZZ_MIGRATION.map(lambda name: (name, True)),
-    RELOCATED_FUZZ_MEMBER.map(lambda name: (name, False)),
+ADVERSARIAL_FUZZ_MEMBER = st.one_of(
+    st.lists(NASTY, min_size=1, max_size=8).map("".join),
+    RELOCATED_FUZZ_MEMBER,
 )
 
 
 @settings(max_examples=2000, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(case=FUZZ_CASE)
-def test_fuzz_no_accepted_name_reaches_migrations_or_is_sql(case: tuple[str, bool]) -> None:
-    name, must_accept = case
+@given(name=ADVERSARIAL_FUZZ_MEMBER)
+def test_fuzz_no_accepted_adversarial_name_reaches_migrations_or_is_sql(name: str) -> None:
     blob = _wheel_with(name)
     try:
         migs = guard.read_wheel(blob, "fuzz", wheel_filename="r-0.0.0-py3-none-any.whl")
     except (guard.GuardError, ValueError):
-        assert not must_accept, name
         return
     view = _installer_view(name)
     if name.startswith("regista/migrations/") and name[len("regista/migrations/"):] in migs:
@@ -611,10 +691,7 @@ def _descriptor_wheel() -> bytes:
         files = _wheel_files(BASE)
         for name, data in files.items():
             zf.writestr(name, data)
-        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
-        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
-        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
-        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+        _finish_wheel(zf, files)
     return bytes(sink.buf)
 
 
@@ -631,10 +708,7 @@ def _unicode_path_wheel() -> bytes:
                 body = b"\x01" + struct_pack_crc(zlib.crc32(name.encode())) + target
                 info.extra = b"\x75\x70" + len(body).to_bytes(2, "little") + body
             zf.writestr(info, data)
-        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
-        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
-        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
-        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+        _finish_wheel(zf, files)
     return buf.getvalue()
 
 
@@ -649,10 +723,7 @@ def _zip64_wheel() -> bytes:
         for name, data in files.items():
             with zf.open(name, "w", force_zip64=True) as fh:
                 fh.write(data)
-        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
-        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
-        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
-        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+        _finish_wheel(zf, files)
     return buf.getvalue()
 
 
@@ -726,7 +797,7 @@ def test_a_symlinked_gitignore_is_not_exempt(tmp_path: Path) -> None:
          b'backend-path = ["."]\n', "no backend-path"),
         (b'[build-system]\nrequires = ["setuptools==1"]\nbuild-backend = "hatchling.build"\n',
          "trusted frozen requirement set"),
-        (PYPROJECT + b"\n[tool.hatch.metadata.hooks.custom]\n", "hooks"),
+        (PYPROJECT + b"\n[tool.hatch.metadata.hooks.custom]\n", "reviewed static build table"),
     ],
 )
 def test_the_build_contract_refuses_unpinned_or_executable_builds(
@@ -737,7 +808,7 @@ def test_the_build_contract_refuses_unpinned_or_executable_builds(
 
 
 def test_the_repository_pyproject_honours_the_build_contract() -> None:
-    guard.check_build_contract(PYPROJECT, "pyproject.toml")
+    guard.check_build_contract(REPO_PYPROJECT, "pyproject.toml")
 
 
 @pytest.mark.parametrize(
@@ -761,8 +832,7 @@ def test_build_contract_requires_exact_trusted_set(pyproject: bytes) -> None:
 
 
 def test_check_dist_enforces_the_trusted_build_requirement_set(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _test_repo(tmp_path)
     (repo / "pyproject.toml").write_bytes(
         PYPROJECT.replace(
             b'requires = [\n', b'requires = [\n    "neutral-build-helper==1.0.2",\n'
@@ -833,7 +903,7 @@ def test_wheel_layout_allows_only_named_metadata_and_licenses() -> None:
 
 
 def test_wheel_metadata_is_mandatory_and_exact() -> None:
-    with pytest.raises(guard.GuardError, match="required WHEEL metadata is missing"):
+    with pytest.raises(guard.GuardError, match=r"required metadata is missing: \['WHEEL'\]"):
         guard.read_wheel(
             _wheel_bytes(_wheel_files(BASE), wheel_metadata=None),
             "r-0.0.0-py3-none-any.whl",
@@ -902,11 +972,16 @@ def test_a_rebuild_that_diverges_under_either_frontend_fails(
 
     monkeypatch.setattr(guard, "_rebuild", fake)
     d = _dist(tmp_path)
-    assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) != []
+    with pytest.raises(guard.GuardError, match="not tracked by Git"):
+        guard.check_dist(
+            _ledger(), d, {}, repo_root=tmp_path / "repo", rebuild_sdists=True
+        )
     monkeypatch.setattr(guard, "_rebuild", lambda label, argv, sdist, out: (
         out / "r-0.0.0-py3-none-any.whl").write_bytes(good)
         and out / "r-0.0.0-py3-none-any.whl")
-    assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) == []
+    assert guard.check_dist(
+        _ledger(), d, {}, repo_root=tmp_path / "repo", rebuild_sdists=True
+    ) == []
 
 
 def test_both_frontends_are_configured() -> None:
@@ -919,14 +994,23 @@ BENIGN = ACCEPTED_FUZZ_MEMBER
 @settings(max_examples=300, deadline=None)
 @given(name=BENIGN)
 def test_fuzz_benign_names_are_accepted(name: str) -> None:
-    """Positive half of the property, so the negative fuzz cannot pass by refusing
-    everything (DB/DS round-1 notes)."""
+    """Separate positive property: the adversarial property is not asked to
+    prove that its generated names reach an acceptance branch."""
     assume(name.split("/")[1].split(".")[0] not in guard.WINDOWS_DEVICES)
     assume(all(p.split(".")[0] not in guard.WINDOWS_DEVICES for p in name.split("/")))
     assume(not name.startswith("regista/migrations"))
     assert guard.read_wheel(
         _wheel_with(name), "fuzz", wheel_filename="r-0.0.0-py3-none-any.whl"
     ) == {n: _sha(b) for n, b in BASE.items()}
+
+
+@settings(max_examples=100, deadline=None)
+@given(name=CANONICAL_FUZZ_MIGRATION)
+def test_fuzz_canonical_migrations_are_accepted(name: str) -> None:
+    migs = guard.read_wheel(
+        _wheel_with(name), "fuzz migration", wheel_filename="r-0.0.0-py3-none-any.whl"
+    )
+    assert name.removeprefix("regista/migrations/") in migs
 
 
 def _overlapping_wheel() -> bytes:
@@ -936,6 +1020,15 @@ def _overlapping_wheel() -> bytes:
     first = blob.index(b"PK\x01\x02")
     second = blob.index(b"PK\x01\x02", first + 4)
     blob[second + 42 : second + 46] = (0).to_bytes(4, "little")
+    return bytes(blob)
+
+
+def _wheel_with_gap_before_central_directory() -> bytes:
+    """Insert one byte after the last local record and retarget the EOCD."""
+    blob = bytearray(_good_wheel())
+    old_cd = struct.unpack_from("<I", blob, len(blob) - 22 + 16)[0]
+    blob[old_cd:old_cd] = b"x"
+    struct.pack_into("<I", blob, len(blob) - 22 + 16, old_cd + 1)
     return bytes(blob)
 
 
@@ -951,6 +1044,7 @@ def _overlapping_wheel() -> bytes:
         (lambda: _good_wheel()[:-2] + b"\x03\x00abc", "no end-of-central-directory record"),
         (lambda: _good_wheel()[:14] + b"\xff\xff\xff\xff" + _good_wheel()[18:],
          "local header disagrees"),
+        (_wheel_with_gap_before_central_directory, "bytes between the last record"),
     ],
 )
 def test_each_zip_container_rule_names_its_own_refusal(blob_fn: Any, message: str) -> None:
@@ -959,4 +1053,236 @@ def test_each_zip_container_rule_names_its_own_refusal(blob_fn: Any, message: st
     with pytest.raises(guard.GuardError, match=re.escape(message)):
         guard.read_wheel(
             blob_fn(), "w", wheel_filename="r-0.0.0-py3-none-any.whl"
+        )
+
+
+# --------------------------------------------------------------------------
+# New-design round 3: reviewed bytes, complete metadata, and static builds
+
+
+def _wheel_with_record_omitting(
+    omitted: str, *, self_row: str = "r-0.0.0.dist-info/RECORD,,"
+) -> bytes:
+    files = _wheel_files(BASE)
+    generated = {
+        "r-0.0.0.dist-info/METADATA": METADATA,
+        "r-0.0.0.dist-info/WHEEL": WHEEL_METADATA,
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in {**files, **generated}.items():
+            zf.writestr(name, data)
+        rows = [
+            f"{name},sha256={_record_digest(data)},{len(data)}"
+            for name, data in {**files, **generated}.items()
+            if name != omitted
+        ]
+        rows.append(self_row)
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(rows) + "\n")
+    return buf.getvalue()
+
+
+def _wheel_with_identity(distribution: str, version: str) -> bytes:
+    files = _wheel_files(BASE)
+    prefix = f"{distribution}-{version}.dist-info"
+    metadata = f"Metadata-Version: 2.4\nName: {distribution}\nVersion: {version}\n".encode()
+    generated = {f"{prefix}/METADATA": metadata, f"{prefix}/WHEEL": WHEEL_METADATA}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in {**files, **generated}.items():
+            zf.writestr(name, data)
+        rows = [
+            f"{name},sha256={_record_digest(data)},{len(data)}"
+            for name, data in {**files, **generated}.items()
+        ]
+        rows.append(f"{prefix}/RECORD,,")
+        zf.writestr(f"{prefix}/RECORD", "\n".join(rows) + "\n")
+    return buf.getvalue()
+
+
+def test_round_n3_edited_package_bytes_fail(tmp_path: Path) -> None:
+    wheel = _wheel_bytes({**_wheel_files(BASE), "regista/__init__.py": b"edited\n"})
+    assert "differs from tracked" in _verdict(_dist(tmp_path / "wheel", wheel=wheel))
+
+    sdist = _sdist_bytes({**_sdist_files(BASE), "src/regista/__init__.py": b"edited\n"})
+    assert "differs from its tracked source" in _verdict(
+        _dist(tmp_path / "sdist", sdist=sdist)
+    )
+
+
+def test_round_n3_untracked_artifact_members_fail(tmp_path: Path) -> None:
+    wheel_dist = _dist(tmp_path / "wheel", wheel=_wheel_with("regista/untracked.py"))
+    wheel_source = tmp_path / "wheel" / "repo" / "src" / "regista" / "untracked.py"
+    wheel_source.write_bytes(C)  # matching but deliberately not `git add`ed
+    assert "not tracked by Git" in _verdict(
+        wheel_dist
+    )
+    sdist_dist = _dist(tmp_path / "sdist", sdist=_sdist_with("untracked.txt"))
+    (tmp_path / "sdist" / "repo" / "untracked.txt").write_bytes(C)
+    assert "not tracked by Git" in _verdict(
+        sdist_dist
+    )
+
+
+def test_check_dist_requires_the_root_of_a_git_checkout(tmp_path: Path) -> None:
+    repo = _test_repo(tmp_path)
+    nested = repo / "src"
+    with pytest.raises(guard.GuardError, match="root of a Git checkout"):
+        guard._git_tracked_files(nested)
+
+
+def test_a_tracked_path_reached_through_a_parent_symlink_is_refused(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    repo = tmp_path / "repo"
+    package = repo / "src" / "regista"
+    (package / "__init__.py").unlink()
+    package.rmdir()
+    outside = tmp_path / "outside-package"
+    outside.mkdir()
+    (outside / "__init__.py").write_bytes(b"")
+    package.symlink_to(outside, target_is_directory=True)
+    assert "escapes the checkout" in _verdict(d)
+
+
+def test_sdist_pkg_info_exists_exactly_once_at_the_root(tmp_path: Path) -> None:
+    missing = _sdist_bytes(_sdist_files(BASE), pkg_info=None)
+    assert "PKG-INFO must exist exactly once" in _verdict(_dist(tmp_path, sdist=missing))
+
+
+def test_wheel_metadata_and_record_are_complete() -> None:
+    with pytest.raises(guard.GuardError, match="required metadata is missing"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), metadata=None),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    with pytest.raises(guard.GuardError, match="list every wheel member"):
+        guard.read_wheel(
+            _wheel_with_record_omitting("regista/__init__.py"),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    with pytest.raises(guard.GuardError, match="exactly one Name and Version"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), metadata=b"Name: r\n"),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    with pytest.raises(guard.GuardError, match="self-row must have empty"):
+        guard.read_wheel(
+            _wheel_with_record_omitting(
+                "not-present", self_row="r-0.0.0.dist-info/RECORD,sha256=eA,1"
+            ),
+            "r-0.0.0-py3-none-any.whl",
+        )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["r-0.0.0-py2-none-any.whl", "r-0.0.0-cp314-cp314-linux_x86_64.whl"],
+)
+def test_only_the_universal_wheel_filename_tag_is_allowed(filename: str) -> None:
+    with pytest.raises(guard.GuardError, match="filename tag must be exactly py3-none-any"):
+        guard.read_wheel(_good_wheel(), filename)
+
+
+def test_wheel_tag_and_identity_metadata_must_match() -> None:
+    wrong_tag = WHEEL_METADATA.replace(b"Tag: py3-none-any", b"Tag: py2-none-any")
+    with pytest.raises(guard.GuardError, match="Tag lines must be exactly py3-none-any"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), wheel_metadata=wrong_tag),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    for metadata in (
+        METADATA.replace(b"Name: r", b"Name: other"),
+        METADATA.replace(b"Version: 0.0.0", b"Version: 9.9.9"),
+    ):
+        with pytest.raises(guard.GuardError, match="filename and METADATA"):
+            guard.read_wheel(
+                _wheel_bytes(_wheel_files(BASE), metadata=metadata),
+                "r-0.0.0-py3-none-any.whl",
+            )
+
+
+@pytest.mark.parametrize(
+    ("distribution", "version"),
+    [("other", "0.0.0"), ("r", "9.9.9")],
+    ids=["distribution", "version"],
+)
+def test_wheel_filename_identity_must_match_literal_project_metadata(
+    distribution: str, version: str
+) -> None:
+    with pytest.raises(guard.GuardError, match=r"differs from \[project\]"):
+        guard.read_wheel(
+            _wheel_with_identity(distribution, version),
+            f"{distribution}-{version}-py3-none-any.whl",
+            project_identity=("r", "0.0.0"),
+        )
+
+
+def test_wheel_license_bytes_are_reviewed(tmp_path: Path) -> None:
+    good = _wheel_with("r-0.0.0.dist-info/licenses/LICENSE", b"license\n")
+    assert _verdict(_dist(tmp_path / "good", wheel=good)) == "pass"
+    bad = _wheel_with("r-0.0.0.dist-info/licenses/LICENSE", b"substituted\n")
+    assert "differs from tracked 'LICENSE'" in _verdict(
+        _dist(tmp_path / "bad", wheel=bad)
+    )
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        b'\n[tool.hatch.version]\nsource = "code"\npath = "src/regista/__init__.py"\n',
+        b"\n[tool.hatch.envs.default]\ndependencies = []\n",
+        b"\n[tool.hatch.build.hooks.custom]\n",
+    ],
+    ids=["version-source-code", "environment", "build-hook"],
+)
+def test_tool_hatch_must_equal_the_single_reviewed_table(addition: bytes) -> None:
+    with pytest.raises(guard.GuardError, match="reviewed static build table"):
+        guard.check_build_contract(PYPROJECT + addition, "pyproject.toml")
+
+
+def test_project_version_must_be_literal_and_not_dynamic() -> None:
+    dynamic = PYPROJECT.replace(
+        b'[project]\nname = "r"\nversion = "0.0.0"',
+        b'[project]\nname = "r"\nversion = "0.0.0"\ndynamic = ["version"]',
+    )
+    with pytest.raises(guard.GuardError, match="must not contain dynamic"):
+        guard.check_build_contract(dynamic, "pyproject.toml")
+    without_version = PYPROJECT.replace(b'version = "0.0.0"\n', b"")
+    with pytest.raises(guard.GuardError, match="literal strings"):
+        guard.check_build_contract(without_version, "pyproject.toml")
+
+
+def test_repository_hatch_config_files_are_independently_refused(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    (tmp_path / "repo" / "hatch.toml").write_text("[build]\n")
+    with pytest.raises(guard.GuardError, match=r"hatch\.toml must not exist"):
+        guard.check_dist(
+            _ledger(), d, {}, repo_root=tmp_path / "repo", rebuild_sdists=False
+        )
+
+
+def test_gitignore_exemption_requires_the_exact_one_byte_content(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    (d / ".gitignore").write_bytes(b"**\n")
+    assert ".gitignore" in _verdict(d)
+
+
+def test_folded_migration_alias_rule_is_independently_pinned() -> None:
+    with pytest.raises(guard.GuardError, match="not a canonical migration"):
+        guard._classify(
+            "MIGRATIONS/001_a.sql", "migrations/", "folded alias", sql_elsewhere=True
+        )
+
+
+def test_rebuilt_wheel_filename_is_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
+        path = out / "r-0.0.0-py2-none-any.whl"
+        path.write_bytes(_good_wheel())
+        return path
+
+    monkeypatch.setattr(guard, "_rebuild", fake)
+    d = _dist(tmp_path)
+    with pytest.raises(guard.GuardError, match="filename tag must be exactly py3-none-any"):
+        guard.check_dist(
+            _ledger(), d, {}, repo_root=tmp_path / "repo", rebuild_sdists=True
         )
