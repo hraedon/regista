@@ -1,5 +1,17 @@
 [build-system]
-requires = ["hatchling"]
+# Exactly pinned, including hatchling's whole dependency closure: an installer
+# building the sdist resolves these into its isolated build environment, and the
+# published-migration guard (#65) requires the pin so pip and uv run the same
+# backend code. Update all of them together (`uv pip install hatchling==X` in a
+# scratch venv, then `uv pip freeze`).
+requires = [
+    "hatchling==1.32.4",
+    "packaging==26.3",
+    "pathspec==1.1.1",
+    "pluggy==1.6.0",
+    "tomlkit==0.15.1",
+    "trove-classifiers==2026.9.21.13",
+]
 build-backend = "hatchling.build"
 
 [project]

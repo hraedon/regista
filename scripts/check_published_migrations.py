@@ -23,7 +23,22 @@ that have been deleted from PyPI. ``verify-ledger`` fails loudly if a recorded
 release is no longer on PyPI, and a human decides what to do. Earlier versions
 judged ledger history (withdrawals, merge parents, renames). Six review rounds
 found a new gap in that judgement every time, so it was dropped rather than
-patched further. The claim is now small enough to check exhaustively.
+patched further.
+
+**Scope of the sdist half.** A PEP 517 build runs backend code, so what an
+installer gets from the sdist cannot be proven for every frontend and every
+environment. The claim covers ISOLATED builds by pip and uv, the two frontends
+actually run here. It rests on a build contract:
+
+* ``build-system.requires`` pins hatchling and its whole dependency closure to
+  exact versions, and the backend is ``hatchling.build`` with no
+  ``backend-path``.
+* No hatch build hook or plugin is configured, and there is no ``hatch.toml``
+  or ``hatch_build.py``.
+* The sdist's ``pyproject.toml`` is byte-identical to the reviewed one.
+
+Builds with ``--no-build-isolation``, other frontends, and other backends are
+outside the claim.
 
 **The allowlist (``check-dist``)**, applied to every member of every wheel and
 sdist in ``DIST_DIR``:
@@ -44,10 +59,20 @@ sdist in ``DIST_DIR``:
 * The wheel's migrations must equal the expected set exactly, with matching
   bytes: no extras and no missing files. Each one must be vouched for by the
   wheel's single ``RECORD`` with the same sha256.
+* A wheel is one canonical ZIP container:
+  - local records start at offset 0 and are contiguous;
+  - each local header agrees with its central-directory entry;
+  - one end-of-central-directory record sits at the very end, with no comment;
+  - there are no data descriptors and no extra fields (so no ZIP64 and no
+    Unicode Path names).
+* An sdist has one top-level directory and no PAX headers.
+* No regular member may sit where a directory must be, for example a file named
+  exactly ``regista/migrations``. No segment may end in ``.``, and none may be a
+  Windows device name.
 * There must be at least one wheel and at least one sdist. Each sdist's
-  migrations must equal the wheel's. A wheel rebuilt FROM each sdist (what pip
-  and uv do when installing it) must pass all of the above and carry the same
-  migrations.
+  migrations must equal the wheel's, and each sdist must honour the build
+  contract above. A wheel built FROM each sdist by uv AND by pip, in isolation,
+  must pass all of the above and carry the same migrations.
 
 **Historical violations.** Two migrations were rewritten in place in 0.6.0
 (``001_initial.sql`` and ``035_event_chain_head_genesis_sentinel.sql``):
@@ -68,11 +93,13 @@ import io
 import json
 import re
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import unicodedata
 import urllib.request
 import zipfile
@@ -131,14 +158,27 @@ def _sha(data: bytes) -> str:
 # The member allowlist
 
 
-def _check_names(names: list[str], where: str) -> None:
+WINDOWS_DEVICES = frozenset(
+    ["con", "prn", "aux", "nul"] + [f"{d}{i}" for d in ("com", "lpt") for i in range(10)]
+)
+
+
+def _check_names(names: list[str], where: str, required_dirs: tuple[str, ...] = ()) -> None:
+    """Every name is ASCII and canonical, no two collide when folded, and no
+    regular member sits where a directory must be (an implied ancestor of another
+    member, or one of ``required_dirs``)."""
     seen: dict[str, str] = {}
     for name in names:
+        parts = name.split("/")
         if (
             not name.isascii()
             or SAFE_NAME.fullmatch(name) is None
             or unicodedata.normalize("NFC", name) != name
-            or any(part in (".", "..") for part in name.split("/"))
+            or any(part in (".", "..") for part in parts)
+            # Windows strips a trailing dot from a path segment, and maps device
+            # names (with any extension) to devices.
+            or any(part.endswith(".") for part in parts)
+            or any(part.split(".", 1)[0].lower() in WINDOWS_DEVICES for part in parts)
         ):
             raise GuardError(f"{where}: member name {name!r} is not on the allowlist")
         key = _fold(name)
@@ -148,6 +188,13 @@ def _check_names(names: list[str], where: str) -> None:
                 "same path on a case- or Unicode-folding filesystem)"
             )
         seen[key] = name
+    dirs = {_fold(d.rstrip("/")) for d in required_dirs}
+    for name in names:
+        parts = name.split("/")
+        dirs.update(_fold("/".join(parts[:i])) for i in range(1, len(parts)))
+    for name in names:
+        if _fold(name) in dirs:
+            raise GuardError(f"{where}: regular member {name!r} sits where a directory must be")
 
 
 def _classify(rel: str, migrations_dir: str, where: str, *, sql_elsewhere: bool) -> str | None:
@@ -165,20 +212,73 @@ def _classify(rel: str, migrations_dir: str, where: str, *, sql_elsewhere: bool)
     return None
 
 
+def _check_zip_container(blob: bytes, infos: list[zipfile.ZipInfo], where: str) -> None:
+    """One canonical archive, read the same way by every unzip implementation.
+
+    The byte stream must be exactly: local records laid end to end from offset 0,
+    then the central directory, then one 22-byte end-of-central-directory record
+    with no comment. There must be no preamble, no second archive, no gap or
+    overlap, no data descriptor, and no extra field in any header (which also
+    rules out ZIP64 and Info-ZIP Unicode Path names).
+    """
+    eocd = blob[-22:]
+    if len(blob) < 22 or eocd[:4] != b"PK\x05\x06":
+        raise GuardError(f"{where}: no end-of-central-directory record at the very end")
+    disk, cd_disk, n_disk, n_total, cd_size, cd_off, comment_len = struct.unpack(
+        "<HHHHIIH", eocd[4:]
+    )
+    if (disk, cd_disk, comment_len) != (0, 0, 0) or not n_disk == n_total == len(infos):
+        raise GuardError(f"{where}: non-canonical end-of-central-directory record")
+    if cd_off + cd_size != len(blob) - 22:
+        raise GuardError(f"{where}: central directory does not end at the EOCD record")
+    expected = 0
+    for info in sorted(infos, key=lambda i: i.header_offset):
+        if info.header_offset != expected:
+            raise GuardError(f"{where}: {info.orig_filename!r} is not contiguous (preamble, gap "
+                             "or overlap)")
+        too_big = max(info.file_size, info.compress_size) >= 0xFFFFFFFF
+        if info.flag_bits & 0x08 or too_big:
+            raise GuardError(f"{where}: {info.orig_filename!r} uses a data descriptor or ZIP64")
+        (sig, _ver, flags, method, _t, _d, crc, csize, usize, name_len,
+         extra_len) = struct.unpack("<4sHHHHHIIIHH", blob[expected : expected + 30])
+        # A streaming unzipper trusts the LOCAL header; it must say exactly what
+        # the central directory says.
+        if sig != b"PK\x03\x04" or (flags, method, crc, csize, usize) != (
+            info.flag_bits, info.compress_type, info.CRC, info.compress_size, info.file_size
+        ) or blob[expected + 30 : expected + 30 + name_len] != info.orig_filename.encode():
+            raise GuardError(f"{where}: {info.orig_filename!r} local header disagrees with "
+                             "the central directory")
+        # No extra field in either header: none of our wheels carries one, and
+        # they are where ZIP64 sizes and alternate (Unicode Path) names live.
+        if info.extra or extra_len:
+            raise GuardError(f"{where}: {info.orig_filename!r} carries a ZIP extra field")
+        expected += 30 + name_len + extra_len + info.compress_size
+    if expected != cd_off:
+        raise GuardError(f"{where}: bytes between the last record and the central directory")
+
+
 def read_wheel(blob: bytes, where: str) -> dict[str, str]:
     """Allowlisted wheel -> {migration filename: sha256}."""
+    try:
+        return _read_wheel(blob, where)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, struct.error, UnicodeDecodeError,
+            ValueError, EOFError) as exc:
+        raise GuardError(f"{where}: unreadable wheel ({exc.__class__.__name__}: {exc})") from exc
+
+
+def _read_wheel(blob: bytes, where: str) -> dict[str, str]:
     out: dict[str, str] = {}
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         infos = zf.infolist()
-        # orig_filename is the raw header name: zipfile truncates ``filename`` at
-        # NUL, so judging the truncated name would accept a different string than
-        # other unzip implementations see (found by the property fuzz). Reading
-        # each member below also makes zipfile refuse a local header whose name
-        # differs from the central directory's.
-        _check_names([i.orig_filename for i in infos], where)
+        _check_zip_container(blob, infos, where)
+        # orig_filename is the central-directory name before zipfile truncates it
+        # at NUL; judging the truncated ``filename`` would accept a string other
+        # unzip implementations read differently (found by the property fuzz).
+        # zf.read() below also refuses a local header whose name differs from it.
+        _check_names([i.orig_filename for i in infos], where, (WHEEL_MIGRATIONS,))
         for info in infos:
             if info.orig_filename != info.filename:
-                raise GuardError(f"{where}: member name {info.orig_filename!r} contains NUL")
+                raise GuardError(f"{where}: member name {info.orig_filename!r} is not canonical")
         files: dict[str, bytes] = {}
         for info in infos:
             mode = info.external_attr >> 16
@@ -208,13 +308,37 @@ def read_wheel(blob: bytes, where: str) -> dict[str, str]:
 
 def read_sdist(blob: bytes, where: str) -> dict[str, str]:
     """Allowlisted sdist -> {migration filename: sha256}."""
+    try:
+        return _read_sdist(blob, where)
+    except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
+        raise GuardError(f"{where}: unreadable sdist ({exc.__class__.__name__}: {exc})") from exc
+
+
+def sdist_file(blob: bytes, rel: str) -> bytes | None:
+    """The bytes of ``<root>/<rel>`` in an (already allowlisted) sdist, or None."""
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        for m in tf.getmembers():
+            if m.name.split("/", 1)[-1] == rel and m.name.count("/") == rel.count("/") + 1:
+                fh = tf.extractfile(m)
+                return fh.read() if fh is not None else None
+    return None
+
+
+def _read_sdist(blob: bytes, where: str) -> dict[str, str]:
     out: dict[str, str] = {}
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
         members = tf.getmembers()
-        _check_names([m.name for m in members], where)
+        if tf.pax_headers or any(m.pax_headers for m in members):
+            raise GuardError(f"{where}: PAX extended headers can rename members; refused")
         roots = {m.name.split("/", 1)[0] for m in members}
         if len(roots) != 1 or any("/" not in m.name for m in members):
             raise GuardError(f"{where}: expected one top-level directory, found {sorted(roots)}")
+        root = next(iter(roots))
+        _check_names(
+            [m.name for m in members],
+            where,
+            tuple(f"{root}/{d}" for d in (SDIST_MIGRATIONS, *FORBIDDEN_SOURCE_DIRS)),
+        )
         for m in members:
             if not m.isfile():
                 raise GuardError(f"{where}: {m.name!r} is not a regular file (type {m.type!r})")
@@ -346,14 +470,64 @@ def _compare(actual: Mapping[str, str], expected: Mapping[str, str], where: str)
 # Checks
 
 
+#: Build frontends whose isolated build of each sdist must reproduce the
+#: expected migrations. The pip entry runs the interpreter running this guard.
+REBUILDERS: list[tuple[str, list[str]]] = [
+    ("uv", ["uv", "build", "--wheel", "--out-dir", "{out}", "{sdist}"]),
+    ("pip", [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", "{out}", "{sdist}"]),
+]
+
+
+def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
+    cmd = [a.format(out=out, sdist=sdist) for a in argv]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise GuardError(f"{sdist.name}: {label} could not build a wheel from it")
+    wheels = sorted(out.glob("*.whl"))
+    if len(wheels) != 1:
+        raise GuardError(f"{sdist.name}: {label} produced {len(wheels)} wheels")
+    return wheels[0]
+
+
+def _keys(node: Any, prefix: str = "") -> list[str]:
+    if isinstance(node, dict):
+        return [k for key, v in node.items() for k in [prefix + key, *_keys(v, prefix + key + ".")]]
+    return []
+
+
+def check_build_contract(pyproject: bytes, where: str) -> None:
+    """The build an installer will run is pinned and inert: every build requirement
+    is an exact ``name==version`` pin, the backend is hatchling with no
+    ``backend-path``, and no hatch build hook or plugin is configured."""
+    data = tomllib.loads(pyproject.decode())
+    bs = data.get("build-system", {})
+    if bs.get("build-backend") != "hatchling.build" or "backend-path" in bs:
+        raise GuardError(f"{where}: build backend must be hatchling.build, no backend-path")
+    reqs = bs.get("requires", [])
+    pin = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][0-9A-Za-z.]*")
+    if not reqs or not all(isinstance(r, str) and pin.fullmatch(r) for r in reqs):
+        raise GuardError(f"{where}: build-system.requires must be exact name==version pins")
+    if "hatchling" not in {r.split("==")[0].lower() for r in reqs}:
+        raise GuardError(f"{where}: hatchling must be pinned in build-system.requires")
+    hooks = [k for k in _keys(data.get("tool", {}).get("hatch", {})) if "hook" in k.lower()]
+    if hooks:
+        raise GuardError(f"{where}: hatch build hooks/plugins are not allowed: {hooks}")
+
+
 def check_dist(
     ledger: Mapping[str, Any],
     dist_dir: Path,
     frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
     *,
+    repo_root: Path = REPO_ROOT,
     rebuild_sdists: bool = True,
 ) -> list[str]:
     problems = check_ledger(ledger, frozen)
+    pyproject = (repo_root / "pyproject.toml").read_bytes()
+    check_build_contract(pyproject, "pyproject.toml")
+    for config in ("hatch.toml", "hatch_build.py"):
+        if (repo_root / config).exists():
+            raise GuardError(f"{config} must not exist: it can change what hatch builds")
     expected = expected_migrations(ledger)
     wheels = sorted(dist_dir.glob("*.whl"))
     sdists = sorted(dist_dir.glob("*.tar.gz"))
@@ -363,7 +537,12 @@ def check_dist(
         p.name
         for p in dist_dir.iterdir()
         if p not in (*wheels, *sdists)
-        and not (p.name == ".gitignore" and p.is_file() and p.read_bytes() == b"*")
+        and not (
+            p.name == ".gitignore"
+            and not p.is_symlink()
+            and p.is_file()
+            and p.read_bytes() == b"*"
+        )
     )
     if not wheels or not sdists or others:
         raise GuardError(
@@ -373,20 +552,23 @@ def check_dist(
     for whl in wheels:
         problems += _compare(read_wheel(whl.read_bytes(), whl.name), expected, whl.name)
     for sdist in sdists:
-        problems += _compare(read_sdist(sdist.read_bytes(), sdist.name), expected, sdist.name)
+        blob = sdist.read_bytes()
+        problems += _compare(read_sdist(blob, sdist.name), expected, sdist.name)
+        # The installer's build of this sdist runs ITS pyproject.toml. Require it
+        # to be the reviewed one, byte for byte, with no extra hatch config file.
+        if sdist_file(blob, "pyproject.toml") != pyproject:
+            raise GuardError(f"{sdist.name}: pyproject.toml differs from the repository's")
+        for config in ("hatch.toml", "hatch_build.py"):
+            if sdist_file(blob, config) is not None:
+                raise GuardError(f"{sdist.name}: contains {config}")
         if rebuild_sdists:
-            with tempfile.TemporaryDirectory() as tmp:
-                proc = subprocess.run(
-                    ["uv", "build", "--wheel", "--out-dir", tmp, str(sdist)],
-                    capture_output=True, text=True,
-                )
-                if proc.returncode != 0:
-                    raise GuardError(f"{sdist.name}: building a wheel from it failed")
-                rebuilt = sorted(Path(tmp).glob("*.whl"))
-                if len(rebuilt) != 1:
-                    raise GuardError(f"{sdist.name}: rebuild produced {len(rebuilt)} wheels")
-                where = f"wheel rebuilt from {sdist.name}"
-                problems += _compare(read_wheel(rebuilt[0].read_bytes(), where), expected, where)
+            for label, argv in REBUILDERS:
+                with tempfile.TemporaryDirectory() as tmp:
+                    rebuilt = _rebuild(label, argv, sdist, Path(tmp))
+                    where = f"wheel {label} built from {sdist.name}"
+                    problems += _compare(
+                        read_wheel(rebuilt.read_bytes(), where), expected, where
+                    )
     return problems
 
 

@@ -20,7 +20,15 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
     and so is any `.sql` elsewhere in a wheel.
   - The migration set and bytes must equal the latest released set plus the ledger's
     declared `unreleased` entries: no extras, no missing files.
-  - The same must hold for a wheel rebuilt from each sdist, which is what installers do.
+  - The same must hold for a wheel built from each sdist by both uv and pip in isolation.
+    That half rests on a build contract: hatchling and its whole build-dependency closure
+    are pinned exactly in `build-system.requires`, no build hooks or hatch config files are
+    allowed, and the sdist's `pyproject.toml` must be byte-identical to the reviewed one.
+    `--no-build-isolation` builds and other frontends are outside the claim.
+  - Wheels must be one canonical ZIP container: contiguous records from offset 0, local and
+    central headers that agree, one EOCD record at the very end, and no comments, data
+    descriptors or extra fields. Sdists may carry no PAX headers. A regular file where a
+    directory must be, a trailing-dot segment, and a Windows device name are all refused.
 
   `verify-ledger` proves the ledger equals PyPI. The guard deliberately makes no claim about
   git history or about releases deleted from PyPI; such a deletion fails `verify-ledger`

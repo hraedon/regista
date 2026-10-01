@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -93,6 +94,7 @@ def test_a_real_build_passes_check_dist_including_the_sdist_rebuild(tmp_path: Pa
 # Fixtures
 
 BASE = {"001_a.sql": A, "002_b.sql": B}
+PYPROJECT = (REPO_ROOT / "pyproject.toml").read_bytes()
 RELEASES = {"0.1.0": {"001_a.sql": A}, "0.2.0": BASE}
 
 
@@ -141,7 +143,8 @@ def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
 def _sdist_bytes(files: dict[str, bytes], extra: list[tarfile.TarInfo] = ()) -> bytes:  # type: ignore[assignment]
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for name, data in {"PKG-INFO": b"Name: r\n", **files}.items():
+        base = {"PKG-INFO": b"Name: r\n", "pyproject.toml": PYPROJECT}
+        for name, data in {**base, **files}.items():
             info = tarfile.TarInfo(f"r-0.0.0/{name}")
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
@@ -510,3 +513,237 @@ def test_ledger_round_trips_through_copy() -> None:
     led = guard.load_ledger()
     assert guard.check_ledger(copy.deepcopy(led)) == []
     assert json.loads(json.dumps(led)) == led
+
+
+# --------------------------------------------------------------------------
+# New-design round 1 (Daybreak Blue B1-B3, DeepSeek B1/N1-N6)
+
+
+def _good_wheel() -> bytes:
+    return _wheel_bytes(_wheel_files(BASE))
+
+
+def _pax_sdist(pax: dict[str, str], global_: bool = False) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT,
+                      pax_headers=pax if global_ else None) as tf:
+        for name, data in {"PKG-INFO": b"x", "pyproject.toml": PYPROJECT,
+                           **_sdist_files(BASE)}.items():
+            info = tarfile.TarInfo(f"r-0.0.0/{name}")
+            info.size = len(data)
+            if not global_ and name == "PKG-INFO":
+                info.pax_headers = pax
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _descriptor_wheel() -> bytes:
+    class Unseekable(io.RawIOBase):
+        def __init__(self) -> None:
+            self.buf = bytearray()
+
+        def writable(self) -> bool:
+            return True
+
+        def write(self, b: Any) -> int:
+            self.buf += bytes(b)
+            return len(b)
+
+    sink = Unseekable()
+    with zipfile.ZipFile(sink, "w") as zf:
+        files = _wheel_files(BASE)
+        for name, data in files.items():
+            zf.writestr(name, data)
+        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+    return bytes(sink.buf)
+
+
+def _unicode_path_wheel() -> bytes:
+    import zlib
+
+    files = dict(_wheel_files(BASE))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in files.items():
+            info = zipfile.ZipInfo(name)
+            if name.endswith("002_b.sql"):
+                target = b"regista/migrations/000_x.sql"
+                body = b"\x01" + struct_pack_crc(zlib.crc32(name.encode())) + target
+                info.extra = b"\x75\x70" + len(body).to_bytes(2, "little") + body
+            zf.writestr(info, data)
+        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+    return buf.getvalue()
+
+
+def struct_pack_crc(crc: int) -> bytes:
+    return crc.to_bytes(4, "little")
+
+
+def _zip64_wheel() -> bytes:
+    files = _wheel_files(BASE)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", allowZip64=True) as zf:
+        for name, data in files.items():
+            with zf.open(name, "w", force_zip64=True) as fh:
+                fh.write(data)
+        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+    return buf.getvalue()
+
+
+ROUND_N1: dict[str, tuple[bytes | None, bytes | None]] = {
+    "regular file at exactly regista/migrations (DB B2, DS N2)": (
+        _wheel_with("regista/migrations"), None),
+    "regular file at a required ancestor": (_wheel_with("regista"), None),
+    "sdist regular file at exactly migrations": (None, _sdist_with("migrations")),
+    "concatenated wheels / two EOCDs (DB B3)": (_good_wheel() + _good_wheel(), None),
+    "preamble before the first record": (b"\0" * 16 + _good_wheel(), None),
+    "trailing bytes after EOCD": (_good_wheel() + b"\0", None),
+    "zip comment": (_good_wheel()[:-2] + b"\x03\x00abc", None),
+    "data descriptors": (_descriptor_wheel(), None),
+    "ZIP64 records": (_zip64_wheel(), None),
+    "Info-ZIP Unicode Path extra field": (_unicode_path_wheel(), None),
+    "Windows trailing dot segment (DS N1)": (_wheel_with("regista/migrations./000_x.sql."), None),
+    "Windows device name": (_wheel_with("regista/con.txt"), None),
+    "PAX path override": (None, _pax_sdist({"path": "r-0.0.0/migrations/000_x.sql"})),
+    "PAX global header": (None, _pax_sdist({"comment": "x"}, global_=True)),
+    "sdist pyproject with a hatch hook (DB B1, DS B1)": (None, _sdist_with(
+        "pyproject.toml", PYPROJECT + b"\n[tool.hatch.build.hooks.custom]\n")),
+    "sdist carries hatch_build.py": (None, _sdist_with("hatch_build.py", b"x = 1\n")),
+    "sdist carries hatch.toml": (None, _sdist_with("hatch.toml", b"")),
+    "corrupt wheel": (b"PK\x03\x04garbage", None),
+    "local header CRC disagrees with central": (_good_wheel()[:14] + b"\xff\xff\xff\xff"
+                                                 + _good_wheel()[18:], None),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(ROUND_N1))
+def test_round_n1_shapes_fail(tmp_path: Path, shape: str) -> None:
+    wheel, sdist = ROUND_N1[shape]
+    verdict = _verdict(_dist(tmp_path, wheel, sdist))
+    assert verdict != "pass", shape
+    assert "Traceback" not in verdict
+
+
+def test_an_sdist_with_two_roots_or_a_top_level_file_fails(tmp_path: Path) -> None:
+    for extra_name in ("other-0.0.0/x.txt", "toplevel.txt"):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for name, data in {"r-0.0.0/PKG-INFO": b"x", "r-0.0.0/pyproject.toml": PYPROJECT,
+                               **{f"r-0.0.0/{k}": v for k, v in _sdist_files(BASE).items()},
+                               extra_name: b"x"}.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        assert "one top-level directory" in _verdict(_dist(tmp_path / extra_name[:3], None,
+                                                           buf.getvalue()))
+
+
+def test_a_corrupt_sdist_is_an_error_not_a_traceback(tmp_path: Path) -> None:
+    assert _verdict(_dist(tmp_path, None, b"\x1f\x8bnot a tar")).startswith("error:")
+
+
+def test_a_symlinked_gitignore_is_not_exempt(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    (tmp_path / "star").write_bytes(b"*")
+    (d / ".gitignore").symlink_to(tmp_path / "star")
+    assert _verdict(d).startswith("error:")
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "fragment"),
+    [
+        (b'[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
+         "exact name==version"),
+        (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "x.build"\n',
+         "must be hatchling.build"),
+        (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "hatchling.build"\n'
+         b'backend-path = ["."]\n', "no backend-path"),
+        (b'[build-system]\nrequires = ["setuptools==1"]\nbuild-backend = "hatchling.build"\n',
+         "hatchling must be pinned"),
+        (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "hatchling.build"\n'
+         b"[tool.hatch.metadata.hooks.custom]\n", "hooks"),
+    ],
+)
+def test_the_build_contract_refuses_unpinned_or_executable_builds(
+    pyproject: bytes, fragment: str
+) -> None:
+    with pytest.raises(guard.GuardError, match=re.escape(fragment)):
+        guard.check_build_contract(pyproject, "pyproject.toml")
+
+
+def test_the_repository_pyproject_honours_the_build_contract() -> None:
+    guard.check_build_contract(PYPROJECT, "pyproject.toml")
+
+
+@pytest.mark.parametrize("bad_frontend", ["uv", "pip"])
+def test_a_rebuild_that_diverges_under_either_frontend_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_frontend: str
+) -> None:
+    """A backend that behaves differently per frontend (DB B1 / DS B1) is caught by
+    building with each frontend; the rebuild rule is no longer untested."""
+    good, bad = _good_wheel(), _wheel_with("regista/migrations/000_x.sql")
+
+    def fake(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
+        path = out / "r-0.0.0-py3-none-any.whl"
+        path.write_bytes(bad if label == bad_frontend else good)
+        return path
+
+    monkeypatch.setattr(guard, "_rebuild", fake)
+    d = _dist(tmp_path)
+    assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) != []
+    monkeypatch.setattr(guard, "_rebuild", lambda label, argv, sdist, out: (
+        out / "w.whl").write_bytes(good) and out / "w.whl")
+    assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) == []
+
+
+def test_both_frontends_are_configured() -> None:
+    assert [label for label, _ in guard.REBUILDERS] == ["uv", "pip"]
+
+
+BENIGN = st.from_regex(r"regista/[a-z][a-z0-9_]{0,10}(/[a-z][a-z0-9_]{0,10}){0,2}\.(py|txt|json)",
+                       fullmatch=True)
+
+
+@settings(max_examples=300, deadline=None)
+@given(name=BENIGN)
+def test_fuzz_benign_names_are_accepted(name: str) -> None:
+    """Positive half of the property, so the negative fuzz cannot pass by refusing
+    everything (DB/DS round-1 notes)."""
+    assume(name.split("/")[1].split(".")[0] not in guard.WINDOWS_DEVICES)
+    assume(all(p.split(".")[0] not in guard.WINDOWS_DEVICES for p in name.split("/")))
+    assume(not name.startswith("regista/migrations"))
+    assert guard.read_wheel(_wheel_with(name), "fuzz") == {n: _sha(b) for n, b in BASE.items()}
+
+
+def _overlapping_wheel() -> bytes:
+    """Point the second central-directory entry at the first local record: the
+    EOCD stays consistent, so only the contiguity rule can see the overlap."""
+    blob = bytearray(_good_wheel())
+    first = blob.index(b"PK\x01\x02")
+    second = blob.index(b"PK\x01\x02", first + 4)
+    blob[second + 42 : second + 46] = (0).to_bytes(4, "little")
+    return bytes(blob)
+
+
+@pytest.mark.parametrize(
+    ("blob_fn", "message"),
+    [
+        (lambda: b"\0" * 16 + _good_wheel(), "central directory does not end"),
+        (lambda: _overlapping_wheel(), "is not contiguous"),
+        (lambda: _good_wheel() + b"\0", "no end-of-central-directory record at the very end"),
+        (_unicode_path_wheel, "carries a ZIP extra field"),
+        (_zip64_wheel, "local header disagrees"),
+        (_descriptor_wheel, "uses a data descriptor"),
+        (lambda: _good_wheel()[:-2] + b"\x03\x00abc", "no end-of-central-directory record"),
+        (lambda: _good_wheel()[:14] + b"\xff\xff\xff\xff" + _good_wheel()[18:],
+         "local header disagrees"),
+    ],
+)
+def test_each_zip_container_rule_names_its_own_refusal(blob_fn: Any, message: str) -> None:
+    """Each container rule is pinned by its own message, so disabling any single
+    rule turns this red even where another layer would also refuse the archive."""
+    with pytest.raises(guard.GuardError, match=re.escape(message)):
+        guard.read_wheel(blob_fn(), "w")
