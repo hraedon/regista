@@ -15,20 +15,30 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   - Every member of every wheel and sdist must be a regular file with a strict ASCII, NFC,
     traversal-free name.
   - No two names may collide after NFKC + casefold.
+  - A wheel may contain files only under `regista/` and the single
+    `<dist>-<version>.dist-info/` directory named by its wheel filename. That metadata
+    directory is limited to `METADATA`, `WHEEL`, `RECORD`, `entry_points.txt`, and
+    `licenses/`; `WHEEL` must declare version 1.0 and `Root-Is-Purelib: true`. Wheel
+    `.data/` relocation trees and all other top-level members are refused.
+  - Python site-startup executables (`*.pth`, `sitecustomize.py`, and
+    `usercustomize.py`, case-folded) are refused anywhere in a wheel or sdist.
   - Migrations are found only by exact parent path and the name pattern
     `^\d{3}_[a-z0-9_]+\.sql$`. Anything else touching the migrations path is refused,
     and so is any `.sql` elsewhere in a wheel.
   - The migration set and bytes must equal the latest released set plus the ledger's
     declared `unreleased` entries: no extras, no missing files.
   - The same must hold for a wheel built from each sdist by both uv and pip in isolation.
-    That half rests on a build contract: hatchling and its whole build-dependency closure
-    are pinned exactly in `build-system.requires`, no build hooks or hatch config files are
-    allowed, and the sdist's `pyproject.toml` must be byte-identical to the reviewed one.
-    `--no-build-isolation` builds and other frontends are outside the claim.
+    That half rests on a build contract: `build-system.requires` must equal the guard's
+    named, exact six-package `TRUSTED_BUILD_REQUIREMENTS` set, no build hooks or hatch
+    config files are allowed, and the sdist's `pyproject.toml` must be byte-identical to
+    the reviewed one. Build requirements execute code; this frozen closure is trusted,
+    not inert. `--no-build-isolation` builds and other frontends are outside the claim.
   - Wheels must be one canonical ZIP container: contiguous records from offset 0, local and
     central headers that agree, one EOCD record at the very end, and no comments, data
     descriptors or extra fields. Sdists may carry no PAX headers. A regular file where a
     directory must be, a trailing-dot segment, and a Windows device name are all refused.
+    Unreadable ZIP members and non-file entries in the distribution directory fail as
+    guard errors rather than escaping as tracebacks.
 
   `verify-ledger` proves the ledger equals PyPI. The guard deliberately makes no claim about
   git history or about releases deleted from PyPI; such a deletion fails `verify-ledger`

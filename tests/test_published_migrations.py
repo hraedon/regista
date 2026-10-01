@@ -4,8 +4,8 @@ Every bypass found across six review rounds of the previous design is kept here
 as a vector that must FAIL (``BYPASSES``). The history-judgement vectors became
 ``verify-ledger`` vectors when that judgement was dropped from the guard's claim.
 A property fuzz checks, using an independent model of how installers normalise
-names, that no member name the guard accepts can land in the migrations
-directory or be a .sql file.
+names and relocate wheel ``.data/{purelib,platlib}`` members, that no member name
+the guard accepts can land in the migrations directory or be a .sql file.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import json
 import posixpath
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -49,6 +50,12 @@ def _load_guard() -> ModuleType:
 
 guard = _load_guard()
 A, B, C = b"-- a\n", b"-- b\n", b"-- c\n"
+WHEEL_METADATA = (
+    b"Wheel-Version: 1.0\n"
+    b"Generator: regista-test\n"
+    b"Root-Is-Purelib: true\n"
+    b"Tag: py3-none-any\n"
+)
 
 
 def _sha(data: bytes) -> str:
@@ -119,6 +126,7 @@ def _record_digest(data: bytes) -> str:
 
 
 def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
+                 wheel_metadata: bytes | None = WHEEL_METADATA,
                  extra: list[tuple[zipfile.ZipInfo, bytes]] = ()) -> bytes:  # type: ignore[assignment]
     buf = io.BytesIO()
     with warnings.catch_warnings():
@@ -134,6 +142,8 @@ def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
             for info, data in extra:
                 zf.writestr(info, data)
             zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+            if wheel_metadata is not None:
+                zf.writestr("r-0.0.0.dist-info/WHEEL", wheel_metadata)
             if record:
                 lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
                 zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
@@ -319,6 +329,8 @@ def test_a_record_naming_other_bytes_fails(tmp_path: Path) -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         for n, d in _wheel_files(BASE).items():
             zf.writestr(n, d)
+        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
         zf.writestr("r-0.0.0.dist-info/RECORD",
                     "".join(f"{n},sha256={_record_digest(C)},1\n" for n in _wheel_files(BASE)))
     assert "RECORD does not vouch" in _verdict(_dist(tmp_path, buf.getvalue()))
@@ -488,17 +500,47 @@ NASTY = st.sampled_from(
 
 def _installer_view(name: str) -> str:
     n = unicodedata.normalize("NFKC", name.replace("\\", "/")).casefold()
+    parts = n.split("/")
+    if len(parts) >= 3 and parts[0].endswith(".data") and parts[1] in {"purelib", "platlib"}:
+        n = "/".join(parts[2:])
     return posixpath.normpath("/" + n).lstrip("/")
 
 
+@pytest.mark.parametrize("scheme", ["purelib", "platlib"])
+def test_installer_view_models_wheel_data_relocation(scheme: str) -> None:
+    name = f"r-0.0.0.data/{scheme}/regista/migrations/000_x.sql/note.txt"
+    assert _installer_view(name) == "regista/migrations/000_x.sql/note.txt"
+
+
+ACCEPTED_FUZZ_MEMBER = st.from_regex(
+    r"regista/pkg_[a-z][a-z0-9_]{0,8}\.(py|txt|json)",
+    fullmatch=True,
+)
+CANONICAL_FUZZ_MIGRATION = st.from_regex(
+    r"regista/migrations/[3-9][0-9]{2}_[a-z][a-z0-9_]{0,8}\.sql", fullmatch=True
+)
+RELOCATED_FUZZ_MEMBER = st.builds(
+    lambda scheme, leaf: f"r-0.0.0.data/{scheme}/regista/migrations/{leaf}",
+    st.sampled_from(["purelib", "platlib"]),
+    st.sampled_from(["000_x.sql", "000_x.sql/note.txt", "probe.pth"]),
+)
+FUZZ_CASE = st.one_of(
+    st.lists(NASTY, min_size=1, max_size=8).map(lambda parts: ("".join(parts), False)),
+    ACCEPTED_FUZZ_MEMBER.map(lambda name: (name, True)),
+    CANONICAL_FUZZ_MIGRATION.map(lambda name: (name, True)),
+    RELOCATED_FUZZ_MEMBER.map(lambda name: (name, False)),
+)
+
+
 @settings(max_examples=2000, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(parts=st.lists(NASTY, min_size=1, max_size=8))
-def test_fuzz_no_accepted_name_reaches_migrations_or_is_sql(parts: list[str]) -> None:
-    name = "".join(parts)
+@given(case=FUZZ_CASE)
+def test_fuzz_no_accepted_name_reaches_migrations_or_is_sql(case: tuple[str, bool]) -> None:
+    name, must_accept = case
     blob = _wheel_with(name)
     try:
-        migs = guard.read_wheel(blob, "fuzz")
+        migs = guard.read_wheel(blob, "fuzz", wheel_filename="r-0.0.0-py3-none-any.whl")
     except (guard.GuardError, ValueError):
+        assert not must_accept, name
         return
     view = _installer_view(name)
     if name.startswith("regista/migrations/") and name[len("regista/migrations/"):] in migs:
@@ -507,6 +549,21 @@ def test_fuzz_no_accepted_name_reaches_migrations_or_is_sql(parts: list[str]) ->
     assert not view.startswith("regista/migrations/"), name
     assert not view.endswith(".sql"), name
     assert not view.startswith("src/regista/migrations"), name
+
+
+def test_negative_fuzz_acceptance_branches_are_reachable() -> None:
+    """Pin both non-migration acceptance and the canonical-migration early return."""
+    assert guard.read_wheel(
+        _wheel_with("regista/module.py"),
+        "fuzz control",
+        wheel_filename="r-0.0.0-py3-none-any.whl",
+    ) == {name: _sha(data) for name, data in BASE.items()}
+    migs = guard.read_wheel(
+        _wheel_with("regista/migrations/300_fuzz.sql"),
+        "fuzz migration control",
+        wheel_filename="r-0.0.0-py3-none-any.whl",
+    )
+    assert "300_fuzz.sql" in migs
 
 
 def test_ledger_round_trips_through_copy() -> None:
@@ -554,6 +611,8 @@ def _descriptor_wheel() -> bytes:
         files = _wheel_files(BASE)
         for name, data in files.items():
             zf.writestr(name, data)
+        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
         lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
         zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
     return bytes(sink.buf)
@@ -572,6 +631,8 @@ def _unicode_path_wheel() -> bytes:
                 body = b"\x01" + struct_pack_crc(zlib.crc32(name.encode())) + target
                 info.extra = b"\x75\x70" + len(body).to_bytes(2, "little") + body
             zf.writestr(info, data)
+        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
         lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
         zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
     return buf.getvalue()
@@ -588,6 +649,8 @@ def _zip64_wheel() -> bytes:
         for name, data in files.items():
             with zf.open(name, "w", force_zip64=True) as fh:
                 fh.write(data)
+        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+        zf.writestr("r-0.0.0.dist-info/WHEEL", WHEEL_METADATA)
         lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
         zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
     return buf.getvalue()
@@ -656,15 +719,14 @@ def test_a_symlinked_gitignore_is_not_exempt(tmp_path: Path) -> None:
     ("pyproject", "fragment"),
     [
         (b'[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
-         "exact name==version"),
+         "trusted frozen requirement set"),
         (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "x.build"\n',
          "must be hatchling.build"),
         (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "hatchling.build"\n'
          b'backend-path = ["."]\n', "no backend-path"),
         (b'[build-system]\nrequires = ["setuptools==1"]\nbuild-backend = "hatchling.build"\n',
-         "hatchling must be pinned"),
-        (b'[build-system]\nrequires = ["hatchling==1"]\nbuild-backend = "hatchling.build"\n'
-         b"[tool.hatch.metadata.hooks.custom]\n", "hooks"),
+         "trusted frozen requirement set"),
+        (PYPROJECT + b"\n[tool.hatch.metadata.hooks.custom]\n", "hooks"),
     ],
 )
 def test_the_build_contract_refuses_unpinned_or_executable_builds(
@@ -676,6 +738,153 @@ def test_the_build_contract_refuses_unpinned_or_executable_builds(
 
 def test_the_repository_pyproject_honours_the_build_contract() -> None:
     guard.check_build_contract(PYPROJECT, "pyproject.toml")
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        PYPROJECT.replace(
+            b'requires = [\n', b'requires = [\n    "neutral-build-helper==1.0.2",\n'
+        ),
+        PYPROJECT.replace(b'    "packaging==26.3",\n', b""),
+        PYPROJECT.replace(b'    "packaging==26.3",', b'    "packaging==26.2",'),
+        PYPROJECT.replace(
+            b'    "packaging==26.3",\n',
+            b'    "packaging==26.3",\n    "packaging==26.3",\n',
+        ),
+    ],
+    ids=["extra", "missing", "different", "duplicate"],
+)
+def test_build_contract_requires_exact_trusted_set(pyproject: bytes) -> None:
+    with pytest.raises(guard.GuardError, match="trusted frozen requirement set"):
+        guard.check_build_contract(pyproject, "pyproject.toml")
+
+
+def test_check_dist_enforces_the_trusted_build_requirement_set(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_bytes(
+        PYPROJECT.replace(
+            b'requires = [\n', b'requires = [\n    "neutral-build-helper==1.0.2",\n'
+        )
+    )
+    with pytest.raises(guard.GuardError, match="trusted frozen requirement set"):
+        guard.check_dist(_ledger(), _dist(tmp_path), {}, repo_root=repo, rebuild_sdists=False)
+
+
+# --------------------------------------------------------------------------
+# New-design round 2 (Daybreak Blue B1-B3, DeepSeek B1/NB1/NB2/NB7)
+
+
+@pytest.mark.parametrize(
+    ("name", "fragment"),
+    [
+        ("zzz_probe.pth", "startup-executable"),
+        ("regista/zzz_probe.PTH", "startup-executable"),
+        ("regista/sitecustomize.py", "startup-executable"),
+        ("regista/usercustomize.py", "startup-executable"),
+        (
+            "r-0.0.0.data/purelib/regista/migrations/000_unexpected.sql/note.txt",
+            "outside the allowed layout",
+        ),
+        (
+            "r-0.0.0.data/platlib/regista/migrations/000_unexpected.sql/note.txt",
+            "outside the allowed layout",
+        ),
+        ("other-0.0.0.dist-info/METADATA", "outside the allowed layout"),
+        ("README.txt", "outside the allowed layout"),
+        ("r-0.0.0.dist-info/unknown.json", "outside the allowed layout"),
+    ],
+    ids=[
+        "top-level-pth",
+        "package-pth",
+        "sitecustomize",
+        "usercustomize",
+        "data-purelib",
+        "data-platlib",
+        "second-dist-info",
+        "top-level-file",
+        "unknown-dist-info-file",
+    ],
+)
+def test_round_n2_wheel_members_fail(name: str, fragment: str) -> None:
+    with pytest.raises(guard.GuardError, match=fragment):
+        guard.read_wheel(_wheel_with(name), "r-0.0.0-py3-none-any.whl")
+
+
+@pytest.mark.parametrize(
+    "name", ["src/regista/zzz_probe.pth", "sitecustomize.py", "src/usercustomize.py"]
+)
+def test_round_n2_sdist_startup_executables_fail(name: str) -> None:
+    with pytest.raises(guard.GuardError, match="startup-executable"):
+        guard.read_sdist(_sdist_with(name), "r-0.0.0.tar.gz")
+
+
+def test_wheel_dist_info_must_match_its_filename() -> None:
+    with pytest.raises(guard.GuardError, match="outside the allowed layout"):
+        guard.read_wheel(_good_wheel(), "other-9.9-py3-none-any.whl")
+
+
+def test_wheel_layout_allows_only_named_metadata_and_licenses() -> None:
+    wheel = _wheel_with("r-0.0.0.dist-info/licenses/LICENSE", b"license\n")
+    assert guard.read_wheel(wheel, "r-0.0.0-py3-none-any.whl") == {
+        name: _sha(data) for name, data in BASE.items()
+    }
+
+
+def test_wheel_metadata_is_mandatory_and_exact() -> None:
+    with pytest.raises(guard.GuardError, match="required WHEEL metadata is missing"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), wheel_metadata=None),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    wrong_version = WHEEL_METADATA.replace(b"Wheel-Version: 1.0", b"Wheel-Version: 1.1")
+    with pytest.raises(guard.GuardError, match=re.escape("exactly Wheel-Version: 1.0")):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), wheel_metadata=wrong_version),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    not_purelib = WHEEL_METADATA.replace(b"Root-Is-Purelib: true", b"Root-Is-Purelib: false")
+    with pytest.raises(guard.GuardError, match="exactly Root-Is-Purelib: true"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), wheel_metadata=not_purelib),
+            "r-0.0.0-py3-none-any.whl",
+        )
+    terminated_headers = WHEEL_METADATA.replace(
+        b"Root-Is-Purelib: true", b"\nRoot-Is-Purelib: true"
+    )
+    with pytest.raises(guard.GuardError, match="content after its header block"):
+        guard.read_wheel(
+            _wheel_bytes(_wheel_files(BASE), wheel_metadata=terminated_headers),
+            "r-0.0.0-py3-none-any.whl",
+        )
+
+
+def _unsupported_compression_wheel() -> bytes:
+    blob = bytearray(_good_wheel())
+    central = struct.unpack_from("<I", blob, len(blob) - 22 + 16)[0]
+    struct.pack_into("<H", blob, 8, 99)
+    struct.pack_into("<H", blob, central + 10, 99)
+    return bytes(blob)
+
+
+def test_unsupported_wheel_compression_is_an_error_not_a_traceback(tmp_path: Path) -> None:
+    verdict = _verdict(_dist(tmp_path, _unsupported_compression_wheel()))
+    assert verdict.startswith("error:")
+    assert "NotImplementedError" in verdict
+    assert "Traceback" not in verdict
+
+
+@pytest.mark.parametrize("artifact", ["x.whl", "x.tar.gz"])
+def test_a_directory_named_like_an_artifact_is_an_error_not_a_traceback(
+    tmp_path: Path, artifact: str
+) -> None:
+    d = _dist(tmp_path)
+    (d / artifact).mkdir()
+    verdict = _verdict(d)
+    assert verdict.startswith("error:")
+    assert "every entry must be a regular file" in verdict
+    assert "Traceback" not in verdict
 
 
 @pytest.mark.parametrize("bad_frontend", ["uv", "pip"])
@@ -695,7 +904,8 @@ def test_a_rebuild_that_diverges_under_either_frontend_fails(
     d = _dist(tmp_path)
     assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) != []
     monkeypatch.setattr(guard, "_rebuild", lambda label, argv, sdist, out: (
-        out / "w.whl").write_bytes(good) and out / "w.whl")
+        out / "r-0.0.0-py3-none-any.whl").write_bytes(good)
+        and out / "r-0.0.0-py3-none-any.whl")
     assert guard.check_dist(_ledger(), d, {}, rebuild_sdists=True) == []
 
 
@@ -703,8 +913,7 @@ def test_both_frontends_are_configured() -> None:
     assert [label for label, _ in guard.REBUILDERS] == ["uv", "pip"]
 
 
-BENIGN = st.from_regex(r"regista/[a-z][a-z0-9_]{0,10}(/[a-z][a-z0-9_]{0,10}){0,2}\.(py|txt|json)",
-                       fullmatch=True)
+BENIGN = ACCEPTED_FUZZ_MEMBER
 
 
 @settings(max_examples=300, deadline=None)
@@ -715,7 +924,9 @@ def test_fuzz_benign_names_are_accepted(name: str) -> None:
     assume(name.split("/")[1].split(".")[0] not in guard.WINDOWS_DEVICES)
     assume(all(p.split(".")[0] not in guard.WINDOWS_DEVICES for p in name.split("/")))
     assume(not name.startswith("regista/migrations"))
-    assert guard.read_wheel(_wheel_with(name), "fuzz") == {n: _sha(b) for n, b in BASE.items()}
+    assert guard.read_wheel(
+        _wheel_with(name), "fuzz", wheel_filename="r-0.0.0-py3-none-any.whl"
+    ) == {n: _sha(b) for n, b in BASE.items()}
 
 
 def _overlapping_wheel() -> bytes:
@@ -746,4 +957,6 @@ def test_each_zip_container_rule_names_its_own_refusal(blob_fn: Any, message: st
     """Each container rule is pinned by its own message, so disabling any single
     rule turns this red even where another layer would also refuse the archive."""
     with pytest.raises(guard.GuardError, match=re.escape(message)):
-        guard.read_wheel(blob_fn(), "w")
+        guard.read_wheel(
+            blob_fn(), "w", wheel_filename="r-0.0.0-py3-none-any.whl"
+        )
