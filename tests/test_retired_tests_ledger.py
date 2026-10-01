@@ -26,8 +26,10 @@ WI-289 Phase A hardening — the coverage pointer is strict by default:
   ``DEFERRED_COVERAGE_NODE_IDS``, so growing the allowlist, shrinking it, or
   swapping one owed node for another is a visible diff in two places: the
   ledger entry and the pin.
-- Every ``coverage_owed`` entry, deferred or discharged, is also pinned by
-  content digest (``COVERAGE_OWED_DIGEST``). Re-pointing a discharged entry's
+- Every entry whose disposition is exactly ``coverage_owed`` (a near-miss
+  spelling such as a trailing newline fails the well-formedness check, which
+  uses ``fullmatch``), deferred or discharged, is also pinned by content
+  digest (``COVERAGE_OWED_DIGEST``). Re-pointing a discharged entry's
   ``covered_by``, or permuting node IDs among entries so an invariant is
   credited to the wrong test, leaves the identity sets unchanged. It cannot
   leave the digest unchanged. The digest proves the record did not change
@@ -193,13 +195,13 @@ def test_ledger_entries_are_well_formed(inventory: set[str], full_collection: se
             f"{node_id}: ledger says retired, but the node is still collected"
         )
         disposition = entry.get("disposition", "")
-        assert _DISPOSITION_RE.match(disposition), (
+        assert _DISPOSITION_RE.fullmatch(disposition), (
             f"{node_id}: disposition {disposition!r} is not one of "
             "'dies_with_v5' | 'deleted_by: P1.4' | 'coverage_owed' "
             "(SUITE-RECONCILIATION.md §2.2)"
         )
         if disposition == "coverage_owed":
-            assert _WORK_ITEM_RE.match(entry.get("work_item", "")), (
+            assert _WORK_ITEM_RE.fullmatch(entry.get("work_item", "")), (
                 f"{node_id}: coverage_owed requires a work_item reference "
                 "(WI-<n> or a regista work-item UUID)"
             )
@@ -231,7 +233,7 @@ def test_coverage_owed_entries_point_to_collected_coverage(
                 "test with neither is silent coverage debt."
             )
             marker = (
-                _DEFERRED_TO_RE.match(deferred_to) if isinstance(deferred_to, str) else None
+                _DEFERRED_TO_RE.fullmatch(deferred_to) if isinstance(deferred_to, str) else None
             )
             assert marker, (
                 f"{node_id}: deferred_to {deferred_to!r} is not a work-item "
@@ -294,6 +296,9 @@ def test_coverage_owed_digest_sees_a_permutation_and_a_repoint() -> None:
         if e.get("disposition") == "coverage_owed" and e.get("covered_by")
     ]
     assert len(deferred) >= 2 and len(discharged) >= 2, "fixture premise: retire with the ledger"
+    # The pristine ledger hashes to the pin, so each `!=` below is a change the
+    # digest saw, not a digest that never matched anything.
+    assert _coverage_owed_digest(ledger) == COVERAGE_OWED_DIGEST
     permuted = json.loads(json.dumps(ledger))
     a, b = [e for e in permuted["entries"] if e.get("deferred_to") == "WI-293"][:2]
     a["node_id"], b["node_id"] = b["node_id"], a["node_id"]
@@ -387,3 +392,27 @@ def test_no_test_vanishes_without_a_disposition(
         "retirement-ledger disposition (SUITE-RECONCILIATION.md §2.2): "
         f"{unaccounted[:10]}"
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("disposition", "coverage_owed\n"),
+        ("disposition", "dies_with_v5\n"),
+        ("work_item", "WI-293\n"),
+        ("deferred_to", "WI-293\n"),
+    ],
+)
+def test_near_miss_spellings_are_refused_not_treated_as_another_class(
+    field: str, value: str
+) -> None:
+    """Regex `$` also matches before a trailing newline. Every gate here compares
+    dispositions with `==`, so a value the classifier accepted but every consumer
+    skipped would leave an entry under no check at all (WI-336 round 2, DeepSeek B3)."""
+    pattern = {
+        "disposition": _DISPOSITION_RE,
+        "work_item": _WORK_ITEM_RE,
+        "deferred_to": _DEFERRED_TO_RE,
+    }[field]
+    assert pattern.match(value), "premise: the old .match() accepted this"
+    assert pattern.fullmatch(value) is None
