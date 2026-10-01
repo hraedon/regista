@@ -366,6 +366,13 @@ def _fake_index(monkeypatch: pytest.MonkeyPatch, releases: dict[str, dict[str, b
         with zipfile.ZipFile(buf, "w") as zf:
             for name, data in files.items():
                 zf.writestr(f"regista/migrations/{name}", data)
+            zf.writestr(
+                "r-0.0.0.dist-info/RECORD",
+                "".join(
+                    f"regista/migrations/{n},sha256={_record_digest(d)},{len(d)}\n"
+                    for n, d in files.items()
+                ),
+            )
         blob = buf.getvalue()
         url = f"https://example.invalid/{version}.whl"
         blobs[url] = blob
@@ -459,13 +466,22 @@ def test_two_disagreeing_sdists_are_refused(
 # a withdrawal must be of a release already on record.
 
 
-def _write_wheel(path: Path, files: dict[str, bytes]) -> None:
+def _record_digest(data: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
+def _write_wheel(path: Path, files: dict[str, bytes], record: bool = True) -> None:
     import zipfile
 
     with zipfile.ZipFile(path, "w") as zf:
         for name, data in files.items():
             zf.writestr(name, data)
         zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+        if record:
+            lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
+            zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
 
 
 def _write_sdist(path: Path, files: dict[str, bytes]) -> None:
@@ -483,8 +499,13 @@ def _dist(tmp_path: Path, wheel: dict[str, bytes], sdist: dict[str, bytes] | Non
     d = tmp_path / "dist"
     d.mkdir(parents=True, exist_ok=True)
     _write_wheel(d / "r-0.0.0-py3-none-any.whl", wheel)
-    if sdist is not None:
-        _write_sdist(d / "r-0.0.0.tar.gz", sdist)
+    if sdist is None:  # a faithful sdist mirroring the wheel's runner directory
+        sdist = {
+            "migrations/" + p[len("regista/migrations/") :]: b
+            for p, b in wheel.items()
+            if p.startswith("regista/migrations/") and p.count("/") == 2
+        }
+    _write_sdist(d / "r-0.0.0.tar.gz", sdist)
     return d
 
 
@@ -673,3 +694,60 @@ def test_every_parent_of_a_merge_is_a_base(tmp_path: Path) -> None:
     assert len(parents) == 2 and side in parents
     with pytest.raises(guard.GuardError, match="no parent"):
         guard._parents(root, repo)
+
+
+# --------------------------------------------------------------------------
+# Round 4 review (gpt-5.6-sol B1; DeepSeek round-3 NB5/NB6)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_an_sdist_link_member_is_refused(tmp_path: Path, kind: str) -> None:
+    import io
+    import tarfile
+
+    d = _dist(tmp_path, WHEEL_OK, SDIST_OK)
+    sdist = next(d.glob("*.tar.gz"))
+    buf = io.BytesIO()
+    with tarfile.open(sdist, "r:gz") as src, tarfile.open(fileobj=buf, mode="w:gz") as dst:
+        for m in src.getmembers():
+            fh = src.extractfile(m)
+            dst.addfile(m, fh)
+        link = tarfile.TarInfo("r-0.0.0/src/regista/migrations/000_unexpected.sql")
+        link.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
+        link.linkname = (
+            "../../../migrations/001_a.sql" if kind == "symlink" else "r-0.0.0/migrations/001_a.sql"
+        )
+        dst.addfile(link)
+    sdist.write_bytes(buf.getvalue())
+    with pytest.raises(guard.GuardError, match="non-regular member"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_a_wheel_sql_not_vouched_for_by_record_is_refused(tmp_path: Path) -> None:
+    d = tmp_path / "dist"
+    d.mkdir()
+    _write_wheel(d / "r-0.0.0-py3-none-any.whl", WHEEL_OK, record=False)
+    with pytest.raises(guard.GuardError, match="exactly one top-level RECORD"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_a_record_naming_other_bytes_is_refused(tmp_path: Path) -> None:
+    import zipfile
+
+    d = tmp_path / "dist"
+    d.mkdir()
+    with zipfile.ZipFile(d / "r-0.0.0-py3-none-any.whl", "w") as zf:
+        for name, data in WHEEL_OK.items():
+            zf.writestr(name, data)
+        lines = [f"{n},sha256={_record_digest(C)},1" for n in WHEEL_OK]
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+    with pytest.raises(guard.GuardError, match="RECORD does not vouch"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_check_dist_requires_an_sdist(tmp_path: Path) -> None:
+    d = tmp_path / "dist"
+    d.mkdir()
+    _write_wheel(d / "r-0.0.0-py3-none-any.whl", WHEEL_OK)
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert len(problems) == 1 and "no sdist" in problems[0]

@@ -56,7 +56,9 @@ Subcommands:
     (an owner can delete one) stays in the ledger under
     ``withdrawn_from_pypi``, because stores may already have applied its bytes.
     A withdrawal is accepted only for a release ``REF`` already recorded, so the
-    ledger cannot invent "published" history. A base without a ledger is
+    ledger cannot invent WITHDRAWN history. A newly added release that PyPI
+    serves is authenticated only by ``verify-ledger``; this check cannot judge
+    additions. A base without a ledger is
     accepted only if it also predates this guard (the one-time bootstrap). The
     guard is recognised in history by ``GUARD_MARKER``, not by file path, so
     renaming the script does not reset that boundary.
@@ -97,6 +99,7 @@ Run:  python scripts/check_published_migrations.py check-tree
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -257,7 +260,31 @@ def _sql_members_wheel(blob: bytes) -> dict[str, str]:
             seen.add(info.filename)
             if _is_sql(info.filename):
                 out[info.filename] = hashlib.sha256(zf.read(info)).hexdigest()
+        _check_record(zf, out)
     return out
+
+
+def _check_record(zf: zipfile.ZipFile, sql: Mapping[str, str]) -> None:
+    """Every .sql member must be listed in the wheel's RECORD with the same sha256.
+
+    pip installs and verifies against RECORD, so a .sql whose RECORD entry is
+    missing or names other bytes is refused rather than judged by one reading of
+    the archive while an installer reads another.
+    """
+    records = [
+        n for n in zf.namelist() if n.count("/") == 1 and n.endswith(".dist-info/RECORD")
+    ]
+    if len(records) != 1:
+        raise GuardError(f"wheel: expected exactly one top-level RECORD, found {records}")
+    listed: dict[str, str] = {}
+    for line in zf.read(records[0]).decode().splitlines():
+        parts = line.rsplit(",", 2)
+        if len(parts) == 3 and parts[1].startswith("sha256="):
+            listed[parts[0]] = parts[1][len("sha256=") :]
+    for name, digest in sql.items():
+        expected = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
+        if listed.get(name) != expected:
+            raise GuardError(f"wheel: RECORD does not vouch for {name} with its actual bytes")
 
 
 #: Source directories the runner itself can read migrations from
@@ -278,9 +305,18 @@ def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str,
     reverse = sorted(((r, w) for w, r in pairs), key=lambda p: len(p[0]), reverse=True)
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
         for member in tf.getmembers():
-            if not member.isfile() or not _is_sql(member.name):
-                continue
             _check_member_name(member.name, "sdist")
+            if member.isdir():
+                continue
+            if not member.isfile():
+                # pip and uv materialise symlink and hard-link members as regular
+                # files when they build from the sdist, so a link can install a
+                # migration the guard never read. This project ships none.
+                raise GuardError(
+                    f"sdist: non-regular member {member.name!r} (tar type {member.type!r})"
+                )
+            if not _is_sql(member.name):
+                continue
             # "<name>-<version>/migrations/001.sql" -> "migrations/001.sql"
             rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
             for repo_prefix, wheel_prefix in reverse:
@@ -604,7 +640,13 @@ def dist_sql(
     assert shipped is not None
     runner = {p: d for p, (d, _) in shipped.items() if _in_runner_dir(p)}
     mapping = _path_mapping(pyproject) if pyproject is not None else []
-    for sdist in sorted(dist_dir.glob("*.tar.gz")):
+    sdists = sorted(dist_dir.glob("*.tar.gz"))
+    if not sdists:
+        problems.append(
+            f"{dist_dir}: no sdist, so sdist/wheel agreement cannot be checked; "
+            "publish uploads both"
+        )
+    for sdist in sdists:
         mapped = _sql_members_sdist(sdist.read_bytes(), mapping)
         sql_found = {p: d for p, d in mapped.items() if _in_runner_dir(p)}
         differing = sorted(k for k in runner if k in sql_found and sql_found[k] != runner[k])
