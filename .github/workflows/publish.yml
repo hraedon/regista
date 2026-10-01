@@ -74,8 +74,10 @@ jobs:
     steps:
       - name: Exchange the GitHub OIDC token with PyPI, then burn the result
         # Everything happens in memory in one process. No response body is
-        # written to disk, no URL is logged, and no server-controlled text is
-        # printed: failures show a fixed message per known PyPI error code.
+        # written to disk, and no URL or server-controlled diagnostic text is
+        # logged: failures show a fixed message per known PyPI error code. The
+        # two credentials reach output only as escaped ::add-mask:: commands,
+        # and only after matching their ASCII grammar.
         # The minted upload token is masked the moment it exists. A burn
         # request is sent for it, and anything but HTTP 202 fails the run.
         # Same host as `uv publish` (upload.pypi.org, the default publish
@@ -94,6 +96,18 @@ jobs:
               "invalid-token": "PyPI rejected the OIDC token",
               "not-enabled": "trusted publishing is disabled on PyPI",
           }
+
+          # Both credentials are ASCII by specification: a GitHub OIDC token is a
+          # compact JWS, and a PyPI upload token is "pypi-" plus base64url. Anything
+          # else is refused BEFORE it reaches output. A line break would split the
+          # ::add-mask:: command, unmasking the remainder and injecting a new runner
+          # command. The mask data is also escaped as @actions/core does.
+          JWT = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+          PYPI_TOKEN = re.compile(r"pypi-[A-Za-z0-9_-]+")
+
+          def mask(value):
+              escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::add-mask::{escaped}", flush=True)
 
           def fail(message):
               print(f"FAIL: {message}", flush=True)
@@ -137,7 +151,9 @@ jobs:
           oidc = json_object("GitHub OIDC endpoint", status, raw).get("value")
           if status != 200 or not isinstance(oidc, str) or not oidc:
               fail(f"GitHub OIDC endpoint: no token (HTTP {status})")
-          print(f"::add-mask::{oidc}", flush=True)
+          if not JWT.fullmatch(oidc):
+              fail("GitHub OIDC endpoint: token is not a compact JWS; withheld")
+          mask(oidc)
 
           status, raw = call(
               "mint-token", f"{HOST}/_/oidc/mint-token",
@@ -146,14 +162,18 @@ jobs:
           )
           body = json_object("mint-token", status, raw)
           token = body.get("token")
-          if isinstance(token, str) and token:
-              print(f"::add-mask::{token}", flush=True)
+          well_formed = isinstance(token, str) and PYPI_TOKEN.fullmatch(token) is not None
+          if well_formed:
+              mask(token)
           if status == 200 and isinstance(token, str) and token:
               b_status, _ = call(
                   "burn-token", f"{HOST}/_/oidc/burn-token",
                   data=json.dumps({"token": token}).encode(),
                   headers={"Content-Type": "application/json"},
               )
+              if not well_formed:
+                  fail("PyPI minted a token that is not 'pypi-' plus base64url; it was "
+                       f"withheld from output, and a burn was requested (HTTP {b_status}).")
               if b_status != 202:
                   fail("PyPI accepted the publisher, but did not accept the burn request "
                        f"(HTTP {b_status}). The upload token expires on its own within "

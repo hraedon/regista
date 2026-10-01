@@ -29,7 +29,20 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish.yml"
 SECRETS = ("GH.JWT.SECRET", "pypi-MINTED-SECRET", "REQTOK", "QUERY-SECRET", "DESC-SECRET",
-           "pypi-NESTED", "set-output", "Traceback")
+           "pypi-NESTED", "set-output", "INJECT", "Traceback")
+
+#: Loaded into the step's interpreter: refuse every non-loopback connection, so a
+#: request that bypasses HOST fails loudly instead of reaching the real PyPI.
+_LOOPBACK_ONLY = """
+import socket
+_orig = socket.socket.connect
+def _connect(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        raise OSError("test sandbox: non-loopback connection refused: " + str(host))
+    return _orig(self, address)
+socket.socket.connect = _connect
+"""
 
 
 def _step() -> dict[str, object]:
@@ -48,7 +61,9 @@ def test_the_preflight_job_is_dispatch_from_main_only_and_never_reaches_publish(
     )
     assert jobs["oidc-preflight"]["environment"].split()[0] == "pypi"
     assert "needs" not in jobs["oidc-preflight"]
-    assert jobs["verify"]["if"].startswith("github.event_name == 'push'")
+    assert jobs["verify"]["if"] == (
+        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+    )
     assert jobs["build"]["needs"] == "verify" and "if" not in jobs["build"]
     assert jobs["publish"]["needs"] == "build" and "if" not in jobs["publish"]
     assert _step()["shell"] == "python3 {0}"
@@ -72,6 +87,8 @@ class _Fake(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path.startswith("/_/oidc/audience"):
             self._send(200, "[]" if self.mode == "aud-list" else '{"audience":"pypi"}')
+        elif self.path.startswith("/oidc?") and self.mode == "oidc-newline":
+            self._send(200, '{"value":"GH.JWT.SECRET\\n::error::INJECT"}')
         elif self.path.startswith("/oidc?"):
             if self.mode == "oidc-drop":
                 self.connection.shutdown(socket.SHUT_RDWR)
@@ -85,6 +102,8 @@ class _Fake(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.mode == "oidc-newline":
+            raise AssertionError("must not mint with a malformed OIDC token")
         if self.path == "/_/oidc/burn-token":
             type(self).burned.append(json.loads(body)["token"])
             self._send(503 if self.mode == "burn-503" else 202, '{"message":"Accepted"}')
@@ -104,6 +123,10 @@ class _Fake(http.server.BaseHTTPRequestHandler):
             ),
             "html": (503, "<html>down</html>"),
             "token-not-str": (200, '{"token":{"pypi-NESTED":1}}'),
+            "token-newline": (
+                200, '{"token":"pypi-FIRST\\n::error::INJECT\\npypi-MINTED-SECRET"}'
+            ),
+            "token-surrogate": (200, '{"token":"pypi-MINTED-SECRET\\ud800"}'),
         }
         code, text = responses[self.mode]
         self._send(code, text, "text/html" if self.mode == "html" else "application/json")
@@ -130,6 +153,9 @@ CASES = {
     "nested": (1, False, "(unrecognised error code; details withheld)"),
     "html": (1, False, "mint-token: non-JSON body (HTTP 503); body withheld"),
     "token-not-str": (1, False, "HTTP 200 without a usable token"),
+    "token-newline": (1, True, "not 'pypi-' plus base64url; it was withheld"),
+    "token-surrogate": (1, True, "not 'pypi-' plus base64url; it was withheld"),
+    "oidc-newline": (1, False, "token is not a compact JWS; withheld"),
     "aud-list": (1, False, "audience endpoint: JSON body is not an object"),
     "oidc-list": (1, False, "GitHub OIDC endpoint: JSON body is not an object"),
     "oidc-drop": (1, False, "GitHub OIDC endpoint: request failed (RemoteDisconnected)"),
@@ -150,6 +176,12 @@ def test_preflight_outcome_and_no_leak(
     script = tmp_path / "step.py"
     script.write_text(source.replace(marker, f'HOST = "http://127.0.0.1:{port}"'))
     env = {k: v for k, v in os.environ.items() if not k.startswith("ACTIONS_ID_TOKEN")}
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text(_LOOPBACK_ONLY)
+    env["PYTHONPATH"] = str(site)
+    for proxy in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy"):
+        env.pop(proxy, None)
     if mode != "missing-env":
         env["ACTIONS_ID_TOKEN_REQUEST_URL"] = f"http://127.0.0.1:{port}/oidc?sig=QUERY-SECRET"
         env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "REQTOK"
@@ -163,13 +195,21 @@ def test_preflight_outcome_and_no_leak(
     output = proc.stdout + proc.stderr
     assert proc.returncode == expected_rc, output
     assert fragment in output, output
-    visible = "\n".join(
-        line for line in output.splitlines() if not line.startswith("::add-mask::")
-    )
+    # Model the runner: workflow commands are line-oriented, so a mask covers
+    # exactly its own line. Every other line is visible log text, and no other
+    # runner command may appear.
+    lines = output.splitlines()
+    for line in lines:
+        assert not line.startswith("::") or line.startswith("::add-mask::"), (
+            f"a runner command other than add-mask was emitted: {line!r}"
+        )
+    visible = "\n".join(line for line in lines if not line.startswith("::add-mask::"))
     leaked = [s for s in SECRETS if s in visible]
     assert not leaked, f"leaked {leaked}:\n{output}"
     assert list(workdir.iterdir()) == [], "the preflight wrote to disk"
-    assert handler.burned == (["pypi-MINTED-SECRET"] if expect_burn else [])
+    assert len(handler.burned) == (1 if expect_burn else 0)
+    if mode == "ok":
+        assert handler.burned == ["pypi-MINTED-SECRET"]
     if "pypi-MINTED-SECRET" in output:
         first = output.index("pypi-MINTED-SECRET")
         assert output[:first].endswith("::add-mask::"), "minted token printed before its mask"
