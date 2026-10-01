@@ -4,7 +4,7 @@
 cluster 4, deferred to WI-289/P3.3. Phase D discharges them: each entry now carries a
 ``covered_by`` counterpart in
 ``tests/test_bundle.py::TestWI289Cluster4Counterparts`` and its ``deferred_to`` marker was
-removed, and the ``DEFERRED_COVERAGE_ALLOWLIST`` pin drops from 11 to 0.
+removed, and its identities are absent from the ``DEFERRED_COVERAGE_NODE_IDS`` pin.
 
 This module lives beside the ledger/census change (not in ``test_bundle.py``) so the two
 commit together and each commit stays green: a ``covered_by`` pointer is a string in a JSON
