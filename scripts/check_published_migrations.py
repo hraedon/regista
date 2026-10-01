@@ -12,8 +12,12 @@ not git tags. Tags and releases have diverged in this repository before:
 ``v0.5.1-rc1`` is not PyPI 0.5.1, and ``v0.4.0`` was never uploaded. The
 committed ledger ``release/published-migrations.json`` records, for every
 release of ``regista-hraedon`` on PyPI, the sha256 of the wheel and sdist and of
-every ``*.sql`` file each one ships. The ledger is a cache of PyPI and is
-checked against PyPI. It is not an authority anyone can edit to bless a change.
+every ``*.sql`` file each one ships. The ledger is a cache of PyPI. It is checked
+against PyPI (``verify-ledger``) and against its own git history
+(``check-monotonic``), so editing it to bless a change, or to forget a release,
+is DETECTED by CI. Detection becomes enforcement only when those CI jobs are
+required status checks on ``main``. As of this writing ``main`` has no branch
+protection, so a red run is a signal a reviewer must honour, not a lock.
 
 Subcommands:
 
@@ -24,11 +28,19 @@ Subcommands:
     * each one's bytes equal its **latest** published bytes;
     * a path whose published bytes differ between releases is allowed only if
       it is one of the exactly-pinned historical violations below;
-    * every migration in the tree has a numeric version prefix, versions are
-      unique, and an unpublished migration sorts **after** every published one.
-      The runner (``_migrations.discover_migrations``) silently skips
-      non-numeric names and does not refuse duplicate numbers, so this guard
-      refuses both.
+    * every ``.sql`` the build would package (every ``packages`` dir and every
+      ``force-include`` source, not only dirs that already hold published files)
+      lands in the one directory the runner reads, from one source directory,
+      under a canonical name (lower-case ``.sql``, ASCII-digit version before
+      the first ``_``), with a unique version. An unpublished migration must sort
+      **after** every published one. The runner applies by set membership, so a
+      late low number would run out of order on existing stores.
+
+``check-monotonic --base REF`` (git)
+    Every release and withdrawal recorded at ``REF`` is still recorded,
+    unchanged. Published history only grows. A release PyPI no longer serves
+    (an owner can delete one) stays in the ledger under
+    ``withdrawn_from_pypi``, because stores may already have applied its bytes.
 
 ``verify-ledger`` (network: pypi.org)
     Re-download every release PyPI lists, verify each file against PyPI's
@@ -65,7 +77,7 @@ import argparse
 import hashlib
 import io
 import json
-import re
+import subprocess
 import sys
 import tarfile
 import time
@@ -105,8 +117,6 @@ FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {
     ),
 }
 
-_VERSION_RE = re.compile(r"^(\d+)_[A-Za-z0-9_.-]+\.sql$")
-
 
 class GuardError(Exception):
     """A violation. The message says what changed and what to do instead."""
@@ -118,7 +128,7 @@ class GuardError(Exception):
 
 def _version_key(version: str) -> tuple[int, ...]:
     parts = version.split(".")
-    if not all(p.isdigit() for p in parts):
+    if not all(p.isascii() and p.isdigit() for p in parts):
         raise GuardError(
             f"release version {version!r} is not a plain N.N.N release; extend "
             "_version_key deliberately rather than guessing an order"
@@ -208,7 +218,12 @@ def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str,
     return out
 
 
-def build_ledger(mapping: list[tuple[str, str]]) -> dict[str, Any]:
+def build_ledger(
+    mapping: list[tuple[str, str]], prior: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Rebuild from PyPI. Releases ``prior`` recorded that PyPI no longer serves are
+    KEPT and listed in ``withdrawn_from_pypi``: a deletion on PyPI does not unpublish
+    bytes that stores may already have applied, so it must never shrink the ledger."""
     index = json.loads(_fetch(PYPI_JSON))
     releases: dict[str, Any] = {}
     for version in sorted(index["releases"], key=_version_key):
@@ -237,12 +252,15 @@ def build_ledger(mapping: list[tuple[str, str]]) -> dict[str, Any]:
                     raise GuardError(f"{version}: two wheels ship different migrations")
                 wheel_sql = members
             elif f["packagetype"] == "sdist":
-                sdist_sql = _sql_members_sdist(blob, mapping)
+                members = _sql_members_sdist(blob, mapping)
+                if sdist_sql is not None and members != sdist_sql:
+                    raise GuardError(f"{version}: two sdists ship different migrations")
+                sdist_sql = members
         if wheel_sql is None:
             raise GuardError(f"{version}: no wheel on PyPI; cannot establish what installs")
         if sdist_sql is not None and sdist_sql != wheel_sql:
             differing = sorted(
-                k for k in wheel_sql if sdist_sql.get(k) not in (None, wheel_sql[k])
+                k for k in wheel_sql if k in sdist_sql and sdist_sql[k] != wheel_sql[k]
             )
             raise GuardError(
                 f"{version}: the sdist and the wheel ship different migration bytes: "
@@ -252,12 +270,20 @@ def build_ledger(mapping: list[tuple[str, str]]) -> dict[str, Any]:
             )
         entry["migrations"] = dict(sorted(wheel_sql.items()))
         releases[version] = entry
+    withdrawn = sorted(
+        set((prior or {}).get("releases", {})) - set(releases), key=_version_key
+    )
+    for version in withdrawn:
+        assert prior is not None
+        releases[version] = prior["releases"][version]
+    releases = {v: releases[v] for v in sorted(releases, key=_version_key)}
     return {
         "format": LEDGER_FORMAT,
         "project": PROJECT,
         "source": "PyPI wheel and sdist bytes; regenerate with "
         "`python scripts/check_published_migrations.py build`",
         "releases": releases,
+        "withdrawn_from_pypi": withdrawn,
         "historical_violations": _multiplicity(releases),
     }
 
@@ -291,6 +317,51 @@ def latest_published(ledger: Mapping[str, Any]) -> dict[str, tuple[str, str, set
             prior = out.get(path)
             seen = (prior[2] if prior else set()) | {digest}
             out[path] = (digest, version, seen)
+    return out
+
+
+#: The one directory the runner reads, as a wheel path. _migrations._migrations_dir()
+#: resolves ``<package>/migrations`` and globs ``*.sql`` in it (not recursively).
+#: tests/test_published_migrations.py pins this against the runner itself.
+RUNNER_WHEEL_DIR = "regista/migrations/"
+
+
+def _in_runner_dir(wheel_path: str) -> bool:
+    rest = wheel_path[len(RUNNER_WHEEL_DIR) :]
+    return wheel_path.startswith(RUNNER_WHEEL_DIR) and "/" not in rest
+
+
+def runner_version(name: str) -> int | None:
+    """The version the runner would assign to ``name``, or None if it skips it.
+
+    Mirrors ``_migrations.discover_migrations``: the glob is ``*.sql`` (case-
+    sensitive) and the version is ``int(stem.split("_", 1)[0])``. ASCII digits are
+    required here even though ``int()`` accepts other Unicode digits: a migration
+    numbered in superscripts is a defect to refuse, not a version to honour.
+    """
+    if not name.endswith(".sql"):
+        return None
+    head = name[: -len(".sql")].split("_", 1)[0]
+    if not (head.isascii() and head.isdigit()):
+        return None
+    return int(head)
+
+
+def shipped_sql(repo_root: Path, mapping: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """wheel path -> repository source paths, for every .sql the build would package.
+
+    Any suffix case counts (``.SQL`` ships too); the runner rule decides later
+    whether it would ever apply.
+    """
+    out: dict[str, list[str]] = {}
+    for wheel_prefix, repo_prefix in mapping:
+        base = repo_root / repo_prefix
+        if not base.is_dir():
+            continue
+        for f in sorted(base.rglob("*")):
+            if f.is_file() and f.suffix.lower() == ".sql":
+                rel = f.relative_to(base).as_posix()
+                out.setdefault(wheel_prefix + rel, []).append(repo_prefix + rel)
     return out
 
 
@@ -344,52 +415,107 @@ def check_tree(
                 "published bytes and put the change in a new migration."
             )
 
-    # 3. Shape of the migration directories: numeric, unique, append-only.
-    # Unmappable published paths were already reported in step 2.
-    mapped: dict[str, str] = {}
+    # 3. Everything the build ships, not just what has been published. The set
+    #    is derived from the same [tool.hatch] mapping hatchling uses, so a new
+    #    force-include, a new package directory, or a src/regista/migrations/
+    #    (which _migrations._migrations_dir() PREFERS over the repo-root copy)
+    #    cannot add migrations the guard never inspects.
+    shipped = shipped_sql(repo_root, mapping)
+    for wheel_path, sources in sorted(shipped.items()):
+        if len(sources) > 1:
+            problems.append(
+                f"{wheel_path} would be shipped from {len(sources)} source files "
+                f"{sources}. Exactly one source may produce a packaged migration."
+            )
+    runner_sources = sorted(
+        {src.rsplit("/", 1)[0] for w, srcs in shipped.items() if _in_runner_dir(w) for src in srcs}
+    )
+    if len(runner_sources) > 1:
+        problems.append(
+            f"{RUNNER_WHEEL_DIR} is assembled from {len(runner_sources)} source "
+            f"directories {runner_sources}. An editable install reads only one of them "
+            "(src/regista/migrations/ is preferred when it exists), so the runner and the "
+            "wheel would apply different sets. Keep one source directory."
+        )
+    pub_versions: dict[int, str] = {}
     for wheel_path in published:
-        try:
-            mapped[wheel_path] = wheel_to_repo_path(wheel_path, mapping)
-        except GuardError:
+        if _in_runner_dir(wheel_path):
+            number = runner_version(wheel_path.rsplit("/", 1)[1])
+            if number is not None:
+                pub_versions[number] = wheel_path
+    max_published = max(pub_versions, default=-1)
+    by_version: dict[int, list[str]] = {}
+    for wheel_path, sources in sorted(shipped.items()):
+        where = f"{sources[0]} (ships as {wheel_path})"
+        if not _in_runner_dir(wheel_path):
+            problems.append(
+                f"{where}: a packaged .sql outside {RUNNER_WHEEL_DIR}. The runner applies "
+                f"only top-level {RUNNER_WHEEL_DIR}*.sql, so this would ship and never "
+                "apply. Move it or stop shipping it."
+            )
             continue
-    migration_dirs = sorted({repo_path.rsplit("/", 1)[0] for repo_path in mapped.values()})
-    for rel_dir in migration_dirs:
-        directory = repo_root / rel_dir
-        pub_versions: dict[int, str] = {}
-        for repo_path in mapped.values():
-            if repo_path.rsplit("/", 1)[0] == rel_dir:
-                m = _VERSION_RE.match(repo_path.rsplit("/", 1)[1])
-                if m:
-                    pub_versions[int(m.group(1))] = repo_path
-        max_published = max(pub_versions, default=-1)
-        by_version: dict[int, list[str]] = {}
-        for sql in sorted(directory.glob("*.sql")) if directory.is_dir() else []:
-            rel = f"{rel_dir}/{sql.name}"
-            m = _VERSION_RE.match(sql.name)
-            if not m:
-                problems.append(
-                    f"{rel}: no numeric version prefix. The runner silently skips such "
-                    "a file, so it would ship and never apply."
-                )
+        name = wheel_path.rsplit("/", 1)[1]
+        number = runner_version(name)
+        if number is None:
+            problems.append(
+                f"{where}: not a canonical migration name (a lower-case .sql suffix and "
+                "an ASCII-digit version before the first '_'). Depending on the name "
+                "the runner either skips it or derives a version via int(), e.g. from "
+                "'+4'. Both are refused."
+            )
+            continue
+        by_version.setdefault(number, []).append(wheel_path)
+    for number, paths in sorted(by_version.items()):
+        if len(paths) > 1:
+            problems.append(f"migration version {number} is claimed by {len(paths)} files: {paths}")
+        for wheel_path in paths:
+            if wheel_path in published:
                 continue
-            by_version.setdefault(int(m.group(1)), []).append(rel)
-        for number, paths in sorted(by_version.items()):
-            if len(paths) > 1:
+            if number <= max_published:
                 problems.append(
-                    f"migration version {number} is claimed by {len(paths)} files: {paths}"
+                    f"{shipped[wheel_path][0]}: unpublished migration numbered {number} "
+                    f"sorts at or before the latest published migration ({max_published}, "
+                    f"{pub_versions[max_published]}). The runner applies by set "
+                    "membership, so stores already past it would run this late and out "
+                    f"of order. Number it above {max_published}."
                 )
-            for rel in paths:
-                if rel in pub_versions.values():
-                    continue
-                if number <= max_published:
-                    problems.append(
-                        f"{rel}: unpublished migration numbered {number} sorts at or "
-                        f"before the latest published migration ({max_published}, "
-                        f"{pub_versions[max_published]}). Stores already past "
-                        f"{max_published} would never apply it. Number it above "
-                        f"{max_published}."
-                    )
     return problems
+
+
+def check_monotonic(base: Mapping[str, Any] | None, head: Mapping[str, Any]) -> list[str]:
+    """The ledger only grows. Every release (and withdrawal) the base ledger records
+    must still be recorded, byte-for-byte, at head. ``verify-ledger`` proves head
+    matches PyPI; this proves head did not forget what PyPI used to serve, which a
+    PyPI deletion plus a matching ledger edit would otherwise erase."""
+    if base is None:
+        return []
+    problems = []
+    for version, entry in base["releases"].items():
+        if version not in head["releases"]:
+            problems.append(f"ledger dropped release {version}; published history only grows")
+        elif head["releases"][version] != entry:
+            problems.append(f"ledger rewrote release {version}; recorded releases are immutable")
+    lost = set(base.get("withdrawn_from_pypi") or []) - set(head.get("withdrawn_from_pypi") or [])
+    if lost:
+        problems.append(f"ledger un-recorded withdrawn releases {sorted(lost)}")
+    return problems
+
+
+def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> dict[str, Any] | None:
+    rel = LEDGER_PATH.relative_to(REPO_ROOT).as_posix()
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"], capture_output=True
+    )
+    if proc.returncode != 0:
+        exists = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            capture_output=True,
+        )
+        if exists.returncode != 0:
+            raise GuardError(f"base ref {ref!r} is not a commit in this checkout")
+        return None  # the base predates the ledger (bootstrap)
+    loaded: dict[str, Any] = json.loads(proc.stdout)
+    return loaded
 
 
 def _fmt(m: Mapping[str, frozenset[str]]) -> str:
@@ -429,18 +555,21 @@ def main(argv: list[str] | None = None) -> int:
     rel = sub.add_parser("check-release", help="publish workflow pre-build gate")
     rel.add_argument("--version", required=True)
     sub.add_parser("build", help="network: rewrite the ledger from PyPI")
+    mono = sub.add_parser("check-monotonic", help="git: the ledger only grows vs a base ref")
+    mono.add_argument("--base", required=True)
     args = parser.parse_args(argv)
 
     try:
         if args.cmd == "build":
-            ledger = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"))
+            prior = load_ledger() if LEDGER_PATH.exists() else None
+            ledger = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"), prior)
             LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
             LEDGER_PATH.write_text(_canonical(ledger))
             print(f"wrote {LEDGER_PATH} ({len(ledger['releases'])} releases)")
             return 0
         if args.cmd == "verify-ledger":
             committed = load_ledger()
-            fresh = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"))
+            fresh = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"), committed)
             if _canonical(fresh) != _canonical(committed):
                 missing = sorted(set(fresh["releases"]) - set(committed["releases"]))
                 extra = sorted(set(committed["releases"]) - set(fresh["releases"]))
@@ -459,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             problems = check_tree(fresh)
+        elif args.cmd == "check-monotonic":
+            problems = check_monotonic(_ledger_at(args.base), load_ledger())
         elif args.cmd == "check-release":
             problems = check_release(load_ledger(), args.version)
         else:

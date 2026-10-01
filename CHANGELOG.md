@@ -6,17 +6,21 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
-- **Published migrations are immutable, and CI enforces it against PyPI's own bytes (#65).**
+- **Published migrations are immutable, and CI checks it against PyPI's own bytes (#65).**
   `release/published-migrations.json` records the sha256 of every `*.sql` that each
   `regista-hraedon` release on PyPI ships. The wheel and sdist of all nine releases,
   0.5.1-0.7.2, were downloaded and checked against PyPI's digests, and they agree.
   `scripts/check_published_migrations.py` refuses a tree that edits, renames or deletes a
   published migration. It also refuses an unpublished migration numbered at or below the
-  published head, a duplicate version number, and a `.sql` name with no numeric prefix.
-  The runner silently skips that last kind, so it would ship and never apply. The offline
+  published head, a duplicate version number, a non-canonical name, and any packaged
+  `.sql` outside the runner's one directory, judged over every source the build packages
+  (not just the directories that already hold published files). The offline
   check runs in the test suite. A separate CI job and the publish workflow re-derive the
-  ledger from PyPI and require it to match exactly, so the ledger cannot be edited to bless
-  a change. A newly published release turns CI red until it is recorded.
+  ledger from PyPI and require it to match exactly. They also require it to only grow
+  relative to its git history, so a ledger edit that blesses a change or forgets a release
+  is detected. That detection blocks a merge only if the job is a required check, and
+  `main` currently has no branch protection. A newly published release turns CI red until
+  it is recorded. A release later deleted from PyPI stays recorded as withdrawn.
 
   **Two violations predate the guard and cannot be undone.** `001_initial.sql` and
   `035_event_chain_head_genesis_sentinel.sql` were rewritten in place in 0.6.0. 0.5.x

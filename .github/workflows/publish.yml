@@ -76,6 +76,10 @@ jobs:
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            python3 scripts/check_published_migrations.py check-monotonic --base "$prev"
+          fi
       - name: Lint
         run: ruff check src/ tests/ tools/
       - name: Type-check

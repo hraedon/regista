@@ -191,17 +191,32 @@ jobs:
   # from PyPI, verifies each file against PyPI's sha256, recomputes the ledger
   # and requires it to equal the committed one. A newly published release
   # turns this red until `python scripts/check_published_migrations.py build`
-  # records it - from then on its migrations are frozen too.
+  # records it - from then on its migrations are frozen too. These checks only
+  # BLOCK a merge if this job is a required status check on main; today main
+  # has no branch protection, so a red run is a signal a reviewer must honour.
   published-migrations:
     name: Published migrations are immutable (verified against PyPI)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # check-monotonic reads the base ref's ledger
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
       - name: Ledger equals PyPI, and the tree honours it
         run: python3 scripts/check_published_migrations.py verify-ledger
+      # The ledger only grows: a PyPI deletion plus a matching ledger edit must
+      # not erase a release from published history. Base selection mirrors the
+      # epoch-debt ratchet in the `check` job.
+      - name: Ledger only grows relative to the base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          python3 scripts/check_published_migrations.py check-monotonic --base "$base"
 
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI

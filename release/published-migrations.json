@@ -572,5 +572,6 @@
       }
     }
   },
-  "source": "PyPI wheel and sdist bytes; regenerate with `python scripts/check_published_migrations.py build`"
+  "source": "PyPI wheel and sdist bytes; regenerate with `python scripts/check_published_migrations.py build`",
+  "withdrawn_from_pypi": []
 }
