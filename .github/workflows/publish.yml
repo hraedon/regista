@@ -76,10 +76,8 @@ jobs:
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
-          prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
-          if [ -n "$prev" ]; then
-            python3 scripts/check_published_migrations.py check-monotonic --base "$prev"
-          fi
+          # The tagged commit's parent: the last ledger state before the tag.
+          python3 scripts/check_published_migrations.py check-monotonic --base HEAD^
       - name: Lint
         run: ruff check src/ tests/ tools/
       - name: Type-check
@@ -96,6 +94,10 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Build
         run: uv build
+      # #65: judge the exact bytes about to be uploaded. `uv build` builds the
+      # wheel FROM the sdist, so this also covers sdist-only mappings.
+      - name: Built artifacts honour the published-migration ledger
+        run: python3 scripts/check_published_migrations.py check-dist dist
       - name: Check distribution metadata
         run: uvx twine check dist/*
       - uses: actions/upload-artifact@v4

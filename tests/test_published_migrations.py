@@ -451,3 +451,115 @@ def test_two_disagreeing_sdists_are_refused(
     monkeypatch.setattr(guard, "_fetch", lambda url, attempts=4: table[url])
     with pytest.raises(guard.GuardError, match="two sdists ship different migrations"):
         guard.build_ledger(_mapping(tmp_path))
+
+
+# --------------------------------------------------------------------------
+# Round 2 review (gpt-5.6-sol B1-B4): the built artifact is the authority, and
+# a withdrawal must be of a release already on record.
+
+
+def _write_wheel(path: Path, files: dict[str, bytes]) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+        zf.writestr("r-0.0.0.dist-info/METADATA", "Name: r\n")
+
+
+def _write_sdist(path: Path, files: dict[str, bytes]) -> None:
+    import io
+    import tarfile
+
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(f"r-0.0.0/{name}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+
+def _dist(tmp_path: Path, wheel: dict[str, bytes], sdist: dict[str, bytes] | None = None) -> Path:
+    d = tmp_path / "dist"
+    d.mkdir(parents=True, exist_ok=True)
+    _write_wheel(d / "r-0.0.0-py3-none-any.whl", wheel)
+    if sdist is not None:
+        _write_sdist(d / "r-0.0.0.tar.gz", sdist)
+    return d
+
+
+WHEEL_OK = {f"regista/migrations/{n}": b for n, b in BASE_FILES.items()}
+SDIST_OK = {f"migrations/{n}": b for n, b in BASE_FILES.items()}
+
+
+def test_check_dist_passes_a_faithful_build(tmp_path: Path) -> None:
+    d = _dist(tmp_path, WHEEL_OK, SDIST_OK)
+    assert guard.check_dist(_ledger(BASE_RELEASES), d, {}) == []
+
+
+def test_check_dist_sees_a_backdoor_the_source_model_cannot(tmp_path: Path) -> None:
+    """The four round-2 shapes (file-valued/global force-include, only-include+sources,
+    symlinked dir) and sdist-only injection all end the same way: an extra file in
+    the wheel. The artifact check judges that file directly."""
+    d = _dist(tmp_path, {**WHEEL_OK, "regista/migrations/000_backdoor.sql": C}, SDIST_OK)
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert any("000_backdoor.sql: unpublished migration numbered 0" in p for p in problems)
+    assert any("migrations/ differs from the wheel" in p for p in problems)
+
+
+def test_check_dist_sees_a_mutated_published_migration(tmp_path: Path) -> None:
+    d = _dist(tmp_path, {**WHEEL_OK, "regista/migrations/001_a.sql": A + b"-- x\n"})
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert len(problems) == 1 and "bytes changed after publication" in problems[0]
+
+
+def test_check_dist_sees_a_dropped_published_migration(tmp_path: Path) -> None:
+    d = _dist(tmp_path, {"regista/migrations/002_b.sql": B})
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert any("001_a.sql: published in 0.2.0 and no longer packaged" in p for p in problems)
+
+
+def test_check_dist_refuses_sql_outside_the_runner_dir(tmp_path: Path) -> None:
+    d = _dist(tmp_path, {**WHEEL_OK, "regista/schema.sql": C})
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert len(problems) == 1 and "outside regista/migrations/" in problems[0]
+
+
+def test_check_dist_refuses_an_sdist_that_diverges_from_the_wheel(tmp_path: Path) -> None:
+    d = _dist(tmp_path, WHEEL_OK, {**SDIST_OK, "migrations/000_x.sql": C})
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert len(problems) == 1 and "only-sdist=['regista/migrations/000_x.sql']" in problems[0]
+
+
+def test_check_dist_with_no_wheel_refuses_to_pass(tmp_path: Path) -> None:
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(guard.GuardError, match="no wheel"):
+        guard.check_dist(_ledger(BASE_RELEASES), tmp_path / "empty", {})
+
+
+def test_monotonic_refuses_a_fabricated_withdrawal() -> None:
+    base = _ledger(BASE_RELEASES)
+    head = copy.deepcopy(base)
+    head["releases"]["0.0.1"] = {"files": {}, "migrations": {"regista/migrations/000_x.sql": "0"}}
+    head["withdrawn_from_pypi"] = ["0.0.1"]
+    problems = guard.check_monotonic(base, head)
+    assert any("never recorded as published" in p for p in problems)
+
+
+def test_monotonic_allows_withdrawing_a_release_on_record() -> None:
+    base = _ledger(BASE_RELEASES)
+    head = copy.deepcopy(base)
+    head["withdrawn_from_pypi"] = ["0.1.0"]
+    assert guard.check_monotonic(base, head) == []
+
+
+def test_a_founding_ledger_may_not_record_withdrawals() -> None:
+    head = _ledger(BASE_RELEASES)
+    head["withdrawn_from_pypi"] = ["0.1.0"]
+    assert any("founding ledger" in p for p in guard.check_monotonic(None, head))
+
+
+def test_a_missing_base_ledger_is_refused_once_the_guard_exists() -> None:
+    head = _ledger(BASE_RELEASES)
+    assert guard.check_monotonic(None, head, base_has_guard=False) == []
+    problems = guard.check_monotonic(None, head, base_has_guard=True)
+    assert any("ledger was deleted" in p for p in problems)

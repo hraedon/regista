@@ -21,33 +21,47 @@ protection, so a red run is a signal a reviewer must honour, not a lock.
 
 Subcommands:
 
-``check-tree`` (offline, runs in the ordinary test suite)
-    The working tree honours the ledger:
+``check-dist DIST_DIR`` (offline; the AUTHORITY - CI and the publish build job)
+    The rules below, applied to the .sql files the built wheel(s) actually
+    contain. Each sdist's ``migrations/`` must match the wheel. ``uv build``
+    builds the wheel from the sdist, so sdist-only mappings are covered.
 
-    * every published migration still exists at its repository path;
-    * each one's bytes equal its **latest** published bytes;
+``check-tree`` (offline, runs in pytest; a conservative EARLY signal)
+    The same rules over a model of the hatch build: every ``packages`` dir and
+    every directory-valued ``force-include`` of the wheel target. Hatch has
+    selection rules this model does not reproduce (file-valued or global
+    force-include, only-include, sources rewrites, symlink traversal,
+    exclude/VCS-ignore), so it can miss a file (check-dist catches that) or
+    count an excluded one (which fails safe). The rules:
+
+    * every published migration is still packaged, with the bytes of its
+      **latest** release;
     * a path whose published bytes differ between releases is allowed only if
       it is one of the exactly-pinned historical violations below;
-    * every ``.sql`` the build would package (every ``packages`` dir and every
-      ``force-include`` source, not only dirs that already hold published files)
-      lands in the one directory the runner reads, from one source directory,
-      under a canonical name (lower-case ``.sql``, ASCII-digit version before
-      the first ``_``), with a unique version. An unpublished migration must sort
-      **after** every published one. The runner applies by set membership, so a
-      late low number would run out of order on existing stores.
+    * every packaged ``.sql`` lands directly in the one directory the runner
+      reads, from one source (tree check), under a canonical name (lower-case
+      ``.sql``, ASCII-digit version before the first ``_``), with a unique
+      version. An unpublished migration must sort **after** every published
+      one. The runner applies by set membership, so a late low number would
+      run out of order on existing stores.
 
 ``check-monotonic --base REF`` (git)
     Every release and withdrawal recorded at ``REF`` is still recorded,
     unchanged. Published history only grows. A release PyPI no longer serves
     (an owner can delete one) stays in the ledger under
     ``withdrawn_from_pypi``, because stores may already have applied its bytes.
+    A withdrawal is accepted only for a release ``REF`` already recorded, so the
+    ledger cannot invent "published" history. A base without a ledger is
+    accepted only if it also predates this guard (the one-time bootstrap).
 
 ``verify-ledger`` (network: pypi.org)
     Re-download every release PyPI lists, verify each file against PyPI's
     sha256 digest, recompute the ledger, and require it to equal the committed
-    one exactly. A missing release, a ledger edit, or a new PyPI release that
-    has not been recorded yet all fail. A new release therefore turns CI red
-    until the ledger records it, and from then on its migrations are frozen.
+    one exactly. An edit to any release PyPI still serves, or a new PyPI
+    release not yet recorded, fails. A new release therefore turns CI red until
+    the ledger records it, and from then on its migrations are frozen. Releases
+    PyPI no longer serves are carried over as withdrawn, and only
+    ``check-monotonic`` can judge them, so the two always run together.
 
 ``check-release --version X`` (publish workflow, before build)
     ``X`` must not already be in the ledger, and ``check-tree`` must pass on
@@ -365,18 +379,13 @@ def shipped_sql(repo_root: Path, mapping: list[tuple[str, str]]) -> dict[str, li
     return out
 
 
-def check_tree(
+def _check_ledger_consistency(
+    published: Mapping[str, tuple[str, str, set[str]]],
     ledger: Mapping[str, Any],
-    repo_root: Path = REPO_ROOT,
-    frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
+    frozen: Mapping[str, frozenset[str]],
 ) -> list[str]:
-    """Return every violation (empty list = pass). Never stops at the first."""
+    """Historical multiplicity is exactly the frozen set, and the ledger agrees with itself."""
     problems: list[str] = []
-    mapping = _path_mapping(repo_root / "pyproject.toml")
-    published = latest_published(ledger)
-
-    # 1. Historical multiplicity is exactly the frozen set: no more, no fewer,
-    #    and the ledger's own record agrees with what its releases say.
     multi = {p: frozenset(s) for p, (_, _, s) in published.items() if len(s) > 1}
     if multi != dict(frozen):
         problems.append(
@@ -391,52 +400,32 @@ def check_tree(
             "ledger historical_violations does not match its own releases: "
             f"recorded {_fmt(recorded)}, derived {_fmt(multi)}"
         )
+    return problems
 
-    # 2. Every published path exists at its repository path with its latest bytes.
+
+def _check_shape(
+    published: Mapping[str, tuple[str, str, set[str]]],
+    shipped: Mapping[str, tuple[str, str]],
+) -> list[str]:
+    """Rules over the packaged .sql set, keyed by wheel path -> (sha256, label).
+
+    The same rules judge the source tree (an early, conservative model of the
+    build) and a built wheel (the authority: what actually installs).
+    """
+    problems: list[str] = []
     for wheel_path, (digest, version, _seen) in sorted(published.items()):
-        try:
-            repo_path = wheel_to_repo_path(wheel_path, mapping)
-        except GuardError as exc:
-            problems.append(str(exc))
-            continue
-        target = repo_root / repo_path
-        if not target.is_file():
+        if wheel_path not in shipped:
             problems.append(
-                f"{repo_path}: published in {version} (as {wheel_path}) and now missing. "
-                "Published migrations may not be deleted or renamed; a store that "
-                "applied it records its checksum."
+                f"{wheel_path}: published in {version} and no longer packaged. Published "
+                "migrations may not be deleted or renamed; a store that applied it "
+                "records its checksum."
             )
-            continue
-        actual = hashlib.sha256(target.read_bytes()).hexdigest()
-        if actual != digest:
+        elif shipped[wheel_path][0] != digest:
             problems.append(
-                f"{repo_path}: bytes changed after publication. Latest published "
-                f"({version}) sha256 {digest}, tree has {actual}. Restore the "
-                "published bytes and put the change in a new migration."
+                f"{shipped[wheel_path][1]}: bytes changed after publication. Latest "
+                f"published ({version}) sha256 {digest}, now {shipped[wheel_path][0]}. "
+                "Restore the published bytes and put the change in a new migration."
             )
-
-    # 3. Everything the build ships, not just what has been published. The set
-    #    is derived from the same [tool.hatch] mapping hatchling uses, so a new
-    #    force-include, a new package directory, or a src/regista/migrations/
-    #    (which _migrations._migrations_dir() PREFERS over the repo-root copy)
-    #    cannot add migrations the guard never inspects.
-    shipped = shipped_sql(repo_root, mapping)
-    for wheel_path, sources in sorted(shipped.items()):
-        if len(sources) > 1:
-            problems.append(
-                f"{wheel_path} would be shipped from {len(sources)} source files "
-                f"{sources}. Exactly one source may produce a packaged migration."
-            )
-    runner_sources = sorted(
-        {src.rsplit("/", 1)[0] for w, srcs in shipped.items() if _in_runner_dir(w) for src in srcs}
-    )
-    if len(runner_sources) > 1:
-        problems.append(
-            f"{RUNNER_WHEEL_DIR} is assembled from {len(runner_sources)} source "
-            f"directories {runner_sources}. An editable install reads only one of them "
-            "(src/regista/migrations/ is preferred when it exists), so the runner and the "
-            "wheel would apply different sets. Keep one source directory."
-        )
     pub_versions: dict[int, str] = {}
     for wheel_path in published:
         if _in_runner_dir(wheel_path):
@@ -445,8 +434,8 @@ def check_tree(
                 pub_versions[number] = wheel_path
     max_published = max(pub_versions, default=-1)
     by_version: dict[int, list[str]] = {}
-    for wheel_path, sources in sorted(shipped.items()):
-        where = f"{sources[0]} (ships as {wheel_path})"
+    for wheel_path, (_digest, label) in sorted(shipped.items()):
+        where = f"{label} (ships as {wheel_path})"
         if not _in_runner_dir(wheel_path):
             problems.append(
                 f"{where}: a packaged .sql outside {RUNNER_WHEEL_DIR}. The runner applies "
@@ -454,8 +443,7 @@ def check_tree(
                 "apply. Move it or stop shipping it."
             )
             continue
-        name = wheel_path.rsplit("/", 1)[1]
-        number = runner_version(name)
+        number = runner_version(wheel_path.rsplit("/", 1)[1])
         if number is None:
             problems.append(
                 f"{where}: not a canonical migration name (a lower-case .sql suffix and "
@@ -473,7 +461,7 @@ def check_tree(
                 continue
             if number <= max_published:
                 problems.append(
-                    f"{shipped[wheel_path][0]}: unpublished migration numbered {number} "
+                    f"{shipped[wheel_path][1]}: unpublished migration numbered {number} "
                     f"sorts at or before the latest published migration ({max_published}, "
                     f"{pub_versions[max_published]}). The runner applies by set "
                     "membership, so stores already past it would run this late and out "
@@ -482,40 +470,173 @@ def check_tree(
     return problems
 
 
-def check_monotonic(base: Mapping[str, Any] | None, head: Mapping[str, Any]) -> list[str]:
-    """The ledger only grows. Every release (and withdrawal) the base ledger records
-    must still be recorded, byte-for-byte, at head. ``verify-ledger`` proves head
-    matches PyPI; this proves head did not forget what PyPI used to serve, which a
-    PyPI deletion plus a matching ledger edit would otherwise erase."""
+def check_tree(
+    ledger: Mapping[str, Any],
+    repo_root: Path = REPO_ROOT,
+    frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
+) -> list[str]:
+    """The source tree, judged through a CONSERVATIVE model of the hatch build.
+
+    This is the fast early signal (it runs in pytest). It is not the authority:
+    hatch has selection rules this model does not reproduce (file-valued and
+    global force-include, only-include, sources rewrites, symlink traversal,
+    exclude and VCS-ignore). ``check-dist`` over the built wheel is the
+    authority and gates publication. Where this model overcounts, it fails safe.
+    """
+    published = latest_published(ledger)
+    problems = _check_ledger_consistency(published, ledger, frozen)
+    mapping = _path_mapping(repo_root / "pyproject.toml")
+    sources = shipped_sql(repo_root, mapping)
+    for wheel_path, srcs in sorted(sources.items()):
+        if len(srcs) > 1:
+            problems.append(
+                f"{wheel_path} would be shipped from {len(srcs)} source files "
+                f"{srcs}. Exactly one source may produce a packaged migration."
+            )
+    runner_sources = sorted(
+        {src.rsplit("/", 1)[0] for w, srcs in sources.items() if _in_runner_dir(w) for src in srcs}
+    )
+    if len(runner_sources) > 1:
+        problems.append(
+            f"{RUNNER_WHEEL_DIR} is assembled from {len(runner_sources)} source "
+            f"directories {runner_sources}. An editable install reads only one of them "
+            "(src/regista/migrations/ is preferred when it exists), so the runner and the "
+            "wheel would apply different sets. Keep one source directory."
+        )
+    for wheel_path in published:
+        if wheel_path not in sources:
+            try:
+                wheel_to_repo_path(wheel_path, mapping)
+            except GuardError as exc:
+                problems.append(str(exc))
+    shipped = {
+        w: (hashlib.sha256((repo_root / srcs[0]).read_bytes()).hexdigest(), srcs[0])
+        for w, srcs in sources.items()
+    }
+    return problems + _check_shape(published, shipped)
+
+
+def dist_sql(dist_dir: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """The packaged .sql set of the built wheel(s) in ``dist_dir``, plus agreement problems.
+
+    Every wheel must carry the same set. Each sdist's ``migrations/`` must equal the
+    wheel's runner directory byte-for-byte, so an sdist a user builds from cannot
+    install something the checked wheel does not.
+    """
+    problems: list[str] = []
+    wheels = sorted(dist_dir.glob("*.whl"))
+    if not wheels:
+        raise GuardError(f"{dist_dir}: no wheel to check; refusing to vacuously pass")
+    shipped: dict[str, tuple[str, str]] | None = None
+    for whl in wheels:
+        digests = _sql_members_wheel(whl.read_bytes())
+        members = {p: (d, f"{whl.name}:{p}") for p, d in digests.items()}
+        if shipped is not None and {p: d for p, (d, _) in members.items()} != {
+            p: d for p, (d, _) in shipped.items()
+        }:
+            problems.append(f"{whl.name} ships different .sql files than {wheels[0].name}")
+        shipped = shipped or members
+    assert shipped is not None
+    runner = {p: d for p, (d, _) in shipped.items() if _in_runner_dir(p)}
+    for sdist in sorted(dist_dir.glob("*.tar.gz")):
+        with tarfile.open(sdist, mode="r:gz") as tf:
+            found: dict[str, str] = {}
+            for member in tf.getmembers():
+                parts = member.name.split("/")
+                if member.isfile() and len(parts) == 3 and parts[1] == "migrations":
+                    fh = tf.extractfile(member)
+                    assert fh is not None
+                    found[RUNNER_WHEEL_DIR + parts[2]] = hashlib.sha256(fh.read()).hexdigest()
+        sql_found = {p: d for p, d in found.items() if p.lower().endswith(".sql")}
+        differing = sorted(k for k in runner if k in sql_found and sql_found[k] != runner[k])
+        if sql_found != runner:
+            problems.append(
+                f"{sdist.name}: migrations/ differs from the wheel's {RUNNER_WHEEL_DIR} "
+                f"(only-sdist={sorted(set(sql_found) - set(runner))}, "
+                f"only-wheel={sorted(set(runner) - set(sql_found))}, "
+                f"differing={differing})"
+            )
+    return shipped, problems
+
+
+def check_dist(
+    ledger: Mapping[str, Any],
+    dist_dir: Path,
+    frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
+) -> list[str]:
+    """The AUTHORITATIVE check: the rules applied to what the built wheel installs."""
+    published = latest_published(ledger)
+    problems = _check_ledger_consistency(published, ledger, frozen)
+    shipped, agreement = dist_sql(dist_dir)
+    return problems + agreement + _check_shape(published, shipped)
+
+
+def check_monotonic(
+    base: Mapping[str, Any] | None, head: Mapping[str, Any], *, base_has_guard: bool = False
+) -> list[str]:
+    """The ledger only grows, and a withdrawal must be of a release already on record.
+
+    Every release the base ledger records must still be recorded, unchanged, at
+    head. A release in head's ``withdrawn_from_pypi`` must have been recorded as
+    a release in the base: head cannot vouch for history that PyPI no longer
+    serves, so a fabricated "withdrawn" release (which would otherwise make an
+    arbitrary path count as published) is refused. With no base ledger, head may
+    record no withdrawals at all, and the bootstrap is allowed only when the
+    base predates the guard itself.
+    """
+    head_withdrawn = set(head.get("withdrawn_from_pypi") or [])
     if base is None:
-        return []
+        problems = []
+        if base_has_guard:
+            problems.append(
+                "base has the published-migration guard but no ledger; the ledger was "
+                "deleted. Bootstrap without a base ledger is allowed only once, from a "
+                "base that predates the guard."
+            )
+        if head_withdrawn:
+            problems.append(
+                f"founding ledger records withdrawn releases {sorted(head_withdrawn)}; a "
+                "ledger cannot vouch for releases PyPI no longer serves on its own say-so"
+            )
+        return problems
     problems = []
     for version, entry in base["releases"].items():
         if version not in head["releases"]:
             problems.append(f"ledger dropped release {version}; published history only grows")
         elif head["releases"][version] != entry:
             problems.append(f"ledger rewrote release {version}; recorded releases are immutable")
-    lost = set(base.get("withdrawn_from_pypi") or []) - set(head.get("withdrawn_from_pypi") or [])
+    lost = set(base.get("withdrawn_from_pypi") or []) - head_withdrawn
     if lost:
         problems.append(f"ledger un-recorded withdrawn releases {sorted(lost)}")
+    unvouched = head_withdrawn - set(base["releases"])
+    if unvouched:
+        problems.append(
+            f"ledger records withdrawn releases {sorted(unvouched)} that the base never "
+            "recorded as published; only a release already on record can be withdrawn"
+        )
     return problems
 
 
-def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> dict[str, Any] | None:
-    rel = LEDGER_PATH.relative_to(REPO_ROOT).as_posix()
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"], capture_output=True
-    )
-    if proc.returncode != 0:
-        exists = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-            capture_output=True,
+def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> tuple[dict[str, Any] | None, bool]:
+    """(ledger at ``ref`` or None, whether ``ref`` already carries this guard)."""
+    def show(path: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{path}"], capture_output=True
         )
-        if exists.returncode != 0:
-            raise GuardError(f"base ref {ref!r} is not a commit in this checkout")
-        return None  # the base predates the ledger (bootstrap)
+
+    exists = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        raise GuardError(f"base ref {ref!r} is not a commit in this checkout")
+    guard_rel = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
+    has_guard = show(guard_rel).returncode == 0
+    proc = show(LEDGER_PATH.relative_to(REPO_ROOT).as_posix())
+    if proc.returncode != 0:
+        return None, has_guard
     loaded: dict[str, Any] = json.loads(proc.stdout)
-    return loaded
+    return loaded, has_guard
 
 
 def _fmt(m: Mapping[str, frozenset[str]]) -> str:
@@ -557,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("build", help="network: rewrite the ledger from PyPI")
     mono = sub.add_parser("check-monotonic", help="git: the ledger only grows vs a base ref")
     mono.add_argument("--base", required=True)
+    dist = sub.add_parser("check-dist", help="AUTHORITATIVE: the rules over built artifacts")
+    dist.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
 
     try:
@@ -589,7 +712,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             problems = check_tree(fresh)
         elif args.cmd == "check-monotonic":
-            problems = check_monotonic(_ledger_at(args.base), load_ledger())
+            base, base_has_guard = _ledger_at(args.base)
+            problems = check_monotonic(base, load_ledger(), base_has_guard=base_has_guard)
+        elif args.cmd == "check-dist":
+            problems = check_dist(load_ledger(), args.dist_dir)
         elif args.cmd == "check-release":
             problems = check_release(load_ledger(), args.version)
         else:

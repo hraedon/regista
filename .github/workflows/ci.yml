@@ -204,8 +204,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Ledger equals PyPI, and the tree honours it
         run: python3 scripts/check_published_migrations.py verify-ledger
+      # The authoritative check: the rules applied to what the built wheel
+      # actually installs. The source-tree check models hatch conservatively;
+      # this one does not need to, so selection rules it cannot see (file or
+      # global force-include, only-include/sources, symlinks, sdist-only
+      # mappings that reach the wheel through `uv build`) are covered.
+      - name: Built artifacts honour the ledger
+        run: |
+          uv build --out-dir dist
+          python3 scripts/check_published_migrations.py check-dist dist
       # The ledger only grows: a PyPI deletion plus a matching ledger edit must
       # not erase a release from published history. Base selection mirrors the
       # epoch-debt ratchet in the `check` job.

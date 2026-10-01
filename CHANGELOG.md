@@ -13,12 +13,14 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `scripts/check_published_migrations.py` refuses a tree that edits, renames or deletes a
   published migration. It also refuses an unpublished migration numbered at or below the
   published head, a duplicate version number, a non-canonical name, and any packaged
-  `.sql` outside the runner's one directory, judged over every source the build packages
-  (not just the directories that already hold published files). The offline
-  check runs in the test suite. A separate CI job and the publish workflow re-derive the
-  ledger from PyPI and require it to match exactly. They also require it to only grow
-  relative to its git history, so a ledger edit that blesses a change or forgets a release
-  is detected. That detection blocks a merge only if the job is a required check, and
+  `.sql` outside the runner's one directory. The authority is `check-dist`, which judges
+  the .sql files inside the built wheel and requires each sdist to match. It runs in CI and
+  in the publish build job, immediately before upload. A conservative source-tree model of
+  the same rules runs in the test suite as an early signal. A separate CI job and the
+  publish workflow re-derive the ledger from PyPI and require it to match exactly. They
+  also require it to only grow relative to its git history, and accept a withdrawal only
+  for a release already on record. So a ledger edit that blesses a change, forgets a
+  release or invents one is detected. That detection blocks a merge only if the job is a required check, and
   `main` currently has no branch protection. A newly published release turns CI red until
   it is recorded. A release later deleted from PyPI stays recorded as withdrawn.
 
