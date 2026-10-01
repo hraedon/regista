@@ -29,16 +29,24 @@ name: Publish
 #   sub=repo:hraedon/regista:environment:pypi
 #   job_workflow_ref=hraedon/regista/.github/workflows/publish.yml@refs/tags/vX
 # PyPI had no trusted publisher registered for them. Registering one is a
-# pypi.org account action, so this file cannot fix it. What it can do is let
-# the registration be PROVEN before the next tag rather than discovered
-# after it: run this workflow by hand (Actions -> Publish -> Run workflow, or
-# `gh workflow run publish.yml --ref main`). The dispatch runs ONLY the
-# `oidc-preflight` job. That job performs the same OIDC exchange `uv publish`
-# would and reports PyPI's verdict. It uploads nothing. The short-lived upload
-# token PyPI mints on success (15 minutes) is never printed or stored. PyPI
-# matches the publisher on owner, repository, workflow filename and
-# environment, not on the ref or the event, so a pass here predicts a pass on
-# the tag.
+# pypi.org account action, so this file cannot fix it. What it adds is a way
+# to check the registration without cutting a release: dispatch this workflow
+# from main (`gh workflow run publish.yml --ref main`). The dispatch runs ONLY
+# the `oidc-preflight` job, which performs the OIDC exchange `uv publish` uses
+# and reports PyPI's verdict. It uploads nothing, and it burns the upload token
+# PyPI mints. A pass confirms that PyPI currently accepts this workflow's
+# identity under the publisher registration the tag run uses: owner,
+# repository, workflow filename and environment. PyPI does not match on the
+# ref or the event. A pass does not exercise the upload itself.
+#
+# PREREQUISITE before the first dispatch: protect the `pypi` environment
+# (Settings -> Environments -> pypi). Require a reviewer, and restrict
+# deployment refs to branch `main` and tags `v*`. Without that, anyone with
+# write access can dispatch a MODIFIED publish.yml from any branch and get a
+# live upload token. The `if:` above cannot stop that, because the modified
+# copy is the one that runs. A writer can already reach the publish job by
+# pushing a v* tag, so this adds no new principal, but it is an easier path.
+# The environment's protection rules are the boundary for both.
 
 on:
   push:
@@ -53,37 +61,83 @@ permissions:
 jobs:
   oidc-preflight:
     name: Trusted-publisher preflight (uploads nothing)
-    if: github.event_name == 'workflow_dispatch'
+    # Dispatches from main only. A tag ref has nothing to add: PyPI does not
+    # match on the ref (see PREFLIGHT above).
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: pypi   # must match the registered publisher, as `publish` does
     permissions:
       id-token: write
     steps:
-      - name: Exchange the GitHub OIDC token with PyPI, then discard the result
+      - name: Exchange the GitHub OIDC token with PyPI, then burn the result
+        # Everything happens in memory in one process. No response body is
+        # written to disk. The minted upload token is masked the moment it
+        # exists, revoked via /_/oidc/burn-token, and never printed. On
+        # failure, only the allowlisted `code`/`description` strings of
+        # PyPI's error envelope are logged. Same host as `uv publish`
+        # (upload.pypi.org, the default publish authority).
+        shell: python3 {0}
         run: |
-          set -euo pipefail
-          audience="$(curl -fsS https://pypi.org/_/oidc/audience | python3 -c 'import json,sys; print(json.load(sys.stdin)["audience"])')"
-          oidc="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
-          echo "::add-mask::$oidc"
-          status="$(curl -sS -o mint.json -w '%{http_code}' -X POST \
-            -H 'Content-Type: application/json' \
-            --data "{\"token\": \"$oidc\"}" https://pypi.org/_/oidc/mint-token)"
-          # Report the verdict, never the minted credential.
-          python3 - "$status" <<'PY'
-          import json, sys
-          status = sys.argv[1]
-          body = json.load(open("mint.json"))
-          if status == "200" and "token" in body:
-              print("PASS: PyPI accepted this workflow as a trusted publisher "
-                    "(upload token minted and discarded; nothing was uploaded).")
+          import json, os, sys, urllib.error, urllib.request
+
+          HOST = "https://upload.pypi.org"
+
+          def call(url, data=None, headers=None):
+              req = urllib.request.Request(url, data=data, headers=headers or {})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return resp.status, resp.read()
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read()
+              except OSError as exc:
+                  sys.exit(f"FAIL: could not reach {url}: {exc.__class__.__name__}")
+
+          def as_json(status, raw, what):
+              try:
+                  return json.loads(raw)
+              except ValueError:
+                  sys.exit(f"FAIL: {what} returned a non-JSON body (HTTP {status}); body withheld")
+
+          status, raw = call(f"{HOST}/_/oidc/audience")
+          audience = as_json(status, raw, "audience endpoint").get("audience") if status == 200 else None
+          if not isinstance(audience, str):
+              sys.exit(f"FAIL: audience endpoint HTTP {status}")
+
+          status, raw = call(
+              f"{os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']}&audience={audience}",
+              headers={"Authorization": f"bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          oidc = as_json(status, raw, "GitHub OIDC endpoint").get("value") if status == 200 else None
+          if not isinstance(oidc, str):
+              sys.exit(f"FAIL: GitHub OIDC token request HTTP {status}")
+          print(f"::add-mask::{oidc}", flush=True)
+
+          status, raw = call(
+              f"{HOST}/_/oidc/mint-token",
+              data=json.dumps({"token": oidc}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          body = as_json(status, raw, "mint-token")
+          token = body.get("token") if isinstance(body, dict) else None
+          if isinstance(token, str) and token:
+              print(f"::add-mask::{token}", flush=True)
+          if status == 200 and isinstance(token, str) and token:
+              b_status, _ = call(
+                  f"{HOST}/_/oidc/burn-token",
+                  data=json.dumps({"token": token}).encode(),
+                  headers={"Content-Type": "application/json"},
+              )
+              print("PASS: PyPI accepted this workflow as a trusted publisher. Nothing was "
+                    f"uploaded; the minted token was masked and burned (burn HTTP {b_status}).")
               sys.exit(0)
           print(f"FAIL: PyPI refused the OIDC exchange (HTTP {status}).")
-          print(json.dumps({k: v for k, v in body.items() if k != "token"}, indent=2))
+          errors = body.get("errors") if isinstance(body, dict) else None
+          for err in errors if isinstance(errors, list) else []:
+              if isinstance(err, dict):
+                  code, desc = err.get("code"), err.get("description")
+                  print(f"  code={code if isinstance(code, str) else '?'}"[:120])
+                  print(f"  description={desc if isinstance(desc, str) else '?'}"[:400])
           sys.exit(1)
-          PY
-          rm -f mint.json
 
   verify:
     name: Verify (lint, types, tests) before publish
