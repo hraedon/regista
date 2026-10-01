@@ -1,5 +1,10 @@
 # Plan 010 — Delegation Chain (`on_behalf_of`)
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: the `on_behalf_of` delegation field for agent-to-principal binding.
+> Why: action-delegation credentials are explicit REMOVE-scope (`plans/032-final-public-release.md:60`).
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Draft RFC
 **Owner:** plm
 **Resolves:** BC-197

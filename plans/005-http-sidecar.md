@@ -1,5 +1,10 @@
 # Plan 005 — Thin HTTP Sidecar for Regista
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a thin HTTP sidecar exposing the public API over FastAPI.
+> Why: removed (D3, `plans/032-open-decisions.md`/-review.md) — the dependency map found it is not a thin pass-through (ships its own `TokenRegistry`, `AuthenticatedActor`, `require_admin`, rate limiting, 1,708 LOC), and Plan 032 §3 only keeps the sidecar if F0 demonstrates bounded qualification cost, which it did not.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 Status: draft / provisional
 Owner: regista
 Related spec sections: §19 (Public API Surface), §19.2 (Signing), §19.3 (Service-wrapping is mechanical), §19.5 (What the API exposes), AC-33

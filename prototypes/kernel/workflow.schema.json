@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hraedon/regista/prototypes/kernel/workflow.schema.json",
+  "title": "Regista kernel workflow document",
+  "description": "The authoring format for a workflow definition, loadable from YAML or JSON. This is the 0.8 kernel's dialect: a deliberately reduced form of the 0.7 schema (src/regista/_workflow_schema.json). Keys the 0.7 schema accepted and this one does not are refused by name with an explanation rather than ignored -- see WORKFLOW_DOCUMENT_REMOVED_KEYS in kernel.py -- because silently dropping 'allowed_roles' would drop a role restriction, and silently dropping 'validator' would drop a gate.",
+  "type": "object",
+  "required": ["kernel_workflow", "name", "states", "work_item_types", "transitions"],
+  "$comment": "Two rules live in the loader, not here, because JSON Schema can state them only in a form that reports unhelpfully: exactly one state carries initial: true (contains/maxContains prints the entire states array back at you), and 'roles' is required if and only if a transition restricts to one.",
+  "additionalProperties": false,
+  "properties": {
+    "kernel_workflow": {
+      "description": "Version of THIS DOCUMENT FORMAT -- not of the library, and not of the workflow. The registry assigns workflow versions; pinning a library version in a document is how 0.7's 'regista_version' ended up meaning nothing.",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "initial": { "type": "boolean", "default": false },
+          "terminal": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "roles": {
+      "description": "The closed set of role names this workflow's transitions may restrict to. Required once any transition declares 'roles'. It exists to be cross-checked: a role named on a transition and nowhere else is a typo that would otherwise make that transition permanently un-performable, and the failure would surface only at runtime as a refusal naming a role nobody can present.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "work_item_types": {
+      "description": "The closed set of work-item type names this workflow admits. create_work_item() refuses any other. Names only: the kernel validates no per-type custom-field declarations, so accepting the 0.7 object form would accept a declaration it does not enforce.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "from": {
+            "description": "One source state, or several. Several sources belong under ONE entry: a transition name may appear only once in a document.",
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            ]
+          },
+          "to": { "type": "string", "minLength": 1 },
+          "roles": {
+            "description": "Roles permitted to make this transition. Application policy: the kernel checks the role a caller PRESENTS against this list; it does not verify the caller holds it.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "required_fields": {
+            "description": "Fields that must be present and non-null on the item once this transition has applied its own field changes.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

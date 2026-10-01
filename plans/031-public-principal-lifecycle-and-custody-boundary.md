@@ -1,5 +1,10 @@
 # Plan 031 — Public principal lifecycle and custody boundary
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a public, non-durable principal lifecycle contract (versioned digests, proof-of-possession, custody boundary) as a foundation for public principal enrollment.
+> Why: principal custody and lifecycle ceremonies are explicit REMOVE-scope (`plans/032-final-public-release.md:60`); the final 0.8.0 contract treats actor IDs as caller-supplied attribution rather than a registry the library manages.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** In Progress — Phase 0 and the non-durable public contract foundation
 implemented 2026-07-12: versioned types/digests, non-mutating prepare operations,
 process-local one-use proof-of-possession, public facade, JSON-safe result

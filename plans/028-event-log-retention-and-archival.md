@@ -1,5 +1,10 @@
 # Plan 028 — Event-log retention & archival without breaking the chain
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: event-log retention and archival without breaking the chain (segment sealing, replay bridging across archived segments).
+> Why: D16 ruling: historical; no archival subsystem in the MVP. Ordinary PostgreSQL backup/restore remains the required and sufficient retention mechanism. `AGENTS.md:295` already records segment sealing as removed by P1.4 (0.6.0), independent of Plan 032.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Phase 1 (WI-1.1 seal) + replay bridge landed; WI-1.2/2.1 deferred. Terminal-only sealing guardrail (Finding 2) implemented 2026-07-06. Known limitation: replay bridging across non-contiguous segments not yet validated (physical archival not implemented).
 **Author:** Claude (Fable 5), from the 2026-07-02 suite-gaps review
 **Strategic role:** The converged store's event log is append-only and grows

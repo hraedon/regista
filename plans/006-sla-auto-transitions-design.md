@@ -1,5 +1,10 @@
 # Plan 006 — SLA-Based Auto-Transitions: Design Exploration
 
+> **0.8.0 disposition: HISTORICAL.**
+> Release line this plan describes: a design-exploration (self-marked "NOT a plan, NOT implementation-ready") for SLA-based auto-escalation after N hours.
+> Why: never implemented; maps constraints against FR-15 (signing) and other REMOVE-scope FRs, and auto-escalation by wall-clock dwell time is not on Plan 032's keep table (§20 of spec.md explicitly disclaims dwell-time monitoring as a regista responsibility). Kept as a record of a considered-and-not-taken direction, not as design intent for 0.8.0.
+> See `plans/032-plan-dispositions.md` for the full disposition index and `plans/032-final-public-release.md` for the 0.8.0 reduction these dispositions follow.
+
 **Status:** Design exploration (NOT a plan, NOT implementation-ready)
 **Owner:** plm
 **Sibling:** plans/003-recurring-work-items.md (in flight; not yet on disk)

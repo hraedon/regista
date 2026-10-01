@@ -1,0 +1,54 @@
+# The workflow driven by example_documents.py — document ingestion with a
+# person in the loop. Scenario 2's point is that this file and the caller's
+# field names are the ONLY difference from scenario 1: no document-specific
+# code exists anywhere in the kernel.
+kernel_workflow: 1
+name: ingest
+
+states:
+  - name: received
+    initial: true
+  - name: extracting
+  - name: needs_review
+  - name: rejected
+  - name: approved
+  - name: archived
+    terminal: true
+
+roles:
+  - editor
+
+work_item_types:
+  - document
+  - followup
+
+transitions:
+  - name: extract
+    from: received
+    to: extracting
+
+  - name: propose
+    from: extracting
+    to: needs_review
+    required_fields: [invoice_total, invoice_date]
+
+  # Only a person may accept or reject an extraction. Application policy: the
+  # kernel checks the role presented against this list, it does not verify that
+  # the caller holds it.
+  - name: correct
+    from: needs_review
+    to: approved
+    roles: [editor]
+
+  - name: reject
+    from: needs_review
+    to: rejected
+    roles: [editor]
+
+  - name: rework
+    from: rejected
+    to: extracting
+
+  - name: archive
+    from: approved
+    to: archived
