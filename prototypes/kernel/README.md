@@ -61,17 +61,18 @@ be called if this were installed; here you run it as `python3 cli.py …`.
 python3 test_mutations.py "$DSN"
 ```
 
-53 checks, each with a control. They let real leases expire and write with them,
+58 checks, each with a control. They let real leases expire and write with them,
 heartbeat a dead lease, present a live holder's fencing token as someone else,
 hold a row lock until a lease dies underneath a waiting writer, edit event
 payloads, delete middle *and* final events, rewrite a projection's fields, pass
 a `datetime` as a custom field, overwrite a reducer-owned payload key, reuse
 idempotency keys for different requests, present the wrong role, point
 `initialize()` at a 0.7-era schema, create an undeclared work-item type, make a
-v2-only transition on a v1-pinned item, and load a workflow document carrying a
-duplicated YAML key or any 0.7 key this format dropped. Every one asserts
-something was refused **and** that the legitimate version of the same call still
-succeeds.
+v2-only transition on a v1-pinned item, exhaust a bounded pool, poison returned
+transactions, interrupt a write with `KeyboardInterrupt`, replace a killed
+server connection, and load a workflow document carrying a duplicated YAML key
+or any 0.7 key this format dropped. Every one asserts something was refused
+**and** that the legitimate version of the same call still succeeds.
 
 Expiry is exercised with genuinely short leases and real waits, never by
 backdating `expires_at` in SQL — a backdated row cannot tell a correct expiry
@@ -194,6 +195,36 @@ item = k.create_work_item(workflow="remediation", type="finding",
 claim = k.claim(item.id, actor_id="worker-1", ttl_seconds=300)
 k.transition(item.id, transition="start", actor_id="worker-1", attempt=claim.attempt)
 ```
+
+`Kernel.connect()` owns a bounded synchronous `psycopg_pool` pool. Its explicit
+controls are `pool_min_size=1`, `pool_max_size=4`, and `pool_timeout=5.0` seconds:
+
+```python
+k = Kernel.connect(DSN, schema="project_a",
+                   pool_min_size=1, pool_max_size=8, pool_timeout=2.0)
+```
+
+Each public database operation checks out one connection exclusively, starts a
+transaction scoped to the configured schema, and returns it clean. Checkout
+never grows past `pool_max_size`; waiting longer than `pool_timeout` raises
+`PoolExhaustedError`, a `KernelError` that names the configured maximum. Both a
+session scope on every checkout and a transaction-local scope on every operation
+are intentional: a prior rollback, a prior borrower's `SET search_path`, or a
+replacement after server-side connection loss cannot redirect the next operation.
+Open and failed transactions are rolled back on return. Cleanup covers
+`BaseException`, so an interruption in the middle of a write commits no partial
+effect and does not poison the next borrower.
+
+`health()` includes `pool_size`, `pool_min_size`, `pool_max_size`,
+`pool_waiting`, and `pool_available`; availability is the number available after
+the health call returns its own checkout. The snapshot is instantaneous, not a
+capacity reservation or an observability time series.
+
+The limits are deliberately narrow: bounds are per `Kernel` instance (not a
+database-wide connection budget), there is no async pool, callers do not borrow
+raw SQL connections, and closing a kernel while another thread is using it is
+not a supported coordination mechanism. Use one long-lived `Kernel` per project
+per process and call `close()` during orderly shutdown.
 
 `claim.attempt` is a **fencing token**. An item is always in exactly one of
 three lease conditions, and every refusal says which one it found:
@@ -405,12 +436,12 @@ the static half; this supplies the running half.
 | Kernel-classified code to sever and re-cut | 22,610 |
 | …of which six modules couple hardest to the trust stack | 6,046 |
 
-The prototype is **not yet** a complete MVP, but the gap has narrowed. Against
-Plan 032's keep table, still missing: **connection-pool behaviour**. Done since
-the first draft: the CLI, bounded and ordered pagination across every collection
-query, bounded custom-field filtering, work-discovery queries including the
-link-aware one, health, and workflow documents loaded from YAML/JSON against a
-JSON Schema.
+The prototype is **not yet** a complete MVP, but the keep-table implementation
+gaps named by the first draft are now closed. Done since that draft: bounded
+connection-pool behaviour, the CLI, bounded and ordered pagination across every
+collection query, bounded custom-field filtering, work-discovery queries
+including the link-aware one, health, and workflow documents loaded from
+YAML/JSON against a JSON Schema.
 
 The keep table's custom-field row can be read two ways, and the maintainer
 should rule rather than inherit the reading below. "Basic validated domain

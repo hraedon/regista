@@ -20,6 +20,7 @@ Run:  python test_mutations.py "postgresql://..."
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -51,6 +52,7 @@ from kernel import (
     KernelError,
     LeaseExpiredError,
     LeaseNotHeldError,
+    PoolExhaustedError,
     ReservedPayloadKeyError,
     StaleAttemptError,
     TransitionRefusedError,
@@ -125,6 +127,18 @@ KERNEL_PUBLIC_SURFACE = frozenset({
     "history", "replay",
 })
 
+# connect() kept its call shape for every existing caller and deliberately added
+# only explicit pool controls. Pin parameters as well as names: changing a default
+# bound or making the timeout unconfigurable is a public-contract change even
+# though dir(Kernel) would remain identical.
+KERNEL_CONNECT_PARAMETERS = {
+    "dsn": inspect.Parameter.empty,
+    "schema": "public",
+    "pool_min_size": 1,
+    "pool_max_size": 4,
+    "pool_timeout": 5.0,
+}
+
 #: Workflow's fields and methods. Pinned for the same reason as the Kernel
 #: surface: a new field is a decision (is it hashed? is it in the document? does
 #: validate() check it?) and this check is what forces the decision to be made
@@ -180,11 +194,24 @@ def expect_exactly(
     return caught
 
 
-def fresh(dsn: str, schema: str) -> Kernel:
+def fresh(
+    dsn: str,
+    schema: str,
+    *,
+    pool_min_size: int = 1,
+    pool_max_size: int = 4,
+    pool_timeout: float = 5.0,
+) -> Kernel:
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         c.execute(f'CREATE SCHEMA "{schema}"')
-    k = Kernel.connect(dsn, schema=schema)
+    k = Kernel.connect(
+        dsn,
+        schema=schema,
+        pool_min_size=pool_min_size,
+        pool_max_size=pool_max_size,
+        pool_timeout=pool_timeout,
+    )
     k.initialize(os.path.join(HERE, "schema.sql"))
     k.register_workflow(WF)
     return k
@@ -654,6 +681,184 @@ def main(dsn: str) -> int:
         k.close()
     check("a rollback does not reset the session's search_path",
           search_path_survives_a_refusal)
+
+    print("\n\033[1mBounded connection pool (Plan 032 F2)\033[0m")
+
+    def pool_bound_and_timeout_are_enforced() -> None:
+        k = fresh(dsn, "m_pool_bound", pool_min_size=0, pool_max_size=2,
+                  pool_timeout=0.25)
+        held = [k._pool.getconn(), k._pool.getconn()]
+        try:
+            stats = k._pool.get_stats()
+            assert stats["pool_size"] == 2, f"pool did not reach its configured bound: {stats}"
+            started = time.monotonic()
+            err = expect_exactly(PoolExhaustedError, k.health,
+                                 "a third checkout from a size-2 pool")
+            elapsed = time.monotonic() - started
+            assert 0.18 <= elapsed < 1.0, (
+                f"checkout waited {elapsed:.3f}s, not the configured 0.25s bound"
+            )
+            assert "maximum is 2" in str(err), f"the refusal does not name the bound: {err}"
+            assert k._pool.get_stats()["pool_size"] <= 2, "pool grew beyond max_size=2"
+        finally:
+            for conn in held:
+                k._pool.putconn(conn)
+            k.close()
+    check("pool checkout is bounded in size and time, with a typed refusal",
+          pool_bound_and_timeout_are_enforced)
+
+    def pooled_schema_scope_survives_every_reuse_path() -> None:
+        other = fresh(dsn, "m_pool_scope_other", pool_max_size=1)
+        other.create_work_item(workflow="t", type="x", actor_id="other")
+        other.create_work_item(workflow="t", type="x", actor_id="other")
+        other.close()
+
+        k = fresh(dsn, "m_pool_scope", pool_max_size=1, pool_timeout=2.0)
+        item = k.create_work_item(workflow="t", type="x", actor_id="configured")
+        expect(TransitionRefusedError,
+               lambda: k.transition(item.id, transition="not-a-transition",
+                                    actor_id="configured"),
+               "a refusal before a pooled connection is reused")
+        assert k.health()["work_items"] == 1, "rollback moved the pool out of its schema"
+
+        conn = k._pool.getconn()
+        conn.execute('SET search_path TO "m_pool_scope_other"')
+        conn.commit()
+        k._pool.putconn(conn)
+        assert k.health()["work_items"] == 1, (
+            "the next borrower inherited another schema after SET search_path"
+        )
+
+        conn = k._pool.getconn()
+        pid_row = conn.execute("SELECT pg_backend_pid() AS pid").fetchone()
+        assert pid_row is not None
+        backend_pid = int(pid_row["pid"])
+        conn.rollback()
+        k._pool.putconn(conn)
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            terminated = admin.execute(
+                "SELECT pg_terminate_backend(%s)", (backend_pid,)
+            ).fetchone()
+        assert terminated is not None and terminated[0] is True, (
+            "the server-side-loss premise did not terminate the pooled backend"
+        )
+        assert k.health()["work_items"] == 1, (
+            "a replacement connection did not return to the configured schema"
+        )
+        k.close()
+    check("pool reuse stays schema-scoped after refusal, SET, and server loss",
+          pooled_schema_scope_survives_every_reuse_path)
+
+    def dirty_returns_and_interruptions_are_rolled_back() -> None:
+        app = f"kernel-pool-clean-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m_pool_clean", pool_max_size=1)
+        surgery(dsn, "m_pool_clean", "CREATE TABLE pool_probe (n integer)", ())
+
+        dirty = k._pool.getconn()
+        dirty.execute("INSERT INTO pool_probe (n) VALUES (1)")
+        k._pool.putconn(dirty)
+        assert scalar(dsn, "m_pool_clean", "SELECT count(*) FROM pool_probe") == 0, (
+            "an open transaction was committed or reused instead of rolled back"
+        )
+
+        failed = k._pool.getconn()
+        try:
+            failed.execute("SELECT 1 / 0")
+        except psycopg.Error:
+            pass
+        else:
+            raise AssertionError("the failed-transaction premise did not fail")
+        assert failed.info.transaction_status.name == "INERROR"
+        k._pool.putconn(failed)
+        assert k.health()["work_items"] == 0, "a failed transaction poisoned the pool"
+
+        original_append = Kernel._append_event
+
+        def interrupt_append(self: Kernel, *args: Any, **kwargs: Any) -> None:
+            del self, args, kwargs
+            raise KeyboardInterrupt("synthetic mid-transaction interrupt")
+
+        setattr(Kernel, "_append_event", interrupt_append)
+        try:
+            expect(KeyboardInterrupt,
+                   lambda: k.create_work_item(workflow="t", type="x", actor_id="a"),
+                   "KeyboardInterrupt after projection writes and before the event")
+        finally:
+            setattr(Kernel, "_append_event", original_append)
+        assert k.health()["work_items"] == 0, "the interrupted create left a partial row"
+        assert open_transactions(dsn, app) == 0, "the interrupted operation stayed open"
+        k.create_work_item(workflow="t", type="x", actor_id="control")
+        assert k.health()["work_items"] == 1, "the connection was poisoned after interruption"
+        k.close()
+    check("dirty/failed returns and BaseException interruptions cannot poison the pool",
+          dirty_returns_and_interruptions_are_rolled_back)
+
+    def health_reports_pool_state_without_pin() -> None:
+        app = f"kernel-pool-health-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m_pool_health", pool_min_size=2,
+                  pool_max_size=3, pool_timeout=0.5)
+        state = k.health()
+        assert {
+            "pool_size", "pool_min_size", "pool_max_size", "pool_waiting",
+            "pool_available",
+        } <= state.keys(), f"health omitted pool state: {state}"
+        assert state["pool_min_size"] == 2 and state["pool_max_size"] == 3, state
+        assert 2 <= state["pool_size"] <= 3, state
+        assert state["pool_waiting"] == 0, state
+        assert 0 <= state["pool_available"] <= state["pool_size"], state
+        assert open_transactions(dsn, app) == 0, "health left a pooled transaction open"
+        k.close()
+    check("health reports pool bounds/size/waiting/available and closes its transaction",
+          health_reports_pool_state_without_pin)
+
+    def concurrent_borrowers_have_distinct_transactions_and_database_time() -> None:
+        k = fresh(dsn, "m_pool_isolation", pool_min_size=2, pool_max_size=2)
+        barrier = threading.Barrier(2)
+        observations: list[tuple[int, datetime]] = []
+        failures: list[BaseException] = []
+        lock = threading.Lock()
+        original_db_now = Kernel._db_now
+
+        def observed_db_now(self: Kernel, cur: Any) -> datetime:
+            del self
+            cur.execute("SELECT pg_backend_pid() AS pid, clock_timestamp() AS ts")
+            row = cur.fetchone()
+            if row is None:
+                raise AssertionError("database clock probe returned no row")
+            observed_at: datetime = row["ts"]
+            with lock:
+                observations.append((int(row["pid"]), observed_at))
+            barrier.wait(timeout=2.0)
+            return observed_at
+
+        def create(actor: str) -> None:
+            try:
+                k.create_work_item(workflow="t", type="x", actor_id=actor)
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_db_now", observed_db_now)
+        try:
+            threads = [threading.Thread(target=create, args=(actor,))
+                       for actor in ("one", "two")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=3.0)
+            assert all(not thread.is_alive() for thread in threads), (
+                "concurrent operations did not both reach the database-clock barrier"
+            )
+        finally:
+            setattr(Kernel, "_db_now", original_db_now)
+        assert not failures, f"concurrent operations failed: {failures}"
+        assert len(observations) == 2, f"expected two clock observations: {observations}"
+        assert len({pid for pid, _ in observations}) == 2, (
+            f"two concurrent borrowers shared one connection/transaction: {observations}"
+        )
+        assert len(k.list_items()) == 2, "one concurrent transaction lost the other's work"
+        k.close()
+    check("concurrent borrowers never share a transaction or a process clock",
+          concurrent_borrowers_have_distinct_transactions_and_database_time)
 
     print("\n\033[1mWorkflow validation\033[0m")
 
@@ -1479,8 +1684,16 @@ def main(dsn: str) -> int:
             "returns a collection it needs limit= and after= and a row in this check, "
             "and this check cannot tell you that by itself."
         )
+        connect_parameters = {
+            name: parameter.default
+            for name, parameter in inspect.signature(Kernel.connect).parameters.items()
+        }
+        assert connect_parameters == KERNEL_CONNECT_PARAMETERS, (
+            "Kernel.connect() changed its explicit pool contract: "
+            f"{connect_parameters} != {KERNEL_CONNECT_PARAMETERS}"
+        )
         k.close()
-    check("every collection query is bounded and resumable, and the coverage list is checked",
+    check("every collection query and the connect/public surfaces are deliberately pinned",
           every_collection_query_is_bounded)
 
     print("\n\033[1mWorkflow documents\033[0m")
@@ -1711,7 +1924,8 @@ transitions:
     print("\n\033[1mWork-item types and version pinning\033[0m")
 
     def undeclared_types_are_refused() -> None:
-        k = fresh(dsn, "m40")  # WF declares types ("x", "y")
+        app = f"kernel-type-refusal-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m40")  # WF declares types ("x", "y")
         item = k.create_work_item(workflow="t", type="x", actor_id="a")
         assert item.state == "open", "the declared type did not create an item"
         err = expect(InvalidWorkflowError,
@@ -1723,8 +1937,8 @@ transitions:
         # The refusal leaves nothing behind: a partially-created item would be
         # invisible to every type filter and present in every count.
         assert len(k.list_items()) == 1, "a refused create still wrote a row"
-        assert k._conn.info.transaction_status.name == "IDLE", (
-            "the refusal left the connection in a transaction"
+        assert open_transactions(dsn, app) == 0, (
+            "the refusal left a pooled connection in a transaction"
         )
         # ...and a workflow that declares no type cannot reach the registry at all.
         expect(InvalidWorkflowError,
