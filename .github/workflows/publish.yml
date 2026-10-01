@@ -34,14 +34,17 @@ name: Publish
 # from main (`gh workflow run publish.yml --ref main`). The dispatch runs ONLY
 # the `oidc-preflight` job, which performs the OIDC exchange `uv publish` uses
 # and reports PyPI's verdict. It uploads nothing, and it burns the upload token
-# PyPI mints. A pass confirms that PyPI currently accepts this workflow's
+# PyPI mints (PyPI acknowledges a burn with HTTP 202 and does not report
+# the outcome). A pass confirms that PyPI currently accepts this workflow's
 # identity under the publisher registration the tag run uses: owner,
 # repository, workflow filename and environment. PyPI does not match on the
 # ref or the event. A pass does not exercise the upload itself.
 #
 # PREREQUISITE before the first dispatch: protect the `pypi` environment
-# (Settings -> Environments -> pypi). Require a reviewer, and restrict
-# deployment refs to branch `main` and tags `v*`. Without that, anyone with
+# (Settings -> Environments -> pypi). Require a reviewer, enable "Prevent
+# self-review", disallow administrator bypass, and restrict deployment refs to
+# branch `main` and tags `v*`. For that to be a real boundary, also protect
+# `main` and guard creation of `v*` tags with a ruleset. Without that, anyone with
 # write access can dispatch a MODIFIED publish.yml from any branch and get a
 # live upload token. The `if:` above cannot stop that, because the modified
 # copy is the one that runs. A writer can already reach the publish job by
@@ -71,72 +74,104 @@ jobs:
     steps:
       - name: Exchange the GitHub OIDC token with PyPI, then burn the result
         # Everything happens in memory in one process. No response body is
-        # written to disk. The minted upload token is masked the moment it
-        # exists, revoked via /_/oidc/burn-token, and never printed. On
-        # failure, only the allowlisted `code`/`description` strings of
-        # PyPI's error envelope are logged. Same host as `uv publish`
-        # (upload.pypi.org, the default publish authority).
+        # written to disk, no URL is logged, and no server-controlled text is
+        # printed: failures show a fixed message per known PyPI error code.
+        # The minted upload token is masked the moment it exists. A burn
+        # request is sent for it, and anything but HTTP 202 fails the run.
+        # Same host as `uv publish` (upload.pypi.org, the default publish
+        # authority).
         shell: python3 {0}
         run: |
-          import json, os, sys, urllib.error, urllib.request
+          import http.client, json, os, re, sys, urllib.error, urllib.request
 
           HOST = "https://upload.pypi.org"
+          # PyPI error codes we explain. Anything else prints as "unrecognised":
+          # server-controlled text (descriptions, unknown codes) is never logged.
+          KNOWN = {
+              "invalid-publisher": "no trusted publisher on PyPI matches these claims; "
+                                   "register owner/repo/publish.yml/environment pypi",
+              "invalid-payload": "PyPI could not parse the OIDC token",
+              "invalid-token": "PyPI rejected the OIDC token",
+              "not-enabled": "trusted publishing is disabled on PyPI",
+          }
 
-          def call(url, data=None, headers=None):
-              req = urllib.request.Request(url, data=data, headers=headers or {})
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as resp:
-                      return resp.status, resp.read()
-              except urllib.error.HTTPError as exc:
-                  return exc.code, exc.read()
-              except OSError as exc:
-                  sys.exit(f"FAIL: could not reach {url}: {exc.__class__.__name__}")
+          def fail(message):
+              print(f"FAIL: {message}", flush=True)
+              sys.exit(1)
 
-          def as_json(status, raw, what):
+          def call(label, url, data=None, headers=None):
+              # Never print `url`: the GitHub request URL is a signed runtime URL.
               try:
-                  return json.loads(raw)
+                  req = urllib.request.Request(url, data=data, headers=headers or {})
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          return resp.status, resp.read()
+                  except urllib.error.HTTPError as exc:
+                      return exc.code, exc.read()
+              except (OSError, ValueError, http.client.HTTPException) as exc:
+                  fail(f"{label}: request failed ({exc.__class__.__name__})")
+
+          def json_object(label, status, raw):
+              try:
+                  body = json.loads(raw)
               except ValueError:
-                  sys.exit(f"FAIL: {what} returned a non-JSON body (HTTP {status}); body withheld")
+                  fail(f"{label}: non-JSON body (HTTP {status}); body withheld")
+              if not isinstance(body, dict):
+                  fail(f"{label}: JSON body is not an object (HTTP {status}); body withheld")
+              return body
 
-          status, raw = call(f"{HOST}/_/oidc/audience")
-          audience = as_json(status, raw, "audience endpoint").get("audience") if status == 200 else None
-          if not isinstance(audience, str):
-              sys.exit(f"FAIL: audience endpoint HTTP {status}")
+          for var in ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+              if not os.environ.get(var):
+                  fail(f"{var} is not set; the job needs `permissions: id-token: write`")
+
+          status, raw = call("audience endpoint", f"{HOST}/_/oidc/audience")
+          audience = json_object("audience endpoint", status, raw).get("audience")
+          if status != 200 or not isinstance(audience, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", audience):
+              fail(f"audience endpoint: unusable response (HTTP {status})")
 
           status, raw = call(
+              "GitHub OIDC endpoint",
               f"{os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']}&audience={audience}",
               headers={"Authorization": f"bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
           )
-          oidc = as_json(status, raw, "GitHub OIDC endpoint").get("value") if status == 200 else None
-          if not isinstance(oidc, str):
-              sys.exit(f"FAIL: GitHub OIDC token request HTTP {status}")
+          oidc = json_object("GitHub OIDC endpoint", status, raw).get("value")
+          if status != 200 or not isinstance(oidc, str) or not oidc:
+              fail(f"GitHub OIDC endpoint: no token (HTTP {status})")
           print(f"::add-mask::{oidc}", flush=True)
 
           status, raw = call(
-              f"{HOST}/_/oidc/mint-token",
+              "mint-token", f"{HOST}/_/oidc/mint-token",
               data=json.dumps({"token": oidc}).encode(),
               headers={"Content-Type": "application/json"},
           )
-          body = as_json(status, raw, "mint-token")
-          token = body.get("token") if isinstance(body, dict) else None
+          body = json_object("mint-token", status, raw)
+          token = body.get("token")
           if isinstance(token, str) and token:
               print(f"::add-mask::{token}", flush=True)
           if status == 200 and isinstance(token, str) and token:
               b_status, _ = call(
-                  f"{HOST}/_/oidc/burn-token",
+                  "burn-token", f"{HOST}/_/oidc/burn-token",
                   data=json.dumps({"token": token}).encode(),
                   headers={"Content-Type": "application/json"},
               )
+              if b_status != 202:
+                  fail("PyPI accepted the publisher, but did not accept the burn request "
+                       f"(HTTP {b_status}). The upload token expires on its own within "
+                       "15 minutes; treat this run as a credential exposure until then.")
               print("PASS: PyPI accepted this workflow as a trusted publisher. Nothing was "
-                    f"uploaded; the minted token was masked and burned (burn HTTP {b_status}).")
+                    "uploaded; the minted token was masked and its burn request accepted "
+                    "(HTTP 202; PyPI does not report the revocation outcome).")
               sys.exit(0)
+          if status == 200:
+              fail("PyPI answered HTTP 200 without a usable token; body withheld")
+          errors = body.get("errors")
+          codes = [e.get("code") for e in errors if isinstance(e, dict)] if isinstance(errors, list) else []
           print(f"FAIL: PyPI refused the OIDC exchange (HTTP {status}).")
-          errors = body.get("errors") if isinstance(body, dict) else None
-          for err in errors if isinstance(errors, list) else []:
-              if isinstance(err, dict):
-                  code, desc = err.get("code"), err.get("description")
-                  print(f"  code={code if isinstance(code, str) else '?'}"[:120])
-                  print(f"  description={desc if isinstance(desc, str) else '?'}"[:400])
+          for code in codes:
+              if isinstance(code, str) and code in KNOWN:
+                  print(f"  {code}: {KNOWN[code]}")
+              else:
+                  print("  (unrecognised error code; details withheld)")
           sys.exit(1)
 
   verify:
