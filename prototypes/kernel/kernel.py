@@ -1187,6 +1187,20 @@ class Kernel:
         ts: datetime = row["ts"]
         return ts
 
+    def _transaction_lock(self, cur: DictCursor, namespace: str, value: str) -> None:
+        """Serialize a logical name for this schema until the transaction ends.
+
+        PostgreSQL cannot row-lock a row that does not exist yet. The workflow
+        registry and idempotency table both need to serialize that absent-row
+        case before choosing a version or inserting a globally unique key.
+        Hash collisions only serialize unrelated names; they cannot weaken the
+        guarantee.
+        """
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"regista-kernel:{self._schema}:{namespace}:{value}",),
+        )
+
     @_pooled_operation
     def initialize(self, schema_sql_path: str) -> None:
         """Create the kernel schema in an empty destination.
@@ -1196,6 +1210,9 @@ class Kernel:
         schema (refuse WITHOUT mutating anything).
         """
         with self._conn.cursor() as cur:
+            # An empty schema has no row to lock. Serialize concurrent
+            # initializers before either one performs the check-then-create.
+            self._transaction_lock(cur, "initialize", self._schema)
             cur.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
                 (self._schema,),
@@ -1258,6 +1275,9 @@ class Kernel:
         body = wf.as_json()
         content_hash = _hash(_canonical(body))
         with self._conn.cursor() as cur:
+            # The first version has no row to SELECT FOR UPDATE, and later
+            # callers must not independently choose the same next version.
+            self._transaction_lock(cur, "workflow", wf.name)
             cur.execute(
                 "SELECT version, content_hash FROM workflow_registry "
                 "WHERE workflow_name = %s ORDER BY version DESC LIMIT 1",
@@ -1709,6 +1729,70 @@ class Kernel:
 
     # ---- transitions -----------------------------------------------------
 
+    def _idempotency_result(
+        self, cur: DictCursor, idempotency_key: str, request_hash: bytes
+    ) -> WorkItem | None:
+        """Return the result originally recorded for a key, or refuse reuse.
+
+        The stored event id identifies the transition's exact result. Replaying
+        only through that event avoids returning a later writer's state as if
+        it were the result of this request.
+        """
+        cur.execute(
+            "SELECT i.request_hash, i.work_item_id, e.event_seq, "
+            "w.workflow_name, w.workflow_version, w.work_item_type "
+            "FROM idempotency_keys i "
+            "LEFT JOIN events e ON e.event_id = i.event_id "
+            "LEFT JOIN work_items_current w ON w.work_item_id = i.work_item_id "
+            "WHERE i.idempotency_key = %s",
+            (idempotency_key,),
+        )
+        prior = cur.fetchone()
+        if prior is None:
+            return None
+        if bytes(prior["request_hash"]) != request_hash:
+            raise IdempotencyConflictError(
+                f"idempotency key {idempotency_key!r} was used for a different "
+                "request; refusing without partial effect"
+            )
+        if prior["event_seq"] is None or prior["workflow_name"] is None:
+            raise KernelError(
+                f"idempotency key {idempotency_key!r} refers to a missing event or "
+                "work item"
+            )
+
+        target_seq = int(prior["event_seq"])
+        cur.execute(
+            "SELECT event_seq, transition, payload FROM events "
+            "WHERE work_item_id = %s AND event_seq <= %s ORDER BY event_seq",
+            (prior["work_item_id"], target_seq),
+        )
+        rows = cur.fetchall()
+        if not rows or int(rows[-1]["event_seq"]) != target_seq:
+            raise KernelError(
+                f"idempotency key {idempotency_key!r} cannot reconstruct its original result"
+            )
+
+        state = ""
+        fields: dict[str, Any] = {}
+        for row in rows:
+            event_payload = row["payload"]
+            if row["transition"] is None:
+                created = event_payload.get("created", {})
+                state = created.get("state", "")
+                fields = dict(created.get("fields", {}))
+            else:
+                state = event_payload.get("to", state)
+                fields.update(event_payload.get("fields", {}))
+                for cleared in event_payload.get("unset", ()):
+                    fields.pop(cleared, None)
+
+        return WorkItem(
+            prior["work_item_id"], prior["workflow_name"],
+            int(prior["workflow_version"]), prior["work_item_type"],
+            state, fields, target_seq,
+        )
+
     @_pooled_operation
     def transition(
         self,
@@ -1785,33 +1869,10 @@ class Kernel:
         }))
         with self._conn.cursor() as cur:
             if idempotency_key is not None:
-                cur.execute(
-                    "SELECT work_item_id, request_hash FROM idempotency_keys "
-                    "WHERE idempotency_key = %s",
-                    (idempotency_key,),
-                )
-                prior = cur.fetchone()
-                if prior:
-                    if bytes(prior["request_hash"]) != request_hash:
-                        self._conn.rollback()
-                        raise IdempotencyConflictError(
-                            f"idempotency key {idempotency_key!r} was used for a different "
-                            "request; refusing without partial effect"
-                        )
-                    cur.execute(
-                        "SELECT * FROM work_items_current WHERE work_item_id = %s",
-                        (work_item_id,),
-                    )
-                    existing = cur.fetchone()
+                prior = self._idempotency_result(cur, idempotency_key, request_hash)
+                if prior is not None:
                     self._conn.rollback()
-                    if existing is None:
-                        raise KernelError(f"no such work item: {work_item_id}")
-                    return WorkItem(
-                        existing["work_item_id"], existing["workflow_name"],
-                        existing["workflow_version"], existing["work_item_type"],
-                        existing["current_state"], existing["custom_fields"],
-                        existing["last_event_seq"],
-                    )
+                    return prior
 
             cur.execute(
                 "SELECT * FROM work_items_current WHERE work_item_id = %s FOR UPDATE",
@@ -1821,6 +1882,17 @@ class Kernel:
             if not item:
                 self._conn.rollback()
                 raise KernelError(f"no such work item: {work_item_id}")
+
+            if idempotency_key is not None:
+                # The fast check above avoids locking on ordinary retries. This
+                # second check is the correctness boundary: the item lock closes
+                # the same-item race, while the key-scoped transaction lock also
+                # closes reuse across two different items.
+                self._transaction_lock(cur, "idempotency", idempotency_key)
+                prior = self._idempotency_result(cur, idempotency_key, request_hash)
+                if prior is not None:
+                    self._conn.rollback()
+                    return prior
 
             wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
 

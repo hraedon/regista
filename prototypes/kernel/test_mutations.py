@@ -45,6 +45,7 @@ from kernel import (
     WORKFLOW_DOCUMENT_VERSION,
     ClaimContestedError,
     DatabaseOperationError,
+    Event,
     IdempotencyConflictError,
     InvalidFieldError,
     InvalidQueryError,
@@ -60,6 +61,7 @@ from kernel import (
     TransitionRefusedError,
     UnsupportedSchemaError,
     Workflow,
+    WorkItem,
     load_workflow,
     load_workflow_document,
     validate_workflow_document,
@@ -154,6 +156,7 @@ WORKFLOW_PUBLIC_SURFACE = frozenset({
 
 PASS: list[str] = []
 FAIL: list[str] = []
+CREATED_SCHEMAS: set[str] = set()
 
 
 def check(name: str, fn: Callable[[], None]) -> None:
@@ -208,6 +211,7 @@ def fresh(
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         c.execute(f'CREATE SCHEMA "{schema}"')
+    CREATED_SCHEMAS.add(schema)
     k = Kernel.connect(
         dsn,
         schema=schema,
@@ -1277,9 +1281,18 @@ $proof$;
     def idem() -> None:
         k = fresh(dsn, "m8")
         it = k.create_work_item(workflow="t", type="x", actor_id="a")
-        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K1")
-        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K1")  # replay
-        assert k.get(it.id).last_event_seq == 1, "identical retry duplicated an effect"
+        original = k.transition(
+            it.id, transition="start", actor_id="a", idempotency_key="K1"
+        )
+        k.transition(it.id, transition="annotate", actor_id="a", fields={"later": True})
+        replayed = k.transition(
+            it.id, transition="start", actor_id="a", idempotency_key="K1"
+        )
+        assert replayed == original, (
+            f"retry returned the item's later state instead of the original result: "
+            f"{replayed} != {original}"
+        )
+        assert k.get(it.id).last_event_seq == 2, "identical retry duplicated an effect"
         expect(IdempotencyConflictError,
                lambda: k.transition(it.id, transition="submit", actor_id="a",
                                     fields={"note": "n"}, idempotency_key="K1"),
@@ -1289,6 +1302,130 @@ $proof$;
                      idempotency_key="K2")  # control
         k.close()
     check("identical retry is a no-op; conflicting reuse refuses with no partial effect", idem)
+
+    def run_idempotency_race(
+        schema: str, *, conflicting: bool, different_item: bool = False,
+    ) -> tuple[list[tuple[str, WorkItem | BaseException]], list[Event]]:
+        """Force both callers past the unlocked fast lookup before A commits."""
+        k = fresh(dsn, schema, pool_min_size=2, pool_max_size=4)
+        first = k.create_work_item(workflow="t", type="x", actor_id="a")
+        k.transition(first.id, transition="start", actor_id="a")
+        second = first
+        if different_item:
+            second = k.create_work_item(workflow="t", type="x", actor_id="a")
+            k.transition(second.id, transition="start", actor_id="a")
+
+        original_append = Kernel._append_event
+        original_result = Kernel._idempotency_result
+        a_in_append = threading.Event()
+        release_a = threading.Event()
+        b_passed_fast_lookup = threading.Event()
+        outcomes: list[tuple[str, WorkItem | BaseException]] = []
+        outcome_lock = threading.Lock()
+
+        def observed_result(
+            self: Kernel, cur: Any, key: str, request_hash: bytes,
+        ) -> WorkItem | None:
+            result = original_result(self, cur, key, request_hash)
+            if threading.current_thread().name == "idem-B" and result is None:
+                b_passed_fast_lookup.set()
+            return result
+
+        def paused_append(self: Kernel, *args: Any, **kwargs: Any) -> uuid.UUID:
+            if threading.current_thread().name == "idem-A":
+                a_in_append.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("idempotency race leader was not released")
+            return original_append(self, *args, **kwargs)
+
+        def call(label: str, item_id: uuid.UUID, amount: int) -> None:
+            try:
+                result = k.transition(
+                    item_id, transition="annotate", actor_id="a",
+                    fields={"amount": amount}, idempotency_key="CONCURRENT-K",
+                )
+                outcome: WorkItem | BaseException = result
+            except BaseException as exc:
+                outcome = exc
+            with outcome_lock:
+                outcomes.append((label, outcome))
+
+        setattr(Kernel, "_idempotency_result", observed_result)
+        setattr(Kernel, "_append_event", paused_append)
+        try:
+            leader = threading.Thread(
+                target=call, args=("A", first.id, 1), name="idem-A"
+            )
+            leader.start()
+            assert a_in_append.wait(timeout=3.0), "leader never reached the append barrier"
+            follower = threading.Thread(
+                target=call,
+                args=("B", second.id, 2 if conflicting else 1),
+                name="idem-B",
+            )
+            follower.start()
+            assert b_passed_fast_lookup.wait(timeout=3.0), (
+                "follower did not observe the key as absent before the leader committed; "
+                "the concurrency premise is vacuous"
+            )
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "idempotency race threads did not finish"
+            )
+            events = k.history(first.id)
+            if different_item:
+                events += k.history(second.id)
+        finally:
+            release_a.set()
+            setattr(Kernel, "_append_event", original_append)
+            setattr(Kernel, "_idempotency_result", original_result)
+            k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+        return outcomes, events
+
+    def concurrent_identical_retry_replays() -> None:
+        outcomes, events = run_idempotency_race("m_idem_same", conflicting=False)
+        assert len(outcomes) == 2, outcomes
+        assert all(isinstance(value, WorkItem) for _, value in outcomes), outcomes
+        results = [value for _, value in outcomes if isinstance(value, WorkItem)]
+        assert [result.last_event_seq for result in results] == [2, 2], outcomes
+        assert all(result.fields == {"amount": 1} for result in results), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"identical concurrent retry appended more than one effect: {events}"
+        )
+    check("concurrent identical idempotency retry returns the original result once",
+          concurrent_identical_retry_replays)
+
+    def concurrent_conflicting_reuse_refuses() -> None:
+        outcomes, events = run_idempotency_race("m_idem_conflict", conflicting=True)
+        values = [value for _, value in outcomes]
+        assert sum(isinstance(value, WorkItem) for value in values) == 1, outcomes
+        assert sum(type(value) is IdempotencyConflictError for value in values) == 1, outcomes
+        assert not any(isinstance(value, DatabaseOperationError) for value in values), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"conflicting concurrent reuse left more than one effect: {events}"
+        )
+    check("concurrent conflicting idempotency reuse is a typed refusal with no effect",
+          concurrent_conflicting_reuse_refuses)
+
+    def concurrent_cross_item_reuse_refuses() -> None:
+        outcomes, events = run_idempotency_race(
+            "m_idem_cross_item", conflicting=True, different_item=True,
+        )
+        values = [value for _, value in outcomes]
+        assert sum(isinstance(value, WorkItem) for value in values) == 1, outcomes
+        assert sum(type(value) is IdempotencyConflictError for value in values) == 1, outcomes
+        assert not any(isinstance(value, DatabaseOperationError) for value in values), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"one global key committed effects to two work items: {events}"
+        )
+    check("a concurrent idempotency key collision across work items is serialized",
+          concurrent_cross_item_reuse_refuses)
 
     print("\n\033[1mReplay / chain\033[0m")
 
@@ -1467,6 +1604,7 @@ $proof$;
             c.execute('CREATE SCHEMA m12')
             c.execute('CREATE TABLE m12.project_identity (id bool primary key)')
             c.execute('CREATE TABLE m12._regista_migrations (v int)')
+        CREATED_SCHEMAS.add("m12")
         k = Kernel.connect(dsn, schema="m12")
         expect(UnsupportedSchemaError,
                lambda: k.initialize(os.path.join(HERE, "schema.sql")),
@@ -1487,6 +1625,83 @@ $proof$;
         k.initialize(os.path.join(HERE, "schema.sql"))  # second call is a no-op
         k.close()
     check("initialising an already-current schema is a no-op", idempotent_init)
+
+    def concurrent_initializers_are_serialized() -> None:
+        schema = "m_init_race"
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                Identifier(schema)
+            ))
+            admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(schema)))
+        first = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+        second = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+        original_lock = Kernel._transaction_lock
+        a_has_lock = threading.Event()
+        release_a = threading.Event()
+        b_started = threading.Event()
+        b_has_lock = threading.Event()
+        failures: list[BaseException] = []
+
+        def paused_lock(
+            self: Kernel, cur: Any, namespace: str, value: str,
+        ) -> None:
+            original_lock(self, cur, namespace, value)
+            if namespace != "initialize":
+                return
+            if threading.current_thread().name == "initialize-A":
+                a_has_lock.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("initializer leader was not released")
+            elif threading.current_thread().name == "initialize-B":
+                b_has_lock.set()
+
+        def initialize(kernel: Kernel, *, follower: bool = False) -> None:
+            if follower:
+                b_started.set()
+            try:
+                kernel.initialize(os.path.join(HERE, "schema.sql"))
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_transaction_lock", paused_lock)
+        try:
+            leader = threading.Thread(
+                target=initialize, args=(first,), name="initialize-A"
+            )
+            leader.start()
+            assert a_has_lock.wait(timeout=3.0), (
+                "initializer leader never acquired the empty-schema lock"
+            )
+            follower = threading.Thread(
+                target=initialize, args=(second,), kwargs={"follower": True},
+                name="initialize-B",
+            )
+            follower.start()
+            assert b_started.wait(timeout=1.0), "initializer follower thread never started"
+            overlapped_schema_check = b_has_lock.wait(timeout=0.35)
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "initializer race threads did not finish"
+            )
+            assert not overlapped_schema_check, (
+                "two initializers entered the empty-schema check concurrently"
+            )
+            assert not failures, f"a concurrent initializer failed: {failures}"
+            assert first.health()["schema_version"] == 1
+            assert second.health()["schema_version"] == 1
+        finally:
+            release_a.set()
+            setattr(Kernel, "_transaction_lock", original_lock)
+            first.close()
+            second.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+    check("concurrent initialization of one empty schema is serialized and idempotent",
+          concurrent_initializers_are_serialized)
 
     print("\n\033[1mLease inspection\033[0m")
 
@@ -1600,6 +1815,107 @@ $proof$;
         k.close()
     check("a workflow version is assigned, and an asserted one is checked not discarded",
           workflow_version_is_honoured_or_absent)
+
+    def run_workflow_registration_race(
+        schema: str, second_definition: Workflow,
+    ) -> tuple[list[int | BaseException], bool, list[int]]:
+        """Hold A after version choice and prove B cannot choose concurrently."""
+        k = fresh(dsn, schema, pool_min_size=2, pool_max_size=4)
+        first_definition = replace(WF, name="registry-race")
+        original_assert = Kernel._assert_version
+        a_chose_version = threading.Event()
+        release_a = threading.Event()
+        b_started = threading.Event()
+        b_chose_version = threading.Event()
+        outcomes: list[int | BaseException] = []
+        outcomes_lock = threading.Lock()
+
+        def paused_assert(
+            self: Kernel, wf: Workflow, assigned: int, *, is_new: bool,
+        ) -> None:
+            if threading.current_thread().name == "workflow-A":
+                a_chose_version.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("workflow registration leader was not released")
+            elif threading.current_thread().name == "workflow-B":
+                b_chose_version.set()
+            original_assert(self, wf, assigned, is_new=is_new)
+
+        def register(definition: Workflow, *, follower: bool = False) -> None:
+            if follower:
+                b_started.set()
+            try:
+                outcome: int | BaseException = k.register_workflow(definition)
+            except BaseException as exc:
+                outcome = exc
+            with outcomes_lock:
+                outcomes.append(outcome)
+
+        setattr(Kernel, "_assert_version", paused_assert)
+        try:
+            leader = threading.Thread(
+                target=register, args=(first_definition,), name="workflow-A"
+            )
+            leader.start()
+            assert a_chose_version.wait(timeout=3.0), (
+                "workflow leader never chose a version"
+            )
+            follower = threading.Thread(
+                target=register,
+                args=(replace(second_definition, name="registry-race"),),
+                kwargs={"follower": True},
+                name="workflow-B",
+            )
+            follower.start()
+            assert b_started.wait(timeout=1.0), "workflow follower thread never started"
+            overlapped_version_choice = b_chose_version.wait(timeout=0.35)
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "workflow registration race threads did not finish"
+            )
+            versions = [
+                version for name, version, _ in k.list_workflows()
+                if name == "registry-race"
+            ]
+        finally:
+            release_a.set()
+            setattr(Kernel, "_assert_version", original_assert)
+            k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+        return outcomes, overlapped_version_choice, versions
+
+    def concurrent_workflow_registration_is_serialized() -> None:
+        identical, identical_overlap, identical_versions = run_workflow_registration_race(
+            "m_workflow_race_same", WF,
+        )
+        assert not identical_overlap, (
+            "two identical registrations chose a version concurrently; removing the "
+            "name lock makes this check fail before the primary-key collision"
+        )
+        assert sorted(value for value in identical if isinstance(value, int)) == [1, 1], (
+            f"identical concurrent registration did not replay v1: {identical}"
+        )
+        assert not any(isinstance(value, BaseException) for value in identical), identical
+        assert identical_versions == [1], identical_versions
+
+        distinct, distinct_overlap, distinct_versions = run_workflow_registration_race(
+            "m_workflow_race_distinct", WF_V2,
+        )
+        assert not distinct_overlap, (
+            "two distinct registrations chose the same next version concurrently"
+        )
+        assert sorted(value for value in distinct if isinstance(value, int)) == [1, 2], (
+            f"distinct concurrent definitions were not assigned v1 then v2: {distinct}"
+        )
+        assert not any(isinstance(value, BaseException) for value in distinct), distinct
+        assert distinct_versions == [1, 2], distinct_versions
+    check("concurrent workflow registration replays identical content and orders new versions",
+          concurrent_workflow_registration_is_serialized)
 
     print("\n\033[1mField merge and clearing (D7)\033[0m")
 
@@ -2320,8 +2636,22 @@ def _wait_until_blocked(dsn: str, app_name: str, deadline: float = 15.0) -> date
     )
 
 
+def _drop_created_schemas(dsn: str) -> None:
+    """Leave a shared test database as clean as the mutation suite found it."""
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        for schema in sorted(CREATED_SCHEMAS):
+            admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                Identifier(schema)
+            ))
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    sys.exit(main(sys.argv[1]))
+    test_dsn = sys.argv[1]
+    try:
+        exit_code = main(test_dsn)
+    finally:
+        _drop_created_schemas(test_dsn)
+    sys.exit(exit_code)

@@ -61,12 +61,13 @@ be called if this were installed; here you run it as `python3 cli.py …`.
 python3 test_mutations.py "$DSN"
 ```
 
-58 checks, each with a control. They let real leases expire and write with them,
+69 checks, each with a control. They let real leases expire and write with them,
 heartbeat a dead lease, present a live holder's fencing token as someone else,
 hold a row lock until a lease dies underneath a waiting writer, edit event
 payloads, delete middle *and* final events, rewrite a projection's fields, pass
-a `datetime` as a custom field, overwrite a reducer-owned payload key, reuse
-idempotency keys for different requests, present the wrong role, point
+a `datetime` as a custom field, overwrite a reducer-owned payload key, race
+identical and conflicting idempotency-key reuse on one or two work items, race
+workflow registration and schema initialization, present the wrong role, point
 `initialize()` at a 0.7-era schema, create an undeclared work-item type, make a
 v2-only transition on a v1-pinned item, exhaust a bounded pool, poison returned
 transactions, interrupt a write with `KeyboardInterrupt`, replace a killed
@@ -195,6 +196,19 @@ item = k.create_work_item(workflow="remediation", type="finding",
 claim = k.claim(item.id, actor_id="worker-1", ttl_seconds=300)
 k.transition(item.id, transition="start", actor_id="worker-1", attempt=claim.attempt)
 ```
+
+`transition(..., idempotency_key="...")` is safe under concurrent retry. The
+key identifies the logical transition request: item, actor, transition, fields,
+clears, and payload. An identical retry returns the original transition result
+and appends no event, even if the item has changed since. Reusing the key for
+any different request raises `IdempotencyConflictError` with no partial effect.
+The key is global within the project schema, so the same guarantee applies when
+two callers race it against different work items.
+
+Workflow registration and first-time schema initialization are likewise
+serialized by logical name. Concurrent identical workflow registration returns
+the existing version; concurrent distinct definitions receive consecutive
+versions rather than colliding on the registry primary key.
 
 `Kernel.connect()` owns a bounded synchronous `psycopg_pool` pool. Its explicit
 controls are `pool_min_size=1`, `pool_max_size=4`, and `pool_timeout=5.0` seconds:
