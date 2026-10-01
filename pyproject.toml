@@ -94,7 +94,7 @@ markers = [
 ]
 
 [tool.ruff]
-# D14 (Plan 032 open-decisions, ruled 2026-09-17): prototypes/ is the
+# D14 (Plan 032 open-decisions, adopted default 2026-09-17): prototypes/ is the
 # retained implementation (D1 = EXTRACT), not a throwaway — it gets the same
 # lint gate as src/ and tests/ now, not only after promotion. See
 # [tool.mypy] below and .github/workflows/ci.yml for the matching type-check
@@ -121,7 +121,7 @@ select = ["E", "F", "I", "N", "W", "UP", "RUF"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-# D14 (Plan 032 open-decisions, ruled 2026-09-17): prototypes/ (the retained
+# D14 (Plan 032 open-decisions, adopted default 2026-09-17): prototypes/ (the retained
 # kernel prototype, D1 = EXTRACT) is a first-class strict target now, not
 # only after promotion — "verified clean by hand" establishes neither
 # continued coverage nor that it stays clean. It has no burndown-list
