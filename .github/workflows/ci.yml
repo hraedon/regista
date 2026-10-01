@@ -184,49 +184,31 @@ jobs:
       - name: Prototype kernel scenarios + mutation checks (PostgreSQL)
         run: pytest prototypes/kernel/test_scenarios.py -v
 
-  # GitHub issue #65: published migrations are immutable. The offline half
-  # (the tree honours release/published-migrations.json) runs in the `check`
-  # job's pytest. This job is the half that stops the ledger itself being
-  # edited to bless a mutation: it re-downloads every regista-hraedon release
-  # from PyPI, verifies each file against PyPI's sha256, recomputes the ledger
-  # and requires it to equal the committed one. A newly published release
-  # turns this red until `python scripts/check_published_migrations.py build`
-  # records it - from then on its migrations are frozen too. These checks only
-  # BLOCK a merge if this job is a required status check on main; today main
-  # has no branch protection, so a red run is a signal a reviewer must honour.
+  # GitHub issue #65: published migrations are immutable. The guard is an
+  # ALLOWLIST over artifacts; it makes no claim about git history (see the
+  # docstring of scripts/check_published_migrations.py for exactly what it
+  # proves). verify-ledger: the ledger equals what PyPI serves now.
+  # check-dist: the artifacts we would publish ship exactly the ledger's
+  # migrations, in allowlisted form, including a wheel rebuilt from each sdist.
+  # This only BLOCKS a merge if the job is a required status check on main;
+  # today main has no branch protection.
   published-migrations:
     name: Published migrations are immutable (verified against PyPI)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # check-monotonic reads the base ref's ledger
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Ledger equals PyPI, and the tree honours it
-        run: python3 scripts/check_published_migrations.py verify-ledger
-      # The authoritative check: the rules applied to what the built wheel
-      # actually installs. The source-tree check models hatch conservatively;
-      # this one does not need to, so selection rules it cannot see (file or
-      # global force-include, only-include/sources, symlinks, sdist-only
-      # mappings that reach the wheel through `uv build`) are covered.
-      - name: Built artifacts honour the ledger
+        run: |
+          python3 scripts/check_published_migrations.py verify-ledger
+          python3 scripts/check_published_migrations.py check-tree
+      - name: Built artifacts are on the allowlist
         run: |
           uv build --out-dir dist
           python3 scripts/check_published_migrations.py check-dist dist
-      # The ledger only grows: a PyPI deletion plus a matching ledger edit must
-      # not erase a release from published history. Base selection mirrors the
-      # epoch-debt ratchet in the `check` job.
-      - name: Ledger only grows relative to the base
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="origin/${{ github.base_ref }}"
-          else
-            base="${{ github.event.before }}"
-          fi
-          python3 scripts/check_published_migrations.py check-monotonic --base "$base"
 
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI

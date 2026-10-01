@@ -1,106 +1,62 @@
-"""Published-migration immutability guard (GitHub issue #65).
+"""Published-migration immutability guard (GitHub issue #65): an allowlist.
 
 **The rule.** Once a release containing a migration is published, that
 migration's path and bytes are immutable. Every later schema change ships as a
 new, appended migration. A store migrated by an old release records each
-migration's checksum; rewriting a published file makes every such store report
-``MIGRATION_DRIFT`` and creates pressure to soften the drift check. That
-pressure is how PR #62 came to propose grandfathering checksums.
+migration's checksum, so rewriting a published file makes those stores report
+``MIGRATION_DRIFT``.
 
-**What "published" means here.** The bytes PyPI serves are the source of truth,
-not git tags. Tags and releases have diverged in this repository before:
-``v0.5.1-rc1`` is not PyPI 0.5.1, and ``v0.4.0`` was never uploaded. The
-committed ledger ``release/published-migrations.json`` records, for every
-release of ``regista-hraedon`` on PyPI, the sha256 of the wheel and sdist and of
-every ``*.sql`` file each one ships. The ledger is a cache of PyPI. It is checked
-against PyPI (``verify-ledger``) and against its own git history
-(``check-monotonic``), so editing it to bless a change, or to forget a release,
-is DETECTED by CI. Detection becomes enforcement only when those CI jobs are
-required status checks on ``main``. As of this writing ``main`` has no branch
-protection, so a red run is a signal a reviewer must honour, not a lock.
+**What this guard proves, and nothing more.**
 
-Subcommands:
+1. ``release/published-migrations.json`` ("the ledger") records, for each
+   release, exactly what PyPI serves for ``regista-hraedon`` *now*: per release,
+   the sha256 of every file and of every migration it ships (``verify-ledger``;
+   network).
+2. The artifacts about to be published (``check-dist``) are well formed, and they
+   ship EXACTLY the expected migration set, byte for byte. Anything not on the
+   allowlist fails, including anything the guard does not recognise. The expected
+   set is every migration of the latest released ledger entry, plus the
+   ``unreleased`` entries declared in the ledger.
 
-``check-dist DIST_DIR`` (offline; the AUTHORITY - CI and the publish build job)
-    The rules below, applied to every SQL-like file (any suffix case or Unicode
-    spelling a folding filesystem could glob as ``*.sql``, in any directory
-    including ``.dist-info``) and to EVERY member under the runner directory.
-    The runner directory may contain only direct-child, ASCII, canonical
-    ``NNN_*.sql`` files; anything else there (another file, a subdirectory,
-    a file implying one) is refused. Archive member names
-    must already be canonical (no ``..``/``.``/empty segment, leading ``/`` or
-    backslash), because installers normalise them. Duplicate members are refused.
-    Each sdist's .sql files are mapped into wheel paths the same way ledger
-    construction maps them (the build config plus the runner's own source dirs)
-    and must match the wheel. ``uv build`` builds the wheel from the sdist, so
-    sdist-only mappings are covered.
+It deliberately makes **no claim about git history**, and none about releases
+that have been deleted from PyPI. ``verify-ledger`` fails loudly if a recorded
+release is no longer on PyPI, and a human decides what to do. Earlier versions
+judged ledger history (withdrawals, merge parents, renames). Six review rounds
+found a new gap in that judgement every time, so it was dropped rather than
+patched further. The claim is now small enough to check exhaustively.
 
-``check-tree`` (offline, runs in pytest; a conservative EARLY signal)
-    The same rules over a model of the hatch build: every ``packages`` dir and
-    every directory-valued ``force-include`` of the wheel target. Hatch has
-    selection rules this model does not reproduce (file-valued or global
-    force-include, only-include, sources rewrites, symlink traversal,
-    exclude/VCS-ignore), so it can miss a file (check-dist catches that) or
-    count an excluded one (which fails safe). The rules:
+**The allowlist (``check-dist``)**, applied to every member of every wheel and
+sdist in ``DIST_DIR``:
 
-    * every published migration is still packaged, with the bytes of its
-      **latest** release;
-    * a path whose published bytes differ between releases is allowed only if
-      it is one of the exactly-pinned historical violations below;
-    * every packaged ``.sql`` lands directly in the one directory the runner
-      reads, from one source (tree check), under a canonical name (lower-case
-      ``.sql``, ASCII-digit version before the first ``_``), with a unique
-      version. An unpublished migration must sort **after** every published
-      one. The runner applies by set membership, so a late low number would
-      run out of order on existing stores.
+* A member name is ASCII, matches ``SAFE_NAME`` (``[A-Za-z0-9._+-]`` segments
+  joined by ``/``), is NFC, and has no empty, ``.`` or ``..`` segment. So there
+  is no leading ``/``, no backslash, no NUL or control character, and no
+  Unicode.
+* A member is a regular file. Every symlink, hard link, directory entry, device
+  or FIFO is refused.
+* No two members collide after NFKC + casefold, and no name repeats.
+* A migration is a member whose parent is EXACTLY the migrations directory
+  (``regista/migrations/`` in a wheel, ``<root>/migrations/`` in an sdist), with
+  a filename matching ``MIGRATION_NAME`` (``^\\d{3}_[a-z0-9_]+\\.sql$``). Any
+  other member whose folded path lies under a folded migrations directory is
+  refused. So is ``src/regista/migrations/``, the runner's preferred copy. In a
+  wheel, so is any folded ``.sql`` anywhere else.
+* The wheel's migrations must equal the expected set exactly, with matching
+  bytes: no extras and no missing files. Each one must be vouched for by the
+  wheel's single ``RECORD`` with the same sha256.
+* There must be at least one wheel and at least one sdist. Each sdist's
+  migrations must equal the wheel's. A wheel rebuilt FROM each sdist (what pip
+  and uv do when installing it) must pass all of the above and carry the same
+  migrations.
 
-``check-monotonic --base REF`` (git)
-    Every release and withdrawal recorded at ``REF`` is still recorded,
-    unchanged. Published history only grows. A release PyPI no longer serves
-    (an owner can delete one) stays in the ledger under
-    ``withdrawn_from_pypi``, because stores may already have applied its bytes.
-    The ledger path is pinned: renaming it reads as deleting it.
-    A withdrawal is accepted only for a release ``REF`` already recorded, so the
-    ledger cannot invent WITHDRAWN history. A newly added release that PyPI
-    serves is authenticated only by ``verify-ledger``; this check cannot judge
-    additions. A base without a ledger is
-    accepted only if it also predates this guard (the one-time bootstrap). The
-    guard is recognised in history by ``GUARD_MARKER``, not by file path, so
-    renaming the script does not reset that boundary.
-    ``--all-parents-of REV`` checks every parent of REV. ``--ledger-history-of
-    REV`` (used by publish) additionally checks every ancestor that touched the
-    ledger, on every path, so neither a merge nor a later descendant of one can
-    hide a dropped ledger state. A root commit is refused.
+**Historical violations.** Two migrations were rewritten in place in 0.6.0
+(``001_initial.sql`` and ``035_event_chain_head_genesis_sentinel.sql``):
+0.5.x ships one set of bytes, 0.6.0-0.7.2 another. Both are pinned by exact
+digest set in ``FROZEN_HISTORICAL_VIOLATIONS``. Any further multiplicity fails.
 
-``verify-ledger`` (network: pypi.org)
-    Re-download every release PyPI lists, verify each file against PyPI's
-    sha256 digest, recompute the ledger, and require it to equal the committed
-    one exactly. An edit to any release PyPI still serves, or a new PyPI
-    release not yet recorded, fails. A new release therefore turns CI red until
-    the ledger records it, and from then on its migrations are frozen. Releases
-    PyPI no longer serves are carried over as withdrawn, and only
-    ``check-monotonic`` can judge them, so the two always run together.
-
-``check-release --version X`` (publish workflow, before build)
-    ``X`` must not already be in the ledger, and ``check-tree`` must pass on
-    the tagged tree.
-
-``build`` (network)
-    Rewrite the ledger from PyPI. This is the only supported way to change it.
-    ``verify-ledger`` is ``build`` followed by an exact comparison.
-
-**Historical violations.** Two migrations were rewritten in place in 0.6.0, as
-measured from the PyPI wheels of all nine releases on 2026-10-01:
-``001_initial.sql`` and ``035_event_chain_head_genesis_sentinel.sql``.
-0.5.1-0.5.5 ship one set of bytes and 0.6.0-0.7.2 another. Those releases are
-already public and cannot be retracted, so the guard cannot make them
-consistent. What it can do is freeze the damage: both paths are pinned with
-their exact hash sets in ``FROZEN_HISTORICAL_VIOLATIONS``, the tree must carry
-their latest bytes, and any further multiplicity, on these paths or any other,
-fails. The set of violations cannot grow quietly. It is pinned here in code
-and recomputed from PyPI by ``verify-ledger``.
-
-Run:  python scripts/check_published_migrations.py check-tree
+Subcommands: ``check-dist DIST_DIR`` (authoritative; CI and the publish build
+job), ``check-tree`` (fast early signal over ``migrations/``), ``verify-ledger``
+(network), ``check-release --version X``, ``build`` (network; regenerate).
 """
 
 from __future__ import annotations
@@ -110,11 +66,13 @@ import base64
 import hashlib
 import io
 import json
+import re
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
-import tomllib
 import unicodedata
 import urllib.request
 import zipfile
@@ -126,30 +84,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = REPO_ROOT / "release" / "published-migrations.json"
 PROJECT = "regista-hraedon"
 PYPI_JSON = f"https://pypi.org/pypi/{PROJECT}/json"
-LEDGER_FORMAT = 1
-#: A stable marker for "this commit carries the published-migration guard",
-#: independent of the script's path, so renaming or moving the guard cannot reset
-#: the bootstrap boundary in check-monotonic. Keep it in the implementation file.
-GUARD_MARKER = "regista-published-migration-guard:v1"
+LEDGER_FORMAT = 2
 
-#: The in-place rewrites already shipped, keyed by wheel path, with the exact
-#: set of sha256 digests PyPI has served for each. Growing or changing this set
-#: is a deliberate, reviewable act; ``check-tree`` and ``verify-ledger`` both
-#: compare against it exactly.
+WHEEL_MIGRATIONS = "regista/migrations/"
+SDIST_MIGRATIONS = "migrations/"
+FORBIDDEN_SOURCE_DIRS = ("src/regista/migrations/",)
+SAFE_NAME = re.compile(r"[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*")
+MIGRATION_NAME = re.compile(r"\d{3}_[a-z0-9_]+\.sql")
+
 FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {
-    "regista/migrations/001_initial.sql": frozenset(
+    "001_initial.sql": frozenset(
         {
-            # 0.5.1 - 0.5.5
             "b8d3fbf2e07382d486b88c06cef493eb0dd474bd597f9ceb5d358f2acce9b49f",
-            # 0.6.0 - 0.7.2 (current)
             "db8e3daeb85c962f4034af65b5bb7fae8929e9d8d6fb8015053b0703091cb373",
         }
     ),
-    "regista/migrations/035_event_chain_head_genesis_sentinel.sql": frozenset(
+    "035_event_chain_head_genesis_sentinel.sql": frozenset(
         {
-            # 0.5.1 - 0.5.5
             "8dd73c22dd46efd797709b61daf811e4f939649e6def3f258bdd05801def2f31",
-            # 0.6.0 - 0.7.2 (current)
             "6dd6ccc9ad9fb07a6196a94b8968588c5b7913f7fc28beb990aa69679a637a0f",
         }
     ),
@@ -157,61 +109,126 @@ FROZEN_HISTORICAL_VIOLATIONS: Mapping[str, frozenset[str]] = {
 
 
 class GuardError(Exception):
-    """A violation. The message says what changed and what to do instead."""
+    """A violation. Raised for anything not on the allowlist."""
 
 
-# --------------------------------------------------------------------------
-# Version ordering (PEP 440 subset: the release segment is all this project uses)
+def _fold(s: str) -> str:
+    return unicodedata.normalize("NFKC", s).casefold()
 
 
 def _version_key(version: str) -> tuple[int, ...]:
     parts = version.split(".")
     if not all(p.isascii() and p.isdigit() for p in parts):
-        raise GuardError(
-            f"release version {version!r} is not a plain N.N.N release; extend "
-            "_version_key deliberately rather than guessing an order"
-        )
+        raise GuardError(f"release version {version!r} is not a plain N.N.N release")
     return tuple(int(p) for p in parts)
 
 
-# --------------------------------------------------------------------------
-# Wheel path -> repository path
-
-
-def _path_mapping(pyproject: Path) -> list[tuple[str, str]]:
-    """(wheel_prefix, repo_prefix) pairs from the hatch build configuration.
-
-    The mapping is read rather than hard-coded so that moving the migrations
-    (Plan 032 F1 may well do so) cannot quietly disconnect the guard from them.
-    A published path that maps to nothing is an error, not a skip.
-    """
-    data = tomllib.loads(pyproject.read_text())
-    wheel = data["tool"]["hatch"]["build"]["targets"]["wheel"]
-    pairs: list[tuple[str, str]] = []
-    for src, dst in (wheel.get("force-include") or {}).items():
-        pairs.append((dst.rstrip("/") + "/", src.rstrip("/") + "/"))
-    for pkg in wheel.get("packages") or []:
-        # "src/regista" ships as "regista/"
-        name = pkg.rstrip("/").rsplit("/", 1)[-1]
-        pairs.append((name + "/", pkg.rstrip("/") + "/"))
-    # Longest wheel prefix first, so a force-include nested in a package wins.
-    pairs.sort(key=lambda p: len(p[0]), reverse=True)
-    return pairs
-
-
-def wheel_to_repo_path(wheel_path: str, mapping: list[tuple[str, str]]) -> str:
-    for wheel_prefix, repo_prefix in mapping:
-        if wheel_path.startswith(wheel_prefix):
-            return repo_prefix + wheel_path[len(wheel_prefix) :]
-    raise GuardError(
-        f"published file {wheel_path!r} maps to no repository path under the current "
-        "[tool.hatch.build.targets.wheel] configuration. A published migration "
-        "cannot be untracked by moving the build configuration away from it."
-    )
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 # --------------------------------------------------------------------------
-# Ledger construction from PyPI
+# The member allowlist
+
+
+def _check_names(names: list[str], where: str) -> None:
+    seen: dict[str, str] = {}
+    for name in names:
+        if (
+            not name.isascii()
+            or SAFE_NAME.fullmatch(name) is None
+            or unicodedata.normalize("NFC", name) != name
+            or any(part in (".", "..") for part in name.split("/"))
+        ):
+            raise GuardError(f"{where}: member name {name!r} is not on the allowlist")
+        key = _fold(name)
+        if key in seen:
+            raise GuardError(
+                f"{where}: members {seen[key]!r} and {name!r} collide (same name, or the "
+                "same path on a case- or Unicode-folding filesystem)"
+            )
+        seen[key] = name
+
+
+def _classify(rel: str, migrations_dir: str, where: str, *, sql_elsewhere: bool) -> str | None:
+    """Return the migration filename if ``rel`` is one, None if it is some other
+    allowed file; raise if it is anything else touching the migrations path."""
+    folded = _fold(rel)
+    for forbidden in (migrations_dir, *FORBIDDEN_SOURCE_DIRS):
+        if folded.startswith(_fold(forbidden)):
+            name = rel[len(forbidden) :]
+            if rel.startswith(migrations_dir) and MIGRATION_NAME.fullmatch(name):
+                return name
+            raise GuardError(f"{where}: {rel!r} is not a canonical migration in {migrations_dir}")
+    if not sql_elsewhere and folded.endswith(".sql"):
+        raise GuardError(f"{where}: {rel!r} is a .sql outside {migrations_dir}")
+    return None
+
+
+def read_wheel(blob: bytes, where: str) -> dict[str, str]:
+    """Allowlisted wheel -> {migration filename: sha256}."""
+    out: dict[str, str] = {}
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        infos = zf.infolist()
+        # orig_filename is the raw header name: zipfile truncates ``filename`` at
+        # NUL, so judging the truncated name would accept a different string than
+        # other unzip implementations see (found by the property fuzz). Reading
+        # each member below also makes zipfile refuse a local header whose name
+        # differs from the central directory's.
+        _check_names([i.orig_filename for i in infos], where)
+        for info in infos:
+            if info.orig_filename != info.filename:
+                raise GuardError(f"{where}: member name {info.orig_filename!r} contains NUL")
+        files: dict[str, bytes] = {}
+        for info in infos:
+            mode = info.external_attr >> 16
+            # A mode with no file-type bits (hatch writes 0o644 for some
+            # dist-info members) is a regular file to every installer.
+            if info.is_dir() or stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+                raise GuardError(f"{where}: {info.filename!r} is not a regular file")
+            files[info.filename] = zf.read(info)
+        for name, data in files.items():
+            mig = _classify(name, WHEEL_MIGRATIONS, where, sql_elsewhere=False)
+            if mig is not None:
+                out[mig] = _sha(data)
+        records = [n for n in files if n.count("/") == 1 and n.endswith(".dist-info/RECORD")]
+        if len(records) != 1:
+            raise GuardError(f"{where}: expected exactly one top-level RECORD, found {records}")
+        listed: dict[str, str] = {}
+        for line in files[records[0]].decode().splitlines():
+            parts = line.rsplit(",", 2)
+            if len(parts) == 3 and parts[1].startswith("sha256="):
+                listed[parts[0]] = parts[1][len("sha256=") :]
+        for mig, digest in out.items():
+            expected = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
+            if listed.get(WHEEL_MIGRATIONS + mig) != expected:
+                raise GuardError(f"{where}: RECORD does not vouch for {mig} with its bytes")
+    return out
+
+
+def read_sdist(blob: bytes, where: str) -> dict[str, str]:
+    """Allowlisted sdist -> {migration filename: sha256}."""
+    out: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        members = tf.getmembers()
+        _check_names([m.name for m in members], where)
+        roots = {m.name.split("/", 1)[0] for m in members}
+        if len(roots) != 1 or any("/" not in m.name for m in members):
+            raise GuardError(f"{where}: expected one top-level directory, found {sorted(roots)}")
+        for m in members:
+            if not m.isfile():
+                raise GuardError(f"{where}: {m.name!r} is not a regular file (type {m.type!r})")
+            rel = m.name.split("/", 1)[1]
+            mig = _classify(rel, SDIST_MIGRATIONS, where, sql_elsewhere=True)
+            if mig is not None:
+                fh = tf.extractfile(m)
+                assert fh is not None
+                out[mig] = _sha(fh.read())
+    return out
+
+
+# --------------------------------------------------------------------------
+# Ledger
 
 
 def _fetch(url: str, attempts: int = 4) -> bytes:
@@ -221,249 +238,44 @@ def _fetch(url: str, attempts: int = 4) -> bytes:
             with urllib.request.urlopen(url, timeout=60) as resp:
                 body: bytes = resp.read()
                 return body
-        except OSError as exc:  # URLError is an OSError
+        except OSError as exc:
             last = exc
             time.sleep(2**i)
     raise GuardError(f"could not fetch {url} after {attempts} attempts: {last}")
 
 
-def _check_member_name(name: str, where: str) -> None:
-    """Refuse archive member names an installer would normalise to somewhere else.
-
-    pip and uv both normalise ``x.dist-info/../regista/migrations/000.sql`` into
-    the runner directory, so every name must already be canonical: relative POSIX,
-    no empty, ``.`` or ``..`` segment, no backslash.
-    """
-    parts = name.split("/")
-    if (
-        not name
-        or name.startswith("/")
-        or "\\" in name
-        or any(part in ("", ".", "..") for part in parts[:-1])
-        or parts[-1] in (".", "..")
-    ):
-        raise GuardError(f"{where}: non-canonical archive member name {name!r}")
+def _multiplicity(releases: Mapping[str, Any]) -> dict[str, list[str]]:
+    seen: dict[str, set[str]] = {}
+    for entry in releases.values():
+        for name, digest in entry["migrations"].items():
+            seen.setdefault(name, set()).add(digest)
+    return {n: sorted(d) for n, d in sorted(seen.items()) if len(d) > 1}
 
 
-def _is_sql(name: str) -> bool:
-    """Anything a case-insensitive or Unicode-folding filesystem could glob as
-    ``*.sql`` (e.g. ``.SQL``, or ``.\u017fql`` with a long s, which Windows case
-    folding matches). The shape rules then refuse every non-canonical spelling."""
-    return unicodedata.normalize("NFKC", name).casefold().endswith(".sql")
-
-
-def _fold(path: str) -> str:
-    """Filesystem identity on a case-insensitive / Unicode-folding install."""
-    return unicodedata.normalize("NFKC", path).casefold()
-
-
-def _judged(wheel_path: str) -> bool:
-    """Members the shape rules must see: every SQL-like file anywhere, and EVERY
-    member under the runner directory, so a non-migration file or a directory
-    (explicit, or implied by a descendant like ``000_x.sql/note.txt``) there is
-    refused rather than ignored."""
-    return _is_sql(wheel_path) or _fold(wheel_path).startswith(_fold(RUNNER_WHEEL_DIR))
-
-
-def _check_directory_member(name: str, where: str) -> None:
-    """A directory the runner's *.sql glob would select, or any directory inside its
-    folded runner path, makes discover_migrations() return a non-file."""
-    stripped = name.rstrip("/")
-    if _is_sql(stripped) or _fold(stripped + "/").startswith(_fold(RUNNER_WHEEL_DIR)):
-        raise GuardError(f"{where}: directory member {name!r} in or named like a migration")
-
-
-def _check_fold_collisions(names: list[str], where: str) -> None:
-    seen: dict[str, str] = {}
-    for n in names:
-        key = _fold(n)
-        if key in seen and seen[key] != n:
-            raise GuardError(
-                f"{where}: {seen[key]!r} and {n!r} are one path on a folding filesystem"
-            )
-        seen[key] = n
-
-
-def _sql_members_wheel(blob: bytes) -> dict[str, str]:
-    """Every .sql member of a wheel, in any directory including .dist-info.
-
-    A real wheel ships SQL only in the runner directory, so nothing is excluded:
-    anything elsewhere is judged (and refused) by the shape rules.
-    """
-    out: dict[str, str] = {}
-    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-        seen: set[str] = set()
-        _check_fold_collisions([i.filename for i in zf.infolist()], "wheel")
-        for info in zf.infolist():
-            if info.is_dir():
-                _check_directory_member(info.filename, "wheel")
-                continue
-            _check_member_name(info.filename, "wheel")
-            if info.filename in seen:
-                raise GuardError(f"wheel: duplicate archive member {info.filename!r}")
-            seen.add(info.filename)
-            if _judged(info.filename):
-                out[info.filename] = hashlib.sha256(zf.read(info)).hexdigest()
-        _check_record(zf, out)
-    return out
-
-
-def _check_record(zf: zipfile.ZipFile, sql: Mapping[str, str]) -> None:
-    """Every .sql member must be listed in the wheel's RECORD with the same sha256.
-
-    pip installs and verifies against RECORD, so a .sql whose RECORD entry is
-    missing or names other bytes is refused rather than judged by one reading of
-    the archive while an installer reads another.
-    """
-    records = [
-        n for n in zf.namelist() if n.count("/") == 1 and n.endswith(".dist-info/RECORD")
-    ]
-    if len(records) != 1:
-        raise GuardError(f"wheel: expected exactly one top-level RECORD, found {records}")
-    listed: dict[str, str] = {}
-    for line in zf.read(records[0]).decode().splitlines():
-        parts = line.rsplit(",", 2)
-        if len(parts) == 3 and parts[1].startswith("sha256="):
-            listed[parts[0]] = parts[1][len("sha256=") :]
-    for name, digest in sql.items():
-        expected = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
-        if listed.get(name) != expected:
-            raise GuardError(f"wheel: RECORD does not vouch for {name} with its actual bytes")
-
-
-#: Source directories the runner itself can read migrations from
-#: (``_migrations._migrations_dir()``: the package copy, else the repo root). They
-#: always map to the runner directory, whatever the build config says.
-_RUNNER_SOURCE_DIRS = ("migrations/", "src/regista/migrations/")
-
-
-def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str, str]:
-    """sdist .sql members keyed by the WHEEL path they would build into.
-
-    Uses the configured mapping PLUS the runner's own source directories, so the
-    comparison cannot be narrowed by editing [tool.hatch]. Two members mapping to
-    one wheel path, or a non-canonical member name, are refused.
-    """
-    out: dict[str, str] = {}
-    pairs = list(mapping) + [(RUNNER_WHEEL_DIR, d) for d in _RUNNER_SOURCE_DIRS]
-    reverse = sorted(((r, w) for w, r in pairs), key=lambda p: len(p[0]), reverse=True)
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
-        _check_fold_collisions([m.name for m in tf.getmembers()], "sdist")
-        for member in tf.getmembers():
-            _check_member_name(member.name, "sdist")
-            if member.isdir():
-                rel_dir = member.name.split("/", 1)[1] if "/" in member.name else ""
-                for src in _RUNNER_SOURCE_DIRS:
-                    if _is_sql(rel_dir) or _fold(rel_dir + "/").startswith(_fold(src)):
-                        raise GuardError(
-                            f"sdist: directory member {member.name!r} in or named like "
-                            "a migration"
-                        )
-                continue
-            if not member.isfile():
-                # pip and uv materialise symlink and hard-link members as regular
-                # files when they build from the sdist, so a link can install a
-                # migration the guard never read. This project ships none.
-                raise GuardError(
-                    f"sdist: non-regular member {member.name!r} (tar type {member.type!r})"
-                )
-            # "<name>-<version>/migrations/001.sql" -> "migrations/001.sql"
-            rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
-            runner_srcs = tuple(_fold(d) for d in _RUNNER_SOURCE_DIRS)
-            if not (_is_sql(rel) or _fold(rel).startswith(runner_srcs)):
-                continue
-            for repo_prefix, wheel_prefix in reverse:
-                if rel.startswith(repo_prefix):
-                    key = wheel_prefix + rel[len(repo_prefix) :]
-                    if key in out:
-                        raise GuardError(f"sdist: two members build into {key}")
-                    fh = tf.extractfile(member)
-                    assert fh is not None
-                    out[key] = hashlib.sha256(fh.read()).hexdigest()
-                    break
-    return out
-
-
-def build_ledger(
-    mapping: list[tuple[str, str]], prior: Mapping[str, Any] | None = None
-) -> dict[str, Any]:
-    """Rebuild from PyPI. Releases ``prior`` recorded that PyPI no longer serves are
-    KEPT and listed in ``withdrawn_from_pypi``: a deletion on PyPI does not unpublish
-    bytes that stores may already have applied, so it must never shrink the ledger."""
+def build_releases() -> dict[str, Any]:
+    """What PyPI serves now, read through the same allowlist as check-dist."""
     index = json.loads(_fetch(PYPI_JSON))
     releases: dict[str, Any] = {}
     for version in sorted(index["releases"], key=_version_key):
         files = index["releases"][version]
         if not files:
-            continue  # a release with every file deleted ships nothing
-        entry: dict[str, Any] = {"files": {}, "migrations": {}}
-        wheel_sql: dict[str, str] | None = None
-        sdist_sql: dict[str, str] | None = None
+            continue
+        entry: dict[str, Any] = {"files": {}, "migrations": None}
         for f in sorted(files, key=lambda f: str(f["filename"])):
             blob = _fetch(f["url"])
-            digest = hashlib.sha256(blob).hexdigest()
-            if digest != f["digests"]["sha256"]:
-                raise GuardError(
-                    f"{f['filename']}: downloaded sha256 {digest} != PyPI digest "
-                    f"{f['digests']['sha256']}"
-                )
-            entry["files"][f["filename"]] = {
-                "sha256": digest,
-                "packagetype": f["packagetype"],
-                "yanked": bool(f.get("yanked", False)),
-            }
-            if f["packagetype"] == "bdist_wheel":
-                members = _sql_members_wheel(blob)
-                if wheel_sql is not None and members != wheel_sql:
-                    raise GuardError(f"{version}: two wheels ship different migrations")
-                wheel_sql = members
-            elif f["packagetype"] == "sdist":
-                members = _sql_members_sdist(blob, mapping)
-                if sdist_sql is not None and members != sdist_sql:
-                    raise GuardError(f"{version}: two sdists ship different migrations")
-                sdist_sql = members
-        if wheel_sql is None:
-            raise GuardError(f"{version}: no wheel on PyPI; cannot establish what installs")
-        if sdist_sql is not None and sdist_sql != wheel_sql:
-            differing = sorted(
-                k for k in wheel_sql if k in sdist_sql and sdist_sql[k] != wheel_sql[k]
-            )
-            raise GuardError(
-                f"{version}: the sdist and the wheel ship different migration bytes: "
-                f"only-wheel={sorted(set(wheel_sql) - set(sdist_sql))} "
-                f"only-sdist={sorted(set(sdist_sql) - set(wheel_sql))} "
-                f"differing={differing}"
-            )
-        entry["migrations"] = dict(sorted(wheel_sql.items()))
+            if _sha(blob) != f["digests"]["sha256"]:
+                raise GuardError(f"{f['filename']}: download does not match PyPI's digest")
+            entry["files"][f["filename"]] = {"sha256": _sha(blob), "packagetype": f["packagetype"]}
+            reader = {"bdist_wheel": read_wheel, "sdist": read_sdist}.get(f["packagetype"])
+            if reader is None:
+                raise GuardError(f"{f['filename']}: unexpected package type {f['packagetype']}")
+            mig = reader(blob, f["filename"])
+            if entry["migrations"] is not None and mig != entry["migrations"]:
+                raise GuardError(f"{version}: its files ship different migrations")
+            entry["migrations"] = mig
+        entry["migrations"] = dict(sorted(entry["migrations"].items()))
         releases[version] = entry
-    withdrawn = sorted(
-        set((prior or {}).get("releases", {})) - set(releases), key=_version_key
-    )
-    for version in withdrawn:
-        assert prior is not None
-        releases[version] = prior["releases"][version]
-    releases = {v: releases[v] for v in sorted(releases, key=_version_key)}
-    return {
-        "format": LEDGER_FORMAT,
-        "project": PROJECT,
-        "source": "PyPI wheel and sdist bytes; regenerate with "
-        "`python scripts/check_published_migrations.py build`",
-        "releases": releases,
-        "withdrawn_from_pypi": withdrawn,
-        "historical_violations": _multiplicity(releases),
-    }
-
-
-def _multiplicity(releases: Mapping[str, Any]) -> dict[str, list[str]]:
-    seen: dict[str, set[str]] = {}
-    for entry in releases.values():
-        for path, digest in entry["migrations"].items():
-            seen.setdefault(path, set()).add(digest)
-    return {p: sorted(d) for p, d in sorted(seen.items()) if len(d) > 1}
-
-
-# --------------------------------------------------------------------------
-# Offline tree check
+    return releases
 
 
 def load_ledger(path: Path = LEDGER_PATH) -> dict[str, Any]:
@@ -472,401 +284,154 @@ def load_ledger(path: Path = LEDGER_PATH) -> dict[str, Any]:
         raise GuardError(f"{path}: unrecognised ledger format/project")
     if not ledger.get("releases"):
         raise GuardError(f"{path}: ledger records no releases; refusing to vacuously pass")
+    if set(ledger) != {"format", "project", "source", "releases", "historical_violations",
+                       "unreleased"}:
+        raise GuardError(f"{path}: unexpected ledger keys {sorted(ledger)}")
     return ledger
 
 
-def latest_published(ledger: Mapping[str, Any]) -> dict[str, tuple[str, str, set[str]]]:
-    """wheel path -> (latest digest, version that shipped it, every digest ever shipped)."""
-    out: dict[str, tuple[str, str, set[str]]] = {}
-    for version in sorted(ledger["releases"], key=_version_key):
-        for path, digest in ledger["releases"][version]["migrations"].items():
-            prior = out.get(path)
-            seen = (prior[2] if prior else set()) | {digest}
-            out[path] = (digest, version, seen)
-    return out
-
-
-#: The one directory the runner reads, as a wheel path. _migrations._migrations_dir()
-#: resolves ``<package>/migrations`` and globs ``*.sql`` in it (not recursively).
-#: tests/test_published_migrations.py pins this against the runner itself.
-RUNNER_WHEEL_DIR = "regista/migrations/"
-
-
-def _in_runner_dir(wheel_path: str) -> bool:
-    rest = wheel_path[len(RUNNER_WHEEL_DIR) :]
-    return wheel_path.startswith(RUNNER_WHEEL_DIR) and "/" not in rest
-
-
-def runner_version(name: str) -> int | None:
-    """The version the runner would assign to ``name``, or None if it skips it.
-
-    Mirrors ``_migrations.discover_migrations``: the glob is ``*.sql`` (case-
-    sensitive) and the version is ``int(stem.split("_", 1)[0])``. ASCII digits are
-    required here even though ``int()`` accepts other Unicode digits: a migration
-    numbered in superscripts is a defect to refuse, not a version to honour.
-    """
-    if not (name.isascii() and name.endswith(".sql")):
-        return None
-    head = name[: -len(".sql")].split("_", 1)[0]
-    if not (head.isascii() and head.isdigit()):
-        return None
-    return int(head)
-
-
-def shipped_sql(repo_root: Path, mapping: list[tuple[str, str]]) -> dict[str, list[str]]:
-    """wheel path -> repository source paths, for every .sql the build would package.
-
-    Any suffix case counts (``.SQL`` ships too); the runner rule decides later
-    whether it would ever apply.
-    """
-    out: dict[str, list[str]] = {}
-    for wheel_prefix, repo_prefix in mapping:
-        base = repo_root / repo_prefix
-        if not base.is_dir():
-            continue
-        for f in sorted(base.rglob("*")):
-            rel = f.relative_to(base).as_posix() if f.is_file() else ""
-            if rel and _judged(wheel_prefix + rel):
-                out.setdefault(wheel_prefix + rel, []).append(repo_prefix + rel)
-    return out
-
-
-def _check_ledger_consistency(
-    published: Mapping[str, tuple[str, str, set[str]]],
+def check_ledger(
     ledger: Mapping[str, Any],
-    frozen: Mapping[str, frozenset[str]],
-) -> list[str]:
-    """Historical multiplicity is exactly the frozen set, and the ledger agrees with itself."""
-    problems: list[str] = []
-    multi = {p: frozenset(s) for p, (_, _, s) in published.items() if len(s) > 1}
-    if multi != dict(frozen):
-        problems.append(
-            "published migration bytes differ between releases beyond the frozen "
-            f"historical violations. Observed multiplicity {_fmt(multi)}; frozen "
-            f"{_fmt(frozen)}. A published migration was rewritten in place. Restore "
-            "its published bytes and ship the change as a new migration."
-        )
-    recorded = {p: frozenset(d) for p, d in (ledger.get("historical_violations") or {}).items()}
-    if recorded != multi:
-        problems.append(
-            "ledger historical_violations does not match its own releases: "
-            f"recorded {_fmt(recorded)}, derived {_fmt(multi)}"
-        )
-    return problems
-
-
-def _check_shape(
-    published: Mapping[str, tuple[str, str, set[str]]],
-    shipped: Mapping[str, tuple[str, str]],
-) -> list[str]:
-    """Rules over the packaged .sql set, keyed by wheel path -> (sha256, label).
-
-    The same rules judge the source tree (an early, conservative model of the
-    build) and a built wheel (the authority: what actually installs).
-    """
-    problems: list[str] = []
-    for wheel_path, (digest, version, _seen) in sorted(published.items()):
-        if wheel_path not in shipped:
-            problems.append(
-                f"{wheel_path}: published in {version} and no longer packaged. Published "
-                "migrations may not be deleted or renamed; a store that applied it "
-                "records its checksum."
-            )
-        elif shipped[wheel_path][0] != digest:
-            problems.append(
-                f"{shipped[wheel_path][1]}: bytes changed after publication. Latest "
-                f"published ({version}) sha256 {digest}, now {shipped[wheel_path][0]}. "
-                "Restore the published bytes and put the change in a new migration."
-            )
-    pub_versions: dict[int, str] = {}
-    for wheel_path in published:
-        if _in_runner_dir(wheel_path):
-            number = runner_version(wheel_path.rsplit("/", 1)[1])
-            if number is not None:
-                pub_versions[number] = wheel_path
-    max_published = max(pub_versions, default=-1)
-    by_version: dict[int, list[str]] = {}
-    for wheel_path, (_digest, label) in sorted(shipped.items()):
-        where = f"{label} (ships as {wheel_path})"
-        if not _in_runner_dir(wheel_path):
-            problems.append(
-                f"{where}: a packaged .sql outside {RUNNER_WHEEL_DIR}. The runner applies "
-                f"only top-level {RUNNER_WHEEL_DIR}*.sql, so this would ship and never "
-                "apply. Move it or stop shipping it."
-            )
-            continue
-        number = runner_version(wheel_path.rsplit("/", 1)[1])
-        if number is None:
-            problems.append(
-                f"{where}: not a canonical migration name (a lower-case .sql suffix and "
-                "an ASCII-digit version before the first '_'). Depending on the name "
-                "the runner either skips it or derives a version via int(), e.g. from "
-                "'+4'. Both are refused."
-            )
-            continue
-        by_version.setdefault(number, []).append(wheel_path)
-    for number, paths in sorted(by_version.items()):
-        if len(paths) > 1:
-            problems.append(f"migration version {number} is claimed by {len(paths)} files: {paths}")
-        for wheel_path in paths:
-            if wheel_path in published:
-                continue
-            if number <= max_published:
-                problems.append(
-                    f"{shipped[wheel_path][1]}: unpublished migration numbered {number} "
-                    f"sorts at or before the latest published migration ({max_published}, "
-                    f"{pub_versions[max_published]}). The runner applies by set "
-                    "membership, so stores already past it would run this late and out "
-                    f"of order. Number it above {max_published}."
-                )
-    return problems
-
-
-def check_tree(
-    ledger: Mapping[str, Any],
-    repo_root: Path = REPO_ROOT,
     frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
 ) -> list[str]:
-    """The source tree, judged through a CONSERVATIVE model of the hatch build.
-
-    This is the fast early signal (it runs in pytest). It is not the authority:
-    hatch has selection rules this model does not reproduce (file-valued and
-    global force-include, only-include, sources rewrites, symlink traversal,
-    exclude and VCS-ignore). ``check-dist`` over the built wheel is the
-    authority and gates publication. Where this model overcounts, it fails safe.
-    """
-    published = latest_published(ledger)
-    problems = _check_ledger_consistency(published, ledger, frozen)
-    mapping = _path_mapping(repo_root / "pyproject.toml")
-    sources = shipped_sql(repo_root, mapping)
-    for wheel_path, srcs in sorted(sources.items()):
-        if len(srcs) > 1:
-            problems.append(
-                f"{wheel_path} would be shipped from {len(srcs)} source files "
-                f"{srcs}. Exactly one source may produce a packaged migration."
-            )
-    runner_sources = sorted(
-        {src.rsplit("/", 1)[0] for w, srcs in sources.items() if _in_runner_dir(w) for src in srcs}
-    )
-    if len(runner_sources) > 1:
-        problems.append(
-            f"{RUNNER_WHEEL_DIR} is assembled from {len(runner_sources)} source "
-            f"directories {runner_sources}. An editable install reads only one of them "
-            "(src/regista/migrations/ is preferred when it exists), so the runner and the "
-            "wheel would apply different sets. Keep one source directory."
-        )
-    for wheel_path in published:
-        if wheel_path not in sources:
-            try:
-                wheel_to_repo_path(wheel_path, mapping)
-            except GuardError as exc:
-                problems.append(str(exc))
-    shipped = {
-        w: (hashlib.sha256((repo_root / srcs[0]).read_bytes()).hexdigest(), srcs[0])
-        for w, srcs in sources.items()
-    }
-    return problems + _check_shape(published, shipped)
-
-
-def dist_sql(
-    dist_dir: Path, pyproject: Path | None = None
-) -> tuple[dict[str, tuple[str, str]], list[str]]:
-    """The packaged .sql set of the built wheel(s) in ``dist_dir``, plus agreement problems.
-
-    Every wheel must carry the same set. Each sdist's ``migrations/`` must equal the
-    wheel's runner directory byte-for-byte, so an sdist a user builds from cannot
-    install something the checked wheel does not.
-    """
+    """Internal consistency, and the expected migration set it implies."""
     problems: list[str] = []
-    wheels = sorted(dist_dir.glob("*.whl"))
-    if not wheels:
-        raise GuardError(f"{dist_dir}: no wheel to check; refusing to vacuously pass")
-    shipped: dict[str, tuple[str, str]] | None = None
-    for whl in wheels:
-        digests = _sql_members_wheel(whl.read_bytes())
-        members = {p: (d, f"{whl.name}:{p}") for p, d in digests.items()}
-        if shipped is not None and {p: d for p, (d, _) in members.items()} != {
-            p: d for p, (d, _) in shipped.items()
-        }:
-            problems.append(f"{whl.name} ships different .sql files than {wheels[0].name}")
-        shipped = shipped or members
-    assert shipped is not None
-    runner = {p: d for p, (d, _) in shipped.items() if _in_runner_dir(p)}
-    mapping = _path_mapping(pyproject) if pyproject is not None else []
-    sdists = sorted(dist_dir.glob("*.tar.gz"))
-    if not sdists:
+    releases = ledger["releases"]
+    multi = {n: frozenset(d) for n, d in _multiplicity(releases).items()}
+    if multi != dict(frozen):
         problems.append(
-            f"{dist_dir}: no sdist, so sdist/wheel agreement cannot be checked; "
-            "publish uploads both"
+            f"released migration bytes differ between releases beyond the frozen pair: {multi}"
         )
-    for sdist in sdists:
-        mapped = _sql_members_sdist(sdist.read_bytes(), mapping)
-        sql_found = {p: d for p, d in mapped.items() if _in_runner_dir(p)}
-        differing = sorted(k for k in runner if k in sql_found and sql_found[k] != runner[k])
-        if sql_found != runner:
-            problems.append(
-                f"{sdist.name}: migrations differ from the wheel's {RUNNER_WHEEL_DIR} "
-                f"(only-sdist={sorted(set(sql_found) - set(runner))}, "
-                f"only-wheel={sorted(set(runner) - set(sql_found))}, "
-                f"differing={differing})"
-            )
-    return shipped, problems
+    if {n: frozenset(d) for n, d in ledger["historical_violations"].items()} != multi:
+        problems.append("ledger historical_violations does not match its own releases")
+    latest = releases[max(releases, key=_version_key)]["migrations"]
+    ever = {n for e in releases.values() for n in e["migrations"]}
+    if ever - set(latest):
+        dropped = sorted(ever - set(latest))
+        problems.append(f"the latest release dropped published migrations {dropped}")
+    head = max((int(n[:3]) for n in ever), default=-1)
+    unreleased = ledger["unreleased"]
+    for name, digest in unreleased.items():
+        if MIGRATION_NAME.fullmatch(name) is None or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            problems.append(f"unreleased entry {name!r}: bad name or digest")
+        elif name in ever:
+            problems.append(f"unreleased entry {name} is already published")
+        elif int(name[:3]) <= head:
+            problems.append(f"unreleased {name} does not sort after the published head {head:03d}")
+    numbers = [n[:3] for n in [*latest, *unreleased]]
+    if len(numbers) != len(set(numbers)):
+        problems.append("two migrations share a version number")
+    return problems
+
+
+def expected_migrations(ledger: Mapping[str, Any]) -> dict[str, str]:
+    releases = ledger["releases"]
+    latest = dict(releases[max(releases, key=_version_key)]["migrations"])
+    return {**latest, **ledger["unreleased"]}
+
+
+def _compare(actual: Mapping[str, str], expected: Mapping[str, str], where: str) -> list[str]:
+    problems = []
+    for name in sorted(set(expected) - set(actual)):
+        problems.append(f"{where}: missing migration {name}")
+    for name in sorted(set(actual) - set(expected)):
+        problems.append(f"{where}: undeclared migration {name} (declare it under 'unreleased')")
+    for name in sorted(set(actual) & set(expected)):
+        if actual[name] != expected[name]:
+            problems.append(f"{where}: {name} bytes differ from the ledger")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# Checks
 
 
 def check_dist(
     ledger: Mapping[str, Any],
     dist_dir: Path,
     frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
-    repo_root: Path = REPO_ROOT,
+    *,
+    rebuild_sdists: bool = True,
 ) -> list[str]:
-    """The AUTHORITATIVE check: the rules applied to what the built wheel installs."""
-    published = latest_published(ledger)
-    problems = _check_ledger_consistency(published, ledger, frozen)
-    shipped, agreement = dist_sql(dist_dir, repo_root / "pyproject.toml")
-    return problems + agreement + _check_shape(published, shipped)
-
-
-def check_monotonic(
-    base: Mapping[str, Any] | None, head: Mapping[str, Any], *, base_has_guard: bool = False
-) -> list[str]:
-    """The ledger only grows, and a withdrawal must be of a release already on record.
-
-    Every release the base ledger records must still be recorded, unchanged, at
-    head. A release in head's ``withdrawn_from_pypi`` must have been recorded as
-    a release in the base: head cannot vouch for history that PyPI no longer
-    serves, so a fabricated "withdrawn" release (which would otherwise make an
-    arbitrary path count as published) is refused. With no base ledger, head may
-    record no withdrawals at all, and the bootstrap is allowed only when the
-    base predates the guard itself.
-    """
-    head_withdrawn = set(head.get("withdrawn_from_pypi") or [])
-    if base is None:
-        problems = []
-        if base_has_guard:
-            problems.append(
-                "base has the published-migration guard but no ledger; the ledger was "
-                "deleted. Bootstrap without a base ledger is allowed only once, from a "
-                "base that predates the guard."
-            )
-        if head_withdrawn:
-            problems.append(
-                f"founding ledger records withdrawn releases {sorted(head_withdrawn)}; a "
-                "ledger cannot vouch for releases PyPI no longer serves on its own say-so"
-            )
-        return problems
-    problems = []
-    for version, entry in base["releases"].items():
-        if version not in head["releases"]:
-            problems.append(f"ledger dropped release {version}; published history only grows")
-        elif head["releases"][version] != entry:
-            problems.append(f"ledger rewrote release {version}; recorded releases are immutable")
-    lost = set(base.get("withdrawn_from_pypi") or []) - head_withdrawn
-    if lost:
-        problems.append(f"ledger un-recorded withdrawn releases {sorted(lost)}")
-    unvouched = head_withdrawn - set(base["releases"])
-    if unvouched:
-        problems.append(
-            f"ledger records withdrawn releases {sorted(unvouched)} that the base never "
-            "recorded as published; only a release already on record can be withdrawn"
+    problems = check_ledger(ledger, frozen)
+    expected = expected_migrations(ledger)
+    wheels = sorted(dist_dir.glob("*.whl"))
+    sdists = sorted(dist_dir.glob("*.tar.gz"))
+    # `uv build` drops a one-byte `*` .gitignore into its out-dir; nothing else
+    # may sit beside the artifacts.
+    others = sorted(
+        p.name
+        for p in dist_dir.iterdir()
+        if p not in (*wheels, *sdists)
+        and not (p.name == ".gitignore" and p.is_file() and p.read_bytes() == b"*")
+    )
+    if not wheels or not sdists or others:
+        raise GuardError(
+            f"{dist_dir}: need >=1 wheel and >=1 sdist and nothing else; "
+            f"wheels={len(wheels)} sdists={len(sdists)} other={others}"
         )
+    for whl in wheels:
+        problems += _compare(read_wheel(whl.read_bytes(), whl.name), expected, whl.name)
+    for sdist in sdists:
+        problems += _compare(read_sdist(sdist.read_bytes(), sdist.name), expected, sdist.name)
+        if rebuild_sdists:
+            with tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.run(
+                    ["uv", "build", "--wheel", "--out-dir", tmp, str(sdist)],
+                    capture_output=True, text=True,
+                )
+                if proc.returncode != 0:
+                    raise GuardError(f"{sdist.name}: building a wheel from it failed")
+                rebuilt = sorted(Path(tmp).glob("*.whl"))
+                if len(rebuilt) != 1:
+                    raise GuardError(f"{sdist.name}: rebuild produced {len(rebuilt)} wheels")
+                where = f"wheel rebuilt from {sdist.name}"
+                problems += _compare(read_wheel(rebuilt[0].read_bytes(), where), expected, where)
     return problems
 
 
-def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> tuple[dict[str, Any] | None, bool]:
-    """(ledger at ``ref`` or None, whether ``ref`` already carries this guard)."""
-    exists = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-        capture_output=True,
-    )
-    if exists.returncode != 0:
-        raise GuardError(f"base ref {ref!r} is not a commit in this checkout")
-    grep = subprocess.run(
-        ["git", "-C", str(repo_root), "grep", "-l", "-F", GUARD_MARKER, ref, "--"],
-        capture_output=True,
-    )
-    if grep.returncode not in (0, 1):
-        raise GuardError(f"git grep failed on {ref!r}: {grep.stderr.decode(errors='replace')}")
-    has_guard = grep.returncode == 0
-    ledger_rel = LEDGER_PATH.relative_to(REPO_ROOT).as_posix()
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "show", f"{ref}:{ledger_rel}"], capture_output=True
-    )
-    if proc.returncode != 0:
-        return None, has_guard
-    try:
-        loaded: dict[str, Any] = json.loads(proc.stdout)
-    except ValueError as exc:
-        raise GuardError(f"ledger at {ref!r} is not valid JSON") from exc
-    return loaded, has_guard
+def check_tree(ledger: Mapping[str, Any], repo_root: Path = REPO_ROOT,
+               frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS) -> list[str]:
+    """Early signal: migrations/ holds exactly the expected files, nothing else."""
+    problems = check_ledger(ledger, frozen)
+    for forbidden in FORBIDDEN_SOURCE_DIRS:
+        if (repo_root / forbidden).exists():
+            problems.append(f"{forbidden} must not exist (the runner would prefer it)")
+    actual: dict[str, str] = {}
+    for p in sorted((repo_root / SDIST_MIGRATIONS).iterdir()):
+        if p.is_symlink() or not p.is_file() or MIGRATION_NAME.fullmatch(p.name) is None:
+            problems.append(f"migrations/{p.name}: not a canonical migration file")
+        else:
+            actual[p.name] = _sha(p.read_bytes())
+    return problems + _compare(actual, expected_migrations(ledger), "migrations/")
 
 
-def _ledger_history(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
-    """Every proper ancestor of ``rev`` that touched the ledger, plus its parents.
-
-    A later descendant of a merge can otherwise inherit a merge that silently
-    dropped history (round-5 review). Since the ledger only grows, the head must
-    be a superset of every ledger state on every path through its ancestry.
-    """
-    def log(*selector: str) -> list[str]:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "log", "--full-history", "--format=%H",
-             f"{rev}^@", *selector],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise GuardError(f"git log over the ledger's history failed for {rev!r}")
-        return [c for c in proc.stdout.split() if c]
-
-    # --full-history: default history simplification prunes a side branch when a
-    # merge resolves the ledger to its first parent (round-6 review).
-    touched = log("--", LEDGER_PATH.relative_to(REPO_ROOT).as_posix())
-    # The ledger path is PINNED. Commits that introduced or removed the guard
-    # marker are bases too: if one carries the guard but has no ledger at the
-    # pinned path (a rename), check_monotonic refuses it as a deleted ledger.
-    touched += log("-S", GUARD_MARKER)
-    seen: list[str] = []
-    for c in _parents(rev, repo_root) + touched:
-        if c not in seen:
-            seen.append(c)
-    return seen
-
-
-def _parents(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-list", "--parents", "-n", "1", rev],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        raise GuardError(f"{rev!r} is not a commit in this checkout")
-    parents = proc.stdout.split()[1:]
-    if not parents:
-        raise GuardError(f"{rev!r} has no parent; refusing to release a root commit")
-    return parents
-
-
-def _fmt(m: Mapping[str, frozenset[str]]) -> str:
-    return json.dumps({k: sorted(v) for k, v in sorted(m.items())}, indent=None)
-
-
-def check_release(
-    ledger: Mapping[str, Any],
-    version: str,
-    repo_root: Path = REPO_ROOT,
-    frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
-) -> list[str]:
+def check_release(ledger: Mapping[str, Any], version: str, repo_root: Path = REPO_ROOT,
+                  frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS) -> list[str]:
     problems = []
-    if version in ledger["releases"]:
-        problems.append(f"{version} is already published on PyPI; it cannot be re-released")
     known = sorted(ledger["releases"], key=_version_key)
-    if known and _version_key(version) <= _version_key(known[-1]):
-        problems.append(
-            f"{version} does not sort after the latest published release {known[-1]}"
-        )
+    if version in ledger["releases"]:
+        problems.append(f"{version} is already published")
+    elif _version_key(version) <= _version_key(known[-1]):
+        problems.append(f"{version} does not sort after the latest release {known[-1]}")
     return problems + check_tree(ledger, repo_root, frozen)
 
 
-# --------------------------------------------------------------------------
-# CLI
+def verify_ledger(committed: Mapping[str, Any], fresh: Mapping[str, Any]) -> list[str]:
+    problems = []
+    for v in sorted(set(fresh) - set(committed["releases"]), key=_version_key):
+        problems.append(f"PyPI release {v} is not in the ledger; run `build` and commit")
+    for v in sorted(set(committed["releases"]) - set(fresh), key=_version_key):
+        problems.append(
+            f"ledger release {v} is no longer on PyPI. This guard makes no claim about "
+            "deleted releases: a human must decide (stores may still hold its bytes)"
+        )
+    for v in sorted(set(fresh) & set(committed["releases"]), key=_version_key):
+        if fresh[v] != committed["releases"][v]:
+            problems.append(f"ledger release {v} differs from what PyPI serves")
+    if _multiplicity(fresh) != committed["historical_violations"]:
+        problems.append("historical_violations differs from PyPI")
+    return problems
 
 
 def _canonical(obj: Any) -> str:
@@ -874,77 +439,45 @@ def _canonical(obj: Any) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description="published-migration immutability guard")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("check-tree", help="offline: the tree honours the ledger")
-    sub.add_parser("verify-ledger", help="network: the ledger equals PyPI")
-    rel = sub.add_parser("check-release", help="publish workflow pre-build gate")
+    sub.add_parser("check-tree")
+    sub.add_parser("verify-ledger")
+    sub.add_parser("build")
+    rel = sub.add_parser("check-release")
     rel.add_argument("--version", required=True)
-    sub.add_parser("build", help="network: rewrite the ledger from PyPI")
-    mono = sub.add_parser("check-monotonic", help="git: the ledger only grows vs a base ref")
-    which = mono.add_mutually_exclusive_group(required=True)
-    which.add_argument("--base")
-    which.add_argument(
-        "--all-parents-of", help="check against EVERY parent of this commit (merge-safe)"
-    )
-    which.add_argument(
-        "--ledger-history-of",
-        help="check against every parent AND every ancestor that touched the ledger",
-    )
-    dist = sub.add_parser("check-dist", help="AUTHORITATIVE: the rules over built artifacts")
+    dist = sub.add_parser("check-dist")
     dist.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
-
     try:
         if args.cmd == "build":
             prior = load_ledger() if LEDGER_PATH.exists() else None
-            ledger = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"), prior)
+            releases = build_releases()
+            unreleased = dict((prior or {}).get("unreleased", {}))
+            for entry in releases.values():
+                for name, digest in entry["migrations"].items():
+                    if name in unreleased:
+                        if unreleased.pop(name) != digest:
+                            raise GuardError(f"{name} was released with undeclared bytes")
             LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-            LEDGER_PATH.write_text(_canonical(ledger))
-            print(f"wrote {LEDGER_PATH} ({len(ledger['releases'])} releases)")
+            LEDGER_PATH.write_text(_canonical({
+                "format": LEDGER_FORMAT, "project": PROJECT,
+                "source": "PyPI artifacts; regenerate with "
+                          "`python scripts/check_published_migrations.py build`",
+                "releases": releases, "historical_violations": _multiplicity(releases),
+                "unreleased": dict(sorted(unreleased.items())),
+            }))
+            print(f"wrote {LEDGER_PATH} ({len(releases)} releases)")
             return 0
+        ledger = load_ledger()
         if args.cmd == "verify-ledger":
-            committed = load_ledger()
-            fresh = build_ledger(_path_mapping(REPO_ROOT / "pyproject.toml"), committed)
-            if _canonical(fresh) != _canonical(committed):
-                missing = sorted(set(fresh["releases"]) - set(committed["releases"]))
-                extra = sorted(set(committed["releases"]) - set(fresh["releases"]))
-                changed = sorted(
-                    v
-                    for v in set(fresh["releases"]) & set(committed["releases"])
-                    if fresh["releases"][v] != committed["releases"][v]
-                )
-                print(
-                    "ledger does not match PyPI. "
-                    f"Unrecorded releases: {missing}; recorded but absent from PyPI: "
-                    f"{extra}; recorded differently: {changed}; other fields differ: "
-                    f"{not (missing or extra or changed)}. If a release was just "
-                    "published, run `build` and commit the result.",
-                    file=sys.stderr,
-                )
-                return 1
-            problems = check_tree(fresh)
-        elif args.cmd == "check-monotonic":
-            if args.base:
-                bases = [args.base]
-            elif args.all_parents_of:
-                bases = _parents(args.all_parents_of)
-            else:
-                bases = _ledger_history(args.ledger_history_of)
-            problems = []
-            head = load_ledger()
-            for ref in bases:
-                base, base_has_guard = _ledger_at(ref)
-                problems += [
-                    f"vs {ref}: {p}"
-                    for p in check_monotonic(base, head, base_has_guard=base_has_guard)
-                ]
-        elif args.cmd == "check-dist":
-            problems = check_dist(load_ledger(), args.dist_dir)
+            problems = verify_ledger(ledger, build_releases()) + check_ledger(ledger)
         elif args.cmd == "check-release":
-            problems = check_release(load_ledger(), args.version)
+            problems = check_release(ledger, args.version)
+        elif args.cmd == "check-dist":
+            problems = check_dist(ledger, args.dist_dir)
         else:
-            problems = check_tree(load_ledger())
+            problems = check_tree(ledger)
     except GuardError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

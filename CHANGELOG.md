@@ -6,23 +6,26 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
-- **Published migrations are immutable, and CI checks it against PyPI's own bytes (#65).**
-  `release/published-migrations.json` records the sha256 of every `*.sql` that each
-  `regista-hraedon` release on PyPI ships. The wheel and sdist of all nine releases,
-  0.5.1-0.7.2, were downloaded and checked against PyPI's digests, and they agree.
-  `scripts/check_published_migrations.py` refuses a tree that edits, renames or deletes a
-  published migration. It also refuses an unpublished migration numbered at or below the
-  published head, a duplicate version number, a non-canonical name, and any packaged
-  `.sql` outside the runner's one directory. The authority is `check-dist`, which judges
-  the .sql files inside the built wheel and requires each sdist to match. It runs in CI and
-  in the publish build job, immediately before upload. A conservative source-tree model of
-  the same rules runs in the test suite as an early signal. A separate CI job and the
-  publish workflow re-derive the ledger from PyPI and require it to match exactly. They
-  also require it to only grow relative to its git history, and accept a withdrawal only
-  for a release already on record. So a ledger edit that blesses a change, forgets a
-  release or invents one is detected. That detection blocks a merge only if the job is a required check, and
-  `main` currently has no branch protection. A newly published release turns CI red until
-  it is recorded. A release later deleted from PyPI stays recorded as withdrawn.
+- **Published migrations are immutable: an allowlist over the artifacts we publish (#65).**
+  `release/published-migrations.json` records exactly what PyPI serves for every
+  `regista-hraedon` release: per release, the sha256 of each file and of each migration. It
+  was measured from the wheels and sdists of all nine releases, 0.5.1-0.7.2.
+  `scripts/check_published_migrations.py check-dist` runs in CI and in the publish build job
+  on the exact bytes uploaded. It fails closed:
+  - Every member of every wheel and sdist must be a regular file with a strict ASCII, NFC,
+    traversal-free name.
+  - No two names may collide after NFKC + casefold.
+  - Migrations are found only by exact parent path and the name pattern
+    `^\d{3}_[a-z0-9_]+\.sql$`. Anything else touching the migrations path is refused,
+    and so is any `.sql` elsewhere in a wheel.
+  - The migration set and bytes must equal the latest released set plus the ledger's
+    declared `unreleased` entries: no extras, no missing files.
+  - The same must hold for a wheel rebuilt from each sdist, which is what installers do.
+
+  `verify-ledger` proves the ledger equals PyPI. The guard deliberately makes no claim about
+  git history or about releases deleted from PyPI; such a deletion fails `verify-ledger`
+  loudly for a human to resolve. Detection blocks a merge only if the job is a required
+  check, and `main` has no branch protection today.
 
   **Two violations predate the guard and cannot be undone.** `001_initial.sql` and
   `035_event_chain_head_genesis_sentinel.sql` were rewritten in place in 0.6.0. 0.5.x

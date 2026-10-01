@@ -230,18 +230,13 @@ jobs:
           pkg="$(python -c 'import importlib.metadata as m; print(m.version("regista-hraedon"))')"
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg"
-      # GitHub issue #65: refuse to publish a tree that rewrote, renamed,
-      # deleted or inserted-below a migration some earlier release shipped,
-      # judged against PyPI's own bytes (verify-ledger), not just the
-      # committed ledger. check-release also refuses a version PyPI already has.
+      # GitHub issue #65: the ledger must equal what PyPI serves, and the
+      # tagged tree must hold exactly the ledger's migrations. check-dist in the
+      # build job then judges the exact bytes that are uploaded.
       - name: Published migrations are immutable
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
-          # Against every parent AND every ancestor that touched the ledger, so
-          # neither a merge nor a later descendant of one can hide a dropped
-          # ledger state. A root commit is refused.
-          python3 scripts/check_published_migrations.py check-monotonic --ledger-history-of HEAD
       - name: Lint
         run: ruff check src/ tests/ tools/
       - name: Type-check
