@@ -44,6 +44,7 @@ from kernel import (
     WORKFLOW_DOCUMENT_REMOVED_KEYS,
     WORKFLOW_DOCUMENT_VERSION,
     ClaimContestedError,
+    DatabaseOperationError,
     IdempotencyConflictError,
     InvalidFieldError,
     InvalidQueryError,
@@ -53,6 +54,7 @@ from kernel import (
     LeaseExpiredError,
     LeaseNotHeldError,
     PoolExhaustedError,
+    PoolUnavailableError,
     ReservedPayloadKeyError,
     StaleAttemptError,
     TransitionRefusedError,
@@ -63,6 +65,7 @@ from kernel import (
     validate_workflow_document,
     workflow_schema,
 )
+from psycopg.sql import SQL, Identifier
 from psycopg.types.json import Jsonb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -237,6 +240,25 @@ def named(dsn: str, app_name: str) -> str:
     """The same DSN, tagged so pg_stat_activity can pick this session out."""
     sep = "&" if "?" in dsn else "?"
     return f"{dsn}{sep}application_name={app_name}"
+
+
+def create_settable_role(dsn: str) -> str:
+    """Create a no-login role that the DSN user can SET ROLE to for reset checks."""
+    role = f"kernel_pool_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT current_user").fetchone()
+        if row is None:
+            raise AssertionError("could not identify the test database user")
+        conn.execute(SQL("CREATE ROLE {} NOLOGIN").format(Identifier(role)))
+        conn.execute(
+            SQL("GRANT {} TO {}").format(Identifier(role), Identifier(str(row[0])))
+        )
+    return role
+
+
+def drop_test_role(dsn: str, role: str) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(SQL("DROP ROLE {}").format(Identifier(role)))
 
 
 def open_transactions(dsn: str, app_name: str) -> int:
@@ -684,6 +706,42 @@ def main(dsn: str) -> int:
 
     print("\n\033[1mBounded connection pool (Plan 032 F2)\033[0m")
 
+    def zero_minimum_still_proves_connectivity() -> None:
+        unreachable = psycopg.conninfo.make_conninfo(
+            dsn,
+            host="127.0.0.1",
+            port="1",
+            connect_timeout="1",
+        )
+        started = time.monotonic()
+        err = expect_exactly(
+            PoolUnavailableError,
+            lambda: Kernel.connect(
+                unreachable,
+                schema="m_pool_unreachable",
+                pool_min_size=0,
+                pool_max_size=1,
+                pool_timeout=0.4,
+            ),
+            "connect(min_size=0) to an unreachable database",
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"connectivity proof exceeded its bound: {elapsed:.3f}s"
+        assert err.__cause__ is not None, "the typed connect failure lost its cause"
+
+        # Control: zero remains a supported minimum when one connection can be
+        # established; the check is about eager connectivity, not rejecting zero.
+        k = Kernel.connect(
+            dsn,
+            schema="public",
+            pool_min_size=0,
+            pool_max_size=1,
+            pool_timeout=1.0,
+        )
+        k.close()
+    check("connect proves one working connection even when pool_min_size is zero",
+          zero_minimum_still_proves_connectivity)
+
     def pool_bound_and_timeout_are_enforced() -> None:
         k = fresh(dsn, "m_pool_bound", pool_min_size=0, pool_max_size=2,
                   pool_timeout=0.25)
@@ -728,6 +786,15 @@ def main(dsn: str) -> int:
         assert k.health()["work_items"] == 1, (
             "the next borrower inherited another schema after SET search_path"
         )
+        replayed_state, replayed_fields, replay_drift = k.replay(item.id)
+        assert (replayed_state, replayed_fields, replay_drift) == ("open", {}, []), (
+            "replay() lost the configured schema when its rollback discarded SET LOCAL: "
+            f"{(replayed_state, replayed_fields, replay_drift)}"
+        )
+        events = k.history(item.id)
+        assert len(events) == 1 and events[0].seq == 0, (
+            "history() did not read the configured schema after replay's rollback-first path"
+        )
 
         conn = k._pool.getconn()
         pid_row = conn.execute("SELECT pg_backend_pid() AS pid").fetchone()
@@ -748,6 +815,124 @@ def main(dsn: str) -> int:
         k.close()
     check("pool reuse stays schema-scoped after refusal, SET, and server loss",
           pooled_schema_scope_survives_every_reuse_path)
+
+    def returned_connections_discard_role_and_transaction_defaults() -> None:
+        role = create_settable_role(dsn)
+        k: Kernel | None = None
+        try:
+            k = fresh(dsn, "m_pool_session_reset", pool_max_size=1)
+            borrowed = k._pool.getconn()
+            borrowed.execute(SQL("SET ROLE {}").format(Identifier(role)))
+            borrowed.execute("SET default_transaction_read_only TO on")
+            borrowed.execute("SET default_transaction_isolation TO 'serializable'")
+            premise = borrowed.execute(
+                "SELECT current_user, session_user, "
+                "current_setting('default_transaction_read_only') AS read_only, "
+                "current_setting('default_transaction_isolation') AS isolation"
+            ).fetchone()
+            assert premise is not None
+            assert premise["current_user"] == role, (
+                f"SET ROLE premise did not take effect: {premise}"
+            )
+            assert premise["read_only"] == "on", premise
+            assert premise["isolation"] == "serializable", premise
+            borrowed.commit()
+            k._pool.putconn(borrowed)
+
+            clean = k._pool.getconn()
+            observed = clean.execute(
+                "SELECT current_user, session_user, "
+                "current_setting('default_transaction_read_only') AS read_only, "
+                "current_setting('default_transaction_isolation') AS isolation"
+            ).fetchone()
+            assert observed is not None
+            assert observed["current_user"] == observed["session_user"], observed
+            assert observed["read_only"] == "off", observed
+            assert observed["isolation"] == "read committed", observed
+            clean.rollback()
+            k._pool.putconn(clean)
+
+            item = k.create_work_item(workflow="t", type="x", actor_id="control")
+            assert k.get(item.id).state == "open", (
+                "the borrower after the session mutation could not perform a write"
+            )
+        finally:
+            if k is not None:
+                k.close()
+            drop_test_role(dsn, role)
+    check("return discards a prior borrower's role/read-only/isolation mutations",
+          returned_connections_discard_role_and_transaction_defaults)
+
+    def initialize_sql_cannot_leak_session_state() -> None:
+        schema = "m_pool_init_reset"
+        role = create_settable_role(dsn)
+        k: Kernel | None = None
+        try:
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+                admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(schema)))
+            with open(os.path.join(HERE, "schema.sql")) as source:
+                schema_sql = source.read()
+            session_mutation = f"""
+GRANT USAGE ON SCHEMA {schema} TO {role};
+GRANT INSERT ON TABLE kernel_meta TO {role};
+SET ROLE {role};
+SET default_transaction_read_only TO on;
+SET default_transaction_isolation TO 'serializable';
+DO $proof$
+BEGIN
+    IF current_user <> '{role}'
+       OR current_setting('default_transaction_read_only') <> 'on'
+       OR current_setting('default_transaction_isolation') <> 'serializable' THEN
+        RAISE EXCEPTION 'session-mutation premise did not hold';
+    END IF;
+END
+$proof$;
+"""
+            with tempfile.NamedTemporaryFile("w", suffix=".sql") as custom_schema:
+                custom_schema.write(schema_sql)
+                custom_schema.write(session_mutation)
+                custom_schema.flush()
+                k = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+                k.initialize(custom_schema.name)
+
+            # register_workflow writes. Without a whole-session reset this runs
+            # as the weak role and in a read-only transaction; either leak makes
+            # the control fail, formerly with a bare psycopg exception.
+            assert k.register_workflow(WF) == 1
+            assert k.health()["workflows"] == 1
+        finally:
+            if k is not None:
+                k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+            drop_test_role(dsn, role)
+    check("initialize SQL cannot leak role/read-only/isolation to its next borrower",
+          initialize_sql_cannot_leak_session_state)
+
+    def raw_database_errors_are_translated_at_the_public_boundary() -> None:
+        k = fresh(dsn, "m_pool_db_error", pool_max_size=1)
+        surgery(dsn, "m_pool_db_error", "DROP TABLE kernel_meta", ())
+        err = expect_exactly(
+            DatabaseOperationError,
+            k.health,
+            "health() after its table was removed",
+        )
+        assert isinstance(err.__cause__, psycopg.Error), (
+            f"database cause was not preserved: {err.__cause__!r}"
+        )
+        assert "health" in str(err), f"translated error omitted the operation: {err}"
+        k.close()
+
+        control = fresh(dsn, "m_pool_db_error_control", pool_max_size=1)
+        assert control.health()["schema_version"] == 1
+        control.close()
+    check("public operations translate psycopg errors and preserve their cause",
+          raw_database_errors_are_translated_at_the_public_boundary)
 
     def dirty_returns_and_interruptions_are_rolled_back() -> None:
         app = f"kernel-pool-clean-{uuid.uuid4().hex[:8]}"
@@ -810,6 +995,108 @@ def main(dsn: str) -> int:
         k.close()
     check("health reports pool bounds/size/waiting/available and closes its transaction",
           health_reports_pool_state_without_pin)
+
+    def health_availability_accounts_for_a_queued_waiter() -> None:
+        k = fresh(dsn, "m_pool_health_waiter", pool_min_size=1,
+                  pool_max_size=1, pool_timeout=2.0)
+        item = k.create_work_item(workflow="t", type="x", actor_id="a")
+        health_paused = threading.Event()
+        release_health = threading.Event()
+        health_result: list[dict[str, Any]] = []
+        waiter_result: list[object] = []
+        failures: list[BaseException] = []
+        original_end_read = Kernel._end_read
+
+        def pause_health(self: Kernel) -> None:
+            original_end_read(self)
+            if threading.current_thread().name == "health-snapshot":
+                health_paused.set()
+                if not release_health.wait(timeout=2.0):
+                    raise AssertionError("health snapshot was not released")
+
+        def run_health() -> None:
+            try:
+                health_result.append(k.health())
+            except BaseException as exc:
+                failures.append(exc)
+
+        def run_waiter() -> None:
+            try:
+                waiter_result.append(k.get(item.id))
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_end_read", pause_health)
+        try:
+            health_thread = threading.Thread(target=run_health, name="health-snapshot")
+            health_thread.start()
+            assert health_paused.wait(timeout=2.0), (
+                "health never held the pool's sole connection; waiter premise is vacuous"
+            )
+            waiter_thread = threading.Thread(target=run_waiter, name="health-waiter")
+            waiter_thread.start()
+            deadline = time.monotonic() + 2.0
+            while (k._pool.get_stats().get("requests_waiting", 0) < 1
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            queued = int(k._pool.get_stats().get("requests_waiting", 0))
+            assert queued == 1, f"waiter never queued behind health(): {queued}"
+            release_health.set()
+            health_thread.join(timeout=3.0)
+            waiter_thread.join(timeout=3.0)
+            assert not health_thread.is_alive() and not waiter_thread.is_alive(), (
+                "health/waiter threads did not finish"
+            )
+        finally:
+            release_health.set()
+            setattr(Kernel, "_end_read", original_end_read)
+        assert not failures, f"health/waiter operations failed: {failures}"
+        assert health_result and health_result[0]["pool_waiting"] == 1, health_result
+        assert health_result[0]["pool_available"] == 0, (
+            "health counted its returned checkout as idle despite the queued waiter: "
+            f"{health_result[0]}"
+        )
+        assert len(waiter_result) == 1, "the queued waiter never received the connection"
+        assert k.health()["pool_available"] == 1, (
+            "control snapshot without a waiter did not project the returned checkout"
+        )
+        k.close()
+    check("health availability does not count a return promised to a queued waiter",
+          health_availability_accounts_for_a_queued_waiter)
+
+    def nested_public_operation_is_refused_without_leaking_a_connection() -> None:
+        k = fresh(dsn, "m_pool_nested", pool_min_size=1, pool_max_size=1,
+                  pool_timeout=0.25)
+        nested_attempted = False
+        original_db_now = Kernel._db_now
+
+        def nested_db_now(self: Kernel, cur: Any) -> datetime:
+            nonlocal nested_attempted
+            del cur
+            nested_attempted = True
+            self.health()
+            raise AssertionError("nested health() unexpectedly returned")
+
+        setattr(Kernel, "_db_now", nested_db_now)
+        try:
+            err = expect_exactly(
+                KernelError,
+                lambda: k.create_work_item(workflow="t", type="x", actor_id="a"),
+                "a public health() call nested inside create_work_item()",
+            )
+        finally:
+            setattr(Kernel, "_db_now", original_db_now)
+        assert nested_attempted, "the nested public operation path was never reached"
+        assert "nested public database operations" in str(err), err
+        state = k.health()
+        assert state["work_items"] == 0, "the refused outer operation committed a partial row"
+        assert state["pool_available"] == 1, (
+            f"the nested refusal leaked the pool's only connection: {state}"
+        )
+        k.create_work_item(workflow="t", type="x", actor_id="control")
+        k.close()
+    check("nested public operations are refused without leaking the checkout",
+          nested_public_operation_is_refused_without_leaking_a_connection)
 
     def concurrent_borrowers_have_distinct_transactions_and_database_time() -> None:
         k = fresh(dsn, "m_pool_isolation", pool_min_size=2, pool_max_size=2)

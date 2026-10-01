@@ -205,20 +205,37 @@ k = Kernel.connect(DSN, schema="project_a",
 ```
 
 Each public database operation checks out one connection exclusively, starts a
-transaction scoped to the configured schema, and returns it clean. Checkout
-never grows past `pool_max_size`; waiting longer than `pool_timeout` raises
-`PoolExhaustedError`, a `KernelError` that names the configured maximum. Both a
-session scope on every checkout and a transaction-local scope on every operation
-are intentional: a prior rollback, a prior borrower's `SET search_path`, or a
-replacement after server-side connection loss cannot redirect the next operation.
-Open and failed transactions are rolled back on return. Cleanup covers
-`BaseException`, so an interruption in the middle of a write commits no partial
-effect and does not poison the next borrower.
+transaction scoped to the configured schema, and returns it clean. Return first
+rolls back open or failed work, then runs PostgreSQL `DISCARD ALL` in autocommit
+mode. That clears the whole previous session—not only `search_path`, but also a
+changed role, session GUCs such as transaction defaults, prepared statements,
+temporary objects, advisory locks, and notification registrations. Checkout
+then establishes the configured session `search_path`; each operation also uses
+`SET LOCAL`. Both scopes are intentional: a prior rollback, arbitrary SQL run by
+`initialize()`, a previous borrower's session mutation, the reset itself, or a
+replacement after server-side connection loss cannot redirect or alter the next
+operation.
+
+Checkout never grows past `pool_max_size`; waiting longer than `pool_timeout`
+raises `PoolExhaustedError`, a `KernelError` that names the configured maximum.
+`pool_min_size=0` remains supported, but `connect()` always proves at least one
+connection before returning; an unreachable database is therefore a
+`PoolUnavailableError` at connect time, not a later capacity-looking exhaustion.
+Any raw `psycopg.Error` raised during a public database operation is translated
+to `DatabaseOperationError` with the original exception retained as `__cause__`.
+Open/failure cleanup covers `BaseException`, so an interruption in the middle of
+a write commits no partial effect and does not poison the next borrower. A public
+operation nested in another public operation on the same thread is refused before
+a second checkout, and the outer checkout is still returned cleanly.
 
 `health()` includes `pool_size`, `pool_min_size`, `pool_max_size`,
-`pool_waiting`, and `pool_available`; availability is the number available after
-the health call returns its own checkout. The snapshot is instantaneous, not a
-capacity reservation or an observability time series.
+`pool_waiting`, and `pool_available`. They are one instantaneous snapshot taken
+before `health()` returns its own checkout. `pool_available` projects that
+immediate return: it adds the health checkout only when no waiter is already
+queued; when a waiter is queued, the checkout is promised directly to that
+waiter and is not counted as idle capacity. The result is neither a capacity
+reservation nor an observability time series, and another thread may change it
+as soon as the snapshot is taken.
 
 The limits are deliberately narrow: bounds are per `Kernel` instance (not a
 database-wide connection budget), there is no async pool, callers do not borrow

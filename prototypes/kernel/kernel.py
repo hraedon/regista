@@ -27,12 +27,15 @@ enforced in exactly one place.
 BOUNDED POOL.
     Kernel.connect() owns a synchronous psycopg_pool with explicit min/max sizes
     and a checkout timeout. Every public database operation exclusively borrows
-    one connection. Checkout reasserts the session search_path and the operation
-    reasserts it with SET LOCAL, so rollback, a previous borrower's SET, and a
-    replacement connection cannot redirect work. Return rolls back any open or
-    failed transaction on every BaseException path. Limits are per Kernel/process;
-    this is not a database-wide connection budget, an async surface, or a raw SQL
-    connection API. See README.md for the public contract and operational limits.
+    one connection. Return rolls back any open or failed transaction and then
+    uses DISCARD ALL outside a transaction to remove the previous borrower's
+    complete session state (roles, GUCs, prepared statements, temporary objects,
+    advisory locks, and notification registrations). Checkout reasserts the
+    session search_path and the operation reasserts it with SET LOCAL, so rollback,
+    a replacement connection, and the reset itself cannot redirect work. Cleanup
+    covers every BaseException path. Limits are per Kernel/process; this is not a
+    database-wide connection budget, an async surface, or a raw SQL connection API.
+    See README.md for the public contract and operational limits.
 
 ONE CLOCK.
     The database decides what time it is, for every stamp and every expiry
@@ -255,6 +258,7 @@ class KernelError(Exception):
 class PoolConfigurationError(KernelError): ...
 class PoolExhaustedError(KernelError): ...
 class PoolUnavailableError(KernelError): ...
+class DatabaseOperationError(KernelError): ...
 class UnsupportedSchemaError(KernelError): ...
 class InvalidWorkflowError(KernelError): ...
 class InvalidQueryError(KernelError): ...
@@ -302,16 +306,24 @@ def _pooled_operation(
     """
     @functools.wraps(method)
     def wrapped(self: Kernel, *args: P.args, **kwargs: P.kwargs) -> R:
-        conn = self._acquire_connection()
         try:
-            self._begin_operation(conn)
-            self._operation_local.conn = conn
-            return method(self, *args, **kwargs)
-        finally:
-            if getattr(self._operation_local, "conn", None) is conn:
-                del self._operation_local.conn
-            self._clean_connection(conn)
-            self._pool.putconn(conn)
+            conn = self._acquire_connection()
+            try:
+                self._begin_operation(conn)
+                self._operation_local.conn = conn
+                return method(self, *args, **kwargs)
+            finally:
+                if getattr(self._operation_local, "conn", None) is conn:
+                    del self._operation_local.conn
+                self._clean_connection(conn)
+                self._pool.putconn(conn)
+        except KernelError:
+            raise
+        except psycopg.Error as exc:
+            raise DatabaseOperationError(
+                f"database operation {method.__name__} failed "
+                f"({type(exc).__name__})"
+            ) from exc
 
     return cast("Callable[Concatenate[Kernel, P], R]", wrapped)
 
@@ -1045,15 +1057,29 @@ class Kernel:
                 f"pool_timeout must be greater than zero, got {pool_timeout}"
             )
 
-        def check_connection(conn: DictConn) -> None:
-            # The built-in check detects a server-side loss before a connection
-            # reaches an operation. Reasserting a session path on EVERY checkout
-            # repairs any SET search_path issued by the previous borrower. The
-            # operation adds SET LOCAL as well, so its transaction is independently
-            # scoped and a rollback cannot erase the next borrower's scope.
-            ConnectionPool.check_connection(conn)
+        def reset_connection(conn: DictConn) -> None:
+            """Erase all state owned by the borrower before this connection is idle."""
             if conn.info.transaction_status != TransactionStatus.IDLE:
                 conn.rollback()
+            conn.autocommit = True
+            try:
+                conn.execute("DISCARD ALL")
+            finally:
+                # psycopg_pool requires reset callbacks to leave connections in
+                # their configured state and outside a transaction.
+                if not conn.closed:
+                    conn.autocommit = False
+
+        def check_connection(conn: DictConn) -> None:
+            # The built-in check detects a server-side loss before a connection
+            # reaches an operation. Roll back first because the built-in check
+            # toggles autocommit and cannot repair an INTRANS/INERROR connection.
+            if conn.info.transaction_status != TransactionStatus.IDLE:
+                conn.rollback()
+            ConnectionPool.check_connection(conn)
+            # DISCARD ALL intentionally removes this session scope on return.
+            # Reassert it on EVERY checkout; SET LOCAL below independently scopes
+            # the operation, while this session scope serves rollback-first paths.
             conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
             conn.commit()
 
@@ -1066,16 +1092,26 @@ class Kernel:
                 timeout=pool_timeout,
                 open=False,
                 check=check_connection,
+                reset=reset_connection,
                 kwargs={"row_factory": dict_row, "autocommit": False},
             )
             pool.open(wait=True, timeout=pool_timeout)
-        except (PoolTimeout, TooManyRequests, ValueError) as exc:
+            # ConnectionPool.wait() is a no-op when min_size=0. An explicit
+            # checkout proves connectivity for every accepted configuration.
+            probe = pool.getconn(timeout=pool_timeout)
+            pool.putconn(probe)
+        except BaseException as exc:
             if pool is not None:
-                pool.close()
-            raise PoolUnavailableError(
-                f"could not open connection pool within {pool_timeout:g}s "
-                f"(configured min={pool_min_size}, max={pool_max_size})"
-            ) from exc
+                _close_pool_quietly(pool)
+            if isinstance(
+                exc,
+                (PoolTimeout, TooManyRequests, PoolClosed, psycopg.Error, ValueError),
+            ):
+                raise PoolUnavailableError(
+                    f"could not open connection pool within {pool_timeout:g}s "
+                    f"(configured min={pool_min_size}, max={pool_max_size})"
+                ) from exc
+            raise
         return cls(
             pool,
             schema,
@@ -1350,16 +1386,22 @@ class Kernel:
                 counts[label] = int(r["n"]) if r else 0
         self._end_read()
         stats = self._pool.get_stats()
-        # health() itself owns one checkout. Report the availability callers will
-        # see after this operation returns, rather than under-reporting by one.
-        available = min(int(stats["pool_size"]), int(stats["pool_available"]) + 1)
+        waiting = int(stats.get("requests_waiting", 0))
+        # Project the immediate return of health()'s checkout from this snapshot.
+        # With a queued waiter the pool hands that connection directly to it, so
+        # the checkout does not become available to an additional caller.
+        returned_to_idle = 0 if waiting else 1
+        available = min(
+            int(stats["pool_size"]),
+            int(stats["pool_available"]) + returned_to_idle,
+        )
         return {
             "schema_version": version,
             **counts,
             "pool_size": int(stats["pool_size"]),
             "pool_min_size": self._pool_min_size,
             "pool_max_size": self._pool_max_size,
-            "pool_waiting": int(stats.get("requests_waiting", 0)),
+            "pool_waiting": waiting,
             "pool_available": available,
         }
 
