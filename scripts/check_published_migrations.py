@@ -22,8 +22,12 @@ protection, so a red run is a signal a reviewer must honour, not a lock.
 Subcommands:
 
 ``check-dist DIST_DIR`` (offline; the AUTHORITY - CI and the publish build job)
-    The rules below, applied to every .sql file (any suffix case, any directory,
-    including ``.dist-info``) the built wheel(s) contain. Archive member names
+    The rules below, applied to every SQL-like file (any suffix case or Unicode
+    spelling a folding filesystem could glob as ``*.sql``, in any directory
+    including ``.dist-info``) and to EVERY member under the runner directory.
+    The runner directory may contain only direct-child, ASCII, canonical
+    ``NNN_*.sql`` files; anything else there (another file, a subdirectory,
+    a file implying one) is refused. Archive member names
     must already be canonical (no ``..``/``.``/empty segment, leading ``/`` or
     backslash), because installers normalise them. Duplicate members are refused.
     Each sdist's .sql files are mapped into wheel paths the same way ledger
@@ -62,8 +66,10 @@ Subcommands:
     accepted only if it also predates this guard (the one-time bootstrap). The
     guard is recognised in history by ``GUARD_MARKER``, not by file path, so
     renaming the script does not reset that boundary.
-    ``--all-parents-of REV`` checks every parent of REV, so a merge cannot hide
-    a ledger state on a second parent. A root commit is refused.
+    ``--all-parents-of REV`` checks every parent of REV. ``--ledger-history-of
+    REV`` (used by publish) additionally checks every ancestor that touched the
+    ledger, on every path, so neither a merge nor a later descendant of one can
+    hide a dropped ledger state. A root commit is refused.
 
 ``verify-ledger`` (network: pypi.org)
     Re-download every release PyPI lists, verify each file against PyPI's
@@ -108,6 +114,7 @@ import sys
 import tarfile
 import time
 import tomllib
+import unicodedata
 import urllib.request
 import zipfile
 from collections.abc import Mapping
@@ -238,8 +245,18 @@ def _check_member_name(name: str, where: str) -> None:
 
 
 def _is_sql(name: str) -> bool:
-    """Any suffix case: the shape rules then refuse a non-lower-case one."""
-    return name.lower().endswith(".sql")
+    """Anything a case-insensitive or Unicode-folding filesystem could glob as
+    ``*.sql`` (e.g. ``.SQL``, or ``.\u017fql`` with a long s, which Windows case
+    folding matches). The shape rules then refuse every non-canonical spelling."""
+    return unicodedata.normalize("NFKC", name).casefold().endswith(".sql")
+
+
+def _judged(wheel_path: str) -> bool:
+    """Members the shape rules must see: every SQL-like file anywhere, and EVERY
+    member under the runner directory, so a non-migration file or a directory
+    (explicit, or implied by a descendant like ``000_x.sql/note.txt``) there is
+    refused rather than ignored."""
+    return _is_sql(wheel_path) or wheel_path.startswith(RUNNER_WHEEL_DIR)
 
 
 def _sql_members_wheel(blob: bytes) -> dict[str, str]:
@@ -258,7 +275,7 @@ def _sql_members_wheel(blob: bytes) -> dict[str, str]:
             if info.filename in seen:
                 raise GuardError(f"wheel: duplicate archive member {info.filename!r}")
             seen.add(info.filename)
-            if _is_sql(info.filename):
+            if _judged(info.filename):
                 out[info.filename] = hashlib.sha256(zf.read(info)).hexdigest()
         _check_record(zf, out)
     return out
@@ -315,10 +332,10 @@ def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str,
                 raise GuardError(
                     f"sdist: non-regular member {member.name!r} (tar type {member.type!r})"
                 )
-            if not _is_sql(member.name):
-                continue
             # "<name>-<version>/migrations/001.sql" -> "migrations/001.sql"
             rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
+            if not (_is_sql(rel) or rel.startswith(_RUNNER_SOURCE_DIRS)):
+                continue
             for repo_prefix, wheel_prefix in reverse:
                 if rel.startswith(repo_prefix):
                     key = wheel_prefix + rel[len(repo_prefix) :]
@@ -452,7 +469,7 @@ def runner_version(name: str) -> int | None:
     required here even though ``int()`` accepts other Unicode digits: a migration
     numbered in superscripts is a defect to refuse, not a version to honour.
     """
-    if not name.endswith(".sql"):
+    if not (name.isascii() and name.endswith(".sql")):
         return None
     head = name[: -len(".sql")].split("_", 1)[0]
     if not (head.isascii() and head.isdigit()):
@@ -472,8 +489,8 @@ def shipped_sql(repo_root: Path, mapping: list[tuple[str, str]]) -> dict[str, li
         if not base.is_dir():
             continue
         for f in sorted(base.rglob("*")):
-            if f.is_file() and f.suffix.lower() == ".sql":
-                rel = f.relative_to(base).as_posix()
+            rel = f.relative_to(base).as_posix() if f.is_file() else ""
+            if rel and _judged(wheel_prefix + rel):
                 out.setdefault(wheel_prefix + rel, []).append(repo_prefix + rel)
     return out
 
@@ -747,6 +764,28 @@ def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> tuple[dict[str, Any] | 
     return loaded, has_guard
 
 
+def _ledger_history(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Every proper ancestor of ``rev`` that touched the ledger, plus its parents.
+
+    A later descendant of a merge can otherwise inherit a merge that silently
+    dropped history (round-5 review). Since the ledger only grows, the head must
+    be a superset of every ledger state on every path through its ancestry.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "log", "--format=%H", f"{rev}^@", "--",
+         LEDGER_PATH.relative_to(REPO_ROOT).as_posix()],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise GuardError(f"git log over the ledger's history failed for {rev!r}")
+    touched = [c for c in proc.stdout.split() if c]
+    seen: list[str] = []
+    for c in _parents(rev, repo_root) + touched:
+        if c not in seen:
+            seen.append(c)
+    return seen
+
+
 def _parents(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
     proc = subprocess.run(
         ["git", "-C", str(repo_root), "rev-list", "--parents", "-n", "1", rev],
@@ -803,6 +842,10 @@ def main(argv: list[str] | None = None) -> int:
     which.add_argument(
         "--all-parents-of", help="check against EVERY parent of this commit (merge-safe)"
     )
+    which.add_argument(
+        "--ledger-history-of",
+        help="check against every parent AND every ancestor that touched the ledger",
+    )
     dist = sub.add_parser("check-dist", help="AUTHORITATIVE: the rules over built artifacts")
     dist.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
@@ -837,7 +880,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             problems = check_tree(fresh)
         elif args.cmd == "check-monotonic":
-            bases = [args.base] if args.base else _parents(args.all_parents_of)
+            if args.base:
+                bases = [args.base]
+            elif args.all_parents_of:
+                bases = _parents(args.all_parents_of)
+            else:
+                bases = _ledger_history(args.ledger_history_of)
             problems = []
             head = load_ledger()
             for ref in bases:

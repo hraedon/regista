@@ -238,9 +238,10 @@ jobs:
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
-          # Against EVERY parent of the tagged commit, so a merge cannot hide a
-          # ledger state on its second parent. A root commit is refused.
-          python3 scripts/check_published_migrations.py check-monotonic --all-parents-of HEAD
+          # Against every parent AND every ancestor that touched the ledger, so
+          # neither a merge nor a later descendant of one can hide a dropped
+          # ledger state. A root commit is refused.
+          python3 scripts/check_published_migrations.py check-monotonic --ledger-history-of HEAD
       - name: Lint
         run: ruff check src/ tests/ tools/
       - name: Type-check

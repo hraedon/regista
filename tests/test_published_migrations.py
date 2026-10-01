@@ -751,3 +751,54 @@ def test_check_dist_requires_an_sdist(tmp_path: Path) -> None:
     _write_wheel(d / "r-0.0.0-py3-none-any.whl", WHEEL_OK)
     problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
     assert len(problems) == 1 and "no sdist" in problems[0]
+
+
+# --------------------------------------------------------------------------
+# Round 5 review (gpt-5.6-sol B1-B3): Unicode folding, things that are not
+# migration files inside the runner directory, and ledger ancestry.
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "regista/migrations/000_unexpected.\u017fql",  # long s: Windows case-folds to .sql
+        "regista/migrations/051_café.sql",  # non-ASCII migration name
+        "regista/migrations/000_unexpected.sql/note.txt",  # implies a directory named *.sql
+        "regista/migrations/README.txt",  # anything else in the runner directory
+    ],
+)
+def test_check_dist_refuses_anything_but_canonical_migrations_in_the_runner_dir(
+    tmp_path: Path, name: str
+) -> None:
+    d = _dist(tmp_path, {**WHEEL_OK, name: C}, SDIST_OK)
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert any(name in p for p in problems), problems
+
+
+def test_is_sql_sees_what_a_folding_filesystem_would_glob() -> None:
+    assert guard._is_sql("x.\u017fql") and guard._is_sql("x.SQL") and guard._is_sql("x.sql")
+    assert guard.runner_version("000_x.\u017fql") is None
+    assert guard.runner_version("051_café.sql") is None
+
+
+def test_ledger_history_sees_a_dropped_state_behind_a_merge_and_a_child(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    full = json.dumps(_ledger(BASE_RELEASES))
+    reduced_ledger = _ledger({"0.2.0": BASE_RELEASES["0.2.0"]})
+    reduced = json.dumps(reduced_ledger)
+    marker = f"# {guard.GUARD_MARKER}\n"
+    _commit(repo, {"g.py": marker, "release/published-migrations.json": full}, "full ledger")
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, {"side": "1\n"}, "side keeps full ledger")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"release/published-migrations.json": reduced}, "branch drops a release")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
+    child = _commit(repo, {"prep": "1\n"}, "release-prep child")
+    direct = guard._parents(child, repo)
+    assert len(direct) == 1  # --all-parents-of would see only the merge...
+    bases = guard._ledger_history(child, repo)
+    problems = []
+    for ref in bases:
+        base, has_guard = guard._ledger_at(ref, repo)
+        problems += guard.check_monotonic(base, reduced_ledger, base_has_guard=has_guard)
+    assert any("dropped release 0.1.0" in p for p in problems)  # ...the history does
