@@ -13,8 +13,11 @@ migration's checksum, so rewriting a published file makes those stores report
    the sha256 of every file and of every migration it ships (``verify-ledger``;
    network).
 2. The artifacts about to be published (``check-dist``) contain ONLY REVIEWED
-   BYTES from tracked files in the checked-out tree (apart from tightly checked,
-   generated package metadata), and their migration subset equals the ledger.
+   BYTES, meaning the blobs of the COMMITTED tree at HEAD (a checkout with
+   uncommitted changes to tracked files is refused). Generated package
+   metadata (METADATA including Requires-Dist, entry_points.txt, WHEEL, RECORD)
+   must be byte-identical to what pip and uv each build from the accepted sdist,
+   so it is bound to reviewed input too. Their migration subset equals the ledger.
    Package code may do anything its reviewed source says when it is run; that is
    the code-review boundary and is deliberately outside this artifact guard.
 
@@ -53,11 +56,15 @@ sdist in ``DIST_DIR``:
 * A member is a regular file. Every symlink, hard link, directory entry, device
   or FIFO is refused.
 * No two members collide after NFKC + casefold, and no name repeats.
-* Every sdist member is byte-identical to a tracked checkout file with the same
+* Every sdist member is byte-identical to the committed HEAD blob at the same
   relative path, except its single generated ``PKG-INFO``. Every wheel package
-  member is byte-identical to its tracked source (``src/regista/`` or, for the
-  force-included migration files, ``migrations/``). ``check-dist`` therefore
-  requires ``repo_root`` to be the root of a Git checkout. This reviewed-bytes
+  member is byte-identical to its committed source blob (``src/regista/`` or, for
+  the force-included migration files, ``migrations/``). ``check-dist`` therefore
+  requires ``repo_root`` to be the root of a clean Git checkout. Bytes on disk are
+  never trusted, so an edit hidden from ``git status`` (``assume-unchanged``)
+  cannot pass.
+* Every wheel in ``DIST_DIR`` is member-for-member byte-identical to the wheels
+  pip and uv build from each sdist. This binds the generated metadata. This reviewed-bytes
   rule is intentionally NOT applied by ``verify-ledger`` to published artifacts
   that predate the current tree.
 * A wheel contains files only under ``regista/`` and one
@@ -405,52 +412,74 @@ def _check_zip_container(blob: bytes, infos: list[zipfile.ZipInfo], where: str) 
         raise GuardError(f"{where}: bytes between the last record and the central directory")
 
 
-def _git_tracked_files(repo_root: Path) -> frozenset[str]:
-    """Return tracked paths, refusing anything other than the checkout root."""
-    root = repo_root.resolve()
+def _git(root: Path, *args: str) -> bytes:
     try:
-        top = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root:
-            raise GuardError(f"{repo_root}: repo_root must be the root of a Git checkout")
-        listed = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True,
-            check=False,
-        )
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
     except OSError as exc:
+        raise GuardError(f"{root}: cannot run git ({exc.__class__.__name__})") from exc
+    if proc.returncode != 0:
+        raise GuardError(f"{root}: git {args[0]} failed")
+    return proc.stdout
+
+
+def _git_tracked_files(repo_root: Path) -> Mapping[str, bytes]:
+    """The reviewed bytes: every regular file of the COMMITTED tree at HEAD.
+
+    "Reviewed" means committed, not merely tracked: a working tree with any staged
+    or unstaged change to a tracked file is refused, and member bytes are compared
+    with the HEAD blobs, never with the files on disk. Symlinks and submodules in
+    the tree are not reviewed bytes and are omitted (so a member that maps to one
+    is refused as untracked).
+    """
+    root = repo_root.resolve()
+    top = _git(root, "rev-parse", "--show-toplevel").decode().strip()
+    if Path(top).resolve() != root:
+        raise GuardError(f"{repo_root}: repo_root must be the root of a Git checkout")
+    if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=no"):
         raise GuardError(
-            f"{repo_root}: cannot inspect Git checkout ({exc.__class__.__name__})"
-        ) from exc
-    if listed.returncode != 0:
-        raise GuardError(f"{repo_root}: git ls-files failed")
-    try:
-        paths = frozenset(p.decode("utf-8") for p in listed.stdout.split(b"\0") if p)
-    except UnicodeDecodeError as exc:
-        raise GuardError(f"{repo_root}: a tracked path is not UTF-8") from exc
-    if not paths:
-        raise GuardError(f"{repo_root}: Git checkout has no tracked files")
-    return paths
+            f"{repo_root}: the working tree has uncommitted changes to tracked files; "
+            "reviewed bytes are the committed tree, so commit or discard them first"
+        )
+    listing = _git(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD")
+    blobs: dict[str, str] = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path_bytes = entry.partition(b"\t")
+        mode, kind, sha = meta.decode().split()
+        try:
+            path = path_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GuardError(f"{repo_root}: a tracked path is not UTF-8") from exc
+        if kind == "blob" and mode in ("100644", "100755"):
+            blobs[path] = sha
+    if not blobs:
+        raise GuardError(f"{repo_root}: HEAD has no tracked files")
+    batch = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(f"{sha}\n" for sha in blobs.values()).encode(),
+        capture_output=True,
+        check=False,
+    )
+    if batch.returncode != 0:
+        raise GuardError(f"{repo_root}: git cat-file failed")
+    out: dict[str, bytes] = {}
+    stream, pos = batch.stdout, 0
+    for path, sha in blobs.items():
+        header_end = stream.index(b"\n", pos)
+        got_sha, kind, size = stream[pos:header_end].decode().split()
+        if got_sha != sha or kind != "blob":
+            raise GuardError(f"{repo_root}: git cat-file returned an unexpected object")
+        start = header_end + 1
+        out[path] = stream[start : start + int(size)]
+        pos = start + int(size) + 1
+    return out
 
 
-def _reviewed_bytes(repo_root: Path, tracked: frozenset[str], rel: str, where: str) -> bytes:
+def _reviewed_bytes(repo_root: Path, tracked: Mapping[str, bytes], rel: str, where: str) -> bytes:
     if rel not in tracked:
         raise GuardError(f"{where}: source {rel!r} is not tracked by Git")
-    source = repo_root / rel
-    try:
-        source.resolve().relative_to(repo_root.resolve())
-    except ValueError as exc:
-        raise GuardError(f"{where}: tracked source {rel!r} escapes the checkout") from exc
-    if source.is_symlink() or not source.is_file():
-        raise GuardError(f"{where}: tracked source {rel!r} is not a regular file")
-    try:
-        return source.read_bytes()
-    except OSError as exc:
-        raise GuardError(f"{where}: cannot read tracked source {rel!r}") from exc
+    return tracked[rel]
 
 
 def read_wheel(
@@ -459,7 +488,7 @@ def read_wheel(
     *,
     wheel_filename: str | None = None,
     repo_root: Path | None = None,
-    tracked: frozenset[str] | None = None,
+    tracked: Mapping[str, bytes] | None = None,
     project_identity: tuple[str, str] | None = None,
 ) -> dict[str, str]:
     """Allowlisted wheel -> {migration filename: sha256}."""
@@ -487,7 +516,7 @@ def _read_wheel(
     wheel_filename: str,
     *,
     repo_root: Path | None,
-    tracked: frozenset[str] | None,
+    tracked: Mapping[str, bytes] | None,
     project_identity: tuple[str, str] | None,
 ) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -593,7 +622,7 @@ def read_sdist(
     where: str,
     *,
     repo_root: Path | None = None,
-    tracked: frozenset[str] | None = None,
+    tracked: Mapping[str, bytes] | None = None,
 ) -> dict[str, str]:
     """Allowlisted sdist -> {migration filename: sha256}."""
     try:
@@ -617,7 +646,7 @@ def _read_sdist(
     where: str,
     *,
     repo_root: Path | None,
-    tracked: frozenset[str] | None,
+    tracked: Mapping[str, bytes] | None,
 ) -> dict[str, str]:
     out: dict[str, str] = {}
     if (repo_root is None) != (tracked is None):
@@ -799,6 +828,14 @@ def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
     return wheels[0]
 
 
+def _wheel_members(blob: bytes, where: str) -> dict[str, str]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            return {i.orig_filename: _sha(zf.read(i)) for i in zf.infolist()}
+    except (zipfile.BadZipFile, OSError, ValueError, NotImplementedError) as exc:
+        raise GuardError(f"{where}: unreadable wheel ({exc.__class__.__name__})") from exc
+
+
 def check_build_contract(pyproject: bytes, where: str) -> tuple[str, str]:
     """The build uses one named, frozen, trusted executable closure.
 
@@ -873,7 +910,9 @@ def check_dist(
             f"{dist_dir}: need >=1 wheel and >=1 sdist and nothing else; "
             f"wheels={len(wheels)} sdists={len(sdists)} other={others}"
         )
+    direct_members: dict[str, dict[str, str]] = {}
     for whl in wheels:
+        direct_members[whl.name] = _wheel_members(whl.read_bytes(), whl.name)
         problems += _compare(
             read_wheel(
                 whl.read_bytes(),
@@ -904,6 +943,21 @@ def check_dist(
                 with tempfile.TemporaryDirectory() as tmp:
                     rebuilt = _rebuild(label, argv, sdist, Path(tmp))
                     where = f"wheel {label} built from {sdist.name}"
+                    # Bind EVERY wheel member, including generated METADATA
+                    # (Requires-Dist), entry_points.txt, WHEEL and RECORD, to what
+                    # each trusted frontend builds from the accepted sdist. A
+                    # post-build edit to generated metadata cannot match.
+                    rebuilt_members = _wheel_members(rebuilt.read_bytes(), where)
+                    for name, members in direct_members.items():
+                        if members != rebuilt_members:
+                            changed = sorted(
+                                k for k in set(members) | set(rebuilt_members)
+                                if members.get(k) != rebuilt_members.get(k)
+                            )
+                            problems.append(
+                                f"{name}: differs from the {label} rebuild of {sdist.name} "
+                                f"in {changed[:5]}"
+                            )
                     problems += _compare(
                         # The rebuilt wheel is held to the same checkout bytes and
                         # identity as the direct wheel; its filename is evidence.

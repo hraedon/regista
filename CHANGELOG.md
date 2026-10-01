@@ -12,8 +12,10 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   was measured from the wheels and sdists of all nine releases, 0.5.1-0.7.2.
   `scripts/check_published_migrations.py check-dist` runs in CI and in the publish build job
   on the exact bytes uploaded. Its artifact claim is deliberately precise: artifacts contain
-  only reviewed bytes from tracked files in the checkout (apart from constrained generated
-  package metadata), and their migration subset equals the ledger. Reviewed package code may
+  only reviewed bytes, meaning the committed HEAD blobs (a dirty checkout is refused). Every
+  wheel must be member-for-member identical to the wheels pip and uv build from the sdist,
+  which binds generated metadata (Requires-Dist, entry points, WHEEL, RECORD). Their
+  migration subset equals the ledger. Reviewed package code may
   perform effects when it runs; what that code does is the code-review boundary, outside this
   artifact guard. It fails closed:
   - Every member of every wheel and sdist must be a regular file with a strict ASCII, NFC,

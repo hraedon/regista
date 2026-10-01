@@ -92,14 +92,15 @@ def test_frozen_violations_are_exactly_the_two_measured_in_0_6_0() -> None:
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build real artifacts")
 def test_a_real_build_passes_check_dist_including_the_sdist_rebuild(tmp_path: Path) -> None:
-    dist = tmp_path / "dist"
-    cache = tmp_path / "uv-cache"
+    """Builds from a clean clone of HEAD: reviewed bytes are committed bytes."""
+    dist, clone = tmp_path / "dist", tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(REPO_ROOT), str(clone)], check=True)
     subprocess.run(
-        ["uv", "build", "-q", "--out-dir", str(dist), str(REPO_ROOT)],
+        ["uv", "build", "-q", "--out-dir", str(dist), str(clone)],
         check=True,
-        env={**os.environ, "UV_CACHE_DIR": str(cache)},
+        env={**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
     )
-    assert guard.check_dist(guard.load_ledger(), dist) == []
+    assert guard.check_dist(guard.load_ledger(), dist, repo_root=clone) == []
 
 
 # --------------------------------------------------------------------------
@@ -249,9 +250,20 @@ def _test_repo(tmp_path: Path) -> Path:
     for name, data in {**BASE, "003_c.sql": C}.items():
         (repo / "migrations" / name).write_bytes(data)
     (repo / "LICENSE").write_bytes(b"license\n")
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    _git_commit_all(repo, init=True)
     return repo
+
+
+def _git_commit_all(repo: Path, *, init: bool = False) -> None:
+    """Reviewed bytes are COMMITTED bytes: fixtures commit what they track."""
+    if init:
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "fixture"],
+        check=True,
+    )
 
 
 def _verdict(d: Path, ledger: dict[str, Any] | None = None) -> str:
@@ -838,6 +850,7 @@ def test_check_dist_enforces_the_trusted_build_requirement_set(tmp_path: Path) -
             b'requires = [\n', b'requires = [\n    "neutral-build-helper==1.0.2",\n'
         )
     )
+    _git_commit_all(repo)
     with pytest.raises(guard.GuardError, match="trusted frozen requirement set"):
         guard.check_dist(_ledger(), _dist(tmp_path), {}, repo_root=repo, rebuild_sdists=False)
 
@@ -1141,7 +1154,8 @@ def test_a_tracked_path_reached_through_a_parent_symlink_is_refused(tmp_path: Pa
     outside.mkdir()
     (outside / "__init__.py").write_bytes(b"")
     package.symlink_to(outside, target_is_directory=True)
-    assert "escapes the checkout" in _verdict(d)
+    _git_commit_all(repo)  # HEAD now records a symlink, which is not reviewed bytes
+    assert "not tracked by Git" in _verdict(d)
 
 
 def test_sdist_pkg_info_exists_exactly_once_at_the_root(tmp_path: Path) -> None:
@@ -1286,3 +1300,132 @@ def test_rebuilt_wheel_filename_is_checked(tmp_path: Path, monkeypatch: pytest.M
         guard.check_dist(
             _ledger(), d, {}, repo_root=tmp_path / "repo", rebuild_sdists=True
         )
+
+
+# --------------------------------------------------------------------------
+# New-design round 4 (Daybreak Blue B1/B2): generated metadata bound to the
+# trusted rebuilds; "reviewed" means the committed blob.
+
+REQUIRES_DIST_URL = b"Requires-Dist: neutral-fixture @ file:///tmp/neutral_fixture-0.0.0-py3-none-any.whl\n"
+
+
+def _rewrite_wheel(blob: bytes, changes: dict[str, bytes]) -> bytes:
+    """Rewrite members of a wheel and regenerate a fully valid RECORD for them,
+    exactly as an attacker editing a built wheel would."""
+    src = zipfile.ZipFile(io.BytesIO(blob))
+    record = next(n for n in src.namelist() if n.endswith(".dist-info/RECORD"))
+    contents = {i.filename: src.read(i) for i in src.infolist()}
+    contents.update(changes)
+    lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in contents.items()
+             if n != record]
+    contents[record] = ("\n".join(lines) + f"\n{record},,\n").encode()
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        originals = {i.filename: i for i in src.infolist()}
+        order = [n for n in originals if n != record] + [
+            n for n in contents if n not in originals
+        ] + [record]
+        for name in order:
+            new = zipfile.ZipInfo(name, originals[name].date_time if name in originals
+                                  else (2020, 1, 1, 0, 0, 0))
+            new.external_attr = originals[name].external_attr if name in originals \
+                else 0o100644 << 16
+            new.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(new, contents[name])
+    return out.getvalue()
+
+
+def _with_metadata_line(blob: bytes, line: bytes) -> bytes:
+    src = zipfile.ZipFile(io.BytesIO(blob))
+    meta = next(n for n in src.namelist() if n.endswith(".dist-info/METADATA"))
+    head, sep, body = src.read(meta).partition(b"\n\n")
+    return _rewrite_wheel(blob, {meta: head + b"\n" + line.rstrip(b"\n") + sep + body})
+
+
+def _with_entry_points(blob: bytes, text: bytes) -> bytes:
+    src = zipfile.ZipFile(io.BytesIO(blob))
+    ep = next(n for n in src.namelist() if n.endswith(".dist-info/entry_points.txt"))
+    return _rewrite_wheel(blob, {ep: text})
+
+
+def _stub_rebuilds(monkeypatch: pytest.MonkeyPatch, wheel: bytes) -> None:
+    def fake(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
+        path = out / "r-0.0.0-py3-none-any.whl"
+        path.write_bytes(wheel)
+        return path
+
+    monkeypatch.setattr(guard, "_rebuild", fake)
+
+
+@pytest.mark.parametrize("kind", ["requires-dist", "entry-points"])
+def test_edited_generated_metadata_differs_from_the_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    pristine = _wheel_bytes(_wheel_files(BASE))
+    if kind == "requires-dist":
+        edited = _with_metadata_line(pristine, REQUIRES_DIST_URL)
+    else:
+        edited = _rewrite_wheel(pristine, {"r-0.0.0.dist-info/entry_points.txt":
+                                           b"[console_scripts]\nx = regista:main\n"})
+    d = _dist(tmp_path, wheel=edited)
+    _stub_rebuilds(monkeypatch, pristine)
+    problems = guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo")
+    assert any("differs from the uv rebuild" in p for p in problems), problems
+    assert any("differs from the pip rebuild" in p for p in problems), problems
+    _stub_rebuilds(monkeypatch, edited)  # control: binding is the only thing refusing it
+    assert guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo") == []
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build real artifacts")
+@pytest.mark.parametrize("kind", ["requires-dist", "entry-points"])
+def test_round4_repros_fail_against_a_real_build(tmp_path: Path, kind: str) -> None:
+    """Daybreak round-4 B1, end to end: a direct-URL dependency (a 51st migration
+    after install) and an edited entry_points.txt, each with a valid RECORD, are
+    refused by the real pip and uv rebuilds."""
+    dist, clone = tmp_path / "dist", tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(REPO_ROOT), str(clone)], check=True)
+    env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+    subprocess.run(["uv", "build", "-q", "--out-dir", str(dist), str(clone)], check=True, env=env)
+    whl = next(dist.glob("*.whl"))
+    blob = whl.read_bytes()
+    whl.write_bytes(
+        _with_metadata_line(blob, REQUIRES_DIST_URL) if kind == "requires-dist"
+        else _with_entry_points(blob, b"[console_scripts]\nregista = os:system\n")
+    )
+    assert guard.read_wheel(whl.read_bytes(), whl.name) is not None  # structurally valid
+    problems = guard.check_dist(guard.load_ledger(), dist, repo_root=clone)
+    assert any("rebuild" in p for p in problems), problems
+
+
+def test_a_dirty_tracked_file_is_refused(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    (tmp_path / "repo" / "src" / "regista" / "__init__.py").write_bytes(b"# dirty\n")
+    assert "uncommitted changes" in _verdict(d)
+
+
+def test_a_staged_but_uncommitted_change_is_refused(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / "src" / "regista" / "new.py").write_bytes(b"")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    assert "uncommitted changes" in _verdict(d)
+
+
+def test_reviewed_bytes_are_the_committed_blob_not_the_disk(tmp_path: Path) -> None:
+    """`assume-unchanged` hides a disk edit from `git status`; the guard still
+    compares against the HEAD blob. An artifact matching the commit passes; one
+    carrying the disk-only edit fails."""
+    edit = b"# edited on disk only\n"
+
+    def hide_edit(repo: Path) -> None:
+        subprocess.run(["git", "-C", str(repo), "update-index", "--assume-unchanged",
+                        "src/regista/__init__.py"], check=True)
+        (repo / "src" / "regista" / "__init__.py").write_bytes(edit)
+
+    committed = _dist(tmp_path / "committed")
+    hide_edit(tmp_path / "committed" / "repo")
+    assert _verdict(committed) == "pass"
+    edited = _dist(tmp_path / "edited",
+                   wheel=_wheel_bytes({**_wheel_files(BASE), "regista/__init__.py": edit}))
+    hide_edit(tmp_path / "edited" / "repo")
+    assert "differs from tracked" in _verdict(edited)
