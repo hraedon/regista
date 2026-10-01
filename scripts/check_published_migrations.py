@@ -22,9 +22,14 @@ protection, so a red run is a signal a reviewer must honour, not a lock.
 Subcommands:
 
 ``check-dist DIST_DIR`` (offline; the AUTHORITY - CI and the publish build job)
-    The rules below, applied to the .sql files the built wheel(s) actually
-    contain. Each sdist's ``migrations/`` must match the wheel. ``uv build``
-    builds the wheel from the sdist, so sdist-only mappings are covered.
+    The rules below, applied to every .sql file (any suffix case, any directory,
+    including ``.dist-info``) the built wheel(s) contain. Archive member names
+    must already be canonical (no ``..``/``.``/empty segment, leading ``/`` or
+    backslash), because installers normalise them. Duplicate members are refused.
+    Each sdist's .sql files are mapped into wheel paths the same way ledger
+    construction maps them (the build config plus the runner's own source dirs)
+    and must match the wheel. ``uv build`` builds the wheel from the sdist, so
+    sdist-only mappings are covered.
 
 ``check-tree`` (offline, runs in pytest; a conservative EARLY signal)
     The same rules over a model of the hatch build: every ``packages`` dir and
@@ -52,7 +57,11 @@ Subcommands:
     ``withdrawn_from_pypi``, because stores may already have applied its bytes.
     A withdrawal is accepted only for a release ``REF`` already recorded, so the
     ledger cannot invent "published" history. A base without a ledger is
-    accepted only if it also predates this guard (the one-time bootstrap).
+    accepted only if it also predates this guard (the one-time bootstrap). The
+    guard is recognised in history by ``GUARD_MARKER``, not by file path, so
+    renaming the script does not reset that boundary.
+    ``--all-parents-of REV`` checks every parent of REV, so a merge cannot hide
+    a ledger state on a second parent. A root commit is refused.
 
 ``verify-ledger`` (network: pypi.org)
     Re-download every release PyPI lists, verify each file against PyPI's
@@ -107,6 +116,10 @@ LEDGER_PATH = REPO_ROOT / "release" / "published-migrations.json"
 PROJECT = "regista-hraedon"
 PYPI_JSON = f"https://pypi.org/pypi/{PROJECT}/json"
 LEDGER_FORMAT = 1
+#: A stable marker for "this commit carries the published-migration guard",
+#: independent of the script's path, so renaming or moving the guard cannot reset
+#: the bootstrap boundary in check-monotonic. Keep it in the implementation file.
+GUARD_MARKER = "regista-published-migration-guard:v1"
 
 #: The in-place rewrites already shipped, keyed by wheel path, with the exact
 #: set of sha256 digests PyPI has served for each. Growing or changing this set
@@ -203,30 +216,80 @@ def _fetch(url: str, attempts: int = 4) -> bytes:
     raise GuardError(f"could not fetch {url} after {attempts} attempts: {last}")
 
 
+def _check_member_name(name: str, where: str) -> None:
+    """Refuse archive member names an installer would normalise to somewhere else.
+
+    pip and uv both normalise ``x.dist-info/../regista/migrations/000.sql`` into
+    the runner directory, so every name must already be canonical: relative POSIX,
+    no empty, ``.`` or ``..`` segment, no backslash.
+    """
+    parts = name.split("/")
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or any(part in ("", ".", "..") for part in parts[:-1])
+        or parts[-1] in (".", "..")
+    ):
+        raise GuardError(f"{where}: non-canonical archive member name {name!r}")
+
+
+def _is_sql(name: str) -> bool:
+    """Any suffix case: the shape rules then refuse a non-lower-case one."""
+    return name.lower().endswith(".sql")
+
+
 def _sql_members_wheel(blob: bytes) -> dict[str, str]:
+    """Every .sql member of a wheel, in any directory including .dist-info.
+
+    A real wheel ships SQL only in the runner directory, so nothing is excluded:
+    anything elsewhere is judged (and refused) by the shape rules.
+    """
     out: dict[str, str] = {}
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-        for name in zf.namelist():
-            if name.endswith(".sql") and ".dist-info/" not in name:
-                out[name] = hashlib.sha256(zf.read(name)).hexdigest()
+        seen: set[str] = set()
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            _check_member_name(info.filename, "wheel")
+            if info.filename in seen:
+                raise GuardError(f"wheel: duplicate archive member {info.filename!r}")
+            seen.add(info.filename)
+            if _is_sql(info.filename):
+                out[info.filename] = hashlib.sha256(zf.read(info)).hexdigest()
     return out
 
 
+#: Source directories the runner itself can read migrations from
+#: (``_migrations._migrations_dir()``: the package copy, else the repo root). They
+#: always map to the runner directory, whatever the build config says.
+_RUNNER_SOURCE_DIRS = ("migrations/", "src/regista/migrations/")
+
+
 def _sql_members_sdist(blob: bytes, mapping: list[tuple[str, str]]) -> dict[str, str]:
-    """sdist members keyed by their WHEEL path, so the two can be compared."""
+    """sdist .sql members keyed by the WHEEL path they would build into.
+
+    Uses the configured mapping PLUS the runner's own source directories, so the
+    comparison cannot be narrowed by editing [tool.hatch]. Two members mapping to
+    one wheel path, or a non-canonical member name, are refused.
+    """
     out: dict[str, str] = {}
-    reverse = sorted(((r, w) for w, r in mapping), key=lambda p: len(p[0]), reverse=True)
+    pairs = list(mapping) + [(RUNNER_WHEEL_DIR, d) for d in _RUNNER_SOURCE_DIRS]
+    reverse = sorted(((r, w) for w, r in pairs), key=lambda p: len(p[0]), reverse=True)
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
         for member in tf.getmembers():
-            if not member.isfile() or not member.name.endswith(".sql"):
+            if not member.isfile() or not _is_sql(member.name):
                 continue
+            _check_member_name(member.name, "sdist")
             # "<name>-<version>/migrations/001.sql" -> "migrations/001.sql"
             rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
             for repo_prefix, wheel_prefix in reverse:
                 if rel.startswith(repo_prefix):
+                    key = wheel_prefix + rel[len(repo_prefix) :]
+                    if key in out:
+                        raise GuardError(f"sdist: two members build into {key}")
                     fh = tf.extractfile(member)
                     assert fh is not None
-                    key = wheel_prefix + rel[len(repo_prefix) :]
                     out[key] = hashlib.sha256(fh.read()).hexdigest()
                     break
     return out
@@ -516,7 +579,9 @@ def check_tree(
     return problems + _check_shape(published, shipped)
 
 
-def dist_sql(dist_dir: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
+def dist_sql(
+    dist_dir: Path, pyproject: Path | None = None
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """The packaged .sql set of the built wheel(s) in ``dist_dir``, plus agreement problems.
 
     Every wheel must carry the same set. Each sdist's ``migrations/`` must equal the
@@ -538,20 +603,14 @@ def dist_sql(dist_dir: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
         shipped = shipped or members
     assert shipped is not None
     runner = {p: d for p, (d, _) in shipped.items() if _in_runner_dir(p)}
+    mapping = _path_mapping(pyproject) if pyproject is not None else []
     for sdist in sorted(dist_dir.glob("*.tar.gz")):
-        with tarfile.open(sdist, mode="r:gz") as tf:
-            found: dict[str, str] = {}
-            for member in tf.getmembers():
-                parts = member.name.split("/")
-                if member.isfile() and len(parts) == 3 and parts[1] == "migrations":
-                    fh = tf.extractfile(member)
-                    assert fh is not None
-                    found[RUNNER_WHEEL_DIR + parts[2]] = hashlib.sha256(fh.read()).hexdigest()
-        sql_found = {p: d for p, d in found.items() if p.lower().endswith(".sql")}
+        mapped = _sql_members_sdist(sdist.read_bytes(), mapping)
+        sql_found = {p: d for p, d in mapped.items() if _in_runner_dir(p)}
         differing = sorted(k for k in runner if k in sql_found and sql_found[k] != runner[k])
         if sql_found != runner:
             problems.append(
-                f"{sdist.name}: migrations/ differs from the wheel's {RUNNER_WHEEL_DIR} "
+                f"{sdist.name}: migrations differ from the wheel's {RUNNER_WHEEL_DIR} "
                 f"(only-sdist={sorted(set(sql_found) - set(runner))}, "
                 f"only-wheel={sorted(set(runner) - set(sql_found))}, "
                 f"differing={differing})"
@@ -563,11 +622,12 @@ def check_dist(
     ledger: Mapping[str, Any],
     dist_dir: Path,
     frozen: Mapping[str, frozenset[str]] = FROZEN_HISTORICAL_VIOLATIONS,
+    repo_root: Path = REPO_ROOT,
 ) -> list[str]:
     """The AUTHORITATIVE check: the rules applied to what the built wheel installs."""
     published = latest_published(ledger)
     problems = _check_ledger_consistency(published, ledger, frozen)
-    shipped, agreement = dist_sql(dist_dir)
+    shipped, agreement = dist_sql(dist_dir, repo_root / "pyproject.toml")
     return problems + agreement + _check_shape(published, shipped)
 
 
@@ -619,24 +679,43 @@ def check_monotonic(
 
 def _ledger_at(ref: str, repo_root: Path = REPO_ROOT) -> tuple[dict[str, Any] | None, bool]:
     """(ledger at ``ref`` or None, whether ``ref`` already carries this guard)."""
-    def show(path: str) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            ["git", "-C", str(repo_root), "show", f"{ref}:{path}"], capture_output=True
-        )
-
     exists = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
         capture_output=True,
     )
     if exists.returncode != 0:
         raise GuardError(f"base ref {ref!r} is not a commit in this checkout")
-    guard_rel = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
-    has_guard = show(guard_rel).returncode == 0
-    proc = show(LEDGER_PATH.relative_to(REPO_ROOT).as_posix())
+    grep = subprocess.run(
+        ["git", "-C", str(repo_root), "grep", "-l", "-F", GUARD_MARKER, ref, "--"],
+        capture_output=True,
+    )
+    if grep.returncode not in (0, 1):
+        raise GuardError(f"git grep failed on {ref!r}: {grep.stderr.decode(errors='replace')}")
+    has_guard = grep.returncode == 0
+    ledger_rel = LEDGER_PATH.relative_to(REPO_ROOT).as_posix()
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"{ref}:{ledger_rel}"], capture_output=True
+    )
     if proc.returncode != 0:
         return None, has_guard
-    loaded: dict[str, Any] = json.loads(proc.stdout)
+    try:
+        loaded: dict[str, Any] = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise GuardError(f"ledger at {ref!r} is not valid JSON") from exc
     return loaded, has_guard
+
+
+def _parents(rev: str, repo_root: Path = REPO_ROOT) -> list[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-list", "--parents", "-n", "1", rev],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise GuardError(f"{rev!r} is not a commit in this checkout")
+    parents = proc.stdout.split()[1:]
+    if not parents:
+        raise GuardError(f"{rev!r} has no parent; refusing to release a root commit")
+    return parents
 
 
 def _fmt(m: Mapping[str, frozenset[str]]) -> str:
@@ -677,7 +756,11 @@ def main(argv: list[str] | None = None) -> int:
     rel.add_argument("--version", required=True)
     sub.add_parser("build", help="network: rewrite the ledger from PyPI")
     mono = sub.add_parser("check-monotonic", help="git: the ledger only grows vs a base ref")
-    mono.add_argument("--base", required=True)
+    which = mono.add_mutually_exclusive_group(required=True)
+    which.add_argument("--base")
+    which.add_argument(
+        "--all-parents-of", help="check against EVERY parent of this commit (merge-safe)"
+    )
     dist = sub.add_parser("check-dist", help="AUTHORITATIVE: the rules over built artifacts")
     dist.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
@@ -712,8 +795,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             problems = check_tree(fresh)
         elif args.cmd == "check-monotonic":
-            base, base_has_guard = _ledger_at(args.base)
-            problems = check_monotonic(base, load_ledger(), base_has_guard=base_has_guard)
+            bases = [args.base] if args.base else _parents(args.all_parents_of)
+            problems = []
+            head = load_ledger()
+            for ref in bases:
+                base, base_has_guard = _ledger_at(ref)
+                problems += [
+                    f"vs {ref}: {p}"
+                    for p in check_monotonic(base, head, base_has_guard=base_has_guard)
+                ]
         elif args.cmd == "check-dist":
             problems = check_dist(load_ledger(), args.dist_dir)
         elif args.cmd == "check-release":

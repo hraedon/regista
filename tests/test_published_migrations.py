@@ -16,6 +16,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -503,7 +504,7 @@ def test_check_dist_sees_a_backdoor_the_source_model_cannot(tmp_path: Path) -> N
     d = _dist(tmp_path, {**WHEEL_OK, "regista/migrations/000_backdoor.sql": C}, SDIST_OK)
     problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
     assert any("000_backdoor.sql: unpublished migration numbered 0" in p for p in problems)
-    assert any("migrations/ differs from the wheel" in p for p in problems)
+    assert any("migrations differ from the wheel" in p for p in problems)
 
 
 def test_check_dist_sees_a_mutated_published_migration(tmp_path: Path) -> None:
@@ -563,3 +564,112 @@ def test_a_missing_base_ledger_is_refused_once_the_guard_exists() -> None:
     assert guard.check_monotonic(None, head, base_has_guard=False) == []
     problems = guard.check_monotonic(None, head, base_has_guard=True)
     assert any("ledger was deleted" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# Round 3 review (gpt-5.6-sol B1-B4): archive member names, sdist mapping depth,
+# a renamed guard, and merge parents.
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "r-0.0.0.dist-info/../regista/migrations/000_unexpected.sql",
+        "/regista/migrations/000_unexpected.sql",
+        "regista/./migrations/000_unexpected.sql",
+        "regista//migrations/000_unexpected.sql",
+        "regista\\migrations\\000_unexpected.sql",
+    ],
+)
+def test_check_dist_refuses_non_canonical_member_names(tmp_path: Path, name: str) -> None:
+    d = _dist(tmp_path, {**WHEEL_OK, name: C})
+    with pytest.raises(guard.GuardError, match="non-canonical archive member name"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_check_dist_judges_sql_inside_dist_info_and_any_suffix_case(tmp_path: Path) -> None:
+    d = _dist(
+        tmp_path,
+        {
+            **WHEEL_OK,
+            "regista/x.dist-info/000_unexpected.sql": C,
+            "regista/migrations/003_unexpected.SQL": C,
+        },
+    )
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {})
+    assert any("x.dist-info/000_unexpected.sql" in p and "outside" in p for p in problems)
+    assert any("003_unexpected.SQL" in p and "not a canonical" in p for p in problems)
+
+
+def test_check_dist_refuses_duplicate_archive_members(tmp_path: Path) -> None:
+    import warnings
+    import zipfile
+
+    d = tmp_path / "dist"
+    d.mkdir()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns on the duplicate we are making
+        with zipfile.ZipFile(d / "r-0.0.0-py3-none-any.whl", "w") as zf:
+            for name, data in WHEEL_OK.items():
+                zf.writestr(name, data)
+            zf.writestr("regista/migrations/003_c.sql", b"-- first\n")
+            zf.writestr("regista/migrations/003_c.sql", b"-- second\n")
+    with pytest.raises(guard.GuardError, match="duplicate archive member"):
+        guard.check_dist(_ledger(BASE_RELEASES), d, {})
+
+
+def test_check_dist_maps_a_nested_sdist_migration_dir(tmp_path: Path) -> None:
+    """src/regista/migrations/ in the sdist builds into the runner dir, whatever
+    the depth: it must agree with the wheel."""
+    repo = _make_repo(tmp_path / "repo", BASE_FILES)
+    d = _dist(tmp_path, WHEEL_OK, {**SDIST_OK, "src/regista/migrations/000_unexpected.sql": C})
+    problems = guard.check_dist(_ledger(BASE_RELEASES), d, {}, repo)
+    assert any("only-sdist=['regista/migrations/000_unexpected.sql']" in p for p in problems)
+
+
+def _git(repo: Path, *args: str) -> str:
+    out = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+    return out.stdout.strip()
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "hist"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
+    return repo
+
+
+def _commit(repo: Path, files: dict[str, str], msg: str) -> str:
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_a_renamed_guard_still_counts_as_present_in_the_base(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    base = _commit(repo, {"scripts/old_name.py": f"# {guard.GUARD_MARKER}\n"}, "guard, no ledger")
+    ledger, has_guard = guard._ledger_at(base, repo)
+    assert ledger is None and has_guard
+    assert any("ledger was deleted" in p for p in guard.check_monotonic(
+        ledger, _ledger(BASE_RELEASES), base_has_guard=has_guard))
+
+
+def test_every_parent_of_a_merge_is_a_base(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    root = _commit(repo, {"README": "x\n"}, "root")
+    _git(repo, "checkout", "-q", "-b", "side")
+    side = _commit(repo, {"release/published-migrations.json": "{}\n"}, "ledger on side")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"other": "y\n"}, "main moves")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
+    parents = guard._parents("HEAD", repo)
+    assert len(parents) == 2 and side in parents
+    with pytest.raises(guard.GuardError, match="no parent"):
+        guard._parents(root, repo)
