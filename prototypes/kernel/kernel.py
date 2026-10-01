@@ -20,9 +20,22 @@ Honest boundary, restated from Plan 032 §1 so no caller has to infer it:
     process making external requests. Fencing external effects is the caller's
     job -- pass `attempt` to the target system too.
 
-Three contracts this module settles explicitly, because leaving them implicit is
+Four contracts this module settles explicitly, because leaving them implicit is
 what produced the defects in WI-367 and WI-368. Each is stated once here and
 enforced in exactly one place.
+
+BOUNDED POOL.
+    Kernel.connect() owns a synchronous psycopg_pool with explicit min/max sizes
+    and a checkout timeout. Every public database operation exclusively borrows
+    one connection. Return rolls back any open or failed transaction and then
+    uses DISCARD ALL outside a transaction to remove the previous borrower's
+    complete session state (roles, GUCs, prepared statements, temporary objects,
+    advisory locks, and notification registrations). Checkout reasserts the
+    session search_path and the operation reasserts it with SET LOCAL, so rollback,
+    a replacement connection, and the reset itself cannot redirect work. Cleanup
+    covers every BaseException path. Limits are per Kernel/process; this is not a
+    database-wide connection budget, an async surface, or a raw SQL connection API.
+    See README.md for the public contract and operational limits.
 
 ONE CLOCK.
     The database decides what time it is, for every stamp and every expiry
@@ -143,19 +156,26 @@ QUERIES ARE BOUNDED AND TOTALLY ORDERED.
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
+import threading
 import uuid
+import weakref
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Concatenate, Literal, ParamSpec, TypeVar, cast
 
 import jsonschema
 import psycopg
 import yaml
+from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow, dict_row
+from psycopg.sql import SQL, Identifier
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool, PoolClosed, PoolTimeout, TooManyRequests
 
 DictConn = psycopg.Connection[DictRow]
 DictCursor = psycopg.Cursor[DictRow]
@@ -235,6 +255,10 @@ class KernelError(Exception):
     """Base class. Every refusal below is one of these, never a bare psycopg error."""
 
 
+class PoolConfigurationError(KernelError): ...
+class PoolExhaustedError(KernelError): ...
+class PoolUnavailableError(KernelError): ...
+class DatabaseOperationError(KernelError): ...
 class UnsupportedSchemaError(KernelError): ...
 class InvalidWorkflowError(KernelError): ...
 class InvalidQueryError(KernelError): ...
@@ -264,6 +288,55 @@ class LeaseNotHeldError(StaleAttemptError):
 
 class ReservedPayloadKeyError(InvalidFieldError):
     """A caller payload tried to set a key the event reducer owns."""
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _pooled_operation(
+    method: Callable[Concatenate[Kernel, P], R],
+) -> Callable[Concatenate[Kernel, P], R]:
+    """Give one public operation one exclusive, schema-scoped connection.
+
+    Cleanup catches BaseException deliberately: KeyboardInterrupt and cancellation-like
+    exceptions must roll back just as ordinary exceptions do. The wrapped method keeps
+    owning commit versus rollback; this boundary guarantees that anything it forgot to
+    end is rolled back before the connection can be reused.
+    """
+    @functools.wraps(method)
+    def wrapped(self: Kernel, *args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            conn = self._acquire_connection()
+            try:
+                self._begin_operation(conn)
+                self._operation_local.conn = conn
+                return method(self, *args, **kwargs)
+            finally:
+                if getattr(self._operation_local, "conn", None) is conn:
+                    del self._operation_local.conn
+                self._clean_connection(conn)
+                self._pool.putconn(conn)
+        except KernelError:
+            raise
+        except psycopg.Error as exc:
+            raise DatabaseOperationError(
+                f"database operation {method.__name__} failed "
+                f"({type(exc).__name__})"
+            ) from exc
+
+    return cast("Callable[Concatenate[Kernel, P], R]", wrapped)
+
+
+def _close_pool_quietly(pool: ConnectionPool[DictConn]) -> None:
+    """Close before interpreter finalization; explicit close still reports errors."""
+    try:
+        pool.close()
+    except BaseException:
+        # At process exit there is no caller that can act on a close failure, and
+        # logging may already be torn down. In particular, Python 3.14 rejects
+        # joining pool worker threads once finalization has begun.
+        pass
 
 
 def _check_json(value: Any, path: str, depth: int = 0) -> None:
@@ -930,32 +1003,171 @@ class Event:
 
 
 class Kernel:
-    """Coordination state over one PostgreSQL schema.
+    """Coordination state over one PostgreSQL schema and a bounded connection pool.
 
     The caller owns execution and interfaces; this owns who holds what, what
-    state it is in, what may happen next, and how it got there.
+    state it is in, what may happen next, and how it got there. Each public
+    database operation gets one exclusive connection and one transaction; no
+    connection or transaction is shared between concurrent borrowers.
     """
 
-    def __init__(self, conn: DictConn, schema: str) -> None:
-        self._conn = conn
+    def __init__(
+        self,
+        pool: ConnectionPool[DictConn],
+        schema: str,
+        *,
+        pool_min_size: int,
+        pool_max_size: int,
+        pool_timeout: float,
+    ) -> None:
+        self._pool = pool
         self._schema = schema
+        self._pool_min_size = pool_min_size
+        self._pool_max_size = pool_max_size
+        self._pool_timeout = pool_timeout
+        self._operation_local = threading.local()
+        self._finalizer = weakref.finalize(self, _close_pool_quietly, pool)
 
     # ---- lifecycle -------------------------------------------------------
 
     @classmethod
-    def connect(cls, dsn: str, *, schema: str = "public") -> Kernel:
-        conn: DictConn = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
-        with conn.cursor() as cur:
-            cur.execute(f'SET search_path TO "{schema}"')
-        # SET is undone by a rollback, so this must commit rather than leave the
-        # transaction open: initialize() rolls back when it refuses a schema, and
-        # that would otherwise silently drop the connection back to the default
-        # search_path for the rest of the session.
-        conn.commit()
-        return cls(conn, schema)
+    def connect(
+        cls,
+        dsn: str,
+        *,
+        schema: str = "public",
+        pool_min_size: int = 1,
+        pool_max_size: int = 4,
+        pool_timeout: float = 5.0,
+    ) -> Kernel:
+        """Open a bounded pool for one project schema.
+
+        ``pool_max_size`` is a hard connection bound. An operation that cannot
+        check out a connection within ``pool_timeout`` raises PoolExhaustedError.
+        The default remains a one-line replacement for the old single-connection
+        API, so the CLI and examples need no lifecycle changes.
+        """
+        if pool_min_size < 0 or pool_max_size < 1 or pool_min_size > pool_max_size:
+            raise PoolConfigurationError(
+                "pool bounds require 0 <= pool_min_size <= pool_max_size and "
+                f"pool_max_size >= 1; got min={pool_min_size}, max={pool_max_size}"
+            )
+        if pool_timeout <= 0:
+            raise PoolConfigurationError(
+                f"pool_timeout must be greater than zero, got {pool_timeout}"
+            )
+
+        def reset_connection(conn: DictConn) -> None:
+            """Erase all state owned by the borrower before this connection is idle."""
+            if conn.info.transaction_status != TransactionStatus.IDLE:
+                conn.rollback()
+            conn.autocommit = True
+            try:
+                conn.execute("DISCARD ALL")
+            finally:
+                # psycopg_pool requires reset callbacks to leave connections in
+                # their configured state and outside a transaction.
+                if not conn.closed:
+                    conn.autocommit = False
+
+        def check_connection(conn: DictConn) -> None:
+            # The built-in check detects a server-side loss before a connection
+            # reaches an operation. Roll back first because the built-in check
+            # toggles autocommit and cannot repair an INTRANS/INERROR connection.
+            if conn.info.transaction_status != TransactionStatus.IDLE:
+                conn.rollback()
+            ConnectionPool.check_connection(conn)
+            # DISCARD ALL intentionally removes this session scope on return.
+            # Reassert it on EVERY checkout; SET LOCAL below independently scopes
+            # the operation, while this session scope serves rollback-first paths.
+            conn.execute(SQL("SET search_path TO {}").format(Identifier(schema)))
+            conn.commit()
+
+        pool: ConnectionPool[DictConn] | None = None
+        try:
+            pool = ConnectionPool(
+                dsn,
+                min_size=pool_min_size,
+                max_size=pool_max_size,
+                timeout=pool_timeout,
+                open=False,
+                check=check_connection,
+                reset=reset_connection,
+                kwargs={"row_factory": dict_row, "autocommit": False},
+            )
+            pool.open(wait=True, timeout=pool_timeout)
+            # ConnectionPool.wait() is a no-op when min_size=0. An explicit
+            # checkout proves connectivity for every accepted configuration.
+            probe = pool.getconn(timeout=pool_timeout)
+            pool.putconn(probe)
+        except BaseException as exc:
+            if pool is not None:
+                _close_pool_quietly(pool)
+            if isinstance(
+                exc,
+                (PoolTimeout, TooManyRequests, PoolClosed, psycopg.Error, ValueError),
+            ):
+                raise PoolUnavailableError(
+                    f"could not open connection pool within {pool_timeout:g}s "
+                    f"(configured min={pool_min_size}, max={pool_max_size})"
+                ) from exc
+            raise
+        return cls(
+            pool,
+            schema,
+            pool_min_size=pool_min_size,
+            pool_max_size=pool_max_size,
+            pool_timeout=pool_timeout,
+        )
 
     def close(self) -> None:
-        self._conn.close()
+        self._finalizer.detach()
+        self._pool.close()
+
+    @property
+    def _conn(self) -> DictConn:
+        """The connection exclusively assigned to the current operation/thread."""
+        conn = getattr(self._operation_local, "conn", None)
+        if conn is None:
+            raise KernelError("database access attempted outside a pooled operation")
+        return cast(DictConn, conn)
+
+    def _acquire_connection(self) -> DictConn:
+        if getattr(self._operation_local, "conn", None) is not None:
+            raise KernelError(
+                "nested public database operations are not supported; an operation "
+                "must finish before the same thread starts another"
+            )
+        try:
+            return self._pool.getconn(timeout=self._pool_timeout)
+        except (PoolTimeout, TooManyRequests) as exc:
+            raise PoolExhaustedError(
+                f"connection pool exhausted: configured maximum is "
+                f"{self._pool_max_size}; no connection became available within "
+                f"{self._pool_timeout:g}s"
+            ) from exc
+        except PoolClosed as exc:
+            raise PoolUnavailableError("connection pool is closed") from exc
+
+    def _begin_operation(self, conn: DictConn) -> None:
+        try:
+            conn.execute(SQL("SET LOCAL search_path TO {}").format(Identifier(self._schema)))
+        except BaseException:
+            self._clean_connection(conn)
+            raise
+
+    @staticmethod
+    def _clean_connection(conn: DictConn) -> None:
+        """Rollback unfinished/failed work, or make a broken connection discardable."""
+        try:
+            if conn.info.transaction_status != TransactionStatus.IDLE:
+                conn.rollback()
+        except BaseException:
+            # putconn() recognises a closed/broken connection and replaces it.
+            try:
+                conn.close()
+            except BaseException:
+                pass
 
     def _end_read(self) -> None:
         """Close a read-only transaction.
@@ -975,6 +1187,21 @@ class Kernel:
         ts: datetime = row["ts"]
         return ts
 
+    def _transaction_lock(self, cur: DictCursor, namespace: str, value: str) -> None:
+        """Serialize a logical name for this schema until the transaction ends.
+
+        PostgreSQL cannot row-lock a row that does not exist yet. The workflow
+        registry and idempotency table both need to serialize that absent-row
+        case before choosing a version or inserting a globally unique key.
+        Hash collisions only serialize unrelated names; they cannot weaken the
+        guarantee.
+        """
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"regista-kernel:{self._schema}:{namespace}:{value}",),
+        )
+
+    @_pooled_operation
     def initialize(self, schema_sql_path: str) -> None:
         """Create the kernel schema in an empty destination.
 
@@ -983,6 +1210,9 @@ class Kernel:
         schema (refuse WITHOUT mutating anything).
         """
         with self._conn.cursor() as cur:
+            # An empty schema has no row to lock. Serialize concurrent
+            # initializers before either one performs the check-then-create.
+            self._transaction_lock(cur, "initialize", self._schema)
             cur.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
                 (self._schema,),
@@ -1028,6 +1258,7 @@ class Kernel:
 
     # ---- workflows -------------------------------------------------------
 
+    @_pooled_operation
     def register_workflow(self, wf: Workflow) -> int:
         """Register an immutable workflow version; returns the version assigned.
 
@@ -1044,6 +1275,9 @@ class Kernel:
         body = wf.as_json()
         content_hash = _hash(_canonical(body))
         with self._conn.cursor() as cur:
+            # The first version has no row to SELECT FOR UPDATE, and later
+            # callers must not independently choose the same next version.
+            self._transaction_lock(cur, "workflow", wf.name)
             cur.execute(
                 "SELECT version, content_hash FROM workflow_registry "
                 "WHERE workflow_name = %s ORDER BY version DESC LIMIT 1",
@@ -1113,6 +1347,7 @@ class Kernel:
             )
         return Workflow.from_json(row["definition"], int(row["version"]))
 
+    @_pooled_operation
     def get_workflow(self, name: str, version: int | None = None) -> Workflow:
         with self._conn.cursor() as cur:
             try:
@@ -1121,6 +1356,7 @@ class Kernel:
                 self._end_read()
         return wf
 
+    @_pooled_operation
     def list_workflows(
         self, *, limit: int = DEFAULT_PAGE_LIMIT,
         after: tuple[str, int] | None = None,
@@ -1144,8 +1380,9 @@ class Kernel:
         self._end_read()
         return [(r["workflow_name"], int(r["version"]), r["registered_at"]) for r in rows]
 
+    @_pooled_operation
     def health(self) -> dict[str, Any]:
-        """Schema version and bounded counts. Cheap enough to poll."""
+        """Schema version, bounded counts, and an instantaneous pool snapshot."""
         with self._conn.cursor() as cur:
             cur.execute("SELECT kernel_schema_version FROM kernel_meta")
             row = cur.fetchone()
@@ -1168,10 +1405,29 @@ class Kernel:
                 r = cur.fetchone()
                 counts[label] = int(r["n"]) if r else 0
         self._end_read()
-        return {"schema_version": version, **counts}
+        stats = self._pool.get_stats()
+        waiting = int(stats.get("requests_waiting", 0))
+        # Project the immediate return of health()'s checkout from this snapshot.
+        # With a queued waiter the pool hands that connection directly to it, so
+        # the checkout does not become available to an additional caller.
+        returned_to_idle = 0 if waiting else 1
+        available = min(
+            int(stats["pool_size"]),
+            int(stats["pool_available"]) + returned_to_idle,
+        )
+        return {
+            "schema_version": version,
+            **counts,
+            "pool_size": int(stats["pool_size"]),
+            "pool_min_size": self._pool_min_size,
+            "pool_max_size": self._pool_max_size,
+            "pool_waiting": waiting,
+            "pool_available": available,
+        }
 
     # ---- work items ------------------------------------------------------
 
+    @_pooled_operation
     def create_work_item(
         self,
         *,
@@ -1220,6 +1476,7 @@ class Kernel:
         self._conn.commit()
         return WorkItem(item_id, wf.name, wf.version, type, wf.initial, fields, 0)
 
+    @_pooled_operation
     def get(self, work_item_id: uuid.UUID) -> WorkItem:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -1237,6 +1494,7 @@ class Kernel:
 
     # ---- claims ----------------------------------------------------------
 
+    @_pooled_operation
     def claim(
         self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: float = 300
     ) -> Claim:
@@ -1296,6 +1554,7 @@ class Kernel:
         self._conn.commit()
         return Claim(work_item_id, actor_id, attempt, expires)
 
+    @_pooled_operation
     def heartbeat(
         self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int,
         ttl_seconds: float = 300,
@@ -1394,6 +1653,7 @@ class Kernel:
             "caller-supplied attribution either way.)"
         )
 
+    @_pooled_operation
     def release(self, work_item_id: uuid.UUID, *, actor_id: str, attempt: int) -> None:
         """Release a lease. Takes the primitive rather than a Claim, so a CLI
         holding only (id, actor, attempt) can call it without fabricating one.
@@ -1410,6 +1670,7 @@ class Kernel:
             )
         self._conn.commit()
 
+    @_pooled_operation
     def lease(self, work_item_id: uuid.UUID) -> Claim | None:
         """Who holds this item's lease, if anyone. A SNAPSHOT, not a guarantee.
 
@@ -1444,6 +1705,7 @@ class Kernel:
         return Claim(work_item_id, row["actor_id"], int(row["attempt_number"]),
                      row["expires_at"], bool(row["live"]))
 
+    @_pooled_operation
     def expire_leases(self, work_item_id: uuid.UUID | None = None) -> int:
         """Sweep expired leases -- every one, or just this item's.
 
@@ -1467,6 +1729,71 @@ class Kernel:
 
     # ---- transitions -----------------------------------------------------
 
+    def _idempotency_result(
+        self, cur: DictCursor, idempotency_key: str, request_hash: bytes
+    ) -> WorkItem | None:
+        """Return the result originally recorded for a key, or refuse reuse.
+
+        The stored event id identifies the transition's exact result. Replaying
+        only through that event avoids returning a later writer's state as if
+        it were the result of this request.
+        """
+        cur.execute(
+            "SELECT i.request_hash, i.work_item_id, e.event_seq, "
+            "w.workflow_name, w.workflow_version, w.work_item_type "
+            "FROM idempotency_keys i "
+            "LEFT JOIN events e ON e.event_id = i.event_id "
+            "LEFT JOIN work_items_current w ON w.work_item_id = i.work_item_id "
+            "WHERE i.idempotency_key = %s",
+            (idempotency_key,),
+        )
+        prior = cur.fetchone()
+        if prior is None:
+            return None
+        if bytes(prior["request_hash"]) != request_hash:
+            raise IdempotencyConflictError(
+                f"idempotency key {idempotency_key!r} was used for a different "
+                "request; refusing without partial effect"
+            )
+        if prior["event_seq"] is None or prior["workflow_name"] is None:
+            raise KernelError(
+                f"idempotency key {idempotency_key!r} refers to a missing event or "
+                "work item"
+            )
+
+        target_seq = int(prior["event_seq"])
+        cur.execute(
+            "SELECT event_seq, transition, payload FROM events "
+            "WHERE work_item_id = %s AND event_seq <= %s ORDER BY event_seq",
+            (prior["work_item_id"], target_seq),
+        )
+        rows = cur.fetchall()
+        if not rows or int(rows[-1]["event_seq"]) != target_seq:
+            raise KernelError(
+                f"idempotency key {idempotency_key!r} cannot reconstruct its original result"
+            )
+
+        state = ""
+        fields: dict[str, Any] = {}
+        for row in rows:
+            event_payload = row["payload"]
+            if row["transition"] is None:
+                created = event_payload.get("created", {})
+                state = created.get("state", "")
+                fields = dict(created.get("fields", {}))
+            else:
+                state = event_payload.get("to", state)
+                fields.update(event_payload.get("fields", {}))
+                for cleared in event_payload.get("unset", ()):
+                    fields.pop(cleared, None)
+
+        return WorkItem(
+            prior["work_item_id"], prior["workflow_name"],
+            int(prior["workflow_version"]), prior["work_item_type"],
+            state, fields, target_seq,
+        )
+
+    @_pooled_operation
     def transition(
         self,
         work_item_id: uuid.UUID,
@@ -1542,21 +1869,10 @@ class Kernel:
         }))
         with self._conn.cursor() as cur:
             if idempotency_key is not None:
-                cur.execute(
-                    "SELECT work_item_id, request_hash FROM idempotency_keys "
-                    "WHERE idempotency_key = %s",
-                    (idempotency_key,),
-                )
-                prior = cur.fetchone()
-                if prior:
-                    if bytes(prior["request_hash"]) != request_hash:
-                        self._conn.rollback()
-                        raise IdempotencyConflictError(
-                            f"idempotency key {idempotency_key!r} was used for a different "
-                            "request; refusing without partial effect"
-                        )
+                prior = self._idempotency_result(cur, idempotency_key, request_hash)
+                if prior is not None:
                     self._conn.rollback()
-                    return self.get(work_item_id)
+                    return prior
 
             cur.execute(
                 "SELECT * FROM work_items_current WHERE work_item_id = %s FOR UPDATE",
@@ -1566,6 +1882,17 @@ class Kernel:
             if not item:
                 self._conn.rollback()
                 raise KernelError(f"no such work item: {work_item_id}")
+
+            if idempotency_key is not None:
+                # The fast check above avoids locking on ordinary retries. This
+                # second check is the correctness boundary: the item lock closes
+                # the same-item race, while the key-scoped transaction lock also
+                # closes reuse across two different items.
+                self._transaction_lock(cur, "idempotency", idempotency_key)
+                prior = self._idempotency_result(cur, idempotency_key, request_hash)
+                if prior is not None:
+                    self._conn.rollback()
+                    return prior
 
             wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
 
@@ -1737,6 +2064,7 @@ class Kernel:
 
     # ---- links -----------------------------------------------------------
 
+    @_pooled_operation
     def link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
         if source == target:
             raise InvalidFieldError("a work item cannot link to itself")
@@ -1748,6 +2076,7 @@ class Kernel:
             )
         self._conn.commit()
 
+    @_pooled_operation
     def links_from(
         self, source: uuid.UUID, *, link_type: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT, after: tuple[str, uuid.UUID] | None = None,
@@ -1778,6 +2107,7 @@ class Kernel:
 
     # ---- discovery queries ----------------------------------------------
 
+    @_pooled_operation
     def list_items(
         self, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -1800,6 +2130,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
+    @_pooled_operation
     def available(
         self, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -1822,6 +2153,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
+    @_pooled_operation
     def owned(
         self, actor_id: str, *, workflow: str | None = None, type: str | None = None,
         states: tuple[str, ...] = (), where_fields: dict[str, Any] | None = None,
@@ -1837,6 +2169,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
+    @_pooled_operation
     def in_states(
         self, states: tuple[str, ...], *, workflow: str | None = None,
         type: str | None = None, where_fields: dict[str, Any] | None = None,
@@ -1858,6 +2191,7 @@ class Kernel:
             limit=limit, after=after,
         )
 
+    @_pooled_operation
     def blocked(
         self, *, link_type: str, direction: Literal["incoming", "outgoing"],
         satisfied_states: tuple[str, ...],
@@ -2032,6 +2366,7 @@ class Kernel:
 
     # ---- history and replay ---------------------------------------------
 
+    @_pooled_operation
     def history(
         self, work_item_id: uuid.UUID, *, limit: int = DEFAULT_PAGE_LIMIT,
         after: int | None = None,
@@ -2062,6 +2397,7 @@ class Kernel:
             for r in rows
         ]
 
+    @_pooled_operation
     def replay(self, work_item_id: uuid.UUID) -> tuple[str, dict[str, Any], list[str]]:
         """Rebuild state from events alone and reconcile it with the projection.
 

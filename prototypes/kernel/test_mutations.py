@@ -20,6 +20,7 @@ Run:  python test_mutations.py "postgresql://..."
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -43,6 +44,8 @@ from kernel import (
     WORKFLOW_DOCUMENT_REMOVED_KEYS,
     WORKFLOW_DOCUMENT_VERSION,
     ClaimContestedError,
+    DatabaseOperationError,
+    Event,
     IdempotencyConflictError,
     InvalidFieldError,
     InvalidQueryError,
@@ -51,16 +54,20 @@ from kernel import (
     KernelError,
     LeaseExpiredError,
     LeaseNotHeldError,
+    PoolExhaustedError,
+    PoolUnavailableError,
     ReservedPayloadKeyError,
     StaleAttemptError,
     TransitionRefusedError,
     UnsupportedSchemaError,
     Workflow,
+    WorkItem,
     load_workflow,
     load_workflow_document,
     validate_workflow_document,
     workflow_schema,
 )
+from psycopg.sql import SQL, Identifier
 from psycopg.types.json import Jsonb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -125,6 +132,18 @@ KERNEL_PUBLIC_SURFACE = frozenset({
     "history", "replay",
 })
 
+# connect() kept its call shape for every existing caller and deliberately added
+# only explicit pool controls. Pin parameters as well as names: changing a default
+# bound or making the timeout unconfigurable is a public-contract change even
+# though dir(Kernel) would remain identical.
+KERNEL_CONNECT_PARAMETERS = {
+    "dsn": inspect.Parameter.empty,
+    "schema": "public",
+    "pool_min_size": 1,
+    "pool_max_size": 4,
+    "pool_timeout": 5.0,
+}
+
 #: Workflow's fields and methods. Pinned for the same reason as the Kernel
 #: surface: a new field is a decision (is it hashed? is it in the document? does
 #: validate() check it?) and this check is what forces the decision to be made
@@ -137,6 +156,7 @@ WORKFLOW_PUBLIC_SURFACE = frozenset({
 
 PASS: list[str] = []
 FAIL: list[str] = []
+CREATED_SCHEMAS: set[str] = set()
 
 
 def check(name: str, fn: Callable[[], None]) -> None:
@@ -180,11 +200,25 @@ def expect_exactly(
     return caught
 
 
-def fresh(dsn: str, schema: str) -> Kernel:
+def fresh(
+    dsn: str,
+    schema: str,
+    *,
+    pool_min_size: int = 1,
+    pool_max_size: int = 4,
+    pool_timeout: float = 5.0,
+) -> Kernel:
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         c.execute(f'CREATE SCHEMA "{schema}"')
-    k = Kernel.connect(dsn, schema=schema)
+    CREATED_SCHEMAS.add(schema)
+    k = Kernel.connect(
+        dsn,
+        schema=schema,
+        pool_min_size=pool_min_size,
+        pool_max_size=pool_max_size,
+        pool_timeout=pool_timeout,
+    )
     k.initialize(os.path.join(HERE, "schema.sql"))
     k.register_workflow(WF)
     return k
@@ -210,6 +244,25 @@ def named(dsn: str, app_name: str) -> str:
     """The same DSN, tagged so pg_stat_activity can pick this session out."""
     sep = "&" if "?" in dsn else "?"
     return f"{dsn}{sep}application_name={app_name}"
+
+
+def create_settable_role(dsn: str) -> str:
+    """Create a no-login role that the DSN user can SET ROLE to for reset checks."""
+    role = f"kernel_pool_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT current_user").fetchone()
+        if row is None:
+            raise AssertionError("could not identify the test database user")
+        conn.execute(SQL("CREATE ROLE {} NOLOGIN").format(Identifier(role)))
+        conn.execute(
+            SQL("GRANT {} TO {}").format(Identifier(role), Identifier(str(row[0])))
+        )
+    return role
+
+
+def drop_test_role(dsn: str, role: str) -> None:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(SQL("DROP ROLE {}").format(Identifier(role)))
 
 
 def open_transactions(dsn: str, app_name: str) -> int:
@@ -655,6 +708,449 @@ def main(dsn: str) -> int:
     check("a rollback does not reset the session's search_path",
           search_path_survives_a_refusal)
 
+    print("\n\033[1mBounded connection pool (Plan 032 F2)\033[0m")
+
+    def zero_minimum_still_proves_connectivity() -> None:
+        unreachable = psycopg.conninfo.make_conninfo(
+            dsn,
+            host="127.0.0.1",
+            port="1",
+            connect_timeout="1",
+        )
+        started = time.monotonic()
+        err = expect_exactly(
+            PoolUnavailableError,
+            lambda: Kernel.connect(
+                unreachable,
+                schema="m_pool_unreachable",
+                pool_min_size=0,
+                pool_max_size=1,
+                pool_timeout=0.4,
+            ),
+            "connect(min_size=0) to an unreachable database",
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"connectivity proof exceeded its bound: {elapsed:.3f}s"
+        assert err.__cause__ is not None, "the typed connect failure lost its cause"
+
+        # Control: zero remains a supported minimum when one connection can be
+        # established; the check is about eager connectivity, not rejecting zero.
+        k = Kernel.connect(
+            dsn,
+            schema="public",
+            pool_min_size=0,
+            pool_max_size=1,
+            pool_timeout=1.0,
+        )
+        k.close()
+    check("connect proves one working connection even when pool_min_size is zero",
+          zero_minimum_still_proves_connectivity)
+
+    def pool_bound_and_timeout_are_enforced() -> None:
+        k = fresh(dsn, "m_pool_bound", pool_min_size=0, pool_max_size=2,
+                  pool_timeout=0.25)
+        held = [k._pool.getconn(), k._pool.getconn()]
+        try:
+            stats = k._pool.get_stats()
+            assert stats["pool_size"] == 2, f"pool did not reach its configured bound: {stats}"
+            started = time.monotonic()
+            err = expect_exactly(PoolExhaustedError, k.health,
+                                 "a third checkout from a size-2 pool")
+            elapsed = time.monotonic() - started
+            assert 0.18 <= elapsed < 1.0, (
+                f"checkout waited {elapsed:.3f}s, not the configured 0.25s bound"
+            )
+            assert "maximum is 2" in str(err), f"the refusal does not name the bound: {err}"
+            assert k._pool.get_stats()["pool_size"] <= 2, "pool grew beyond max_size=2"
+        finally:
+            for conn in held:
+                k._pool.putconn(conn)
+            k.close()
+    check("pool checkout is bounded in size and time, with a typed refusal",
+          pool_bound_and_timeout_are_enforced)
+
+    def pooled_schema_scope_survives_every_reuse_path() -> None:
+        other = fresh(dsn, "m_pool_scope_other", pool_max_size=1)
+        other.create_work_item(workflow="t", type="x", actor_id="other")
+        other.create_work_item(workflow="t", type="x", actor_id="other")
+        other.close()
+
+        k = fresh(dsn, "m_pool_scope", pool_max_size=1, pool_timeout=2.0)
+        item = k.create_work_item(workflow="t", type="x", actor_id="configured")
+        expect(TransitionRefusedError,
+               lambda: k.transition(item.id, transition="not-a-transition",
+                                    actor_id="configured"),
+               "a refusal before a pooled connection is reused")
+        assert k.health()["work_items"] == 1, "rollback moved the pool out of its schema"
+
+        conn = k._pool.getconn()
+        conn.execute('SET search_path TO "m_pool_scope_other"')
+        conn.commit()
+        k._pool.putconn(conn)
+        assert k.health()["work_items"] == 1, (
+            "the next borrower inherited another schema after SET search_path"
+        )
+        replayed_state, replayed_fields, replay_drift = k.replay(item.id)
+        assert (replayed_state, replayed_fields, replay_drift) == ("open", {}, []), (
+            "replay() lost the configured schema when its rollback discarded SET LOCAL: "
+            f"{(replayed_state, replayed_fields, replay_drift)}"
+        )
+        events = k.history(item.id)
+        assert len(events) == 1 and events[0].seq == 0, (
+            "history() did not read the configured schema after replay's rollback-first path"
+        )
+
+        conn = k._pool.getconn()
+        pid_row = conn.execute("SELECT pg_backend_pid() AS pid").fetchone()
+        assert pid_row is not None
+        backend_pid = int(pid_row["pid"])
+        conn.rollback()
+        k._pool.putconn(conn)
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            terminated = admin.execute(
+                "SELECT pg_terminate_backend(%s)", (backend_pid,)
+            ).fetchone()
+        assert terminated is not None and terminated[0] is True, (
+            "the server-side-loss premise did not terminate the pooled backend"
+        )
+        assert k.health()["work_items"] == 1, (
+            "a replacement connection did not return to the configured schema"
+        )
+        k.close()
+    check("pool reuse stays schema-scoped after refusal, SET, and server loss",
+          pooled_schema_scope_survives_every_reuse_path)
+
+    def returned_connections_discard_role_and_transaction_defaults() -> None:
+        role = create_settable_role(dsn)
+        k: Kernel | None = None
+        try:
+            k = fresh(dsn, "m_pool_session_reset", pool_max_size=1)
+            borrowed = k._pool.getconn()
+            borrowed.execute(SQL("SET ROLE {}").format(Identifier(role)))
+            borrowed.execute("SET default_transaction_read_only TO on")
+            borrowed.execute("SET default_transaction_isolation TO 'serializable'")
+            premise = borrowed.execute(
+                "SELECT current_user, session_user, "
+                "current_setting('default_transaction_read_only') AS read_only, "
+                "current_setting('default_transaction_isolation') AS isolation"
+            ).fetchone()
+            assert premise is not None
+            assert premise["current_user"] == role, (
+                f"SET ROLE premise did not take effect: {premise}"
+            )
+            assert premise["read_only"] == "on", premise
+            assert premise["isolation"] == "serializable", premise
+            borrowed.commit()
+            k._pool.putconn(borrowed)
+
+            clean = k._pool.getconn()
+            observed = clean.execute(
+                "SELECT current_user, session_user, "
+                "current_setting('default_transaction_read_only') AS read_only, "
+                "current_setting('default_transaction_isolation') AS isolation"
+            ).fetchone()
+            assert observed is not None
+            assert observed["current_user"] == observed["session_user"], observed
+            assert observed["read_only"] == "off", observed
+            assert observed["isolation"] == "read committed", observed
+            clean.rollback()
+            k._pool.putconn(clean)
+
+            item = k.create_work_item(workflow="t", type="x", actor_id="control")
+            assert k.get(item.id).state == "open", (
+                "the borrower after the session mutation could not perform a write"
+            )
+        finally:
+            if k is not None:
+                k.close()
+            drop_test_role(dsn, role)
+    check("return discards a prior borrower's role/read-only/isolation mutations",
+          returned_connections_discard_role_and_transaction_defaults)
+
+    def initialize_sql_cannot_leak_session_state() -> None:
+        schema = "m_pool_init_reset"
+        role = create_settable_role(dsn)
+        k: Kernel | None = None
+        try:
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+                admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(schema)))
+            with open(os.path.join(HERE, "schema.sql")) as source:
+                schema_sql = source.read()
+            session_mutation = f"""
+GRANT USAGE ON SCHEMA {schema} TO {role};
+GRANT INSERT ON TABLE kernel_meta TO {role};
+SET ROLE {role};
+SET default_transaction_read_only TO on;
+SET default_transaction_isolation TO 'serializable';
+DO $proof$
+BEGIN
+    IF current_user <> '{role}'
+       OR current_setting('default_transaction_read_only') <> 'on'
+       OR current_setting('default_transaction_isolation') <> 'serializable' THEN
+        RAISE EXCEPTION 'session-mutation premise did not hold';
+    END IF;
+END
+$proof$;
+"""
+            with tempfile.NamedTemporaryFile("w", suffix=".sql") as custom_schema:
+                custom_schema.write(schema_sql)
+                custom_schema.write(session_mutation)
+                custom_schema.flush()
+                k = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+                k.initialize(custom_schema.name)
+
+            # register_workflow writes. Without a whole-session reset this runs
+            # as the weak role and in a read-only transaction; either leak makes
+            # the control fail, formerly with a bare psycopg exception.
+            assert k.register_workflow(WF) == 1
+            assert k.health()["workflows"] == 1
+        finally:
+            if k is not None:
+                k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+            drop_test_role(dsn, role)
+    check("initialize SQL cannot leak role/read-only/isolation to its next borrower",
+          initialize_sql_cannot_leak_session_state)
+
+    def raw_database_errors_are_translated_at_the_public_boundary() -> None:
+        k = fresh(dsn, "m_pool_db_error", pool_max_size=1)
+        surgery(dsn, "m_pool_db_error", "DROP TABLE kernel_meta", ())
+        err = expect_exactly(
+            DatabaseOperationError,
+            k.health,
+            "health() after its table was removed",
+        )
+        assert isinstance(err.__cause__, psycopg.Error), (
+            f"database cause was not preserved: {err.__cause__!r}"
+        )
+        assert "health" in str(err), f"translated error omitted the operation: {err}"
+        k.close()
+
+        control = fresh(dsn, "m_pool_db_error_control", pool_max_size=1)
+        assert control.health()["schema_version"] == 1
+        control.close()
+    check("public operations translate psycopg errors and preserve their cause",
+          raw_database_errors_are_translated_at_the_public_boundary)
+
+    def dirty_returns_and_interruptions_are_rolled_back() -> None:
+        app = f"kernel-pool-clean-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m_pool_clean", pool_max_size=1)
+        surgery(dsn, "m_pool_clean", "CREATE TABLE pool_probe (n integer)", ())
+
+        dirty = k._pool.getconn()
+        dirty.execute("INSERT INTO pool_probe (n) VALUES (1)")
+        k._pool.putconn(dirty)
+        assert scalar(dsn, "m_pool_clean", "SELECT count(*) FROM pool_probe") == 0, (
+            "an open transaction was committed or reused instead of rolled back"
+        )
+
+        failed = k._pool.getconn()
+        try:
+            failed.execute("SELECT 1 / 0")
+        except psycopg.Error:
+            pass
+        else:
+            raise AssertionError("the failed-transaction premise did not fail")
+        assert failed.info.transaction_status.name == "INERROR"
+        k._pool.putconn(failed)
+        assert k.health()["work_items"] == 0, "a failed transaction poisoned the pool"
+
+        original_append = Kernel._append_event
+
+        def interrupt_append(self: Kernel, *args: Any, **kwargs: Any) -> None:
+            del self, args, kwargs
+            raise KeyboardInterrupt("synthetic mid-transaction interrupt")
+
+        setattr(Kernel, "_append_event", interrupt_append)
+        try:
+            expect(KeyboardInterrupt,
+                   lambda: k.create_work_item(workflow="t", type="x", actor_id="a"),
+                   "KeyboardInterrupt after projection writes and before the event")
+        finally:
+            setattr(Kernel, "_append_event", original_append)
+        assert k.health()["work_items"] == 0, "the interrupted create left a partial row"
+        assert open_transactions(dsn, app) == 0, "the interrupted operation stayed open"
+        k.create_work_item(workflow="t", type="x", actor_id="control")
+        assert k.health()["work_items"] == 1, "the connection was poisoned after interruption"
+        k.close()
+    check("dirty/failed returns and BaseException interruptions cannot poison the pool",
+          dirty_returns_and_interruptions_are_rolled_back)
+
+    def health_reports_pool_state_without_pin() -> None:
+        app = f"kernel-pool-health-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m_pool_health", pool_min_size=2,
+                  pool_max_size=3, pool_timeout=0.5)
+        state = k.health()
+        assert {
+            "pool_size", "pool_min_size", "pool_max_size", "pool_waiting",
+            "pool_available",
+        } <= state.keys(), f"health omitted pool state: {state}"
+        assert state["pool_min_size"] == 2 and state["pool_max_size"] == 3, state
+        assert 2 <= state["pool_size"] <= 3, state
+        assert state["pool_waiting"] == 0, state
+        assert 0 <= state["pool_available"] <= state["pool_size"], state
+        assert open_transactions(dsn, app) == 0, "health left a pooled transaction open"
+        k.close()
+    check("health reports pool bounds/size/waiting/available and closes its transaction",
+          health_reports_pool_state_without_pin)
+
+    def health_availability_accounts_for_a_queued_waiter() -> None:
+        k = fresh(dsn, "m_pool_health_waiter", pool_min_size=1,
+                  pool_max_size=1, pool_timeout=2.0)
+        item = k.create_work_item(workflow="t", type="x", actor_id="a")
+        health_paused = threading.Event()
+        release_health = threading.Event()
+        health_result: list[dict[str, Any]] = []
+        waiter_result: list[object] = []
+        failures: list[BaseException] = []
+        original_end_read = Kernel._end_read
+
+        def pause_health(self: Kernel) -> None:
+            original_end_read(self)
+            if threading.current_thread().name == "health-snapshot":
+                health_paused.set()
+                if not release_health.wait(timeout=2.0):
+                    raise AssertionError("health snapshot was not released")
+
+        def run_health() -> None:
+            try:
+                health_result.append(k.health())
+            except BaseException as exc:
+                failures.append(exc)
+
+        def run_waiter() -> None:
+            try:
+                waiter_result.append(k.get(item.id))
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_end_read", pause_health)
+        try:
+            health_thread = threading.Thread(target=run_health, name="health-snapshot")
+            health_thread.start()
+            assert health_paused.wait(timeout=2.0), (
+                "health never held the pool's sole connection; waiter premise is vacuous"
+            )
+            waiter_thread = threading.Thread(target=run_waiter, name="health-waiter")
+            waiter_thread.start()
+            deadline = time.monotonic() + 2.0
+            while (k._pool.get_stats().get("requests_waiting", 0) < 1
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            queued = int(k._pool.get_stats().get("requests_waiting", 0))
+            assert queued == 1, f"waiter never queued behind health(): {queued}"
+            release_health.set()
+            health_thread.join(timeout=3.0)
+            waiter_thread.join(timeout=3.0)
+            assert not health_thread.is_alive() and not waiter_thread.is_alive(), (
+                "health/waiter threads did not finish"
+            )
+        finally:
+            release_health.set()
+            setattr(Kernel, "_end_read", original_end_read)
+        assert not failures, f"health/waiter operations failed: {failures}"
+        assert health_result and health_result[0]["pool_waiting"] == 1, health_result
+        assert health_result[0]["pool_available"] == 0, (
+            "health counted its returned checkout as idle despite the queued waiter: "
+            f"{health_result[0]}"
+        )
+        assert len(waiter_result) == 1, "the queued waiter never received the connection"
+        assert k.health()["pool_available"] == 1, (
+            "control snapshot without a waiter did not project the returned checkout"
+        )
+        k.close()
+    check("health availability does not count a return promised to a queued waiter",
+          health_availability_accounts_for_a_queued_waiter)
+
+    def nested_public_operation_is_refused_without_leaking_a_connection() -> None:
+        k = fresh(dsn, "m_pool_nested", pool_min_size=1, pool_max_size=1,
+                  pool_timeout=0.25)
+        nested_attempted = False
+        original_db_now = Kernel._db_now
+
+        def nested_db_now(self: Kernel, cur: Any) -> datetime:
+            nonlocal nested_attempted
+            del cur
+            nested_attempted = True
+            self.health()
+            raise AssertionError("nested health() unexpectedly returned")
+
+        setattr(Kernel, "_db_now", nested_db_now)
+        try:
+            err = expect_exactly(
+                KernelError,
+                lambda: k.create_work_item(workflow="t", type="x", actor_id="a"),
+                "a public health() call nested inside create_work_item()",
+            )
+        finally:
+            setattr(Kernel, "_db_now", original_db_now)
+        assert nested_attempted, "the nested public operation path was never reached"
+        assert "nested public database operations" in str(err), err
+        state = k.health()
+        assert state["work_items"] == 0, "the refused outer operation committed a partial row"
+        assert state["pool_available"] == 1, (
+            f"the nested refusal leaked the pool's only connection: {state}"
+        )
+        k.create_work_item(workflow="t", type="x", actor_id="control")
+        k.close()
+    check("nested public operations are refused without leaking the checkout",
+          nested_public_operation_is_refused_without_leaking_a_connection)
+
+    def concurrent_borrowers_have_distinct_transactions_and_database_time() -> None:
+        k = fresh(dsn, "m_pool_isolation", pool_min_size=2, pool_max_size=2)
+        barrier = threading.Barrier(2)
+        observations: list[tuple[int, datetime]] = []
+        failures: list[BaseException] = []
+        lock = threading.Lock()
+        original_db_now = Kernel._db_now
+
+        def observed_db_now(self: Kernel, cur: Any) -> datetime:
+            del self
+            cur.execute("SELECT pg_backend_pid() AS pid, clock_timestamp() AS ts")
+            row = cur.fetchone()
+            if row is None:
+                raise AssertionError("database clock probe returned no row")
+            observed_at: datetime = row["ts"]
+            with lock:
+                observations.append((int(row["pid"]), observed_at))
+            barrier.wait(timeout=2.0)
+            return observed_at
+
+        def create(actor: str) -> None:
+            try:
+                k.create_work_item(workflow="t", type="x", actor_id=actor)
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_db_now", observed_db_now)
+        try:
+            threads = [threading.Thread(target=create, args=(actor,))
+                       for actor in ("one", "two")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=3.0)
+            assert all(not thread.is_alive() for thread in threads), (
+                "concurrent operations did not both reach the database-clock barrier"
+            )
+        finally:
+            setattr(Kernel, "_db_now", original_db_now)
+        assert not failures, f"concurrent operations failed: {failures}"
+        assert len(observations) == 2, f"expected two clock observations: {observations}"
+        assert len({pid for pid, _ in observations}) == 2, (
+            f"two concurrent borrowers shared one connection/transaction: {observations}"
+        )
+        assert len(k.list_items()) == 2, "one concurrent transaction lost the other's work"
+        k.close()
+    check("concurrent borrowers never share a transaction or a process clock",
+          concurrent_borrowers_have_distinct_transactions_and_database_time)
+
     print("\n\033[1mWorkflow validation\033[0m")
 
     def bad_transition() -> None:
@@ -785,9 +1281,18 @@ def main(dsn: str) -> int:
     def idem() -> None:
         k = fresh(dsn, "m8")
         it = k.create_work_item(workflow="t", type="x", actor_id="a")
-        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K1")
-        k.transition(it.id, transition="start", actor_id="a", idempotency_key="K1")  # replay
-        assert k.get(it.id).last_event_seq == 1, "identical retry duplicated an effect"
+        original = k.transition(
+            it.id, transition="start", actor_id="a", idempotency_key="K1"
+        )
+        k.transition(it.id, transition="annotate", actor_id="a", fields={"later": True})
+        replayed = k.transition(
+            it.id, transition="start", actor_id="a", idempotency_key="K1"
+        )
+        assert replayed == original, (
+            f"retry returned the item's later state instead of the original result: "
+            f"{replayed} != {original}"
+        )
+        assert k.get(it.id).last_event_seq == 2, "identical retry duplicated an effect"
         expect(IdempotencyConflictError,
                lambda: k.transition(it.id, transition="submit", actor_id="a",
                                     fields={"note": "n"}, idempotency_key="K1"),
@@ -797,6 +1302,130 @@ def main(dsn: str) -> int:
                      idempotency_key="K2")  # control
         k.close()
     check("identical retry is a no-op; conflicting reuse refuses with no partial effect", idem)
+
+    def run_idempotency_race(
+        schema: str, *, conflicting: bool, different_item: bool = False,
+    ) -> tuple[list[tuple[str, WorkItem | BaseException]], list[Event]]:
+        """Force both callers past the unlocked fast lookup before A commits."""
+        k = fresh(dsn, schema, pool_min_size=2, pool_max_size=4)
+        first = k.create_work_item(workflow="t", type="x", actor_id="a")
+        k.transition(first.id, transition="start", actor_id="a")
+        second = first
+        if different_item:
+            second = k.create_work_item(workflow="t", type="x", actor_id="a")
+            k.transition(second.id, transition="start", actor_id="a")
+
+        original_append = Kernel._append_event
+        original_result = Kernel._idempotency_result
+        a_in_append = threading.Event()
+        release_a = threading.Event()
+        b_passed_fast_lookup = threading.Event()
+        outcomes: list[tuple[str, WorkItem | BaseException]] = []
+        outcome_lock = threading.Lock()
+
+        def observed_result(
+            self: Kernel, cur: Any, key: str, request_hash: bytes,
+        ) -> WorkItem | None:
+            result = original_result(self, cur, key, request_hash)
+            if threading.current_thread().name == "idem-B" and result is None:
+                b_passed_fast_lookup.set()
+            return result
+
+        def paused_append(self: Kernel, *args: Any, **kwargs: Any) -> uuid.UUID:
+            if threading.current_thread().name == "idem-A":
+                a_in_append.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("idempotency race leader was not released")
+            return original_append(self, *args, **kwargs)
+
+        def call(label: str, item_id: uuid.UUID, amount: int) -> None:
+            try:
+                result = k.transition(
+                    item_id, transition="annotate", actor_id="a",
+                    fields={"amount": amount}, idempotency_key="CONCURRENT-K",
+                )
+                outcome: WorkItem | BaseException = result
+            except BaseException as exc:
+                outcome = exc
+            with outcome_lock:
+                outcomes.append((label, outcome))
+
+        setattr(Kernel, "_idempotency_result", observed_result)
+        setattr(Kernel, "_append_event", paused_append)
+        try:
+            leader = threading.Thread(
+                target=call, args=("A", first.id, 1), name="idem-A"
+            )
+            leader.start()
+            assert a_in_append.wait(timeout=3.0), "leader never reached the append barrier"
+            follower = threading.Thread(
+                target=call,
+                args=("B", second.id, 2 if conflicting else 1),
+                name="idem-B",
+            )
+            follower.start()
+            assert b_passed_fast_lookup.wait(timeout=3.0), (
+                "follower did not observe the key as absent before the leader committed; "
+                "the concurrency premise is vacuous"
+            )
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "idempotency race threads did not finish"
+            )
+            events = k.history(first.id)
+            if different_item:
+                events += k.history(second.id)
+        finally:
+            release_a.set()
+            setattr(Kernel, "_append_event", original_append)
+            setattr(Kernel, "_idempotency_result", original_result)
+            k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+        return outcomes, events
+
+    def concurrent_identical_retry_replays() -> None:
+        outcomes, events = run_idempotency_race("m_idem_same", conflicting=False)
+        assert len(outcomes) == 2, outcomes
+        assert all(isinstance(value, WorkItem) for _, value in outcomes), outcomes
+        results = [value for _, value in outcomes if isinstance(value, WorkItem)]
+        assert [result.last_event_seq for result in results] == [2, 2], outcomes
+        assert all(result.fields == {"amount": 1} for result in results), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"identical concurrent retry appended more than one effect: {events}"
+        )
+    check("concurrent identical idempotency retry returns the original result once",
+          concurrent_identical_retry_replays)
+
+    def concurrent_conflicting_reuse_refuses() -> None:
+        outcomes, events = run_idempotency_race("m_idem_conflict", conflicting=True)
+        values = [value for _, value in outcomes]
+        assert sum(isinstance(value, WorkItem) for value in values) == 1, outcomes
+        assert sum(type(value) is IdempotencyConflictError for value in values) == 1, outcomes
+        assert not any(isinstance(value, DatabaseOperationError) for value in values), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"conflicting concurrent reuse left more than one effect: {events}"
+        )
+    check("concurrent conflicting idempotency reuse is a typed refusal with no effect",
+          concurrent_conflicting_reuse_refuses)
+
+    def concurrent_cross_item_reuse_refuses() -> None:
+        outcomes, events = run_idempotency_race(
+            "m_idem_cross_item", conflicting=True, different_item=True,
+        )
+        values = [value for _, value in outcomes]
+        assert sum(isinstance(value, WorkItem) for value in values) == 1, outcomes
+        assert sum(type(value) is IdempotencyConflictError for value in values) == 1, outcomes
+        assert not any(isinstance(value, DatabaseOperationError) for value in values), outcomes
+        assert [event.transition for event in events].count("annotate") == 1, (
+            f"one global key committed effects to two work items: {events}"
+        )
+    check("a concurrent idempotency key collision across work items is serialized",
+          concurrent_cross_item_reuse_refuses)
 
     print("\n\033[1mReplay / chain\033[0m")
 
@@ -975,6 +1604,7 @@ def main(dsn: str) -> int:
             c.execute('CREATE SCHEMA m12')
             c.execute('CREATE TABLE m12.project_identity (id bool primary key)')
             c.execute('CREATE TABLE m12._regista_migrations (v int)')
+        CREATED_SCHEMAS.add("m12")
         k = Kernel.connect(dsn, schema="m12")
         expect(UnsupportedSchemaError,
                lambda: k.initialize(os.path.join(HERE, "schema.sql")),
@@ -995,6 +1625,83 @@ def main(dsn: str) -> int:
         k.initialize(os.path.join(HERE, "schema.sql"))  # second call is a no-op
         k.close()
     check("initialising an already-current schema is a no-op", idempotent_init)
+
+    def concurrent_initializers_are_serialized() -> None:
+        schema = "m_init_race"
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                Identifier(schema)
+            ))
+            admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(schema)))
+        first = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+        second = Kernel.connect(dsn, schema=schema, pool_max_size=1)
+        original_lock = Kernel._transaction_lock
+        a_has_lock = threading.Event()
+        release_a = threading.Event()
+        b_started = threading.Event()
+        b_has_lock = threading.Event()
+        failures: list[BaseException] = []
+
+        def paused_lock(
+            self: Kernel, cur: Any, namespace: str, value: str,
+        ) -> None:
+            original_lock(self, cur, namespace, value)
+            if namespace != "initialize":
+                return
+            if threading.current_thread().name == "initialize-A":
+                a_has_lock.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("initializer leader was not released")
+            elif threading.current_thread().name == "initialize-B":
+                b_has_lock.set()
+
+        def initialize(kernel: Kernel, *, follower: bool = False) -> None:
+            if follower:
+                b_started.set()
+            try:
+                kernel.initialize(os.path.join(HERE, "schema.sql"))
+            except BaseException as exc:
+                failures.append(exc)
+
+        setattr(Kernel, "_transaction_lock", paused_lock)
+        try:
+            leader = threading.Thread(
+                target=initialize, args=(first,), name="initialize-A"
+            )
+            leader.start()
+            assert a_has_lock.wait(timeout=3.0), (
+                "initializer leader never acquired the empty-schema lock"
+            )
+            follower = threading.Thread(
+                target=initialize, args=(second,), kwargs={"follower": True},
+                name="initialize-B",
+            )
+            follower.start()
+            assert b_started.wait(timeout=1.0), "initializer follower thread never started"
+            overlapped_schema_check = b_has_lock.wait(timeout=0.35)
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "initializer race threads did not finish"
+            )
+            assert not overlapped_schema_check, (
+                "two initializers entered the empty-schema check concurrently"
+            )
+            assert not failures, f"a concurrent initializer failed: {failures}"
+            assert first.health()["schema_version"] == 1
+            assert second.health()["schema_version"] == 1
+        finally:
+            release_a.set()
+            setattr(Kernel, "_transaction_lock", original_lock)
+            first.close()
+            second.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+    check("concurrent initialization of one empty schema is serialized and idempotent",
+          concurrent_initializers_are_serialized)
 
     print("\n\033[1mLease inspection\033[0m")
 
@@ -1108,6 +1815,107 @@ def main(dsn: str) -> int:
         k.close()
     check("a workflow version is assigned, and an asserted one is checked not discarded",
           workflow_version_is_honoured_or_absent)
+
+    def run_workflow_registration_race(
+        schema: str, second_definition: Workflow,
+    ) -> tuple[list[int | BaseException], bool, list[int]]:
+        """Hold A after version choice and prove B cannot choose concurrently."""
+        k = fresh(dsn, schema, pool_min_size=2, pool_max_size=4)
+        first_definition = replace(WF, name="registry-race")
+        original_assert = Kernel._assert_version
+        a_chose_version = threading.Event()
+        release_a = threading.Event()
+        b_started = threading.Event()
+        b_chose_version = threading.Event()
+        outcomes: list[int | BaseException] = []
+        outcomes_lock = threading.Lock()
+
+        def paused_assert(
+            self: Kernel, wf: Workflow, assigned: int, *, is_new: bool,
+        ) -> None:
+            if threading.current_thread().name == "workflow-A":
+                a_chose_version.set()
+                if not release_a.wait(timeout=3.0):
+                    raise AssertionError("workflow registration leader was not released")
+            elif threading.current_thread().name == "workflow-B":
+                b_chose_version.set()
+            original_assert(self, wf, assigned, is_new=is_new)
+
+        def register(definition: Workflow, *, follower: bool = False) -> None:
+            if follower:
+                b_started.set()
+            try:
+                outcome: int | BaseException = k.register_workflow(definition)
+            except BaseException as exc:
+                outcome = exc
+            with outcomes_lock:
+                outcomes.append(outcome)
+
+        setattr(Kernel, "_assert_version", paused_assert)
+        try:
+            leader = threading.Thread(
+                target=register, args=(first_definition,), name="workflow-A"
+            )
+            leader.start()
+            assert a_chose_version.wait(timeout=3.0), (
+                "workflow leader never chose a version"
+            )
+            follower = threading.Thread(
+                target=register,
+                args=(replace(second_definition, name="registry-race"),),
+                kwargs={"follower": True},
+                name="workflow-B",
+            )
+            follower.start()
+            assert b_started.wait(timeout=1.0), "workflow follower thread never started"
+            overlapped_version_choice = b_chose_version.wait(timeout=0.35)
+            release_a.set()
+            leader.join(timeout=5.0)
+            follower.join(timeout=5.0)
+            assert not leader.is_alive() and not follower.is_alive(), (
+                "workflow registration race threads did not finish"
+            )
+            versions = [
+                version for name, version, _ in k.list_workflows()
+                if name == "registry-race"
+            ]
+        finally:
+            release_a.set()
+            setattr(Kernel, "_assert_version", original_assert)
+            k.close()
+            with psycopg.connect(dsn, autocommit=True) as admin:
+                admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    Identifier(schema)
+                ))
+        return outcomes, overlapped_version_choice, versions
+
+    def concurrent_workflow_registration_is_serialized() -> None:
+        identical, identical_overlap, identical_versions = run_workflow_registration_race(
+            "m_workflow_race_same", WF,
+        )
+        assert not identical_overlap, (
+            "two identical registrations chose a version concurrently; removing the "
+            "name lock makes this check fail before the primary-key collision"
+        )
+        assert sorted(value for value in identical if isinstance(value, int)) == [1, 1], (
+            f"identical concurrent registration did not replay v1: {identical}"
+        )
+        assert not any(isinstance(value, BaseException) for value in identical), identical
+        assert identical_versions == [1], identical_versions
+
+        distinct, distinct_overlap, distinct_versions = run_workflow_registration_race(
+            "m_workflow_race_distinct", WF_V2,
+        )
+        assert not distinct_overlap, (
+            "two distinct registrations chose the same next version concurrently"
+        )
+        assert sorted(value for value in distinct if isinstance(value, int)) == [1, 2], (
+            f"distinct concurrent definitions were not assigned v1 then v2: {distinct}"
+        )
+        assert not any(isinstance(value, BaseException) for value in distinct), distinct
+        assert distinct_versions == [1, 2], distinct_versions
+    check("concurrent workflow registration replays identical content and orders new versions",
+          concurrent_workflow_registration_is_serialized)
 
     print("\n\033[1mField merge and clearing (D7)\033[0m")
 
@@ -1479,8 +2287,16 @@ def main(dsn: str) -> int:
             "returns a collection it needs limit= and after= and a row in this check, "
             "and this check cannot tell you that by itself."
         )
+        connect_parameters = {
+            name: parameter.default
+            for name, parameter in inspect.signature(Kernel.connect).parameters.items()
+        }
+        assert connect_parameters == KERNEL_CONNECT_PARAMETERS, (
+            "Kernel.connect() changed its explicit pool contract: "
+            f"{connect_parameters} != {KERNEL_CONNECT_PARAMETERS}"
+        )
         k.close()
-    check("every collection query is bounded and resumable, and the coverage list is checked",
+    check("every collection query and the connect/public surfaces are deliberately pinned",
           every_collection_query_is_bounded)
 
     print("\n\033[1mWorkflow documents\033[0m")
@@ -1711,7 +2527,8 @@ transitions:
     print("\n\033[1mWork-item types and version pinning\033[0m")
 
     def undeclared_types_are_refused() -> None:
-        k = fresh(dsn, "m40")  # WF declares types ("x", "y")
+        app = f"kernel-type-refusal-{uuid.uuid4().hex[:8]}"
+        k = fresh(named(dsn, app), "m40")  # WF declares types ("x", "y")
         item = k.create_work_item(workflow="t", type="x", actor_id="a")
         assert item.state == "open", "the declared type did not create an item"
         err = expect(InvalidWorkflowError,
@@ -1723,8 +2540,8 @@ transitions:
         # The refusal leaves nothing behind: a partially-created item would be
         # invisible to every type filter and present in every count.
         assert len(k.list_items()) == 1, "a refused create still wrote a row"
-        assert k._conn.info.transaction_status.name == "IDLE", (
-            "the refusal left the connection in a transaction"
+        assert open_transactions(dsn, app) == 0, (
+            "the refusal left a pooled connection in a transaction"
         )
         # ...and a workflow that declares no type cannot reach the registry at all.
         expect(InvalidWorkflowError,
@@ -1819,8 +2636,22 @@ def _wait_until_blocked(dsn: str, app_name: str, deadline: float = 15.0) -> date
     )
 
 
+def _drop_created_schemas(dsn: str) -> None:
+    """Leave a shared test database as clean as the mutation suite found it."""
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        for schema in sorted(CREATED_SCHEMAS):
+            admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                Identifier(schema)
+            ))
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
-    sys.exit(main(sys.argv[1]))
+    test_dsn = sys.argv[1]
+    try:
+        exit_code = main(test_dsn)
+    finally:
+        _drop_created_schemas(test_dsn)
+    sys.exit(exit_code)

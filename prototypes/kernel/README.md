@@ -61,17 +61,19 @@ be called if this were installed; here you run it as `python3 cli.py …`.
 python3 test_mutations.py "$DSN"
 ```
 
-53 checks, each with a control. They let real leases expire and write with them,
+69 checks, each with a control. They let real leases expire and write with them,
 heartbeat a dead lease, present a live holder's fencing token as someone else,
 hold a row lock until a lease dies underneath a waiting writer, edit event
 payloads, delete middle *and* final events, rewrite a projection's fields, pass
-a `datetime` as a custom field, overwrite a reducer-owned payload key, reuse
-idempotency keys for different requests, present the wrong role, point
+a `datetime` as a custom field, overwrite a reducer-owned payload key, race
+identical and conflicting idempotency-key reuse on one or two work items, race
+workflow registration and schema initialization, present the wrong role, point
 `initialize()` at a 0.7-era schema, create an undeclared work-item type, make a
-v2-only transition on a v1-pinned item, and load a workflow document carrying a
-duplicated YAML key or any 0.7 key this format dropped. Every one asserts
-something was refused **and** that the legitimate version of the same call still
-succeeds.
+v2-only transition on a v1-pinned item, exhaust a bounded pool, poison returned
+transactions, interrupt a write with `KeyboardInterrupt`, replace a killed
+server connection, and load a workflow document carrying a duplicated YAML key
+or any 0.7 key this format dropped. Every one asserts something was refused
+**and** that the legitimate version of the same call still succeeds.
 
 Expiry is exercised with genuinely short leases and real waits, never by
 backdating `expires_at` in SQL — a backdated row cannot tell a correct expiry
@@ -194,6 +196,66 @@ item = k.create_work_item(workflow="remediation", type="finding",
 claim = k.claim(item.id, actor_id="worker-1", ttl_seconds=300)
 k.transition(item.id, transition="start", actor_id="worker-1", attempt=claim.attempt)
 ```
+
+`transition(..., idempotency_key="...")` is safe under concurrent retry. The
+key identifies the logical transition request: item, actor, transition, fields,
+clears, and payload. An identical retry returns the original transition result
+and appends no event, even if the item has changed since. Reusing the key for
+any different request raises `IdempotencyConflictError` with no partial effect.
+The key is global within the project schema, so the same guarantee applies when
+two callers race it against different work items.
+
+Workflow registration and first-time schema initialization are likewise
+serialized by logical name. Concurrent identical workflow registration returns
+the existing version; concurrent distinct definitions receive consecutive
+versions rather than colliding on the registry primary key.
+
+`Kernel.connect()` owns a bounded synchronous `psycopg_pool` pool. Its explicit
+controls are `pool_min_size=1`, `pool_max_size=4`, and `pool_timeout=5.0` seconds:
+
+```python
+k = Kernel.connect(DSN, schema="project_a",
+                   pool_min_size=1, pool_max_size=8, pool_timeout=2.0)
+```
+
+Each public database operation checks out one connection exclusively, starts a
+transaction scoped to the configured schema, and returns it clean. Return first
+rolls back open or failed work, then runs PostgreSQL `DISCARD ALL` in autocommit
+mode. That clears the whole previous session—not only `search_path`, but also a
+changed role, session GUCs such as transaction defaults, prepared statements,
+temporary objects, advisory locks, and notification registrations. Checkout
+then establishes the configured session `search_path`; each operation also uses
+`SET LOCAL`. Both scopes are intentional: a prior rollback, arbitrary SQL run by
+`initialize()`, a previous borrower's session mutation, the reset itself, or a
+replacement after server-side connection loss cannot redirect or alter the next
+operation.
+
+Checkout never grows past `pool_max_size`; waiting longer than `pool_timeout`
+raises `PoolExhaustedError`, a `KernelError` that names the configured maximum.
+`pool_min_size=0` remains supported, but `connect()` always proves at least one
+connection before returning; an unreachable database is therefore a
+`PoolUnavailableError` at connect time, not a later capacity-looking exhaustion.
+Any raw `psycopg.Error` raised during a public database operation is translated
+to `DatabaseOperationError` with the original exception retained as `__cause__`.
+Open/failure cleanup covers `BaseException`, so an interruption in the middle of
+a write commits no partial effect and does not poison the next borrower. A public
+operation nested in another public operation on the same thread is refused before
+a second checkout, and the outer checkout is still returned cleanly.
+
+`health()` includes `pool_size`, `pool_min_size`, `pool_max_size`,
+`pool_waiting`, and `pool_available`. They are one instantaneous snapshot taken
+before `health()` returns its own checkout. `pool_available` projects that
+immediate return: it adds the health checkout only when no waiter is already
+queued; when a waiter is queued, the checkout is promised directly to that
+waiter and is not counted as idle capacity. The result is neither a capacity
+reservation nor an observability time series, and another thread may change it
+as soon as the snapshot is taken.
+
+The limits are deliberately narrow: bounds are per `Kernel` instance (not a
+database-wide connection budget), there is no async pool, callers do not borrow
+raw SQL connections, and closing a kernel while another thread is using it is
+not a supported coordination mechanism. Use one long-lived `Kernel` per project
+per process and call `close()` during orderly shutdown.
 
 `claim.attempt` is a **fencing token**. An item is always in exactly one of
 three lease conditions, and every refusal says which one it found:
@@ -405,12 +467,12 @@ the static half; this supplies the running half.
 | Kernel-classified code to sever and re-cut | 22,610 |
 | …of which six modules couple hardest to the trust stack | 6,046 |
 
-The prototype is **not yet** a complete MVP, but the gap has narrowed. Against
-Plan 032's keep table, still missing: **connection-pool behaviour**. Done since
-the first draft: the CLI, bounded and ordered pagination across every collection
-query, bounded custom-field filtering, work-discovery queries including the
-link-aware one, health, and workflow documents loaded from YAML/JSON against a
-JSON Schema.
+The prototype is **not yet** a complete MVP, but the keep-table implementation
+gaps named by the first draft are now closed. Done since that draft: bounded
+connection-pool behaviour, the CLI, bounded and ordered pagination across every
+collection query, bounded custom-field filtering, work-discovery queries
+including the link-aware one, health, and workflow documents loaded from
+YAML/JSON against a JSON Schema.
 
 The keep table's custom-field row can be read two ways, and the maintainer
 should rule rather than inherit the reading below. "Basic validated domain
