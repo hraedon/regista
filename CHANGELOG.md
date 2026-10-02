@@ -4,6 +4,16 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- **Non-blocking published-migration check (#65).** `scripts/check_published_migrations.py`
+  and `release/published-migrations.json` land as an advisory CI job,
+  `continue-on-error: true`, while the full guard is reviewed in #82. The ledger records what
+  PyPI serves for all nine releases. The check refuses artifacts whose migrations differ from
+  it or that fall outside a strict allowlist. `build-system.requires` now pins hatchling and
+  its dependency closure exactly, which the check requires. The publish workflow is
+  unchanged.
+
 ### Changed
 
 - **Audit bundles are format v3 only; v1 and v2 are deleted, not deprecated (WI-289 Phase B,
