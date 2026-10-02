@@ -184,16 +184,17 @@ jobs:
       - name: Prototype kernel scenarios + mutation checks (PostgreSQL)
         run: pytest prototypes/kernel/test_scenarios.py -v
 
-  # GitHub issue #65, NON-BLOCKING while PR #82 continues. Runs the published-
-  # migration allowlist guard in the controlled environment it requires
-  # (fresh full-depth clone, `env -i`, no replacement objects, empty HOME).
-  # `continue-on-error: true`: a red run is a signal to investigate, not a
-  # merge gate. One known open gap is listed on #82 (blob bytes are not re-hashed
-  # against their object IDs). The publish workflow is deliberately unchanged.
-  published-migrations-advisory:
-    name: Published migrations (non-blocking, #65)
+  # GitHub issue #65: published migrations are immutable. BLOCKING. The guard
+  # is an allowlist over artifacts with no claim about git history (its
+  # docstring states exactly what it proves). The binding verdict is the
+  # `check-dist --authoritative` step: a fresh full-depth clone, `env -i`, no
+  # replacement objects, an empty HOME. The guard refuses --authoritative
+  # outside that environment, and in every mode it refuses replace refs,
+  # grafts and alternate object stores and re-hashes every blob it reads. This
+  # only blocks a merge if the job is a required status check on main.
+  published-migrations:
+    name: Published migrations are immutable (verified against PyPI)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -206,7 +207,7 @@ jobs:
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-tree
-      - name: Built artifacts are on the allowlist
+      - name: Built artifacts are on the allowlist (authoritative)
         run: |
           uv build --out-dir dist
           home="$(mktemp -d)"

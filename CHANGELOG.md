@@ -6,13 +6,21 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
 
 ### Added
 
-- **Non-blocking published-migration check (#65).** `scripts/check_published_migrations.py`
-  and `release/published-migrations.json` land as an advisory CI job,
-  `continue-on-error: true`, while the full guard is reviewed in #82. The ledger records what
-  PyPI serves for all nine releases. The check refuses artifacts whose migrations differ from
-  it or that fall outside a strict allowlist. `build-system.requires` now pins hatchling and
-  its dependency closure exactly, which the check requires. The publish workflow is
-  unchanged.
+- **Published migrations are immutable: a blocking allowlist guard over the artifacts we
+  publish (#65).** `release/published-migrations.json` records what PyPI serves for all nine
+  releases. `scripts/check_published_migrations.py check-dist --authoritative` gives the
+  binding verdict, in CI (the `published-migrations` job and the publish workflow's build
+  job), in a fresh full-depth clone under `env -i` with replacement objects off, no
+  system or global git config, and an empty HOME. The guard refuses to give that verdict
+  outside that environment, and local runs are labelled ADVISORY. It proves that the
+  artifacts contain only committed HEAD bytes, that every wheel is identical (content and
+  mode) to the wheels pip and uv build from the sdist, and that the migration set equals
+  the ledger, under a strict allowlist of names, file types, modes and archive structure.
+  It also proves the store's objects are the commit's: every blob is re-hashed against its
+  ID, alternate object stores, grafts and replace refs are refused, and the authoritative
+  run fscks everything reachable from HEAD. It makes no claim about git history or about
+  what reviewed code does at run time. This replaces the non-blocking check from #89 and
+  supersedes #82.
 
 ### Changed
 

@@ -13,13 +13,19 @@ fresh full-depth clone, under ``env -i`` with exactly
 ``GIT_NO_REPLACE_OBJECTS=1``, ``GIT_CONFIG_NOSYSTEM=1``,
 ``GIT_CONFIG_GLOBAL=/dev/null`` and an empty ``HOME``. The guard itself
 refuses ``--authoritative`` unless that environment holds: those values, no
-other inherited ``GIT_*`` variable, an empty HOME, and a non-shallow clone. In
-every mode it refuses a repository with ``refs/replace/*`` or a grafts file,
-and it runs its own git calls with ``--no-replace-objects`` under an
-allowlisted environment. A local run without ``--authoritative`` still
-executes every check, but every line it prints is labelled ADVISORY: it shows
-what CI would likely say, and proves nothing about a checkout whose git
-configuration it does not control.
+other inherited ``GIT_*`` variable, an empty HOME, and a non-shallow clone. The
+authoritative run then runs ``git fsck --strict`` over everything reachable
+from HEAD, so the commit, every tree and every blob hash to their IDs. In every
+mode the guard refuses ``refs/replace/*``, grafts, alternate object stores
+(``objects/info/alternates`` and ``http-alternates``, plus
+``GIT_ALTERNATE_OBJECT_DIRECTORIES`` and ``GIT_OBJECT_DIRECTORY``), and it
+re-hashes every blob it reads as ``blob <len>\\0<data>`` (sha1 or sha256, per
+the repository's object format) against the ID HEAD's tree names. A loose
+object stored under an ID it does not hash to is refused. It runs its own git
+calls with ``--no-replace-objects`` under an allowlisted environment. A local
+run without ``--authoritative`` still executes every check, but every line it
+prints is labelled ADVISORY: it shows what CI would likely say, and proves
+nothing about a checkout whose git configuration it does not control.
 
 **What this guard proves, and nothing more.**
 
@@ -477,16 +483,57 @@ def check_authoritative_environment(repo_root: Path) -> None:
         raise GuardError("authoritative mode requires HOME to be an existing empty directory")
     if _git(repo_root, "rev-parse", "--is-shallow-repository").strip() != b"false":
         raise GuardError(f"{repo_root}: authoritative mode requires a full-depth clone")
+    _check_no_object_rewrites(repo_root.resolve())
+    _check_object_store_integrity(repo_root.resolve())
+
+
+def _git_path_exists(root: Path, rel: str) -> bool:
+    path = _git(root, "rev-parse", "--git-path", rel).decode().strip()
+    return (root / path).exists() or Path(path).exists()
+
+
+#: Environment variables that point git at another object store.
+OBJECT_STORE_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY")
 
 
 def _check_no_object_rewrites(root: Path) -> None:
-    """Replacement refs and grafts make git report objects that are not the ones
-    the commit names. Their mere presence is refused, in every mode."""
+    """Replacement refs, grafts and alternate object stores make git return
+    objects other than the ones the commit names, or from somewhere other than
+    this repository. Their mere presence is refused, in every mode."""
     if _git(root, "for-each-ref", "--format=%(refname)", "refs/replace/"):
         raise GuardError(f"{root}: refs/replace/* exists; replacement objects are refused")
-    grafts = _git(root, "rev-parse", "--git-path", "info/grafts").decode().strip()
-    if (root / grafts).exists() or Path(grafts).exists():
+    if _git_path_exists(root, "info/grafts"):
         raise GuardError(f"{root}: a grafts file exists; grafted history is refused")
+    for alt in ("objects/info/alternates", "objects/info/http-alternates"):
+        if _git_path_exists(root, alt):
+            raise GuardError(f"{root}: {alt} exists; alternate object stores are refused")
+    present = [k for k in OBJECT_STORE_ENV if k in os.environ]
+    if present:
+        raise GuardError(f"{root}: {present} set; alternate object stores are refused")
+
+
+def _object_id(fmt: str, kind: str, data: bytes) -> str:
+    """The git object ID of ``data``, recomputed: ``<kind> <len>\\0<data>``."""
+    if fmt not in ("sha1", "sha256"):
+        raise GuardError(f"unsupported git object format {fmt!r}")
+    return hashlib.new(fmt, f"{kind} {len(data)}\0".encode() + data).hexdigest()
+
+
+def _check_object_store_integrity(root: Path) -> None:
+    """AUTHORITATIVE only: every object reachable from HEAD (commit, trees,
+    blobs, history) hashes to its ID. Covers the trees ls-tree reads, which
+    the per-blob re-hash does not."""
+    try:
+        proc = subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(root), "fsck", "--strict",
+             "--no-dangling", "--no-progress", "HEAD"],
+            capture_output=True, check=False, env=_git_env(),
+        )
+    except OSError as exc:
+        raise GuardError(f"{root}: cannot run git fsck ({exc.__class__.__name__})") from exc
+    if proc.returncode != 0:
+        first = (proc.stderr or proc.stdout).decode(errors="replace").strip().splitlines()[:1]
+        raise GuardError(f"{root}: git fsck --strict failed: {first}")
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -555,6 +602,7 @@ def _git_tracked_files(repo_root: Path) -> Tracked:
     )
     if batch.returncode != 0:
         raise GuardError(f"{repo_root}: git cat-file failed")
+    fmt = _git(root, "rev-parse", "--show-object-format").decode().strip()
     out = Tracked()
     out.modes = modes
     stream, pos = batch.stdout, 0
@@ -564,7 +612,13 @@ def _git_tracked_files(repo_root: Path) -> Tracked:
         if got_sha != sha or kind != "blob":
             raise GuardError(f"{repo_root}: git cat-file returned an unexpected object")
         start = header_end + 1
-        out[path] = stream[start : start + int(size)]
+        data = stream[start : start + int(size)]
+        # Never trust the store: a loose object can sit under an ID it does not
+        # hash to (round-6 review). Recompute the ID from the bytes returned.
+        if _object_id(fmt, "blob", data) != sha:
+            raise GuardError(f"{repo_root}: object for {path!r} does not hash to {sha}; "
+                             "the object store is corrupt or forged")
+        out[path] = data
         pos = start + int(size) + 1
     return out
 

@@ -230,6 +230,13 @@ jobs:
           pkg="$(python -c 'import importlib.metadata as m; print(m.version("regista-hraedon"))')"
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg"
+      # GitHub issue #65: the ledger must equal what PyPI serves, and the
+      # tagged tree must hold exactly the ledger's migrations. check-dist in the
+      # build job then judges the exact bytes that are uploaded.
+      - name: Published migrations are immutable
+        run: |
+          python3 scripts/check_published_migrations.py verify-ledger
+          python3 scripts/check_published_migrations.py check-release --version "${GITHUB_REF_NAME#v}"
       - name: Lint
         run: ruff check src/ tests/ tools/
       - name: Type-check
@@ -243,9 +250,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0   # authoritative check-dist refuses a shallow clone
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.14"   # check-dist rebuilds each sdist with pip too
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Build
         run: uv build
+      # #65: judge the exact bytes about to be uploaded against the allowlist,
+      # including wheels pip and uv build from the sdist (see the guard's
+      # docstring for the build contract that half of the claim rests on).
+      - name: Built artifacts honour the published-migration ledger
+        run: |
+          home="$(mktemp -d)"
+          env -i PATH="$PATH" HOME="$home" \
+            GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            python3 scripts/check_published_migrations.py check-dist --authoritative dist
       - name: Check distribution metadata
         run: uvx twine check dist/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
