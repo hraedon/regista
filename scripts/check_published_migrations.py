@@ -22,8 +22,8 @@ mode the guard refuses ``refs/replace/*``, grafts, alternate object stores
 re-hashes every blob it reads as ``blob <len>\\0<data>`` (sha1 or sha256, per
 the repository's object format) against the ID HEAD's tree names. A loose
 object stored under an ID it does not hash to is refused. It runs its own git
-calls with ``--no-replace-objects`` under an allowlisted environment. A local run without ``--authoritative`` still
-executes every check, but every line it prints is labelled ADVISORY: it shows
+calls with ``--no-replace-objects`` under an allowlisted environment. A local
+run without ``--authoritative`` still executes every check, but every line it prints is labelled ADVISORY: it shows
 what CI would likely say, and proves nothing about a checkout whose git
 configuration it does not control.
 
