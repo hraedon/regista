@@ -6,6 +6,21 @@ new, appended migration. A store migrated by an old release records each
 migration's checksum, so rewriting a published file makes those stores report
 ``MIGRATION_DRIFT``.
 
+**Where the verdict is proven.** Only ``check-dist --authoritative`` gives the
+binding verdict, and it runs only in CI: the PR workflow's
+``published-migrations`` job and the publish workflow's build job, each in a
+fresh full-depth clone, under ``env -i`` with exactly
+``GIT_NO_REPLACE_OBJECTS=1``, ``GIT_CONFIG_NOSYSTEM=1``,
+``GIT_CONFIG_GLOBAL=/dev/null`` and an empty ``HOME``. The guard itself
+refuses ``--authoritative`` unless that environment holds: those values, no
+other inherited ``GIT_*`` variable, an empty HOME, and a non-shallow clone. In
+every mode it refuses a repository with ``refs/replace/*`` or a grafts file,
+and it runs its own git calls with ``--no-replace-objects`` under an
+allowlisted environment. A local run without ``--authoritative`` still
+executes every check, but every line it prints is labelled ADVISORY: it shows
+what CI would likely say, and proves nothing about a checkout whose git
+configuration it does not control.
+
 **What this guard proves, and nothing more.**
 
 1. ``release/published-migrations.json`` ("the ledger") records, for each
@@ -63,8 +78,16 @@ sdist in ``DIST_DIR``:
   requires ``repo_root`` to be the root of a clean Git checkout. Bytes on disk are
   never trusted, so an edit hidden from ``git status`` (``assume-unchanged``)
   cannot pass.
-* Every wheel in ``DIST_DIR`` is member-for-member byte-identical to the wheels
-  pip and uv build from each sdist. This binds the generated metadata. This reviewed-bytes
+* Every wheel in ``DIST_DIR`` is member-for-member identical (content sha256
+  AND ZIP external attributes, i.e. file mode) to the wheels pip and uv build
+  from each sdist. This binds the generated metadata.
+* Every wheel member has mode exactly 0644. No executable bit is allowed on
+  migrations or package data, and the ``EXECUTABLE_WHEEL_MEMBERS`` allowlist is
+  empty. Every sdist member's executable bit must equal its committed tree mode
+  (100755 vs 100644), and nothing under ``migrations/`` or ``src/regista/`` may
+  be executable.
+* Encrypted, corrupt or otherwise unreadable members are a one-line error with
+  a non-zero exit, never a traceback. This reviewed-bytes
   rule is intentionally NOT applied by ``verify-ledger`` to published artifacts
   that predate the current tree.
 * A wheel contains files only under ``regista/`` and one
@@ -412,9 +435,68 @@ def _check_zip_container(blob: bytes, infos: list[zipfile.ZipInfo], where: str) 
         raise GuardError(f"{where}: bytes between the last record and the central directory")
 
 
+#: The git environment the guard requires in AUTHORITATIVE mode, and always
+#: imposes on its own git invocations: replacement objects off, no system or
+#: global config, an empty HOME, and no other inherited GIT_* variable.
+AUTHORITATIVE_GIT_ENV = {
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+}
+
+#: Wheel members are package data. None may carry an executable bit; this
+#: allowlist of wheel paths that may is deliberately empty.
+EXECUTABLE_WHEEL_MEMBERS: frozenset[str] = frozenset()
+WHEEL_MEMBER_MODE = 0o644
+
+
+def _git_env() -> dict[str, str]:
+    """Environment for every git call the guard makes: an allowlist, not a filter."""
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "LC_ALL", "TZ")}
+    env.update(AUTHORITATIVE_GIT_ENV)
+    env["HOME"] = _EMPTY_HOME
+    return env
+
+
+_EMPTY_HOME = tempfile.mkdtemp(prefix="regista-guard-home-")
+
+
+def check_authoritative_environment(repo_root: Path) -> None:
+    """Refuse to give an AUTHORITATIVE verdict unless the process itself runs in
+    the controlled environment (not just the guard's own git calls): the three
+    variables set exactly, HOME an existing empty directory, no other GIT_*
+    variable inherited, a full-depth clone, and no replacement refs or grafts."""
+    for key, value in AUTHORITATIVE_GIT_ENV.items():
+        if os.environ.get(key) != value:
+            raise GuardError(f"authoritative mode requires {key}={value}")
+    extra = sorted(k for k in os.environ if k.startswith("GIT_") and k not in AUTHORITATIVE_GIT_ENV)
+    if extra:
+        raise GuardError(f"authoritative mode refuses inherited git variables {extra}")
+    home = os.environ.get("HOME", "")
+    if not home or not Path(home).is_dir() or any(Path(home).iterdir()):
+        raise GuardError("authoritative mode requires HOME to be an existing empty directory")
+    if _git(repo_root, "rev-parse", "--is-shallow-repository").strip() != b"false":
+        raise GuardError(f"{repo_root}: authoritative mode requires a full-depth clone")
+
+
+def _check_no_object_rewrites(root: Path) -> None:
+    """Replacement refs and grafts make git report objects that are not the ones
+    the commit names. Their mere presence is refused, in every mode."""
+    if _git(root, "for-each-ref", "--format=%(refname)", "refs/replace/"):
+        raise GuardError(f"{root}: refs/replace/* exists; replacement objects are refused")
+    grafts = _git(root, "rev-parse", "--git-path", "info/grafts").decode().strip()
+    if (root / grafts).exists() or Path(grafts).exists():
+        raise GuardError(f"{root}: a grafts file exists; grafted history is refused")
+
+
 def _git(root: Path, *args: str) -> bytes:
     try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
+        proc = subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(root), *args],
+            capture_output=True,
+            check=False,
+            env=_git_env(),
+        )
     except OSError as exc:
         raise GuardError(f"{root}: cannot run git ({exc.__class__.__name__})") from exc
     if proc.returncode != 0:
@@ -422,7 +504,13 @@ def _git(root: Path, *args: str) -> bytes:
     return proc.stdout
 
 
-def _git_tracked_files(repo_root: Path) -> Mapping[str, bytes]:
+class Tracked(dict[str, bytes]):
+    """Committed HEAD blobs by path, plus their git tree modes in ``modes``."""
+
+    modes: dict[str, str]
+
+
+def _git_tracked_files(repo_root: Path) -> Tracked:
     """The reviewed bytes: every regular file of the COMMITTED tree at HEAD.
 
     "Reviewed" means committed, not merely tracked: a working tree with any staged
@@ -435,6 +523,7 @@ def _git_tracked_files(repo_root: Path) -> Mapping[str, bytes]:
     top = _git(root, "rev-parse", "--show-toplevel").decode().strip()
     if Path(top).resolve() != root:
         raise GuardError(f"{repo_root}: repo_root must be the root of a Git checkout")
+    _check_no_object_rewrites(root)
     if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=no"):
         raise GuardError(
             f"{repo_root}: the working tree has uncommitted changes to tracked files; "
@@ -442,6 +531,7 @@ def _git_tracked_files(repo_root: Path) -> Mapping[str, bytes]:
         )
     listing = _git(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD")
     blobs: dict[str, str] = {}
+    modes: dict[str, str] = {}
     for entry in listing.split(b"\0"):
         if not entry:
             continue
@@ -453,17 +543,20 @@ def _git_tracked_files(repo_root: Path) -> Mapping[str, bytes]:
             raise GuardError(f"{repo_root}: a tracked path is not UTF-8") from exc
         if kind == "blob" and mode in ("100644", "100755"):
             blobs[path] = sha
+            modes[path] = mode
     if not blobs:
         raise GuardError(f"{repo_root}: HEAD has no tracked files")
     batch = subprocess.run(
-        ["git", "-C", str(root), "cat-file", "--batch"],
+        ["git", "--no-replace-objects", "-C", str(root), "cat-file", "--batch"],
         input="".join(f"{sha}\n" for sha in blobs.values()).encode(),
         capture_output=True,
         check=False,
+        env=_git_env(),
     )
     if batch.returncode != 0:
         raise GuardError(f"{repo_root}: git cat-file failed")
-    out: dict[str, bytes] = {}
+    out = Tracked()
+    out.modes = modes
     stream, pos = batch.stdout, 0
     for path, sha in blobs.items():
         header_end = stream.index(b"\n", pos)
@@ -547,6 +640,14 @@ def _read_wheel(
             # dist-info members) is a regular file to every installer.
             if info.is_dir() or stat.S_IFMT(mode) not in (0, stat.S_IFREG):
                 raise GuardError(f"{where}: {info.filename!r} is not a regular file")
+            perm = stat.S_IMODE(mode)
+            if info.filename in EXECUTABLE_WHEEL_MEMBERS:
+                pass
+            elif perm != WHEEL_MEMBER_MODE:
+                raise GuardError(
+                    f"{where}: {info.filename!r} has mode {perm:#o}; wheel members must be "
+                    f"{WHEEL_MEMBER_MODE:#o} (no executable bit)"
+                )
             files[info.filename] = zf.read(info)
         required_metadata = {
             name: f"{dist_info}/{name}" for name in ("METADATA", "WHEEL", "RECORD")
@@ -641,6 +742,9 @@ def sdist_file(blob: bytes, rel: str) -> bytes | None:
     return None
 
 
+_SDIST_PACKAGE_DIRS = ("src/regista/",)
+
+
 def _read_sdist(
     blob: bytes,
     where: str,
@@ -676,9 +780,19 @@ def _read_sdist(
             fh = tf.extractfile(m)
             assert fh is not None
             data = fh.read()
+            executable = bool(m.mode & 0o111)
+            if executable and rel.startswith((SDIST_MIGRATIONS, *_SDIST_PACKAGE_DIRS)):
+                raise GuardError(f"{where}: {rel!r} is executable; migrations and package "
+                                 "data may not be")
             if repo_root is not None and tracked is not None and rel != "PKG-INFO":
                 if data != _reviewed_bytes(repo_root, tracked, rel, where):
                     raise GuardError(f"{where}: {rel!r} differs from its tracked source")
+                committed_exec = getattr(tracked, "modes", {}).get(rel) == "100755"
+                if executable != committed_exec:
+                    raise GuardError(f"{where}: {rel!r} executable bit differs from the "
+                                     "committed tree mode")
+            elif rel == "PKG-INFO" and executable:
+                raise GuardError(f"{where}: PKG-INFO is executable")
             mig = _classify(rel, SDIST_MIGRATIONS, where, sql_elsewhere=True)
             if mig is not None:
                 out[mig] = _sha(data)
@@ -817,7 +931,7 @@ def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
     # Keep uv's cache out of the reviewed checkout and artifact directory. A
     # caller-level UV_CACHE_DIR inside the source tree would otherwise mutate
     # the very input this guard is authenticating.
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["UV_CACHE_DIR"] = str(out / ".uv-cache")
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
@@ -829,10 +943,15 @@ def _rebuild(label: str, argv: list[str], sdist: Path, out: Path) -> Path:
 
 
 def _wheel_members(blob: bytes, where: str) -> dict[str, str]:
+    """{name: "<sha256> <mode>"}: rebuild equality covers content AND the
+    external attributes installers apply (round-5: a 0755 mode passed)."""
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-            return {i.orig_filename: _sha(zf.read(i)) for i in zf.infolist()}
-    except (zipfile.BadZipFile, OSError, ValueError, NotImplementedError) as exc:
+            return {
+                i.orig_filename: f"{_sha(zf.read(i))} {i.external_attr >> 16:o}"
+                for i in zf.infolist()
+            }
+    except Exception as exc:  # any read failure is one fail-closed verdict
         raise GuardError(f"{where}: unreadable wheel ({exc.__class__.__name__})") from exc
 
 
@@ -874,7 +993,10 @@ def check_dist(
     *,
     repo_root: Path = REPO_ROOT,
     rebuild_sdists: bool = True,
+    authoritative: bool = False,
 ) -> list[str]:
+    if authoritative:
+        check_authoritative_environment(repo_root)
     problems = check_ledger(ledger, frozen)
     tracked = _git_tracked_files(repo_root)
     pyproject = _reviewed_bytes(repo_root, tracked, "pyproject.toml", "pyproject.toml")
@@ -1033,7 +1155,22 @@ def main(argv: list[str] | None = None) -> int:
     rel.add_argument("--version", required=True)
     dist = sub.add_parser("check-dist")
     dist.add_argument("dist_dir", type=Path)
+    dist.add_argument(
+        "--authoritative",
+        action="store_true",
+        help="give the binding verdict; refuses unless run in the controlled CI environment",
+    )
     args = parser.parse_args(argv)
+    advisory = args.cmd == "check-dist" and not args.authoritative
+    label = "ADVISORY (not authoritative; only the CI run is) " if advisory else ""
+    try:
+        return _main(args, label)
+    except Exception as exc:  # never a traceback: one line, non-zero exit
+        print(f"{label}error: internal {exc.__class__.__name__}: {exc}"[:500], file=sys.stderr)
+        return 3
+
+
+def _main(args: argparse.Namespace, label: str) -> int:
     try:
         if args.cmd == "build":
             prior = load_ledger() if LEDGER_PATH.exists() else None
@@ -1060,17 +1197,17 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "check-release":
             problems = check_release(ledger, args.version)
         elif args.cmd == "check-dist":
-            problems = check_dist(ledger, args.dist_dir)
+            problems = check_dist(ledger, args.dist_dir, authoritative=args.authoritative)
         else:
             problems = check_tree(ledger)
     except GuardError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"{label}error: {exc}", file=sys.stderr)
         return 2
     for p in problems:
-        print(f"VIOLATION: {p}", file=sys.stderr)
+        print(f"{label}VIOLATION: {p}", file=sys.stderr)
     if problems:
         return 1
-    print(f"{args.cmd}: ok")
+    print(f"{label}{args.cmd}: ok")
     return 0
 
 

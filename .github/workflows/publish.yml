@@ -250,6 +250,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0   # authoritative check-dist refuses a shallow clone
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.14"   # check-dist rebuilds each sdist with pip too
@@ -260,7 +262,11 @@ jobs:
       # including wheels pip and uv build from the sdist (see the guard's
       # docstring for the build contract that half of the claim rests on).
       - name: Built artifacts honour the published-migration ledger
-        run: python3 scripts/check_published_migrations.py check-dist dist
+        run: |
+          home="$(mktemp -d)"
+          env -i PATH="$PATH" HOME="$home" \
+            GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            python3 scripts/check_published_migrations.py check-dist --authoritative dist
       - name: Check distribution metadata
         run: uvx twine check dist/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4

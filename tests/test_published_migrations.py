@@ -50,6 +50,26 @@ def _load_guard() -> ModuleType:
 
 
 guard = _load_guard()
+
+_ORIGINAL_WRITESTR = zipfile.ZipFile.writestr
+
+
+@pytest.fixture(autouse=True)
+def _wheel_members_are_0644(monkeypatch: pytest.MonkeyPatch) -> None:
+    """zipfile gives string-named members mode 0600; hatch writes 0644. Fixtures
+    that build wheels from names get the real mode, so the mode rule (which
+    refuses anything but 0644) judges fixtures as it judges real wheels.
+    Fixtures that want another mode pass an explicit ZipInfo."""
+
+    def writestr(self: zipfile.ZipFile, name: Any, data: Any, *a: Any, **kw: Any) -> None:
+        if isinstance(name, str):
+            info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+            info.external_attr = 0o100644 << 16
+            info.compress_type = self.compression
+            name = info
+        _ORIGINAL_WRITESTR(self, name, data, *a, **kw)
+
+    monkeypatch.setattr(zipfile.ZipFile, "writestr", writestr)
 A, B, C = b"-- a\n", b"-- b\n", b"-- c\n"
 WHEEL_METADATA = (
     b"Wheel-Version: 1.0\n"
@@ -178,7 +198,8 @@ def _finish_wheel(
 def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
                  wheel_metadata: bytes | None = WHEEL_METADATA,
                  metadata: bytes | None = METADATA,
-                 extra: list[tuple[zipfile.ZipInfo, bytes]] = ()) -> bytes:  # type: ignore[assignment]
+                 extra: list[tuple[zipfile.ZipInfo, bytes]] = (),  # type: ignore[assignment]
+                 record_extra: dict[str, bytes] | None = None) -> bytes:
     buf = io.BytesIO()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -193,7 +214,8 @@ def _wheel_bytes(files: dict[str, bytes], *, record: bool = True,
             for info, data in extra:
                 zf.writestr(info, data)
             _finish_wheel(
-                zf, files, record=record, wheel_metadata=wheel_metadata, metadata=metadata
+                zf, {**files, **(record_extra or {})}, record=record,
+                wheel_metadata=wheel_metadata, metadata=metadata,
             )
     return buf.getvalue()
 
@@ -1429,3 +1451,221 @@ def test_reviewed_bytes_are_the_committed_blob_not_the_disk(tmp_path: Path) -> N
                    wheel=_wheel_bytes({**_wheel_files(BASE), "regista/__init__.py": edit}))
     hide_edit(tmp_path / "edited" / "repo")
     assert "differs from tracked" in _verdict(edited)
+
+
+# --------------------------------------------------------------------------
+# New-design round 5 (Daybreak B1/B2, DeepSeek B1-B3): replacement objects,
+# modes, clean errors; the authoritative environment.
+
+
+def _git_in(repo: Path, *args: str, input_: bytes | None = None) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], input=input_, capture_output=True,
+                          check=True).stdout
+
+
+def test_a_replacement_ref_is_refused_whatever_the_artifact(tmp_path: Path) -> None:
+    """Round-5 repro: refs/replace/* made cat-file return bytes absent from HEAD."""
+    edit = b"# replacement content\n"
+    edited = _dist(tmp_path / "e",
+                   wheel=_wheel_bytes({**_wheel_files(BASE), "regista/__init__.py": edit}))
+    repo = tmp_path / "e" / "repo"
+    orig = _git_in(repo, "rev-parse", "HEAD:src/regista/__init__.py").decode().strip()
+    new = _git_in(repo, "hash-object", "-w", "--stdin", input_=edit).decode().strip()
+    _git_in(repo, "replace", orig, new)
+    assert "refs/replace" in _verdict(edited)
+    pristine = _dist(tmp_path / "p")
+    repo_p = tmp_path / "p" / "repo"
+    orig_p = _git_in(repo_p, "rev-parse", "HEAD:src/regista/__init__.py").decode().strip()
+    new_p = _git_in(repo_p, "hash-object", "-w", "--stdin", input_=edit).decode().strip()
+    _git_in(repo_p, "replace", orig_p, new_p)
+    assert "refs/replace" in _verdict(pristine)  # presence alone is refused
+
+
+def test_reads_ignore_replacement_objects_even_if_the_refusal_were_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defence in depth: with the presence check disabled, the guard still reads
+    the raw HEAD blob (--no-replace-objects), so the edited artifact fails."""
+    monkeypatch.setattr(guard, "_check_no_object_rewrites", lambda root: None)
+    edit = b"# replacement content\n"
+    d = _dist(tmp_path, wheel=_wheel_bytes({**_wheel_files(BASE), "regista/__init__.py": edit}))
+    repo = tmp_path / "repo"
+    orig = _git_in(repo, "rev-parse", "HEAD:src/regista/__init__.py").decode().strip()
+    new = _git_in(repo, "hash-object", "-w", "--stdin", input_=edit).decode().strip()
+    _git_in(repo, "replace", orig, new)
+    assert "differs from tracked" in _verdict(d)
+
+
+def test_a_grafts_file_is_refused(tmp_path: Path) -> None:
+    d = _dist(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "grafts").write_text("")
+    assert "grafts" in _verdict(d)
+
+
+def _wheel_with_mode(name: str, mode: int) -> bytes:
+    files = dict(_wheel_files(BASE))
+    data = files.pop(name)
+    info = zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0))
+    info.external_attr = mode << 16
+    return _wheel_bytes(files, extra=[(info, data)], record_extra={name: data})
+
+
+@pytest.mark.parametrize("mode", [0o100755, 0o100744, 0o100600, 0o100664])
+def test_a_wheel_member_with_any_mode_but_0644_is_refused(tmp_path: Path, mode: int) -> None:
+    """Round-5 repro: a 0755 member passed and pip preserved the executable bit."""
+    assert "wheel members must be 0o644" in _verdict(
+        _dist(tmp_path, wheel=_wheel_with_mode("regista/__init__.py", mode)))
+
+
+def test_the_rebuild_binding_compares_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same names and bytes, different external attributes: refused."""
+    direct = _wheel_bytes(_wheel_files(BASE))
+    typeless = _wheel_with_mode("regista/__init__.py", 0o644)  # 0644 without S_IFREG
+    d = _dist(tmp_path, wheel=direct)
+    _stub_rebuilds(monkeypatch, typeless)
+    problems = guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo")
+    assert any("differs from the uv rebuild" in p for p in problems), problems
+
+
+def test_an_executable_sdist_member_in_package_data_is_refused(tmp_path: Path) -> None:
+    info = tarfile.TarInfo("r-0.0.0/src/regista/__init__.py")
+    info.mode = 0o755
+    files = dict(_sdist_files(BASE))
+    files.pop("src/regista/__init__.py", None)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in {"PKG-INFO": b"Name: r\n", "pyproject.toml": PYPROJECT, **files}.items():
+            ti = tarfile.TarInfo(f"r-0.0.0/{name}")
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+        tf.addfile(info, io.BytesIO(b""))
+    assert "is executable" in _verdict(_dist(tmp_path, sdist=buf.getvalue()))
+
+
+def test_an_sdist_member_mode_must_match_the_committed_mode(tmp_path: Path) -> None:
+    repo = _test_repo(tmp_path)
+    (repo / "tool.sh").write_bytes(b"#!/bin/sh\n")
+    (repo / "tool.sh").chmod(0o755)
+    _git_commit_all(repo)
+    plain = _sdist_with("tool.sh", b"#!/bin/sh\n")  # TarInfo default mode 0644
+    assert "executable bit differs" in _verdict(_dist(tmp_path, sdist=plain))
+
+
+def _encrypted(blob: bytes) -> bytes:
+    raw = bytearray(blob)
+    for sig, off in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        i = raw.find(sig)
+        while i != -1:
+            raw[i + off] |= 0x01
+            i = raw.find(sig, i + 4)
+    return bytes(raw)
+
+
+def _corrupt_deflate() -> bytes:
+    buf = io.BytesIO()
+    files = _wheel_files(BASE)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data + b"x" * 64)
+        lines = [f"{n},sha256={_record_digest(d)},{len(d)}" for n, d in files.items()]
+        zf.writestr("r-0.0.0.dist-info/RECORD", "\n".join(lines) + "\n")
+    raw = bytearray(buf.getvalue())
+    first = zipfile.ZipFile(io.BytesIO(bytes(raw))).infolist()[0]
+    start = first.header_offset + 30 + len(first.filename)
+    raw[start : start + 4] = b"\xff\xff\xff\xff"
+    return bytes(raw)
+
+
+@pytest.mark.parametrize("kind", ["encrypted", "corrupt"])
+def test_unreadable_members_are_a_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Round-5 DeepSeek B1 regression: RuntimeError/zlib.error escaped."""
+    blob = _encrypted(_wheel_bytes(_wheel_files(BASE))) if kind == "encrypted" \
+        else _corrupt_deflate()
+    with pytest.raises(guard.GuardError):
+        guard._wheel_members(blob, "w")
+    with pytest.raises(guard.GuardError):
+        guard.read_wheel(blob, "r-0.0.0-py3-none-any.whl")
+
+
+def _clean_clone_with_current_guard(tmp_path: Path) -> Path:
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(REPO_ROOT), str(clone)], check=True)
+    for rel in ("scripts/check_published_migrations.py",):
+        (clone / rel).write_bytes((REPO_ROOT / rel).read_bytes())
+    _git_commit_all(clone)
+    return clone
+
+
+@pytest.mark.parametrize("kind", ["encrypted", "corrupt"])
+def test_the_cli_never_prints_a_traceback(tmp_path: Path, kind: str) -> None:
+    clone = _clean_clone_with_current_guard(tmp_path)
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    blob = _encrypted(_wheel_bytes(_wheel_files(BASE))) if kind == "encrypted" \
+        else _corrupt_deflate()
+    (dist / "regista_hraedon-0.7.2-py3-none-any.whl").write_bytes(blob)
+    (dist / "regista_hraedon-0.7.2.tar.gz").write_bytes(_sdist_bytes(_sdist_files(BASE)))
+    proc = subprocess.run(
+        [sys.executable, str(clone / "scripts" / "check_published_migrations.py"),
+         "check-dist", str(dist)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "Traceback" not in proc.stderr + proc.stdout
+    lines = [ln for ln in proc.stderr.splitlines() if ln.strip()]
+    assert len(lines) == 1 and lines[0].startswith("ADVISORY"), proc.stderr
+
+
+def _authoritative_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    for k in list(os.environ):
+        if k.startswith("GIT_"):
+            monkeypatch.delenv(k)
+    for k, v in guard.AUTHORITATIVE_GIT_ENV.items():
+        monkeypatch.setenv(k, v)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+
+def test_the_authoritative_environment_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _test_repo(tmp_path)
+    _authoritative_env(monkeypatch, tmp_path)
+    guard.check_authoritative_environment(repo)  # control: the right environment passes
+    for key in guard.AUTHORITATIVE_GIT_ENV:
+        with monkeypatch.context() as m:
+            m.delenv(key)
+            with pytest.raises(guard.GuardError, match=key):
+                guard.check_authoritative_environment(repo)
+    with monkeypatch.context() as m:
+        m.setenv("GIT_DIR", str(repo / ".git"))
+        with pytest.raises(guard.GuardError, match="inherited git variables"):
+            guard.check_authoritative_environment(repo)
+    with monkeypatch.context() as m:
+        (tmp_path / "home" / ".gitconfig").write_text("")
+        with pytest.raises(guard.GuardError, match="empty directory"):
+            guard.check_authoritative_environment(repo)
+        (tmp_path / "home" / ".gitconfig").unlink()
+    shallow = tmp_path / "shallow"
+    _git_commit_all(repo)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)],
+                   check=True, env={k: v for k, v in os.environ.items()})
+    with pytest.raises(guard.GuardError, match="full-depth"):
+        guard.check_authoritative_environment(shallow)
+
+
+def test_check_dist_authoritative_flag_runs_the_environment_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _dist(tmp_path)
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    with pytest.raises(guard.GuardError, match="authoritative mode requires"):
+        guard.check_dist(_ledger(), d, {}, repo_root=tmp_path / "repo",
+                         rebuild_sdists=False, authoritative=True)

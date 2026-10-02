@@ -197,6 +197,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # authoritative check-dist refuses a shallow clone
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -205,10 +207,18 @@ jobs:
         run: |
           python3 scripts/check_published_migrations.py verify-ledger
           python3 scripts/check_published_migrations.py check-tree
-      - name: Built artifacts are on the allowlist
+      # The AUTHORITATIVE verdict (#65). Fresh full-depth clone (checkout above,
+      # fetch-depth 0) and an allowlisted environment: `env -i` drops every
+      # inherited variable, GIT_* included. The guard itself refuses
+      # --authoritative unless this environment holds, and refuses
+      # refs/replace/* or grafts in any mode.
+      - name: Built artifacts are on the allowlist (authoritative)
         run: |
           uv build --out-dir dist
-          python3 scripts/check_published_migrations.py check-dist dist
+          home="$(mktemp -d)"
+          env -i PATH="$PATH" HOME="$home" \
+            GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            python3 scripts/check_published_migrations.py check-dist --authoritative dist
 
   # The lock is only a lock if something checks it. regista and agent-wake both
   # shipped a uv.lock that had silently stopped matching pyproject.toml — CI

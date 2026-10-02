@@ -11,7 +11,13 @@ All notable changes to regista are documented here. Format follows [Keep a Chang
   `regista-hraedon` release: per release, the sha256 of each file and of each migration. It
   was measured from the wheels and sdists of all nine releases, 0.5.1-0.7.2.
   `scripts/check_published_migrations.py check-dist` runs in CI and in the publish build job
-  on the exact bytes uploaded. Its artifact claim is deliberately precise: artifacts contain
+  on the exact bytes uploaded. Only that CI run is AUTHORITATIVE. It runs `check-dist
+  --authoritative` in a fresh full-depth clone under `env -i` with
+  `GIT_NO_REPLACE_OBJECTS=1`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and an
+  empty `HOME`. The guard refuses `--authoritative` outside that environment, and in every
+  mode it refuses replacement refs and grafts. Local runs are labelled ADVISORY. Wheel
+  members must be mode 0644, sdist executable bits must match the committed tree, and the
+  rebuild comparison includes modes. Its artifact claim is deliberately precise: artifacts contain
   only reviewed bytes, meaning the committed HEAD blobs (a dirty checkout is refused). Every
   wheel must be member-for-member identical to the wheels pip and uv build from the sdist,
   which binds generated metadata (Requires-Dist, entry points, WHEEL, RECORD). Their
