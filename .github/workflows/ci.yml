@@ -60,6 +60,15 @@ jobs:
           REGISTA_FORBIDDEN_IDENTIFIERS: ${{ secrets.REGISTA_FORBIDDEN_IDENTIFIERS }}
         run: python3 scripts/check_committed_identifiers.py
 
+      # Everything the push or PR publishes, not just the tip tree: every commit's
+      # message, author/committer identity, and added or changed files. The range
+      # comes from the event (needs the fetch-depth: 0 checkout above).
+      - name: Published-range identifier gate
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        env:
+          REGISTA_FORBIDDEN_IDENTIFIERS: ${{ secrets.REGISTA_FORBIDDEN_IDENTIFIERS }}
+        run: python3 scripts/check_committed_identifiers.py --ci-range
+
       # prototypes/ included: D14 (Plan 032 open-decisions, adopted default 2026-09-17)
       # — the kernel prototype is the retained implementation (D1 = EXTRACT),
       # so it gets the same lint gate as src/ and tests/ now.
