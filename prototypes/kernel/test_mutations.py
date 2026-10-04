@@ -127,7 +127,7 @@ KERNEL_PUBLIC_SURFACE = frozenset({
     "register_workflow", "get_workflow", "list_workflows", "health",
     "create_work_item", "get",
     "claim", "heartbeat", "lease", "release", "expire_leases",
-    "transition", "link", "links_from",
+    "transition", "link", "remove_link", "links_from",
     "list_items", "available", "owned", "in_states", "blocked",
     "history", "replay",
 })
@@ -150,7 +150,7 @@ KERNEL_CONNECT_PARAMETERS = {
 #: rather than defaulted.
 WORKFLOW_PUBLIC_SURFACE = frozenset({
     "name", "states", "initial", "transitions", "version", "roles",
-    "required_fields", "terminal", "types", "role_names",
+    "required_fields", "terminal", "types", "role_names", "field_schemas", "link_type_names",
     "validate", "as_json", "from_json", "as_document", "from_document",
 })
 

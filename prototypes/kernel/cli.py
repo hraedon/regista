@@ -272,7 +272,7 @@ def cmd_transition(k: Kernel, args: argparse.Namespace) -> int:
         uuid.UUID(args.id), transition=args.transition, actor_id=args.actor,
         actor_kind=args.actor_kind, role=args.role, attempt=args.attempt,
         fields=_fields(args.field), unset_fields=tuple(args.unset_field or ()),
-        idempotency_key=args.idempotency_key,
+        idempotency_key=args.idempotency_key, expected_seq=args.expected_seq,
     )
     if not args.json:
         print(f"{args.transition} -> {item.state}")
@@ -284,6 +284,14 @@ def cmd_link(k: Kernel, args: argparse.Namespace) -> int:
     k.link(uuid.UUID(args.source), uuid.UUID(args.target), args.type)
     if not args.json:
         print(f"{args.source} -{args.type}-> {args.target}")
+    _emit({"source": args.source, "target": args.target, "type": args.type}, args.json)
+    return 0
+
+
+def cmd_unlink(k: Kernel, args: argparse.Namespace) -> int:
+    k.remove_link(uuid.UUID(args.source), uuid.UUID(args.target), args.type)
+    if not args.json:
+        print(f"removed {args.source} -{args.type}-> {args.target}")
     _emit({"source": args.source, "target": args.target, "type": args.type}, args.json)
     return 0
 
@@ -476,11 +484,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="remove this custom field in the same write, repeatable. "
                         "The only way to clear one; recorded on the event")
     t.add_argument("--idempotency-key")
+    t.add_argument("--expected-seq", type=int)
 
     lk = sub.add_parser("link", help="create a typed link")
     lk.add_argument("source")
     lk.add_argument("target")
     lk.add_argument("--type", required=True)
+
+    ul = sub.add_parser("unlink", help="remove a typed link")
+    ul.add_argument("source")
+    ul.add_argument("target")
+    ul.add_argument("--type", required=True)
 
     h = sub.add_parser("history", help="ordered event history (one page)")
     h.add_argument("id")
@@ -497,6 +511,7 @@ DISPATCH = {
     "create": cmd_create, "show": cmd_show, "list": cmd_list, "claim": cmd_claim,
     "heartbeat": cmd_heartbeat, "lease": cmd_lease,
     "release": cmd_release, "transition": cmd_transition, "link": cmd_link,
+    "unlink": cmd_unlink,
     "history": cmd_history, "replay": cmd_replay,
     ("workflow", "register"): cmd_workflow_register,
     # ("workflow", "validate") is NOT here: it runs without a Kernel.
@@ -515,15 +530,18 @@ def main(argv: list[str] | None = None) -> int:
             # checkable on a laptop with nothing provisioned.
             return cmd_workflow_validate(args)
     handler = DISPATCH[key]
-    k = _kernel(args)
+    k: Kernel | None = None
     try:
+        k = _kernel(args)
         return handler(k, args)
     except KernelError as e:
         # Refusals are the product working, so they print cleanly and exit 2.
         print(f"refused: {e}", file=sys.stderr)
+        _emit({"error": type(e).__name__, "message": str(e), "exit_code": 2}, args.json)
         return 2
     finally:
-        k.close()
+        if k is not None:
+            k.close()
 
 
 if __name__ == "__main__":

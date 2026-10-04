@@ -265,6 +265,7 @@ class InvalidQueryError(KernelError): ...
 class TransitionRefusedError(KernelError): ...
 class ClaimContestedError(KernelError): ...
 class StaleAttemptError(KernelError): ...
+class SequenceConflictError(KernelError): ...
 class InvalidFieldError(KernelError): ...
 class IdempotencyConflictError(KernelError): ...
 
@@ -550,6 +551,14 @@ class Workflow:
     required_fields: transition name -> field names that must be present on the
                  item (already set, or supplied with this transition).
     terminal:    states from which nothing may follow.
+    field_schemas: optional per-type basic JSON Schema objects. A supplied rule
+                 is enforced on creation and on merged/cleared transition fields.
+                 No declaration keeps the existing free-form JSON contract.
+                 work_item_ref: [type, ...] validates a UUID field's target;
+                 [] accepts any existing work-item type, null is optional.
+    link_type_names: optional closed vocabulary for links leaving this workflow's
+                 pinned items. None keeps free-form relationship names; () admits
+                 no relationship. Endpoints must exist in this schema either way.
     role_names:  the closed set of role names the transitions may restrict to.
                  Cross-checked against `roles` in both directions, which is the
                  only thing that catches a role typo: misspell it on the
@@ -576,6 +585,8 @@ class Workflow:
     terminal: tuple[str, ...] = ()
     types: tuple[str, ...] = ()
     role_names: tuple[str, ...] = ()
+    field_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    link_type_names: tuple[str, ...] | None = None
 
     def validate(self) -> None:
         if self.version < 0:
@@ -641,6 +652,43 @@ class Workflow:
                 "runtime."
             )
 
+        if self.link_type_names is not None and (
+            len(set(self.link_type_names)) != len(self.link_type_names)
+            or any(not isinstance(n, str) or not n for n in self.link_type_names)
+        ):
+            raise InvalidWorkflowError("link_type_names must contain unique, nonempty names")
+
+        # Optional per-type JSON Schema declarations. Undeclared schemas retain
+        # the existing free-form JSON contract; a supplied rule is always enforced.
+        for item_type, schema in self.field_schemas.items():
+            if item_type not in self.types:
+                raise InvalidWorkflowError(f"field schema names unknown type {item_type!r}")
+            try:
+                jsonschema.Draft202012Validator.check_schema(schema)
+            except jsonschema.SchemaError as exc:
+                raise InvalidWorkflowError(
+                    f"invalid field schema for {item_type}: {exc.message}"
+                ) from exc
+            if schema.get("type") != "object":
+                raise InvalidWorkflowError("a field schema must describe an object")
+            if set(schema) - {"type", "properties", "required", "additionalProperties"}:
+                raise InvalidWorkflowError("unsupported field schema keyword")
+            if not isinstance(schema.get("additionalProperties", True), bool):
+                raise InvalidWorkflowError("additionalProperties must be a boolean")
+            for name, rule in schema.get("properties", {}).items():
+                if not isinstance(rule, dict):
+                    raise InvalidWorkflowError(f"field {name}: rule must be an object")
+                if set(rule) - {"type", "enum", "minLength", "work_item_ref"}:
+                    raise InvalidWorkflowError(f"field {name}: unsupported field rule keyword")
+                targets = rule.get("work_item_ref")
+                if "work_item_ref" in rule and (
+                    not isinstance(targets, list)
+                    or any(not isinstance(t, str) or t not in self.types for t in targets)
+                ):
+                    raise InvalidWorkflowError(
+                        f"field {name}: work_item_ref must list declared target types (or [])"
+                    )
+
         # Unreachable states. A state nothing enters and that is not the initial
         # state can never hold an item, so every query and report that mentions
         # it is answering about a state the workflow cannot reach.
@@ -663,6 +711,9 @@ class Workflow:
             "terminal": list(self.terminal),
             "types": list(self.types),
             "role_names": list(self.role_names),
+            **({"field_schemas": self.field_schemas} if self.field_schemas else {}),
+            **({"link_type_names": list(self.link_type_names)}
+               if self.link_type_names is not None else {}),
         }
 
     @staticmethod
@@ -684,6 +735,8 @@ class Workflow:
             terminal=tuple(d.get("terminal", [])),
             types=tuple(d.get("types", [])),
             role_names=tuple(d.get("role_names", [])),
+            field_schemas=copy.deepcopy(d.get("field_schemas", {})),
+            link_type_names=(tuple(d["link_type_names"]) if "link_type_names" in d else None),
         )
 
     def as_document(self) -> dict[str, Any]:
@@ -722,6 +775,10 @@ class Workflow:
             doc["roles"] = list(self.role_names)
         doc["work_item_types"] = list(self.types)
         doc["transitions"] = list(by_transition.values())
+        if self.field_schemas:
+            doc["field_schemas"] = copy.deepcopy(self.field_schemas)
+        if self.link_type_names is not None:
+            doc["link_type_names"] = list(self.link_type_names)
         return doc
 
     @staticmethod
@@ -783,6 +840,8 @@ def _build_workflow(doc: object) -> Workflow:
         terminal=tuple(terminal),
         types=tuple(doc["work_item_types"]),
         role_names=tuple(doc.get("roles", [])),
+        field_schemas=copy.deepcopy(doc.get("field_schemas", {})),
+        link_type_names=(tuple(doc["link_type_names"]) if "link_type_names" in doc else None),
     )
 
 
@@ -940,10 +999,13 @@ def load_workflow_document(path: str) -> Any:
             "The extension picks the parser; guessing from the content would make the "
             "same bytes mean different things on different days."
         )
-    with open(path, encoding="utf-8") as fh:
-        if ext == ".json":
-            return json.load(fh)
-        return yaml.load(fh, Loader=_NoDuplicateKeyLoader)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if ext == ".json":
+                return json.load(fh)
+            return yaml.load(fh, Loader=_NoDuplicateKeyLoader)
+    except (yaml.YAMLError, json.JSONDecodeError, OSError) as exc:
+        raise InvalidWorkflowError(f"{path}: cannot load workflow ({type(exc).__name__})") from exc
 
 
 def load_workflow(path: str) -> Workflow:
@@ -1093,7 +1155,11 @@ class Kernel:
                 open=False,
                 check=check_connection,
                 reset=reset_connection,
-                kwargs={"row_factory": dict_row, "autocommit": False},
+                # DISCARD ALL invalidates server preparations on every return.
+                # Automatic preparation cannot amortize across these operations
+                # and otherwise leaves psycopg's cache pointing at absent names.
+                kwargs={"row_factory": dict_row, "autocommit": False,
+                        "prepare_threshold": None},
             )
             pool.open(wait=True, timeout=pool_timeout)
             # ConnectionPool.wait() is a no-op when min_size=0. An explicit
@@ -1450,6 +1516,7 @@ class Kernel:
                     "unchecked one is silent: a misspelling creates a second population "
                     "that every type filter then misses."
                 )
+            self._validate_fields(cur, wf, type, fields)
             item_id = uuid.uuid4()
             now = self._db_now(cur)
             cur.execute(
@@ -1491,6 +1558,38 @@ class Kernel:
             row["work_item_type"], row["current_state"], row["custom_fields"],
             row["last_event_seq"],
         )
+
+    def _validate_fields(
+        self, cur: DictCursor, wf: Workflow, item_type: str, values: dict[str, Any],
+    ) -> None:
+        schema = wf.field_schemas.get(item_type)
+        if schema is None:
+            return
+        errors = sorted(
+            jsonschema.Draft202012Validator(schema).iter_errors(values),
+            key=lambda e: (list(map(str, e.absolute_path)), e.message),
+        )
+        if errors:
+            raise InvalidFieldError(f"{item_type} fields: {errors[0].message}")
+        for name, rule in schema.get("properties", {}).items():
+            targets = rule.get("work_item_ref")
+            value = values.get(name)
+            if targets is None or value is None:
+                continue
+            try:
+                target = uuid.UUID(value)
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise InvalidFieldError(f"{name}: invalid work-item UUID") from exc
+            cur.execute(
+                "SELECT work_item_type FROM work_items_current WHERE work_item_id = %s", (target,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise InvalidFieldError(f"{name}: nonexistent work item {target}")
+            if targets and row["work_item_type"] not in targets:
+                raise InvalidFieldError(
+                    f"{name}: target type {row['work_item_type']!r} is not in {targets}"
+                )
 
     # ---- claims ----------------------------------------------------------
 
@@ -1807,6 +1906,7 @@ class Kernel:
         unset_fields: tuple[str, ...] = (),
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        expected_seq: int | None = None,
     ) -> WorkItem:
         """Make a validated transition.
 
@@ -1828,6 +1928,10 @@ class Kernel:
         reproduces it. See FIELD MERGE, CLEARING, AND NULL in the module
         docstring for the whole contract, including why a null does not satisfy
         a required field.
+
+        `expected_seq` optionally requires the locked item's last_event_seq to
+        match before any effects. This protects content reviewed without a lease.
+        A matching idempotent retry still returns its original result.
 
         `payload` is free-form annotation recorded on the event. It obeys the
         FIELD TYPES contract and may not contain a reserved key.
@@ -1866,6 +1970,7 @@ class Kernel:
         request_hash = _hash(_canonical({
             "w": str(work_item_id), "t": transition, "a": actor_id,
             "f": fields, "u": list(unset), "p": payload,
+            "actor_kind": actor_kind, "role": role, "expected_seq": expected_seq,
         }))
         with self._conn.cursor() as cur:
             if idempotency_key is not None:
@@ -1894,6 +1999,10 @@ class Kernel:
                     self._conn.rollback()
                     return prior
 
+            if expected_seq is not None and expected_seq != int(item["last_event_seq"]):
+                raise SequenceConflictError(
+                    f"expected sequence {expected_seq}, current is {item['last_event_seq']}"
+                )
             wf = self._read_workflow(cur, item["workflow_name"], item["workflow_version"])
 
             # Lease fencing, before any validation that could leak state.
@@ -1968,6 +2077,7 @@ class Kernel:
             merged.update(fields)
             for name in unset:
                 merged.pop(name, None)
+            self._validate_fields(cur, wf, item["work_item_type"], merged)
             required = wf.required_fields.get(transition, ())
             missing = [f for f in required if f not in merged]
             nulled = [f for f in required if f in merged and merged[f] is None]
@@ -2069,11 +2179,32 @@ class Kernel:
         if source == target:
             raise InvalidFieldError("a work item cannot link to itself")
         with self._conn.cursor() as cur:
+            cur.execute("SELECT workflow_name, workflow_version FROM work_items_current "
+                        "WHERE work_item_id = %s", (source,))
+            row = cur.fetchone()
+            if row is None:
+                raise InvalidFieldError(f"link source does not exist: {source}")
+            cur.execute("SELECT 1 FROM work_items_current WHERE work_item_id = %s", (target,))
+            if cur.fetchone() is None:
+                raise InvalidFieldError(f"link target does not exist: {target}")
+            wf = self._read_workflow(cur, row["workflow_name"], row["workflow_version"])
+            if wf.link_type_names is not None and link_type not in wf.link_type_names:
+                raise InvalidFieldError(f"undeclared link type {link_type!r} for {wf.name}")
             cur.execute(
                 "INSERT INTO links (source_id, target_id, link_type) VALUES (%s, %s, %s) "
                 "ON CONFLICT DO NOTHING",
                 (source, target, link_type),
             )
+        self._conn.commit()
+
+    @_pooled_operation
+    def remove_link(self, source: uuid.UUID, target: uuid.UUID, link_type: str) -> None:
+        """Remove an explicit relationship; refuse an absent one. Outside replay."""
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM links WHERE source_id = %s AND target_id = %s "
+                        "AND link_type = %s", (source, target, link_type))
+            if cur.rowcount == 0:
+                raise InvalidFieldError("no such typed link")
         self._conn.commit()
 
     @_pooled_operation
@@ -2431,61 +2562,70 @@ class Kernel:
         Reading events and the projection in separate transactions would let a
         concurrent transition land between them and be reported as drift.
         """
-        self._conn.rollback()  # guarantee the isolation level applies to a fresh transaction
-        with self._conn.cursor() as cur:
-            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            cur.execute(
-                "SELECT event_seq, transition, payload, payload_hash, prev_event_hash "
-                "FROM events WHERE work_item_id = %s ORDER BY event_seq",
-                (work_item_id,),
-            )
-            rows = cur.fetchall()
-            cur.execute(
-                "SELECT current_state, custom_fields, last_event_seq "
-                "FROM work_items_current WHERE work_item_id = %s",
-                (work_item_id,),
-            )
-            projection = cur.fetchone()
-        self._end_read()
+        self._conn.rollback()  # isolation applies to a fresh transaction
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                cur.execute(
+                    "SELECT current_state, custom_fields, last_event_seq "
+                    "FROM work_items_current WHERE work_item_id = %s",
+                    (work_item_id,),
+                )
+                projection = cur.fetchone()
+            with self._conn.cursor(name="kernel_replay") as rows:
+                rows.itersize = 64
+                rows.execute(
+                    "SELECT event_seq, transition, payload, payload_hash, prev_event_hash "
+                    "FROM events WHERE work_item_id = %s ORDER BY event_seq",
+                    (work_item_id,),
+                )
+                drift: list[str] = []
+                state: str = ""
+                fields: dict[str, Any] = {}
+                running: bytes | None = None
+                last_seq = -1
+                for i, r in enumerate(rows):
+                    last_seq = int(r["event_seq"])
+                    if (i == 0) != (r["transition"] is None):
+                        drift.append(
+                            f"event {last_seq}: history must start with exactly one creation event"
+                        )
+                    seq = int(r["event_seq"])
+                    payload = r["payload"]
+                    if seq != i:
+                        drift.append(f"sequence gap: expected {i}, found {seq}")
+                    if r["transition"] is None:
+                        created = payload.get("created", {})
+                        state = created.get("state", "")
+                        fields = dict(created.get("fields", {}))
+                    else:
+                        if payload.get("from") != state:
+                            drift.append(
+                                f"event {seq} leaves {payload.get('from')!r} "
+                                f"but replay is in {state!r}"
+                            )
+                        state = payload.get("to", state)
+                        # The same shallow merge, then the same clears, in the same
+                        # order transition() applied them. If this ignored "unset", a
+                        # cleared field would reappear here and be reported as drift
+                        # against a projection that is in fact correct.
+                        fields.update(payload.get("fields", {}))
+                        for cleared in payload.get("unset", ()):
+                            fields.pop(cleared, None)
 
-        drift: list[str] = []
-        if not rows:
+                    # Chain check. Consistency only -- see the module docstring.
+                    if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
+                        drift.append(f"event {seq}: payload does not match its hash")
+                    stored = (bytes(r["prev_event_hash"])
+                              if r["prev_event_hash"] is not None else None)
+                    if stored != running:
+                        drift.append(f"event {seq}: chain link does not match predecessor")
+                    running = _hash(bytes(r["payload_hash"]), bytes(stored or b""))
+
+        finally:
+            self._end_read()
+        if last_seq == -1:
             return ("", {}, ["no events"])
-
-        state: str = ""
-        fields: dict[str, Any] = {}
-        running: bytes | None = None
-        for i, r in enumerate(rows):
-            seq = int(r["event_seq"])
-            payload = r["payload"]
-            if seq != i:
-                drift.append(f"sequence gap: expected {i}, found {seq}")
-            if r["transition"] is None:
-                created = payload.get("created", {})
-                state = created.get("state", "")
-                fields = dict(created.get("fields", {}))
-            else:
-                if payload.get("from") != state:
-                    drift.append(
-                        f"event {seq} leaves {payload.get('from')!r} "
-                        f"but replay is in {state!r}"
-                    )
-                state = payload.get("to", state)
-                # The same shallow merge, then the same clears, in the same
-                # order transition() applied them. If this ignored "unset", a
-                # cleared field would reappear here and be reported as drift
-                # against a projection that is in fact correct.
-                fields.update(payload.get("fields", {}))
-                for cleared in payload.get("unset", ()):
-                    fields.pop(cleared, None)
-
-            # Chain check. Consistency only -- see the module docstring.
-            if bytes(r["payload_hash"]) != _hash(_canonical(payload)):
-                drift.append(f"event {seq}: payload does not match its hash")
-            stored = bytes(r["prev_event_hash"]) if r["prev_event_hash"] is not None else None
-            if stored != running:
-                drift.append(f"event {seq}: chain link does not match predecessor")
-            running = _hash(bytes(r["payload_hash"]), bytes(stored or b""))
 
         if projection is None:
             drift.append("the projection row is missing, but events exist for this item")
@@ -2504,7 +2644,6 @@ class Kernel:
             drift.append(
                 f"fields disagree: projection has {only_proj!r}, replay has {only_replay!r}"
             )
-        last_seq = int(rows[-1]["event_seq"])
         if int(projection["last_event_seq"]) != last_seq:
             drift.append(
                 f"projection's last_event_seq is {projection['last_event_seq']}, but the "
