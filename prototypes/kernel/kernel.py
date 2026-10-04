@@ -159,6 +159,7 @@ import copy
 import functools
 import hashlib
 import json
+import math
 import os
 import threading
 import uuid
@@ -312,6 +313,11 @@ def _pooled_operation(
             try:
                 self._begin_operation(conn)
                 self._operation_local.conn = conn
+                if method.__name__ in {
+                    "register_workflow", "create_work_item", "claim", "heartbeat",
+                    "release", "expire_leases", "transition", "link", "remove_link",
+                }:
+                    self._require_writable_schema(conn)
                 return method(self, *args, **kwargs)
             finally:
                 if getattr(self._operation_local, "conn", None) is conn:
@@ -431,6 +437,11 @@ def _check_where_fields(where_fields: dict[str, Any] | None) -> dict[str, Any] |
             )
         _check_json(value, f"where_fields.{key}")
     return dict(where_fields)
+
+
+def _check_ttl(ttl_seconds: float) -> None:
+    if not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+        raise InvalidFieldError("ttl_seconds must be positive and finite")
 
 
 def _check_direction(direction: str) -> str:
@@ -1235,6 +1246,27 @@ class Kernel:
             except BaseException:
                 pass
 
+    @staticmethod
+    def _require_writable_schema(conn: DictConn) -> None:
+        """Refuse unsupported destinations before any public mutation.
+
+        Opening a pool is also needed for initialize() and diagnostic reads, so
+        those remain possible. A caller omitting initialize() must never write
+        through an unknown/empty schema-version marker.
+        """
+        try:
+            row = conn.execute("SELECT kernel_schema_version FROM kernel_meta").fetchone()
+        except psycopg.errors.UndefinedTable as exc:
+            raise UnsupportedSchemaError(
+                "kernel schema is not initialized; nothing was changed"
+            ) from exc
+        found = row["kernel_schema_version"] if row else None
+        if found != KERNEL_SCHEMA_VERSION:
+            raise UnsupportedSchemaError(
+                f"kernel schema version {found} is not writable by this build "
+                f"(supported: {KERNEL_SCHEMA_VERSION}); nothing was changed"
+            )
+
     def _end_read(self) -> None:
         """Close a read-only transaction.
 
@@ -1598,6 +1630,7 @@ class Kernel:
         self, work_item_id: uuid.UUID, *, actor_id: str, ttl_seconds: float = 300
     ) -> Claim:
         """Acquire a lease, taking over an expired one. Refuses a live foreign lease."""
+        _check_ttl(ttl_seconds)
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT work_item_id FROM work_items_current WHERE work_item_id = %s FOR UPDATE",
@@ -1672,6 +1705,7 @@ class Kernel:
 
             k.heartbeat(c.work_item_id, actor_id=c.actor_id, attempt=c.attempt)
         """
+        _check_ttl(ttl_seconds)
         with self._conn.cursor() as cur:
             # Serialize on the same row claim() and transition() lock, in the same
             # order, so the whole lease state machine has ONE serialization point.

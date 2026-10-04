@@ -77,7 +77,15 @@ def test_each_command(
     if command in ("heartbeat", "release", "lease"):
         registered.claim(item.id, actor_id="w")
     if command == "expire_leases":
-        registered.claim(item.id, actor_id="w", ttl_seconds=-1)
+        registered.claim(item.id, actor_id="w")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                SQL(
+                    "UPDATE {}.claims SET expires_at=clock_timestamp()-interval '1 second' "
+                    "WHERE work_item_id=%s"
+                ).format(Identifier(schema)),
+                (item.id,),
+            )
     commands = {
         "init": ["init"],
         "health": ["health"],
@@ -313,3 +321,34 @@ def test_cli_new_workflow(
     result = cli(dsn, schema, ["workflow", "register", "--file", str(path)])
     assert result.returncode == 0 and json.loads(result.stdout)["version"] == 1
     assert kernel.get_workflow("review").as_json() == workflow.as_json()
+
+
+@pytest.mark.parametrize(
+    "command", ["init", "health", "show", "history", "replay", "workflow_list", "claim"]
+)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_cli_missing_dsn(schema: str, command: str, as_json: bool) -> None:
+    missing = str(uuid.uuid4())
+    args = {"workflow_list": ["workflow", "list"], "claim": ["claim", missing, "--actor", "w"]}.get(
+        command, [command] if command in ("init", "health") else [command, missing]
+    )
+    env = dict(os.environ)
+    env.pop("REGISTA_DSN", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "cli.py"),
+            "--schema",
+            schema,
+            *(["--json"] if as_json else []),
+            *args,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert "no DSN" in result.stderr and "Traceback" not in result.stderr
+    if as_json:
+        assert json.loads(result.stdout)["exit_code"] == 2

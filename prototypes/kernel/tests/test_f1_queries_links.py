@@ -73,7 +73,15 @@ def test_query_order_and_paging(registered: Kernel, dsn: str, schema: str, query
 def test_query_filters_and_liveness(registered: Kernel, dsn: str, schema: str) -> None:
     items = seed(registered, 3)
     registered.claim(items[0].id, actor_id="w")
-    registered.claim(items[1].id, actor_id="w", ttl_seconds=-1)
+    registered.claim(items[1].id, actor_id="w")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            SQL(
+                "UPDATE {}.claims SET expires_at=clock_timestamp()-interval '1 second' "
+                "WHERE work_item_id=%s"
+            ).format(Identifier(schema)),
+            (items[1].id,),
+        )
     assert [i.id for i in registered.available()] == [items[1].id, items[2].id]
     assert [i.id for i in registered.owned("w")] == [items[0].id]
     assert registered.owned("other") == []

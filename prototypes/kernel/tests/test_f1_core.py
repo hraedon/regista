@@ -444,3 +444,19 @@ def test_concurrent_workflow_registration(kernel: Kernel, workflow: Workflow) ->
     with ThreadPoolExecutor(max_workers=8) as pool:
         versions = list(pool.map(lambda _: kernel.register_workflow(workflow), range(8)))
     assert versions == [1] * 8 and len(kernel.list_workflows()) == 1
+
+
+@pytest.mark.parametrize("operation", ["claim", "heartbeat"])
+@pytest.mark.parametrize("ttl", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_invalid_lease_ttl(registered: Kernel, operation: str, ttl: float) -> None:
+    item = create(registered)
+    if operation == "heartbeat":
+        registered.claim(item.id, actor_id="w")
+    before = registered.lease(item.id)
+    with pytest.raises(InvalidFieldError):
+        if operation == "claim":
+            registered.claim(item.id, actor_id="w", ttl_seconds=ttl)
+        else:
+            registered.heartbeat(item.id, actor_id="w", attempt=1, ttl_seconds=ttl)
+    assert registered.lease(item.id) == before
+    assert len(registered.history(item.id)) == 1

@@ -80,7 +80,7 @@ def _fields(pairs: list[str] | None) -> dict[str, Any]:
 def _kernel(args: argparse.Namespace) -> Kernel:
     dsn = args.dsn or os.environ.get("REGISTA_DSN")
     if not dsn:
-        raise SystemExit("no DSN: pass --dsn or set REGISTA_DSN")
+        raise KernelError("no DSN: pass --dsn or set REGISTA_DSN")
     return Kernel.connect(dsn, schema=args.schema)
 
 

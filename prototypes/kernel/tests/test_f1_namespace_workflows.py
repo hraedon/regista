@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -218,3 +219,117 @@ def test_load_refusals(tmp_path: Path, workflow: Workflow, case: str) -> None:
     )
     with pytest.raises(InvalidWorkflowError):
         load_workflow(str(path))
+
+
+def test_database_role_is_scoped(
+    registered: Kernel, dsn: str, schema: str, schema_factory: Callable[[], str], workflow: Workflow
+) -> None:
+    import uuid
+
+    from psycopg.sql import Literal
+
+    sibling_schema = schema_factory()
+    sibling = Kernel.connect(dsn, schema=sibling_schema)
+    role = "f1_role_" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    restricted: Kernel | None = None
+    redirected: Kernel | None = None
+    try:
+        sibling.initialize(str(ROOT / "schema.sql"))
+        sibling.register_workflow(workflow)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}").format(
+                    Identifier(role), Literal(password)
+                )
+            )
+            conn.execute(
+                SQL("GRANT USAGE ON SCHEMA {} TO {}").format(Identifier(schema), Identifier(role))
+            )
+            conn.execute(
+                SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {} TO {}").format(
+                    Identifier(schema), Identifier(role)
+                )
+            )
+        params: dict[str, Any] = psycopg.conninfo.conninfo_to_dict(dsn)
+        params.update(user=role, password=password)
+        scoped_dsn = psycopg.conninfo.make_conninfo(**params)
+        restricted = Kernel.connect(scoped_dsn, schema=schema)
+        made = restricted.create_work_item(workflow="review", type="task", actor_id="w")
+        assert restricted.get(made.id) == made
+        redirected = Kernel.connect(scoped_dsn, schema=sibling_schema)
+        with pytest.raises(DatabaseOperationError):
+            redirected.list_items()
+        assert sibling.health()["work_items"] == 0
+    finally:
+        if restricted is not None:
+            restricted.close()
+        if redirected is not None:
+            redirected.close()
+        sibling.close()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            # Scoped to a unique disposable role; remove its grants before DROP.
+            conn.execute(SQL("DROP OWNED BY {}").format(Identifier(role)))
+            conn.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
+
+
+@pytest.mark.parametrize("metadata", ["unsupported", "missing"])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "workflow",
+        "create",
+        "claim",
+        "heartbeat",
+        "release",
+        "sweep",
+        "transition",
+        "link",
+        "remove_link",
+    ],
+)
+def test_unsupported_schema_cannot_write(
+    registered: Kernel, dsn: str, schema: str, workflow: Workflow, metadata: str, operation: str
+) -> None:
+    a = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    b = registered.create_work_item(workflow="review", type="task", actor_id="w")
+    registered.link(a.id, b.id, "blocks")
+    if operation in ("heartbeat", "release", "transition"):
+        registered.claim(a.id, actor_id="w")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if metadata == "unsupported":
+            conn.execute(
+                SQL("UPDATE {}.kernel_meta SET kernel_schema_version=999").format(
+                    Identifier(schema)
+                )
+            )
+        else:
+            conn.execute(SQL("DELETE FROM {}.kernel_meta").format(Identifier(schema)))
+    before = (
+        registered.get(a.id),
+        registered.history(a.id),
+        registered.lease(a.id),
+        registered.links_from(a.id),
+    )
+    calls: dict[str, Callable[[], Any]] = {
+        "workflow": lambda: registered.register_workflow(workflow),
+        "create": lambda: registered.create_work_item(workflow="review", type="task", actor_id="w"),
+        "claim": lambda: registered.claim(a.id, actor_id="w"),
+        "heartbeat": lambda: registered.heartbeat(a.id, actor_id="w", attempt=1),
+        "release": lambda: registered.release(a.id, actor_id="w", attempt=1),
+        "sweep": registered.expire_leases,
+        "transition": lambda: registered.transition(
+            a.id, transition="start", actor_id="w", attempt=1
+        ),
+        "link": lambda: registered.link(b.id, a.id, "blocks"),
+        "remove_link": lambda: registered.remove_link(a.id, b.id, "blocks"),
+    }
+    with pytest.raises(UnsupportedSchemaError):
+        calls[operation]()
+    assert (
+        registered.get(a.id),
+        registered.history(a.id),
+        registered.lease(a.id),
+        registered.links_from(a.id),
+    ) == before
+    assert registered.health()["work_items"] == 2
