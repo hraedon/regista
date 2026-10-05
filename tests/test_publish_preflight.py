@@ -65,7 +65,9 @@ def test_the_preflight_job_is_dispatch_from_main_only_and_never_reaches_publish(
         "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
     )
     assert jobs["build"]["needs"] == "verify" and "if" not in jobs["build"]
-    assert jobs["publish"]["needs"] == "build" and "if" not in jobs["publish"]
+    assert jobs["twine"]["needs"] == "build" and "if" not in jobs["twine"]
+    assert set(jobs["publish"]["needs"]) == {"build", "twine"}
+    assert "if" not in jobs["publish"]
     assert _step()["shell"] == "python3 {0}"
 
 
