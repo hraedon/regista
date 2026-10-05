@@ -1,0 +1,246 @@
+{
+  "candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "original_sha256": "58aa2e66cd8e87d798ca1bc4e4f6c416546a213a63081822b895b82eb6609759",
+  "adaptations": [
+    "Paths only: C4 independent clone, its pristine dist, and a new temporary output directory. Probe transformations and guard call unchanged."
+  ],
+  "probe_stdout": "pristine: PASS\nconcatenated-gzip: REFUSED: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\nmember-after-eof-blocks: REFUSED: regista_hraedon-0.8.0.tar.gz: bytes outside the canonical tar envelope\nextra-pkg-info-field: REFUSED: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\nmismatched-name: REFUSED: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\nmismatched-version: REFUSED: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\nsymlink-member: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\nhardlink-member: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\nduplicate-member-name: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\npax-header: REFUSED: regista_hraedon-0.8.0.tar.gz: unexpected header outside the tar envelope\nglobal-pax-header: REFUSED: regista_hraedon-0.8.0.tar.gz: unexpected header outside the tar envelope\ngzip-mtime: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\ngzip-filename: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical gzip header\ngzip-os-byte: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\ngzip-xfl-byte: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\ngzip-different-deflate: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\ntar-member-mtime: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\ntar-member-mode-0600: REFUSED: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n",
+  "authoritative_vectors": [
+    {
+      "vector": "concatenated-gzip",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/concatenated-gzip"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\n"
+    },
+    {
+      "vector": "duplicate-member-name",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/duplicate-member-name"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n"
+    },
+    {
+      "vector": "extra-pkg-info-field",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/extra-pkg-info-field"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: PKG-INFO differs byte-for-byte from wheel METADATA\n"
+    },
+    {
+      "vector": "global-pax-header",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/global-pax-header"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: unexpected header outside the tar envelope\n"
+    },
+    {
+      "vector": "gzip-different-deflate",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/gzip-different-deflate"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n"
+    },
+    {
+      "vector": "gzip-filename",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/gzip-filename"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip header\n"
+    },
+    {
+      "vector": "gzip-mtime",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/gzip-mtime"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n"
+    },
+    {
+      "vector": "gzip-os-byte",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/gzip-os-byte"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n"
+    },
+    {
+      "vector": "gzip-xfl-byte",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/gzip-xfl-byte"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n"
+    },
+    {
+      "vector": "hardlink-member",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/hardlink-member"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n"
+    },
+    {
+      "vector": "member-after-eof-blocks",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/member-after-eof-blocks"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: bytes outside the canonical tar envelope\n"
+    },
+    {
+      "vector": "mismatched-name",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/mismatched-name"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\n"
+    },
+    {
+      "vector": "mismatched-version",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/mismatched-version"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: sdist root/name/version differ from PKG-INFO\n"
+    },
+    {
+      "vector": "pax-header",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/pax-header"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: unexpected header outside the tar envelope\n"
+    },
+    {
+      "vector": "pristine",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/pristine"
+      ],
+      "exit_code": 0,
+      "stdout": "check-dist: ok\n",
+      "stderr": ""
+    },
+    {
+      "vector": "symlink-member",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/symlink-member"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n"
+    },
+    {
+      "vector": "tar-member-mode-0600",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/tar-member-mode-0600"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n"
+    },
+    {
+      "vector": "tar-member-mtime",
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/dv2/rsc1-vectors/tar-member-mtime"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical tar envelope metadata\n"
+    }
+  ],
+  "pristine_passed": true,
+  "all_17_attacks_refused": true
+}

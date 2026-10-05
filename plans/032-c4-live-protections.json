@@ -1,0 +1,372 @@
+{
+  "read_only": true,
+  "queries": [
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/rulesets"
+      ],
+      "queried_utc": "2026-10-05T21:55:50.122826+00:00",
+      "exit_code": 0,
+      "result": [
+        {
+          "id": 24537019,
+          "name": "main: PRs with green CI",
+          "target": "branch",
+          "source_type": "Repository",
+          "source": "hraedon/regista",
+          "enforcement": "active",
+          "node_id": "RRS_lACqUmVwb3NpdG9yec5JSB48zgF2Z7s",
+          "_links": {
+            "self": {
+              "href": "https://api.github.com/repos/hraedon/regista/rulesets/24537019"
+            },
+            "html": {
+              "href": "https://github.com/hraedon/regista/rules/24537019"
+            }
+          },
+          "created_at": "2026-10-05T21:48:36.458Z",
+          "updated_at": "2026-10-05T21:48:36.520Z"
+        },
+        {
+          "id": 24537020,
+          "name": "release tags v*: admins only",
+          "target": "tag",
+          "source_type": "Repository",
+          "source": "hraedon/regista",
+          "enforcement": "active",
+          "node_id": "RRS_lACqUmVwb3NpdG9yec5JSB48zgF2Z7w",
+          "_links": {
+            "self": {
+              "href": "https://api.github.com/repos/hraedon/regista/rulesets/24537020"
+            },
+            "html": {
+              "href": "https://github.com/hraedon/regista/rules/24537020"
+            }
+          },
+          "created_at": "2026-10-05T21:48:36.990Z",
+          "updated_at": "2026-10-05T21:48:37.046Z"
+        }
+      ]
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/rules/branches/main"
+      ],
+      "queried_utc": "2026-10-05T21:55:50.512197+00:00",
+      "exit_code": 0,
+      "result": [
+        {
+          "type": "deletion",
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "hraedon/regista",
+          "ruleset_id": 24537019
+        },
+        {
+          "type": "non_fast_forward",
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "hraedon/regista",
+          "ruleset_id": 24537019
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [],
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "hraedon/regista",
+          "ruleset_id": 24537019
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": false,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "Kernel (Python 3.11, PostgreSQL 15)"
+              },
+              {
+                "context": "Kernel (Python 3.12, PostgreSQL 15)"
+              },
+              {
+                "context": "Kernel (Python 3.13, PostgreSQL 15)"
+              },
+              {
+                "context": "Kernel (Python 3.14, PostgreSQL 15)"
+              },
+              {
+                "context": "Kernel (Python 3.14, PostgreSQL 16)"
+              },
+              {
+                "context": "Kernel (Python 3.14, PostgreSQL 17)"
+              },
+              {
+                "context": "Lockfile is current"
+              },
+              {
+                "context": "Schema baseline and reviewed artifacts are immutable"
+              }
+            ]
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "hraedon/regista",
+          "ruleset_id": 24537019
+        }
+      ]
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/environments/pypi"
+      ],
+      "queried_utc": "2026-10-05T21:55:50.853090+00:00",
+      "exit_code": 0,
+      "result": {
+        "id": 20227573224,
+        "node_id": "EN_kwDOSUgePM8AAAAEtahF6A",
+        "name": "pypi",
+        "url": "https://api.github.com/repos/hraedon/regista/environments/pypi",
+        "html_url": "https://github.com/hraedon/regista/deployments/activity_log?environments_filter=pypi",
+        "created_at": "2026-08-20T03:51:38Z",
+        "updated_at": "2026-10-05T21:48:26Z",
+        "can_admins_bypass": false,
+        "protection_rules": [
+          {
+            "id": 67780493,
+            "node_id": "GA_kwDOSUgePM4ECj-N",
+            "type": "required_reviewers",
+            "prevent_self_review": false,
+            "reviewers": [
+              {
+                "type": "User",
+                "reviewer": {
+                  "login": "hraedon",
+                  "id": 9434186,
+                  "node_id": "MDQ6VXNlcjk0MzQxODY=",
+                  "avatar_url": "https://avatars.githubusercontent.com/u/9434186?v=4",
+                  "gravatar_id": "",
+                  "url": "https://api.github.com/users/hraedon",
+                  "html_url": "https://github.com/hraedon",
+                  "followers_url": "https://api.github.com/users/hraedon/followers",
+                  "following_url": "https://api.github.com/users/hraedon/following{/other_user}",
+                  "gists_url": "https://api.github.com/users/hraedon/gists{/gist_id}",
+                  "starred_url": "https://api.github.com/users/hraedon/starred{/owner}{/repo}",
+                  "subscriptions_url": "https://api.github.com/users/hraedon/subscriptions",
+                  "organizations_url": "https://api.github.com/users/hraedon/orgs",
+                  "repos_url": "https://api.github.com/users/hraedon/repos",
+                  "events_url": "https://api.github.com/users/hraedon/events{/privacy}",
+                  "received_events_url": "https://api.github.com/users/hraedon/received_events",
+                  "type": "User",
+                  "user_view_type": "public",
+                  "site_admin": false
+                }
+              }
+            ]
+          },
+          {
+            "id": 67780494,
+            "node_id": "GA_kwDOSUgePM4ECj-O",
+            "type": "branch_policy"
+          }
+        ],
+        "deployment_branch_policy": {
+          "protected_branches": false,
+          "custom_branch_policies": true
+        }
+      }
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/rulesets/24537019"
+      ],
+      "queried_utc": "2026-10-05T21:55:51.212756+00:00",
+      "exit_code": 0,
+      "result": {
+        "id": 24537019,
+        "name": "main: PRs with green CI",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "hraedon/regista",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "~DEFAULT_BRANCH"
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          },
+          {
+            "type": "pull_request",
+            "parameters": {
+              "required_approving_review_count": 0,
+              "dismiss_stale_reviews_on_push": false,
+              "required_reviewers": [],
+              "require_code_owner_review": false,
+              "require_last_push_approval": false,
+              "required_review_thread_resolution": false,
+              "require_extra_approval_for_unattributed_changes": true,
+              "allowed_merge_methods": [
+                "merge",
+                "squash",
+                "rebase"
+              ]
+            }
+          },
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "strict_required_status_checks_policy": false,
+              "do_not_enforce_on_create": false,
+              "required_status_checks": [
+                {
+                  "context": "Kernel (Python 3.11, PostgreSQL 15)"
+                },
+                {
+                  "context": "Kernel (Python 3.12, PostgreSQL 15)"
+                },
+                {
+                  "context": "Kernel (Python 3.13, PostgreSQL 15)"
+                },
+                {
+                  "context": "Kernel (Python 3.14, PostgreSQL 15)"
+                },
+                {
+                  "context": "Kernel (Python 3.14, PostgreSQL 16)"
+                },
+                {
+                  "context": "Kernel (Python 3.14, PostgreSQL 17)"
+                },
+                {
+                  "context": "Lockfile is current"
+                },
+                {
+                  "context": "Schema baseline and reviewed artifacts are immutable"
+                }
+              ]
+            }
+          }
+        ],
+        "node_id": "RRS_lACqUmVwb3NpdG9yec5JSB48zgF2Z7s",
+        "created_at": "2026-10-05T21:48:36.458Z",
+        "updated_at": "2026-10-05T21:48:36.520Z",
+        "bypass_actors": [],
+        "current_user_can_bypass": "never",
+        "_links": {
+          "self": {
+            "href": "https://api.github.com/repos/hraedon/regista/rulesets/24537019"
+          },
+          "html": {
+            "href": "https://github.com/hraedon/regista/rules/24537019"
+          }
+        }
+      }
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/rulesets/24537020"
+      ],
+      "queried_utc": "2026-10-05T21:55:51.592986+00:00",
+      "exit_code": 0,
+      "result": {
+        "id": 24537020,
+        "name": "release tags v*: admins only",
+        "target": "tag",
+        "source_type": "Repository",
+        "source": "hraedon/regista",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/tags/v*"
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "creation"
+          },
+          {
+            "type": "update"
+          },
+          {
+            "type": "deletion"
+          }
+        ],
+        "node_id": "RRS_lACqUmVwb3NpdG9yec5JSB48zgF2Z7w",
+        "created_at": "2026-10-05T21:48:36.990Z",
+        "updated_at": "2026-10-05T21:48:37.046Z",
+        "bypass_actors": [
+          {
+            "actor_id": 5,
+            "actor_type": "RepositoryRole",
+            "bypass_mode": "always"
+          }
+        ],
+        "current_user_can_bypass": "always",
+        "_links": {
+          "self": {
+            "href": "https://api.github.com/repos/hraedon/regista/rulesets/24537020"
+          },
+          "html": {
+            "href": "https://github.com/hraedon/regista/rules/24537020"
+          }
+        }
+      }
+    },
+    {
+      "command": [
+        "gh",
+        "api",
+        "repos/hraedon/regista/environments/pypi/deployment-branch-policies"
+      ],
+      "queried_utc": "2026-10-05T21:55:51.998900+00:00",
+      "exit_code": 0,
+      "result": {
+        "total_count": 2,
+        "branch_policies": [
+          {
+            "id": 62074118,
+            "node_id": "MDE2OkdhdGVCcmFuY2hQb2xpY3k2MjA3NDExOA==",
+            "name": "main",
+            "type": "branch"
+          },
+          {
+            "id": 62074119,
+            "node_id": "MDE2OkdhdGVCcmFuY2hQb2xpY3k2MjA3NDExOQ==",
+            "name": "v*",
+            "type": "tag"
+          }
+        ]
+      }
+    }
+  ]
+}

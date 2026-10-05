@@ -1,0 +1,40 @@
+{
+  "candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "pristine_install": "Gate build/Twine fresh venv installs from the committed locks pass.",
+  "probes": [
+    {
+      "probe": "corrupted-tool-hashes",
+      "command": [
+        "uv",
+        "pip",
+        "install",
+        "--no-cache",
+        "--python",
+        "/tmp/regista-c4-hashlock-y584q4bx/corrupted-tool-hashes/bin/python",
+        "--require-hashes",
+        "-r",
+        "/tmp/regista-c4-hashlock-y584q4bx/corrupted-tool-hashes.txt"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "Using Python 3.14.8 environment at: /tmp/regista-c4-hashlock-y584q4bx/corrupted-tool-hashes\nResolved 27 packages in 220ms\nDownloading cryptography (4.5MiB)\nDownloading pygments (1.2MiB)\nerror: Failed to download `jaraco-context==6.1.2`\n  cause: Hash mismatch for `jaraco-context==6.1.2`\n\n         Expected:\n           sha256:0000000000000000000000000000000000000000000000000000000000000000\n           sha256:0000000000000000000000000000000000000000000000000000000000000000\n\n         Computed:\n           sha256:bf8150b79a2d5d91ae48629d8b427a8f7ba0e1097dd6202a9059f29a36379535\n"
+    },
+    {
+      "probe": "omitted-transitive-pin",
+      "command": [
+        "uv",
+        "pip",
+        "install",
+        "--no-cache",
+        "--python",
+        "/tmp/regista-c4-hashlock-y584q4bx/omitted-transitive-pin/bin/python",
+        "--require-hashes",
+        "-r",
+        "/tmp/regista-c4-hashlock-y584q4bx/omitted-transitive-pin.txt"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "Using Python 3.14.8 environment at: /tmp/regista-c4-hashlock-y584q4bx/omitted-transitive-pin\nerror: In `--require-hashes` mode, all requirements must be pinned upfront with `==`, but found: `requests`\n"
+    }
+  ]
+}

@@ -1,0 +1,284 @@
+{
+  "candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "vectors": [
+    {
+      "vector": "pristine",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pristine"
+      ],
+      "exit_code": 0,
+      "stdout": "check-dist: ok\n",
+      "stderr": "",
+      "sdist_sha256": "6a1341fef8cbd464281989115178beb6ebbecd8ca0369a7c7396828cb6094b99"
+    },
+    {
+      "vector": "reviewer-exact-concatenated-gzip",
+      "preparation": [
+        {
+          "command": [
+            "dd",
+            "if=/tmp/regista-c4-final-evidence/archive-vectors-final/trailer.gz",
+            "of=regista_hraedon-0.8.0.tar.gz",
+            "oflag=append",
+            "conv=notrunc"
+          ],
+          "stdout": "",
+          "stderr": "0+1 records in\n0+1 records out\n42 bytes copied, 3.8251e-05 s, 1.1 MB/s\n"
+        }
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/reviewer-exact-concatenated-gzip"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\n",
+      "sdist_sha256": "c58fb02686aca0ae0b745c9d56200583d66897d51652426a7125e968d11a9a80"
+    },
+    {
+      "vector": "raw-trailer",
+      "preparation": [
+        {
+          "command": [
+            "dd",
+            "if=/tmp/regista-c4-final-evidence/archive-vectors-final/sdist-trailer.txt",
+            "of=regista_hraedon-0.8.0.tar.gz",
+            "oflag=append",
+            "conv=notrunc"
+          ],
+          "stdout": "",
+          "stderr": "0+1 records in\n0+1 records out\n28 bytes copied, 5.9053e-05 s, 474 kB/s\n"
+        }
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/raw-trailer"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: gzip must contain exactly one complete member and no trailer\n",
+      "sdist_sha256": "8f09b1caebb2d6b3e4cf9f12d6fc5b55662ae90b2d5a307be4a1df8bf8c25cfb"
+    },
+    {
+      "vector": "tar-extra-data",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/tar-extra-data"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "92b0eb540f4a18826fa1bb67c0e94520b7f4b37ddecd2cb0667bfcc39824419e"
+    },
+    {
+      "vector": "tar-extra-padding",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/tar-extra-padding"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "9b7c60367cb06ffde3e38d65eb2391e0637d1f93519f93b103e54a4248c102b0"
+    },
+    {
+      "vector": "pkg-info-metadata-version",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-metadata-version"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "d8b42bb0edf63d7321bcc74462e32458031b0062f983094add26be3a7426d07b"
+    },
+    {
+      "vector": "pkg-info-name",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-name"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "6e4a6cbf221fa43cee7d19a13410eb4d2adf7ea2fdccd3b8392d341401a941d9"
+    },
+    {
+      "vector": "pkg-info-version",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-version"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "e54e7bac681eba904bea32448ef377a0c18173112f55949a3b7f95aa420ccb09"
+    },
+    {
+      "vector": "pkg-info-summary",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-summary"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "75d9b14a7bbba0f2347971777f079dd8404110fd90feb6e3a05fad35f7dea432"
+    },
+    {
+      "vector": "pkg-info-license-file",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-license-file"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "25e993ba3c877cfa8d0a69bf991dbf7eb393da0ff78cd58452d55a19668e2867"
+    },
+    {
+      "vector": "pkg-info-classifier",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-classifier"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "2060e3057d918e51473f0e1b050b5a510ee8147cff458445337522400512028f"
+    },
+    {
+      "vector": "pkg-info-requires-python",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-requires-python"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "e65f0fbb485d508d8efbf993b0b5261c2f576cf05addb9e2ae216226f3c77449"
+    },
+    {
+      "vector": "pkg-info-requires-dist",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-requires-dist"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "afd79732dd8ddaf6ec25edd8633a0dfc3e720817e67ad8851cb484a560118e66"
+    },
+    {
+      "vector": "pkg-info-provides-extra",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-provides-extra"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "1830e79fdda02f176c34d1a4dff9f1108bd9ebbfbe65c4a1b4d056cf63ea248d"
+    },
+    {
+      "vector": "pkg-info-description-content-type",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-description-content-type"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "478d0b26816ead5375924ee30ab0f11e51cd09e4719942ae7e0dffa2e7c2ab95"
+    },
+    {
+      "vector": "pkg-info-description",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/pkg-info-description"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "93f35129661c037e2beca21220557c4ea9c098fb47e8ba047eb56682f7556863"
+    },
+    {
+      "vector": "wrong-root",
+      "preparation": [],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-authoritative/scripts/check_published_migrations.py",
+        "check-dist",
+        "--authoritative",
+        "/tmp/regista-c4-final-evidence/archive-vectors-final/wrong-root"
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: regista_hraedon-0.8.0.tar.gz: noncanonical gzip encoding (qualified level 9/header required)\n",
+      "sdist_sha256": "3d330ad3e3ba24c48cbb0f535c30700557d59cbd0b2ddd41f226202786872956"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "risk": "high: publication artifact integrity and approval boundary",
+  "candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "reviewer": "/root/c4_candidate_review",
+  "reviewer_model_lineage": "GPT-5.6 Sol",
+  "parent_model_lineage": "GPT-6",
+  "mode": "read-only fresh context, no edits or delegation",
+  "source_scope": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+    ".github/build-requirements.in",
+    ".github/build-requirements.txt",
+    ".github/twine-requirements.in",
+    ".github/twine-requirements.txt",
+    "scripts/check_published_migrations.py",
+    "scripts/prove_c1_artifacts.py",
+    "tests/test_c1_workflows.py",
+    "tests/test_distribution_vectors.py"
+  ],
+  "source_verdict": "No additional concrete bypass or regression found in e4fab00..1806b97.",
+  "source_evidence": "Verify installs uv.lock frozen + hash-locked build closure; fresh build venv; guard immediately before immutable v4 upload; unprivileged locked Twine consumes that artifact; publish needs both build and Twine and downloads same run-scoped artifact. Canonical guard byte-reencodes gzip and pins tar metadata; clean Hatchling artifact passes; pip/uv rebuilds install locked closure in fresh environments.",
+  "findings": [
+    {
+      "file": "plans/032-f5-release-prep.md",
+      "problem": "Draft F5 still identified C3 candidate 0c07472 and old sdist a0f0367d while C4 packaged inputs changed.",
+      "reviewer_observed_wheel_sha256": "224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8",
+      "reviewer_observed_sdist_sha256": "d00766e7f0ce4eeb0a366704122c9aa18ae0f28deb8230726aa5991a55697c8c",
+      "resolution": "F3/F5 now identify final candidate 4098196fdecf990fe8f2f788c7c9e84e0e2558dd and its independently reproduced sdist 6a1341fef8cbd464281989115178beb6ebbecd8ca0369a7c7396828cb6094b99; wheel unchanged. Earlier reviewer observed d00766e7 sdist belongs to reviewed source 1806b97.",
+      "verification": "Parent build and independent fresh full-depth clone match both reviewer hashes byte-for-byte."
+    }
+  ],
+  "investigator": "/root/c4_boundary_investigation",
+  "investigator_model_lineage": "GPT-5.6 Sol",
+  "investigator_verdict": "Baseline mutable Twine validation-to-upload gap and all M1 gzip/tar variants reproduced; shared read_sdist boundary identified; clean metadata compatible.",
+  "work_item_and_claim": "Not written: user restricted tracker writes to explicit authorization. Existing isolated branch/worktree used.",
+  "isolation": "/projects/.worktrees/regista-f1b; feat/wi364-f1-promote",
+  "external_provenance": "No private adapter attachment asserted. Git, committed test/probe evidence, live read-only GitHub protections, and final CI are evidence. Owner release approval remains separate.",
+  "emergency_path": "none",
+  "reviewed_source_candidate": "1806b974166e929048f26d776e6d83971b393d58",
+  "post_review_followup": {
+    "commit": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+    "file": "tests/test_publish_preflight.py",
+    "change": "Existing preflight isolation test now checks Twine needs build and publish needs both build/Twine. No runtime/workflow change after independent source review.",
+    "parent_validation": "23 preflight/workflow tests pass; complete requalification repeated on corrected source."
+  }
+}

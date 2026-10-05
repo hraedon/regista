@@ -1,22 +1,21 @@
-# Plan 032 F3 — C3 distribution, restart and recovery qualification
+# Plan 032 F3 — C4 distribution, restart and recovery qualification
 
-Date: 2026-10-05. Artifact candidate: `0c07472ce48031c97c9775dafa617abda022ac28` on
-`feat/wi364-f1-promote` (draft PR #93). This replaces the C2 qualification after
-its collation-dependent CI failure.
+Date: 2026-10-05. Artifact candidate: `4098196fdecf990fe8f2f788c7c9e84e0e2558dd` on
+`feat/wi364-f1-promote` (draft PR #93). This repeats the C3 gates after the C4 release-workflow and canonical archive fixes.
 Evidence-only follow-up commits do not change packaged inputs. All databases are
 disposable child databases of the user-authorized local test service.
 
 | Artifact | SHA-256 |
 | --- | --- |
 | `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
-| `regista_hraedon-0.8.0.tar.gz` | `a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019` |
+| `regista_hraedon-0.8.0.tar.gz` | `6a1341fef8cbd464281989115178beb6ebbecd8ca0369a7c7396828cb6094b99` |
 
 A full-depth independent clone (`--no-local --no-hardlinks`) rebuilt both artifacts
 byte-identically. The authoritative guard runs there with an empty HOME, no
 system/global Git configuration, replacement objects disabled and no alternates.
 It rebuilds the sdist with pip and uv and binds every wheel member's bytes/mode.
 The exact after-last-manual-edit commands, exit codes and stdout/stderr are in the
-[C3 final gate record](032-c3-final-gates.json). Qualification requires that record
+[C4 final gate record](032-c4-final-gates.json). Qualification requires that record
 plus a green GitHub CI run on the final evidence commit.
 
 This candidate also fixes the atomicity helper import under console pytest,
@@ -63,11 +62,15 @@ Set REGISTA_TEST_DSN to the authorized disposable endpoint; credentials are
 sanitized in the public generated record. No production DSN is accepted as evidence.
 
 ```bash
-uv build
-uvx --from twine==7.0.0 twine check dist/*.whl dist/*.tar.gz
+uv venv .release-build --python .venv/bin/python
+uv pip install --python .release-build/bin/python --require-hashes -r .github/build-requirements.txt
+uv build --python .release-build/bin/python --no-build-isolation
+uv venv .release-twine --python .venv/bin/python
+uv pip install --python .release-twine/bin/python --require-hashes -r .github/twine-requirements.txt
+.release-twine/bin/twine check dist/*.whl dist/*.tar.gz
 PATH=/tmp/regista-pg15-tools/extracted/usr/lib/postgresql/15/bin:$PATH \
   .venv/bin/python scripts/qualify_distribution.py dist \
-  --dsn "$REGISTA_TEST_DSN" --output /tmp/regista-c3-console-f3-qualified
+  --dsn "$REGISTA_TEST_DSN" --output /tmp/regista-c4-console-f3-qualified
 .venv/bin/python scripts/smoke_installed.py dist
 .venv/bin/ruff check src/ tests/ examples/ scripts/
 .venv/bin/mypy
@@ -134,28 +137,28 @@ restart revalidates. Historical C2 Alpine benchmark batches measured create medi
 [C2 samples](032-c2-baseline-benchmark.json) and [C2 report](032-c2-validation.md).
 
 C1 and C2 CI runs were red due to the collation defect; their local qualification
-was insufficient. C3 requires final-commit GitHub CI on all six kernel matrix
+was insufficient. C4 requires final-commit GitHub CI on all six kernel matrix
 combinations plus lockfile and authoritative artifacts. The exact final run and
 job verdicts are reported separately after the authorized branch push; this
 committed document records the local evidence before that push.
-External branch/tag/environment/PyPI
-settings, D8's unfamiliar-human walkthrough and private consumer upgrades remain
-F5 owner prerequisites. No tags, dispatches, uploads or settings changes are made.
+Live GitHub branch/tag/environment settings are recorded in F5. PyPI registration,
+D8's unfamiliar-human walkthrough and private consumer upgrades remain owner
+prerequisites. Recheck the recorded live controls before release. No tags, dispatches, uploads or settings changes are made.
 
-## Generated C3 local gate results
+## Generated C4 local gate results
 
 ```text
 ruff: All checks passed!
 mypy: Success: no issues found in 5 source files
-suite-314-pg15: 1005 passed, 67 subtests passed in 403.73s (0:06:43)
-suite-311-pg15: 1005 passed, 67 subtests passed in 398.38s (0:06:38)
-suite-314-alpine: 1004 passed, 1 skipped, 67 subtests passed in 473.14s (0:07:53)
-suite-314-pg16: 1005 passed, 67 subtests passed in 386.78s (0:06:26)
-suite-314-pg17: 1005 passed, 67 subtests passed in 352.11s (0:05:52)
+suite-314-pg15: 1024 passed, 67 subtests passed in 419.37s (0:06:59)
+suite-311-pg15: 1024 passed, 67 subtests passed in 419.45s (0:06:59)
+suite-314-alpine: 1023 passed, 1 skipped, 67 subtests passed in 478.68s (0:07:58)
+suite-314-pg16: 1024 passed, 67 subtests passed in 380.60s (0:06:20)
+suite-314-pg17: 1024 passed, 67 subtests passed in 344.65s (0:05:44)
 prove-f1: 165 mutants killed; 518 distinct test nodes proved
 prove-b2: 11 mutants killed; no survivors
-prove-c1-artifacts: 9 artifact/workflow mutants killed
-readme: 1 passed in 0.78s
+prove-c1-artifacts: 16 artifact/workflow mutants killed
+readme: 1 passed in 0.94s
 verify-baseline: verify-baseline: ok
 verify-ledger: verify-ledger: ok
 check-tree: check-tree: ok
@@ -164,19 +167,28 @@ smoke: Installed wheel smoke passed (clean venv, checkout absent from import pat
 missing-dsn: expected exit 4; REGISTA_TEST_DSN is required
 all-eight-clause mutant: 3 test-body failures, 0 errors, 0 skips
 pristine authoritative: check-dist: ok
-tamper vectors: 16/16 refused, exit 2
-reviewer originals: 14/14 executed; original hashes and raw exit classifications match C2; four supplemental arms recorded
+C3 tamper vectors: 16/16 refused, exit 2
+dv2 probe_rsc1: pristine PASS; all 17 attacks REFUSED
+dv2 authoritative: pristine exit 0; all 17 attacks exit 2
+tool locks: pristine fresh installs pass; corrupt hashes and omitted transitive pin refused, exit 1
+reviewer originals: 14/14 executed; hashes and raw exit classifications match C3; four supplemental arms recorded
 F3: wheel and sdist passed installed examples, restart, separate restore and another valid write on Debian PostgreSQL 15
 independent build: wheel and sdist byte-identical
 ```
 
-All 27 normal gate commands exited 0. Missing-DSN admission refused with the
-required exit 4; the isolated collation mutant's three test-body failures are
-expected and recorded separately. Alpine's only skip is the absent libc en_US
-UTF-8 locale; its ICU regression ran. Debian 15/16/17 have no skipped tests.
-Exact commands/stdout/stderr are in the C3 gate record, with reviewer and tamper
-outputs linked there. Both qualified artifact hashes are byte-identical to the
-independent full-depth rebuild. This is pre-push local evidence: C3 completion
-also requires green GitHub CI on the final evidence commit. Its exact run URL
-and all job verdicts are reported after the authorized branch push; release must
-verify that same final commit in [PR #93](https://github.com/hraedon/regista/pull/93/checks).
+All 29 normal qualification commands exited 0; the two supplementary release/focused
+checks also passed. Missing-DSN refusal has the required exit 4. The collation
+mutant's three test-body failures are expected. Alpine's only skip is unavailable
+libc en_US UTF-8; its ICU regression ran. Debian 15/16/17 have no skipped tests.
+Exact commands/output are in [C4 gates](032-c4-final-gates.json),
+[165 kernel mutants](032-c4-f1-mutations.json),
+[16 artifact/workflow mutants](032-c4-artifact-mutations.json),
+[original supply-chain vectors](032-c4-dv2-probes.json),
+[tool-lock refusal probes](032-c4-tool-lock-probes.json), and
+[independent read-only review](032-c4-source-review.json).
+
+The supply-chain guard rejects every probe_rsc1 attack; pristine artifacts pass
+the authoritative guard in a clean full-depth clone, empty HOME and isolated Git
+environment. Later evidence-only commits change no distribution input. F5 records
+the live GitHub controls and mandatory owner hash comparison. Final pushed-commit
+CI remains required; its URL and all job verdicts are recorded after the push.

@@ -1,0 +1,297 @@
+{
+  "candidate": "4098196fdecf990fe8f2f788c7c9e84e0e2558dd",
+  "runs": [
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/idempotency_memory_probe.py",
+      "original_sha256": "a2d22500297d3b8013b62289f276b8882b9f676ec2fff388e056bc31f69d9dd4",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-idempotency_memory_probe-raw/idempotency_memory_probe.py"
+      ],
+      "exit_code": 0,
+      "seconds": 2.87,
+      "stdout": "events reconstructed: 201\nretry traced current bytes: 35413\nretry traced peak bytes: 8582909\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/search_path_special_probe.py",
+      "original_sha256": "887f2426b28c90396f36fd113a3db977b34dc14b41f355b2a7447907e4796765",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-search_path_special_probe-raw/search_path_special_probe.py"
+      ],
+      "exit_code": 1,
+      "seconds": 0.44,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-search_path_special_probe-raw/search_path_special_probe.py\", line 28, in <module>\n    k = Kernel.connect(DSN, schema=\"$user\")\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 1442, in connect\n    raise InvalidFieldError(f\"reserved PostgreSQL schema name: {schema!r}\")\nregista.kernel.InvalidFieldError: reserved PostgreSQL schema name: '$user'\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/security_probe.py",
+      "original_sha256": "fd63860158d6356b4b96a980df43701838445c71d465762e1d4d93a04a6ddf5e",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-security_probe-raw/security_probe.py"
+      ],
+      "exit_code": 1,
+      "seconds": 1.57,
+      "stdout": "identifier initialized: 'sec_rev_quote\"; DROP SCHEMA sec_rev_victim CASCADE; --' 1\nidentifier initialized: 'Sec_Rev_Case' 1\nidentifier initialized: 'sec_rev_case' 1\nidentifier initialized: 'sec_rev_\u0430' 1\nidentifier initialized: 'sec_rev_a' 1\nvictim after identifiers: intact\nhostile workflow version: 1\nhostile values survived: 1 DONE 1\nevents table survived: 3\nreserved schema refused: pg_catalog InvalidFieldError\nreserved schema refused: information_schema InvalidFieldError\nNUL schema refused: DatabaseOperationError database operation _check_destination failed (DataError)\n",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-security_probe-raw/security_probe.py\", line 132, in <module>\n    escaping.initialize(str(ROOT / \"escape_schema.sql\"))\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 342, in wrapped\n    return method(self, *args, **kwargs)\nTypeError: Kernel.initialize() takes 1 positional argument but 2 were given\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/terminal_probe.py",
+      "original_sha256": "107a04792e12b449ea1bba4213bd042e9e5123884e4c251febde811363b434bb",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-terminal_probe-raw/terminal_probe.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.91,
+      "stdout": "exit: 0\nstdout repr: '   0. 2026-10-05 22:07:57  created            attacker\\\\n  99. 2099-01-01  approved trusted-admin\\\\u001b[31m (agent)\\n'\ncontains raw newline spoof: False\ncontains raw ESC: False\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_atomic_pool.py",
+      "original_sha256": "ec27360b76f7150c86b223c07eba718042834f07d829e8e77e817b5186ebb311",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_atomic_pool-raw/probe_atomic_pool.py"
+      ],
+      "exit_code": 1,
+      "seconds": 0.59,
+      "stdout": "interrupted error: DatabaseOperationError\n",
+      "stderr": "discarding closed connection: <psycopg.Connection [BAD] at 0x74afb71e0910>\nTraceback (most recent call last):\n  File \"/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_atomic_pool-raw/probe_atomic_pool.py\", line 89, in <module>\n    print(\"after kill: state/events=\", k.get(item.id).state, len(k.history(item.id)))\n                                       ~~~~~^^^^^^^^^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 338, in wrapped\n    self._begin_operation(conn)\n    ~~~~~~~~~~~~~~~~~~~~~^^^^^^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 1624, in _begin_operation\n    self._admit_connection(conn)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 1570, in _admit_connection\n    self._validate_baseline(conn)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 1685, in _validate_baseline\n    raise UnsupportedSchemaError(\n        \"destination does not match the complete kernel baseline; nothing was changed\"\n    )\nregista.kernel.UnsupportedSchemaError: destination does not match the complete kernel baseline; nothing was changed\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_heartbeat_sweep.py",
+      "original_sha256": "eef2c62552b2a76e2297bf812bfaa2c035dfaeb9b97bd1c8b45ab91c91c682f3",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_heartbeat_sweep-raw/probe_heartbeat_sweep.py"
+      ],
+      "exit_code": 0,
+      "seconds": 1.61,
+      "stdout": "heartbeat outcome: Claim\nsweep outcome: 0\ncurrent lease: worker 1 True\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_idempotency_memory.py",
+      "original_sha256": "354190937340fcb05a9a15d0741cc12990fac98d05d1de3f94f02c7a53727af8",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_idempotency_memory-raw/probe_idempotency_memory.py"
+      ],
+      "exit_code": 0,
+      "seconds": 24.62,
+      "stdout": "history events: 3001\nretry equal: True\nretry peak bytes: 1202773\nreplay clean: True\nreplay peak bytes: 1208333\nretry/replay peak ratio: 1.0\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_pool_return_loss.py",
+      "original_sha256": "2e7a70c4e3c78283193a592cab0859a596006d01706f6e2c0f27b21bc48a028b",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_pool_return_loss-raw/probe_pool_return_loss.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.65,
+      "stdout": "terminated: (True,)\nread outcome: success\npool stats after return: {'connections_num': 1, 'connections_ms': 10, 'requests_num': 6, 'requests_queued': 5, 'requests_wait_ms': 1, 'pool_min': 1, 'pool_max': 1, 'pool_size': 1, 'pool_available': 0, 'requests_waiting': 0}\nnext read: open\n",
+      "stderr": "error resetting connection: terminating connection due to administrator command\ndiscarding closed connection: <psycopg.Connection [BAD] at 0x701c9d9f4910>\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_release_race.py",
+      "original_sha256": "578a17e8ebb8dd7982969c4f19b040ddc8bdf94e24a5a1778ed252a5d1cd9816",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_release_race-raw/probe_release_race.py"
+      ],
+      "exit_code": 0,
+      "seconds": 10.57,
+      "stdout": "after release returned: lease= None state= open\ntransition outcome: RuntimeError\nafter transition returned: lease= None state= open\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_replay_semantics.py",
+      "original_sha256": "0f5241c3b56d619ff191aef01f0144a2787eb7dda414520b2559357d32c4f1b3",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_replay_semantics-raw/probe_replay_semantics.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.7,
+      "stdout": "before: ('doing', {}, [])\nstored transition: edit\nstored payload: {'to': 'doing', 'from': 'open', 'fields': {}}\nworkflow edit rule: (('doing',), 'doing')\nafter: ('doing', {}, ['event 1: payload does not match its hash', 'event 1: source state is forbidden by the pinned transition'])\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_statement_timeout.py",
+      "original_sha256": "2bb73d63dfdc142eb02c4282b13fdea8fe0aee0a0c94328c79b3d278277a9218",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_statement_timeout-raw/probe_statement_timeout.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.72,
+      "stdout": "timeout outcome: DatabaseOperationError QueryCanceled\nafter timeout: state/events= open 1\nnext write: doing\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_unlink_retry.py",
+      "original_sha256": "0180616fff17c785997a815453f2b522a95f0c0dc068cafe5cd1c5fdaca8d599",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_unlink_retry-raw/probe_unlink_retry.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.6,
+      "stdout": "after committed unlink: []\nretry: success\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db4/repro_m1.py",
+      "original_sha256": "ca87afa57d31fcf1c4e47b3659dc0349a019198b01b35506cb9d79f5d6f4bfce",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db4-repro_m1-raw/repro_m1.py"
+      ],
+      "exit_code": 1,
+      "seconds": 0.86,
+      "stdout": "before_release_live= False\nfenced_before_release=True\nlease_after_release= Claim(work_item_id=UUID('5f536e3f-664c-4dc9-9a5a-94dc7afc6bef'), actor_id='worker', attempt=1, expires_at=datetime.datetime(2026, 10, 5, 22, 8, 43, 71527, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC')), live=False)\n",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/regista-c4-final-evidence/reviewer-runs-final/db4-repro_m1-raw/repro_m1.py\", line 23, in <module>\n    print(\"unfenced_transition_state=\", k.transition(\n                                        ~~~~~~~~~~~~^\n        item.id, transition=\"finish\", actor_id=\"worker\"\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    ).state)\n    ^\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 342, in wrapped\n    return method(self, *args, **kwargs)\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 2538, in transition\n    raise self._lease_refusal(work_item_id, lease, actor_id, attempt,\n                              verb=\"transition\")\nregista.kernel.LeaseExpiredError: transition refused: the lease on 5f536e3f-664c-4dc9-9a5a-94dc7afc6bef (attempt 1, held by 'worker') expired at 2026-10-05T22:08:43.071527+00:00. Expiry is terminal -- it cannot be renewed or written through. Call expire_leases(5f536e3f-664c-4dc9-9a5a-94dc7afc6bef) to sweep just this one, expire_leases() to sweep every dead lease, or claim() to take it over and record the takeover. lease() shows who held it.\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db4/repro_m3.py",
+      "original_sha256": "5cb8f5d20a779d634e7c95747d942f89c95e60ccb5ad877af7b67f4d0648bf33",
+      "variant": "raw",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db4-repro_m3-raw/repro_m3.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.57,
+      "stdout": "chain_result= [('b', 'open'), ('c', 'open')]\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/search_path_special_probe.py",
+      "original_sha256": "887f2426b28c90396f36fd113a3db977b34dc14b41f355b2a7447907e4796765",
+      "variant": "pg-temp-arm",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment.",
+        "Selected original pg_temp arm because original $user arm now refuses before reaching it."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-search_path_special_probe-pg-temp-arm/search_path_special_probe.py"
+      ],
+      "exit_code": 1,
+      "seconds": 0.42,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-search_path_special_probe-pg-temp-arm/search_path_special_probe.py\", line 28, in <module>\n    temp = Kernel.connect(DSN, schema=\"pg_temp\", pool_max_size=1)\n  File \"/projects/.worktrees/regista-f1b/src/regista/kernel.py\", line 1442, in connect\n    raise InvalidFieldError(f\"reserved PostgreSQL schema name: {schema!r}\")\nregista.kernel.InvalidFieldError: reserved PostgreSQL schema name: 'pg_temp'\n"
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db1/security_probe.py",
+      "original_sha256": "fd63860158d6356b4b96a980df43701838445c71d465762e1d4d93a04a6ddf5e",
+      "variant": "remaining-arms",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment.",
+        "Caught the removed positional-SQL API TypeError only so remaining original sentinel and CLI arms execute."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db1-security_probe-remaining-arms/security_probe.py"
+      ],
+      "exit_code": 0,
+      "seconds": 7.77,
+      "stdout": "identifier initialized: 'sec_rev_quote\"; DROP SCHEMA sec_rev_victim CASCADE; --' 1\nidentifier initialized: 'Sec_Rev_Case' 1\nidentifier initialized: 'sec_rev_case' 1\nidentifier initialized: 'sec_rev_\u0430' 1\nidentifier initialized: 'sec_rev_a' 1\nvictim after identifiers: intact\nhostile workflow version: 1\nhostile values survived: 1 DONE 1\nevents table survived: 3\nreserved schema refused: pg_catalog InvalidFieldError\nreserved schema refused: information_schema InvalidFieldError\nNUL schema refused: DatabaseOperationError database operation _check_destination failed (DataError)\ncaller SQL refused: TypeError\ncustom initializer cross-schema sentinel: sec_rev_victim.escape_sentinel\nhuge-number CLI exit: 2\nhuge-number traceback: False\nhuge-number stderr tail: refused: --field JSON exceeds parser limits\ninvalid-UUID CLI exit: 2\ninvalid-UUID traceback: False\ninvalid-UUID stderr tail: refused: argument id: expected a UUID\nbad-password CLI exit: 2\nbad-password leaked canary: False\nbad-password stdout: {\n  \"error\": \"PoolUnavailableError\",\n  \"message\": \"could not open connection pool within 5s (configured min=1, max=4)\",\n  \"exit_code\": 2\n}\nbad-password stderr: error connecting in 'pool-1': connection failed: connection to server at \"127.0.0.1\", port 55498 failed: FATAL:  password authentication failed for user \"regista_test\"\nerror connecting in 'pool-1': connection failed: connection to server at \"127.0.0.1\", port 55498 failed: FATAL:  password authentication failed for user \"regista_test\"\nerror connecting in 'pool-1': connection failed: connection to server at \"127.0.0.1\", port 55498 failed: FATAL:  password authentication failed for user \"regista_test\"\nrefused: could not open connection pool within 5s (configured min=1, max=4)\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_release_race.py",
+      "original_sha256": "578a17e8ebb8dd7982969c4f19b040ddc8bdf94e24a5a1778ed252a5d1cd9816",
+      "variant": "drain-controller",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted; reviewer-local CLI .venv points to fixed worktree environment.",
+        "Release runs in a controller thread so it can wait for writer commit without deadlocking the original synchronous test controller."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_release_race-drain-controller/probe_release_race.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.9,
+      "stdout": "release waits for paused writer: True\nafter release returned: lease= None state= doing\ntransition outcome: WorkItem\nafter transition returned: lease= None state= doing\n",
+      "stderr": ""
+    },
+    {
+      "reviewer_script": "/tmp/claude-1000/-projects/01315121-c80f-4b7d-a1e9-01df906c64a8/scratchpad/db2/probe_atomic_pool.py",
+      "original_sha256": "ec27360b76f7150c86b223c07eba718042834f07d829e8e77e817b5186ebb311",
+      "variant": "remove-fixture-before-replacement",
+      "adaptations": [
+        "Only hard-coded disposable database name and authorized Debian endpoint substituted.",
+        "Remove reviewer-installed foreign trigger/function after backend termination, before replacement connection baseline validation; all original assertions retained."
+      ],
+      "command": [
+        "/projects/.worktrees/regista-f1b/.venv/bin/python",
+        "/tmp/regista-c4-final-evidence/reviewer-runs-final/db2-probe_atomic_pool-remove-fixture/probe_atomic_pool.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.7,
+      "stdout": "interrupted error: DatabaseOperationError\nafter kill: state/events= open 1\nreplacement write: doing replay drift= []\n",
+      "stderr": "discarding closed connection: <psycopg.Connection [BAD] at 0x78a1c49e8910>\n"
+    }
+  ]
+}

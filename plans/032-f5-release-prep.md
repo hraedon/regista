@@ -1,7 +1,7 @@
 # Plan 032 F5 — 0.8.0 release preparation (no publication)
 
 Prepared 2026-10-05. **Exact candidate commit:
-`0c07472ce48031c97c9775dafa617abda022ac28`**, branch `feat/wi364-f1-promote`,
+`4098196fdecf990fe8f2f788c7c9e84e0e2558dd`**, branch `feat/wi364-f1-promote`,
 draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
 commits on that branch do not change any packaged input. Do not infer publication
 from the version bump: no tag, upload, workflow dispatch, yank or settings change
@@ -12,7 +12,7 @@ was authorized or performed.
 | Artifact | SHA-256 |
 | --- | --- |
 | `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
-| `regista_hraedon-0.8.0.tar.gz` | `a0f0367d690869821e572da70b987996d745362a81d0e3153ecb9a0e134cb019` |
+| `regista_hraedon-0.8.0.tar.gz` | `6a1341fef8cbd464281989115178beb6ebbecd8ca0369a7c7396828cb6094b99` |
 
 [F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
 installed resources/scenarios, restart, rollback/contention, terminated-worker
@@ -30,77 +30,116 @@ was added (D13).
 
 The wheel contains the explicit facade, kernel, CLI, `py.typed`, both schema
 resources, four example script/YAML resources, entry point, metadata and license
-(16 members including RECORD, including the committed baseline manifest). The sdist contains 71 regular members under its
+(16 members including RECORD, including the committed baseline manifest). The sdist contains 75 regular members under its
 single versioned root: retained source, examples/tests/scripts/hooks, CI,
 publication declaration, README/metadata/license and test-operation files.
 Retired migrations/sidecar implementations are absent. Current Git-only reference
 docs and qualification reports are not distribution inputs. README is the wheel
-long description; `uvx --from twine==7.0.0 twine check dist/*.whl dist/*.tar.gz` passes for both artifacts.
+long description. Twine 7.0.0 runs from the complete hash-locked closure in
+`.github/twine-requirements.txt`, installed in a fresh venv with `--require-hashes`.
 
 ## Tag workflow and byte equivalence
 
 `.github/workflows/publish.yml` is triggered by a pushed **`v*` tag**. Its verify
-job first requires merged origin/main ancestry and a fail-closed identifier scan,
-then checks tagged package version against the tag, baseline/PyPI binding, lint,
-types and the PostgreSQL suite on 3.14. The build job checks out the full tagged
-history, sets up Python 3.14, runs `uv build` (sdist, then wheel from sdist), runs
-`check-dist --authoritative` and `uvx --from twine==7.0.0 twine check`, and uploads `dist`. The publish
-job downloads **that build job's artifacts** and runs
-`uv publish --trusted-publishing always` in environment `pypi` with OIDC permission.
-It does not rebuild in the publish job. A tag push is a publication action.
+job requires merged origin/main ancestry and a fail-closed identifier scan, then
+checks tag/package version, baseline/PyPI binding, lint, types and PostgreSQL tests
+on 3.14. Verification and kernel CI install `uv.lock` with
+`uv sync --frozen --extra dev`; there is no latest-pip upgrade or unlocked dev install.
+
+The build job installs `.github/build-requirements.txt` with `--require-hashes`
+into a fresh venv, then runs `uv build --no-build-isolation` with that interpreter.
+Both authoritative pip/uv sdist rebuilds also install that hash-locked closure into
+fresh venvs. The build job writes commit SHA, tag and wheel/sdist SHA-256 hashes to
+`$GITHUB_STEP_SUMMARY`, then runs `check-dist --authoritative`. Its **immediately
+following step** uploads immutable artifact `dist`; no Python tooling runs in
+between. A separate `twine` job (`contents: read`, no OIDC or environment) downloads
+that artifact and checks metadata using the hash-locked Twine venv. Publish needs
+**both build and twine**, downloads the original build artifact, and runs
+`uv publish --trusted-publishing always` in environment `pypi`. It does not rebuild.
+A tag push is a publication action.
 
 The build job **does rebuild**, rather than consuming a locally reviewed upload.
 A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
 tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
 SHA-256 hashes above**. C1 fixes, C2 connection admission and C3 locale-independent
 catalog ordering are included in this candidate.
-The candidate also fixes console pytest's atomicity helper import; the revised
-sdist was fully requalified after CI exposed it. The wheel hash is unchanged.
+C4 also includes the verified C1–C3 fixes. Its sdist changes because the
+release workflows, tool locks, guard and regressions are distribution inputs.
+The wheel hash is unchanged. Evidence-only follow-ups exclude all packaged paths.
 Rebuild tooling was uv 0.12.23 with the complete pinned Hatch backend closure
 in `pyproject.toml` (Hatchling
-1.32.4). The [final gate record](032-c3-final-gates.json) records the after-last-edit build
+1.32.4). The [final gate record](032-c4-final-gates.json) records the after-last-edit build
 and digest comparison; publication must still retain the qualified hashes.
 
-The #65 guard additionally validates exact candidate members against committed
-HEAD, schema pins, metadata/RECORD, names, archive structures and modes. It rebuilds
-each sdist with **both pip and uv**, comparing **every wheel member's bytes and
-mode**, including generated metadata. That is content/mode equivalence, not a
-claim that arbitrary ZIP compression/timestamps give identical raw archives.
-The observed fresh-clone raw hashes supply the stronger byte-identity evidence
-for this candidate and tooling. Owner should compare the actual tag build's
-downloaded artifact hashes again before permitting upload if tooling changes.
-`check-dist: ok` was obtained under `env -i`, an empty HOME, replacement objects
-off, no system/global git config, a full-depth independent clone and no alternates.
+The #65 guard binds candidate members to committed HEAD, schema pins,
+metadata/RECORD, archive names/structures and modes. The sdist must be exactly the
+qualified gzip encoding: mtime `1580601600`, no filename/optional fields, level 9,
+XFL 2 and OS 255, with byte equality after re-encoding. Every tar member has that
+mtime, zero uid/gid, empty uname/gname/linkname, regular type `0`, zero device
+fields and mode `0644` or `0755` matching the committed executable bit. It rebuilds
+each sdist with **pip and uv**, comparing every wheel member's bytes and mode,
+including metadata. This does not claim arbitrary wheel ZIP encodings have equal
+raw hashes. Exact raw SHA-256 equality is also a mandatory human approval gate.
+A changed compression implementation must be requalified; the guard fails closed.
 
-The CI matrix covers Python 3.11–3.14 on official Debian PostgreSQL 15, plus
-Python 3.14 on PostgreSQL 16 and 17. C1/C2 Kernel jobs were red because their
-catalog fingerprints depended on the database's default collation; passing local
-Alpine suites had missed that. C3 retains the existing manifest/fingerprint after
-complete equality checks on all four servers, adds explicit C ordering and real
-non-C libc/ICU database regressions, and requalifies the new artifacts against
-Debian PostgreSQL 15. Final-commit CI is required. This is pre-push evidence; the
-exact final run URL and
-all job verdicts are reported after the authorized branch push. Release must verify
-that same commit in [PR #93](https://github.com/hraedon/regista/pull/93/checks).
-Exact local output is in the C3 gate record.
-All actions use full SHAs resolved from official tags. Every setup-uv step pins
-0.12.23, x86_64 and its official platform checksum; twine is pinned to 7.0.0.
-External branch/tag/environment settings remain owner-verification prerequisites.
+The matrix covers Python 3.11–3.14 on Debian PostgreSQL 15, plus Python 3.14 on
+PostgreSQL 16 and 17. C3's final CI run at `e4fab00367ef3a36e4310b9f0ba318befb12254a`
+was [37372407234](https://github.com/hraedon/regista/actions/runs/37372407234),
+**success on all eight jobs**. C4's final pushed evidence commit also requires a
+green run; its URL and individual job verdicts will be recorded after the push.
+All actions use full official-tag SHAs. Every setup-uv step pins version 0.12.23
+and its official x86_64 binary checksum. The action has no `architecture` input;
+that invalid input is removed. The checksum fails closed for a different binary.
+
+## Live GitHub protections — read-only C4 evidence
+
+Queried with `gh api repos/hraedon/regista/rulesets`,
+`gh api repos/hraedon/regista/rules/branches/main`, and
+`gh api repos/hraedon/regista/environments/pypi`; details also came from each
+ruleset's endpoint and `environments/pypi/deployment-branch-policies`.
+Exact JSON and query timestamps are in [C4 live protection evidence](032-c4-live-protections.json).
+No settings were changed by this agent; the coordinator applied H1 with owner authorization.
+
+- Active branch ruleset **24537019** targets default branch main, forbids deletion
+  and non-fast-forward updates, requires a PR and all eight named CI checks.
+  There are no bypass actors. PRs need **0 approvals**, not an independent PR vote;
+  strict/up-to-date status policy is off. See the evidence for each check context.
+- Active tag ruleset **24537020** targets `refs/tags/v*`, restricting creation,
+  update and deletion. Its sole bypass is RepositoryRole **5 (administrators)**,
+  mode `always`, deliberately authorized by the owner. This is an admin-role
+  release boundary, not a separately verified named-account allowlist.
+- Environment **pypi** requires user reviewer **hraedon** (id 9434186), with
+  `can_admins_bypass: false`. Custom deployment policies are branch **main** and
+  tag **v***. **`prevent_self_review: false`** is the solo-maintainer adaptation.
+  Independent approval is the owner's deliberate approval click after comparing
+  both build-summary hashes; it is not a second-person separation guarantee.
+
+## Authorized-owner release sequence
+
+1. Review and merge PR #93 only after the exact pushed commit's eight CI jobs are green.
+2. The owner tags **the merge commit** `v0.8.0` and pushes it, under separate release
+   authorization. If the merge changes any distribution input, requalify and update
+   F3/F5 first; the qualified commit must describe the merge's packaged inputs.
+3. The tag workflow verifies and builds. Open the build job's step summary from
+   the workflow run associated with the pending `pypi` deployment. It lists the
+   commit SHA, tag and both artifact SHA-256 hashes. Confirm SHA/tag identify the
+   intended merge commit/release and build and Twine jobs both passed.
+4. **The owner compares BOTH summary hashes with the qualified hashes in this
+   document before approving. Reject the deployment on ANY mismatch.** Investigate
+   and requalify instead of accepting an unexplained rebuild difference.
+5. Only after that comparison, the owner explicitly approves the **pypi** deployment.
+   Publish uploads the build job's immutable artifact.
+6. Perform the post-PyPI checks below before declaring the release complete.
 
 ## Owner-side prerequisites — must be confirmed by owner
 
-These are the workflow comments' prerequisites, **not verified from this repo**:
+Live GitHub controls above are verified at the recorded query time. These remaining
+owner prerequisites are outside this preparation:
 
 - [ ] PyPI trusted publisher registered for the actual repository owner/name,
   workflow filename `publish.yml`, environment **`pypi`**, project
   **`regista-hraedon`**. Old #70 tag runs failed with `invalid-publisher`; repo
   source does not prove PyPI registration is now correct.
-- [ ] GitHub `pypi` environment requires a reviewer, prevents self-review,
-  disallows administrator bypass, and restricts deployment refs to **main** and
-  **v*** tags. Owner confirms these effective settings.
-- [ ] Main is protected, and the **v*** tag ruleset controls tag creation.
-  Environment/ref protection must constrain modified workflows as the comments
-  describe; an `if:` inside a modifiable workflow is not that boundary.
 - [ ] Review the exact candidate and the three already supplied cross-lineage
   kernel reviews/fixes; confirm final CI and artifact hashes before publication.
 - [ ] Resolve D8's remaining human quickstart walkthrough, or explicitly record
@@ -144,22 +183,10 @@ These are the workflow comments' prerequisites, **not verified from this repo**:
    maintenance dates and the owner's yank disposition. None of these
    post-publication actions was performed during this preparation.
 
-## Owner verification of tag-ruleset principals (C2)
+## Scope of external assurance
 
-Before creating a `v*` tag, the owner must inspect the actual tag ruleset and list
-its allowed creation/bypass principals: only the designated release-owner account
-and any explicitly approved release automation identity may create the release tag.
-Tag update/delete permissions and bypasses must be restricted to those same named
-principals, with separate owner authorization for changing an existing release tag.
-Ordinary write collaborators, PR automation, broad teams and administrators must
-have no implicit bypass; record the precise account/app/team identities and their
-permissions at release approval. Protect main against direct pushes and require PR
-review and passing CI. The `pypi` environment must require a separate reviewer,
-prevent self-review and administrator bypass, and allow only main and protected
-`v*` tags. No settings inspection or mutation is claimed by C2.
-
-Repository verification fetches origin/main and requires the tag commit to be its
-ancestor, checks tag/package version, and runs the fail-closed identifier scan before
-building. This proves merged ancestry; it cannot prove reviewer identity, branch
-ruleset enforcement or environment settings from repository source. The owner must
-verify those external controls before authorizing a tag or upload.
+The ancestry check proves the tag commit is reachable from origin/main; it cannot
+prove reviewer identity or historical approval from Git alone. The live GitHub
+rules and the explicit owner approval with hash comparison supply the publication
+boundary. Recheck live protections before release, including the admin role's
+actual members. PyPI trusted-publisher registration remains owner verification.
