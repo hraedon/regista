@@ -1,7 +1,7 @@
 # Plan 032 F5 — 0.8.0 release preparation (no publication)
 
 Prepared 2026-10-05. **Exact candidate commit:
-`73b3f2efaedca52a8a4c964a8b78e33447615a8f`**, branch `feat/wi364-f1-promote`,
+`8ff80ade3972311c6e6568f3afae415761a9a9ca`**, branch `feat/wi364-f1-promote`,
 draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
 commits on that branch do not change any packaged input. Do not infer publication
 from the version bump: no tag, upload, workflow dispatch, yank or settings change
@@ -11,8 +11,8 @@ was authorized or performed.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `regista_hraedon-0.8.0-py3-none-any.whl` | `a5881f537b5495f6bb78a5e079122c57e7cc4d3965d1dfa42dcd8c8badb555b4` |
-| `regista_hraedon-0.8.0.tar.gz` | `f7c2a8066f993f09d3ef149f710536d318bd1074d4812e7aefe5625f1b6812b8` |
+| `regista_hraedon-0.8.0-py3-none-any.whl` | `80f5498d901aa8c52349a22e4354e540551e32da9f09768d11190573d0fddd04` |
+| `regista_hraedon-0.8.0.tar.gz` | `1a2b25c8d38b1957bf113e88407279ed3754c5ec7f7913c54ea0e19ec830a8d2` |
 
 [F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
 installed resources/scenarios, restart, rollback/contention, terminated-worker
@@ -30,20 +30,21 @@ was added (D13).
 
 The wheel contains the explicit facade, kernel, CLI, `py.typed`, both schema
 resources, four example script/YAML resources, entry point, metadata and license
-(15 members including RECORD). The sdist contains 64 regular members under its
+(16 members including RECORD, including the committed baseline manifest). The sdist contains 69 regular members under its
 single versioned root: retained source, examples/tests/scripts/hooks, CI,
 publication declaration, README/metadata/license and test-operation files.
 Retired migrations/sidecar implementations are absent. Current Git-only reference
 docs and qualification reports are not distribution inputs. README is the wheel
-long description; `uvx twine check dist/*` passes for both artifacts.
+long description; `uvx --from twine==7.0.0 twine check dist/*` passes for both artifacts.
 
 ## Tag workflow and byte equivalence
 
 `.github/workflows/publish.yml` is triggered by a pushed **`v*` tag**. Its verify
-job checks tagged package version against the tag, baseline/PyPI binding, lint,
+job first requires merged origin/main ancestry and a fail-closed identifier scan,
+then checks tagged package version against the tag, baseline/PyPI binding, lint,
 types and the PostgreSQL suite on 3.14. The build job checks out the full tagged
 history, sets up Python 3.14, runs `uv build` (sdist, then wheel from sdist), runs
-`check-dist --authoritative` and `uvx twine check`, and uploads `dist`. The publish
+`check-dist --authoritative` and `uvx --from twine==7.0.0 twine check`, and uploads `dist`. The publish
 job downloads **that build job's artifacts** and runs
 `uv publish --trusted-publishing always` in environment `pypi` with OIDC permission.
 It does not rebuild in the publish job. A tag push is a publication action.
@@ -51,11 +52,9 @@ It does not rebuild in the publish job. A tag push is a publication action.
 The build job **does rebuild**, rather than consuming a locally reviewed upload.
 A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
 tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
-SHA-256 hashes above**. The final candidate also includes explicit removal lists and the measured
-mutation-control timeout correction. It was rebuilt again in that independent
-clone; both hashes above remained identical to the final local artifacts. Rebuild tooling was uv 0.12.23
+SHA-256 hashes above**. C1 fixes and fresh packaged resources are included in this candidate. Rebuild tooling was uv 0.12.23
 with the complete pinned Hatch backend closure in `pyproject.toml` (Hatchling
-1.32.4). The [final gate record](032-f3-final-gates.json) records the after-last-edit build
+1.32.4). The [final gate record](032-c1-final-gates.json) records the after-last-edit build
 and digest comparison; publication must still retain the qualified hashes.
 
 The #65 guard additionally validates exact candidate members against committed
@@ -69,15 +68,13 @@ downloaded artifact hashes again before permitting upload if tooling changes.
 `check-dist: ok` was obtained under `env -i`, an empty HOME, replacement objects
 off, no system/global git config, a full-depth independent clone and no alternates.
 
-The ordinary CI matrix covers 3.11–3.14; the successful artifact-bearing
-[run 37275016486](https://github.com/hraedon/regista/actions/runs/37275016486)
-at `a5b0797a17fb22cabd83d2f4b1a85cfbab716f2a` covers the kernel and package
-resources before the test-harness timeout correction. The exact
-candidate's [run 37276210043](https://github.com/hraedon/regista/actions/runs/37276210043)
-passed all four kernel jobs, the lockfile check and the authoritative artifact
-job on the exact candidate. Reconfirm the final selected commit's verdict before
-release.
-The final evidence-only branch tip also receives its own CI run.
+The ordinary CI matrix covers 3.11–3.14. Historical runs 37275016486 and
+37276210043 predate C1 and do not qualify this candidate. The current local
+3.14/3.11 suites and all exact gate results are in the C1 gate record; the owner
+must confirm the selected commit's current four-version CI verdict before release.
+All actions use full SHAs resolved from official tags. Every setup-uv step pins
+0.12.23, x86_64 and its official platform checksum; twine is pinned to 7.0.0.
+External branch/tag/environment settings remain owner-verification prerequisites.
 
 ## Owner-side prerequisites — must be confirmed by owner
 
@@ -141,6 +138,8 @@ These are the workflow comments' prerequisites, **not verified from this repo**:
 Before creating a `v*` tag, the owner must inspect the actual tag ruleset and list
 its allowed creation/bypass principals: only the designated release-owner account
 and any explicitly approved release automation identity may create the release tag.
+Tag update/delete permissions and bypasses must be restricted to those same named
+principals, with separate owner authorization for changing an existing release tag.
 Ordinary write collaborators, PR automation, broad teams and administrators must
 have no implicit bypass; record the precise account/app/team identities and their
 permissions at release approval. Protect main against direct pushes and require PR

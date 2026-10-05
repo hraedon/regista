@@ -1,0 +1,1120 @@
+{
+  "candidate": "8ff80ade3972311c6e6568f3afae415761a9a9ca",
+  "control": "CONTROL passed: 973 passed, 20 deselected, 67 subtests passed in 544.14s (0:09:04)",
+  "mutants": [
+    {
+      "name": "namespace_name_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_namespace_name_limit_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_before_ignored_a4",
+      "file": "kernel.py",
+      "selection": "test_history_windows_a4[before_suffix]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_before_inclusive_a4",
+      "file": "kernel.py",
+      "selection": "test_history_windows_a4[before_suffix]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_newest_prefix_a4",
+      "file": "kernel.py",
+      "selection": "test_cli_history_window_a4[True]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_suffix_descending_a4",
+      "file": "kernel.py",
+      "selection": "test_cli_history_window_a4[True]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_cursor_refusal_removed_a4",
+      "file": "kernel.py",
+      "selection": "test_history_cursor_refusal_a4 and True",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "replay_transition_names_unchecked_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_transition_pin_a4",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "replay_transition_latest_version_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_transition_pin_a4[v2_only]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "replay_unknown_is_drift_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_unknown_item_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_only_first_page_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_namespace_a4[1]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_skips_projection_only_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_namespace_a4",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_skips_orphans_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_namespace_a4",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_materialized_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_namespace_memory_bound_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_namespace_drift_exit_zero_a4",
+      "file": "cli.py",
+      "selection": "test_cli_namespace_replay_a4",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "json_size_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_json_input_limit_a4 and not 65536",
+      "test_body_failures": 6,
+      "result": "killed"
+    },
+    {
+      "name": "merged_fields_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_input_limit_unicode_and_merge_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "names_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_name_input_limit_a4",
+      "test_body_failures": 6,
+      "result": "killed"
+    },
+    {
+      "name": "names_count_characters_a4",
+      "file": "kernel.py",
+      "selection": "test_name_utf8_limit_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_workflow_input_limit_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "unset_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_unset_input_limit_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "replay_diagnostics_unbounded_a4",
+      "file": "kernel.py",
+      "selection": "test_replay_diagnostics_bounded_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "large_workflow_refusal_traceback_a4",
+      "file": "kernel.py",
+      "selection": "test_large_workflow_document_refuses_cleanly_a4",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_show_workflow_hidden",
+      "file": "cli.py",
+      "selection": "test_each_command[False-show]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_list_workflow_hidden",
+      "file": "cli.py",
+      "selection": "test_each_command[False-list]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "event_sequence_constraint_removed",
+      "file": "kernel.py",
+      "selection": "test_event_sequence_constraint",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "json_key_order_not_canonical",
+      "file": "kernel.py",
+      "selection": "test_replay_key_order_is_irrelevant",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "legacy_document_keys_accepted",
+      "file": "kernel.py",
+      "selection": "test_legacy_document_keys_fail_closed",
+      "test_body_failures": 10,
+      "result": "killed"
+    },
+    {
+      "name": "history_order_reversed",
+      "file": "kernel.py",
+      "selection": "test_history_cursor_windows",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "database_clock_replaced",
+      "file": "kernel.py",
+      "selection": "test_stamps_use_one_database_instant",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "open_existing_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_open_existing_refuses_without_writes",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "cli_existing_gate_removed",
+      "file": "cli.py",
+      "selection": "test_cli_inspection_requires_existing",
+      "test_body_failures": 16,
+      "result": "killed"
+    },
+    {
+      "name": "lease_fencing",
+      "file": "kernel.py",
+      "selection": "test_transition_fencing",
+      "test_body_failures": 7,
+      "result": "killed"
+    },
+    {
+      "name": "heartbeat_owner_attempt_expiry",
+      "file": "kernel.py",
+      "selection": "test_heartbeat_refusals",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "claim_contention",
+      "file": "kernel.py",
+      "selection": "test_claim_contested or test_concurrent_claim_one_winner",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "attempt_reissued",
+      "file": "kernel.py",
+      "selection": "test_attempt_monotonic",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "release_ignored",
+      "file": "kernel.py",
+      "selection": "test_claim_acquire_release",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "heartbeat_no_extension",
+      "file": "kernel.py",
+      "selection": "test_heartbeat_extension",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "sweep_live_leases",
+      "file": "kernel.py",
+      "selection": "test_sweep_scoped_and_live_safe or test_sweep_preserves_replacement_lease",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "retry_conflict_accepted",
+      "file": "kernel.py",
+      "selection": "test_idempotency_conflict",
+      "test_body_failures": 9,
+      "result": "killed"
+    },
+    {
+      "name": "retry_returns_latest",
+      "file": "kernel.py",
+      "selection": "test_idempotency_original_result",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "partial_commit",
+      "file": "kernel.py",
+      "selection": "test_event_projection_atomicity",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "search_path_injection",
+      "file": "kernel.py",
+      "selection": "test_supplied_schema_cannot_redirect",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_shared",
+      "file": "kernel.py",
+      "selection": "test_namespace_isolation",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "type_unchecked",
+      "file": "kernel.py",
+      "selection": "test_create_refusals[type]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_ignored",
+      "file": "kernel.py",
+      "selection": "test_create_refusals[workflow]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "role_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_transition_refusals[role]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "required_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_transition_refusals[required] or test_transition_refusals[null] or test_clear_refusals[required_clear] or test_generic_review_note_and_mixed_actors",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "terminal_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_transition_refusals[terminal]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "from_state_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_transition_refusals[wrong_state]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "reserved_payload_allowed",
+      "file": "kernel.py",
+      "selection": "test_reserved_payload_refusal",
+      "test_body_failures": 5,
+      "result": "killed"
+    },
+    {
+      "name": "field_schema_unenforced",
+      "file": "kernel.py",
+      "selection": "test_declared_field_refusals or test_work_item_refs and (missing or wrong_type or invalid_uuid)",
+      "test_body_failures": 16,
+      "result": "killed"
+    },
+    {
+      "name": "json_types_unchecked",
+      "file": "kernel.py",
+      "selection": "test_json_type_refusal",
+      "test_body_failures": 15,
+      "result": "killed"
+    },
+    {
+      "name": "clear_collision_allowed",
+      "file": "kernel.py",
+      "selection": "test_clear_refusals[same_key]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "clear_not_recorded",
+      "file": "kernel.py",
+      "selection": "test_shallow_merge_and_atomic_clear",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "expected_sequence_ignored",
+      "file": "kernel.py",
+      "selection": "test_expected_sequence[1] or test_expected_sequence[99]",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "schema_refusal_removed",
+      "file": "kernel.py",
+      "selection": "test_initialize_refuses_without_writes",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_semantics_unchecked",
+      "file": "kernel.py",
+      "selection": "test_document_semantic_refusals and (unreachable or unknown_from or unknown_to or undeclared_role or unused_role) or test_field_declaration_refusals",
+      "test_body_failures": 13,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_pinning_removed",
+      "file": "kernel.py",
+      "selection": "test_version_pinning",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "link_self_allowed",
+      "file": "kernel.py",
+      "selection": "test_link_refusals[self]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "link_type_unchecked",
+      "file": "kernel.py",
+      "selection": "test_link_vocabulary_and_removal",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "link_endpoints_unchecked",
+      "file": "kernel.py",
+      "selection": "test_link_refusals[missing_source]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "query_limits_ignored",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[zero] or test_query_refusals[too_large]",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "nested_filter_allowed",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[nested_filter] or test_query_refusals[too_many_filters]",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "bad_direction_allowed",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[direction]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "unknown_satisfaction_allowed",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[satisfied]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "replay_materialized",
+      "file": "kernel.py",
+      "selection": "test_replay_memory_bound",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "snapshot_read_committed",
+      "file": "kernel.py",
+      "selection": "test_replay_repeatable_snapshot",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "prepared_cache_restored",
+      "file": "kernel.py",
+      "selection": "test_sustained_pool_operations",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_failures_exit_zero",
+      "file": "cli.py",
+      "selection": "test_cli_refusal_audit or test_cli_drift_nonzero",
+      "test_body_failures": 31,
+      "result": "killed"
+    },
+    {
+      "name": "document_rules_ignored",
+      "file": "kernel.py",
+      "selection": "test_document_semantic_refusals",
+      "test_body_failures": 11,
+      "result": "killed"
+    },
+    {
+      "name": "invalid_files_accepted",
+      "file": "kernel.py",
+      "selection": "test_load_refusals",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_version_assertion_ignored",
+      "file": "kernel.py",
+      "selection": "test_workflow_version_conflict",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_duplicate_version",
+      "file": "kernel.py",
+      "selection": "test_workflow_idempotent",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "replay_always_clean",
+      "file": "kernel.py",
+      "selection": "test_replay_detects_damage or test_cli_drift_nonzero or test_scoped_replay_ignores_other_damage",
+      "test_body_failures": 12,
+      "result": "killed"
+    },
+    {
+      "name": "absent_link_removal_refuses",
+      "file": "kernel.py",
+      "selection": "test_remove_absent_link",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "missing_target_silent",
+      "file": "kernel.py",
+      "selection": "test_link_refusals[missing_target]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "dead_cursor_restarts",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[dead_cursor]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "empty_states_allowed",
+      "file": "kernel.py",
+      "selection": "test_query_refusals[empty_states]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "unknown_transition_accepted",
+      "file": "kernel.py",
+      "selection": "test_transition_refusals[unknown]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_name_ignored",
+      "file": "kernel.py",
+      "selection": "test_supplied_workflow_name_is_data",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "transition_releases_lease",
+      "file": "kernel.py",
+      "selection": "test_lease_is_retained_until_explicit_release",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_bad_exits_zero",
+      "file": "cli.py",
+      "selection": "test_cli_unreachable_database",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "namespace_shared_role",
+      "file": "kernel.py",
+      "selection": "test_database_role_is_scoped",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "expected_sequence_always_refused",
+      "file": "kernel.py",
+      "selection": "test_expected_sequence[0]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "retry_lookup_removed",
+      "file": "kernel.py",
+      "selection": "test_concurrent_idempotency or test_idempotency_original_result",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "sequence_gaps",
+      "file": "kernel.py",
+      "selection": "test_concurrent_gap_free",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "release_fence_removed",
+      "file": "kernel.py",
+      "selection": "test_attempt_monotonic",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "initializer_missing",
+      "file": "kernel.py",
+      "selection": "test_concurrent_initialize",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_lock_missing",
+      "file": "kernel.py",
+      "selection": "test_concurrent_workflow_registration",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "write_schema_gate_removed",
+      "file": "kernel.py",
+      "selection": "test_unsupported_schema_cannot_write",
+      "test_body_failures": 18,
+      "result": "killed"
+    },
+    {
+      "name": "missing_dsn_exit_one",
+      "file": "cli.py",
+      "selection": "test_cli_missing_dsn",
+      "test_body_failures": 14,
+      "result": "killed"
+    },
+    {
+      "name": "append_writer_reintroduced",
+      "file": "kernel.py",
+      "selection": "test_transition_is_the_only_public_event_writer",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "invalid_ttl_allowed",
+      "file": "kernel.py",
+      "selection": "test_invalid_lease_ttl",
+      "test_body_failures": 10,
+      "result": "killed"
+    },
+    {
+      "name": "cli_success_exits_one",
+      "file": "cli.py",
+      "selection": "test_each_command or test_cli_fresh_init or test_cli_new_workflow or test_cli_listing_modes_and_pages or test_cli_unlink",
+      "test_body_failures": 41,
+      "result": "killed"
+    },
+    {
+      "name": "replay_resets_fencing",
+      "file": "kernel.py",
+      "selection": "test_replay_clean_and_boundary",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "duplicate_link_refused",
+      "file": "kernel.py",
+      "selection": "test_links_lookup_and_idempotency",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "query_order_reversed",
+      "file": "kernel.py",
+      "selection": "test_query_order_and_paging or test_query_filters_and_liveness or test_d6_single_hop_no_scheduler",
+      "test_body_failures": 8,
+      "result": "killed"
+    },
+    {
+      "name": "initializer_missing_catalog",
+      "file": "kernel.py",
+      "selection": "test_catalog_roundtrip",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_missing",
+      "file": "kernel.py",
+      "selection": "test_create_and_get or test_history_cursor_windows",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "replay_ignores_handoff_fields",
+      "file": "kernel.py",
+      "selection": "test_full_repair_handoff",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "replay_writes",
+      "file": "kernel.py",
+      "selection": "test_replay_read_only_no_temp_residue",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_connect_outside_error_handler",
+      "file": "cli.py",
+      "selection": "test_cli_unreachable_database",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "expected_sequence_gt",
+      "file": "kernel.py",
+      "selection": "test_expected_sequence_stale_lower",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "lease_subtype_erased",
+      "file": "kernel.py",
+      "selection": "test_transition_fencing[actor] or test_transition_fencing[released] or test_transition_fencing[swept] or test_heartbeat_refusals[actor]",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "replay_chain_check_removed",
+      "file": "kernel.py",
+      "selection": "test_replay_detects_damage[chain] or test_cli_chain_break_nonzero",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "inlock_retry_recheck_removed",
+      "file": "kernel.py",
+      "selection": "test_idempotency_recheck_under_item_lock",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "single_sequence_number_skipped",
+      "file": "kernel.py",
+      "selection": "test_concurrent_gap_free",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "heartbeat_item_lock_removed",
+      "file": "kernel.py",
+      "selection": "test_heartbeat_serializes_before_expiry_check",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "public_writer_unclassified",
+      "file": "kernel.py",
+      "selection": "test_public_methods_declare_access_and_gate_writes",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "public_writer_declared_read",
+      "file": "kernel.py",
+      "selection": "test_public_methods_declare_access_and_gate_writes",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "invalid_utf8_traceback_restored",
+      "file": "kernel.py",
+      "selection": "test_cli_invalid_utf8_workflow",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "sequence_before_lease_fencing",
+      "file": "kernel.py",
+      "selection": "test_fencing_precedes_sequence",
+      "test_body_failures": 5,
+      "result": "killed"
+    },
+    {
+      "name": "malformed_payload_reducer_unchecked_a5",
+      "file": "kernel.py",
+      "selection": "test_replay_malformed_a5 or test_cli_replay_malformed_a5",
+      "test_body_failures": 42,
+      "result": "killed"
+    },
+    {
+      "name": "malformed_payload_report_hidden_a5",
+      "file": "kernel.py",
+      "selection": "test_replay_malformed_a5 or test_cli_replay_malformed_a5",
+      "test_body_failures": 42,
+      "result": "killed"
+    },
+    {
+      "name": "create_retry_lookup_removed_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_a5 or test_create_concurrent_a5 or test_cli_create_idempotency_a5",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "create_conflicting_retry_accepted_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5 or test_idempotency_shared_namespace_a5",
+      "test_body_failures": 8,
+      "result": "killed"
+    },
+    {
+      "name": "create_key_lock_removed_a5",
+      "file": "kernel.py",
+      "selection": "test_create_key_lock_a5",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "cli_create_key_ignored_a5",
+      "file": "cli.py",
+      "selection": "test_cli_create_idempotency_a5",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "read_diagnostics_writable_gate_a5",
+      "file": "kernel.py",
+      "selection": "test_cli_unsupported_diagnostics_a5",
+      "test_body_failures": 8,
+      "result": "killed"
+    },
+    {
+      "name": "read_transactions_writable_a5",
+      "file": "kernel.py",
+      "selection": "test_reads_enforced_a5",
+      "test_body_failures": 8,
+      "result": "killed"
+    },
+    {
+      "name": "raw_file_limit_after_parse_a5",
+      "file": "kernel.py",
+      "selection": "test_workflow_raw_limit_a5 and file",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "raw_text_limit_removed_a5",
+      "file": "kernel.py",
+      "selection": "test_workflow_raw_limit_a5 and text",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "yaml_alias_guard_removed_a5",
+      "file": "kernel.py",
+      "selection": "test_workflow_alias_bounded_a5",
+      "test_body_failures": 4,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_refusal_type_leaks_a5",
+      "file": "kernel.py",
+      "selection": "test_workflow_error_type_a5 and not document",
+      "test_body_failures": 6,
+      "result": "killed"
+    },
+    {
+      "name": "projection_summary_omitted_a5",
+      "file": "kernel.py",
+      "selection": "test_projection_summary_visible_a5",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "history_newest_truthy_a5",
+      "file": "kernel.py",
+      "selection": "test_history_newest_type_a5",
+      "test_body_failures": 6,
+      "result": "killed"
+    },
+    {
+      "name": "history_unknown_empty_a5",
+      "file": "kernel.py",
+      "selection": "test_history_unknown_a5",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "read_names_unbounded_a5",
+      "file": "kernel.py",
+      "selection": "test_read_input_limits_a5 and not (many or states_bytes)",
+      "test_body_failures": 10,
+      "result": "killed"
+    },
+    {
+      "name": "read_state_count_unbounded_a5",
+      "file": "kernel.py",
+      "selection": "test_read_input_limits_a5 and many",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "read_state_bytes_unbounded_a5",
+      "file": "kernel.py",
+      "selection": "test_read_input_limits_a5 and states_bytes",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "release_docstring_lost_a5",
+      "file": "kernel.py",
+      "selection": "test_release_docstring_a5",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_workflow_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[workflow]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_workflow_version_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[workflow_version]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_type_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[type]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_actor_id_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[actor_id]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_actor_kind_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[actor_kind]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "create_hash_omits_fields_a5",
+      "file": "kernel.py",
+      "selection": "test_create_idempotency_conflict_a5[fields]",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "stored_json_decoder_exception_leaks_a5",
+      "file": "kernel.py",
+      "selection": "test_replay_decoder_damage_a5 and integer",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "workflow_json_decoder_exception_leaks_a5",
+      "file": "kernel.py",
+      "selection": "test_workflow_decoder_error_type_a5 and integer",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_special_names",
+      "file": "kernel.py",
+      "selection": "test_special_namespace_refused",
+      "test_body_failures": 7,
+      "result": "killed"
+    },
+    {
+      "name": "c1_namespace_resolution",
+      "file": "kernel.py",
+      "selection": "test_namespace_resolution_verified or test_namespace_tampering_refuses_operation",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "c1_initializer_public_sql",
+      "file": "kernel.py",
+      "selection": "test_initializer_has_no_sql_path",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_baseline_admission",
+      "file": "kernel.py",
+      "selection": "test_baseline_manifest_refuses_before_write",
+      "test_body_failures": 8,
+      "result": "killed"
+    },
+    {
+      "name": "c1_expired_release",
+      "file": "kernel.py",
+      "selection": "test_release_expired_preserves_fence",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_release_lock",
+      "file": "kernel.py",
+      "selection": "test_release_drains_transition",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_unlink_retry",
+      "file": "kernel.py",
+      "selection": "test_unlink_retry_and_concurrent_noop",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_retry_materializes",
+      "file": "kernel.py",
+      "selection": "test_retry_memory_is_bounded",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_transition_digest",
+      "file": "kernel.py",
+      "selection": "test_replay_pinned_transition_semantics and False",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_transition_source",
+      "file": "kernel.py",
+      "selection": "test_replay_pinned_transition_semantics and True",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_transition_destination",
+      "file": "kernel.py",
+      "selection": "test_replay_pinned_destination",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_human_controls",
+      "file": "cli.py",
+      "selection": "(test_cli_human_controls_escaped and not health) or test_cli_logging_controls_escaped",
+      "test_body_failures": 5,
+      "result": "killed"
+    },
+    {
+      "name": "c1_field_envelope",
+      "file": "cli.py",
+      "selection": "test_cli_malformed_refusal and field",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "c1_json_envelope",
+      "file": "cli.py",
+      "selection": "(test_cli_malformed_refusal and integer) or test_cli_recursion_limit_refusal",
+      "test_body_failures": 3,
+      "result": "killed"
+    },
+    {
+      "name": "c1_uuid_type",
+      "file": "cli.py",
+      "selection": "test_cli_uuid_arguments_are_typed",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_fk_trigger_enforcement",
+      "file": "kernel.py",
+      "selection": "test_baseline_enforcement_and_inheritance and disabled_fk",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_inheritance",
+      "file": "kernel.py",
+      "selection": "test_baseline_enforcement_and_inheritance and inherited_child",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_preliminary_parser",
+      "file": "cli.py",
+      "selection": "test_preliminary_cli_parser_refusal",
+      "test_body_failures": 2,
+      "result": "killed"
+    },
+    {
+      "name": "c1_catalog_helper",
+      "file": "kernel.py",
+      "selection": "test_admission_never_calls_destination_catalog_helper",
+      "test_body_failures": 1,
+      "result": "killed"
+    },
+    {
+      "name": "c1_log_binding",
+      "file": "cli.py",
+      "selection": "test_cli_logging_controls_escaped",
+      "test_body_failures": 1,
+      "result": "killed"
+    }
+  ],
+  "distinct_proved_nodes": 508
+}

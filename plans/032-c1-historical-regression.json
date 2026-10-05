@@ -1,0 +1,14 @@
+[
+  {
+    "case": "before-DOC-L1",
+    "exit_code": 1,
+    "stdout": "F                                                                        [100%]\n=================================== FAILURES ===================================\n______________ test_historical_checklist_has_no_current_authority ______________\n\n    def test_historical_checklist_has_no_current_authority():\n     root=Path(os.environ['C1_DOC_ROOT'])\n>    assert 'historical' in (root/'docs/publication-review-checklist.md').read_text()[:250].lower()\nE    AssertionError: assert 'historical' in '# publication-review checklist \u2014 regista\\n\\nbefore flipping the repository from private to public, verify each item.\\... `[x]` \u2014 verified clean\\n- `[ ]` \u2014 not yet verified / action needed\\n- `[~]` \u2014 partially verified, caveat noted\\n\\n---'\nE     +  where '# publication-review checklist \u2014 regista\\n\\nbefore flipping the repository from private to public, verify each item.\\... `[x]` \u2014 verified clean\\n- `[ ]` \u2014 not yet verified / action needed\\n- `[~]` \u2014 partially verified, caveat noted\\n\\n---' = <built-in method lower of str object at 0x81ccb80>()\nE     +    where <built-in method lower of str object at 0x81ccb80> = '# Publication-Review Checklist \u2014 regista\\n\\nBefore flipping the repository from private to public, verify each item.\\... `[x]` \u2014 verified clean\\n- `[ ]` \u2014 not yet verified / action needed\\n- `[~]` \u2014 partially verified, caveat noted\\n\\n---'.lower\n\n/tmp/regista-c1-history-test.py:6: AssertionError\n=========================== short test summary info ============================\nFAILED ../../../tmp/regista-c1-history-test.py::test_historical_checklist_has_no_current_authority\n1 failed in 0.53s\n",
+    "stderr": ""
+  },
+  {
+    "case": "fixed-DOC-L1",
+    "exit_code": 0,
+    "stdout": ".                                                                        [100%]\n1 passed in 0.51s\n",
+    "stderr": ""
+  }
+]

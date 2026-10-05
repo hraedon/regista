@@ -18,6 +18,8 @@
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Project-URL-Counterfeit, https://example.invalid]",
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Author-email-counterfeit@example.invalid]",
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-Counterfeit]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-File-counterfeit.txt]",
+      "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[License-Expression-Counterfeit]",
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Provides-Extra-counterfeit]",
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Description-Content-Type-text/plain]",
       "tests.test_distribution_vectors::test_c1_sdist_metadata_is_bound[Metadata-Version-2.1]",
