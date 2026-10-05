@@ -47,13 +47,22 @@ control plus killed test-body mutants is required before mutation success is cla
 
 ## Cost, schema pin and independent review
 
-Baseline admission uses namespace-indexed catalog lookups and server-side SHA-256
-of the complete portable record, returning 64 bytes per write. It does not cache
-mutable database evidence. Seven alternating benchmark batches measured catalog
-fingerprint median 4.364 ms and create median 16.437 ms, versus 5.536 ms with only
-the manifest check disabled. This is a measured approximately 10.9 ms write cost,
-not a claim of cost-free admission; network/database load changes these numbers.
-The [benchmark evidence](032-c1-baseline-benchmark.json) retains all samples/method.
+Stage C2 supersedes the C1 per-write design: full catalog validation now runs at
+`connect()` in both modes, at `initialize()`, and before the first operation on
+each new physical pooled connection. Successfully validated connections are held
+in a weak set; empty destinations are never marked validated. Namespace safety
+remains per operation and writes still check the version marker. Trusted
+administrator DDL on live connections is outside the boundary and is detected on
+the next new connection; restart/pool recycling revalidates.
+
+C1's seven alternating batches measured create median **16.437 ms**, versus
+**5.536 ms** with the manifest disabled. C2 repeats seven alternating batches of
+50 writes: create median **5.362 ms**, with the historical per-write guard restored
+as a same-run control at **17.031 ms**. The fingerprint alone measured **4.416 ms**.
+This removes about **11.075 ms (67.4%)** versus C1's measured median and reaches
+the pre-C1 target. Network/database load changes these numbers. The historical
+[benchmark evidence](032-c1-baseline-benchmark.json) and new
+[C2 samples and method](032-c2-baseline-benchmark.json) retain every sample.
 `schema.sql` and its version-1 pin remain unchanged. The transition+payload digest
 changes the unpublished experimental data contract, which is documented explicitly;
 pre-C1 stores must be recreated. No in-place upgrade was introduced.

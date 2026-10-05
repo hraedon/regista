@@ -40,7 +40,7 @@ MUTANTS = [
      'tests/test_f1_baseline.py::test_non_table_schema_is_not_empty'),
     ('ignore_hidden_legacy', KERNEL, 'function:_refuse_legacy_schema', 'return set()',
      'tests/test_f1_baseline.py::test_legacy_schema_hidden_from_unprivileged_role[True]'),
-    ('ignore_late_legacy', KERNEL, 'function:_validate_baseline', 'return',
+    ('ignore_late_legacy', KERNEL, 'function:_admit_connection', 'return',
      'tests/test_f1_baseline.py::test_legacy_objects_added_to_initialized_schema_refuse_before_write'),
     ('accept_removed_key', 'src/regista/workflow.schema.json', '"properties": {',
      '"properties": {"regista_version": {},',

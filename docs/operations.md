@@ -19,6 +19,10 @@ can change records and recompute unkeyed hashes. Replay is a consistency check,
 not authenticity, non-repudiation, hostile-administrator evidence, model identity,
 or external freshness. Transport encryption, storage encryption, credentials,
 access control, retention, and database availability are operator responsibilities.
+The baseline is verified when a connection is opened, before its first operation.
+Catalog changes made by a database administrator while connections are open are
+outside the trust boundary; they are detected on the next new physical connection.
+Restarting the application or recycling the pool revalidates the baseline.
 
 `Kernel.connect(..., require_existing=True)` opens an existing project without
 initializing it. Initialization accepts an empty destination or the supported
@@ -89,12 +93,16 @@ See [breaking changes](breaking-0.8.md) and
 
 `initialize()` takes no SQL-path argument: it loads the pinned packaged resource,
 creates an absent schema transactionally, and accepts an existing version-1 schema
-only when its complete catalog matches `baseline.manifest.json`. Every write checks
-that manifest again; foreign relations, functions/types, columns, constraints,
-indexes, triggers or rules refuse with `UnsupportedSchemaError`. Ownership and
-grants are operator configuration, excluded from the portable manifest. A trusted
-database administrator can change objects after admission; this is not hostile-admin
-isolation. Unsupported-version diagnostic reads retain the A5 behavior.
+only when its complete catalog matches `baseline.manifest.json`. Both `connect()`
+modes validate the baseline, and each new physical pooled connection validates it
+before its first operation. Foreign relations, functions/types, columns, constraints,
+indexes, triggers or rules present at admission refuse with `UnsupportedSchemaError`
+before writes. `initialize()` always performs full validation. Every write checks
+only the session namespace and `kernel_meta` version. Ownership and grants are
+operator configuration, excluded from the portable manifest. Administrator catalog
+changes on already validated connections are outside the trust boundary and are
+detected on the next new connection. Restart the application or recycle its pool
+after DDL to revalidate. Unsupported-version diagnostic reads retain the A5 behavior.
 
 Special `$user`, `pg_*` and `information_schema` names refuse with `InvalidFieldError`.
 Checkout and operation verification require the effective literal namespace and its

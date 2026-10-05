@@ -559,7 +559,7 @@ def _load_schema_sql() -> str:
 def _catalog_record(
     conn: DictConn, schema: str, *, fingerprint: bool = False,
 ) -> dict[str, Any]:
-    """One catalog round trip; no caching of mutable database admission evidence.
+    """One catalog round trip for complete connection/initialization admission.
 
     Namespace dependencies catch foreign object classes as well as relations.
     Per-relation details cover columns/types/defaults, constraints, indexes,
@@ -666,7 +666,7 @@ def _catalog_record(
         """
     if fingerprint:
         # Return 64 ASCII bytes instead of deserializing the complete catalog on
-        # each write. This is equality evidence, not an authenticity mechanism.
+        # admission. This is equality evidence, not an authenticity mechanism.
         sql = ("SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
                "manifest::pg_catalog.text,'UTF8')),'hex') AS fingerprint ") + (
             "FROM (" + sql + ") AS catalog")
@@ -1402,6 +1402,7 @@ class Kernel:
         self._pool_max_size = pool_max_size
         self._pool_timeout = pool_timeout
         self._operation_local = threading.local()
+        self._validated_connections: weakref.WeakSet[DictConn] = weakref.WeakSet()
         self._finalizer = weakref.finalize(self, _close_pool_quietly, pool)
 
     # ---- lifecycle -------------------------------------------------------
@@ -1550,19 +1551,24 @@ class Kernel:
             )
         return tables
 
-    @_pooled_operation(access="read")
-    def _check_destination(self) -> None:
-        tables = self._refuse_legacy_schema(self._conn, self._schema)
+    def _admit_connection(self, conn: DictConn) -> None:
+        """Admit a physical connection once; empty destinations stay unvalidated."""
+        tables = self._refuse_legacy_schema(conn, self._schema)
         if "kernel_meta" in tables:
             # Keep unsupported-version diagnostic reads available (A5).
             try:
-                row = self._conn.execute(SQL(
+                row = conn.execute(SQL(
                     "SELECT kernel_schema_version FROM {}.kernel_meta").format(
                         Identifier(self._schema))).fetchone()
             except psycopg.errors.UndefinedColumn as exc:
                 raise UnsupportedSchemaError("malformed kernel baseline version marker") from exc
             if row and row["kernel_schema_version"] == KERNEL_SCHEMA_VERSION:
-                self._validate_baseline(self._conn)
+                self._validate_baseline(conn)
+                self._validated_connections.add(conn)
+
+    @_pooled_operation(access="read")
+    def _check_destination(self) -> None:
+        # _begin_operation admits this checkout before any relation operation.
         self._end_read()
 
     @_pooled_operation(access="read")
@@ -1610,6 +1616,8 @@ class Kernel:
             conn.execute(SQL("SET LOCAL search_path TO {}").format(
                 Identifier(self._schema)))
             self._verify_namespace(conn, allow_missing=True)
+            if conn not in self._validated_connections:
+                self._admit_connection(conn)
         except BaseException:
             self._clean_connection(conn)
             raise
@@ -1653,9 +1661,8 @@ class Kernel:
                 pass
 
     def _require_writable_schema(self, conn: DictConn) -> None:
-        """Validate the complete baseline on every write, including catalog drift."""
+        """Check session namespace and version; baseline admission is per connection."""
         self._verify_namespace(conn)
-        self._validate_baseline(conn)
         row = conn.execute(SQL("SELECT kernel_schema_version FROM {}.kernel_meta").format(
             Identifier(self._schema))).fetchone()
         found = row["kernel_schema_version"] if row else None
@@ -1712,6 +1719,8 @@ class Kernel:
         schema (no-op), an empty destination (create), and an old or unknown
         schema (refuse WITHOUT mutating anything).
         """
+        # A failed initialization must not leave prior admission cached.
+        self._validated_connections.discard(self._conn)
         with self._conn.cursor() as cur:
             # An empty schema has no row to lock. Serialize concurrent
             # initializers before either one performs the check-then-create.
@@ -1724,6 +1733,7 @@ class Kernel:
                 found = row["kernel_schema_version"] if row else None
                 if found == KERNEL_SCHEMA_VERSION:
                     self._conn.commit()
+                    self._validated_connections.add(self._conn)
                     return
                 self._conn.rollback()
                 raise UnsupportedSchemaError(
@@ -1758,7 +1768,10 @@ class Kernel:
                 "INSERT INTO kernel_meta (kernel_schema_version) VALUES (%s)",
                 (KERNEL_SCHEMA_VERSION,),
             )
+        # Verify even freshly initialized resources before committing any DDL.
+        self._validate_baseline(self._conn)
         self._conn.commit()
+        self._validated_connections.add(self._conn)
 
     # ---- workflows -------------------------------------------------------
 

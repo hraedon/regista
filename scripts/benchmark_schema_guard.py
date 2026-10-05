@@ -1,4 +1,4 @@
-"""Measure complete baseline admission; use only REGISTA_TEST_DSN disposable PostgreSQL."""
+"""Compare admission costs using only REGISTA_TEST_DSN disposable PostgreSQL."""
 from __future__ import annotations
 
 import json
@@ -44,13 +44,17 @@ def main() -> None:
                     for _ in range(100):
                         fn()
                     queries[label].append((time.perf_counter() - begin) * 1000 / 100)
-        writes: dict[str, list[float]] = {"complete_admission": [], "without_manifest_control": []}
-        original = Kernel._validate_baseline
+        writes: dict[str, list[float]] = {"per_connection_admission": [], "per_write_control": []}
+        original = Kernel._require_writable_schema
+
+        def per_write_guard(self: Kernel, conn: psycopg.Connection[dict[str, object]]) -> None:
+            self._validate_baseline(conn)
+            original(self, conn)
         for turn in range(7):
             labels = list(writes) if turn % 2 == 0 else list(reversed(writes))
             for label in labels:
-                fn = original if label == "complete_admission" else lambda self, conn: None
-                with patch.object(Kernel, "_validate_baseline", fn):
+                fn = original if label == "per_connection_admission" else per_write_guard
+                with patch.object(Kernel, "_require_writable_schema", fn):
                     begin = time.perf_counter()
                     for _ in range(50):
                         handle.create_work_item(workflow="bench", type="task", actor_id="bench")
@@ -58,7 +62,8 @@ def main() -> None:
         print(json.dumps({"query_ms_samples": queries, "write_ms_samples": writes,
                           "query_ms_median": {k: statistics.median(v) for k,v in queries.items()},
                           "write_ms_median": {k: statistics.median(v) for k,v in writes.items()},
-                          "method": "7 alternating batches; 100 queries or 50 writes; no DB cache"},
+                          "method": "7 alternating batches; 100 queries or 50 writes; "
+                                    "historical per-write guard control"},
                          indent=2))
     finally:
         handle.close()

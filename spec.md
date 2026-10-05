@@ -20,7 +20,11 @@ policy, not identity authentication or proof of role membership. Unkeyed hashes
 check internal consistency; they provide no authenticity evidence and can be
 recomputed by a database writer. Regista provides no non-repudiation, hostile-admin
 tamper evidence, external freshness, or model identity guarantee. Encryption,
-credentials and database privileges belong to the operator.
+credentials and database privileges belong to the operator. Baselines are verified
+on connection opening, before the first operation. Administrator catalog changes
+while connections are open are outside the trust boundary and are detected on the
+next new physical connection. Restarting the application or recycling its pool
+revalidates the baseline.
 
 ## Storage and initialization
 
@@ -41,7 +45,9 @@ manual `DROP SCHEMA`. Schema names cannot redirect queries to another namespace.
 and `information_schema` names refuse; every checkout/operation verifies literal
 namespace resolution. `initialize()` creates an absent schema transactionally and
 always loads pinned package SQL, with no SQL-path parameter. Existing baseline 1
-must match the complete committed catalog manifest; every write rechecks it.
+must match the complete committed catalog manifest at `connect()` in both modes,
+at `initialize()`, and before the first operation on each new physical connection.
+Every write checks the session namespace and `kernel_meta` version.
 
 ## Workflows and work items
 

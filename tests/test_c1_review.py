@@ -13,6 +13,7 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
+from test_c2_connections import recycle
 from test_f1_cli import cli
 
 from regista import InvalidFieldError, Kernel, LeaseExpiredError, UnsupportedSchemaError, Workflow
@@ -63,13 +64,15 @@ def test_baseline_manifest_refuses_before_write(
         conn.execute(statements[damage])
         before = conn.execute("SELECT * FROM workflow_registry").fetchall()
     for action in [kernel.initialize, lambda: kernel.register_workflow(workflow)]:
+        recycle(kernel)
         with pytest.raises(UnsupportedSchemaError, match="baseline"):
             action()
     with psycopg.connect(dsn) as conn:
         assert conn.execute(SQL("SELECT * FROM {}.workflow_registry").format(
             Identifier(schema))).fetchall() == before
-    with pytest.raises(UnsupportedSchemaError, match="baseline"):
-        Kernel.connect(dsn, schema=schema)
+    for existing in (False, True):
+        with pytest.raises(UnsupportedSchemaError, match="baseline"):
+            Kernel.connect(dsn, schema=schema, require_existing=existing)
 
 
 def test_release_expired_preserves_fence(registered: Kernel, dsn: str, schema: str) -> None:
@@ -286,9 +289,12 @@ def test_baseline_enforcement_and_inheritance(
         else:
             conn.execute(SQL("CREATE TABLE {}.foreign_child () INHERITS ({}.work_items_current)")
                          .format(Identifier(sibling), Identifier(schema)))
+    recycle(registered)
     with pytest.raises(UnsupportedSchemaError, match="baseline"):
         registered.create_work_item(workflow="review", type="task", actor_id="w")
-    assert registered.health()["work_items"] == 0
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(SQL("SELECT count(*) FROM {}.work_items_current").format(
+            Identifier(schema))).fetchone() == (0,)
 
 
 def test_admission_never_calls_destination_catalog_helper(
@@ -300,6 +306,7 @@ def test_admission_never_calls_destination_catalog_helper(
             "RETURNS jsonb "
             "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'untrusted helper called'; END $$"
         ).format(Identifier(schema)))
+    recycle(registered)
     with pytest.raises(UnsupportedSchemaError, match="baseline"):
         registered.create_work_item(workflow="review", type="task", actor_id="w")
 
@@ -339,8 +346,9 @@ def test_initialize_precreated_owner_without_database_create(dsn: str, schema: s
 def test_malformed_marker_is_unsupported(dsn: str, schema: str) -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(SQL("CREATE TABLE {}.kernel_meta(unrelated int)").format(Identifier(schema)))
-    with pytest.raises(UnsupportedSchemaError, match="baseline"):
-        Kernel.connect(dsn, schema=schema)
+    for existing in (False, True):
+        with pytest.raises(UnsupportedSchemaError, match="baseline"):
+            Kernel.connect(dsn, schema=schema, require_existing=existing)
 
 
 def test_cli_logging_controls_escaped(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:

@@ -1154,6 +1154,21 @@ MUTANTS.extend(
 
 
 MUTANTS.extend([
+    ("c2_connection_admission", "kernel.py", method_replace("_admit_connection",
+        "self._validate_baseline(conn)", "pass"),
+     "test_new_physical_connection_refuses_drift_before_write"),
+    ("c2_empty_connection_cached", "kernel.py", method_replace("_admit_connection",
+        "tables = self._refuse_legacy_schema(conn, self._schema)",
+        "self._validated_connections.add(conn)\n"
+        "        tables = self._refuse_legacy_schema(conn, self._schema)"),
+     "test_connection_opened_empty_is_validated_after_initialization"),
+    ("c2_initialize_validation", "kernel.py", method_replace("initialize",
+        "self._validate_baseline(self._conn)", "pass"),
+     "test_initialize_revalidates_live_connection"),
+    ("c2_fresh_initialize_validation", "kernel.py", method_replace("initialize",
+        "# Verify even freshly initialized resources before committing any DDL.\n"
+        "        self._validate_baseline(self._conn)", "pass"),
+     "test_fresh_initialization_validates_before_commit"),
     ("c1_special_names", "kernel.py",
      replace_once('if schema == "$user" or schema.startswith("pg_") '
                   'or schema == "information_schema":',

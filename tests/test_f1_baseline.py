@@ -90,7 +90,7 @@ def test_old_schema_refuses_without_mutation(
         with pytest.raises(UnsupportedSchemaError):
             Kernel.connect(dsn, schema=schema, require_existing=existing)
         assert snapshot() == before
-    # A handle opened before legacy tables appeared also refuses every write/init.
+    # An empty destination is not a validated baseline; late legacy objects refuse.
     # Connect to an empty schema first, then place a representative old marker.
     # This case is separately covered below; here admission itself must refuse.
 
@@ -205,6 +205,9 @@ def test_legacy_objects_added_to_initialized_schema_refuse_before_write(
             Identifier(schema)))
         before = conn.execute(SQL('SELECT count(*) FROM {}.events').format(
             Identifier(schema))).fetchone()
+    from test_c2_connections import recycle
+
+    recycle(kernel)
     with pytest.raises(UnsupportedSchemaError):
         kernel.register_workflow(workflow)
     with psycopg.connect(dsn) as conn:
