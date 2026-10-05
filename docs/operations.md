@@ -1,6 +1,7 @@
 # 0.8.0 operations, trust, and preservation
 
-Use PostgreSQL 15 (the qualified version) with Python 3.11–3.14. Explicitly pass
+PostgreSQL 15, 16 and 17 are tested with Python 3.11–3.14 on 15 and Python 3.14
+on 16 and 17. Explicitly pass
 a DSN and one schema name to `Kernel.connect`; the CLI takes `--dsn` or
 `REGISTA_DSN`, and `--schema` defaults to `public`. No private configuration,
 keys, or sibling tools are required. DSNs may contain credentials: keep them out

@@ -52,8 +52,14 @@ def test_protection_suite_is_in_postgres_ci() -> None:
                        if s.get("uses", "").startswith("astral-sh/setup-uv@"))
     suite = next(i for i, s in enumerate(job["steps"]) if "pytest tests/" in s.get("run", ""))
     assert build_tools < suite  # real-build guard vectors must execute, not skip for missing uv
-    assert job["services"]["postgres"]["image"] == "postgres:15"
-    assert job["strategy"]["matrix"]["python-version"] == ["3.11", "3.12", "3.13", "3.14"]
+    assert job["services"]["postgres"]["image"] == "postgres:${{ matrix.postgres-version }}"
+    matrix = job["strategy"]["matrix"]
+    assert matrix["python-version"] == ["3.11", "3.12", "3.13", "3.14"]
+    assert matrix["postgres-version"] == ["15"]
+    assert matrix["include"] == [
+        {"python-version": "3.14", "postgres-version": "16"},
+        {"python-version": "3.14", "postgres-version": "17"},
+    ]
     step = next(s for s in job["steps"] if "pytest tests/" in s.get("run", ""))
     env = {**job.get("env", {}), **step.get("env", {})}
     assert env["REGISTA_TEST_DSN"] == (

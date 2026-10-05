@@ -29,7 +29,7 @@ revalidates the baseline.
 ## Storage and initialization
 
 Python >=3.11 is advertised; CI qualifies 3.11–3.14 without a speculative upper
-bound. PostgreSQL 15 is qualified. `Kernel.connect` opens a bounded pool (default
+bound. PostgreSQL 15, 16 and 17 are tested. `Kernel.connect` opens a bounded pool (default
 min 1, max 4, timeout 5 seconds) for an explicit schema. It creates nothing.
 Each operation borrows an exclusive connection and scopes one transaction; rollback
 and connection reset isolate borrowers. Pool exhaustion/unavailability and database

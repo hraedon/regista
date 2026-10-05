@@ -1239,6 +1239,9 @@ MUTANTS.extend([
     ("c1_log_binding", "cli.py", replace_once(
         '    logging.getLogger("psycopg.pool").addFilter(_HUMAN_LOG_FILTER)', '    pass'),
      "test_cli_logging_controls_escaped"),
+    ("c3_catalog_default_collation", "kernel.py", method_replace("_catalog_record",
+        'ORDER BY i.type COLLATE "C",i.name COLLATE "C"', 'ORDER BY i.type,i.name'),
+     "test_non_c_database_baseline"),
 ])
 
 def run(

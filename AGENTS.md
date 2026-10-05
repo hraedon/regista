@@ -9,7 +9,8 @@ without a checkout or private configuration.
 
 Use `.venv/bin/ruff check src/ tests/ examples/ scripts/`, `.venv/bin/mypy`,
 and `REGISTA_TEST_DSN=<disposable-postgres-dsn> .venv/bin/python -m pytest tests/ -q`.
-CI tests Python 3.11–3.14 on PostgreSQL 15. CI and `REGISTA_REQUIRE_DB=1` fail
+CI tests Python 3.11–3.14 on PostgreSQL 15 and 3.14 on PostgreSQL 16 and 17.
+CI and `REGISTA_REQUIRE_DB=1` fail
 without a DSN. Never point tests at production. Qualify both wheel and sdist,
 installed examples, restart and a separate-database restore followed by a valid
 write. Run mutation checks, build/render/smoke checks and the schema/artifact guard.

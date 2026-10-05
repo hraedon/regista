@@ -8,7 +8,7 @@ owns an attempt, what state the work is in, and how it got there in PostgreSQL.
 pip install regista-hraedon
 ```
 
-0.8.0 requires Python 3.11 or newer and PostgreSQL (qualified on PostgreSQL 15).
+0.8.0 requires Python 3.11 or newer. PostgreSQL 15, 16 and 17 are tested.
 Provision a database and a role with database `CREATE` privilege (or a pre-created,
 owned project schema). `initialize()` creates an absent namespace transactionally
 and validates an existing complete baseline before accepting it. Set `REGISTA_DSN` to its connection string; this example uses a fresh

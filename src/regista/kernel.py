@@ -565,6 +565,9 @@ def _catalog_record(
     Per-relation details cover columns/types/defaults, constraints, indexes,
     triggers, rules, persistence and row-security. Ownership/grants are operator
     configuration and deliberately excluded. OIDs and schema names are portable.
+    Text ordering uses C byte order, independent of the database locale/provider.
+    Type/definition deparsers emit SQL identifiers, not locale-formatted values;
+    column collation identities remain part of the baseline.
     """
     sql = """
         WITH ns AS (SELECT oid, pg_catalog.quote_ident(nspname)||'.' AS prefix
@@ -600,7 +603,7 @@ def _catalog_record(
         constraints AS (
           SELECT co.conrelid AS relid, pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(
             co.conname,co.contype,co.convalidated,pg_catalog.pg_get_constraintdef(co.oid)
-          ) ORDER BY co.conname) AS data
+          ) ORDER BY co.conname COLLATE "C") AS data
           FROM pg_catalog.pg_constraint co WHERE co.conrelid IN (SELECT oid FROM relations)
           GROUP BY co.conrelid
         ),
@@ -609,7 +612,7 @@ def _catalog_record(
             ic.relname,idx.indisvalid,idx.indisready,idx.indislive,
             pg_catalog.replace(pg_catalog.pg_get_indexdef(idx.indexrelid),
                                (SELECT prefix FROM ns),'<schema>.')
-          ) ORDER BY ic.relname) AS data
+          ) ORDER BY ic.relname COLLATE "C") AS data
           FROM pg_catalog.pg_index idx JOIN pg_catalog.pg_class ic ON ic.oid=idx.indexrelid
           WHERE idx.indrelid IN (SELECT oid FROM relations) GROUP BY idx.indrelid
         ),
@@ -618,7 +621,8 @@ def _catalog_record(
             COALESCE(co.conname,t.tgname),t.tgisinternal,t.tgenabled,t.tgtype,
             t.tgdeferrable,t.tginitdeferred,fnns.nspname,fn.proname,
             CASE WHEN t.tgisinternal THEN NULL ELSE pg_catalog.pg_get_triggerdef(t.oid) END
-          ) ORDER BY COALESCE(co.conname,t.tgname),t.tgtype,fn.proname) AS data
+          ) ORDER BY COALESCE(co.conname,t.tgname) COLLATE "C",t.tgtype,
+                     fn.proname COLLATE "C") AS data
           FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc fn ON fn.oid=t.tgfoid
           JOIN pg_catalog.pg_namespace fnns ON fnns.oid=fn.pronamespace
           LEFT JOIN pg_catalog.pg_constraint co ON co.oid=t.tgconstraint
@@ -626,7 +630,7 @@ def _catalog_record(
         ),
         rules AS (
           SELECT rw.ev_class AS relid, pg_catalog.jsonb_agg(
-                   pg_catalog.pg_get_ruledef(rw.oid) ORDER BY rw.rulename) AS data
+                   pg_catalog.pg_get_ruledef(rw.oid) ORDER BY rw.rulename COLLATE "C") AS data
           FROM pg_catalog.pg_rewrite rw WHERE rw.ev_class IN (SELECT oid FROM relations)
           GROUP BY rw.ev_class
         ),
@@ -640,7 +644,7 @@ def _catalog_record(
                OR inhrelid IN (SELECT oid FROM relations)),
           'objects', COALESCE((
             SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(i.type,i.name)
-                                       ORDER BY i.type,i.name)
+                                       ORDER BY i.type COLLATE "C",i.name COLLATE "C")
             FROM pg_catalog.pg_depend d JOIN ns ON d.refobjid=ns.oid
             CROSS JOIN LATERAL pg_catalog.pg_identify_object(d.classid,d.objid,d.objsubid) i
             WHERE d.refclassid='pg_catalog.pg_namespace'::pg_catalog.regclass
@@ -656,7 +660,7 @@ def _catalog_record(
               'triggers',COALESCE(trig.data,'[]'::pg_catalog.jsonb),
               'rules',COALESCE(rules.data,'[]'::pg_catalog.jsonb),
               'policy_count',COALESCE(pol.count,0)
-            ) ORDER BY r.relname)
+            ) ORDER BY r.relname COLLATE "C")
             FROM relations r LEFT JOIN columns cols ON cols.relid=r.oid
             LEFT JOIN constraints cons ON cons.relid=r.oid LEFT JOIN indexes idx ON idx.relid=r.oid
             LEFT JOIN triggers trig ON trig.relid=r.oid LEFT JOIN rules ON rules.relid=r.oid
