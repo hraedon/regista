@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/wi364-f1-promote]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -79,6 +79,7 @@ jobs:
       - name: Verify new baseline pin and tree
         run: |
           python scripts/check_published_migrations.py verify-baseline
+          python scripts/check_published_migrations.py verify-ledger
           python scripts/check_published_migrations.py check-tree
       - name: Check exact built artifacts (authoritative)
         run: |

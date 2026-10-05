@@ -47,11 +47,11 @@ def person(dsn: str, *argv: str) -> dict[str, Any]:
     p = subprocess.run(cmd, capture_output=True, text=True)
     shown = " ".join(argv[:4])
     if p.returncode == 2:
-        refused(f"$ regista-kernel {shown} -> {p.stderr.strip()}")
+        refused(f"$ regista {shown} -> {p.stderr.strip()}")
         return {}
     if p.returncode != 0:
         raise SystemExit(f"CLI failed: {p.stderr.strip()}")
-    ok(f"$ regista-kernel {shown}")
+    ok(f"$ regista {shown}")
     body: dict[str, Any] = json.loads(p.stdout) if p.stdout.strip() else {}
     return body
 
