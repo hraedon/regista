@@ -2,7 +2,7 @@
 
 All notable changes to regista are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.8.0] — Unreleased
+## [0.8.0] — 2026-10-05
 
 **breaking: deliberate scope reduction** to durable work ownership, validated
 handoffs and read-only history consistency checks over PostgreSQL.
@@ -48,8 +48,8 @@ handoffs and read-only history consistency checks over PostgreSQL.
   Workflow actions, uv plus platform checksum, and twine are pinned; publish checks
   identifiers and tag-commit ancestry on main before build or credentials.
 - 90-day stabilization window from publication for regressions and serious
-  security/data-loss reports; no feature promise or SLA. Publication/end dates will
-  be recorded at release. Public issues: GitHub; sensitive reports: plm@hraedon.com.
+  security/data-loss reports, from publication on 2026-10-05 to 2027-01-03; no
+  feature promise or SLA. Public issues: GitHub; sensitive reports: plm@hraedon.com.
 
 See [breaking changes](docs/breaking-0.8.md), [API](docs/api.md),
 [CLI](docs/cli.md), and [preservation](docs/operations.md).

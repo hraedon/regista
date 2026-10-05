@@ -34,6 +34,7 @@ reopened, and open items must not be defaulted.
 | **Leases through transitions** (2026-10-05) | **RULED: retained until explicit release.** Upgrades the Stage A adopted default. | A documented behaviour change from 0.7. F4 must state it in current docs and list it as a breaking change in the changelog; callers explicitly release before handoff. |
 | **D11** (2026-10-04) | **90-day maintenance window from publication.** | F4 states the window, end date and reporting route. No indefinite maintenance commitment is implied. |
 | **D12** (2026-10-04) | **Yank older releases where possible, without blocking 0.8.0.** | The 0.8.0 release itself is the due diligence. Older-release yanking remains a separately authorized publication action; this ruling does not authorize a yank during F1. |
+| **D8** (2026-10-05) | **Accepted as satisfied at release.** Two cold-agent walkthroughs (2026-09-17) found one blocker, which was fixed. The quickstart is pinned by a test and was run verbatim against an absent schema on PostgreSQL 15 (Debian and Alpine), 16 and 17, and from a fresh PyPI install. | No separate human walkthrough before 0.8.0. Any confusion a new user reports through GitHub issues during the 90-day window is treated as a documentation regression. |
 
 **Adopted** (concurring recommendation, no dissent): D2 retire the in-memory
 backend *and* retarget its 35 conformance tests to PostgreSQL — the retargeting
