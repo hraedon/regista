@@ -30,7 +30,7 @@ def test_distribution_guard_current_baseline() -> None:
     assert GUARD.check_ledger(ledger) == []
     assert GUARD.check_tree(ledger) == []
     assert GUARD.check_build_contract((ROOT / "pyproject.toml").read_bytes(), "test") == (
-        "regista-hraedon", "0.7.2",
+        "regista-hraedon", "0.8.0",
     )
 
 
