@@ -25,13 +25,16 @@ handoffs and read-only history consistency checks over PostgreSQL.
 - Documented trusted-host/database-admin boundary: attribution is not
   authentication, unkeyed hashes are not authenticity evidence, and replay excludes
   leases, counters, links and idempotency keys. Backup/restore includes a valid write.
-- Python >=3.11; CI tests 3.11–3.14 with PostgreSQL 15. Pinned schema/artifact guard
-  qualifies committed package contents and sdist rebuild equivalence (#65).
+- Python >=3.11; CI tests 3.11–3.14 with PostgreSQL 15 and 3.14 with PostgreSQL
+  16 and 17. The pinned schema/artifact guard qualifies committed package contents
+  and sdist rebuild equivalence (#65).
 - `initialize()` takes no caller SQL path, always loads pinned package SQL, and
   creates an absent namespace. Complete baseline catalog checks refuse counterfeit,
   partial or foreign-object schemas before writes. Requires database `CREATE` or a
   pre-created owned schema. Special PostgreSQL schema names refuse; every operation
   verifies literal namespace resolution and prevents temporary-table shadowing.
+- Catalog baseline fingerprints use C byte ordering, independent of the database's
+  default libc or ICU locale. The baseline manifest and schema pins are unchanged.
 - Unlink retries and concurrent identical removals are successful no-ops. Release
   deletes only live matching leases and drains fenced in-flight transitions; expired
   leases remain fenced until takeover/sweep.

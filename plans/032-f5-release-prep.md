@@ -1,7 +1,7 @@
 # Plan 032 F5 — 0.8.0 release preparation (no publication)
 
 Prepared 2026-10-05. **Exact candidate commit:
-`47591367476b6ec036ef439b9f4499e966eac9ff`**, branch `feat/wi364-f1-promote`,
+`27ebc8e1fcc603709b821d6d038720dbd4eb2966`**, branch `feat/wi364-f1-promote`,
 draft [PR #93](https://github.com/hraedon/regista/pull/93). Later evidence-only
 commits on that branch do not change any packaged input. Do not infer publication
 from the version bump: no tag, upload, workflow dispatch, yank or settings change
@@ -11,8 +11,8 @@ was authorized or performed.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `regista_hraedon-0.8.0-py3-none-any.whl` | `7d64f71cae2697b17dc2a1ab79b5a2b686770ea4fb7a9bed3de7911c9c4c2ec0` |
-| `regista_hraedon-0.8.0.tar.gz` | `091dfa27b322bdf5c5129a10f2f8327e64dc0a64df66eb42289b1b4d8cf98f1f` |
+| `regista_hraedon-0.8.0-py3-none-any.whl` | `224c1d11498016de71c881c71ab86593a128521de9134feda8d492fb753465d8` |
+| `regista_hraedon-0.8.0.tar.gz` | `93bf2a62f47a92359c82a64f0cca18d73abf9bd6d00973371dab43b92862df2f` |
 
 [F3 qualification](032-f3-qualification.md) records clean wheel/sdist installs,
 installed resources/scenarios, restart, rollback/contention, terminated-worker
@@ -30,7 +30,7 @@ was added (D13).
 
 The wheel contains the explicit facade, kernel, CLI, `py.typed`, both schema
 resources, four example script/YAML resources, entry point, metadata and license
-(16 members including RECORD, including the committed baseline manifest). The sdist contains 70 regular members under its
+(16 members including RECORD, including the committed baseline manifest). The sdist contains 71 regular members under its
 single versioned root: retained source, examples/tests/scripts/hooks, CI,
 publication declaration, README/metadata/license and test-operation files.
 Retired migrations/sidecar implementations are absent. Current Git-only reference
@@ -52,10 +52,10 @@ It does not rebuild in the publish job. A tag push is a publication action.
 The build job **does rebuild**, rather than consuming a locally reviewed upload.
 A fresh full-depth `git clone --no-local --no-hardlinks` of the artifact-bearing
 tree, followed by the same `uv build`, produced **byte-identical wheel and sdist
-SHA-256 hashes above**. C1 fixes and C2 connection admission are included in this candidate. Rebuild
-tooling was uv 0.12.23
+SHA-256 hashes above**. C1 fixes, C2 connection admission and C3 locale-independent
+catalog ordering are included in this candidate. Rebuild tooling was uv 0.12.23
 with the complete pinned Hatch backend closure in `pyproject.toml` (Hatchling
-1.32.4). The [final gate record](032-c2-final-gates.json) records the after-last-edit build
+1.32.4). The [final gate record](032-c3-final-gates.json) records the after-last-edit build
 and digest comparison; publication must still retain the qualified hashes.
 
 The #65 guard additionally validates exact candidate members against committed
@@ -69,10 +69,17 @@ downloaded artifact hashes again before permitting upload if tooling changes.
 `check-dist: ok` was obtained under `env -i`, an empty HOME, replacement objects
 off, no system/global git config, a full-depth independent clone and no alternates.
 
-The ordinary CI matrix covers 3.11–3.14. Historical runs 37275016486 and
-37276210043 predate C2. The current local
-3.14/3.11 suites and all exact gate results are in the C2 gate record; the owner
-must confirm the selected commit's current four-version CI verdict before release.
+The CI matrix covers Python 3.11–3.14 on official Debian PostgreSQL 15, plus
+Python 3.14 on PostgreSQL 16 and 17. C1/C2 Kernel jobs were red because their
+catalog fingerprints depended on the database's default collation; passing local
+Alpine suites had missed that. C3 retains the existing manifest/fingerprint after
+complete equality checks on all four servers, adds explicit C ordering and real
+non-C libc/ICU database regressions, and requalifies the new artifacts against
+Debian PostgreSQL 15. Final-commit CI is required. This is pre-push evidence; the
+exact final run URL and
+all job verdicts are reported after the authorized branch push. Release must verify
+that same commit in [PR #93](https://github.com/hraedon/regista/pull/93/checks).
+Exact local output is in the C3 gate record.
 All actions use full SHAs resolved from official tags. Every setup-uv step pins
 0.12.23, x86_64 and its official platform checksum; twine is pinned to 7.0.0.
 External branch/tag/environment settings remain owner-verification prerequisites.

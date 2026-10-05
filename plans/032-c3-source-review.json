@@ -1,0 +1,21 @@
+{
+  "reviewed_range": "31e76d89797e8dcc184f6c07225223f5bfe653f5..27ebc8e",
+  "actor": "/root/c3_independent_review",
+  "declared_model_lineage": "GPT-6",
+  "verdict": "source approved, completion conditional on qualification and final GitHub CI",
+  "blocking_findings": [],
+  "audit": "All eight text sort keys in six aggregates explicitly use COLLATE C. Remaining ordering/comparisons are OID, numeric, internal-char or pg_catalog name equality with built-in C collation. Manifest and fingerprint share the query. Real non-C libc/ICU databases verify fixture ordering differs and full committed baseline equivalence. CI expands to six kernel combinations and retains full SHA pins and required DSN.",
+  "minor_findings": [
+    {
+      "path": "CHANGELOG.md:28",
+      "observation": "Unreleased CI summary omitted PostgreSQL 16/17",
+      "disposition": "Updated summary and documented C ordering in this evidence-only change; CHANGELOG is excluded from distributions."
+    },
+    {
+      "path": "examples/README.md:4",
+      "observation": "Example setup specifically recommends PostgreSQL 15",
+      "disposition": "Retained: PostgreSQL 15 remains tested and is the example default; supported versions are documented in README, spec and operations."
+    }
+  ],
+  "provenance_limit": "Separate read-only actor review. Reviewer declared GPT-6 lineage; no cross-lineage review claim. Current AGENTS.md adds no independent cross-lineage acceptance gate; external owner release acceptance remains separate. Tracker writes/claims and private provenance attachments are outside task authorization."
+}
