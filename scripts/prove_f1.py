@@ -1147,7 +1147,9 @@ MUTANTS.extend(
 )
 
 
-def run(root: Path, selection: str, report: Path) -> tuple[int, list[str], list[str], str]:
+def run(
+    root: Path, selection: str, report: Path, *, timeout: int = 300,
+) -> tuple[int, list[str], list[str], str]:
     env = {
         **os.environ,
         "REGISTA_KERNEL_TEST_ROOT": str(root.parent),
@@ -1158,7 +1160,7 @@ def run(root: Path, selection: str, report: Path) -> tuple[int, list[str], list[
         env=env,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=timeout,
     )
     tree = ET.parse(report)
     failed, other = [], []
@@ -1187,10 +1189,14 @@ def main() -> int:
             ROOT,
             "not test_replay_memory_bound and not test_scenario and not test_distribution_guard",
             scratch.parent / "control.xml",
+            # Full source qualification takes about six minutes on this host.
+            # Keep a finite control budget without changing mutant assertions.
+            timeout=900,
         )
         if control_code != 0:
             print(output)
             raise SystemExit("unmodified control failed; no mutation evidence is valid")
+        print(f"CONTROL passed: {output.strip().splitlines()[-1]}", flush=True)
         for name, filename, change, selection in selected:
             for path in ROOT.iterdir():
                 if path.is_file() and path.suffix in (".py", ".json", ".sql", ".yaml"):
