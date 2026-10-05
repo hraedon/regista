@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista S1 — Cutover and Legacy Policy
 
 > **RANK 4 — still correct for v1–v5 semantics; four rules corrected for the two-epoch world.**

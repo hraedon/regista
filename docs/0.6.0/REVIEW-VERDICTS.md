@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # REVIEW-VERDICTS — frozen contract for signed review verdicts and computed assurance in regista 0.6.0
 
 Status: **FROZEN for Stage 0**. Contracts only. No production source changed.

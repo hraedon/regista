@@ -2,7 +2,39 @@
 
 All notable changes to regista are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.8.0] — Unreleased
+
+**breaking: deliberate scope reduction** to durable work ownership, validated
+handoffs and read-only history consistency checks over PostgreSQL.
+
+- Fresh database required; **no in-place upgrade from 0.7.2 or earlier**, reset,
+  or converter. Preserve old dumps, matching package/dependency environments and
+  keys/trust material; verify scratch restoration before changing anything.
+- Public `Kernel` API replaces old facades; PostgreSQL only. Retired signing,
+  trust/key governance, audit bundles, witness/anchoring, field encryption, suite
+  integration, HTTP sidecar/feature extras, in-memory/async backends, recurrence,
+  hooks/webhooks, composition, canonical agent policy and synchronous validators
+  (ruling 2026-10-05). Kernel field/role validation remains.
+- **Leases survive transitions until explicit release**, including terminal
+  transitions; this changes 0.7 behavior (ruling 2026-10-05).
+- CLI `replay` becomes read-only `check-history`; operators schedule
+  `expire-leases`, provision service roles and manually `DROP SCHEMA` for deletion.
+- Bounded JSON input sizes, paged discovery/history, optional field/link validation,
+  explicit field clears, request idempotency, atomic state/history and stale-attempt
+  fencing. Installed package resources include both full coordination examples.
+- Documented trusted-host/database-admin boundary: attribution is not
+  authentication, unkeyed hashes are not authenticity evidence, and replay excludes
+  leases, counters, links and idempotency keys. Backup/restore includes a valid write.
+- Python >=3.11; CI tests 3.11–3.14 with PostgreSQL 15. Pinned schema/artifact guard
+  qualifies committed package contents and sdist rebuild equivalence (#65).
+- 90-day stabilization window from publication for regressions and serious
+  security/data-loss reports; no feature promise or SLA. Publication/end dates will
+  be recorded at release. Public issues: GitHub; sensitive reports: plm@hraedon.com.
+
+See [breaking changes](docs/breaking-0.8.md), [API](docs/api.md),
+[CLI](docs/cli.md), and [preservation](docs/operations.md).
+
+## Historical pre-0.8 unreleased development (never a 0.8.0 contract)
 
 ### Added
 

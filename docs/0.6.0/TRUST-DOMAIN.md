@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # TRUST-DOMAIN.md — trust-domain genesis and key/identity lifecycle
 
 **Status:** FROZEN CONTRACT, Stage 0 of the 0.6.0 cutover. Normative.

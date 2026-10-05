@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista S1 — Authenticated-Field Matrix
 
 > **RANK 4 — unamended for v1–v5.** This matrix describes what v1–v5 envelopes authenticate, and

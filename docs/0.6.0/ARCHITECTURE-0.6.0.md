@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # VERDICT: adopt this architecture for 0.6.0
 
 > ## SUPERSEDED IN 14 PLACES — read `RECONCILIATION.md` and `ARCHITECTURE-FINAL.md` first

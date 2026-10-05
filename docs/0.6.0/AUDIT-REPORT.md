@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista correctness audit — findings and remediation plan
 
 **Date:** 2026-08-08

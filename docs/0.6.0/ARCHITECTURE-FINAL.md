@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista 0.6.0 — final architecture (authoritative entry point)
 
 **Status: FROZEN for implementation, 2026-08-09.** Read this document first. It is short by

@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Regista — Agent Guide
 
 > **Renamed 2026-05-27:** project was previously `substrate`. PyPI/GitHub/module/console-script all moved to `regista` (Plan 018 / v0.4.0). Pre-rename history pinned at tag `v0.4.0-pre-rename`. Older breadcrumbs, reflections, and design docs that still say "substrate" are intentional historical record.

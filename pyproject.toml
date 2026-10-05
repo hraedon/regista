@@ -16,8 +16,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "regista-hraedon"
-version = "0.7.2"
-description = "Coordination + state plane for agent pipelines over Postgres"
+version = "0.8.0"
+description = "Durable work ownership and validated handoffs over PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.11"
 # Plan 032 D13: CI exercises 3.11–3.14; retain the floor without a speculative cap.

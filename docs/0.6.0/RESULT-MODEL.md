@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # regista S1 — Verification Result Model
 
 **Status:** design input for S1 remediation. Not a code change.

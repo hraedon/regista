@@ -566,9 +566,8 @@ WORKFLOW_DOCUMENT_REMOVED_KEYS: dict[str, dict[str, str]] = {
             "merge cannot be content-hashed as what the author wrote."
         ),
         "link_types": (
-            "the kernel validates no link-type declaration. link(source, target, "
-            "link_type) accepts any type string and blocked() filters on it, so "
-            "accepting a declaration here would accept a rule that is never applied."
+            "the old link_types declaration is removed. Use link_type_names for the "
+            "optional closed vocabulary enforced on links leaving this workflow's items."
         ),
         "attempt_threshold": (
             "escalation by attempt count is not in the 0.8 keep table. The fencing "
@@ -576,8 +575,8 @@ WORKFLOW_DOCUMENT_REMOVED_KEYS: dict[str, dict[str, str]] = {
         ),
         "hook_defaults": (
             "queued hooks and webhook delivery are removed in 0.8 (Plan 032 decision "
-            "D4). Synchronous transition validation is a different responsibility and "
-            "is kept."
+            "D4). Synchronous validators are retired too (ruling 2026-10-05); "
+            "validate in the caller before transitioning."
         ),
     },
     "transition": {

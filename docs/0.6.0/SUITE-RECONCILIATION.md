@@ -1,3 +1,6 @@
+> **Historical — pre-0.8.0.** Retained for reference; does not define the
+> 0.8.0 contract. See [current specification](../../spec.md).
+
 # Suite reconciliation at the epoch boundary
 
 **Status: RATIFIED 2026-08-16.** Owner ratified D1/D2/D3 ("Your D1/2/3
